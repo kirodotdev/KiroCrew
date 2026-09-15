@@ -10,6 +10,7 @@ import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
 import ChatInput from '../../components/ChatInput'
+import { composerHandleOf } from '../../components/composerControl'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SlotProvider } from '../../providers/SlotContext'
 import { useConnected } from '../../hooks/useConnected'
@@ -212,8 +213,8 @@ export default function SideChat({ slot }: { slot: string }) {
   }, [])
 
   /** Wrapper around the native composer; the Select-to-Ask seed resolves the
-   *  textarea through it (`textarea[data-composer-input]`) instead of a
-   *  dedicated ref prop on ChatInput. */
+   *  editable element through it (`[data-composer-input]`, textarea or Lexical
+   *  root) instead of a dedicated ref prop on ChatInput. */
   const composerWrapRef = useRef<HTMLDivElement | null>(null)
 
   // Drain any text a cancel released, from EITHER convergence path. Merged, not
@@ -545,11 +546,25 @@ export default function SideChat({ slot }: { slot: string }) {
   useEffect(() => {
     if (!seedTick) return
     const frame = requestAnimationFrame(() => {
-      const el = composerWrapRef.current?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
+      // The editable element, whichever kind the host mounted: the plain
+      // `<textarea>` or the Lexical contenteditable root — both carry the hook.
+      // A `textarea[...]` selector found nothing on the default (Lexical)
+      // composer, so the caret never moved while the seed was still consumed.
+      const el = composerWrapRef.current?.querySelector<HTMLElement>('[data-composer-input]')
       if (el) {
-        el.focus()
-        const len = el.value.length
-        el.setSelectionRange(len, len)
+        const handle = composerHandleOf(el)
+        if (handle) {
+          // Lexical root: place the caret through the editor's own control, in
+          // its string-offset space, and let it focus.
+          const len = handle.getValue().length
+          handle.setSelection(len, len, { focus: true })
+        } else {
+          el.focus()
+          if (el instanceof HTMLTextAreaElement) {
+            const len = el.value.length
+            el.setSelectionRange(len, len)
+          }
+        }
         // Scroll to the top so the START of a long quote is visible (focusing
         // + caret-at-end scrolls to the bottom otherwise, hiding the quote).
         el.scrollTop = 0
@@ -726,6 +741,7 @@ export default function SideChat({ slot }: { slot: string }) {
         </div>
         <SlotProvider slotId={slot}>
           <ChatInput
+            lexicalComposer
             value={draft}
             onChange={setDraft}
             onSend={() => { void send() }}

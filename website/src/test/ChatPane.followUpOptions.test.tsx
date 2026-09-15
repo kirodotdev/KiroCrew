@@ -69,6 +69,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api, ApiError } from '../api/client'
+import { composerRoot, composerValue, setComposerValue, awaitComposer } from './helpers'
 
 /** The marker has to close its own line for OPTION_MARKER_RE to match. */
 const ASSISTANT_WITH_OPTIONS = 'Ready to proceed.\n\n[OPTIONS: Alpha | Beta]'
@@ -127,10 +128,11 @@ async function renderPane(slotKey: string, slotExtra: Record<string, unknown> = 
   // Hydration is settled once the transcript shows the assistant's prose.
   const settled = messages.some(m => m.content.includes('Plan for')) ? /Plan for: ship it/ : /Ready to proceed/
   await waitFor(() => expect(screen.getByText(settled)).toBeTruthy())
+  await awaitComposer()
   return store
 }
 
-const composer = () => (screen.getAllByRole('textbox')[0]) as HTMLTextAreaElement
+const composer = () => composerRoot()
 const chip = (option: string) => screen.getByRole('button', { name: option })
 
 /** Fire one debounced chip click and let its onSelect run (fake timers active). */
@@ -158,7 +160,7 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Alpha')
+    expect(composerValue(composer())).toBe('Alpha')
     vi.useRealTimers()
     fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
@@ -184,12 +186,12 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     // being wiped by a message they never composed.
     await renderPane('pane-6')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
-    fireEvent.change(composer(), { target: { value: 'my unsent draft' } })
+    await setComposerValue('my unsent draft', composer())
     fireEvent.doubleClick(chip('Alpha'))
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     const [wireText] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(wireText).toBe('Alpha')
-    expect(composer().value).toBe('my unsent draft')
+    expect(composerValue(composer())).toBe('my unsent draft')
   })
 
   it('unselecting an option splices its own appended text, never a matching substring of the draft', async () => {
@@ -198,12 +200,12 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     // The handler appends at the END, so it must remove the LAST occurrence.
     await renderPane('pane-7')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
-    fireEvent.change(composer(), { target: { value: 'Please, Alphabet' } })
+    await setComposerValue('Please, Alphabet', composer())
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Please, Alphabet, Alpha')
+    expect(composerValue(composer())).toBe('Please, Alphabet, Alpha')
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Please, Alphabet')
+    expect(composerValue(composer())).toBe('Please, Alphabet')
   })
 
   it('offers no pills while the pane is busy, and offers them once busy clears', async () => {
@@ -249,7 +251,7 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     // The label must NOT fall through to the composer-append path: before the
     // fix the click typed the literal label into the composer, one Enter away
     // from being sent to the agent as an ordinary chat message.
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
@@ -258,7 +260,7 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
     vi.useFakeTimers()
     await act(async () => { clickOption('Alpha') })
-    expect(composer().value).toBe('Alpha')
+    expect(composerValue(composer())).toBe('Alpha')
     expect(api.planAction).not.toHaveBeenCalled()
   })
 
@@ -267,7 +269,7 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Go' })).toBeTruthy())
     vi.useFakeTimers()
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('Go')
+    expect(composerValue(composer())).toBe('Go')
     expect(api.planAction).not.toHaveBeenCalled()
   })
 
@@ -284,7 +286,7 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Approve it' })).toBeTruthy())
     vi.useFakeTimers()
     await act(async () => { clickOption('Approve it') })
-    expect(composer().value).toBe('Approve it')
+    expect(composerValue(composer())).toBe('Approve it')
     expect(api.planAction).not.toHaveBeenCalled()
   })
 
@@ -325,7 +327,7 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     vi.useFakeTimers()
     await act(async () => { clickOption('Go') })
     expect(api.planAction).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
   })
 
   it('a second click while the dispatch is pending does not fire twice (re-entrancy across renders)', async () => {
@@ -674,7 +676,7 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     await waitFor(() => expect(api.planAction).toHaveBeenCalledTimes(1))
     expect(api.planAction).toHaveBeenCalledWith('pane-plan-dbl', 'Go')
     expect(api.sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
   })
 
   it('Send now on a plan chip dispatches the plan action, never sendChat (issue #6240)', async () => {
@@ -687,7 +689,7 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     await waitFor(() => expect(api.planAction).toHaveBeenCalledTimes(1))
     expect(api.planAction).toHaveBeenCalledWith('pane-plan-sendnow', 'Cancel')
     expect(api.sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
   })
 
   it('a double-click whose footer is REPLACED between clicks never dispatches (issue #6240 race)', async () => {
@@ -710,7 +712,7 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     })
     expect(api.planAction).not.toHaveBeenCalled()
     expect(api.sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
   })
 
   it('Send now on a NON-plan chip still sends the label through the pane\'s send path', async () => {
@@ -751,7 +753,7 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     expect(api.planAction).not.toHaveBeenCalled()
     // The composer is untouched too — a refused plan click must not fall
     // through to the append path (that is #5893 itself).
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
     // And the refusal did not wedge the new row: a fresh click on it goes.
     await act(async () => { clickOption('Go') })
     expect(api.planAction).toHaveBeenCalledTimes(1)

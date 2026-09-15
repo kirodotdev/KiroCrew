@@ -81,6 +81,7 @@ import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
 import { clearSideChatDrafts, readSideChatDraft } from '../chat-core/composer/sideChatDrafts'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
+import { composerRoot, composerValue, awaitComposer } from './helpers'
 
 const SLOT = 'pane-slot'
 const PANE_MESSAGES = [
@@ -123,11 +124,12 @@ async function renderPane(props: { openSideChat?: (slot: string) => void } = {})
     )
   })
   await waitFor(() => expect(screen.getByTestId('assistant-stub')).toHaveTextContent('Selectable reply.'))
+  await awaitComposer()
   await waitFor(() => expect(assistantProps).not.toBeNull())
   return store
 }
 
-const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
+const composer = () => composerRoot()
 
 describe('ChatPane selection actions (Quote / Ask)', () => {
   // Every test mounts the same SLOT; the pane parks its composer on unmount
@@ -149,7 +151,7 @@ describe('ChatPane selection actions (Quote / Ask)', () => {
     await renderPane()
     const rect = { top: 10, left: 20, width: 5, height: 5 } as DOMRect
     act(() => { assistantProps!.onQuote!('first line\nsecond line', rect) })
-    await waitFor(() => expect(composer().value).toBe('> first line\n> second line\n\n'))
+    await waitFor(() => expect(composerValue(composer())).toBe('> first line\n> second line\n\n'))
     expect(screen.getByTestId('flying-quote')).toHaveTextContent('first line')
   })
 
@@ -157,9 +159,9 @@ describe('ChatPane selection actions (Quote / Ask)', () => {
     await renderPane()
     const rect = { top: 0, left: 0, width: 1, height: 1 } as DOMRect
     act(() => { assistantProps!.onQuote!('alpha', rect) })
-    await waitFor(() => expect(composer().value).toContain('> alpha'))
+    await waitFor(() => expect(composerValue(composer())).toContain('> alpha'))
     act(() => { assistantProps!.onQuote!('beta', rect) })
-    await waitFor(() => expect(composer().value).toBe('> alpha\n\n> beta\n\n'))
+    await waitFor(() => expect(composerValue(composer())).toBe('> alpha\n\n> beta\n\n'))
   })
 
   it('Ask appears with a host Side Chat opener, opens it for THIS pane\'s slot and seeds THIS slot\'s draft — composer untouched', async () => {
@@ -172,6 +174,6 @@ describe('ChatPane selection actions (Quote / Ask)', () => {
     // The seed is written under the PANE's slot — not the active slot the
     // store holds — so the Side Chat the host re-binds to this pane reads it.
     expect(readSideChatDraft(SLOT)).toBe('> why is this slow?\n\n')
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
   })
 })

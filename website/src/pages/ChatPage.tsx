@@ -7222,6 +7222,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 voice={composerVoiceOptions}
               >
               <ChatInput
+                lexicalComposer
               aboveComposer={
                 <>
                   {/* Session-control failures surface HERE, beside the chips they

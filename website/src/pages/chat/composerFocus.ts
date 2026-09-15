@@ -40,12 +40,23 @@ import { isTouchDevice } from '../../utils/isTouchDevice'
  * attribute is invisible to assistive tech and never translated, which leaves
  * the label free to localize.
  *
+ * And it is the hook ALONE, with no element name in front of it: the composer
+ * is a `<textarea>` only on the plain-textarea path (and the chunk-load
+ * fallback); the Lexical composer every chat surface now mounts by default is
+ * a contenteditable `<div>` carrying the same hook. A `textarea[...]` selector
+ * matched nothing there, and every intent below — Alt+Enter, `/`,
+ * quote-to-compose, widget prefill, the post-create focus, search-close —
+ * silently no-op'd. Callers only ever `focus()` / `scrollIntoView()` the
+ * result, which both elements support, hence `HTMLElement`.
+ *
  * Steps 1 and 2 are `focusedPane()` below, shared with the pending-approval
  * lookup so both chords agree about which pane they are in.
  */
-export function queryComposer(): HTMLTextAreaElement | null {
+const COMPOSER_SELECTOR = '[data-composer-input]'
+
+export function queryComposer(): HTMLElement | null {
   const pane = focusedPane()
-  const scoped = pane?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
+  const scoped = pane?.querySelector<HTMLElement>(COMPOSER_SELECTOR)
   if (scoped) return scoped
   /**
    * Document-wide fallback, EXCLUDING the side chat's own composer.
@@ -69,9 +80,9 @@ export function queryComposer(): HTMLTextAreaElement | null {
    * `[data-side-chat-input]` is the marker ChatPage already uses to find that
    * composer (`handleAsk`'s mount probe), not one invented here.
    */
-  const all = document.querySelectorAll<HTMLTextAreaElement>('textarea[data-composer-input]')
-  for (const ta of all) {
-    if (!ta.closest('[data-side-chat-input]')) return ta
+  const all = document.querySelectorAll<HTMLElement>(COMPOSER_SELECTOR)
+  for (const el of all) {
+    if (!el.closest('[data-side-chat-input]')) return el
   }
   return null
 }
@@ -130,9 +141,9 @@ export function requestComposerExpand(): boolean {
  * synchronous: when the composer is already there the callback runs before this
  * returns, so neither caller loses the ordering its own comment relies on.
  */
-export function queryComposerOrExpand(then: (ta: HTMLTextAreaElement) => void): void {
-  const ta = queryComposer()
-  if (ta) { then(ta); return }
+export function queryComposerOrExpand(then: (el: HTMLElement) => void): void {
+  const el = queryComposer()
+  if (el) { then(el); return }
   if (!requestComposerExpand()) return
   requestAnimationFrame(() => {
     const revealed = queryComposer()
@@ -282,7 +293,10 @@ const COMPOSER_RELEASE_TTL_MS = 1500
 export function releaseComposerForKeyboardSwitch(): void {
   composerReleaseArmedAt = Date.now()
   const ae = document.activeElement
-  if (ae instanceof HTMLTextAreaElement && ae.hasAttribute('data-composer-input')) ae.blur()
+  // Any element carrying the hook — the plain textarea OR the Lexical
+  // contenteditable root — not `HTMLTextAreaElement` alone, which never matched
+  // the default composer and left the chord chain dying on the first jump.
+  if (ae instanceof HTMLElement && ae.hasAttribute('data-composer-input')) ae.blur()
 }
 
 /** Consume the one-shot release. True = the autofocus effect must skip this transition. */

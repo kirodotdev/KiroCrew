@@ -1,4 +1,5 @@
 import { test, expect, type Browser, type Page, type Route, type TestInfo } from '@playwright/test'
+import { composer, expectComposerText } from './helpers/composer'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -150,8 +151,8 @@ for (const touch of [false, true]) {
     test('blocked playback reveals the reply menu and preserves the draft', async ({ page, browser, baseURL }, info) => {
       const { errors, servedIndexHash } = await openChat(page, baseURL!)
       const capture = evidence(page, browser, info, servedIndexHash)
-      const composer = page.locator('textarea[data-composer-input]')
-      await composer.fill(draft)
+      const draftBox = composer(page)
+      await draftBox.fill(draft)
       await page.mouse.move(1, 1)
       await failPlayback(page, 'voice_playback_blocked')
       const notice = page.getByTestId('voice-playback-error')
@@ -165,7 +166,7 @@ for (const touch of [false, true]) {
       await expect(page.getByTestId('speak-message')).toHaveAttribute('aria-description', label('pages.chat.assistantMessage.speak_message'))
       await expect(page.getByTestId('copy-message-menu-item')).toHaveText(label('pages.chat.assistantMessage.copy_text'))
       await expect(page.getByTestId('copy-message-menu-item')).toBeVisible()
-      await expect(composer).toHaveValue(draft)
+      await expectComposerText(draftBox, draft)
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
       await capture('copy-menu-open', touch)
       expect(errors).toEqual([])
@@ -177,7 +178,7 @@ test('failed playback links to and highlights the text-to-speech provider', asyn
   const { errors, servedIndexHash } = await openChat(page, baseURL!)
   const capture = evidence(page, browser, info, servedIndexHash)
   // No draft here: exercise the normal link without bypassing the leave guard.
-  await expect(page.locator('textarea[data-composer-input]')).toHaveValue('')
+  await expectComposerText(composer(page), '')
   await failPlayback(page, 'voice_synthesis_failed')
   const notice = page.getByTestId('voice-playback-error')
   await expect(notice).toContainText(noticeText('components.voicePlaybackNotice.failed'))

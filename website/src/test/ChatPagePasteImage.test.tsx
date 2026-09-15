@@ -65,6 +65,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { awaitComposer, composerRoot } from './helpers'
 
 function makeStore(activeSlot: string, slots: { key: string; mode?: string }[]) {
   return configureStore({
@@ -103,7 +104,7 @@ async function renderAndWaitForInput(store: ReturnType<typeof makeStore>) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await awaitComposer()
 }
 
 /** Fire an image-only clipboard paste (the OS-screenshot clipboard shape). */
@@ -137,7 +138,7 @@ describe('ChatPage clipboard image paste', () => {
     await renderAndWaitForInput(store)
 
     const file = new File(['px'], 'screenshot.png', { type: 'image/png' })
-    await act(async () => { pasteImage(screen.getByLabelText('Message input'), file) })
+    await act(async () => { pasteImage(composerRoot(), file) })
 
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(1))
     const sent = vi.mocked(api.uploadFiles).mock.calls[0][0]
@@ -153,7 +154,7 @@ describe('ChatPage clipboard image paste', () => {
     await renderAndWaitForInput(store)
 
     const big = oversizeImage()
-    await act(async () => { pasteImage(screen.getByLabelText('Message input'), big) })
+    await act(async () => { pasteImage(composerRoot(), big) })
 
     // Exactly the file_too_large banner a picked oversize file produces —
     // resolved through the same i18n path the component uses, so the
