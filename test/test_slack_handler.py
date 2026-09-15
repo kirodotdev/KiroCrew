@@ -4224,10 +4224,12 @@ class TestStreamingLoopPresentationGuards:
 
     @pytest.mark.asyncio
     async def test_append_retry_raise_after_successful_rotation_still_delivers(self):
-        """Rotation SUCCEEDS but the retry append raises too: the raise must
-        map onto the refused-append outcome — the turn stays live, no terminal
-        error, no failure record — exactly as the shipped client's refused
-        append behaves on this path. (Re-delivering the dropped delta is the
+        """Rotation SUCCEEDS but the retry append raises too, and EVERY append
+        on the turn is refused: the raise still maps onto the refused-append
+        outcome — the turn stays live and shows no terminal error — but a stream
+        that delivered no text at all did not reach the reader, so the verdict is
+        a failure, not a success booked from the mere fact a stream was opened.
+        (Re-delivering a dropped delta on a stream that DID land text is the
         delivery-debt follow-up, deliberately out of this sweep's scope.)"""
 
         class AlwaysRaisingAppendSlack(MockSlackClient):
@@ -4248,10 +4250,13 @@ class TestStreamingLoopPresentationGuards:
 
         # Both the first append and the post-rotation retry fired and raised.
         assert slack.append_raises >= 2, slack.actions
-        assert sessions.record_failure_calls == 0
+        # No terminal error surfaces: the appends are swallowed, not escalated to
+        # the catch-all, so the turn completes cleanly.
         all_text = self._all_text(slack)
         assert "Something went wrong" not in all_text, slack.actions
-        assert sessions.record_success_calls == 1
+        # But nothing was delivered, so the single verdict is a failure.
+        assert sessions.record_success_calls == 0, slack.actions
+        assert sessions.record_failure_calls == 1
 
     @pytest.mark.asyncio
     async def test_initial_start_stream_raise_demotes_to_fallback(self):
