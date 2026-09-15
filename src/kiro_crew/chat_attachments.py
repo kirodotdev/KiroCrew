@@ -26,10 +26,13 @@ rows, ``chat_persistence._build_message_entry`` for the dashboard slot save):
 * **Content-addressed.** The stored name carries a sha256 prefix of the bytes, so
   one image referenced by ten messages is stored once and a second reference
   costs a stat.
-* **Idempotent.** A destination already inside the attachments directory is left
-  alone, which is what lets a re-persist of the same row (the slot save
+* **Idempotent.** A destination already inside the attachments directory costs
+  no copy, which is what lets a re-persist of the same row (the slot save
   re-serializes its whole window on every flush) run without re-copying and lets
-  the two writers compose in either order.
+  the two writers compose in either order. Its destination is still re-ENCODED,
+  so a row written by a build that spelled a Windows path natively is repaired
+  the next time it is persisted; for a row already canonical the re-encode is
+  byte-identical, which is what keeps the round trip a fixed point.
 * **Fail-open, per image.** Anything unreadable, oversized, symlinked, or of an
   unexpected type keeps its original markup and logs at debug. A picture that
   cannot be preserved must never cost the message its text.
@@ -152,6 +155,17 @@ _MAX_NAME_CHARS = 64
 #: one is wrapped in angle brackets (a home directory with a space in it is the
 #: realistic case).
 _DEST_NEEDS_ANGLES = frozenset(" \t()<>")
+
+#: A Windows path whose backslashes are SEPARATORS: drive-letter absolute, or a
+#: UNC share. Mirrors ``WIN_PRODUCER_PATH_RE`` in ``website/src/utils/fileTokens.ts``,
+#: the frontend producer for this same wire format.
+_WIN_SEPARATOR_PATH_RE = re.compile(r"^(?:[A-Za-z]:|\\\\[^\\/]+)[\\/]")
+
+#: Windows extended-length prefix. The leading ``\\?\`` is a namespace marker, not
+#: a separator, and Windows does not accept it spelled with forward slashes -- so
+#: such a destination is left exactly as it is. (``_store_one`` builds its path
+#: from ``Path`` joins and never produces one; this is a guard, not a case.)
+_EXTENDED_LENGTH_PREFIX = "\\\\?\\"
 
 
 def attachments_dir(sessions_dir: Path, stem: str) -> Path:
@@ -404,11 +418,18 @@ def _store_one(raw_dest: str, target_dir: Path, budget_bytes: int) -> tuple[str,
     repeat costs no disk.
 
     ``None`` means "leave the reference alone", for every reason: not a local
-    absolute path, already stored, not an image extension, not a regular file,
-    larger than the remaining message budget, or refused by the read chokepoint
-    (unreadable, hardlinked, non-regular, sensitive, or over the per-image
-    ceiling). An over-budget image is SKIPPED rather than ending the row, so one
-    large picture does not cost the smaller ones after it their durability.
+    absolute path, not an image extension, not a regular file, larger than the
+    remaining message budget, or refused by the read chokepoint (unreadable,
+    hardlinked, non-regular, sensitive, or over the per-image ceiling). An
+    over-budget image is SKIPPED rather than ending the row, so one large picture
+    does not cost the smaller ones after it their durability.
+
+    An ALREADY-STORED destination returns its own path at zero cost rather than
+    ``None``: the bytes need no copy, but the destination still has to be re-
+    encoded, because a row written by a build that spelled a Windows path
+    natively holds a destination the markdown reader does not resolve (see
+    :func:`_posix_separators`). Re-encoding a canonical destination reproduces it
+    byte for byte, so the rewrite stays a fixed point either way.
     """
     source = local_destination(raw_dest)
     if source is None:
@@ -417,10 +438,16 @@ def _store_one(raw_dest: str, target_dir: Path, budget_bytes: int) -> tuple[str,
         return None
     # Already ours: the row is being re-persisted (a slot re-flush, or the second
     # of the two writers). Re-copying would content-address the same bytes to the
-    # same name, so this is an optimisation AND the property that makes the
-    # rewrite idempotent.
+    # same name, so charging nothing here is an optimisation AND the property that
+    # makes the rewrite idempotent.
+    #
+    # It is returned rather than skipped so the destination is RE-ENCODED: a row
+    # written by a build that spelled a Windows path natively holds a destination
+    # the markdown reader resolves to a different file, and that row is only ever
+    # rewritten here. A canonical destination re-encodes to itself, so the text is
+    # unchanged and the fixed point holds.
     if _same_dir(source.parent, target_dir):
-        return None
+        return str(source), 0
     # Classification only (see the module docstring): an attachment records a
     # file, so a destination that is a link, directory or device is left as
     # written rather than resolved. Every safety decision is the chokepoint's.
@@ -539,17 +566,50 @@ def _after_alt_text(markup: str) -> int | None:
     return None
 
 
+def _posix_separators(new_dest: str) -> str:
+    r"""*new_dest* with a Windows path's separators written as ``/``.
+
+    A destination is re-parsed by a CommonMark parser before anything resolves
+    it, and CommonMark drops a backslash that precedes ASCII punctuation. The
+    attachments directory sits under the data home, whose default is
+    ``~/.kiro/crew``, so a native destination always carries ``\.kiro\`` -- the
+    parser reads that ``\.`` as an escaped dot, and the dashboard then asks
+    ``/api/file-raw`` for ``...\Users\me.kiro\crew\...``, which is not the file.
+    Windows accepts ``/`` in every file API, so the forward-slash spelling names
+    the same file and is a fixed point of the parser's rule.
+
+    Not a new convention: this is what the frontend producer of this wire format
+    already emits (``mdImageDest``/``normalizeWindowsPath``,
+    ``website/src/utils/fileTokens.ts``), and the forward-slash drive spelling is
+    what its consumer admits (``WINDOWS_ABS_PATH_RE``,
+    ``website/src/utils/urlTransform.ts``) -- where the backslash UNC spelling is
+    deliberately REFUSED, so ``//host/share/...`` is the only form in which a UNC
+    attachment can render at all.
+
+    The Python-side readers are unaffected: ``is_unc_shape`` accepts either
+    separator, ``Path`` treats them alike on Windows, and ``_same_dir`` compares
+    through ``os.path.normpath``. A POSIX path matches nothing here and is
+    returned by identity.
+    """
+    if new_dest.startswith(_EXTENDED_LENGTH_PREFIX):
+        return new_dest
+    if not _WIN_SEPARATOR_PATH_RE.match(new_dest):
+        return new_dest
+    return new_dest.replace("\\", "/")
+
+
 def _encode_destination(new_dest: str, *, angle_wrapped: bool) -> str:
     """*new_dest* in a form a markdown destination can hold.
 
     Angle brackets are escaped either way; the wrapping is added only when the
     original had none and the path holds something a bare destination cannot
-    carry. The path's own separators are left alone -- a Windows path's
-    backslashes precede path characters, which markdown treats literally.
+    carry. A Windows path's separators are rewritten first, for the reason
+    :func:`_posix_separators` carries.
     """
-    escaped = new_dest.replace("<", "\\<").replace(">", "\\>")
+    dest = _posix_separators(new_dest)
+    escaped = dest.replace("<", "\\<").replace(">", "\\>")
     if angle_wrapped:
         return escaped
-    if any(char in _DEST_NEEDS_ANGLES for char in new_dest):
+    if any(char in _DEST_NEEDS_ANGLES for char in dest):
         return f"<{escaped}>"
     return escaped

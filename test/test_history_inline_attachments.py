@@ -9,6 +9,7 @@ session reclaims the images it showed.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -20,6 +21,16 @@ PNG_BYTES = bytes.fromhex(
     "890000000a49444154789c6300010000050001"
     "0d0a2db40000000049454e44ae426082"
 )
+
+
+def _dest(path):
+    """A stored path as a persisted markdown destination spells it.
+
+    Identity on POSIX; forward slashes on Windows, because the native spelling
+    is not a fixed point of the markdown parser that reads the row back. The
+    contract and its cases live in ``test_chat_attachments.py``.
+    """
+    return str(path).replace(os.sep, "/")
 
 
 @pytest.fixture()
@@ -44,7 +55,7 @@ def test_appended_assistant_row_names_the_stored_copy(tmp_path, png):
 
     (row,) = _rows(tmp_path / "thread1.jsonl")
     stored = next(attachments_dir(tmp_path, "thread1").iterdir())
-    assert str(stored) in row["content"]
+    assert _dest(stored) in row["content"]
     assert str(png) not in row["content"]
     assert stored.read_bytes() == PNG_BYTES
     assert png.read_bytes() == PNG_BYTES
@@ -242,4 +253,4 @@ def test_two_sessions_referencing_one_image_keep_separate_copies(tmp_path, png):
     surviving = list(attachments_dir(tmp_path, "thread2").iterdir())
     assert len(surviving) == 1
     (row,) = _rows(tmp_path / "thread2.jsonl")
-    assert str(surviving[0]) in row["content"]
+    assert _dest(surviving[0]) in row["content"]

@@ -7,6 +7,8 @@ A dashboard chat's assistant rows do NOT go through ``ConversationLog.append`` -
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from kiro_crew.chat_attachments import attachments_dir
@@ -20,6 +22,16 @@ PNG_BYTES = bytes.fromhex(
     "890000000a49444154789c6300010000050001"
     "0d0a2db40000000049454e44ae426082"
 )
+
+
+def _dest(path):
+    """A stored path as a persisted markdown destination spells it.
+
+    Identity on POSIX; forward slashes on Windows, because the native spelling
+    is not a fixed point of the markdown parser that reads the row back. The
+    contract and its cases live in ``test_chat_attachments.py``.
+    """
+    return str(path).replace(os.sep, "/")
 
 
 @pytest.fixture()
@@ -43,7 +55,7 @@ def test_entry_names_the_stored_copy(sessions, png):
     entry = _build_message_entry_uncached(message, attachments=(sessions, "tab1"))
 
     stored = next(attachments_dir(sessions, "tab1").iterdir())
-    assert str(stored) in entry["content"]
+    assert _dest(stored) in entry["content"]
     assert str(png) not in entry["content"]
     # The live row now names the durable copy too, so the next flush of this
     # window has nothing to resolve from scratch.
@@ -81,8 +93,8 @@ def test_the_memo_does_not_share_an_entry_across_sessions(sessions, png):
     second = _build_message_entry(message, attachments=(sessions, "tab2"))
 
     assert first["content"] != second["content"]
-    assert str(next(attachments_dir(sessions, "tab1").iterdir())) in first["content"]
-    assert str(next(attachments_dir(sessions, "tab2").iterdir())) in second["content"]
+    assert _dest(next(attachments_dir(sessions, "tab1").iterdir())) in first["content"]
+    assert _dest(next(attachments_dir(sessions, "tab2").iterdir())) in second["content"]
 
 
 def test_reserializing_the_same_row_does_not_recopy(sessions, png):
@@ -129,7 +141,7 @@ def test_variant_content_is_rewritten_too(sessions, png):
     entry = _build_message_entry_uncached(message, attachments=(sessions, "tab1"))
 
     stored = next(attachments_dir(sessions, "tab1").iterdir())
-    assert str(stored) in entry["variants"][0]["content"]
+    assert _dest(stored) in entry["variants"][0]["content"]
     assert str(png) not in entry["variants"][0]["content"]
     # The live variant is updated too, like the primary content.
     assert message["variants"][0]["content"] == entry["variants"][0]["content"]
