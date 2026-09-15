@@ -10191,8 +10191,6 @@
       "stale_collapse_paused_hint": "列表处于搜索、筛选或非“最新优先”排序时暂停折叠。",
       "stale_collapse_row": "休眠会话",
       "stale_collapse_row_ungrouped": "文件夹外",
-      "started_in_channel": "此对话开始于 {{channel}}。",
-      "started_in_direct_message": "此对话开始于私信。",
       "stop_filtering_by_tag": "取消按 {{name}} 筛选",
       "streaming": "流式输出中",
       "sub_agent_needs_approval_other": "{{count}} 个子代理待审批",

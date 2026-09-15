@@ -10495,8 +10495,6 @@
       "stale_collapse_paused_hint": "En pausa mientras la lista está en búsqueda, filtrada u ordenada por algo distinto de más recientes primero.",
       "stale_collapse_row": "Sesiones en reposo",
       "stale_collapse_row_ungrouped": "fuera de carpetas",
-      "started_in_channel": "Esta conversación comenzó en {{channel}}.",
-      "started_in_direct_message": "Esta conversación comenzó en un mensaje directo.",
       "stop_filtering_by_tag": "Dejar de filtrar por {{name}}",
       "streaming": "Transmitiendo",
       "sub_agent_needs_approval_many": "{{count}} subagentes necesitan aprobación",

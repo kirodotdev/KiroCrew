@@ -10343,8 +10343,6 @@
       "stale_collapse_paused_hint": "Pausiert, solange die Liste durchsucht, gefiltert oder nicht nach „Neueste zuerst“ sortiert ist.",
       "stale_collapse_row": "Ruhende Sitzungen",
       "stale_collapse_row_ungrouped": "außerhalb von Ordnern",
-      "started_in_channel": "Diese Unterhaltung begann in {{channel}}.",
-      "started_in_direct_message": "Diese Unterhaltung begann in einer Direktnachricht.",
       "stop_filtering_by_tag": "Nicht mehr nach {{name}} filtern",
       "streaming": "Streaming",
       "sub_agent_needs_approval_one": "{{count}} Subagent braucht Freigabe",

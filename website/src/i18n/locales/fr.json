@@ -10495,8 +10495,6 @@
       "stale_collapse_paused_hint": "En pause tant que la liste est en recherche, filtrée ou triée autrement que par plus récentes d’abord.",
       "stale_collapse_row": "Sessions en sommeil",
       "stale_collapse_row_ungrouped": "hors dossiers",
-      "started_in_channel": "Cette conversation a commencé dans {{channel}}.",
-      "started_in_direct_message": "Cette conversation a commencé dans un message privé.",
       "stop_filtering_by_tag": "Arrêter de filtrer par {{name}}",
       "streaming": "Diffusion en cours",
       "sub_agent_needs_approval_many": "{{count}} sous-agents attendent une approbation",

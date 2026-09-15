@@ -10191,8 +10191,6 @@
       "stale_collapse_paused_hint": "목록이 검색·필터 중이거나 최신순이 아닌 정렬일 때는 일시 중지됩니다.",
       "stale_collapse_row": "휴면 세션",
       "stale_collapse_row_ungrouped": "폴더 밖",
-      "started_in_channel": "이 대화는 {{channel}}에서 시작되었습니다.",
-      "started_in_direct_message": "이 대화는 다이렉트 메시지에서 시작되었습니다.",
       "stop_filtering_by_tag": "{{name}} 필터 해제",
       "streaming": "스트리밍 중",
       "sub_agent_needs_approval_other": "서브에이전트 {{count}}개 승인 대기 중",

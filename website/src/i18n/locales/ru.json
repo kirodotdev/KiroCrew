@@ -10647,8 +10647,6 @@
       "stale_collapse_paused_hint": "Приостановлено, пока список в поиске, отфильтрован или отсортирован не по новизне.",
       "stale_collapse_row": "Спящие сессии",
       "stale_collapse_row_ungrouped": "вне папок",
-      "started_in_channel": "Этот диалог начался в {{channel}}.",
-      "started_in_direct_message": "Этот диалог начался в личном сообщении.",
       "stop_filtering_by_tag": "Не фильтровать по тегу {{name}}",
       "streaming": "Потоковая передача",
       "sub_agent_needs_approval_few": "{{count}} субагента ждут одобрения",

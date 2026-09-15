@@ -10189,8 +10189,6 @@
       "stale_collapse_paused_hint": "検索・フィルター中、または「新しい順」以外の並び替え中は一時停止します。",
       "stale_collapse_row": "休眠中のセッション",
       "stale_collapse_row_ungrouped": "フォルダー外",
-      "started_in_channel": "この会話は {{channel}} で始まりました。",
-      "started_in_direct_message": "この会話はダイレクトメッセージで始まりました。",
       "stop_filtering_by_tag": "{{name}} でのフィルターを解除",
       "streaming": "ストリーミング中",
       "sub_agent_needs_approval_other": "{{count}} 個のサブエージェントが承認待ち",

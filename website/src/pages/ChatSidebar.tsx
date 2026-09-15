@@ -782,6 +782,30 @@ function showsChipCi(state: SourceLinkState | undefined): boolean {
   return state === undefined || !TERMINAL_SOURCE_LINK_STATES.has(state)
 }
 
+/** The channels a session row wears a brand mark for: one per channel that is
+ * currently connected, in first-seen order.
+ *
+ * Connected means at least one delivery on that channel is not paused — the
+ * same rule the session menu's Connect/Disconnect row uses to pick its verb, so
+ * the mark on the row and the verb in the menu can never disagree. `direction`
+ * plays no part: a channel the session was born in and a channel it was later
+ * connected to are the same fact to the reader of the list, and the one thing a
+ * disconnect changes on either is `paused`.
+ *
+ * One per channel, not one per link. A session born in Discord and mirrored to
+ * Discord carries two links for it, and a reader should see one Discord mark,
+ * not two.
+ *
+ * Exported for its own test; the row is the only production caller. */
+export function connectedChannelLinks(links: readonly SessionLink[] | undefined): SessionLink[] {
+  const byChannel = new Map<string, SessionLink>()
+  for (const link of links ?? []) {
+    if (link.paused || byChannel.has(link.channel)) continue
+    byChannel.set(link.channel, link)
+  }
+  return [...byChannel.values()]
+}
+
 /** The single status glyph a change chip shows, or null for none.
  *
  * One function rather than sibling conditionals because the interesting part is
@@ -2588,60 +2612,34 @@ const SessionRow = memo(function SessionRow({
                 </span>
               )}
               {isOut && <span className="text-accent" title={i18nT('pages.chatSidebar.popped_out_to_a_separate_window')}><ExternalLink size={10} /></span>}
-              {slotChannelNamespace(s.key) && (() => {
-                // PROVENANCE ONLY: where this conversation started. That is
-                // history, so it stays true after the channel is disconnected —
-                // which is exactly why this glyph must not describe delivery.
-                // It previously said the session was "two-way" with the channel
-                // and that replies "are delivered there", a claim the disconnect
-                // makes false while this glyph still renders. Current delivery is
-                // the separate set of glyphs below, which filter on `paused`.
-                //
-                // `unified` gets its own key rather than an interpolated label:
-                // it has no proper noun, and an English article fragment inside
-                // a translated sentence is not something a locale can repair.
-                const ns = slotChannelNamespace(s.key)
-                const label = ns === 'unified'
-                  ? i18nT('pages.chatSidebar.started_in_direct_message')
-                  : i18nT('pages.chatSidebar.started_in_channel', { channel: slotChannelLabel(s.key) })
-                // Brand mark rather than a generic bubble: the row already tells
-                // you a chat happened, so the only new information this glyph can
-                // carry is WHICH app it came from. Namespaces with no mark of
-                // their own keep the bubble — ChannelBrandIcon would fall through
-                // to its `Link2` default, which reads as live mirroring and would
-                // collide with the link glyphs rendered just below.
-                return (
-                  <span className="text-muted shrink-0 inline-flex items-center" title={label} aria-label={label}>
-                    {hasChannelBrandIcon(ns) ? <ChannelBrandIcon channel={ns} size={10} /> : <MessageSquare size={10} />}
-                  </span>
-                )
-              })()}
-              {/* Live mirroring, per channel. The origin glyph above is derived
-               *  from the slot KEY (channelOrigin.ts) and already says where the
-               *  conversation STARTED, so this renders only channels currently
-               *  DELIVERING and never double-badges an origin. It replaces a
-               *  `linked_to_slack` Link glyph that fired for ANY channel, because
-               *  every non-Slack transport writes its id into slack_channel_id.
+              {/* One brand mark per channel this session is CONNECTED to, read
+               *  from `s.links` and nothing else. A second glyph used to be drawn
+               *  here from the slot KEY for the channel the session was born in.
+               *  That is a prefix read of the identity, and the property it
+               *  rendered is not one the session address model has — its §5.3
+               *  names capability, attachment and ingress, and "where did this
+               *  start?" is the question it retires (docs/request-for-change/
+               *  rfc-session-address-model.md). It also could not react to a
+               *  disconnect: a Slack-born row kept its mark after the user chose
+               *  "Disconnect from Slack", while the identical mark on a
+               *  dashboard-born row one line down vanished. So the strip reads
+               *  the one state the menu row toggles — `paused` — and nothing
+               *  about where the session came from.
                *
-               *  `both` counts as delivering: a two-way binding is strictly MORE
-               *  connected than a one-way mirror, and filtering on `out` alone left
-               *  a session with messages flowing both ways looking unlinked. A
-               *  disconnected channel is excluded — it keeps its direction, so
-               *  without the `paused` check the sidebar promised delivery for a
-               *  session whose own menu one row away reads "Connect to X". */}
-              {(s.links ?? [])
-                .filter(link => link.direction !== 'origin' && !link.paused)
-                .map((link, index) => (
-                  <span
-                    key={`${link.channel}:${link.direction}:${index}`}
-                    className="inline-flex text-[10px]"
-                    role="img"
-                    aria-label={i18nT('pages.chatSidebar.connected_to', { label: link.label })}
-                    title={i18nT('pages.chatSidebar.connected_to', { label: link.label })}
-                  >
-                    <ChannelBrandIcon channel={link.channel} size={10} />
-                  </span>
-                ))}
+               *  It replaces a `linked_to_slack` Link glyph that fired for ANY
+               *  channel, because every non-Slack transport writes its id into
+               *  slack_channel_id. */}
+              {connectedChannelLinks(s.links).map(link => (
+                <span
+                  key={link.channel}
+                  className="inline-flex text-[10px]"
+                  role="img"
+                  aria-label={i18nT('pages.chatSidebar.connected_to', { label: link.label })}
+                  title={i18nT('pages.chatSidebar.connected_to', { label: link.label })}
+                >
+                  <ChannelBrandIcon channel={link.channel} size={10} />
+                </span>
+              ))}
               {/* Runs-elsewhere marker, first in the strip for the same reason it
                *  is first on a federated search row: it qualifies the whole row,
                *  so a user scanning the list should meet it before the per-session

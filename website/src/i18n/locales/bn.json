@@ -10343,8 +10343,6 @@
       "stale_collapse_paused_hint": "তালিকা অনুসন্ধান, ফিল্টার বা “নতুন আগে” ছাড়া অন্য ক্রমে থাকলে বিরতিতে থাকে।",
       "stale_collapse_row": "সুপ্ত সেশন",
       "stale_collapse_row_ungrouped": "ফোল্ডারের বাইরে",
-      "started_in_channel": "এই কথোপকথন {{channel}}-এ শুরু হয়েছিল।",
-      "started_in_direct_message": "এই কথোপকথন একটি সরাসরি মেসেজে শুরু হয়েছিল।",
       "stop_filtering_by_tag": "{{name}} দিয়ে ফিল্টার করা বন্ধ করুন",
       "streaming": "স্ট্রিমিং",
       "sub_agent_needs_approval_one": "{{count}}টি সাবএজেন্টের অনুমোদন প্রয়োজন",
