@@ -19,7 +19,7 @@
  * common state, so the old gate showed it almost always.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -77,6 +77,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { awaitComposer, setComposerValue } from './helpers'
 
 type Msg = { role: string; content: string; cls?: string; kind?: string; meta?: Record<string, unknown> }
 
@@ -119,7 +120,7 @@ async function renderWith(messages: Msg[]) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await awaitComposer()
 }
 
 beforeEach(() => {
@@ -140,7 +141,7 @@ describe('ChatPage — Continue appears only on an interrupted turn', { timeout:
     expect(screen.getByTestId('error-card-continue')).toBeVisible()
     expect(screen.queryByRole('link', { name: 'Set up private memory' })).toBeNull()
     expect(screen.getByTestId('error-card')).not.toHaveTextContent('memory_unavailable:')
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'try after setup' } })
+    await setComposerValue('try after setup')
     expect(screen.getByLabelText('Send')).not.toBeDisabled()
   })
 

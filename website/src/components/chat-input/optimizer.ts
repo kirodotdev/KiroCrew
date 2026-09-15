@@ -4,7 +4,6 @@ import type { useAppStore } from '../../store'
 import { selectSlotMessages } from '../../store/chatSlice'
 import { pruneBlocks, type PasteBlock } from '../../utils/pasteTokens'
 import { i18nT } from '../../i18n/t'
-import type { ComposerControl } from '../composerControl'
 import { terminalCommand } from '../../hooks/useTerminalCommand'
 import type { ChatInputProps } from './props'
 
@@ -13,16 +12,18 @@ import type { ChatInputProps } from './props'
    that asked, or goes to `onOptimizeResult` when that slot is no longer the
    one on screen. */
 
-export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef, valueFromUserRef, optimizingRef, appendUndoBoundary, terminalCommands }: {
+export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, onChange, replaceInSlot, onOptimizeResult, lexicalComposer, lexicalLoadFailed, inputRef, valueFromUserRef, optimizingRef, appendUndoBoundary, terminalCommands }: {
   slotId: string | null
   chatStore: ReturnType<typeof useAppStore>
   valueRef: React.MutableRefObject<string>
   pasteBlocks: PasteBlock[]
   onChange: (v: string) => void
+  /** Whole-draft replacement that is one undo step in the Lexical editor
+   *  (`ComposerControl.replaceText`); falls back to `onChange` on the textarea. */
+  replaceInSlot: (v: string) => void
   onOptimizeResult?: (slotId: string | null, optimized: string) => void
   lexicalComposer: boolean
   lexicalLoadFailed: boolean
-  composerControl: () => ComposerControl | null
   inputRef: React.RefObject<HTMLTextAreaElement>
   valueFromUserRef: React.MutableRefObject<boolean>
   /** Written here during render; the undo recorder and the keydown handler read it. */
@@ -46,10 +47,9 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
 
   const setTextUndoable = useCallback((text: string) => {
     if (lexicalComposer && !lexicalLoadFailed) {
-      valueFromUserRef.current = true
-      onChange(text)
-      requestAnimationFrame(() => composerControl()?.setSelection(text.length, text.length, { focus: true }))
-      return
+      // The editor's `replaceText` records the result as one undo step and
+      // parks the caret at the end itself (RFC Q6: undo brings the prompt back).
+      return replaceInSlot(text)
     }
     const el = inputRef.current
     if (!el) { onChange(text); return }
@@ -80,7 +80,7 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
     requestAnimationFrame(() => {
       if (el && document.activeElement === el) el.setSelectionRange(text.length, text.length)
     })
-  }, [onChange, lexicalComposer, lexicalLoadFailed, composerControl, valueFromUserRef, inputRef])
+  }, [onChange, replaceInSlot, lexicalComposer, lexicalLoadFailed, valueFromUserRef, inputRef])
 
   const optimizeMutation = useMutation({
     onMutate: () => { setOptimizeError('') },

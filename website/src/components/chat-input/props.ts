@@ -335,8 +335,12 @@ export interface ChatInputProps {
    *  behaviour, and it is what keeps a very large paste off the main thread.
    *  Cmd/Ctrl+Shift+V still forces one raw paste when this is off. */
   showFullPastes?: boolean
-  /** Opt into the first Lexical composer migration slice. Defaults off so the
-   *  established textarea path remains the production fallback until parity is complete. */
+  /** Render the Lexical composer (inline paste pills). Every product surface
+   *  passes this; the default stays off so a bare <ChatInput> — and the textarea
+   *  path that remains the lazy-load FAILURE fallback — keep their contract.
+   *  `test/chatInputHosts.lexicalComposer.test.ts` holds that line: every
+   *  product mount must name the prop, so a new host cannot fall back to the
+   *  textarea by omission. */
   lexicalComposer?: boolean
   /** Optional knowledge chip rendered above the input */
   knowledgeChip?: React.ReactNode

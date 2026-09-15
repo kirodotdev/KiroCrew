@@ -8,12 +8,89 @@ import {
   shouldCollapse as shouldCollapsePaste,
   countLines,
   makePasteId,
+  allocateSeq,
   formatToken,
   tokenRangeAt,
   pruneBlocks,
-  nextSeq,
+  nextSeqIn,
   findTokenRanges,
+  PASTE_TOKEN_REGEX,
 } from '../../utils/pasteTokens'
+
+/**
+ * A textarea paste event is the provenance boundary that can distinguish new
+ * literal marker text from an existing backed marker. When the pasted text
+ * carries an existing block's seq, move that block (and only its already-backed
+ * occurrence) before inserting the literal. The literal bytes then stay inert
+ * regardless of whether they land before or after the pill.
+ *
+ * The repair assumes the replaced selection does not split an existing marker's
+ * bytes -- a caret can only rest on marker boundaries because handleSelectSnap
+ * and the arrow-key hopping keep it there -- so a clipboard fragment can never
+ * be spliced into a synthetic marker.
+ */
+export function repairTextareaPasteCollision(
+  value: string,
+  selectionStart: number,
+  selectionEnd: number,
+  pasted: string,
+  blocks: PasteBlock[],
+): { before: string; after: string; blocks: PasteBlock[] } | null {
+  if (!pasted || !blocks.length) return null
+
+  const pastedSeqs = new Set<number>()
+  PASTE_TOKEN_REGEX.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = PASTE_TOKEN_REGEX.exec(pasted)) !== null) pastedSeqs.add(Number(match[1]))
+  if (!blocks.some(block => pastedSeqs.has(block.seq))) return null
+
+  const used = new Set<number>()
+  let max = 0
+  const reserve = (seq: number) => {
+    used.add(seq)
+    if (seq > max) max = seq
+  }
+  for (const block of blocks) reserve(block.seq)
+  PASTE_TOKEN_REGEX.lastIndex = 0
+  while ((match = PASTE_TOKEN_REGEX.exec(value)) !== null) reserve(Number(match[1]))
+  for (const seq of pastedSeqs) reserve(seq)
+
+  const moved = new Map<PasteBlock, PasteBlock>()
+  const nextBlocks = blocks.map(block => {
+    if (!pastedSeqs.has(block.seq)) return block
+    const seq = allocateSeq(max, used)
+    reserve(seq)
+    const next = { ...block, id: makePasteId(), seq }
+    moved.set(block, next)
+    return next
+  })
+
+  let before = value.slice(0, selectionStart)
+  let after = value.slice(selectionEnd)
+  const beforeRewrites: Array<{ start: number; end: number; block: PasteBlock }> = []
+  const afterRewrites: Array<{ start: number; end: number; block: PasteBlock }> = []
+  for (const range of findTokenRanges(value, blocks)) {
+    const block = moved.get(range.block)
+    if (!block) continue
+    if (range.end <= selectionStart) beforeRewrites.push({ start: range.start, end: range.end, block })
+    else if (range.start >= selectionEnd) {
+      afterRewrites.push({ start: range.start - selectionEnd, end: range.end - selectionEnd, block })
+    }
+    // A marker intersecting the replaced selection is deleted by the paste.
+    // Its moved block is intentionally left orphaned so the pasted literal can
+    // never claim it; the existing prune effect drops the orphan next render.
+  }
+  for (let i = beforeRewrites.length - 1; i >= 0; i--) {
+    const rewrite = beforeRewrites[i]
+    before = before.slice(0, rewrite.start) + formatToken(rewrite.block) + before.slice(rewrite.end)
+  }
+  for (let i = afterRewrites.length - 1; i >= 0; i--) {
+    const rewrite = afterRewrites[i]
+    after = after.slice(0, rewrite.start) + formatToken(rewrite.block) + after.slice(rewrite.end)
+  }
+
+  return { before, after, blocks: nextBlocks }
+}
 
 /* Collapsed-paste tokens and the clipboard: a big paste becomes a
    `[ Paste #N · M lines ]` chip backed by a PasteBlock, the chip moves and
@@ -281,7 +358,7 @@ export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChan
     // for one; the paste then falls through to the plain-insert path below.
     if (onPasteBlocksChange && !forceRaw && !showFullPastes && shouldCollapsePaste(cleaned)) {
       e.preventDefault()
-      const block: PasteBlock = { id: makePasteId(), seq: nextSeq(pasteBlocks), lines: countLines(cleaned), content: cleaned }
+      const block: PasteBlock = { id: makePasteId(), seq: nextSeqIn(value, pasteBlocks), lines: countLines(cleaned), content: cleaned }
       const token = formatToken(block)
       // Surround the token with newlines so the chip lives on its own line —
       // long-form pasted content rarely flows with typed text around it.
@@ -302,6 +379,29 @@ export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChan
       requestAnimationFrame(() => {
         if (ta && document.activeElement === ta) {
           const pos = before.length + insert.length
+          ta.setSelectionRange(pos, pos)
+        }
+      })
+      return
+    }
+
+    // A small literal paste can carry the seq of an existing backed marker.
+    // Native insertion would let text-order canonicalisation bind the block to
+    // whichever copy comes first, so repair the existing identity while this
+    // event still tells us which bytes are the new literal. This controlled
+    // branch covers both cleaned pastes and the otherwise-native fall-through.
+    const collision = onPasteBlocksChange
+      ? repairTextareaPasteCollision(value, start, end, cleaned, pasteBlocks)
+      : null
+    if (collision && onPasteBlocksChange) {
+      e.preventDefault()
+      const next = collision.before + cleaned + collision.after
+      valueFromUserRef.current = true
+      onChange(next)
+      onPasteBlocksChange(collision.blocks)
+      requestAnimationFrame(() => {
+        if (ta && document.activeElement === ta) {
+          const pos = collision.before.length + cleaned.length
           ta.setSelectionRange(pos, pos)
         }
       })

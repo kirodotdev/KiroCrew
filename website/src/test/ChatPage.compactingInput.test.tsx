@@ -10,7 +10,8 @@
  * frontend gate is unnecessary.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, act } from '@testing-library/react'
+import { composerRoot, composerValue, setComposerValue, composerPlaceholder, awaitComposer } from './helpers'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -99,7 +100,7 @@ async function renderWithState(opts: { slotRunning: boolean; slotStopping: boole
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await awaitComposer()
   return store
 }
 
@@ -112,19 +113,18 @@ describe('ChatPage — input during compaction', { timeout: 15_000 }, () => {
   it('keeps the textarea interactive while slotState is compacting', async () => {
     await renderWithState({ slotRunning: true, slotStopping: false, slotState: 'compacting' })
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const input = composerRoot()
     // pointer-events-none is applied via the `disabled` class branch in ChatInput
     expect(input.className).not.toMatch(/pointer-events-none/)
     // "Stopping…" is the disabled placeholder; during compaction we want the
     // normal placeholder so the user knows they can still type.
-    expect(input.placeholder).not.toBe('Stopping…')
+    expect(composerPlaceholder()).not.toBe('Stopping…')
   })
 
   it('accepts typing while compacting (messages can be queued by send())', async () => {
     await renderWithState({ slotRunning: true, slotStopping: false, slotState: 'compacting' })
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(input, { target: { value: 'queued during compaction' } })
-    expect(input.value).toBe('queued during compaction')
+    await setComposerValue('queued during compaction')
+    expect(composerValue()).toBe('queued during compaction')
   })
 })

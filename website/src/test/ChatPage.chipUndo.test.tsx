@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { awaitComposer, composerValue, setComposerValue } from './helpers'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -114,25 +115,30 @@ async function renderPage(store: ReturnType<typeof makeStore>) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  // The composer is a lazy-loaded Lexical root; the label alone resolves on its
+  // Suspense fallback, so wait for the editable root + handle to attach.
+  await awaitComposer()
   return result
 }
 
-/** Type an @-token and pick main.ts from the file picker. Returns the textarea. */
+/** Type an @-token and pick main.ts from the file picker. Returns the composer root. */
 async function pickFile() {
-  const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-  fireEvent.change(ta, { target: { value: '@mai' } })
+  const ta = await awaitComposer()
+  await setComposerValue('@mai', ta)
   const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
   fireEvent.mouseDown(row)
-  await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+  await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
   await screen.findByLabelText('Remove')
   return ta
 }
 
+/** Replace the composer text through the real editor → onChange path. */
+const type = (ta: HTMLElement, text: string) => setComposerValue(text, ta)
+
 const undo = (ta: HTMLElement) => fireEvent.keyDown(ta, { key: 'z', ctrlKey: true })
 const redo = (ta: HTMLElement) => fireEvent.keyDown(ta, { key: 'z', ctrlKey: true, shiftKey: true })
 
-async function send(ta: HTMLTextAreaElement) {
+async function send(ta: HTMLElement) {
   await act(async () => { fireEvent.keyDown(ta, { key: 'Enter' }) })
   await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
   const call = vi.mocked(api.sendChat).mock.calls.at(-1)!
@@ -150,14 +156,14 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
     const ta = await pickFile()
-    fireEvent.change(ta, { target: { value: ta.value + 'explain' } })
+    await type(ta, composerValue(ta) + 'explain')
 
     fireEvent.click(screen.getByLabelText('Remove'))
-    await waitFor(() => expect(ta.value).not.toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).not.toContain('@src/main.ts'))
     expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument()
 
     undo(ta)
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     // The chip is back, and its remove control strips the token again.
     await screen.findByLabelText('Remove')
 
@@ -169,10 +175,10 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
     const ta = await pickFile()
-    fireEvent.change(ta, { target: { value: ta.value + 'explain' } })
+    await type(ta, composerValue(ta) + 'explain')
 
     fireEvent.click(screen.getByLabelText('Remove'))
-    await waitFor(() => expect(ta.value).not.toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).not.toContain('@src/main.ts'))
 
     const llm = await send(ta)
     expect(llm).not.toContain('/repo/src/main.ts')
@@ -182,14 +188,14 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
     const ta = await pickFile()
-    fireEvent.change(ta, { target: { value: ta.value + 'explain' } })
+    await type(ta, composerValue(ta) + 'explain')
 
     fireEvent.click(screen.getByLabelText('Remove'))
-    await waitFor(() => expect(ta.value).not.toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).not.toContain('@src/main.ts'))
     undo(ta)
     await screen.findByLabelText('Remove')
     redo(ta)
-    await waitFor(() => expect(ta.value).not.toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).not.toContain('@src/main.ts'))
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
 
     const llm = await send(ta)
@@ -202,7 +208,7 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     const ta = await pickFile()
     // The strip leaves one of two adjacent copies behind; that leftover must
     // not read as the token coming back.
-    fireEvent.change(ta, { target: { value: '@src/main.ts @src/main.ts ' } })
+    await type(ta, '@src/main.ts @src/main.ts ')
     fireEvent.click(screen.getByLabelText('Remove'))
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
     await new Promise(r => setTimeout(r, 50))
@@ -216,13 +222,13 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
     const ta = await pickFile()
-    fireEvent.change(ta, { target: { value: ta.value + 'explain' } })
+    await type(ta, composerValue(ta) + 'explain')
     fireEvent.click(screen.getByLabelText('Remove'))
-    await waitFor(() => expect(ta.value).not.toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).not.toContain('@src/main.ts'))
     await send(ta)
-    await waitFor(() => expect(ta.value).toBe(''))
+    await waitFor(() => expect(composerValue(ta)).toBe(''))
 
-    fireEvent.change(ta, { target: { value: 'see @src/main.ts ' } })
+    await type(ta, 'see @src/main.ts ')
     await new Promise(r => setTimeout(r, 50))
     expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument()
   })
@@ -242,17 +248,17 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
     fireEvent.click(await screen.findByText('Add to chat: report'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'see @report, and @report here' } })
+    const ta = await awaitComposer()
+    await type(ta, 'see @report, and @report here')
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
 
     // Remove the SHORTER file (staged second, chip index 1).
     fireEvent.click(screen.getAllByLabelText('Remove')[1])
-    await waitFor(() => expect(ta.value).toBe('see @report, and here'))
+    await waitFor(() => expect(composerValue(ta)).toBe('see @report, and here'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
 
     undo(ta)
-    await waitFor(() => expect(ta.value).toBe('see @report, and @report here'))
+    await waitFor(() => expect(composerValue(ta)).toBe('see @report, and @report here'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
 
     const llm = await send(ta)
@@ -270,23 +276,23 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
     act(() => { store.dispatch(openActivityPanel()) })
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = await awaitComposer()
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     act(() => { store.dispatch(updateSlot({ key: 'slot-a', project: '/repo/src' })) })
-    fireEvent.change(ta, { target: { value: '' } })
+    await type(ta, '')
     fireEvent.click(screen.getByText('Add to chat: main.ts'))
-    await waitFor(() => expect(ta.value).toMatch(/(^|\s)@main\.ts/))
-    fireEvent.change(ta, { target: { value: 'see @main.ts and @src/main.ts @src/main.ts ' } })
+    await waitFor(() => expect(composerValue(ta)).toMatch(/(^|\s)@main\.ts/))
+    await type(ta, 'see @main.ts and @src/main.ts @src/main.ts ')
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
 
     fireEvent.click(screen.getByLabelText('Remove'))
-    await waitFor(() => expect(ta.value).not.toMatch(/@main\.ts/))
-    expect(ta.value).toContain('@src/main.ts')
+    await waitFor(() => expect(composerValue(ta)).not.toMatch(/@main\.ts/))
+    expect(composerValue(ta)).toContain('@src/main.ts')
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
 
     undo(ta)
-    await waitFor(() => expect(ta.value).toMatch(/(^|\s)@main\.ts/))
+    await waitFor(() => expect(composerValue(ta)).toMatch(/(^|\s)@main\.ts/))
     await screen.findByLabelText('Remove')
 
     const llm = await send(ta)
@@ -295,21 +301,21 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
 
   /** Stage `report,` then `report` through the tree's "Add to chat", with both
    *  mentioned in the text, then unmount and remount the page the way a reload
-   *  does (sessionStorage survives). Returns the fresh textarea. */
+   *  does (sessionStorage survives). Returns the fresh composer root. */
   async function stagePrefixPairAndReload(store: ReturnType<typeof makeStore>, view: ReturnType<typeof render>) {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: report,'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
     fireEvent.click(await screen.findByText('Add to chat: report'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'see @report, and @report here' } })
+    const ta = await awaitComposer()
+    await type(ta, 'see @report, and @report here')
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
     await new Promise(r => setTimeout(r, 600))
     view.unmount()
     await renderPage(store)
-    const fresh = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    await waitFor(() => expect(fresh.value).toBe('see @report, and @report here'))
+    const fresh = await awaitComposer()
+    await waitFor(() => expect(composerValue(fresh)).toBe('see @report, and @report here'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
     return fresh
   }
@@ -323,11 +329,11 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     const ta = await stagePrefixPairAndReload(store, view)
 
     fireEvent.click(screen.getAllByLabelText('Remove')[1])
-    await waitFor(() => expect(ta.value).toBe('see @report, and here'))
+    await waitFor(() => expect(composerValue(ta)).toBe('see @report, and here'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
 
     undo(ta)
-    await waitFor(() => expect(ta.value).toBe('see @report, and @report here'))
+    await waitFor(() => expect(composerValue(ta)).toBe('see @report, and @report here'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
 
     const llm = await send(ta)
@@ -340,7 +346,7 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     const view = await renderPage(store)
     const ta = await stagePrefixPairAndReload(store, view)
 
-    fireEvent.change(ta, { target: { value: 'see @report, and here' } })
+    await type(ta, 'see @report, and here')
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
 
     const llm = await send(ta)

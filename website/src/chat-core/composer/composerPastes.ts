@@ -51,9 +51,14 @@ export interface ComposerPastes extends ComposerPasteSlice {
   /** Bring a refused payload's blocks back into the composer: `carryPastes`
    *  against `read()`, installed before it returns. The result's text is the
    *  payload with any renumbered tokens rewritten, for the caller's text merge
-   *  (`mergeCarriedDraft`). With no blocks to carry nothing is written, so a
-   *  plain `set` still pending in the same batch keeps its value. */
-  carry: (text: string, sent: readonly PasteBlock[]) => CarriedPastes
+   *  (`mergeCarriedDraft`). `keepText` is the composer text the payload is
+   *  about to be merged INTO: every marker already in it — claimed by a block
+   *  or a hand-typed literal — is reserved, so a carried block can never land
+   *  on a seq the destination already shows (the caller passes its latest
+   *  text, not a render-time snapshot, when two carries share a batch). With
+   *  no blocks to carry nothing is written, so a plain `set` still pending in
+   *  the same batch keeps its value. */
+  carry: (text: string, sent: readonly PasteBlock[], keepText: string) => CarriedPastes
 }
 
 /** The composer's paste blocks. Member functions are stable; the object
@@ -67,8 +72,8 @@ export function useComposerPastes(): ComposerPastes {
     latest.current = next
     set(next)
   }, [])
-  const carry = useCallback((text: string, sent: readonly PasteBlock[]): CarriedPastes => {
-    const carried = carryPastes(text, sent as PasteBlock[], latest.current)
+  const carry = useCallback((text: string, sent: readonly PasteBlock[], keepText: string): CarriedPastes => {
+    const carried = carryPastes(text, sent as PasteBlock[], latest.current, keepText)
     if (sent.length) install(carried.pastes)
     return carried
   }, [install])

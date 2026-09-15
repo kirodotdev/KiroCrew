@@ -315,7 +315,7 @@ describe('ChatPage — model picker closes on a row click', { timeout: 15_000 },
 })
 
 describe('ChatPage — a model pick returns focus to the composer only if it had it', { timeout: 15_000 }, () => {
-  const composer = () => document.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')!
+  const composer = () => document.querySelector<HTMLElement>('[data-composer-input]')!
   // `focusComposer` focuses on the next animation frame.
   const nextFrame = () => act(() => new Promise<void>(r => requestAnimationFrame(() => r())))
   // A real pointer press: `mousedown` (where the chip reads focus) moves focus
