@@ -3883,6 +3883,18 @@ this helper would silently stop matching a marker that ends a line mid-message.
 Different grammar, not a duplicate. `test_options_cap_contract.py::TestOnlyOneTrailerParseExists`
 greps the tree for a re-derived parse and records both exemptions.
 
+**What the marker grammar enforces, and what it leaves alone.** The LINE form
+terminates at end of LINE only, so a marker whose line continues in prose is not
+dispatched and a LEADING marker sharing a line is left unmatched — passed through
+verbatim; rescuing it is a CONSUMER-side fix (select the last marker, strip every
+one), because a sibling terminator would also excise a mid-sentence marker. A label
+may not nest a DECLARED head in any casing that head's own pattern matches, the temper
+carrying the same per-head casing as the patterns; the singular `[OPTION:` is not a
+declared head and stays label text. `split_trailing_protocol_suffix` detaches a RUN of
+trailing markers rather than only the last. An action marker carries exactly one
+non-empty `close=<label>` entry, and a tail that can never reach one stays visible
+rather than being detached — a detached suffix is discarded, never rendered.
+
 **Proactive push works, per-target.** `aibot_send_msg` needs no token and has no
 expiry, but WeCom only delivers into a conversation the user has already written
 to. So `supports_proactive_send` is `True` (the transport CAN push) while
