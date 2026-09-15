@@ -119,6 +119,15 @@ class DashboardPersistenceCoordinator:
             return
 
         for slot in list(owner._slots.values()):
+            # Skip a slot still under construction: its transcript is
+            # mid-hydration and its constructor persists it at its own tail
+            # (import saves after joining Layer B). A background flush landing
+            # here would write a half-built transcript and, worse, could win the
+            # race against the constructor's own save. The slot stays registered
+            # for resume dedup; it is simply not persisted by anyone but its
+            # constructor until construction ends.
+            if slot.key in getattr(owner, "_slots_under_construction", ()):
+                continue
             flush_slot_now = self._owner_method(owner, "flush_slot_now", self.flush_slot_now)
             flush_slot_now(slot)
 
@@ -148,6 +157,11 @@ class DashboardPersistenceCoordinator:
                 name
                 for name, slot in list(owner._slots.items())
                 if getattr(slot, "memory_mode", "persistent") == "persistent"
+                # A slot still under construction is not yet a session; leaving it
+                # out of the restart-restore set means a crash mid-build does not
+                # resurrect a half-hydrated slot. Its constructor adds it on the
+                # normal flush once construction ends.
+                and name not in getattr(owner, "_slots_under_construction", ())
             ]
             # A transient read failure during restore must not let the next
             # live-slot snapshot erase the unread key permanently. The restore

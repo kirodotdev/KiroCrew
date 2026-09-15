@@ -2598,21 +2598,33 @@ class TestUntaggedOriginIsNotUser:
         )
 
     def test_resume_takes_the_persisted_origin_not_the_resumer(self):
-        """The resume endpoint must read metadata BEFORE creating the slot.
+        """The resume endpoint must read metadata BEFORE it creates the slot.
 
         Creating the slot from the request identity and reading the history
-        metadata a dozen lines later, so resuming a persisted cron conversation
-        from the dashboard produced a USER-tagged slot and `slots:user` handed its
-        replayed content to any app holding that scope.
+        metadata a dozen lines later relabels a resumed cron conversation as
+        USER, and `slots:user` then hands its replayed content to any app holding
+        that scope. Resume creates its slot by calling
+        ``_materialise_slot_from_history`` (which owns the ``get_or_create_slot``
+        and passes ``origin=str(meta.get("origin", ""))``), so the invariant is
+        that resume reads ``get_metadata`` before that call. Anchoring on the
+        call site rather than the ``origin=`` string keeps this correct now that
+        the creation lives in the shared helper: the persisted-origin declaration
+        is separately pinned by ``test_every_handler_slot_creation_declares_an_origin``.
         """
         import kiro_crew.dashboard.chat_handlers as _ch
 
         src = Path(_ch.__file__).read_text(encoding="utf-8")
-        meta_read = src.index("meta = state.conversation_log.get_metadata(history_key)")
-        resume_create = src.index('origin=str(meta.get("origin", ""))')
+        # Search from the resume handler's definition so the helper (defined
+        # earlier in the file) is not what the indices land on.
+        resume_def = src.index("async def api_chat_slot_resume(")
+        meta_read = src.index(
+            "meta = state.conversation_log.get_metadata(history_key)", resume_def
+        )
+        resume_create = src.index("_materialise_slot_from_history(", resume_def)
         assert meta_read < resume_create, (
-            "the resume path must read the persisted metadata before it creates "
-            "the slot, or the origin it passes cannot come from that metadata"
+            "the resume path must read the persisted metadata before it calls "
+            "_materialise_slot_from_history, or the origin that call passes cannot "
+            "come from that metadata"
         )
 
     def test_cron_injection_declares_cron(self):
