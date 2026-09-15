@@ -24,7 +24,9 @@ export interface AutoNudgeLoop {
   next_due_ts: number
   /** Why the loop last went inactive: '' while active or never stopped,
    *  otherwise one of the service's terminal codes (`cycle_cap`,
-   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`). Only
+   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`), or
+   *  `interrupted_cycle`, which is NOT terminal: a restart landed mid-delivery,
+   *  so the record is held for a re-activation that charges the claimed cycle. Only
    *  the REST list carries it; the websocket frame for a plain loop does not,
    *  so a consumer merging frames over a fetched record must keep it. */
   stopped_reason?: string
