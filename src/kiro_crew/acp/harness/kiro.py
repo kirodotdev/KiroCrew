@@ -89,6 +89,18 @@ class KiroHarness(MembershipHarness):
         except Exception:
             logger.warning("pre-spawn agent materialization failed", exc_info=True)
 
+        # The derived-spec freshness gate is deliberately NOT here, and this is the
+        # only host-level gate that is not: it is the same check for every host, and it
+        # returns a snapshot the POST-handshake check must compare against. Both ends of
+        # that bracket therefore have to be owned by the object that drives the
+        # handshake -- ``AcpRuntime`` -- and it runs the gate once, after this method
+        # returns, as the last verification before the process is created. A second call
+        # here would re-derive between the runtime's capture and the spawn, so the child
+        # would load the NEWER spec while the post-handshake check compared against the
+        # older snapshot and killed a perfectly valid session. The self-heal above stays
+        # here because it is host-specific: kiro-cli needs the file on disk for
+        # ``--agent``, and it runs BEFORE the gate for that reason -- a missing default
+        # is repaired rather than refused.
         try:
             await asyncio.to_thread(agent_mod.require_fork_governance, ctx.agent, ctx.work_dir)
         except ForkGovernanceUnresolved as exc:
@@ -106,7 +118,18 @@ class KiroHarness(MembershipHarness):
             # non-default provider model: a later set_model cannot cross provider
             # boundaries, and an agent config may pin one of its own.
             argv += ["--model", ctx.model]
-        return SpawnPlan(argv=argv)
+        native_documents: tuple[tuple[str, str], ...] = ()
+        if ctx.private_memory:
+            from kiro_crew.member_essential_context import kiro_launch_documents
+
+            native_documents = tuple(
+                await asyncio.to_thread(
+                    kiro_launch_documents,
+                    ctx.agent,
+                    str(ctx.work_dir) if ctx.work_dir is not None else None,
+                )
+            )
+        return SpawnPlan(argv=argv, native_context_documents=native_documents)
 
     def apply_spawn_env(self, env: dict[str, str]) -> None:
         """Hand kiro-cli the API key from Crew's own configuration.

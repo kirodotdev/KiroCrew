@@ -203,6 +203,17 @@
       "action": { "kind": "route", "label": "Open Apps", "route": "/apps" }
     },
     {
+      "id": "issue-radar-pipeline",
+      "feature": "Issue Radar Pipeline",
+      "title": "See where automated triage is stuck",
+      "body": "Issue Radar has a **Pipeline** dashboard almost nobody finds: left rail → **DASHBOARDS** → **Pipeline**. It shows which of the six triage steps every issue is sitting in, how long it has been there, and what each agent session cost in credits.",
+      "why": "",
+      "doc": "",
+      "doc_link": "issue-radar-pipeline.md",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Apps", "route": "/apps" }
+    },
+    {
       "id": "remote-crew",
       "feature": "Remote Instances",
       "title": "Reach another machine's Kiro Crew",

@@ -62,6 +62,7 @@ offline gateway exercises the same first-run readiness gate as production.
 
 from __future__ import annotations
 
+import itertools
 import json
 import queue
 import sys
@@ -120,7 +121,9 @@ _POLL_INTERVAL_SECS = 0.02
 ERROR_CODE = -32603
 ERROR_MESSAGE = "fake ACP backend: injected failure"
 
+_SESSION_IDS = itertools.count(1)
 _SESSION_ID = "fake-1"
+_SESSIONS: dict[str, tuple[list[dict[str, Any]], str]] = {}
 _TOOL_CALL_ID = "fake-tool-1"
 # The agent-authored purpose line, carried as a reserved tool argument. kiro-cli
 # echoes it back in ``rawInput`` under EITHER spelling; the fake emits the
@@ -187,9 +190,7 @@ def _poll_inbox(match: Callable[[dict[str, Any]], bool]) -> dict[str, Any] | Non
     return found
 
 
-def _await_inbox(
-    match: Callable[[dict[str, Any]], bool], timeout: float
-) -> dict[str, Any] | None:
+def _await_inbox(match: Callable[[dict[str, Any]], bool], timeout: float) -> dict[str, Any] | None:
     """Poll for a matching message until `timeout` elapses. Never blocks forever."""
     deadline = time.monotonic() + timeout
     while True:
@@ -237,9 +238,7 @@ def _prompt_text(params: dict[str, Any]) -> str:
     if not isinstance(blocks, list):
         return ""
     parts = [
-        str(b.get("text", ""))
-        for b in blocks
-        if isinstance(b, dict) and b.get("type") == "text"
+        str(b.get("text", "")) for b in blocks if isinstance(b, dict) and b.get("type") == "text"
     ]
     return "".join(parts)
 
@@ -264,9 +263,7 @@ def _permission_status(session_id: str) -> str:
     return "completed"
 
 
-def _emit_tool_call(
-    session_id: str, *, with_permission: bool, gated: bool = False
-) -> None:
+def _emit_tool_call(session_id: str, *, with_permission: bool, gated: bool = False) -> None:
     """Emit a tool_call (+ optional approval modal) then a completed update."""
     _update(
         session_id,
@@ -328,9 +325,7 @@ def _emit_tool_call(
     )
 
 
-def _stream_slowly(
-    session_id: str, *, cancel_aware: bool, ack_after_chunks: int = 0
-) -> bool:
+def _stream_slowly(session_id: str, *, cancel_aware: bool, ack_after_chunks: int = 0) -> bool:
     """Stream SLOW_CHUNKS chunks with a delay. True if cancelled mid-stream.
 
     cancel_aware=False models an agent stuck in a long tool call that cannot
@@ -369,6 +364,8 @@ def _stream_slowly(
 
 
 def _handle(msg: dict[str, Any]) -> None:
+    global _SESSION_ID
+
     method = msg.get("method")
     if method is None:
         # A response/error to one of our requests (e.g. the permission answer).
@@ -388,11 +385,39 @@ def _handle(msg: dict[str, Any]) -> None:
             },
         )
     elif method == "session/new":
+        # Warm reset creates the new handle before destroying the old one.
+        # Reusing an ID makes old.destroy() remove the new runtime event queue.
+        _SESSION_ID = f"fake-{next(_SESSION_IDS)}"
+        params = msg.get("params") or {}
+        _SESSIONS[_SESSION_ID] = (params.get("mcpServers") or [], params.get("cwd") or "")
         _result(req_id, {"sessionId": _SESSION_ID})
+    elif method == "_kiro.dev/session/terminate":
+        params = msg.get("params") or {}
+        _SESSIONS.pop(str(params.get("sessionId", "")), None)
+        _result(req_id, {})
     elif method == "session/prompt":
         params = msg.get("params") or {}
-        session_id = str(params.get("sessionId", _SESSION_ID))
+        session_id = str(params.get("sessionId", ""))
+        session = _SESSIONS.get(session_id)
+        if session is None:
+            _error(req_id, message="Unknown or terminated ACP session")
+            return
+        servers, cwd = session
         text = _prompt_text(params)
+        if "[[WF_E2E:" in text:
+            from kiro_crew.testing.workflow_memory_scenario import respond
+
+            response = respond(text, servers, cwd)
+            if response is not None:
+                _update(
+                    session_id,
+                    {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": response},
+                    },
+                )
+                _result(req_id, {"stopReason": "end_turn"})
+                return
         if ERROR_TRIGGER in text:
             # A JSON-RPC error instead of a result: the turn fails, not stops.
             _error(req_id)

@@ -6,6 +6,14 @@ The ACP layer spans **five** modules: the legacy per-session client (`acp/client
 
 ## Backend Selection
 
+`AcpSessionHandle.active_agent` records the mode named by session configuration,
+a completed mode handshake or an observed agent-switch event. A queued mode
+request clears that observation until confirmation. `AcpSessionProvider` exposes
+`loaded_capability_template` only for a live dedicated Kiro runtime whose active
+mode matches its launch template; shared handles provide no full-spec loading
+claim. Member generation and MCP-readiness checks belong to
+[session](session.md#member-capability-generations).
+
 The trusted `private_memory` constructor flag is preserved from provider creation
 through client/runtime spawn and recovery. Only private member processes pass it
 to the sandbox; the default `False` keeps existing V1 spawn arguments. The OS
@@ -421,7 +429,7 @@ HTTP response.
 | Notification | Event Kind | Fields |
 |-------------|-----------|--------|
 | `_kiro.dev/compaction/status` | `compaction_status` | `text` = started/completed/failed, `title` = summary |
-| `_kiro.dev/clear/status` | `clear_status` | (none) |
+| `_kiro.dev/clear/status` | `clear_status` | (none); also invalidates the essential-context receipt (`providers.md`) |
 | `_kiro.dev/agent/switched` | `agent_switched` | `text` = new agent name |
 | `_kiro.dev/mcp/oauth_request` | `mcp_oauth_request` | `server_name`, `oauth_url` |
 | `_kiro.dev/mcp/server_initialized` | `mcp_server_initialized` | `server_name` |

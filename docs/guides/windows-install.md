@@ -76,6 +76,10 @@ Current status:
   Kiro Crew logo and ghost family in the native NSIS sidebar, and intermediate
   pages retain a compact branded header. Buttons, progress, install-mode copy,
   keyboard behavior, and localization remain the standard Windows experience.
+  On a fresh install, the Finish page also says that the default Kiro agent
+  needs Kiro CLI, names `kiro-cli login`, and links to the official external
+  setup guide before offering to launch Kiro Crew. The installer performs
+  neither prerequisite step. Auto-updates still skip this page.
   Native page boundaries use a short Win32 alpha-blended cross-fade and honor
   Windows' client-area animation setting. The fade contains no timer-driven
   bitmap swap or UI-thread sleep, so extraction keeps the native progress path;
@@ -182,7 +186,7 @@ The source install below remains the fully supported path.
 | Tool | Why | Get it |
 |------|-----|--------|
 | **Git for Windows** | clone the repo | https://git-scm.com/download/win |
-| **kiro-cli** | the agent backend (ACP); the first dashboard launch can install it | Kiro Crew setup page or kiro-cli's native Windows release |
+| **kiro-cli** | the default agent backend (ACP); install and sign in separately | https://kiro.dev/cli/ |
 | **Python 3.12-3.13** | the venv runtime. `python_requires` is `>=3.12` and 3.13 is in the supported range, but **3.12 is the tested Windows runtime** (it is what the Windows CI shard runs, and numpy 1.x ships no 3.13 Windows wheel) | https://python.org (install user-scoped), or `winget install Python.Python.3.12` |
 | **Node.js** (optional) | builds the full React dashboard; without it the gateway serves the prebuilt bundle | `winget install OpenJS.NodeJS.LTS` |
 
@@ -249,11 +253,12 @@ kirocrew gateway
 
 Open the dashboard URL printed by the gateway. On first launch, Kiro Crew checks
 the **Windows gateway host** for a runnable and authenticated Kiro CLI. If it is
-missing, choose **Install Kiro CLI** to download and run the fixed official
-PowerShell installer; if it is signed out, choose **Sign in to Kiro** and
-complete the device-code flow in the browser. The dashboard opens automatically
-after `kiro-cli whoami` succeeds. This setup runs on the gateway machine, which
-may be different from the computer running the browser.
+missing, follow the link to the official Kiro CLI setup guide and install it
+yourself; if it is signed out, run `kiro-cli login` (or the organization SSO
+command shown by the setup page) yourself. Kiro Crew does not download a remote
+installer or start a login process. The dashboard opens automatically after its
+read-only `kiro-cli whoami` probe succeeds. Run the prerequisite steps on the
+gateway machine, which may be different from the computer running the browser.
 
 The per-user Kiro CLI install under `%LOCALAPPDATA%\Kiro-Cli` is discovered
 independently of the gateway's inherited `PATH`. Installing it while the desktop
@@ -416,13 +421,19 @@ It runs **twice**, once before `sqlite3.connect` and once after. The first call
 is what stops the schema migrations running against a file another local user
 can still write; the second covers whatever SQLite has just created.
 
-The Windows cost is up to 11 `icacls` spawns per init — one for the directory
-plus one per file on each of the two passes, and a file that does not exist
-still spawns (icacls exits non-zero and the caller warns). That is more than it
-sounds and still cheap in context: once per workspace per process, beside the
-`sqlite3.connect`, the migrations and the FAISS index load already in that
-function — and `context.get_memory_for` caches the store and is reached from a
-worker thread, not the gateway event loop.
+The Windows cost is up to 11 in-process DACL operations per init — one for the
+directory plus one per file on each of the two passes; a file that does not
+exist is skipped by an existence check rather than paid for. Each per-file
+write costs roughly 0.24 ms. The directory write is priced differently: its
+inheritable grants propagate to every descendant object, so a directory whose
+DACL does not yet match pays about 0.24 ms per object in the tree — seconds on
+a large data home — once, to repair it. On every later boot the descriptor
+already matches and the write is skipped after an O(1) probe
+(`windows_acl.owner_only_dacl_matches`). That is cheap in context: once per
+workspace per process, beside the `sqlite3.connect`, the migrations and the
+FAISS index load already in that function — and `context.get_memory_for`
+caches the store and is reached from a worker thread, not the gateway event
+loop.
 
 It is fail-soft (warn, keep going), which is the contract `restrict_to_owner`
 documents for its callers: memory being unavailable is a supported degraded
@@ -536,6 +547,27 @@ Two details are load-bearing rather than incidental:
   off also means the handle need not be held: a job stays alive while processes
   are assigned to it, so the limits persist after `CloseHandle` and there is no
   handle registry or teardown to get wrong.
+
+Windows pod teardown does not infer a clean stop from the gateway PID record
+vanishing. Before `/End`, it opens an exact handle to the recorded gateway and
+validates that handle's creation identity against the record, then retains exact
+handles for attributed descendants. Toolhelp preserves the PPID on a living
+direct child after its parent exits, so teardown performs a final snapshot of
+the root after it becomes inactive. This catches the reported direct-child race
+when creation follows the pre-signal snapshot and the root exits before the next
+poll; every descendant already retained by exact handle receives the same final
+scan. It does not claim to reconstruct a lineage through an intermediary that
+was never observed and is already gone. A root that cannot be anchored, an
+incomplete snapshot sequence, or a still-live retained handle fails closed: the
+scheduled task and pod HOME are preserved. The refusal distinguishes the two
+kinds of survivor: a process still active at the deadline is reported by pid
+(with its `tasklist` line), while "enumeration failed" is reserved for the case
+where nothing is live but a terminal snapshot never completed. There is no
+token-only fallback in this backend; it is dispatched only on win32, and the
+exact-handle primitives fail closed everywhere else. The existing Job object
+remains a resource ceiling; `KILL_ON_JOB_CLOSE` is still deliberately unset, so
+normal restart semantics do not change.
+
 
 Failure modes are asymmetric on purpose. The **ceiling** fails soft — any Win32
 error logs a SECURITY warning and returns `False`, because a missing ceiling must

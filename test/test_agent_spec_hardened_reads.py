@@ -893,8 +893,13 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("agent_spec_lookup", "unknown"),
         ("migrate_agent_specs", "unknown"),
     ],
+    "kiro_crew/agent_capabilities.py": [("capability_publish", "dashboard")],
     "kiro_crew/agent_discovery.py": [
         ("forward:operation", "forward:source"),
+        ("forward:operation", "forward:source"),
+        # ``spec_by_declared_name`` scans specs it did not name for whichever
+        # surface resolves an agent id and finds no ``<agent_id>.json``; it
+        # forwards so each such surface attributes its own denials.
         ("forward:operation", "forward:source"),
         ("list_agents", "unknown"),
         ("list_agents", "unknown"),
@@ -1058,10 +1063,22 @@ _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # The ratchet's coverage: every attribution-labelled helper in the module, with
 # its exact call-site inventory. Extending attribution to a new helper means
 # adding it here so its callers keep the two vocabularies separate too.
+# The declared-name scan serves the two surfaces that resolve an agent id
+# through it when they find no ``<agent_id>.json``: the KAS projection that
+# starts the session, and the tool-policy read that session's managed MCP
+# servers make. It reads specs it did not name in a user-writable directory, so
+# every caller names the surface whose resolution the denial belongs to.
+_EXPECTED_DECLARED_NAME_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
+    "kiro_crew/dashboard/handlers/sessions.py": [("session_tool_policy", "dashboard")],
+}
+
+
 _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
     "_read_agent_spec": _EXPECTED_CALL_SITE_LABELS,
     "parsed_agent_specs": _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS,
     "project_agent_names": _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS,
+    "spec_by_declared_name": _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS,
     "warm_project_agent_names": _EXPECTED_WARM_CALL_SITE_LABELS,
 }
 

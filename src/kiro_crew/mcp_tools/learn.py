@@ -64,10 +64,26 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "learn_add",
             "description": (
-                "Save a learned correction or preference that persists across all "
-                "future sessions. MUST be called when the user corrects you, says "
-                "'always do X', 'never do Y', or 'remember that'. Include both "
-                "the rule (what to do) and negative (what not to do)."
+                "Save a learned correction or preference that changes behavior in "
+                "unrelated future sessions. MUST be called only when a user correction "
+                "defines reusable behavior, including 'always do X', 'never do Y', or "
+                "'remember that'. Do NOT save volatile session or task facts such as "
+                "the active model identity or which concrete model ID the assistant "
+                "is running as. A 'running as' phrase needs an unambiguous model "
+                "noun, a qualified 'backend' that ends its clause, or a concrete "
+                "model ID; backend service-account and process wording remains "
+                "durable. The tool rejects recognized runtime identity assertions "
+                "and model-selection imperatives whose selected object is a "
+                "concrete model ID at the end of its clause in the rule or negative "
+                "clause. Clause endings are the field end, a newline, punctuation, or "
+                "the documented closed connector class. A following plain noun makes "
+                "the ID a durable tooling qualifier. "
+                "The check covers only the registry families pinned by the trusted review "
+                "workflow; other backend IDs are not lesson-refused. A model version "
+                "mentioned by itself is allowed. Free-form wording remains a best-effort "
+                "check. Future phrasing misses are handled by this instruction, not new "
+                "regex branches, so do not disguise either refused class. Include "
+                "both the rule (what to do) and negative (what not to do)."
             ),
             "inputSchema": {
                 "type": "object",
@@ -127,6 +143,20 @@ def schemas() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Substring to match"},
+                    "repo_scope": {
+                        "type": "string",
+                        "maxLength": _scope_max,
+                        "description": (
+                            "Optional. Only remove lessons carrying this repo "
+                            "scope, given as the same path fragment used to store "
+                            "them (e.g. 'src/kiro_crew'). A lesson's identity is "
+                            "the pair (rule, repo_scope), so the same rule scoped "
+                            "to a repo and stored globally are two separate "
+                            "lessons; without this the substring removes both. "
+                            "Omit to match every scope. Pass an empty string to "
+                            "remove only the unscoped (global) lessons."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -263,6 +293,16 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
             "wording that shares few significant words with it can coexist."
         )
     if outcome == "refused":
+        if reason == "volatile_session_fact":
+            return (
+                "Error: volatile_session_fact: lesson was NOT saved. Runtime model "
+                "identity assertions and model-selection imperatives whose selected "
+                "concrete model ID ends its clause become stale between sessions. A "
+                "model version mentioned by itself is allowed. Remove the volatile "
+                "assertion or imperative and state a reusable behavioral rule instead. "
+                "Put a concrete background or subagent model choice in config under "
+                "agent.role_models.<role>, not in learned memory."
+            )
         return (
             f"Lesson was NOT saved{scope_note}: the memory store refused this "
             f"value{detail}. Nothing was stored, so the correction is not in effect. "
@@ -351,13 +391,30 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
         return "No lessons saved."
     lines = []
     for le in lessons:
-        lines.append(f"[{le.get('category', '?')}] {le['rule']}")
+        withheld = (
+            " [WITHHELD: volatile_session_fact]"
+            if le.get("withheld_reason") == "volatile_session_fact"
+            else ""
+        )
+        lines.append(f"[{le.get('category', '?')}] {le['rule']}{withheld}")
     return "\n".join(lines)
 
 
 def learn_remove(name: str, args: dict[str, Any]) -> str:
     query = args["query"]
-    d = mcp_core._delete("/api/lessons", {"rule": query})
+    payload: dict[str, Any] = {"rule": query}
+    # Forward the scope discriminator only when the caller supplied a string.
+    # An absent key leaves scope out of the match (delete every scope); a
+    # present string -- INCLUDING an empty one, which targets the unscoped/
+    # global rows -- makes the delete scope-selective. A JSON null arrives here
+    # as None after schema validation and is treated as absent rather than
+    # coerced: coercing it to "" would silently turn "no selector" into
+    # "delete the global rows". The route distinguishes presence the same way,
+    # so a bare rule still deletes across scopes and no existing caller changes.
+    rs = args.get("repo_scope")
+    if isinstance(rs, str):
+        payload["repo_scope"] = rs
+    d = mcp_core._delete("/api/lessons", payload)
     err_val = d.get("error")
     if err_val:
         # Same session-scope mapping as ``learn_add``, but dispatched on the

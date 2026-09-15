@@ -386,6 +386,67 @@ async def _pod_logs(name: str, n: int = 120) -> dict:
     return {"ok": True, "logs": runtime._redact(raw)}
 
 
+async def _pod_status(name: str) -> dict:
+    """One pod's unit state, port and health, as ``kirocrew pod status`` reports it.
+
+    Delegated to the CLI rather than recomposed from ``rt.is_active`` +
+    ``rt.derive_port`` + ``rt.health`` so there is ONE definition of what a pod's
+    status is. A second composition here would drift from the CLI's the first time
+    either side learned a new health verdict (``HEALTH_FOREIGN`` is already one),
+    and an agent comparing the two would be told different things about one pod.
+    """
+    guard = await _pod_checkout_guard(name)
+    if guard:
+        return {"ok": False, "error": guard}
+    await runtime._warm_build_path()
+    rc, stdout, stderr = await runtime._run_cmd(
+        runtime._find_cli() + ["pod", "status", name, "--json"],
+        cwd=repository._repo(),
+        env=_pod_env(),
+        timeout=30,
+    )
+    if rc != 0:
+        return {"ok": False, "error": runtime._redact(stderr or stdout)}
+    try:
+        parsed = json.loads(stdout)
+    except ValueError:
+        return {"ok": False, "error": "pod status returned unparseable JSON"}
+    if not isinstance(parsed, dict):
+        return {"ok": False, "error": "pod status returned an unexpected shape"}
+    return {"ok": True, **parsed}
+
+
+async def _pod_ls() -> dict:
+    """Every pod ACTIVE on this host, not only this repo's.
+
+    Deliberately unscoped: the answer's whole use is collision reasoning (which
+    ports are taken, what is already running), and a list filtered to one repo's
+    worktrees would omit exactly the pod that explains a refusal. Read-only and
+    name/port/health only -- it exposes no other checkout's contents.
+
+    ``repository._repo()`` raises when no main checkout is configured. That is NOT
+    caught here: it is raised on every branch of every pod verb (cwd, ``_pod_env``,
+    and inside ``_pod_checkout_guard``'s discovery chain), so the agent surface
+    catches it once at the handler instead of each helper catching its own branch.
+    """
+    await runtime._warm_build_path()
+    rc, stdout, stderr = await runtime._run_cmd(
+        runtime._find_cli() + ["pod", "ls", "--json"],
+        cwd=repository._repo(),
+        env=_pod_env(),
+        timeout=30,
+    )
+    if rc != 0:
+        return {"ok": False, "error": runtime._redact(stderr or stdout)}
+    try:
+        parsed = json.loads(stdout)
+    except ValueError:
+        return {"ok": False, "error": "pod ls returned unparseable JSON"}
+    if not isinstance(parsed, list):
+        return {"ok": False, "error": "pod ls returned an unexpected shape"}
+    return {"ok": True, "pods": parsed}
+
+
 async def _pod_provision(name: str) -> dict:
     guard = await _pod_checkout_guard(name)
     if guard:

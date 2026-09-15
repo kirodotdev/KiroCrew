@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_sdk.backends import effort_config_option_id
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config import live
@@ -348,7 +349,12 @@ class AcpWorker(Worker):
         try:
             backend = getattr(client, "backend", "")
             via_config_option = capabilities_for(backend).effort_via_config_option
-            if via_config_option and not client.supports_config_option("effort"):
+            # Resolved per backend, like every other effort site: writing the
+            # wrong spelling draws "unknown config option", and the except
+            # below turns that into "using provider default" without saying
+            # why.
+            effort_option = effort_config_option_id(backend)
+            if via_config_option and not client.supports_config_option(effort_option):
                 logger.warning(
                     "AcpWorker: effort=%s unsupported; using provider default",
                     requested,
@@ -366,7 +372,7 @@ class AcpWorker(Worker):
                 )
                 return
             if via_config_option:
-                await client.set_config_option("effort", effective)
+                await client.set_config_option(effort_option, effective)
             else:
                 await client.send_command("/effort", args={"level": effective})
         except Exception:

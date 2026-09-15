@@ -10,31 +10,37 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 /** Plain-text stand-in used while the Pierre chunk loads and for patch text
  *  that does not (yet) parse — e.g. the partial frames of a streaming diff.
  *
- *  Pierre's own geometry, MEASURED from a rendered block (7 blocks, heights
- *  exactly 50 + 20×lines): 2px border, 32px header, 16px body padding, 20px per
- *  line. The stand-in has to match all of it, or the swap moves the reader.
+ *  Pierre's own geometry is 2px border, 32px header, 16px body padding, and
+ *  20px per line. `pierre-plain` wins the transcript's more-specific `<pre>`
+ *  rule so a fallback-to-Pierre swap does not move the reader.
  *
- *  `leading-5` and `py-2` say 20px and 8px — and inside a transcript they were
- *  BOTH LOSING: `.msg-content pre` (specificity 0,1,1) beats a single-class
- *  utility and sets `line-height:1.5` (19.5px at 13px) with `padding:10px 12px`.
- *  The stand-in therefore rendered 4px taller per surface than the thing it
- *  stands in for, and the reader was displaced by 12-36px per transcript row the
- *  moment the chunk resolved (measured in a browser: -4px on every
- *  `.pierre-surface`, three code blocks in one row = -36px). `pierre-plain` is
- *  the hook that wins that fight; the metrics live in index.css next to the rule
- *  they have to beat. Keep the two geometries equal or the reflow returns.
- *
- *  Also the FINAL render for patch surfaces when the plain-diff preference is
- *  on (see `usePlainDiff`), which is why it accepts the caller's `className`:
- *  in that mode it stands in for the Pierre element the class was written for.
- *  The geometry above still has to hold there — the preference can flip while a
- *  transcript is on screen, so this element replaces a Pierre surface in place.
+ *  This is also the final patch render when plain-diff mode is enabled, so it
+ *  preserves a caller class. Recovery and file-pair loading additionally use
+ *  the optional header; a collapsed pair renders the header row alone.
  */
-export function PlainCodeFallback({ text, className }: { text: string; className?: string }) {
+export function PlainCodeFallback({ text, className, contentStyle, header }: {
+  text: string
+  className?: string
+  contentStyle?: CSSProperties
+  header?: ReactNode
+}) {
   return (
-    <pre className={`pierre-plain m-0 px-3 py-2 overflow-x-auto text-[13px] font-mono leading-5 whitespace-pre${className ? ` ${className}` : ''}`}>
-      {text}
-    </pre>
+    <>
+      {header != null ? <PlainFallbackHeader>{header}</PlainFallbackHeader> : null}
+      <pre style={contentStyle} className={`pierre-plain m-0 px-3 py-2 overflow-x-auto text-[13px] font-mono leading-5 whitespace-pre${className ? ` ${className}` : ''}`}>
+        {text}
+      </pre>
+    </>
+  )
+}
+
+/** The header row shared by the fallbacks, sized to Pierre's own header so a
+ *  swap does not move the layout. A collapsed pair is this row alone. */
+function PlainFallbackHeader({ children }: { children: ReactNode }) {
+  return (
+    <div data-diffs-header="" className="flex min-h-9 items-center justify-end gap-1 border-b border-border px-2 py-1">
+      {children}
+    </div>
   )
 }
 
@@ -44,6 +50,8 @@ interface PlainFilePairFallbackProps {
   oldFile: FileContents | null
   newFile: FileContents | null
   options?: PierreDiffOptions
+  geometry?: 'simplified' | 'pierre-swap'
+  text?: string
   className?: string
   contentStyle?: CSSProperties
   renderHeaderMetadata?: () => ReactNode
@@ -66,6 +74,8 @@ export function PlainFilePairFallback({
   oldFile,
   newFile,
   options,
+  geometry = 'simplified',
+  text,
   className,
   contentStyle,
   renderHeaderMetadata,
@@ -116,6 +126,27 @@ export function PlainFilePairFallback({
   const collapsed = options?.collapsed === true
   const filePairLabel = span != null && !collapsed ? changeRegionLabel : simplifiedLabel
   const wraps = options?.overflow === 'wrap'
+
+  if (geometry === 'pierre-swap') {
+    const oldMarker = '-'.repeat(3)
+    const newMarker = '+'.repeat(3)
+    const fallbackText = text ?? (oldFile && newFile
+      ? `${oldMarker} ${oldFile.name}\n${oldFile.contents}\n${newMarker} ${newFile.name}\n${newFile.contents}`
+      : (newFile ?? oldFile)?.contents ?? '')
+    // Prefix, filename and suffix keep the header's geometry and click
+    // selectors; the action cluster (`renderHeaderMetadata`) is left to
+    // Pierre's real header — it can be three buttons, and a diff-added row of
+    // three is barred by `max-two-buttons-per-row`.
+    const header = options?.disableFileHeader === false ? (
+      <>
+        {renderHeaderPrefix?.()}
+        <span data-title="" className="min-w-0 flex-1 truncate">{filename}</span>
+        {renderHeaderFilenameSuffix?.()}
+      </>
+    ) : undefined
+    if (options?.collapsed === true) return header != null ? <PlainFallbackHeader>{header}</PlainFallbackHeader> : null
+    return <PlainCodeFallback text={fallbackText} className={className} contentStyle={contentStyle} header={header} />
+  }
   const sides = [
     oldFile == null ? null : { file: oldFile, lines: oldLines, marker: '−', key: 'old' as const, start: span?.oldStart, end: span?.oldEnd },
     newFile == null ? null : { file: newFile, lines: newLines, marker: '+', key: 'new' as const, start: span?.newStart, end: span?.newEnd },

@@ -34,7 +34,7 @@ from kiro_crew.subagent import AGENT_NOT_FOUND_CODE
 
 
 class _Req:
-    """Request double: ``app["state"]``, ``json()``, ``match_info``, ``query``."""
+    """Request double: state, JSON body, route/query fields and headers."""
 
     def __init__(
         self,
@@ -50,6 +50,7 @@ class _Req:
         self._body = body
         self.match_info = match_info or {}
         self.query = query or {}
+        self.headers: dict[str, str] = {}
         self.remote = remote
         self._extra = {"app": "", **(extra or {})}
 

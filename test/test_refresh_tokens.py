@@ -522,7 +522,7 @@ def test_tr_u_17_persistence_file_mode_0600(tmp_path: Path):
 @pytest.mark.skipif(
     os.name == "nt",
     reason="injects the failure via platform_compat.os.chmod, which only "
-    "restrict_to_owner's POSIX branch calls (Windows shells out to icacls)",
+    "restrict_to_owner's POSIX branch calls (Windows applies a DACL in-process)",
 )
 def test_a_failed_lockdown_still_persists_the_reuse_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

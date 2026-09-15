@@ -50,6 +50,10 @@ def _state(**changes: object) -> MonitorState:
             _state(
                 last_fingerprint="failure-b",
                 last_wake_fingerprint="failure-b",
+                # A real wake records the alert time, so the within-period
+                # suppression is asserted against state the caller produces:
+                # now=1100 sits well inside the re-alert period from 1000.
+                coalesce_alerted={"failure-b": 1_000.0},
             ),
             MonitorDecision.NO_CHANGE,
         ),

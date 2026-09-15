@@ -6,7 +6,10 @@ Kiro Crew and kiro-cli each own:
 
 * ``<data home>/sessions/<stem>.jsonl`` plus its rotated
   ``sessions/archive/<stem>__<stamp>.jsonl`` segments — the transcript, read by
-  dashboard history, search and memory consolidation.
+  dashboard history, search and memory consolidation — and
+  ``sessions/<stem>.attachments/`` — the images its messages show, which
+  ``/api/file-raw`` serves by the paths the transcript holds
+  (:mod:`kiro_crew.chat_attachments`).
 * ``<kiro home>/sessions/cli/<sid>.json`` + ``<sid>.jsonl`` — kiro-cli's replay
   log, read to resume the session.
 
@@ -84,6 +87,7 @@ from typing import IO, Any
 
 from kiro_crew import hooks, pinned_fs, platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir, replace_with_retry
+from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX, attachments_dir
 from kiro_crew.config.paths import (
     CONFIG_DIR_LEAF,
     KIRO_BASE_DIR_NAME,
@@ -582,6 +586,43 @@ def _scan_raw_uncached(sid_for_stem: Mapping[str, str]) -> list[_RawUnit]:
     except OSError:
         logger.debug("transcript store unreadable", exc_info=True)
 
+    # Attachments half: ``<stem>.attachments/`` directories beside the transcripts.
+    # Their bytes are the session's, and a write into one is activity on the
+    # session, so both land on the same unit the transcript does.
+    try:
+        with os.scandir(_crew_sessions_dir()) as it:
+            adirs = [
+                entry.name
+                for entry in it
+                if entry.name.endswith(ATTACHMENTS_DIR_SUFFIX)
+                and entry.is_dir(follow_symlinks=False)
+            ]
+    except OSError:
+        adirs = []
+    for name in adirs:
+        stem = name[: -len(ATTACHMENTS_DIR_SUFFIX)]
+        if not _UNIT_ID_RE.match(stem):
+            continue
+        try:
+            files = _attachment_files(_crew_sessions_dir() / name)
+        except OSError:
+            logger.debug("attachments directory %r unreadable", name, exc_info=True)
+            continue
+        if not files:
+            continue
+        uid = attribute(stem)
+        if uid not in sizes and uid not in stems:
+            # Images outliving their transcript still cost space and still belong
+            # to a session, so they form a unit of their own, like segments do.
+            sids.setdefault(uid, "")
+        add_stem(uid, stem)
+        for path in files:
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            record(uid, st.st_size, st.st_mtime)
+
     for stem, segments in archives.items():
         uid = attribute(stem)
         if uid not in sizes and uid not in stems:
@@ -660,7 +701,36 @@ def _unit_paths(
         )
         for path, _size, _mtime in segments:
             found.append((path, f"{STAGE_CREW_LEAF}/{ARCHIVE_DIR_NAME}/{path.name}"))
+        # The images the transcript's rows reference. Regular files only, never
+        # followed: the directory is code-written and flat, so anything else in
+        # it is not this session's and is left where it is -- the owned files
+        # and the transcript still move, and the directory stays behind holding
+        # only the foreign entry (rmdir refuses a non-empty directory).
+        adir = attachments_dir(_crew_sessions_dir(), stem)
+        for path in _attachment_files(adir):
+            found.append((path, f"{STAGE_CREW_LEAF}/{adir.name}/{path.name}"))
     return found
+
+
+def _attachment_files(adir: Path) -> list[Path]:
+    """The regular files directly inside an attachments directory, sorted.
+
+    Empty for a MISSING directory only. Any other failure to read it RAISES: a
+    directory that exists but cannot be listed holds files this scan cannot see,
+    and answering "none" would let the transcript move without them -- the
+    orphaned, still-served images this half exists to take along. A link where
+    the directory should be is not entered, and a link or subdirectory inside it
+    is not listed.
+    """
+    try:
+        info = os.lstat(adir)
+    except FileNotFoundError:
+        return []
+    if not stat.S_ISDIR(info.st_mode):
+        return []
+    with os.scandir(adir) as it:
+        entries = [e for e in it if e.is_file(follow_symlinks=False)]
+    return sorted((Path(e.path) for e in entries), key=lambda q: q.name)
 
 
 def _bucketize(reclaimable: list[SessionUnit], now: float) -> tuple[StorageBucket, ...]:
@@ -1479,6 +1549,14 @@ def _canonical_origin(rel: str) -> Path | None:
             return _crew_sessions_dir() / name
         if len(parts) == 3 and parts[1] == ARCHIVE_DIR_NAME:
             return _crew_archive_dir() / name
+        if len(parts) == 3 and parts[1].endswith(ATTACHMENTS_DIR_SUFFIX):
+            # ``crew/<stem>.attachments/<image>``: the directory name IS the
+            # session's identity, so it is checked as one -- a name that is not
+            # a session id cannot have been staged from the attachments store.
+            stem = parts[1][: -len(ATTACHMENTS_DIR_SUFFIX)]
+            if not _UNIT_ID_RE.match(stem):
+                return None
+            return attachments_dir(_crew_sessions_dir(), stem) / name
     return None
 
 
@@ -2575,7 +2653,17 @@ def _move_to_trash_locked(
                 done: list[tuple[Path, Path]] = []
                 failed = False
                 woke = False
-                for src, rel in _unit_paths(unit.sid, unit.stems, archives, cli_files):
+                try:
+                    unit_files = _unit_paths(unit.sid, unit.stems, archives, cli_files)
+                except OSError:
+                    # A half this session owns could not be enumerated (an
+                    # attachments directory that exists but will not list). Taking
+                    # the halves that did enumerate is the split this loop's
+                    # rollback exists to prevent, so the session is left whole.
+                    logger.warning("could not enumerate session %r for staging", uid, exc_info=True)
+                    unit_files = []
+                    failed = True
+                for src, rel in unit_files:
                     try:
                         size, mtime = _file_stamp(src)
                     except OSError:
@@ -2736,6 +2824,28 @@ def _move_to_trash_locked(
                     continue
                 moved_sessions += 1
                 moved_bytes += sum(int(record["bytes"]) for record in files)
+                # The attachments directories this unit drained are now empty
+                # shells; a restore recreates one on demand. Removed under the
+                # unit's transcript locks, re-taken for this step: a writer that
+                # resumes this session creates the directory and lands its first
+                # image under that same lock, so an unlocked ``rmdir`` could take
+                # the directory between its ``mkdir`` and the file arriving and
+                # cost that row its image. ``rmdir`` refuses a non-empty
+                # directory, so anything this code did not stage (and so did not
+                # move), or a resumed writer's image that landed while the lock
+                # was free, keeps its home. Best-effort throughout: an empty shell
+                # left behind is a cosmetic leftover, not a broken session.
+                try:
+                    with ExitStack() as shell_locks:
+                        for stem in sorted(unit.stems):
+                            shell_locks.enter_context(log._locked(stem))
+                        for stem in unit.stems:
+                            try:
+                                os.rmdir(attachments_dir(_crew_sessions_dir(), stem))
+                            except OSError:
+                                pass
+                except Exception:
+                    logger.debug("could not take the lock to remove an empty attachments dir")
         # Inside the handle's scope, so the manifest can still be synced through the
         # descriptor that wrote it. Closing only flushes to the OS.
         _sync_batch(target, staged_dirs, manifest, source_dirs)

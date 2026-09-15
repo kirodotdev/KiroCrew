@@ -1034,6 +1034,7 @@ class TelegramDispatcher:
                 memory_store=_memory_store,
                 resumed=resumed,
                 runtime_source="telegram",
+                context_provider=provider,
                 # Temporary mode reads NO memory, which is the half the transcript
                 # gate cannot cover: refusing to WRITE still leaves yesterday's
                 # memories and lessons in today's prompt. Incognito deliberately

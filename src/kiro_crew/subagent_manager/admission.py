@@ -60,6 +60,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         _agent_prevalidated: bool = False,
         _from_queue: bool = False,
         _preassigned_id: str = "",
+        _memory_mode: str | None = None,
     ) -> SubagentInfo | None:
         """Spawn a subagent for *task*.
 
@@ -181,6 +182,33 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     parent_session_key=parent_session_key,
                     done=True,
                     error="spawn refused: gateway admission is closed",
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+            )
+
+        # Freeze before queueing or awaiting approval; a replacement parent must
+        # not change the mode of work already admitted under its predecessor.
+        try:
+            if _memory_mode is None:
+                resolver = self._manager._memory_mode_for_session
+                _memory_mode = (
+                    resolver(parent_session_key) if resolver is not None else "persistent"
+                )
+            if not isinstance(_memory_mode, str) or _memory_mode not in {
+                "persistent",
+                "incognito",
+                "temporary",
+            }:
+                raise ValueError("unknown memory mode")
+        except Exception:
+            return self._manager._announce_rejection(
+                SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error="memory_unavailable: the parent's memory mode could not be established",
                     batch_id=batch_id,
                     batch_total=max(0, int(batch_total)),
                 )
@@ -448,6 +476,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     # the concurrency gate runs against the GLOBAL memory instead
                     # of the crew it was handed to.
                     "memory_store": memory_store,
+                    "_memory_mode": _memory_mode,
                     "_agent_prevalidated": _agent_prevalidated,
                     "_preassigned_id": agent_id,
                 }
@@ -479,6 +508,8 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 agent=agent,
                 app=app,
                 queued=True,
+                parent_session_key=parent_session_key,
+                memory_mode=_memory_mode,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
                 include_memory=include_memory,
@@ -539,8 +570,10 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             include_lessons=include_lessons,
             include_project=include_project,
             memory_store=memory_store or "",
+            memory_mode=_memory_mode,
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
+        info._memory_mode_ready = not bool(conversation_key)
         self._manager._agents[agent_id] = info
         self._manager._running_count += 1
         self._manager._last_spawn_ts = time.monotonic()  # stagger gate: one start per interval
@@ -957,14 +990,14 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 max_turns=info.max_turns,
                 context_groups=_context_groups_field(info),
                 memory_store=info.memory_store,
+                memory_mode=info.memory_mode,
             )
         except Exception:
             logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)
-            if info.memory_store:
-                # The run task may already be registered. Its normal terminal
-                # path settles the failure before allocating a provider.
-                info.error = "memory_unavailable: could not persist this member's run binding"
-                return
+            # The run task may already be registered. Its normal terminal path
+            # settles the failure before allocating a provider, for every store.
+            info.error = "memory_unavailable: could not persist this run's memory binding"
+            return
 
         Stats().inc_subagent_spawned()
         # Beside that stat, and for the same reason: this is the confirmed-start

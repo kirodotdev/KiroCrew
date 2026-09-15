@@ -128,7 +128,16 @@ async def _run_once() -> None:
     # account the default profile is actually pointing at right now. The snapshot
     # above has a TTL, so this live probe is what the account id may be trusted
     # from -- the same rule the HTTP path's ``_resolve_target`` follows.
-    identity = await aws_consent.probe_identity(profile, region)
+    #
+    # ``use_cache=False`` is what makes that sentence true, and it is doing more
+    # work here than at the HTTP resolver. ``resolve_default_account_profile``
+    # reaches ``list_accounts`` -> ``_fold_profile``, which probes every registry
+    # entry with the cache ON, so a cached probe here answers from the entry the
+    # line above just primed: not a 30-second window but a probe that never runs
+    # live at all. A repoint inside it keys ``due_for_nightly``, ``find_drive``
+    # and the snapshot record to the wrong account, unattended and with nobody
+    # reading a log.
+    identity = await aws_consent.probe_identity(profile, region, use_cache=False)
     if not identity.ok or not identity.account:
         logger.info("aws-control nightly: account unresolved; skipping")
         return

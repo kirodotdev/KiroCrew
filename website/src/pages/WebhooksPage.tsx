@@ -40,6 +40,7 @@ import type {
 } from '../api/client'
 import AgentSelector, { type KiroCrewAgent } from '../components/AgentSelector'
 import ErrorNotice from '../components/ErrorNotice'
+import { copyToClipboard, copyCode } from '../utils/clipboard'
 import Tablist, { type TablistTab } from '../components/Tablist'
 import { TABS_RAIL_ROW_CLASS } from '../components/ui/tabsPill'
 import { Badge, Btn, Checkbox, IconButton, Input, PageHeader, SearchInput, Skeleton } from '../components/ui'
@@ -165,12 +166,6 @@ const EMPTY_VIEW: WebhooksView = {
 
 /* ── small helpers ─────────────────────────────────────────────────────── */
 
-function copyText(text: string) {
-  // Clipboard access is unavailable in insecure contexts and in jsdom; copying
-  // is a convenience, so a failure must never surface as an error.
-  try { void navigator.clipboard?.writeText(text)?.catch(() => {}) } catch { /* no clipboard */ }
-}
-
 function usedAgo(ts: number | null | undefined): string {
   return ts ? timeAgo(ts) : i18nT('pages.webhooksPage.never_used')
 }
@@ -274,13 +269,20 @@ function Kv({ rows }: { rows: [string, React.ReactNode][] }) {
 }
 
 function CopyField({ value, label, mask }: { value: string; label: string; mask?: boolean }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = async () => {
+    if (await copyToClipboard(value)) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }
+  }
   return (
     <div className="flex items-center gap-2 bg-bg-elevated border border-border rounded-md pl-3 pr-1.5 py-1.5">
       <span className={`flex-1 min-w-0 font-mono text-[12px] overflow-x-auto whitespace-nowrap scrollbar-none ${mask ? 'text-muted' : 'text-card-fg'}`}>
         {value}
       </span>
-      <IconButton aria-label={label} onClick={() => copyText(value)} title={label}>
-        <Copy size={14} />
+      <IconButton aria-label={label} onClick={handleCopy} title={label}>
+        {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
       </IconButton>
     </div>
   )
@@ -407,6 +409,15 @@ export default function WebhooksPage() {
   // once the banner closes, and the dismiss button sits next to the copy
   // buttons, so a single mis-click would destroy them.
   const [dismissArmed, setDismissArmed] = useState(false)
+  // Gates the copy-token / copy-signing-secret Btn confirmations below on the
+  // shared helper's returned boolean — CopyField above has its own per-field
+  // state, but these two are separate buttons for the same values.
+  const [tokenCopied, setTokenCopied] = useState(false)
+  const [signingCopied, setSigningCopied] = useState(false)
+  // Gates the two request-example copy buttons ('run' = the standalone request
+  // example, 'call' = the "call this hook" example) independently — they never
+  // show at the same time, but each has its own timer.
+  const [exampleCopied, setExampleCopied] = useState<'run' | 'call' | null>(null)
   // Two-step arm for turning the kill switch OFF. Turning it back ON is a single
   // click — that direction is not destructive.
   const [switchArmed, setSwitchArmed] = useState(false)
@@ -734,10 +745,22 @@ export default function WebhooksPage() {
           </div>
         )}
         <div className="flex items-center gap-2 flex-wrap">
-          <Btn onClick={() => copyText(revealed.token)}><Copy size={13} /> {i18nT('pages.webhooksPage.copy_token')}</Btn>
+          <Btn onClick={async () => {
+            if (await copyToClipboard(revealed.token)) {
+              setTokenCopied(true)
+              setTimeout(() => setTokenCopied(false), 1500)
+            }
+          }}>
+            {tokenCopied ? <Check size={13} className="text-ok" /> : <Copy size={13} />} {i18nT('pages.webhooksPage.copy_token')}
+          </Btn>
           {revealed.signing_secret && (
-            <Btn data-testid="webhook-reveal-copy-signing" onClick={() => copyText(revealed.signing_secret ?? '')}>
-              <Copy size={13} /> {i18nT('pages.webhooksPage.copy_signing_secret')}
+            <Btn data-testid="webhook-reveal-copy-signing" onClick={async () => {
+              if (await copyToClipboard(revealed.signing_secret ?? '')) {
+                setSigningCopied(true)
+                setTimeout(() => setSigningCopied(false), 1500)
+              }
+            }}>
+              {signingCopied ? <Check size={13} className="text-ok" /> : <Copy size={13} />} {i18nT('pages.webhooksPage.copy_signing_secret')}
             </Btn>
           )}
           {dismissArmed
@@ -919,12 +942,18 @@ export default function WebhooksPage() {
         collapsible
         defaultCollapsed
         right={(
-          <Btn onClick={() => copyText(exampleFor(
-            selectedToken.require_signature ? 'signed' : 'bearer',
-            view.url, 'hook:my-job', i18nT('pages.webhooksPage.job_finished_3_findings'), signatureWindow,
-          ))}
+          <Btn onClick={async () => {
+            const ok = await copyCode(exampleFor(
+              selectedToken.require_signature ? 'signed' : 'bearer',
+              view.url, 'hook:my-job', i18nT('pages.webhooksPage.job_finished_3_findings'), signatureWindow,
+            ))
+            if (ok) {
+              setExampleCopied('run')
+              setTimeout(() => setExampleCopied(null), 1500)
+            }
+          }}
           >
-            <Copy size={13} /> {i18nT('pages.webhooksPage.copy')}
+            {exampleCopied === 'run' ? <Check size={13} className="text-ok" /> : <Copy size={13} />} {i18nT('pages.webhooksPage.copy')}
           </Btn>
         )}
       >
@@ -1064,11 +1093,17 @@ export default function WebhooksPage() {
       <Section
         title={i18nT('pages.webhooksPage.call_this_hook')}
         right={(
-          <Btn onClick={() => copyText(exampleFor(
-            defaultMode, view.url, selectedContext.session_key, i18nT('pages.webhooksPage.status_update'), signatureWindow,
-          ))}
+          <Btn onClick={async () => {
+            const ok = await copyCode(exampleFor(
+              defaultMode, view.url, selectedContext.session_key, i18nT('pages.webhooksPage.status_update'), signatureWindow,
+            ))
+            if (ok) {
+              setExampleCopied('call')
+              setTimeout(() => setExampleCopied(null), 1500)
+            }
+          }}
           >
-            <Copy size={13} /> {i18nT('pages.webhooksPage.copy')}
+            {exampleCopied === 'call' ? <Check size={13} className="text-ok" /> : <Copy size={13} />} {i18nT('pages.webhooksPage.copy')}
           </Btn>
         )}
       >

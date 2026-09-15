@@ -29,7 +29,7 @@ process and the session table; the harness only says what to put in them.
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -75,6 +75,9 @@ class SpawnContext:
     home: Path
     """One snapshot of the home directory, for the same reason."""
 
+    private_memory: bool = field(default=False, kw_only=True)
+    """Trusted private execution flag; never supplied by an agent-controlled spec."""
+
     sandbox_mode: str = "auto"
     """The sandbox tier this spawn will use, as configured.
 
@@ -101,6 +104,9 @@ class SpawnPlan:
     """The argv to spawn, plus what the spawn decided about itself."""
 
     argv: list[str]
+
+    native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
+    """Admitted sources owned by this exact native launch configuration."""
 
     host_auth: bool = False
     """Crew answers this process's credential callbacks.
@@ -147,6 +153,22 @@ class SessionExtras:
     """
 
     custom_agents: list[dict[str, Any]] | None = None
+
+    derived_spec_snapshot: Any = None
+    """The ``agent.DerivedSpecSnapshot`` the payload above was built from.
+
+    Carried out of the projection because THIS payload is where a wire-registered
+    host consumes the spec: ``session/new`` hands the definition over and a later
+    ``session/set_mode`` only ACTIVATES what is already registered, re-reading
+    nothing. So the check that proves the consumed spec did not change has to
+    compare against this snapshot -- one snapshot per consumed load. A fresh read
+    at activation would validate the file instead of the payload, and pass while
+    the registered definition still carried grants a revocation had removed.
+
+    Typed loosely so this module stays free of :mod:`kiro_crew.agent`, whose
+    import chain reaches the config loader. ``None`` when the host mirrors
+    nothing, or takes its agent at spawn time.
+    """
 
 
 # ── Seam 5: notification aliases ──

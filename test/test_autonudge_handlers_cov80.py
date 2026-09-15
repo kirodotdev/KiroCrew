@@ -169,6 +169,33 @@ async def test_session_monitor_read_requires_and_uses_authenticated_binding(
 
 
 @pytest.mark.asyncio
+async def test_session_monitor_read_admits_webex_legacy_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Webex session has a legacy loop and no structured monitor.
+
+    The read resolves the general binding, so it returns the legacy loop under
+    ``autonudge_loop`` rather than refusing the session as unbound.
+    """
+    session_key = "webex:kirocrew:direct:operator@example.com"
+    loop = _loop(loop_id="lp-web", slot_key=session_key)
+    _svc(monkeypatch, _FakeSvc([loop]))
+
+    request = _mk(
+        "GET",
+        "/api/autonudge/session-monitor",
+        headers={"X-Session-Key": session_key},
+        internal_auth=True,
+    )
+    response = await h.api_session_monitor_get(request)
+    assert response.status == 200
+    payload = _body(response)
+    assert payload["monitor"] is None
+    assert payload["autonudge_loop"] is not None
+    assert payload["autonudge_loop"]["id"] == "lp-web"
+
+
+@pytest.mark.asyncio
 async def test_session_monitor_read_redacts_provider_controlled_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -231,10 +258,18 @@ async def test_session_monitor_read_audits_missing_binding_denial(
 
 
 @pytest.mark.asyncio
-async def test_session_monitor_read_rejects_legacy_only_webex_binding(
+async def test_session_monitor_read_admits_legacy_only_webex_binding(
+    monkeypatch: pytest.MonkeyPatch,
     sel_mock: MagicMock,
 ) -> None:
+    """A Webex binding is admitted at the gate.
+
+    Webex hosts a legacy timer loop, so the read resolves the general binding
+    and returns a normal payload rather than a 401. With no loop armed it reads
+    as not armed, distinct from an unbound session.
+    """
     session_key = "webex:kirocrew:direct:operator@example.com"
+    _svc(monkeypatch, _FakeSvc([]))
     response = await h.api_session_monitor_get(
         _mk(
             "GET",
@@ -244,13 +279,10 @@ async def test_session_monitor_read_rejects_legacy_only_webex_binding(
         )
     )
 
-    assert response.status == 401
-    assert _body(response)["code"] == "session_required"
-    assert any(
-        call.kwargs.get("operation") == "session_monitor_get"
-        and call.kwargs.get("outcome") == "denied"
-        for call in sel_mock.log_api_access.call_args_list
-    )
+    assert response.status == 200
+    payload = _body(response)
+    assert payload["monitor"] is None
+    assert payload["autonudge_loop"] is None
 
 
 def test_session_monitor_read_is_strict_internal() -> None:

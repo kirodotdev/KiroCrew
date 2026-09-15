@@ -32,6 +32,7 @@ organized for someone browsing the repository.
 | [memory-and-learning.md](memory-and-learning.md) | Persistent preferences, project context, and learned corrections. |
 | [knowledge-library-how-it-works.md](knowledge-library-how-it-works.md) | How the knowledge graph is built from your documents. |
 | [dashboard.md](dashboard.md) | The web dashboard: multi-session chat, memory management, live metrics. |
+| [issue-radar-pipeline.md](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost. |
 | [agent-questions.md](agent-questions.md) | Letting an agent pause mid-turn to ask a clickable question. |
 | [followup-suggestions.md](followup-suggestions.md) | Agent-proposed next steps above the composer. |
 | [feature-tips.md](feature-tips.md) | Personalized tips pointing at features you have not used. |

@@ -237,3 +237,120 @@ async def test_lessons_delete_keeps_the_object_path() -> None:
 
     assert response.status == 400
     assert body == {"error": "rule substring required"}
+
+
+async def test_lessons_delete_threads_repo_scope_to_the_store() -> None:
+    """A ``repo_scope`` in the body reaches the store, so a scoped and a
+    global lesson sharing rule text can be deleted independently. Absent it,
+    the store receives None -- the every-scope match."""
+    app = _lessons_app()
+    # context_builder present with a falsy vector_store routes the delete to the
+    # JSONL store (state.lessons), whose remove() is the mock we assert on.
+    app["state"].context_builder = SimpleNamespace(memory=SimpleNamespace(vector_store=None))
+
+    guards = (
+        patch("kiro_crew.dashboard.handlers.cron._recognize_session", AsyncMock(return_value=None)),
+        patch("kiro_crew.dashboard.handlers.cron._blocks_reads_session", return_value=False),
+        patch("kiro_crew.dashboard.handlers.cron._sel"),
+        # No named binding: the caller uses the global lessons contract, so the
+        # delete reaches state.lessons rather than a per-silo store.
+        patch(
+            "kiro_crew.dashboard.handlers.cron.resolve_lesson_memory_store",
+            AsyncMock(return_value=("", None)),
+        ),
+    )
+    with guards[0], guards[1], guards[2], guards[3]:
+        async with TestClient(TestServer(app)) as client:
+            with_scope = await client.delete(
+                "/api/lessons",
+                json={"rule": "run the gate", "repo_scope": "src/pkg"},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert with_scope.status == 200
+            app["state"].lessons.remove.assert_called_once_with("run the gate", "src/pkg")
+
+            app["state"].lessons.remove.reset_mock()
+            no_scope = await client.delete(
+                "/api/lessons",
+                json={"rule": "run the gate"},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert no_scope.status == 200
+            app["state"].lessons.remove.assert_called_once_with("run the gate", None)
+
+
+async def test_lessons_delete_refuses_selector_shapes_that_collide_with_global() -> None:
+    """The selector has exactly three meanings -- absent (every scope), empty or
+    whitespace-only (the global rows), a fragment (that scope) -- and the two
+    body shapes that collapse into a DIFFERENT meaning after coercion are
+    refused with 400 before any store call. A JSON null is not a string, so
+    coercing it to "" would turn "no selector" into "delete the global rows";
+    a bare "/" is nonempty but canonicalises to the global selector, so it
+    would land on rows the caller never named."""
+    app = _lessons_app()
+    app["state"].context_builder = SimpleNamespace(memory=SimpleNamespace(vector_store=None))
+
+    guards = (
+        patch("kiro_crew.dashboard.handlers.cron._recognize_session", AsyncMock(return_value=None)),
+        patch("kiro_crew.dashboard.handlers.cron._blocks_reads_session", return_value=False),
+        patch("kiro_crew.dashboard.handlers.cron._sel"),
+        # No named binding: the caller uses the global lessons contract, so the
+        # accepted whitespace selector reaches state.lessons.
+        patch(
+            "kiro_crew.dashboard.handlers.cron.resolve_lesson_memory_store",
+            AsyncMock(return_value=("", None)),
+        ),
+    )
+    with guards[0], guards[1], guards[2], guards[3]:
+        async with TestClient(TestServer(app)) as client:
+            null_selector = await client.delete(
+                "/api/lessons",
+                json={"rule": "run the gate", "repo_scope": None},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert null_selector.status == 400
+            assert (await null_selector.json()) == {
+                "error": "repo_scope must be a string",
+                "code": "repo_scope_not_string",
+            }
+
+            numeric_selector = await client.delete(
+                "/api/lessons",
+                json={"rule": "run the gate", "repo_scope": 7},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert numeric_selector.status == 400
+
+            slash_selector = await client.delete(
+                "/api/lessons",
+                json={"rule": "run the gate", "repo_scope": "/"},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert slash_selector.status == 400
+            assert (await slash_selector.json()) == {
+                "error": "repo_scope does not name a usable scope",
+                "code": "repo_scope_inadmissible",
+            }
+
+            # An absolute path folds onto the stored relative fragment under
+            # canonical comparison ("/src/pkg" -> "src/pkg"), so accepting it
+            # would delete rows the caller never admissibly named. The write
+            # surface refuses the spelling; the delete surface matches it.
+            absolute_selector = await client.delete(
+                "/api/lessons",
+                json={"rule": "run the gate", "repo_scope": "/src/pkg"},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert absolute_selector.status == 400
+            app["state"].lessons.remove.assert_not_called()
+
+            # Whitespace-only IS the explicit global selector: it reaches the
+            # store verbatim, where canonicalisation folds it to None and the
+            # match targets the unscoped rows.
+            whitespace_selector = await client.delete(
+                "/api/lessons",
+                json={"rule": "run the gate", "repo_scope": "   "},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert whitespace_selector.status == 200
+            app["state"].lessons.remove.assert_called_once_with("run the gate", "   ")

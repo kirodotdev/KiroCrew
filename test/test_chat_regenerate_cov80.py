@@ -109,6 +109,62 @@ async def test_regenerate_rejects_an_empty_user_message(state) -> None:
 
 
 @pytest.mark.asyncio
+async def test_regenerate_skips_a_trailing_system_notice(state) -> None:
+    """A trailing compaction/session-reload notice is a status row, not the
+    reply being regenerated: the variant capture must take the real reply.
+    Capturing the notice instead drops the reply from variant history with
+    no recovery path."""
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "the real reply")
+    slot.append("assistant", "auto compacted", meta={"kind": "compaction"})
+    slot.drain()
+
+    captured: list[list[dict]] = []
+
+    async def _capture(*args, **kwargs) -> None:
+        # Runs before the done-callback discards unconsumed variants.
+        captured.append(list(slot._pending_variants))
+
+    with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/regenerate")
+            assert resp.status == 200
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+    # The variant stash holds the reply, never the notice.
+    assert captured, "background turn never started"
+    contents = [v.get("content") for v in captured[0]]
+    assert "the real reply" in contents
+    assert "auto compacted" not in contents
+    # Truncation still lands after the user row, dropping reply AND notice.
+    assert [m["role"] for m in slot.messages] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_regenerate_never_crosses_a_newer_user_turn(state) -> None:
+    """The notice skip must stop at a real user row: a /compact command is a
+    user row followed by its notice, and skipping past it would regenerate the
+    PRIOR turn -- irreversibly deleting the newer user turn. With no reply in
+    the newest turn there is nothing to regenerate: refuse, mutate nothing."""
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "Q")
+    slot.append("assistant", "A")
+    slot.append("user", "/compact")
+    slot.append("assistant", "auto compacted", meta={"kind": "compaction"})
+    slot.drain()
+
+    async with _client(state) as client:
+        resp = await client.post("/api/chat/slots/s1/regenerate")
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "no_assistant_message"
+
+    # Nothing was truncated or persisted.
+    assert [m["role"] for m in slot.messages] == ["user", "assistant", "user", "assistant"]
+
+
+@pytest.mark.asyncio
 async def test_readiness_latch_blocks_before_the_truncation(state) -> None:
     """Regenerate persists the truncation, so an unverified backend must be
     rejected BEFORE history is mutated -- a failed turn cannot undo it."""

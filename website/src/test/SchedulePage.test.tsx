@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
@@ -50,6 +50,41 @@ const openGallery = async () => {
   fireEvent.keyDown(screen.getByLabelText('Browse schedule templates'), { key: 'Enter' })
   fireEvent.click(await screen.findByText('Browse all templates'))
 }
+
+describe('SchedulePage next-run ordering', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.removeItem('sort:cron-schedule')
+  })
+
+  afterEach(() => localStorage.removeItem('sort:cron-schedule'))
+
+  it.each([null, undefined])('sorts upcoming jobs before a paused job with next_run_ts=%s', async nextRun => {
+    const { api } = await import('../api/client')
+    const now = Date.now() / 1000
+    vi.mocked(api).crons.mockReset().mockResolvedValue({
+      jobs: [
+        mkJob({ id: 'paused', name: 'Paused job', enabled: false, next_run_ts: nextRun }),
+        mkJob({ id: 'later', name: 'Later job', next_run_ts: now + 7200 }),
+        mkJob({ id: 'soon', name: 'Soon job', next_run_ts: now + 3600 }),
+      ],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    await screen.findByRole('checkbox', { name: 'Select Paused job' })
+    const rowNames = () => screen.getAllByRole('row').slice(1).map(row =>
+      within(row).getByRole('checkbox').getAttribute('aria-label'))
+    const expected = ['Select Soon job', 'Select Later job', 'Select Paused job']
+
+    expect(screen.getByRole('columnheader', { name: 'Next Run' })).toHaveAttribute('aria-sort', 'ascending')
+    expect(rowNames()).toEqual(expected)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Name', exact: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next Run', exact: true }))
+    expect(screen.getByRole('columnheader', { name: 'Next Run' })).toHaveAttribute('aria-sort', 'ascending')
+    expect(rowNames()).toEqual(expected)
+  })
+})
 
 describe('SchedulePage delete button state machine', () => {
   beforeEach(() => {

@@ -6,6 +6,7 @@ crons, taskrunner, send-message, notifications).
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -747,18 +748,14 @@ class TestApiKirocrewConfig:
 
     @pytest.mark.asyncio
     async def test_put_no_restart_when_startup_key_resent_unchanged(self, tmp_path, monkeypatch):
-        # The dashboard sends all four settings on every save and enables Save
-        # whenever ANY one is dirty, so a conductor-only save re-sends the three
-        # subagent caps at their existing values. Nothing changed and nothing
-        # is boot-only here, so it must NOT ask the user to restart.
+        # The dashboard sends all three settings on every save and enables Save
+        # whenever ANY one is dirty, so a save re-sends the other caps at their
+        # existing values. Nothing changed and nothing is boot-only here, so it
+        # must NOT ask the user to restart.
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents._regen_conductor", lambda: None, raising=False
-        )
         (tmp_path / "config.json").write_text(
-            '{"agent": {"max_subagents": 8, "subagent_max_turns": 50, '
-            '"subagent_auto_max": 32, "conductor_skill": false}}'
+            '{"agent": {"max_subagents": 8, "subagent_max_turns": 50, "subagent_auto_max": 32}}'
         )
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
             resp = await c.put(
@@ -768,7 +765,6 @@ class TestApiKirocrewConfig:
                         "max_subagents": 8,
                         "subagent_max_turns": 50,
                         "subagent_auto_max": 32,
-                        "conductor_skill": True,
                     }
                 },
             )
@@ -816,33 +812,31 @@ class TestApiKirocrewConfig:
             assert (await resp.json())["restart_required"] is False
 
     @pytest.mark.asyncio
-    async def test_put_does_not_flag_restart_for_live_keys(self, tmp_path, monkeypatch):
-        # conductor_skill is applied inline by the handler (the skill file is
-        # regenerated in-request), so it takes effect immediately and must NOT
-        # raise the restart hint — otherwise the hint becomes noise users learn
-        # to ignore.
+    async def test_put_retired_conductor_skill_alone_is_not_a_recognized_setting(
+        self, tmp_path, monkeypatch
+    ):
+        # agent.conductor_skill (the "Orchestrator Mode" toggle) is retired: the
+        # endpoint does not know the key, so a payload carrying nothing else is
+        # the same 400 any unknown key gets, and nothing is written.
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents._regen_conductor", lambda: None, raising=False
-        )
         (tmp_path / "config.json").write_text('{"agent": {}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
             resp = await c.put("/api/config/kirocrew", json={"agent": {"conductor_skill": True}})
-            assert resp.status == 200
-            assert (await resp.json())["restart_required"] is False
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "no recognized settings provided"
+        saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        assert "conductor_skill" not in saved["agent"]
 
     @pytest.mark.asyncio
-    async def test_put_mixed_live_keys_never_ask_for_a_restart(self, tmp_path, monkeypatch):
-        # Every key this endpoint accepts is live (conductor_skill is applied
-        # in-request, the caps by the config watcher), so a mixed request is
-        # still False. The restart answer comes from the schema's restart=True
-        # marks alone; test_config_live.py pins that path against a real one.
+    async def test_put_retired_conductor_skill_is_ignored_beside_a_live_key(
+        self, tmp_path, monkeypatch
+    ):
+        # A stale dashboard build still sending the retired key alongside a live
+        # cap must not break the save: the cap is applied, the retired key is
+        # dropped rather than persisted, and no restart is asked for.
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents._regen_conductor", lambda: None, raising=False
-        )
         (tmp_path / "config.json").write_text('{"agent": {}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
             resp = await c.put(
@@ -851,6 +845,9 @@ class TestApiKirocrewConfig:
             )
             assert resp.status == 200
             assert (await resp.json())["restart_required"] is False
+        saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        assert saved["agent"]["subagent_max_turns"] == 40
+        assert "conductor_skill" not in saved["agent"]
 
     @pytest.mark.asyncio
     async def test_put_rejects_subagent_auto_max_above_ceiling(self, tmp_path, monkeypatch):

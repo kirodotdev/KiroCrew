@@ -119,6 +119,8 @@ function createGatewaySupervisor({
   cancelPendingTrayHide,
   exitImmersiveModes,
   log,
+  warn,
+  error,
   logPath,
   fsMod = defaultFs,
   osMod = defaultOs,
@@ -148,6 +150,8 @@ function createGatewaySupervisor({
   const IS_WIN = processObj.platform === "win32";
 
   const glog = typeof log === "function" ? log : (() => {});
+  const userWarn = typeof warn === "function" ? warn : glog;
+  const userError = typeof error === "function" ? error : userWarn;
   const gatewayLogPath = typeof logPath === "function" ? logPath : (() => "");
   const mainWindow = () => (typeof getMainWindow === "function" ? getMainWindow() : null);
   const quitting = () => (typeof isQuitting === "function" ? isQuitting() : false);
@@ -654,7 +658,7 @@ function createGatewaySupervisor({
     try {
       fs.mkdirSync(kirocrewDir, { recursive: true, mode: 0o700 });
     } catch (error) {
-      glog(`WARN failed to create kirocrew dir ${kirocrewDir}: ${error.message}`);
+      userWarn(`WARN failed to create kirocrew dir ${kirocrewDir}: ${error.message}`);
     }
 
     const bin = findKirocrewBin(
@@ -681,7 +685,7 @@ function createGatewaySupervisor({
       const missingParts = findMissingBundleParts(fs, path, backendRoot);
       if (missingParts.length) {
         const errorMessage = describeIncompleteBundle(missingParts);
-        glog(`spawn REFUSED: incomplete bundle at ${backendRoot} — missing: ${missingParts.join(", ")}`);
+        userError(`spawn REFUSED: incomplete bundle at ${backendRoot} — missing: ${missingParts.join(", ")}`);
         gatewayStartFailure = {
           error: errorMessage,
           incompleteBundle: true,
@@ -706,11 +710,11 @@ function createGatewaySupervisor({
         cliBin: bin,
       });
       if (need) {
-        glog(`WARN agent sandbox will fail closed: ${need.reason}`);
-        glog(`HINT run this in a terminal (needs sudo), then restart the app: ${need.command}`);
+        userWarn(`WARN agent sandbox will fail closed: ${need.reason}`);
+        userWarn(`HINT run this in a terminal (needs sudo), then restart the app: ${need.command}`);
       }
     } catch (error) {
-      glog(`WARN sandbox profile check failed: ${error.message}`);
+      userWarn(`WARN sandbox profile check failed: ${error.message}`);
     }
 
     // The explicit --port is the single source of truth. Inheriting
@@ -735,7 +739,7 @@ function createGatewaySupervisor({
     // tracebacks which otherwise disappear on clean recipient machines.
     let childOut = "ignore";
     try { childOut = fs.openSync(gatewayLogPath(), "a"); }
-    catch (error) { glog(`WARN could not open child log fd: ${error.message}`); }
+    catch (error) { userWarn(`WARN could not open child log fd: ${error.message}`); }
     glog(SPAWN_MARKER);
     gatewayStartFailure = null;
 
@@ -750,7 +754,7 @@ function createGatewaySupervisor({
         spawnArgs = ["-s", "-m", "kiro_crew", ...spawnArgs];
       } else {
         const errorMessage = describeIncompleteBundle([]);
-        glog(`spawn REFUSED: bundled interpreter absent at ${pythonExe} — install likely still extracting`);
+        userError(`spawn REFUSED: bundled interpreter absent at ${pythonExe} — install likely still extracting`);
         gatewayStartFailure = {
           error: errorMessage,
           incompleteBundle: true,
@@ -837,7 +841,7 @@ function createGatewaySupervisor({
     };
 
     child.on("error", (error) => {
-      glog(`spawn ERROR code=${error.code || "?"} msg=${error.message}`);
+      userError(`spawn ERROR code=${error.code || "?"} msg=${error.message}`);
       if (gatewayProcess !== child) return;
       const giveUp = () => {
         gatewayStartFailure = { error: error.message, bundled };
@@ -848,13 +852,17 @@ function createGatewaySupervisor({
       giveUp();
     });
     child.on("exit", (code, signal) => {
-      glog(`gateway child exited code=${code} signal=${signal}`);
+      const exitMessage = `gateway child exited code=${code} signal=${signal}`;
+      const currentChild = gatewayProcess === child;
+      const expectedExit = !currentChild || quitting() || installingUpdate;
+      if (expectedExit) glog(exitMessage);
+      else userError(exitMessage);
       // Node's Windows kill maps both signal names to TerminateProcess. The
       // Gatekeeper hint is meaningful only on macOS, never on normal teardown.
-      if (signal === "SIGKILL" && IS_MAC) {
-        glog("HINT: SIGKILL on a freshly-spawned bundled binary almost always means macOS Gatekeeper blocked an unsigned/quarantined nested executable. On the recipient's Mac run: xattr -cr <path to KiroCrew.app>");
+      if (signal === "SIGKILL" && IS_MAC && !expectedExit) {
+        userWarn("HINT: SIGKILL on a freshly-spawned bundled binary almost always means macOS Gatekeeper blocked an unsigned/quarantined nested executable. On the recipient's Mac run: xattr -cr <path to KiroCrew.app>");
       }
-      if (gatewayProcess !== child) return;
+      if (!currentChild) return;
       const giveUp = () => {
         if (!gatewayStartFailure) gatewayStartFailure = { code, signal, bundled };
         gatewayProcess = null;
@@ -875,7 +883,7 @@ function createGatewaySupervisor({
   async function stopGatewayGracefully({ timeoutMs = 15000 } = {}) {
     const gateway = gatewayProcess;
     if (!gateway || gateway.exitCode !== null) { gatewayProcess = null; return; }
-    console.log("Stopping gateway gracefully...");
+    glog("Stopping gateway gracefully...");
     // Resolve secrets at call time. The gateway accepts only the secret for its
     // current boot; trying every readable candidate prevents a stale copy from
     // forcing the hard-signal path and skipping session/memory/cron flushes.
@@ -961,7 +969,7 @@ function createGatewaySupervisor({
 
     return new Promise((resolve) => {
       sendStatus("Fetching token from remote dev desktop…");
-      console.log(`SSH token fetch: ssh ${remoteHost} for port ${effectivePort}`);
+      glog(`SSH token fetch: ssh ${remoteHost} for port ${effectivePort}`);
       execFile(
         "/usr/bin/ssh",
         sshArgs,

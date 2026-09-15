@@ -226,7 +226,20 @@ def build_dist(checkout: Path) -> bool:
     # Stage website/dist → the served static/dist (replace any stale copy).
     dst = dist_dir(checkout)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.is_symlink() or dst.is_file():
+    # A LINK is checked before is_dir()/is_file() so a DANGLING one is still
+    # replaced -- and via is_link_or_junction because this very path is
+    # published as a link by `frontend._ensure_tree_dist`, through
+    # `platform_compat.symlink_or_junction`, which falls back to a directory
+    # JUNCTION on Windows (a directory symlink there needs
+    # SeCreateSymbolicLinkPrivilege). A dangling junction answers False to
+    # is_symlink(), is_file() AND is_dir(), so it fell through every branch and
+    # the copytree below hit an entry that still existed: FileExistsError,
+    # unhandled. `unlink_link_or_junction` removes the link itself -- os.unlink
+    # for a symlink, exactly as before; rmdir for a junction -- never the
+    # target's contents.
+    if platform_compat.is_link_or_junction(dst):
+        platform_compat.unlink_link_or_junction(dst)
+    elif dst.is_file():
         dst.unlink()
     elif dst.is_dir():
         shutil.rmtree(dst)

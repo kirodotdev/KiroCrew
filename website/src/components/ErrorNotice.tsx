@@ -78,6 +78,7 @@ export default function ErrorNotice({
   onHandoff,
   className = '',
   messageClassName = '',
+  messageTooltip,
   testId,
 }: {
   /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
@@ -130,6 +131,16 @@ export default function ErrorNotice({
    */
   messageClassName?: string
   /**
+   * Native `title` for the `message` span, for a call site that TRUNCATES the
+   * message (`messageClassName="truncate"`) to hold a fixed row height. A clipped
+   * error is unrecoverable without this: `role="alert"` reads the whole text to
+   * assistive tech, but a sighted user sees only what fits, and for a server
+   * sentence that is exactly the half naming what to do about it. Pass the full
+   * message. Left unset, no tooltip is rendered -- an untruncated message needs
+   * none, and a duplicate tooltip on a fully visible line is noise.
+   */
+  messageTooltip?: string
+  /**
    * `data-testid` for the root element. Several notices can share one surface
    * (a page-level read failure above a row's own mutation failure), and a
    * shared `role="alert"` makes a lookup ambiguous — a call site that migrates
@@ -149,7 +160,7 @@ export default function ErrorNotice({
       >
         <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
         {title && <strong className="font-semibold">{title}</strong>}
-        <span className={`min-w-0 ${messageClassName}`} style={{ overflowWrap: 'anywhere' }}>{message}</span>
+        <span className={`min-w-0 ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{message}</span>
         {askAgent && (
           <AskAgentButton
             report={report}
@@ -183,7 +194,9 @@ export default function ErrorNotice({
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
             existing consumer's tests read. */}
-        {messageClassName ? <span className={messageClassName}>{message}</span> : message}
+        {messageClassName || messageTooltip
+          ? <span className={messageClassName} title={messageTooltip}>{message}</span>
+          : message}
       </div>
       {askAgent && (
         <AskAgentButton

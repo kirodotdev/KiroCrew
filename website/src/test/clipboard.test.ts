@@ -45,4 +45,22 @@ describe('copyCode', () => {
 
     await expect(copyToClipboard('mobile link')).resolves.toBe(false)
   })
+
+  it('resolves false rather than rejecting when the fallback throws', async () => {
+    writeText.mockRejectedValueOnce(new Error('denied'))
+    const execCommand = vi.fn(() => {
+      throw new Error('no copy')
+    })
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+
+    await expect(copyToClipboard('mobile link')).resolves.toBe(false)
+  })
+
+  it('falls back when navigator.clipboard is entirely absent (non-secure origin)', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    const execCommand = mockExecCommand(true)
+
+    await expect(copyToClipboard('mobile link')).resolves.toBe(true)
+    expect(execCommand).toHaveBeenCalledWith('copy')
+  })
 })

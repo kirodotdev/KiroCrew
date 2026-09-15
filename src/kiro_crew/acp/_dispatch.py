@@ -876,6 +876,79 @@ _DENY_OPTION_IDS: frozenset[str] = frozenset(
 )
 
 
+#: The marker key Kiro Crew's own gate extension puts in a harness confirm dialog.
+#:
+#: A harness with no permission gate of its own is gated by an extension Kiro Crew
+#: loads into it (``agent_sdk.backends.Routing.VERIFIED_GATE_EXTENSION``). That
+#: extension can only raise the harness's generic confirm dialog, which the adapter
+#: forwards as a ``session/request_permission`` whose ``toolCall`` describes the
+#: DIALOG -- ``kind: "other"``, a ``rawInput`` of ``{method, title, message}`` -- and
+#: not the tool call behind it. So the extension writes the tool call into the
+#: dialog's message as a JSON envelope under this marker, and the builder below
+#: reads it back out. Keyed on the marker, not on a backend id: the envelope is a
+#: wire contract between two pieces of Kiro Crew's own code, and any harness whose
+#: gate is one of these extensions speaks it.
+GATE_ENVELOPE_MARKER = "kiro-crew-gate"
+
+
+def gate_envelope(tool_call: dict[str, Any], nonce: str | None) -> dict[str, Any] | None:
+    """The tool call a gate-extension confirm dialog is asking about, or ``None``.
+
+    Returns ``{"toolCallId", "title", "kind", "input", "truncated"}`` when
+    *tool_call* is the adapter's rendering of Kiro Crew's own dialog: ``rawInput.method``
+    is ``confirm``, ``rawInput.message`` parses as a JSON object carrying
+    :data:`GATE_ENVELOPE_MARKER`, its ``nonce`` is the one this session issued,
+    and its ``tool`` is the dialog's own title. Anything else -- another
+    extension's dialog, a native tool-call permission, a message that is not the
+    envelope -- is ``None`` and the frame is read exactly as before.
+
+    *nonce* is the per-session value the driver put in the harness child's
+    environment for the extension to echo, and ``None`` means this session runs
+    no gate extension at all. Both checks exist for the same reason: on every
+    harness a permission frame's ``rawInput`` IS the model's tool arguments, so a
+    marker alone would let a model on any backend call any tool with
+    ``{method: "confirm", message: "<envelope>"}`` and have the gate judge the
+    benign call it described while the real one ran. A session without a gate
+    extension therefore never consults the envelope, and one with it accepts
+    only the envelope its own extension could have written. The title check
+    closes the smaller gap on the gated harness itself: another extension relaying
+    model text into a dialog controls that text, not the tool the harness names.
+
+    The ``tool`` and ``kind`` fields are authored by the extension from the
+    harness's own event, so they carry the same provenance the harness's own
+    ``tool_call`` frame would; ``input`` is the tool's arguments, model-influenced
+    like every tool input, and is treated as such downstream.
+    """
+    if not isinstance(nonce, str) or not nonce:
+        return None
+    raw_input = tool_call.get("rawInput")
+    if not isinstance(raw_input, dict) or raw_input.get("method") != "confirm":
+        return None
+    message = raw_input.get("message")
+    if not isinstance(message, str) or GATE_ENVELOPE_MARKER not in message:
+        return None
+    try:
+        body = json.loads(message)
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or body.get(GATE_ENVELOPE_MARKER) != 1:
+        return None
+    if body.get("nonce") != nonce:
+        return None
+    tool = body.get("tool")
+    if not isinstance(tool, str) or not tool or raw_input.get("title") != tool:
+        return None
+    kind = body.get("kind")
+    tool_call_id = body.get("toolCallId")
+    return {
+        "toolCallId": tool_call_id if isinstance(tool_call_id, str) and tool_call_id else "",
+        "title": tool,
+        "kind": kind if isinstance(kind, str) else "other",
+        "input": body.get("input"),
+        "truncated": body.get("truncated") is True,
+    }
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -887,8 +960,13 @@ def build_permission_event(
     tool_name_cache: dict[str, str] | None = None,
     cache_scope: str = "",
     diff_path_cache: dict[str, str] | None = None,
+    gate_envelope_nonce: str | None = None,
 ) -> tuple[AcpEvent, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
+
+    ``gate_envelope_nonce`` is set only by a caller whose session runs Kiro Crew's
+    gate extension (``Routing.VERIFIED_GATE_EXTENSION``); see :func:`gate_envelope`
+    for what it unlocks and why the default consults nothing.
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
     the two transports cannot drift on the kiro/claude permission payload shape:
@@ -912,6 +990,19 @@ def build_permission_event(
     params = msg.params or {}
     tool_call = params.get("toolCall", {})
     tool_call = tool_call if isinstance(tool_call, dict) else {}
+    # A gate-extension dialog describes the DIALOG; the tool call it asks about is
+    # in its envelope. Substitute that description for the frame's own so the rest
+    # of this builder reads the real tool name, kind, id and arguments. The
+    # envelope's id is the harness's own toolCallId for the call, so the caches
+    # below are consulted under the same key the preceding ``tool_call`` frame wrote.
+    envelope = gate_envelope(tool_call, gate_envelope_nonce)
+    if envelope is not None:
+        tool_call = {
+            "toolCallId": envelope["toolCallId"] or tool_call.get("toolCallId", ""),
+            "title": envelope["title"],
+            "kind": envelope["kind"],
+            "input": envelope["input"],
+        }
     title = _redact(tool_call.get("title", "unknown"))
     # The ACP toolCall carries a `kind` ("execute" for Bash, "read"/"edit"/…).
     # Carry it onto the event as display/telemetry metadata only — the is_shell
@@ -1037,6 +1128,13 @@ def build_permission_event(
     # .pop()): a later tool_call_update refinement reads this same cache, so
     # popping here would make it wrongly report is_shell=False.
     cached_shell = shell_cache.get(_ck) if (shell_cache is not None and tool_call_id) else None
+    if cached_shell is None and envelope is not None:
+        # The envelope's kind is the gate extension's own rendering of the
+        # harness's tool name -- Kiro Crew's code reading the harness's event, the
+        # same provenance the cached ``tool_call`` kind has. It is NOT the frame's
+        # own agent-influenced ``kind``, which the deny-by-default rule above is
+        # about; that field described the dialog and was discarded.
+        cached_shell = is_shell_kind(envelope["kind"])
     is_shell = bool(cached_shell)
     if cached_shell is None and tool_input:
         logger.info(
@@ -1068,6 +1166,14 @@ def build_permission_event(
         _inline = tool_call.get("input") or tool_call.get("params")
         if isinstance(_inline, dict):
             _resolved_raw_params = _inline
+            # Trusted when they came out of the gate envelope, and only then: the
+            # extension read them off the harness's own tool_call event, which is
+            # the same source the cache above is filled from. An inline dict on an
+            # ordinary permission frame stays untrusted, as before. A TRUNCATED
+            # envelope keeps its params -- the keys the path checks read survive
+            # the cut -- but earns no durable trust, since a value was not seen
+            # whole.
+            _raw_params_trusted = envelope is not None and not envelope["truncated"]
 
     # Trusted MCP server + tool identity recovered from the preceding tool_call
     # (the permission payload carries no _meta). .get() (not .pop()) mirrors the
@@ -2120,7 +2226,9 @@ __all__ = [
     "set_model_params",
     "parse_metadata",
     "classify_notification",
+    "GATE_ENVELOPE_MARKER",
     "build_permission_event",
+    "gate_envelope",
     "parse_session_update",
     "parse_usage_update",
     "parse_usage_cost",

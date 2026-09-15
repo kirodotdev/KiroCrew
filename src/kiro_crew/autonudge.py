@@ -2831,6 +2831,11 @@ class AutoNudgeService:
                 elif decision is MonitorDecision.WAKE_ACTIONABLE:
                     staged_state.last_wake_fingerprint = observation.fingerprint
                     staged_state.last_wake_reason_code = observation.reason_code
+                    # Record that a wake was DECIDED for this fingerprint, next
+                    # to the persist so the stamp cannot outlive its write: the
+                    # re-alert period is measured from here. decide_monitor only
+                    # READS this map to derive its dedup comparison.
+                    staged_state.coalesce_alerted[observation.fingerprint] = now
                     staged_state.wake_in_flight = True
                     staged_state.wake_delivery = None
                     self._set_monitor_deadline(staged, 0.0)
@@ -3104,6 +3109,9 @@ class AutoNudgeService:
                 staged_state.last_completion_fingerprint = ""
                 staged_state.consecutive_provider_errors = 0
                 staged_state.last_provider_error = None
+                staged_state.coalesce_fingerprint = ""
+                staged_state.coalesce_opened_at = 0.0
+                staged_state.coalesce_alerted = {}
             await self._persist_staged_monitor_locked(loop, staged)
             if loop.active and not state.wake_in_flight and loop.id not in self._firing:
                 self._arm_from_deadline(loop)

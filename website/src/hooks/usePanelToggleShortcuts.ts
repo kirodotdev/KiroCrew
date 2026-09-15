@@ -68,10 +68,13 @@ export function usePanelToggleShortcuts(): UsePanelToggleShortcuts {
       if (token === null) return // bare modifier — keep waiting for a real key
       const chord: Chord = { key: token }
       if (isMac ? e.metaKey : e.ctrlKey) chord.mod = true
+      // On macOS Control is a modifier of its own (`mod` is Cmd); off macOS
+      // Control is already `mod` above, so never set both.
+      if (isMac && e.ctrlKey) chord.ctrl = true
       if (e.altKey) chord.alt = true
       if (e.shiftKey) chord.shift = true
-      // Require a command/option modifier — otherwise keep waiting rather than
-      // installing a bare-key binding that would fire mid-typing.
+      // Require a command/control/option modifier — otherwise keep waiting
+      // rather than installing a bare-key binding that would fire mid-typing.
       if (!isValidChord(chord)) return
       e.preventDefault()
       e.stopPropagation()

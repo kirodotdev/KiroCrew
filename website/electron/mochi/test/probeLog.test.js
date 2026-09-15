@@ -14,7 +14,7 @@ function probeHarness() {
   let now = 0;
   const probeLog = vm.runInNewContext(
     `${source.slice(start, end)}\nprobeLog`,
-    { console: { log: (...parts) => messages.push(parts.join(" ")) }, Date: { now: () => now } },
+    { glog: (...parts) => messages.push(parts.join(" ")), Date: { now: () => now } },
   );
   return { probeLog, messages, advance: (ms) => { now += ms; } };
 }

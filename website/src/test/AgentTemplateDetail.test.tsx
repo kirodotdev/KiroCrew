@@ -570,3 +570,18 @@ describe('blueprint semantics — fork on first edit', () => {
     // the origin's skills vs the copy's degraded-to-empty skills).
     expect(await screen.findByRole('button', { name: /2 changes/ })).toBeInTheDocument()
   })
+
+  it('labels the locked pane\'s navigation with a verb, not the pane title', async () => {
+    mockApi.agentDetail.mockResolvedValue({ name: 'atlas', model: 'opus' })
+    const onCapabilities = vi.fn()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <AgentTemplateDetail template="atlas" models={['opus']} options={['atlas']} crew="crewA" onForked={vi.fn()} onSelect={vi.fn()} fieldLabel={FIELD_LABEL} readOnly onCapabilities={onCapabilities} />
+      </QueryClientProvider>,
+    )
+    const button = await screen.findByRole('button', { name: 'Edit in Capabilities' })
+    expect(screen.queryByRole('button', { name: 'Capabilities' })).toBeNull()
+    fireEvent.click(button)
+    expect(onCapabilities).toHaveBeenCalledTimes(1)
+  })

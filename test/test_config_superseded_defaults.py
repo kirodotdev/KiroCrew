@@ -46,6 +46,10 @@ LOOP_STALL_ENTRY = next(
     e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "dashboard.loop_stall_exit_after_secs"
 )
 
+SESSION_CONTROL_ENTRY = next(
+    e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "agent.session_control"
+)
+
 
 @pytest.fixture(autouse=True)
 def _forget_process_warnings():
@@ -98,6 +102,27 @@ def test_stored_old_default_is_reported_as_drift():
 
 def test_stored_current_default_is_not_drift():
     assert superseded_default_drift({"mcp_gateway": {"forward_declared_env": True}}) == []
+
+
+def test_stored_session_control_false_is_reported_but_not_adopted(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"session_control": False}})
+
+    assert superseded_default_drift(_on_disk(tmp_path)) == [SESSION_CONTROL_ENTRY]
+    cfg = KiroCrewConfig.load()
+    assert cfg.agent.session_control is False
+    assert _on_disk(tmp_path)["agent"]["session_control"] is False
+
+    issues: list[str] = []
+    SD.render_doctor_section(issues)
+    out = capsys.readouterr().out
+    assert "agent.session_control" in out
+    assert "kirocrew config defaults --adopt" in out
+    assert issues == []
 
 
 def test_absent_key_and_absent_section_are_not_drift():
@@ -673,6 +698,7 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         "stt.model",
         "mcp_gateway.forward_declared_env",
         "instances.warm_set_cap",
+        "agent.session_control",
     ):
         assert pinned not in adopting, f"{pinned}'s stored value is guaranteed elsewhere"
 

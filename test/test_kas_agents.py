@@ -21,6 +21,7 @@ from kiro_crew.acp.kas_agents import (
     KAS_MAX_CUSTOM_AGENTS,
     KasAgentTranslationError,
     build_kas_custom_agents,
+    load_agent_spec,
     resolve_prompt,
     to_client_custom_agent,
 )
@@ -413,7 +414,8 @@ class TestPromptResolution:
         (tmp_path / "kirocrew-lite.json").write_text(
             json.dumps({"name": "kirocrew-lite", "tools": [], "prompt": ""}), encoding="utf-8"
         )
-        agents = build_kas_custom_agents(tmp_path, "kirocrew-lite")
+        spec = load_agent_spec(tmp_path, "kirocrew-lite")
+        agents = build_kas_custom_agents(tmp_path, "kirocrew-lite", spec)
         assert agents[0]["prompt"] == _KAS_FALLBACK_PROMPT
         # Tool restriction is preserved — the fallback only supplies a prompt.
         assert agents[0]["tools"] == []
@@ -707,8 +709,13 @@ class TestRuntimeSuppliesTheStubbedSet:
 
         monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _a: None)
         monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: Path("/agents"))
+        # The projection is handed the spec the harness read under the gate, so the read
+        # is the harness's own and is stubbed here rather than inside the builder.
+        monkeypatch.setattr(
+            kas_agents_mod, "load_agent_spec", lambda _dir, agent: {"name": agent, "prompt": "p"}
+        )
 
-        def _capture(_dir, agent, *, stub_server_names=frozenset(), member_dispatch=False):
+        def _capture(_dir, agent, _spec, *, stub_server_names=frozenset(), member_dispatch=False):
             seen.append(stub_server_names)
             return [{"id": agent}]
 
@@ -764,4 +771,155 @@ class TestRuntimeSuppliesTheStubbedSet:
         out = await rt._kas_custom_agents("kirocrew")
 
         assert seen == [frozenset()]
-        assert out == [{"id": "kirocrew"}]
+        assert out.custom_agents == [{"id": "kirocrew"}]
+
+
+class TestSpecLookup:
+    """Which file on disk the projection reads for an ``agent_id``.
+
+    A spec's filename and its declared ``name`` are allowed to differ, and a
+    package manager that installs several agents namespaces them as
+    ``<package>-<name>.json``. ``kiro_crew.agent.agent_spec_path`` already
+    resolves those by declared name, so a filename-only lookup here fails the
+    projection on agents the config, the CLI and the dashboard all resolve.
+    """
+
+    @staticmethod
+    def _write(agents_dir: Path, filename: str, **over) -> Path:
+        path = agents_dir / filename
+        path.write_text(json.dumps(_spec(**over)), encoding="utf-8")
+        return path
+
+    def test_the_filename_match_is_read(self, tmp_path):
+        self._write(tmp_path, "kirocrew.json", description="direct")
+
+        assert load_agent_spec(tmp_path, "kirocrew")["description"] == "direct"
+
+    def test_a_namespaced_filename_resolves_by_declared_name(self, tmp_path):
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="namespaced")
+
+        assert load_agent_spec(tmp_path, "kirocrew")["description"] == "namespaced"
+
+    def test_a_declared_name_outranks_a_misnamed_direct_file(self, tmp_path):
+        """`kirocrew.json` declaring some OTHER agent must not be projected as
+        `kirocrew` while the spec that declares `kirocrew` sits beside it: that
+        would run the other agent's tools and prompt under this name. Declared
+        name first is the order `agent_spec_path` uses for the same reason."""
+        self._write(tmp_path, "kirocrew.json", name="other", description="misnamed")
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="namespaced")
+
+        assert load_agent_spec(tmp_path, "kirocrew")["description"] == "namespaced"
+
+    def test_a_direct_file_declaring_another_name_is_the_fallback(self, tmp_path):
+        """With nothing declaring the id, `<agent_id>.json` still resolves even
+        when its declared name differs -- the filename-stem fallback
+        `agent_spec_path` and config.md rung 2 describe."""
+        self._write(tmp_path, "kirocrew.json", name="other", description="stem fallback")
+
+        assert load_agent_spec(tmp_path, "kirocrew")["description"] == "stem fallback"
+
+    def test_no_match_still_names_the_direct_path(self, tmp_path):
+        """The scan must not blur the error: the operator is told which file to
+        create, not which of the dir's specs failed to match."""
+        self._write(tmp_path, "SomePackage-other.json", name="other")
+
+        with pytest.raises(KasAgentTranslationError) as exc:
+            load_agent_spec(tmp_path, "kirocrew")
+
+        assert str(tmp_path / "kirocrew.json") in str(exc.value)
+
+    def test_an_unparseable_sibling_does_not_break_the_scan(self, tmp_path):
+        """The agents dir is user-writable and shared, so a stray file is normal;
+        the hardened reader skips it and the real match is still found."""
+        (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+        (tmp_path / "list.json").write_text("[]", encoding="utf-8")
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="namespaced")
+
+        assert load_agent_spec(tmp_path, "kirocrew")["description"] == "namespaced"
+
+    def test_a_missing_agents_dir_is_a_translation_error(self, tmp_path):
+        with pytest.raises(KasAgentTranslationError):
+            load_agent_spec(tmp_path / "absent", "kirocrew")
+
+    def test_the_scanned_spec_is_used_without_a_second_read(self, tmp_path, monkeypatch):
+        """The hardened reader resolves the symlink and vets the target it lands
+        on. Reopening that path afterwards would read whatever it points at by
+        then, so the vetted parse itself has to be what the projection uses."""
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="on disk")
+        monkeypatch.setattr(
+            kas_agents,
+            "spec_by_declared_name",
+            lambda *_a, **_k: _spec(description="what the reader vetted"),
+        )
+
+        spec = load_agent_spec(tmp_path, "kirocrew")
+
+        assert spec["description"] == "what the reader vetted"
+
+    def test_two_specs_declaring_one_name_are_refused(self, tmp_path):
+        """`agent_spec_path` refuses this ambiguity because which spec is live is
+        undefined. Picking one here would project an agent the operator did not
+        name, with its tools and its prompt, and say nothing about it.
+        """
+        self._write(tmp_path, "AlphaPackage-kirocrew.json", description="alpha")
+        self._write(tmp_path, "BetaPackage-kirocrew.json", description="beta")
+
+        with pytest.raises(KasAgentTranslationError) as exc:
+            load_agent_spec(tmp_path, "kirocrew")
+
+        message = str(exc.value)
+        assert "AlphaPackage-kirocrew.json" in message
+        assert "BetaPackage-kirocrew.json" in message
+
+    def test_a_direct_file_does_not_settle_a_duplicate_declared_name(self, tmp_path):
+        """Two specs declaring the id are refused even when `<agent_id>.json`
+        exists: which of the two is live is undefined, and a misnamed direct
+        file is not a tie-breaker between them. `agent_spec_path` refuses the
+        same input."""
+        self._write(tmp_path, "kirocrew.json", name="other", description="misnamed")
+        self._write(tmp_path, "AlphaPackage-kirocrew.json", description="alpha")
+        self._write(tmp_path, "BetaPackage-kirocrew.json", description="beta")
+
+        with pytest.raises(KasAgentTranslationError) as exc:
+            load_agent_spec(tmp_path, "kirocrew")
+
+        assert "AlphaPackage-kirocrew.json" in str(exc.value)
+        assert "BetaPackage-kirocrew.json" in str(exc.value)
+
+    def test_an_unsearchable_dir_is_a_translation_error_at_the_direct_read(
+        self, tmp_path, monkeypatch
+    ):
+        """``Path.read_text`` propagates a permission error on every supported
+        version, so an agents dir the process cannot search reaches the
+        fallback read as an ``OSError``. Callers of this module handle
+        ``KasAgentTranslationError``, so an ``OSError`` escaping here aborts
+        session startup instead of failing the projection.
+        """
+
+        def _denied(_self, *_a, **_k):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "read_text", _denied)
+
+        with pytest.raises(KasAgentTranslationError) as exc:
+            load_agent_spec(tmp_path, "kirocrew")
+
+        assert str(tmp_path / "kirocrew.json") in str(exc.value)
+
+    def test_an_unsearchable_dir_is_a_translation_error_during_the_scan(
+        self, tmp_path, monkeypatch
+    ):
+        """On Python 3.12 ``Path.glob`` probes the directory with ``is_dir``
+        before walking it and propagates that error, so the scan raises even
+        though it suppresses per-entry ``scandir`` failures.
+        """
+
+        def _denied(_self, _pattern):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "glob", _denied)
+
+        with pytest.raises(KasAgentTranslationError) as exc:
+            load_agent_spec(tmp_path, "kirocrew")
+
+        assert str(tmp_path / "kirocrew.json") in str(exc.value)

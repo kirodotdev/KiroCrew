@@ -6313,6 +6313,71 @@ class TestForwarderPidHints:
         )
         assert inst.forwarder_sig != ""
 
+    @pytest.mark.asyncio
+    async def test_both_identity_writes_carry_the_same_fields(self, tmp_path, monkeypatch):
+        """``connect`` and ``_mark_recovered`` write ONE record, from one helper.
+
+        Both sites persist the same identity fields, and a field present in one
+        write but absent from the other breaks the record: an identity without
+        the ``local_port`` that ``forwarder_sig`` signs over fails its own
+        verification, so the reclaim refuses the very child the write exists to
+        record. Every other test here checks recorded VALUES, which a missing
+        field can slip past; comparing the recorded KEY SETS is what fails when
+        the two writes disagree.
+        """
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+
+        monkeypatch.setattr(stm, "_reclaim_identity_key", lambda: b"k" * 32)
+        # Pin the start time: on a host where reading it fails (a sandbox that
+        # denies the process query) it records as "" and the signing branch is
+        # skipped, so the key-set comparison below would run against a record
+        # whose signature was never computed.
+        monkeypatch.setattr(pc, "process_start_time", lambda pid: "424242")
+
+        def factory(*a, **k):
+            t = _FakeTunnel(*a, **k)
+            t.pid = os.getpid()  # live pid: the signing branch actually runs
+            return t
+
+        reg, mgr = self._mgr(tmp_path, factory=factory)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+
+        writes: list[dict] = []
+        real_update = reg.update
+
+        def recording_update(instance_id, **kwargs):
+            writes.append(kwargs)
+            return real_update(instance_id, **kwargs)
+
+        # The manager resolves self._registry.update per call, so an instance
+        # attribute is enough to observe both writes.
+        monkeypatch.setattr(reg, "update", recording_update)
+
+        await mgr.connect("cd-1")
+        await mgr._mark_recovered("cd-1")
+
+        identity_writes = [w for w in writes if "forwarder_sig" in w]
+        assert len(identity_writes) == 2, writes
+        connect_kwargs, recovered_kwargs = identity_writes
+
+        # Pinned literally rather than only compared to each other: a field
+        # dropped from BOTH sites is a regression, not agreement.
+        identity_fields = {
+            "local_port",
+            "forwarder_pid",
+            "forwarder_start",
+            "forwarder_sig",
+            "was_connected",
+        }
+        assert set(recovered_kwargs) == identity_fields
+        # connect adds its own extra and nothing else.
+        assert set(connect_kwargs) == identity_fields | {"mark_last_active"}
+        assert connect_kwargs["mark_last_active"] is True
+        # Same live tunnel both times, so the values agree as well as the keys.
+        assert {k: connect_kwargs[k] for k in identity_fields} == recovered_kwargs
+        assert recovered_kwargs["forwarder_sig"] != ""
+
 
 class TestOrphanForwarderReclaim:
     """End-to-end reclaim behavior against REAL processes holding REAL ports.

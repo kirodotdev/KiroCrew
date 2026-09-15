@@ -771,6 +771,8 @@ def _preserve_user_agent_edits(
     if kept:
         logger.info("Preserved user edits in %s: %s", name, ", ".join(sorted(kept)))
     return merged
+
+
 #: Placeholder syntax an agent template uses for a path only known at runtime.
 #:
 #: A shipped builtin's agent config is read from the immutable package root
@@ -2095,18 +2097,11 @@ def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
         # like a bare-python launch - refusing it strands the server with
         # ModuleNotFoundError. Verified through the shebang, not the name.
         _abi_shebang_interp = ""
-        if (
-            _carries_path
-            and not _abi_matched_path
-            and _deps_stamp_ok
-            and os.path.isabs(name)
-        ):
+        if _carries_path and not _abi_matched_path and _deps_stamp_ok and os.path.isabs(name):
             _cand_interp = _python_shebang_interpreter(name)
             if _cand_interp and path_command_is_abi_matched(app_root, _cand_interp):
                 _abi_shebang_interp = _cand_interp
-        if _deps_stamp_ok and (
-            not _carries_path or _abi_matched_path or _abi_shebang_interp
-        ):
+        if _deps_stamp_ok and (not _carries_path or _abi_matched_path or _abi_shebang_interp):
             env = dict(cfg.get("env") or {})
             existing = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = f"{deps_dir}{os.pathsep}{existing}" if existing else str(deps_dir)
@@ -2258,11 +2253,7 @@ def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
                     _shim_script = ""
             elif not _has_python_shebang(venv_cmd):
                 _shim_script = ""
-            if (
-                deps_dir in Path(venv_cmd).parents
-                and _deps_stamp_ok
-                and _shim_script
-            ):
+            if deps_dir in Path(venv_cmd).parents and _deps_stamp_ok and _shim_script:
                 # A deps-dir console script is pip-generated - a Python
                 # script whose shebang is the gateway interpreter, a Windows
                 # launcher pair, or an embedded-ZIP exe. Run direct, its
@@ -2448,7 +2439,11 @@ def _normalize_attached_m(args: list) -> list:
             # operand does not itself start with a dash - drop the
             # separator so the walker shims the script. An operand that DOES
             # start with a dash needs the `--` and stays unshimmable.
-            if i + 1 < len(args) and isinstance(args[i + 1], str) and not args[i + 1].startswith("-"):
+            if (
+                i + 1 < len(args)
+                and isinstance(args[i + 1], str)
+                and not args[i + 1].startswith("-")
+            ):
                 return [*out, *args[i + 1 :]]
             return [*out, *args[i:]]
         if arg.startswith(("-m", "-c")) and len(arg) > 2:
@@ -2488,9 +2483,7 @@ def _py_target_index(args: list) -> int | None:
             # operand starts with a dash): inserting the shim after `--`
             # would be read as a FILENAME, not an option - unshimmable.
             return None
-        if arg == "-x" or (
-            arg.startswith("-") and not arg.startswith("--") and "x" in arg[1:]
-        ):
+        if arg == "-x" or (arg.startswith("-") and not arg.startswith("--") and "x" in arg[1:]):
             # -x tells CPython to SKIP THE FIRST LINE of the script it
             # launches. Inserting the shim makes deps_boot that script, and
             # its first line opens the module docstring - the interpreter
@@ -2895,7 +2888,8 @@ def scrub_backend_mcp_url(app_name: str, unreconciled: list[str] | None = None) 
                 "could not be read. Its materialized agents are KEPT and may still name "
                 "the removed server until a refresh with a readable manifest rewrites "
                 "them.",
-                removed, app_name,
+                removed,
+                app_name,
             )
         return []
     # `_register_mcp_servers` directly, NOT `reregister_app_mcp_servers`: the latter also
@@ -3314,5 +3308,10 @@ def deregister_app(app_name: str) -> RegistrationResult:
     except Exception as exc:
         result.errors.append(f"MCP server deregistration failed: {exc}")
 
+    # No worker re-derive here, deliberately. This file is one of SIX writers of
+    # `kirocrew.json` under two different file locks, so a re-derive per writer leaks
+    # one hole per writer nobody named. `agent.require_fresh_derived_spec` refuses a
+    # stale mirror on the SPAWN path instead, which covers every writer including the
+    # ones this module does not own -- and cannot lose the race a post-write hook can.
     logger.info("Deregistered app %s", app_name)
     return result

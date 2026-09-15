@@ -37,7 +37,40 @@ kirocrew pod ls          # should be empty (torn down)
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5476/api/sessions   # live plane still alive
 ```
 
-## The interface — `kirocrew pod` CLI
+## The interface — pod tools if you are an agent, the CLI if you are a human
+
+**If you are an agent session, reach for the `pod_up` / `pod_down` / `pod_status`
+/ `pod_ls` MCP tools before a shell.** A pod is a systemd `--user` unit, so every
+pod verb needs the systemd user bus. Whether your shell can reach that bus depends
+on the sandbox your session runs behind: under Kiro Crew's own sandbox it can (see
+`security.md`, "Scoped user-bus locator forward"), but behind an outer sandbox with
+its own user namespace it cannot, and `kirocrew pod up` then fails with
+`Permission denied`. `systemctl --user is-system-running` tells you which case you
+are in. The tools work either way -- the gateway holds the host bus and does the
+systemd part -- so they are the portable choice, and the only one on a host that
+denies you the bus.
+
+```
+pod_up     {"worktree": "<wt>"}   -> {base_url, token, port, ttl}
+pod_status {"worktree": "<wt>"}   -> status + port + health
+pod_ls     {}                     -> every pod active on this host
+pod_down   {"worktree": "<wt>"}   -> stopped, HOME reclaimed
+```
+
+Provisioning is not one of them: a cold venv plus an SPA build is minutes of work,
+and a single blocking tool call for that dies to any timeout with no way to learn
+the outcome. An unbuilt worktree is refused with the CLI's own remedy in the
+message; run `kirocrew pod provision <wt>` or use the Dev Fleet page's Provision
+button, which streams its output.
+
+Everything after step 1 below -- curl against the handle, drive the SPA with
+Playwright, read the screenshots -- is unaffected: those are ordinary loopback
+HTTP, which a sandbox does not block. Only the systemd control path is walled off.
+
+The tools need the Dev Fleet app enabled; a disabled app refuses with
+`app_not_enabled`.
+
+The CLI is the same operations for a human at a terminal:
 
 ```bash
 # 1. bring the pod up, get a handle (JSON: base_url + token + port)
@@ -56,6 +89,8 @@ kirocrew pod down <wt>
 
 Other verbs: `ls` (list running pods) · `status <wt>` · `token <wt>` · `url <wt>`
 · `logs <wt>` · `provision <wt>`. Run `kirocrew pod --help` for the full list.
+`token`, `url`, `logs` and `provision` have no tool of their own yet: `pod_up`
+already returns the token and url, and pod logs stay a human-facing read.
 
 **Isolation guarantees** (enforced by the pod runtime):
 own `KIROCREW_HOME`, own port, **no tunnel** (can't grab the real Slack identity),
@@ -110,7 +145,11 @@ full suite.
 
 1. **up** — `kirocrew pod up <wt> --json`. If already active, reuses it (and
    won't stop it on exit). Boots the worktree's own gateway with `--no-crons`,
-   blank-seed DB, isolated HOME.
+   blank-seed DB, isolated HOME. If this phase fails with `gateway still
+   starting after Ns` in `pod-up.log`, the gateway was alive but slower than
+   the health-wait budget (default 90s): re-run with
+   `KIROCREW_POD_HEALTH_SECS=<higher>` exported — the harness passes its
+   environment through to the `pod up` it spawns.
 2. **health** — polls `kirocrew pod status <wt> --json` until its `health` is
    200/401/403 (≤60s). Deliberately not a bare `curl base_url/api/health`: a
    derived port is routinely held by another pod or by the live gateway, every

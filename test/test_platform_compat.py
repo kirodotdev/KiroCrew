@@ -1984,7 +1984,7 @@ class TestProcessDescendants:
         }
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(parent_maps))
-        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 9001)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: 9001)
         monkeypatch.setattr(
             pc,
             "_windows_process_handle_identity",
@@ -2007,7 +2007,7 @@ class TestProcessDescendants:
         }
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(parent_maps))
-        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 9001)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: 9001)
         monkeypatch.setattr(
             pc,
             "_windows_process_handle_identity",
@@ -2017,6 +2017,353 @@ class TestProcessDescendants:
 
         assert pc.descendant_termination_handles(100, {}, 8001) == {}
         assert closed == [9001]
+
+    @pytest.mark.parametrize(
+        "scenario",
+        [
+            "unopenable_live",
+            "unopenable_vanished",
+            "unopenable_snapshot_error",
+            "partial_open_error",
+            "first_identity_unreadable",
+            "retained_identity_unreadable",
+            "vanished_parent_live_child",
+        ],
+    )
+    def test_windows_descendant_snapshot_must_account_for_every_candidate(
+        self, monkeypatch, scenario
+    ):
+        first_map = {101: 100, 102: 100}
+        second_map = dict(first_map)
+        identities = {8001: (100, 10, None), 9001: (101, 20, None)}
+        retained = {101: 9001} if scenario == "retained_identity_unreadable" else {}
+        if scenario in {"unopenable_vanished", "vanished_parent_live_child"}:
+            second_map.pop(102)
+        if scenario == "vanished_parent_live_child":
+            first_map[101] = second_map[101] = 102
+        if scenario in {"first_identity_unreadable", "retained_identity_unreadable"}:
+            identities.pop(9001)
+            identities[9002] = (102, 30, None)
+        scans = 0
+        closed: list[int] = []
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            if scans > 1 and scenario == "unopenable_snapshot_error":
+                raise OSError("fresh snapshot unavailable")
+            return first_map if scans == 1 else second_map
+
+        def open_handle(child_pid, **_kwargs):
+            if child_pid == 101:
+                return 9001
+            if scenario == "partial_open_error":
+                raise OSError("opening failed")
+            return 9002 if 9002 in identities else None
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", open_handle)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", identities.get)
+        # Query denial can produce False; it must not certify disappearance.
+        monkeypatch.setattr(pc, "pid_exists", lambda _pid: False)
+        monkeypatch.setattr(pc, "_windows_process_query_diagnostic", lambda _pid: "identity=None")
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+
+        if scenario == "unopenable_vanished":
+            assert pc.descendant_termination_handles(100, retained, 8001) == {101: 9001}
+            assert scans >= 2
+            assert closed == []
+        else:
+            with pytest.raises(OSError):
+                pc.descendant_termination_handles(100, retained, 8001)
+            expected_closed = [9001] if not retained else []
+            if 9002 in identities:
+                expected_closed.append(9002)
+            assert sorted(closed) == expected_closed
+        assert 8001 not in closed
+        if retained:
+            assert 9001 not in closed
+
+    @pytest.mark.parametrize("partial_open", [False, True])
+    @pytest.mark.parametrize("descendants", [{}, {103: 102}, {103: 102, 104: 103}])
+    def test_windows_vanished_unopened_parent_cannot_hide_new_descendants(
+        self, monkeypatch, partial_open, descendants
+    ):
+        first_map = {102: 100, 105: 100}
+        fresh_map = {105: 100, **descendants}
+        retained = {105: 9005}
+        identities = {8001: (100, 10, None), 9005: (105, 20, None)}
+        if partial_open:
+            first_map[101] = fresh_map[101] = 100
+            identities[9001] = (101, 20, None)
+        scans = 0
+        opened: list[int] = []
+        closed: list[int] = []
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            assert scans <= (2 if descendants or not partial_open else 3)
+            return first_map if scans == 1 else fresh_map
+
+        def open_handle(child_pid, **_kwargs):
+            opened.append(child_pid)
+            assert child_pid in {101, 102}, "fresh PIDs must not acquire kill authority"
+            return 9001 if child_pid == 101 else None
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", open_handle)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", identities.get)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        if descendants:
+            with pytest.raises(OSError, match="vanished unopened parents") as exc:
+                pc.descendant_termination_handles(100, retained, 8001)
+            assert "103" in str(exc.value) and "102" in str(exc.value)
+            assert closed == ([9001] if partial_open else [])
+        else:
+            assert pc.descendant_termination_handles(100, retained, 8001) == (
+                {101: 9001} if partial_open else {}
+            )
+            assert closed == []
+        assert opened == ([101, 102] if partial_open else [102])
+        assert scans == (2 if descendants or not partial_open else 3)
+        assert 8001 not in closed and 9005 not in closed
+
+    def test_windows_vanished_unopened_parent_diagnostic_ids_are_bounded(self, monkeypatch):
+        first_map = {child: 100 for child in range(101, 111)}
+        fresh_map = {child + 100: child for child in first_map}
+        maps = iter((first_map, fresh_map))
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(maps))
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: None)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+        with pytest.raises(OSError, match="vanished unopened parents") as exc:
+            pc.descendant_termination_handles(100, {}, 8001)
+        message = str(exc.value)
+        assert "total=10" in message
+        assert "[(201, 101), (202, 102), (203, 103)]" in message
+        assert "204" not in message and "104" not in message
+
+    @pytest.mark.parametrize("outcome", ["live", "vanished", "snapshot_error"])
+    def test_windows_only_unopenable_child_requires_fresh_absence(self, monkeypatch, outcome):
+        scans = 0
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            if scans > 1:
+                if outcome == "snapshot_error":
+                    raise OSError("fresh snapshot unavailable")
+                if outcome == "vanished":
+                    return {}
+            return {101: 100}
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: None)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+        monkeypatch.setattr(pc, "pid_exists", lambda _pid: False)
+        monkeypatch.setattr(pc, "_windows_process_query_diagnostic", lambda _pid: "identity=None")
+        if outcome == "vanished":
+            assert pc.descendant_termination_handles(100, {}, 8001) == {}
+        else:
+            with pytest.raises(OSError):
+                pc.descendant_termination_handles(100, {}, 8001)
+        assert scans == 2
+
+    @pytest.mark.parametrize(
+        "scenario, expected",
+        [
+            ("exited", {101, 102}),
+            ("retained", {102}),
+            ("early_exit", {101}),
+            ("equal_exit", {101}),
+            ("still_live", set()),
+            ("unreadable", set()),
+            ("recycled_intermediate", set()),
+            ("recycled_root", set()),
+            ("recycled_child", {101}),
+            ("changed_exit", set()),
+            ("retained_early_exit", set()),
+            ("changed_parent", {101}),
+            ("missing_live_child", set()),
+            ("stale_first_edge", {101}),
+            ("snapshot_error", set()),
+        ],
+    )
+    def test_windows_observed_chain_survives_intermediate_exit(
+        self, monkeypatch, scenario, expected
+    ):
+        # Both handles are pinned while the first map still contains 100->101->102.
+        # The second map loses 101, not the proof that 102 was its genuine child.
+        first_map = {101: 100, 102: 101}
+        second_map = {102: 101}
+        first_ids = {8001: (100, 10, None), 9001: (101, 20, None), 9002: (102, 30, None)}
+        second_ids = {**first_ids, 9001: (101, 20, 40)}
+        if scenario in {"early_exit", "retained_early_exit"}:
+            second_ids[9001] = (101, 20, 25)
+        elif scenario == "equal_exit":
+            second_ids[9001] = (101, 20, 30)
+        elif scenario == "still_live":
+            second_ids[9001] = first_ids[9001]
+        elif scenario == "unreadable":
+            second_ids.pop(9001)
+        elif scenario == "recycled_intermediate":
+            second_ids[9001] = (101, 21, 40)
+            second_map[101] = 100
+        elif scenario == "recycled_root":
+            second_ids[8001] = (100, 11, None)
+            second_map[101] = 100
+        elif scenario == "recycled_child":
+            second_ids[9002] = (102, 31, None)
+            second_map[101] = 100
+        elif scenario == "changed_exit":
+            first_ids[9001] = (101, 20, 35)
+        elif scenario == "changed_parent":
+            second_map[102] = 999
+        elif scenario == "missing_live_child":
+            second_map.clear()
+        elif scenario == "stale_first_edge":
+            first_ids[9002] = second_ids[9002] = (102, 15, None)
+        scans = 0
+        closed: list[int] = []
+        opened: list[int] = []
+        retained = {101: 9001} if scenario in {"retained", "retained_early_exit"} else {}
+
+        def parent_map():
+            nonlocal scans
+            scans += 1
+            if scans == 2 and scenario == "snapshot_error":
+                raise OSError("second snapshot failed")
+            return first_map if scans == 1 else second_map
+
+        def open_handle(child_pid, **_kwargs):
+            opened.append(child_pid)
+            return {101: 9001, 102: 9002}[child_pid]
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", parent_map)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", open_handle)
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            lambda handle: (first_ids if scans < 2 else second_ids).get(handle),
+        )
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        if scenario in {"snapshot_error", "unreadable", "still_live", "missing_live_child"}:
+            with pytest.raises(OSError):
+                pc.descendant_termination_handles(100, retained, 8001)
+        else:
+            result = pc.descendant_termination_handles(100, retained, 8001)
+            assert result == {
+                child_pid: {101: 9001, 102: 9002}[child_pid] for child_pid in expected
+            }
+        assert opened == ([102] if retained else [101, 102])
+        assert sorted(closed) == sorted(
+            {101: 9001, 102: 9002}[child_pid] for child_pid in set(opened) - expected
+        )
+        # Neither a retained handle nor the root transfers ownership on rejection.
+        assert 8001 not in closed
+        if retained:
+            assert 9001 not in closed
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows process handles only")
+    def test_native_observed_grandchild_survives_snapshot_gap(self, monkeypatch, tmp_path):
+        # Use the base interpreter, not the Windows venv redirector's extra PID.
+        python = getattr(sys, "_base_executable", sys.executable)
+        leaf_code = (
+            "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); "
+            "(p/'ready').write_text('ready'); deadline=time.monotonic()+30\n"
+            "while not (p/'abort').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+        )
+        middle_code = (
+            "import pathlib,subprocess,sys,time; p=pathlib.Path(sys.argv[1]); "
+            "child=subprocess.Popen([sys.executable,'-c',sys.argv[2],str(p)]); "
+            "(p/'leaf').write_text(str(child.pid)); deadline=time.monotonic()+20\n"
+            "while not (p/'exit').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+            "if (p/'abort').exists(): child.kill(); child.wait(timeout=5)\n"
+        )
+        root_code = (
+            "import pathlib,subprocess,sys,time; p=pathlib.Path(sys.argv[1]); "
+            "child=subprocess.Popen([sys.executable,'-c',sys.argv[2],str(p),sys.argv[3]]); "
+            "(p/'middle').write_text(str(child.pid)); child.wait(timeout=25); time.sleep(30)"
+        )
+        root = subprocess.Popen(
+            [python, "-c", root_code, str(tmp_path), middle_code, leaf_code],
+            creationflags=pc.CREATE_NEW_PROCESS_GROUP,
+        )
+        cleanup: dict[int, int] = {}
+        handles: dict[int, int] = {}
+        try:
+            # Pin our own objects separately so a regression dropping returned
+            # handles cannot strand the native fixture's processes in teardown.
+            deadline = time.monotonic() + 10
+            while not all(
+                (tmp_path / name).exists() and (tmp_path / name).stat().st_size
+                for name in ("middle", "leaf", "ready")
+            ):
+                assert time.monotonic() < deadline, "owned process chain did not start"
+                time.sleep(0.01)
+            middle = int((tmp_path / "middle").read_text())
+            leaf = int((tmp_path / "leaf").read_text())
+            for child_pid in (root.pid, middle, leaf):
+                handle = pc._open_process_termination_handle(child_pid)
+                assert handle is not None
+                cleanup[child_pid] = handle
+            snapshot = pc._windows_process_parent_map
+            scans = 0
+
+            def parent_map():
+                nonlocal scans
+                scans += 1
+                if scans == 2:
+                    (tmp_path / "exit").write_text("exit", encoding="utf-8")
+                    deadline = time.monotonic() + 5
+                    while pc.process_handle_active(cleanup[middle]):
+                        assert time.monotonic() < deadline, "owned intermediary did not exit"
+                        time.sleep(0.01)
+                result = snapshot()
+                if scans == 1:
+                    assert result[middle] == root.pid and result[leaf] == middle
+                else:
+                    # Exit status can precede removal from Toolhelp. Wait for
+                    # the snapshot gap this fixture intends to exercise.
+                    deadline = time.monotonic() + 5
+                    while middle in result and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                        result = snapshot()
+                    assert middle not in result and result[leaf] == middle
+                return result
+
+            monkeypatch.setattr(pc, "_windows_process_parent_map", parent_map)
+            handles = pc.descendant_termination_handles(root.pid, {}, cleanup[root.pid])
+            assert leaf in handles
+            assert pc.process_handle_active(handles[leaf])
+            assert pc.terminate_process_handle(handles[leaf])
+            deadline = time.monotonic() + 5
+            while pc.process_handle_active(cleanup[leaf]):
+                assert time.monotonic() < deadline, "retained grandchild did not terminate"
+                time.sleep(0.01)
+        finally:
+            # Kill only objects this test spawned, never services or a PID tree.
+            (tmp_path / "abort").touch()
+            (tmp_path / "exit").touch()
+            try:
+                for handle in cleanup.values():
+                    if pc.process_handle_active(handle):
+                        pc.terminate_process_handle(handle)
+                if root.poll() is None:
+                    root.kill()
+                root.wait(timeout=5)
+                deadline = time.monotonic() + 5
+                while any(pc.process_handle_active(handle) for handle in cleanup.values()):
+                    assert time.monotonic() < deadline, "owned fixture process survived cleanup"
+                    time.sleep(0.01)
+            finally:
+                for handle in (*handles.values(), *cleanup.values()):
+                    pc.close_process_handle(handle)
 
     @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows process handles only")
     def test_retained_handle_targets_original_windows_child(self):
@@ -5000,3 +5347,211 @@ class TestOwnerOnlyDaclMatchesIsConservative:
             pc.windows_acl.owner_only_dacl_matches(tmp_path, inherit=True, sids=("S-1-3-4",))
             is False
         )
+
+
+class TestWindowsDescendantFailureDiagnostics:
+    @staticmethod
+    def kernel(monkeypatch, open_result=0, exception=None):
+        class Call:
+            def __init__(self, fn):
+                self.fn = fn
+
+            def __call__(self, *args):
+                return self.fn(*args)
+
+        calls = []
+
+        def open_process(access, inherit, pid):
+            calls.append((access, inherit, pid))
+            if exception is not None:
+                raise exception
+            return open_result
+
+        kernel = types.SimpleNamespace(OpenProcess=Call(open_process))
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: kernel, raising=False)
+        return calls
+
+    @pytest.mark.parametrize("error", [5, 87])
+    def test_opener_captures_immediate_native_error(self, monkeypatch, error):
+        calls = self.kernel(monkeypatch)
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: error)
+        failure = []
+        assert pc._open_process_termination_handle(101, failure=failure) is None
+        assert failure == [f"winerror={error}"]
+        assert calls == [(0x101001, False, 101)]
+
+    def test_opener_records_exception_type_not_sensitive_text(self, monkeypatch):
+        self.kernel(monkeypatch, exception=RuntimeError("sensitive-secret"))
+        failure = []
+        assert pc._open_process_termination_handle(101, failure=failure) is None
+        assert failure == ["exception=RuntimeError"]
+
+    def test_success_does_not_collect_diagnostics(self, monkeypatch):
+        self.kernel(monkeypatch, open_result=9001)
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: pytest.fail("not a failure"))
+        failure = []
+        assert pc._open_process_termination_handle(101, failure=failure) == 9001
+        assert failure == []
+
+    @pytest.mark.parametrize("identity", [(101, 20, None), (101, 20, 30), None])
+    def test_query_handle_is_query_only_and_always_closed(self, monkeypatch, identity):
+        calls = self.kernel(monkeypatch, open_result=9002)
+        closed = []
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: identity)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        assert pc._windows_process_query_diagnostic(101) == f"identity={identity}"
+        assert calls == [(0x1000, False, 101)]
+        assert closed == [9002]
+
+    def test_query_exception_is_sanitized_and_handle_closed(self, monkeypatch):
+        self.kernel(monkeypatch, open_result=9002)
+        closed = []
+
+        def unreadable(_handle):
+            raise RuntimeError("sensitive-secret")
+
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", unreadable)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        assert pc._windows_process_query_diagnostic(101) == "exception=RuntimeError"
+        assert closed == [9002]
+
+    def test_query_denial_is_unknown_not_death(self, monkeypatch):
+        self.kernel(monkeypatch)
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: 5)
+        assert pc._windows_process_query_diagnostic(101) == "winerror=5"
+
+    @pytest.mark.parametrize(
+        "query",
+        ["identity=(101, 20, 30)", "identity=(101, 20, None)", "winerror=5", "identity=None"],
+    )
+    def test_still_present_candidate_always_refuses_with_bounded_evidence(self, monkeypatch, query):
+        scans = 0
+        queried = []
+        closed = []
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            return {101: 102, 102: 100, 999: 1}
+
+        def open_handle(_pid, *, failure=None):
+            failure.append("winerror=5")
+            return None
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", open_handle)
+        monkeypatch.setattr(
+            pc, "_windows_process_handle_identity", {8001: (100, 10, None), 9001: (102, 15, 40)}.get
+        )
+        monkeypatch.setattr(
+            pc, "_windows_process_query_diagnostic", lambda pid: queried.append(pid) or query
+        )
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        with pytest.raises(OSError, match="Windows descendant handles unavailable") as exc:
+            pc.descendant_termination_handles(100, {102: 9001}, 8001)
+        text = str(exc.value)
+        assert "open=winerror=5" in text
+        assert "first_chain=[101, 102, 100]" in text
+        assert "fresh_chain=[101, 102, 100]" in text
+        assert "100: (100, 10, None)" in text
+        assert "102: (102, 15, 40)" in text
+        assert query in text
+        assert "999" not in text
+        assert queried == [101]
+        assert closed == []
+        assert scans == 2
+
+    def test_diagnostic_failure_cannot_replace_refusal(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: {101: 100})
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _p, **_k: None)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+
+        def broken(*_a, **_k):
+            raise RuntimeError("sensitive-secret")
+
+        monkeypatch.setattr(pc, "_windows_descendant_failure_details", broken)
+        with pytest.raises(
+            OSError, match="Windows descendant handles unavailable: \\[101\\]"
+        ) as exc:
+            pc.descendant_termination_handles(100, {}, 8001)
+        assert "sensitive-secret" not in str(exc.value)
+
+    def test_error_survives_later_snapshot_and_query_calls(self, monkeypatch):
+        calls = self.kernel(monkeypatch)
+        error = [5]
+        scans = [0]
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: error[0])
+
+        def snapshot():
+            scans[0] += 1
+            error[0] = 5 if scans[0] == 1 else 87
+            return {101: 100}
+
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+        with pytest.raises(OSError) as exc:
+            pc.descendant_termination_handles(100, {}, 8001)
+        assert "open=winerror=5" in str(exc.value)
+        assert "query_unvalidated=winerror=87" in str(exc.value)
+        assert calls == [(0x101001, False, 101), (0x1000, False, 101)]
+
+    def test_diagnostics_bound_candidates_and_ancestry(self, monkeypatch):
+        queried = []
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_query_diagnostic",
+            lambda pid: queried.append(pid) or "identity=None",
+        )
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+        parents = {pid: pid + 1 for pid in range(101, 140)}
+        details = pc._windows_descendant_failure_details(
+            {101, 110, 120, 130}, parents, parents, {100: 8001}, (100, 10, None), {}
+        )
+        assert queried == [101, 110, 120]
+        assert "total=4" in details
+        assert "first_chain=[101, 102, 103, 104, 105, 106, 107, 108]" in details
+        assert "109" not in details
+        assert "130" not in details
+        assert len(details) < 1500
+
+    @pytest.mark.parametrize("vanished", [True, False])
+    def test_success_never_queries_or_logs_diagnostics(self, monkeypatch, caplog, vanished):
+        scans = [0]
+        closed = []
+
+        def snapshot():
+            scans[0] += 1
+            return {} if vanished and scans[0] > 1 else {101: 100}
+
+        def forbidden(*_a, **_k):
+            pytest.fail("successful discovery must not run diagnostics")
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(
+            pc, "_open_process_termination_handle", lambda _p, **_k: None if vanished else 9001
+        )
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            {8001: (100, 10, None), 9001: (101, 20, None)}.get,
+        )
+        monkeypatch.setattr(pc, "_windows_descendant_failure_details", forbidden)
+        monkeypatch.setattr(pc, "_windows_process_query_diagnostic", forbidden)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        assert pc.descendant_termination_handles(100, {}, 8001) == ({} if vanished else {101: 9001})
+        assert closed == []
+        assert caplog.records == []
+
+    def test_failure_evidence_sink_cannot_change_opener_result(self, monkeypatch):
+        self.kernel(monkeypatch)
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: 5)
+
+        class BrokenList(list):
+            def append(self, _item):
+                raise RuntimeError("sensitive-secret")
+
+        assert pc._open_process_termination_handle(101, failure=BrokenList()) is None

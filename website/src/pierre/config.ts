@@ -110,10 +110,23 @@ export const PIERRE_WORKER_POOL_SIZE = 4
  * fully changed lines at ~20 ms on a normal host, leaving headroom under a
  * 100 ms long-task budget at 4x CPU slowdown; 1,000 lines already takes ~120 ms
  * before React rendering or highlighting. The UTF-16 code-unit ceiling is cheap
- * enough to run while editing and bounds wide JavaScript strings before a broken
- * worker pool can move Shiki onto that thread. */
+ * enough to run while editing and bounds unusually wide JavaScript strings. */
 export const PIERRE_FILE_PAIR_MAX_LINES_PER_SIDE = 400
 export const PIERRE_FILE_PAIR_MAX_TOTAL_CODE_UNITS = 128 * 1024
+
+/** Worker bootstrap loads WASM, themes, and languages and gets a wider budget
+ * than ordinary render requests so a slow cold host does not exhaust recovery. */
+export const PIERRE_WORKER_INITIALIZATION_TIMEOUT_MS = 120_000
+
+/** A worker receives one render request at a time. If it has not answered within
+ * this window, recycle the complete manager so sibling requests cannot queue. */
+export const PIERRE_WORKER_REQUEST_TIMEOUT_MS = 30_000
+
+/** Short retries cover transient crashes; repeated failures open a cooldown. */
+export const PIERRE_WORKER_RETRY_DELAYS_MS = [250, 1_000] as const
+export const PIERRE_WORKER_COOLDOWN_MS = 30_000
+export const PIERRE_WORKER_STABLE_AFTER_MS = 60_000
+
 /** Which regex engine the highlight workers tokenize with.
  *
  *  Pierre defaults to `shiki-js`, which runs TextMate grammar patterns through

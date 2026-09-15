@@ -24,11 +24,13 @@ import threading
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from fnmatch import fnmatch
 from pathlib import Path
+from sqlite3 import Error as StdlibSQLiteError
 from typing import Callable, Literal, cast
 from uuid import uuid4
 
@@ -64,12 +66,14 @@ from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, memory_v2, platform_compat
 from kiro_crew.config import live
 from kiro_crew.config.loader import config_dir
+from kiro_crew.lesson_validation import contains_volatile_lesson_fact
 from kiro_crew.memory_stores import MEMORY_DB_FILE
 from kiro_crew.metrics.db_metrics import timed
 from kiro_crew.project_scope import (
     canonical_scope,
     project_scope_satisfied,
     scope_is_admissible,
+    scope_selector_is_inadmissible,
 )
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES, normalize_lesson_category
@@ -88,6 +92,17 @@ from kiro_crew.vector_memory_constants import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _EmbeddingVector(list[float]):
+    """An inference result bound to the database space observed before inference."""
+
+    def __init__(
+        self, values: list[float], token: tuple[str | None, str], *, managed: bool = False
+    ):
+        super().__init__(values)
+        self.space_token = token
+        self.managed = managed
 
 
 @dataclass(frozen=True)
@@ -720,6 +735,57 @@ def _lesson_display_text(decoded: object) -> str:
             return f"{rule.strip()}{_LESSON_NEGATIVE_SEP}{negative.strip()}"
         return rule.strip()
     return ""
+
+
+def _lesson_fields_for_row(decoded: object, key: str) -> tuple[str, str | None] | None:
+    """Extract fields from either stored lesson shape without guessing.
+
+    Mapping rows already separate the rule and NOT-clause. Legacy strings store
+    them in-band, where a rule can itself contain the separator. Try each boundary
+    through ``_split_stored``; that helper accepts one only when the row's key proves
+    the prefix is the original rule. A row keyed by another writer stays one rule,
+    preserving the old fail-safe behavior for ambiguous imports and migrations.
+    """
+    fields = _lesson_fields(decoded)
+    if fields is not None:
+        return fields
+    if not isinstance(decoded, str) or not decoded.strip():
+        return None
+    text = decoded.strip()
+    idx = text.find(_LESSON_NEGATIVE_SEP)
+    while idx != -1:
+        candidate = text[:idx].strip()
+        if candidate:
+            base, stored_clause = _split_stored(text, candidate.lower(), key)
+            if base is not None and stored_clause:
+                negative = text[idx + len(_LESSON_NEGATIVE_SEP) :].strip() or None
+                return base, negative
+        idx = text.find(_LESSON_NEGATIVE_SEP, idx + 1)
+    return text, None
+
+
+def _renderable_lesson_text(decoded: object, key: str) -> str:
+    """Return prompt text only for a row that may count as lesson population.
+
+    Population and rendering must reject the same malformed, withheld, and
+    volatile legacy rows. Otherwise a row that renders nothing can still make the
+    vector store authoritative and silently suppress valid JSONL lessons.
+    Repository scope is applied later because a valid out-of-project row still
+    proves that the vector store is populated. The row key safely separates a
+    legacy string's rule from its in-band NOT-clause before validation.
+    """
+    text = _lesson_display_text(decoded)
+    if not text:
+        return ""
+    fields = _lesson_fields_for_row(decoded, key)
+    if fields is None:
+        return ""
+    rule, negative = fields
+    if contains_volatile_lesson_fact(rule, negative):
+        return ""
+    if _lesson_scope_unusable(decoded):
+        return ""
+    return text
 
 
 def _lesson_embed_text(decoded: object) -> str:
@@ -2317,39 +2383,14 @@ class VectorMemoryStore:
             vec = self._try_embed(f"{key} {value_json}", PRIORITY_BULK)
             if vec:
                 blob = struct.pack(f"{len(vec)}f", *vec)
-                with self._db_lock:
-                    if self._space_generation == embed_generation:
-                        # Best-effort: the semantic row is already committed, so
-                        # a failure persisting this derived vector (disk full,
-                        # I/O error) must not escape as a failed write — callers
-                        # batch many keys per call, and an exception raised after
-                        # a successful commit would discard every remaining item
-                        # in the batch. The row stays NULL and the backfill sweep
-                        # repairs it.
-                        try:
-                            self.db.execute(
-                                f"UPDATE {self._sem_rel} SET embedding = ? "
-                                f"WHERE key = ? AND value_json = ? AND is_deleted = 0"
-                                f"{self._sem_guard}",
-                                (blob, key, value_json),
-                            )
-                            self.db.commit()
-                        except Exception:
-                            logger.warning(
-                                "Embedding persist failed for %r (semantic write kept; "
-                                "vector left NULL for backfill)",
-                                key,
-                                exc_info=True,
-                            )
-                            try:
-                                self.db.rollback()
-                            except Exception:
-                                logger.debug(
-                                    "Rollback after failed embedding persist failed",
-                                    exc_info=True,
-                                )
-                    else:
-                        logger.debug("Dropping a semantic embedding produced in a previous space")
+                with self._vector_commit(vec, best_effort=True) as current:
+                    if current and self._space_generation == embed_generation:
+                        self.db.execute(
+                            f"UPDATE {self._sem_rel} SET embedding = ? "
+                            f"WHERE key = ? AND value_json = ? AND is_deleted = 0"
+                            f"{self._sem_guard}",
+                            (blob, key, value_json),
+                        )
 
         # 9. Retire conflicting episodic entries that reference the old value
         # (called outside the lock — _retire_stale_episodic does a blocking embed
@@ -2401,8 +2442,22 @@ class VectorMemoryStore:
             )
         return True
 
-    def delete_semantic(self, key: str, source: str) -> bool:
-        """Tombstone a semantic memory entry with its full prior revision."""
+    def delete_semantic(
+        self, key: str, source: str, *, expect_value_json: str | None = None
+    ) -> bool:
+        """Tombstone a semantic memory entry with its full prior revision.
+
+        Pass *expect_value_json* to make this a COMPARE-AND-DELETE: the row is
+        tombstoned only while its stored body is still that value, and the answer is
+        ``False`` when it is not. The comparison rides in the UPDATE rather than a
+        read before it, so no writer can land between the two -- ``_db_lock`` orders
+        this process alone, and a second process on the same database file is exactly
+        the writer a caller passing this argument is protecting. Same contract the
+        lazy embedding backfill applies to its own UPDATE, for the same reason.
+
+        A caller that omits it deletes whatever is stored under *key*, which is what
+        an explicit forget wants.
+        """
         now = _now_iso()
         with self._db_lock, self.db:
             row = self.db.execute(
@@ -2410,10 +2465,19 @@ class VectorMemoryStore:
             ).fetchone()
             if row is None:
                 return False
-            self.db.execute(
-                f"UPDATE {self._sem_rel} SET is_deleted=1, updated_at=? WHERE key=?{self._sem_guard}",
-                (now, key),
+            guard = "" if expect_value_json is None else " AND value_json = ?"
+            params: tuple[object, ...] = (
+                (now, key) if expect_value_json is None else (now, key, expect_value_json)
             )
+            cursor = self.db.execute(
+                f"UPDATE {self._sem_rel} SET is_deleted=1, updated_at=? "
+                f"WHERE key=?{guard}{self._sem_guard}",
+                params,
+            )
+            if not cursor.rowcount:
+                # The body moved under the guard, so nothing was tombstoned and
+                # there is no mutation to record.
+                return False
             self._record_mutation(
                 "directive" if key.startswith("lesson.") else "fact",
                 key,
@@ -3081,7 +3145,7 @@ class VectorMemoryStore:
         # local work. FAISS add + _faiss_id_map.append MUST stay atomic together:
         # a reader that sees index.ntotal == N+1 while len(id_map) == N would
         # IndexError (or the concurrent add/search would corrupt the C++ index).
-        with self._db_lock:
+        with self._embedding_config_guard(embedding), self._db_lock:
             if embedding_blob is not None and self._space_generation != embed_generation:
                 # A model swap landed between the embed and this lock. Persist NULL
                 # rather than a vector from the previous space — the backfill at the
@@ -3172,6 +3236,8 @@ class VectorMemoryStore:
                 now = _now_iso()
                 self.db.execute("BEGIN IMMEDIATE")
                 try:
+                    if not self._embedding_current(embedding):
+                        embedding_blob = None
                     active_count = self.db.execute(
                         "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted = 0"
                     ).fetchone()[0]
@@ -3204,6 +3270,9 @@ class VectorMemoryStore:
                 mem_id = str(uuid4())
                 now = _now_iso()
                 with self.db:
+                    self.db.execute("BEGIN IMMEDIATE")
+                    if not self._embedding_current(embedding):
+                        embedding_blob = None
                     self.db.execute(
                         memory_schema.episodic_insert(self._lineage),
                         memory_schema.episodic_insert_params(
@@ -4362,11 +4431,22 @@ class VectorMemoryStore:
           the two keyword sets, newer replaces older
         - Semantic similarity: if >85% cosine similarity, newer replaces older --
           unless a stored near-duplicate outranks this write (``user_explicit``
-          over a lower-authority source, or strictly higher stored confidence).
-          That verdict is decided in a non-mutating pre-pass BEFORE the scan
-          deletes anything, so a write declined on authority deletes nothing
-          and reports ``deduped`` / ``semantic_similarity`` with an empty
-          ``superseded``.
+          over a lower-authority source, or strictly higher stored confidence),
+          which reports ``deduped`` / ``semantic_similarity``.
+
+        **A call that stores nothing deletes nothing.** Every supersede the scan
+        decides on is QUEUED, and the queue drains only once ``set_semantic`` has
+        committed the submission. So a ``deduped`` verdict from any branch, and a
+        ``refused`` from the store's own validation, each preserve every live lesson
+        row and report an empty ``superseded``. They are not byte no-ops on the
+        database: a lazy embedding backfill for a row this call READ may already have
+        been flushed, which changes a vector and no lesson.
+
+        Draining after the commit puts the two outcomes in the safe order, and leaves
+        one window it cannot close: a drain that stops partway -- a raised error, a
+        killed process -- keeps the submission and leaves the rows it had not reached
+        yet. That direction is deliberate. The residue is a duplicate, never a lost
+        lesson, and the next write matching those rows retires them.
 
         Two of those three rules DELETE a stored lesson, and the substring rule's
         "longer wins" direction means a submitted rule can retire a stored one that
@@ -4393,7 +4473,15 @@ class VectorMemoryStore:
         as ``rule_emb_generation``, so a model swap landing between that embed and
         this write is detected and the vector is left NULL for the backfill
         instead of being committed into the wrong space.
+
+        Runtime model-identity assertions and recognized concrete-ID model-selection
+        imperatives in either persisted field are refused here, before embedding or
+        deduplication. A model-version literal without either form remains durable. The
+        JSONL fallback calls the same predicate, so MCP, dashboard, consolidation,
+        task-runner, and direct callers share the boundary.
         """
+        if contains_volatile_lesson_fact(rule, negative):
+            return LessonWriteResult(LessonWriteOutcome.REFUSED, "volatile_session_fact")
         rule_lower = rule.lower()
         # lower(), deliberately NOT casefold(). casefold() maps ß to ss, which matches
         # "Straße" against "STRASSE" -- but the same mapping makes "Maße" and "Masse"
@@ -4465,7 +4553,7 @@ class VectorMemoryStore:
         # (blob, key, space generation, exact value embedded). The generation is
         # recorded per entry, not once for the call: these lazy backfills embed
         # inside the dedup scan below, so a swap can land between entries.
-        pending_backfills: list[tuple[bytes, str, int, str]] = []
+        pending_backfills: list[tuple[bytes, str, int, str, list[float]]] = []
 
         # PREFLIGHT the final value BEFORE the dedup scan below, which DELETES
         # superseded rows. The value was only validated by set_semantic at the very
@@ -4500,22 +4588,16 @@ class VectorMemoryStore:
             return LessonWriteResult(LessonWriteOutcome.REFUSED, code.value)
 
         def _flush_backfills() -> None:
-            if pending_backfills:
-                with self._db_lock:
-                    for blob, bk, gen, body in pending_backfills:
-                        if gen != self._space_generation:
-                            # Swap landed after this blob was embedded. Leave the row
-                            # NULL for the post-activation backfill rather than
-                            # persisting a vector from the previous space.
-                            logger.debug("Dropping a lazy lesson backfill from a previous space")
-                            continue
-                        self.db.execute(
-                            f"UPDATE {self._sem_rel} SET embedding = ? WHERE key = ? "
-                            f"AND value_json = ? AND embedding IS NULL AND is_deleted = 0"
-                            f"{self._sem_guard}",
-                            (blob, bk, body),
-                        )
-                    self.db.commit()
+            for blob, bk, gen, body, vector in pending_backfills:
+                with self._vector_commit(vector, best_effort=True) as current:
+                    if not current or gen != self._space_generation:
+                        continue
+                    self.db.execute(
+                        f"UPDATE {self._sem_rel} SET embedding = ? WHERE key = ? "
+                        f"AND value_json = ? AND embedding IS NULL AND is_deleted = 0"
+                        f"{self._sem_guard}",
+                        (blob, bk, body),
+                    )
 
         # TWO PASSES, and the order is load-bearing.
         #
@@ -4695,20 +4777,22 @@ class VectorMemoryStore:
         # for every row) rather than per candidate — see _stored_similarity_scorer.
         similarity = self._stored_similarity_scorer(rule_emb) if rule_emb else None
 
-        # Every row this scan tombstones, in the order it went. Collected rather
+        # Every row this call tombstoned, in the order it went. Collected rather
         # than counted: a count tells the caller a lesson is gone without telling it
         # WHICH, and the row is a tombstone by the time the caller could look it up.
-        # Populated at all three delete sites below, never at pass 1's -- pass 1
-        # rewrites one row under its own key and deletes nothing, and ``matched``
-        # skips this scan entirely, so an ``enriched`` result always reports none.
+        # Populated only where the deletions actually run -- after the write lands --
+        # so a result that reports a supersede is always a result whose write landed.
         superseded: list[str] = []
 
-        # The mutating semantic branch's supersedes, DEFERRED (key, report,
-        # sim): they execute after the loop, only when the write proceeds, so
-        # a later refusal (main's ``substring_covered``) cannot strand a
-        # deletion this change's newest-wins took where the old tie-break
-        # would have refused. See the semantic branch below.
-        deferred_semantic: list[tuple[str, str, float]] = []
+        # Every supersede the scan decides on, DEFERRED as (key, report): the
+        # queue drains only after the write is COMMITTED, so no route that
+        # declines the submission can cost a stored lesson. Deferring is the
+        # whole invariant rather than one branch's detail -- rows are scanned in
+        # recency order, so an eager delete in any branch can precede a later
+        # row's refusal, and the caller is then handed a decline for a call that
+        # emptied part of the store. Draining after ``set_semantic`` extends the
+        # same guarantee to a value the store itself rejects.
+        deferred_supersedes: list[tuple[str, str, str, str]] = []
 
         # AUTHORITY PRE-PASS -- non-mutating, decided before the scan's first
         # deletion. The invariant (settled after three review rounds circled
@@ -4727,11 +4811,10 @@ class VectorMemoryStore:
         # whole list, while the scan can return early on a lexical claimant --
         # so the SETS can differ even though no row is ever double-charged.)
         # A ``user_explicit`` write can never be declined, so the pass is
-        # skipped for it entirely. Main's substring/topic-overlap branches
-        # keep their delete-as-you-go shape (their one pre-existing
-        # delete-then-decline route, via ``substring_covered``, predates this
-        # change and is spec-documented); scan-wide authority ordering is a
-        # tracked follow-up decision.
+        # skipped for it entirely. The pass is non-mutating for its own reason,
+        # independent of the scan's deferral below: an authority decline must not
+        # spend the call's embed budget rewriting rows it is about to refuse.
+        # Scan-wide authority ordering is a tracked follow-up decision.
         if (
             self.algorithm_version != "v2"
             and similarity is not None
@@ -4781,7 +4864,13 @@ class VectorMemoryStore:
                     if existing_emb:
                         row_blob = struct.pack(f"{len(existing_emb)}f", *existing_emb)
                         pending_backfills.append(
-                            (row_blob, existing["key"], backfill_generation, existing["value_json"])
+                            (
+                                row_blob,
+                                existing["key"],
+                                backfill_generation,
+                                existing["value_json"],
+                                existing_emb,
+                            )
                         )
                         existing["embedding"] = row_blob
                     else:
@@ -4873,15 +4962,9 @@ class VectorMemoryStore:
                 # anything, so this adds no weak-hashing exposure -- ``_lesson_key``
                 # already derived these ids, and CodeQL flags that derivation at its own
                 # site, not at a line that merely logs the result.
-                logger.info(
-                    "Lesson supersede: %s contains and replaces %s [%s], %d so far",
-                    key,
-                    existing["key"],
-                    category,
-                    len(superseded) + 1,
+                deferred_supersedes.append(
+                    (existing["key"], existing_report, existing["value_json"], "contains")
                 )
-                superseded.append(existing_report)
-                self.delete_semantic(existing["key"], source)
                 continue
 
             # Topic overlap dedup
@@ -4898,15 +4981,14 @@ class VectorMemoryStore:
                     # two rules to genuinely be about the same thing.
                     ratio = len(overlap) / max(len(rule_words), len(existing_words))
                     if ratio >= 0.5:
-                        logger.info(
-                            "Lesson conflict: %s replaces %s [%s] (%.0f%% overlap)",
-                            key,
-                            existing["key"],
-                            category,
-                            ratio * 100,
+                        deferred_supersedes.append(
+                            (
+                                existing["key"],
+                                existing_report,
+                                existing["value_json"],
+                                "%.0f%% keyword overlap" % (ratio * 100),
+                            )
                         )
-                        superseded.append(existing_report)
-                        self.delete_semantic(existing["key"], source)
                         continue
 
             # Semantic dedup via embeddings (use stored embedding when available)
@@ -4945,7 +5027,13 @@ class VectorMemoryStore:
                     if existing_emb:
                         row_blob = struct.pack(f"{len(existing_emb)}f", *existing_emb)
                         pending_backfills.append(
-                            (row_blob, existing["key"], backfill_generation, existing["value_json"])
+                            (
+                                row_blob,
+                                existing["key"],
+                                backfill_generation,
+                                existing["value_json"],
+                                existing_emb,
+                            )
                         )
                     backfills_done += 1
                 if row_blob is not None:
@@ -4966,34 +5054,26 @@ class VectorMemoryStore:
                         #
                         # No authority check HERE, by construction: the
                         # non-mutating pre-pass above already returned DEDUPED
-                        # if any purely-semantic row outranks the write. But a
-                        # LATER row can still decline the write via main's own
-                        # ``substring_covered`` return, and this branch's
-                        # newest-wins deletes where a length tie-break would
-                        # refuse -- so THIS branch's supersedes are DEFERRED
-                        # and executed only after the scan completes with the
-                        # write going ahead. A declined write executes none of
-                        # them. The substring and topic-overlap branches keep
-                        # main's delete-as-you-go shape, including before a
-                        # ``substring_covered`` refusal -- that composition
-                        # predates this change and is reported via
-                        # ``superseded``.
-                        deferred_semantic.append((existing["key"], existing_report, sim))
+                        # if any purely-semantic row outranks the write. Like
+                        # both lexical branches, this one only QUEUES its
+                        # supersede -- a later row can still decline the write
+                        # via ``substring_covered``, and a declined write
+                        # executes no deletion at all.
+                        deferred_supersedes.append(
+                            (
+                                existing["key"],
+                                existing_report,
+                                existing["value_json"],
+                                "%.2f cosine" % sim,
+                            )
+                        )
                         continue
 
-        # Execute the semantic supersedes the scan deferred: reachable only
-        # when no refusal claimed the write, so the submission WILL be stored
-        # and these rows are genuinely replaced.
-        for d_key, d_report, d_sim in deferred_semantic:
-            logger.info(
-                "Lesson semantic supersede: %.2f sim, %s replaces %s",
-                d_sim,
-                key,
-                d_key,
-            )
-            pending_backfills[:] = [entry for entry in pending_backfills if entry[1] != d_key]
-            superseded.append(d_report)
-            self.delete_semantic(d_key, source)
+        # No pending backfill is dropped for a queued row. The queue is a list of
+        # CANDIDATE deletions until the write commits, so discarding their vectors
+        # here would cost the surviving rows their embeddings on exactly the paths
+        # that delete nothing. A vector written to a row this call then retires is
+        # one spent UPDATE on a tombstone.
 
         _flush_backfills()
 
@@ -5010,17 +5090,49 @@ class VectorMemoryStore:
             facets = dataclasses.replace(prior, scope=repo_scope)
         err = self.set_semantic(key, value, confidence, source, facets=facets)
         if err is not None:
-            # Carries ``superseded`` too, and this is the path where it matters most:
-            # the scan above already deleted, so a refusal here means rows were
-            # destroyed and NOTHING was stored in their place. The preflight was
-            # added to keep this unreachable for the values it can screen; a refusal
-            # that gets past it must still name the cost rather than report a bare
-            # refusal for a call that emptied part of the store.
+            # Nothing was deleted: the scan only QUEUED its supersedes, and the
+            # queue drains below this return. So a value the store rejects costs
+            # no stored row, and ``superseded`` is empty here by construction.
             return LessonWriteResult(LessonWriteOutcome.REFUSED, err[0].value, tuple(superseded))
+        # THE WRITE HAS LANDED -- drain the supersede queue. Every route that
+        # declines the submission returned above, so reaching this line is what
+        # makes each queued deletion a genuine replacement rather than a loss.
+        #
+        # Each row is deleted only while its body is still the one the scan READ, and
+        # the comparison is the delete statement's own, so no writer can land between
+        # checking and tombstoning. Nothing serializes this method for its whole
+        # length and ``_lesson_key`` keys on the rule and scope alone, so a competing
+        # write CAN reach a queued key inside this window -- a user enriching the very
+        # rule being retired lands on it exactly -- and a second process on the same
+        # database file is ordered by no lock this process holds. The guard decides
+        # the write's OWN key too: ``set_semantic`` has committed by here, so a queued
+        # row sharing that key fails it, and no separate same-key check is needed.
+        #
+        # A supersede is LOGGED here because this is where one happens; the scan only
+        # nominates rows. IDENTITIES only, never row text -- a lesson holds whatever
+        # the user once told the agent, and this sink persists to disk.
+        for d_key, d_report, d_body, d_reason in deferred_supersedes:
+            if not self.delete_semantic(d_key, source, expect_value_json=d_body):
+                logger.info(
+                    "Lesson supersede skipped: %s changed or went while %s was written",
+                    d_key,
+                    key,
+                )
+                continue
+            logger.info(
+                "Lesson supersede: %s replaces %s [%s] (%s), %d so far",
+                key,
+                d_key,
+                category,
+                d_reason,
+                len(superseded) + 1,
+            )
+            superseded.append(d_report)
+
         if rule_emb:
             emb_blob = struct.pack(f"{len(rule_emb)}f", *rule_emb)
-            with self._db_lock:
-                if self._space_generation != lesson_embed_generation:
+            with self._vector_commit(rule_emb, best_effort=True) as current:
+                if not current or self._space_generation != lesson_embed_generation:
                     # Swap landed mid-write: leave the vector NULL for the backfill
                     # instead of persisting one from the previous space. The lesson
                     # row itself is already written.
@@ -5034,7 +5146,6 @@ class VectorMemoryStore:
                         f"{self._sem_guard}",
                         (emb_blob, key, json.dumps(value)),
                     )
-                    self.db.commit()
         # ``matched`` is pass 1's verdict: it rewrote an EXISTING row under that row's
         # own key to attach a clause, which is an enrichment. Every other route here
         # wrote a new row under the submitted rule's key -- including the ones that
@@ -5153,25 +5264,26 @@ class VectorMemoryStore:
         answered and the JSONL store must stay silent.
 
         A ``lesson.*`` key is not sufficient evidence. ``set_semantic`` accepts any
-        object, so an import or a legacy migration can leave a list or a rule-less
-        dict under one -- which every renderer already skips. Counting such a row as
-        population would silence the JSONL store while nothing renders, so saved
-        corrections would vanish. The decode is the same one the renderer uses.
+        object, so an import or a legacy migration can leave a list, a rule-less
+        dict, malformed scope, or volatile pre-boundary row under one. Every
+        renderer skips those rows. Counting one as population would silence the
+        JSONL store while nothing renders, so saved corrections would vanish. The
+        shared predicate keeps this authority check aligned with rendering.
 
-        Selects ``value_json`` only, never ``SELECT *``: reading every embedding
-        blob is the duplicate-SELECT cost the rendering path was written to avoid.
+        Selects only ``key`` and ``value_json``, never ``SELECT *``: reading every
+        embedding blob is the duplicate-SELECT cost the rendering path was written
+        to avoid. The key proves whether a legacy in-band separator marks a clause.
         """
         rows = self._fetch_all_locked(
-            "SELECT value_json FROM semantic_memory " "WHERE is_deleted = 0 AND key LIKE 'lesson.%'"
+            "SELECT key, value_json FROM semantic_memory "
+            "WHERE is_deleted = 0 AND key LIKE 'lesson.%'"
         )
         for row in rows:
             try:
                 decoded = json.loads(row["value_json"])
             except (ValueError, TypeError):
                 continue
-            if _lesson_scope_unusable(decoded):
-                continue
-            if _lesson_display_text(decoded):
+            if _renderable_lesson_text(decoded, row["key"]):
                 return True
         return False
 
@@ -5214,9 +5326,32 @@ class VectorMemoryStore:
         )
         return int(rows[0]["n"]) if rows else 0
 
-    def delete_lesson(self, rule_substring: str) -> bool:
-        """Delete lessons whose value contains rule_substring."""
+    def delete_lesson(self, rule_substring: str, repo_scope: str | None = None) -> bool:
+        """Delete lessons whose value contains rule_substring.
+
+        Substring matching on the rule text is deliberate: a user targets a
+        lesson by a fragment of its rule rather than retyping the whole thing.
+        A lesson's identity is the pair ``(rule, repo_scope)`` -- the scope is
+        folded into the semantic key so a scoped and a global lesson sharing
+        rule text are two distinct rows, and the selector decides which of
+        them a delete reaches. When *repo_scope* is None (the default) scope
+        stays out of the match and every substring hit is deleted. When it is
+        given, a row is deleted only when it ALSO carries that scope --
+        compared canonically on both sides, so the two never disagree over
+        trailing-slash / backslash forms and the canonical form of an empty
+        selector targets the unscoped (global) rows specifically. A nonempty
+        selector the write surface would refuse -- a bare ``/``, an absolute
+        path, a dot segment -- is refused with :class:`ValueError` rather than
+        canonically folded onto rows the caller never named. A STORED scope
+        that is present but unusable marks a scoped-but-broken row, which the
+        injection gate withholds; a scope-selective delete never claims such a
+        row, and the unselective (absent) path is what removes it.
+        """
+        if repo_scope is not None and scope_selector_is_inadmissible(repo_scope):
+            raise ValueError(f"repo_scope does not name a usable scope: {repo_scope!r}")
         deleted = False
+        scope_selective = repo_scope is not None
+        wanted_scope = canonical_scope(repo_scope) if scope_selective else None
         for e in self.get_lessons():
             val = json.loads(e["value_json"])
             # Match against the rendered lesson text so a mapping-shaped row is
@@ -5224,9 +5359,27 @@ class VectorMemoryStore:
             # substring like "category" delete every imported lesson). Rows with
             # no lesson shape fall back to str() so junk rows stay deletable.
             text = _lesson_display_text(val) or str(val)
-            if rule_substring.lower() in text.lower():
-                self.delete_semantic(e["key"], "user_explicit")
-                deleted = True
+            if rule_substring.lower() not in text.lower():
+                continue
+            # ``_lesson_scope`` reads a mapping row's scope and normalises a legacy
+            # string row (which cannot carry one) to None -- the same reader the
+            # injection gate uses, so delete and inject agree on what a row's scope
+            # is. Canonicalise it before comparing so the two sides fold identically.
+            #
+            # A row whose stored scope is PRESENT but unusable (an imported "/",
+            # a non-string) is scoped-but-broken, not global: the injection gate
+            # withholds it via the same classifier, so a scope-selective delete
+            # never claims it -- an all-slash stored scope would otherwise fold
+            # to None and be tombstoned by the explicit-global selector. Such a
+            # row stays reachable through the unselective (absent) path, which
+            # is how junk rows stay deletable.
+            if scope_selective:
+                if _lesson_scope_unusable(val):
+                    continue
+                if canonical_scope(_lesson_scope(val)) != wanted_scope:
+                    continue
+            self.delete_semantic(e["key"], "user_explicit")
+            deleted = True
         return deleted
 
     def get_lessons_context(
@@ -5261,12 +5414,10 @@ class VectorMemoryStore:
             lesson_rows = self._eligible_rows(self.get_lessons(), "directive")
         for row in lesson_rows:
             decoded = json.loads(row["value_json"])
-            text = _lesson_display_text(decoded)
+            text = _renderable_lesson_text(decoded, row["key"])
             if not text:
                 continue
             scope = _lesson_scope(decoded)
-            if _lesson_scope_unusable(decoded):
-                continue
             if scope and not project_scope_satisfied(scope, project_dir):
                 continue
             entries.append((row, text))
@@ -5504,6 +5655,83 @@ class VectorMemoryStore:
             time.sleep(delay)
         return vec
 
+    def _embedding_token(self) -> tuple[str | None, str]:
+        with self._db_lock:
+            return self.recorded_embedding_space(), self.recorded_rebuild_generation()
+
+    def _embedding_current(self, vector: list[float] | None) -> bool:
+        if not isinstance(vector, _EmbeddingVector):
+            return True
+        if vector.space_token != self._embedding_token():
+            return False
+        if vector.managed:
+            from kiro_crew.embeddings import embedding_rebuild_generation
+
+            requested = embedding_rebuild_generation()
+            if requested and requested != vector.space_token[1]:
+                return False
+        return True
+
+    @contextmanager
+    def _embedding_config_guard(self, vector: list[float] | None):
+        """Serialize managed vector publication against explicit config apply."""
+        from kiro_crew.config.loader import _config_write_lock, _lock_target, config_path
+
+        if isinstance(vector, _EmbeddingVector) and vector.managed:
+            with _config_write_lock(_lock_target(config_path())):
+                yield
+        else:
+            yield
+
+    @contextmanager
+    def _vector_commit(self, vector: list[float] | None, *, best_effort: bool = False):
+        """Own a derived-only transaction; callers never commit inside it."""
+        with ExitStack() as resources:
+            started = False
+
+            def rollback_owned():
+                if not started:
+                    return
+                self._faiss_index = None
+                self._faiss_id_map.clear()
+                self._invalidate_episodic_scoring()
+                try:
+                    self.db.rollback()
+                except Exception:
+                    # Closing rolls back the uncommitted vector without touching
+                    # already committed text. Do not reuse an uncertain connection.
+                    logger.exception("Vector rollback failed; closing the store")
+                    self.close()
+
+            try:
+                # Wait for config admission before blocking readers of this store.
+                # Both locks stay owned through commit or rollback below.
+                resources.enter_context(self._embedding_config_guard(vector))
+                resources.enter_context(self._db_lock)
+                self.db.execute("BEGIN IMMEDIATE")
+                started = True
+                current = self._embedding_current(vector)
+            except (OSError, sqlite3.Error, StdlibSQLiteError):
+                rollback_owned()
+                if not best_effort:
+                    raise
+                logger.warning(
+                    "Derived vector admission failed; saved text retained", exc_info=True
+                )
+                yield False
+                return
+            try:
+                yield current
+                self.db.commit()
+            except (OSError, sqlite3.Error, StdlibSQLiteError):
+                rollback_owned()
+                if not best_effort:
+                    raise
+                logger.warning("Derived vector write failed; saved text retained", exc_info=True)
+            except BaseException:
+                rollback_owned()
+                raise
+
     def _try_embed(self, text: str, priority: int = PRIORITY_NORMAL) -> list[float] | None:
         """Embed text using embed_fn if available.
 
@@ -5524,21 +5752,6 @@ class VectorMemoryStore:
         so concurrent writers share at most one factory call + probe per cooldown
         window.
         """
-        if self.embed_fn is not None:
-            # Every production memory store uses the process singleton. During
-            # a live same-width swap, a lazily opened store may not yet have
-            # reached reconciliation; refuse its new-space query/write vector
-            # rather than compare or persist it beside old-space rows.
-            from kiro_crew import embeddings
-
-            if self.embed_fn is embeddings.make_sync_embed_fn():
-                if self.recorded_embedding_space() is None and not self.has_stored_embeddings():
-                    # An empty store has no legacy vectors to protect. Let a
-                    # ready custom backend establish its identity before the
-                    # first write; reconciliation still refuses an unready one.
-                    embeddings.reconcile_store_embedding_space(self)
-                if embeddings.store_embedding_space_is_stale(self):
-                    return None
         if self.embed_fn is None and self.embed_fn_factory is not None:
             # Hold the rebind lock for the cooldown check + factory call + probe so
             # the "once per cooldown window" invariant holds under multi-threaded
@@ -5574,11 +5787,36 @@ class VectorMemoryStore:
                                     len(probe),
                                 )
         if self.embed_fn is not None:
+            from kiro_crew import embeddings
+
+            # Check after lazy rebinding too. A callable does not establish that
+            # this store has handled the current model's durable rebuild request.
+            if self.embed_fn is embeddings.make_sync_embed_fn():
+                if self.recorded_embedding_space() is None and not self.has_stored_embeddings():
+                    embeddings.reconcile_store_embedding_space(self)
+                if embeddings.store_embedding_space_is_stale(self):
+                    return None
             try:
                 generation_before = self._space_generation
-                # Only forward to an embed_fn that advertises the kwarg. A custom
-                # or legacy embed_fn keeps its single-argument contract.
-                if getattr(self.embed_fn, "accepts_priority", False):
+                managed = self.embed_fn is embeddings.make_sync_embed_fn()
+                producer = embeddings.get_shared_embedder() if managed else None
+                persistent_token = self._embedding_token() if self._db is not None else (None, "")
+                if producer is not None and (
+                    persistent_token[0]
+                    != embeddings.embedding_space_signature(producer.model_id, producer.dim)
+                    or (
+                        embeddings.embedding_rebuild_generation()
+                        and persistent_token[1] != embeddings.embedding_rebuild_generation()
+                    )
+                ):
+                    return None
+                # A managed call pins its producer through cache/coalescing too;
+                # a later singleton replacement cannot relabel its result.
+                if producer is not None:
+                    result = embeddings._shared_sync_embed(
+                        text, priority=priority, backend=producer
+                    )
+                elif getattr(self.embed_fn, "accepts_priority", False):
                     result = self.embed_fn(text, priority=priority)  # type: ignore[call-arg]
                 else:
                     result = self.embed_fn(text)
@@ -5594,7 +5832,11 @@ class VectorMemoryStore:
                     logger.debug("Embedded for migration: dim=%d text=%s…", len(result), text[:50])
                 else:
                     logger.debug("Embed returned None for: %s…", text[:50])
-                return result
+                return (
+                    _EmbeddingVector(result, persistent_token, managed=managed)
+                    if result is not None
+                    else None
+                )
             except Exception:
                 logger.debug("Embed failed for: %s…", text[:50], exc_info=True)
                 return None
@@ -5605,8 +5847,8 @@ class VectorMemoryStore:
         row = self._fetch_one_locked("SELECT value FROM memory_meta WHERE key = ?", (key,))
         return str(row["value"]) if row is not None else None
 
-    def _write_meta(self, key: str, value: str) -> None:
-        """Upsert a ``memory_meta`` value."""
+    def _write_meta_in_transaction(self, key: str, value: str) -> None:
+        """Write metadata under the caller's database lock and transaction."""
         with self._db_lock:
             self.db.execute(
                 "INSERT INTO memory_meta (key, value, updated_at) VALUES (?, ?, ?) "
@@ -5614,7 +5856,28 @@ class VectorMemoryStore:
                 "updated_at = excluded.updated_at",
                 (key, value, _now_iso()),
             )
+
+    def _write_meta(self, key: str, value: str) -> None:
+        """Upsert a ``memory_meta`` value."""
+        with self._db_lock:
+            self._write_meta_in_transaction(key, value)
             self.db.commit()
+
+    def recorded_rebuild_generation(self) -> str:
+        """Explicit rebuild request whose old vectors were durably invalidated."""
+        return self._read_meta("embedding_rebuild_generation") or ""
+
+    def embedding_repair_state(self, generation: str) -> tuple[bool, int]:
+        """Snapshot invalidation acknowledgment and remaining live NULL vectors."""
+        with self._db_lock:
+            pending = bool(generation and self.recorded_rebuild_generation() != generation)
+            remaining = sum(
+                self.db.execute(
+                    f"SELECT COUNT(*) FROM {relation} WHERE is_deleted = 0 AND embedding IS NULL"
+                ).fetchone()[0]
+                for relation in ("semantic_memory", "episodic_memories")
+            )
+            return pending, remaining
 
     def begin_space_change(self) -> None:
         """Mark the start of a vector-space change (a live model swap).
@@ -5684,7 +5947,36 @@ class VectorMemoryStore:
         return any(self._fetch_one_locked(query) is not None for query in queries)
 
     def reconcile_embedding_space(
-        self, signature: str, *, clear_when_unknown: bool = False, force: bool = False
+        self,
+        signature: str,
+        *,
+        clear_when_unknown: bool = False,
+        force: bool = False,
+        rebuild_generation: str = "",
+    ) -> int:
+        """Serialize the request check and invalidation across SQLite connections."""
+        with self._db_lock:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                result = self._reconcile_embedding_space_locked(
+                    signature,
+                    clear_when_unknown=clear_when_unknown,
+                    force=force,
+                    rebuild_generation=rebuild_generation,
+                )
+                self.db.commit()
+                return result
+            except Exception:
+                self.db.rollback()
+                raise
+
+    def _reconcile_embedding_space_locked(
+        self,
+        signature: str,
+        *,
+        clear_when_unknown: bool = False,
+        force: bool = False,
+        rebuild_generation: str = "",
     ) -> int:
         """Discard embeddings produced by a DIFFERENT model. Returns rows invalidated.
 
@@ -5732,15 +6024,25 @@ class VectorMemoryStore:
         Explicit model apply uses force to rebuild inherited legacy vectors
         whose old metadata cannot prove which weights produced them.
         """
-        stored = self._read_meta(_EMBED_SIG_KEY)
-        if stored == signature and not force:
-            return 0
-        if stored is None and not clear_when_unknown and not force:
-            self._write_meta(_EMBED_SIG_KEY, signature)
-            logger.info("Recorded embedding vector space %s for existing memory", signature)
-            return 0
-
         with self._db_lock:
+            stored = self._read_meta(_EMBED_SIG_KEY)
+            pending = bool(
+                rebuild_generation and self.recorded_rebuild_generation() != rebuild_generation
+            )
+            force = force or pending
+            if stored == signature and not force:
+                return 0
+            if stored is None and not clear_when_unknown and not force:
+                self._write_meta_in_transaction(_EMBED_SIG_KEY, signature)
+                logger.info("Recorded embedding vector space %s for existing memory", signature)
+                return 0
+            # Even equal signatures may represent an explicit rebuild. Fence
+            # in-flight reads/writes before changing any derived state.
+            if stored is not None or force or self.has_stored_embeddings():
+                self.begin_space_change()
+            self._faiss_index = None
+            self._faiss_id_map = []
+            self._invalidate_episodic_scoring()
             try:
                 episodic = self.db.execute(
                     f"UPDATE {self._epi_rel} SET embedding = NULL WHERE embedding IS NOT NULL"
@@ -5750,27 +6052,24 @@ class VectorMemoryStore:
                     f"UPDATE {self._sem_rel} SET embedding = NULL WHERE embedding IS NOT NULL"
                     f"{self._sem_guard}"
                 ).rowcount
-                self.db.commit()
+                stale_removal_failed = False
+                for stale in (self._faiss_path, self._faiss_path.with_suffix(".ids.json")):
+                    try:
+                        stale.unlink(missing_ok=True)
+                    except OSError:
+                        stale_removal_failed = True
+                        logger.warning("Could not remove stale FAISS file %s", stale, exc_info=True)
+                if not stale_removal_failed:
+                    self._write_meta_in_transaction(_EMBED_SIG_KEY, signature)
+                    if rebuild_generation:
+                        self._write_meta_in_transaction(
+                            "embedding_rebuild_generation", rebuild_generation
+                        )
+                # The outer reconciliation owns the only commit. Failed index
+                # removal leaves the request unacknowledged and vectors NULL.
             except Exception:
                 self.db.rollback()
                 raise
-            self._faiss_index = None
-            self._faiss_id_map = []
-            self._invalidate_episodic_scoring()
-            stale_removal_failed = False
-            for stale in (self._faiss_path, self._faiss_path.with_suffix(".ids.json")):
-                try:
-                    stale.unlink(missing_ok=True)
-                except OSError:
-                    # A surviving index file is NOT cosmetic: load_faiss_index()
-                    # prefers the persisted pair, and its only consistency check
-                    # is index-vs-id-map (both intact here), so the next start
-                    # would load OLD vectors and score them against new-model
-                    # queries. Reachable on a read-only directory and on Windows,
-                    # where unlink fails while another process holds the index
-                    # mapped.
-                    stale_removal_failed = True
-                    logger.warning("Could not remove stale FAISS file %s", stale, exc_info=True)
         invalidated = max(0, episodic) + max(0, semantic)
         if stale_removal_failed:
             # Deliberately do NOT stamp the signature. Stamping would mark the
@@ -5786,7 +6085,6 @@ class VectorMemoryStore:
                 self._faiss_path,
             )
             return invalidated
-        self._write_meta(_EMBED_SIG_KEY, signature)
         if invalidated:
             logger.warning(
                 "Embedding model changed (vector space %s -> %s) — invalidated %d stored "
@@ -5974,28 +6272,21 @@ class VectorMemoryStore:
             if norm > 0:
                 arr = arr / norm
             blob = arr.tobytes()
-            with self._db_lock:
+            with self._vector_commit(vec) as current:
                 if should_stop is not None and should_stop():
                     break
-                if backfill_generation != self._space_generation:
+                if not current or backfill_generation != self._space_generation:
                     logger.debug("Dropping an episodic backfill from a previous space")
                     if progress is not None:
                         progress(embedded, total)
                     continue
-                # `embedding IS NULL` keeps this merge-only: a concurrent writer
-                # that has already filled this row's vector (in the current
-                # space) must not be overwritten by our older computation.
-                # `is_deleted = 0` keeps a vector off a row tombstoned during the
-                # pause. No text guard is needed here, unlike the semantic
-                # sweeps: `episodic_memories.text` is never rewritten in place
-                # (rows are tombstoned instead), so `id` pins the text we
-                # embedded.
+                # Owner editing can replace an episode body in place. Match
+                # that body as well as identity, liveness and the NULL vector.
                 updated = self.db.execute(
                     f"UPDATE {self._epi_rel} SET embedding = ? "
-                    f"WHERE id = ? AND embedding IS NULL AND is_deleted = 0{self._epi_guard}",
-                    (blob, row["id"]),
+                    f"WHERE id = ? AND text = ? AND embedding IS NULL AND is_deleted = 0{self._epi_guard}",
+                    (blob, row["id"], row["text"]),
                 ).rowcount
-                self.db.commit()
                 # A newly embedded row is a row neither resident scoring tier has
                 # seen. A winner-body lookup can drop vanished ids but cannot
                 # surface new ones, so update both derived populations here.
@@ -6097,10 +6388,10 @@ class VectorMemoryStore:
             # Stored un-normalized to match write_lesson(): _cosine_sim()
             # normalizes both operands itself.
             blob = struct.pack(f"{len(vec)}f", *vec)
-            with self._db_lock:
+            with self._vector_commit(vec) as current:
                 if should_stop is not None and should_stop():
                     break
-                if lesson_generation != self._space_generation:
+                if not current or lesson_generation != self._space_generation:
                     logger.debug("Dropping a lesson backfill from a previous space")
                     continue
                 # Same three-part guard as _backfill_semantic_kv_embeddings, for
@@ -6117,7 +6408,6 @@ class VectorMemoryStore:
                     f"AND is_deleted = 0{self._sem_guard}",
                     (blob, row["key"], row["value_json"]),
                 )
-                self.db.commit()
             embedded += 1
             if progress is not None:
                 progress(embedded, total)
@@ -6179,10 +6469,10 @@ class VectorMemoryStore:
                     progress(embedded, total)
                 continue
             blob = struct.pack(f"{len(vec)}f", *vec)
-            with self._db_lock:
+            with self._vector_commit(vec) as current:
                 if should_stop is not None and should_stop():
                     break
-                if backfill_generation != self._space_generation:
+                if not current or backfill_generation != self._space_generation:
                     logger.debug("Dropping a semantic backfill from a previous space")
                     continue
                 # value_json guard: a concurrent re-write of this key already
@@ -6197,7 +6487,6 @@ class VectorMemoryStore:
                     f"AND is_deleted = 0{self._sem_guard}",
                     (blob, row["key"], row["value_json"]),
                 )
-                self.db.commit()
             embedded += 1
             if progress is not None:
                 progress(embedded, total)
@@ -6559,9 +6848,17 @@ class VectorMemoryStore:
     def _check_recall_query(self, query: _RecallQuery | None) -> None:
         """Called under the store lock before a read and before publication."""
         if query is not None and query.generation is not None:
+            from kiro_crew import embeddings
+
+            if (
+                self.embed_fn is embeddings.make_sync_embed_fn()
+                and embeddings.store_embedding_space_is_stale(self)
+            ):
+                raise _RecallSpaceChanged
             if (
                 query.generation != self._space_generation
                 or query.signature != self.recorded_embedding_space()
+                or not self._embedding_current(query.vector)
             ):
                 raise _RecallSpaceChanged
 

@@ -220,9 +220,10 @@ points is overhead, not richness.
   every level keeps it. Length is the other axis and it stays with the active
   level: `answer_only` holds its three checks unless the user asked for depth
   (a doc, a walkthrough, in detail) — draw the shape, twelve words a sentence in
-  words a child knows, cut the rest. Its word check is the Age 5 row above, so
-  an explanation under it keeps this skill's register and adds only the reason,
-  one line per point; borrow the calibration, never a length licence.
+  words a child knows, cut the rest. Its word check is the Age 5 row above, and
+  its own "asked why" branch is this skill's Step 3 in miniature; an explanation
+  under it follows that branch as the block spells it, and borrows the
+  calibration here, never a length licence beyond it.
   `ultra` and `concise`: keep the register the audience row calls for and spend
   the words there; the level bounds length, not vocabulary.
 - **Persist what gets forwarded.** An explanation written for a manager, a

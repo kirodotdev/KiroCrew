@@ -2,9 +2,11 @@ import React, { createContext, useContext, memo, useEffect, useMemo, useRef, use
 import Clickable from './Clickable'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
-import { X, Download, Plus, Minus, Search, Folder, Maximize2, Check, FileCode, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare, ExternalLink } from 'lucide-react'
+import { X, Download, Plus, Minus, Search, Folder, Maximize2, Check, FileCode, FileSpreadsheet, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare, ExternalLink } from 'lucide-react'
 import { copyCode, copyToClipboard } from '../utils/clipboard'
-import { canonicalChatHref, sessionKeyFrom, sessionKeyFromChatHref } from '../utils/sessionKeys'
+import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
+import { hastTableToCsv, hastTableToMarkdown } from '../utils/tableClipboard'
+import { canonicalChatHref, chatHrefSid, namesASession, sessionKeyFrom, sessionKeyFromShort } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -575,7 +577,7 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   const [showSource, setShowSource] = useState(false)
   // Outcome of the last copy press. `failed` is a refused clipboard write --
   // `copyCode` RESOLVES false when the textarea fallback reports failure and
-  // REJECTS if that fallback throws, so both arms are handled; confirming
+  // never rejects, so the boolean is the only failure signal; confirming
   // unconditionally would announce "Copied" for a write that never landed.
   //
   // The two outcomes are NOT symmetric, and that asymmetry is the design:
@@ -596,14 +598,11 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   type CopyOutcome = 'idle' | 'ok' | 'failed'
   const [copyState, setCopyState] = useState<CopyOutcome>('idle')
   const copySource = () => {
-    copyCode(code).then(
-      ok => {
-        setCopyState(ok ? 'ok' : 'failed')
-        // Only the confirmation is on a timer. See above.
-        if (ok) setTimeout(() => setCopyState('idle'), 1500)
-      },
-      () => setCopyState('failed'),
-    )
+    copyCode(code).then(ok => {
+      setCopyState(ok ? 'ok' : 'failed')
+      // Only the confirmation is on a timer. See above.
+      if (ok) setTimeout(() => setCopyState('idle'), 1500)
+    })
   }
   const copyLabel = copyState === 'ok' ? i18nT('components.markdownRenderer.copied')
     : i18nT('components.markdownRenderer.copy_diagram_source')
@@ -959,10 +958,20 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       sessionCandidate = decodeURIComponent(href)
     } catch { /* keep it a normal link */ }
   }
-  // Whether this href NAMES a same-origin chat session at all, independent of
-  // whether that session is currently reachable (open). A closed/unknown key is
-  // still a chat-session href — it just does not resolve in the open-tabs roster.
-  const sessionHrefKey = sessionCandidate ? sessionKeyFromChatHref(sessionCandidate) : null
+  // The session parameter this href carries, verbatim. Handed to
+  // `resolveSessionChip` below rather than a pre-resolved key, because that
+  // helper owns which spellings name a session — so a short `?sid=chat-1380`
+  // resolves here exactly as the same short name does in a backtick chip.
+  const sessionHrefSid = sessionCandidate ? chatHrefSid(sessionCandidate) : null
+  // Whether this href NAMES a same-origin chat session at all, by SHAPE, and
+  // independent of whether that session is currently reachable (open). A
+  // closed/unknown one is still a chat-session href — it just does not resolve in
+  // the open-tabs roster. Both spellings count, and the union is `namesASession`'s
+  // rather than re-spelled here: declining only the full key left an authored
+  // `?sid=chat-9999` to navigate to exactly the dead session view this interception
+  // exists to prevent (#9914), and a spelling added to the resolver alone would
+  // re-open that hole if this gate kept its own copy of the grammar.
+  const sessionHrefNamesSession = !!sessionHrefSid && namesASession(sessionHrefSid)
   // Whether this renderer is wired to route sessions at all — the SAME predicate
   // `resolveSessionChip` guards on (`onSessionOpen` AND `sessions`), so the link
   // affordance and the click handler can never disagree. Both must be present:
@@ -974,7 +983,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   const sessionRouting = !!(sessionActions.onSessionOpen && sessionActions.sessions)
   // Same gate as the inline chip, so a link and a bare key naming one session
   // cannot disagree about whether it is reachable.
-  const sessionLink = sessionHrefKey ? resolveSessionChip(sessionHrefKey, sessionActions) : null
+  const sessionLink = sessionHrefSid ? resolveSessionChip(sessionHrefSid, sessionActions) : null
   // The attribute carries the canonical key: a modified click goes to the browser,
   // and an authored `dashboard_…` sid would open a session `?sid=` cannot resolve.
   const sessionHref = sessionLink && sessionCandidate ? canonicalChatHref(sessionCandidate, sessionLink.key) : null
@@ -1001,7 +1010,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
     if (sessionLink) {
       e.preventDefault()
       sessionActions.onSessionOpen!(sessionLink.key)
-    } else if (sessionHrefKey && sessionRouting) {
+    } else if (sessionHrefNamesSession && sessionRouting) {
       e.preventDefault()
     }
   }
@@ -1099,16 +1108,28 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       {...sp(node)}
       href={sessionHref ?? href}
       // A `/chat?sid=` href is never a path, so the session branch wins outright.
-      // `sessionHrefKey` (not `sessionLink`) gates the handler so a session link
-      // that does not resolve — a closed/unknown key, or the active session's own
-      // key — is still intercepted and declined rather than left to navigate the
-      // browser to a dead `?sid=` view (#9914) or a duplicate tab.
-      onClick={sessionHrefKey ? onSessionClick : (pathResolution.candidate ? onPathClick : undefined)}
+      // One predicate gates the handler, because a link that RESOLVES necessarily
+      // names a session by shape too — so the two branches inside the handler
+      // split the same population rather than needing different gates: resolvable
+      // switches in place, and one that names a session but does not resolve (a
+      // closed or unknown key, a short name no open session answers to, or the
+      // active session's own key) is intercepted and declined rather than left to
+      // navigate the browser to a dead `?sid=` view (#9914) or a duplicate tab.
+      onClick={sessionHrefNamesSession ? onSessionClick : (pathResolution.candidate ? onPathClick : undefined)}
       title={sessionLink
         ? `${sessionLink.title}\n${i18nT('components.markdownRenderer.click_to_switch_to_this_session')}`
         : undefined}
       {...(ext ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
-      className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent"
+      // A session link that names a session but cannot open one drops the live-link
+      // affordance rather than keeping it and doing nothing. The click is swallowed
+      // deliberately (#9914: navigating a dead `?sid=` is worse than not moving), so
+      // the accent underline was promising an action that never came — every time,
+      // for every old transcript naming a session that has since closed. Muted and
+      // unadorned is the same answer the backtick chip gives an unresolved key: no
+      // affordance, and the href stays intact so a modified click still works.
+      className={sessionHrefNamesSession && !sessionLink && sessionRouting
+        ? 'text-muted'
+        : 'text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent'}
     >
       <InsideLinkCtx.Provider value={true}>{children}</InsideLinkCtx.Provider>
     </a>
@@ -1158,6 +1179,11 @@ type SessionActions = {
   onSessionOpen?: (key: string) => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
+  /** Epoch seconds this message was written at, when the host knows it. Only the
+   *  SHORT-name lookup uses it, to refuse a slot minted after the text naming it
+   *  (see `sessionKeyFromShort`). Absent on surfaces that render markdown with no
+   *  message identity, and there NO short name resolves — the full key still does. */
+  writtenAtEpoch?: number
 }
 const SessionActionCtx = createContext<SessionActions>({})
 
@@ -1175,10 +1201,16 @@ const SessionActionCtx = createContext<SessionActions>({})
  *     not honour a chip here;
  *   - the key names the session the reader is ALREADY in, where a click would be
  *     a visible no-op.
+ *
+ * A SHORT name (`chat-1380`, no timestamp) resolves through the same roster. The
+ * roster was already the authority for whether a chip may exist, so letting it
+ * also say which session a nickname means adds no new trust: a name it does not
+ * answer for is refused by the second rule above, like any other unknown key.
  */
 function resolveSessionChip(raw: string, actions: SessionActions): { key: string; title: string } | null {
   if (!actions.onSessionOpen || !actions.sessions) return null
   const key = sessionKeyFrom(raw)
+    ?? sessionKeyFromShort(raw, actions.sessions.keys(), actions.writtenAtEpoch)
   if (!key || key === actions.activeSession) return null
   const title = actions.sessions.get(key)
   if (title === undefined) return null
@@ -1703,6 +1735,98 @@ function jiraCardMeta(link: PullRequestLink): LinkMeta {
   }
 }
 
+const TABLE_ACTION_BTN_CLS = 'flex items-center gap-1 px-1.5 py-1 rounded text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer'
+
+/** A markdown table plus the row of copy actions beneath it.
+ *
+ *  Selecting a rendered table by hand and pasting it produces tab-separated
+ *  cells at best and a run of words at worst, so the copy has to be offered.
+ *  Two targets, because they are pasted into different places: GFM Markdown
+ *  for a doc, an issue, or another chat, and CSV for a spreadsheet. Both are
+ *  serialized from the hast `node` react-markdown hands this override, never
+ *  from the DOM -- see `tableClipboard.ts` for why (alignment is not forwarded
+ *  to the DOM, and inline-code chips carry UI a text walk cannot tell apart
+ *  from content).
+ *
+ *  The row follows the code block's pattern exactly: hidden until the table is
+ *  hovered or focused (`group-hover` / `group-focus-within`), and always shown
+ *  on a hover-less (touch) device through `HOVER_NONE_ACTIONS_ROW_CLS`, so it
+ *  is discoverable there without adding permanent chrome under every table on
+ *  a desktop. It sits BELOW the table, not over the header cells, so it never
+ *  covers a column label. Each button carries a short visible verb label
+ *  beside its glyph ("Copy Markdown", "Copy CSV") -- a touch screen shows no
+ *  tooltip, so the word alone must say what a tap does; it flips to "Copied!"
+ *  on success so the confirmation reads as text, not only as a colour.
+ *
+ *  The horizontal-scroll wrapper and the table's own class contract are
+ *  unchanged (`MarkdownRenderer.tableWrap.test.tsx` pins them): the wrapper
+ *  still owns `overflow-x-auto`, and this component only adds a sibling row
+ *  after it. */
+function MarkdownTable({ node, children }: { node?: HastElement; children?: React.ReactNode }) {
+  type CopyTarget = 'markdown' | 'csv'
+  type CopyOutcome = { state: 'idle' } | { state: 'ok'; target: CopyTarget } | { state: 'failed' }
+  const [outcome, setOutcome] = useState<CopyOutcome>({ state: 'idle' })
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (timerRef.current != null) clearTimeout(timerRef.current) }, [])
+
+  const copy = (target: CopyTarget) => {
+    if (!node) return
+    const text = target === 'markdown' ? hastTableToMarkdown(node) : hastTableToCsv(node)
+    if (text.length === 0) return
+    copyToClipboard(text).then(
+      ok => {
+        if (!ok) { setOutcome({ state: 'failed' }); return }
+        setOutcome({ state: 'ok', target })
+        if (timerRef.current != null) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => { setOutcome({ state: 'idle' }); timerRef.current = null }, 1500)
+      },
+      () => setOutcome({ state: 'failed' }),
+    )
+  }
+
+  const label = (target: CopyTarget) => outcome.state === 'ok' && outcome.target === target
+    ? i18nT('components.markdownRenderer.copied')
+    : target === 'markdown'
+      ? i18nT('components.markdownRenderer.copy_table_markdown')
+      : i18nT('components.markdownRenderer.copy_table_csv')
+  // The visible word carries the verb ("Copy Markdown"), because on a touch
+  // screen it is the only label there is, and it flips to "Copied!" with the
+  // check so the confirmation is readable, not just a colour change.
+  const word = (target: CopyTarget) => outcome.state === 'ok' && outcome.target === target
+    ? i18nT('components.markdownRenderer.copied')
+    : target === 'markdown'
+      ? i18nT('components.markdownRenderer.format_markdown')
+      : i18nT('components.markdownRenderer.format_csv')
+  const glyph = (target: CopyTarget, Icon: typeof Copy) => outcome.state === 'ok' && outcome.target === target
+    ? <Check size={13} className="text-ok" aria-hidden="true" />
+    : <Icon size={13} aria-hidden="true" />
+
+  return (
+    <div className="my-3 group/table" data-testid="markdown-table">
+      <div className="overflow-x-auto"><table {...sp(node)} className="min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal]">{children}</table></div>
+      <div className={`mt-0.5 flex items-center justify-end gap-1 select-none opacity-0 group-hover/table:opacity-100 group-focus-within/table:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
+        <button type="button" data-testid="table-copy-markdown" className={TABLE_ACTION_BTN_CLS} onClick={() => copy('markdown')} title={label('markdown')} aria-label={label('markdown')}>
+          {glyph('markdown', Copy)}
+          <span aria-hidden="true">{word('markdown')}</span>
+        </button>
+        <button type="button" data-testid="table-copy-csv" className={TABLE_ACTION_BTN_CLS} onClick={() => copy('csv')} title={label('csv')} aria-label={label('csv')}>
+          {glyph('csv', FileSpreadsheet)}
+          <span aria-hidden="true">{word('csv')}</span>
+        </button>
+      </div>
+      {/* No hand-off, for the same reason as the mermaid notices above: this
+          renderer is embedded in hosts holding unsaved drafts it cannot
+          identify -- MarkdownPanel's editable preview, the chat composer -- so
+          navigating to the chat could discard what the user typed. Dismissable,
+          like the mermaid copy notice: one refused clipboard write must not
+          leave a permanent red line under the table in the transcript. */}
+      {outcome.state === 'failed' && (
+        <ErrorNotice variant="inline" className="mt-1" message={i18nT('components.markdownRenderer.copy_failed')} onDismiss={() => setOutcome({ state: 'idle' })} />
+      )}
+    </div>
+  )
+}
+
 const MD_COMPONENTS: Components = {
   code({ className, children, ...props }) {
     // Only a <code> inside a <pre> may render a block-level component here
@@ -1714,7 +1838,12 @@ const MD_COMPONENTS: Components = {
     const { 'data-fenced': fenced, ...rest } = props as Record<string, unknown>
     if (fenced === undefined) return <InlineCode {...rest}>{children}</InlineCode>
 
-    const match = /language-(\w+)/.exec(className || '')
+    // remark-rehype stamps `language-<first word of the info string>`; keep the
+    // whole tag (`error-report`, `c++`, `asp.net`), not just its leading `\w+`
+    // run, so the header label and highlighter hint match what the author
+    // wrote. A class token has no whitespace, so `\S+` is the whole tag. Same
+    // rule as FENCE_OPEN (useBlockAssembler) / fixCodeFences.
+    const match = /language-(\S+)/.exec(className || '')
     const lang = match?.[1]
     const codeStr = String(children).replace(/\n$/, '')
 
@@ -1739,8 +1868,9 @@ const MD_COMPONENTS: Components = {
   // table wider than the viewport overflow to its real width and scroll inside
   // the wrapper, while a narrow table still fills the container. A genuinely
   // oversized token now widens its column instead of breaking, which the
-  // horizontal scroll already handles.
-  table({ node, children }) { return <div className="overflow-x-auto my-3"><table {...sp(node)} className="min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal]">{children}</table></div> },
+  // horizontal scroll already handles. Those classes now live on
+  // `MarkdownTable`, which also adds the copy row beneath the table.
+  table({ node, children }) { return <MarkdownTable node={node}>{children}</MarkdownTable> },
   // Headers carry the column's meaning, so never break them mid-label.
   th({ node, children }) { return <th {...spa('th', node)} className="text-left text-muted text-[13px] font-medium px-3 py-2 border-b border-border bg-bg-elevated whitespace-nowrap">{children}</th> },
   td({ node, children }) { return <td {...spa('td', node)} className="px-3 py-2 border-b border-border text-sm">{children}</td> },
@@ -2441,6 +2571,10 @@ export function remarkVerbatimUnknownTags() {
 // delimiters are classified), and the strikethrough companion AFTER, because it
 // extends gfm's own `~~` construct.
 const REMARK_PLUGINS: PluggableList = [
+  // FIRST: bounds the parsed tree's depth as part of parse(), ahead of
+  // remark-gfm's own post-parse transform, which recurses over the tree.
+  // Input-controlled nesting otherwise overflows the call stack there.
+  remarkBoundDepth,
   remarkCjkFriendly,
   remarkGfm,
   remarkCjkFriendlyGfmStrikethrough,
@@ -2615,7 +2749,10 @@ function rehypeUnwrapBlocks() {
   }
 }
 
-const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex]
+// `rehypeBoundRawDepth` sits ahead of `rehypeRaw`: raw HTML that would nest
+// past the depth bound is downgraded to text before rehype-raw's recursive
+// hast conversion can overflow on it.
+const REHYPE_PLUGINS: PluggableList = [rehypeBoundRawDepth, [rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex]
 
 // Matches one source line break plus any leading tabs/spaces, so a trailing
 // space before the break doesn't survive as its own text node. Mirrors the
@@ -2700,7 +2837,7 @@ function rehypeSourcepos() {
     walk(tree)
   }
 }
-const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
+const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [rehypeBoundRawDepth, [rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
 // NOTE: remark plugin config is shared via REMARK_PLUGINS above (singleDollarTextMath:
 // false). The sourcepos variant only differs in the rehype chain.
 
@@ -3739,13 +3876,18 @@ export function fixCodeFences(s: string): string {
     if (inFence || num === undefined) return match
     return num + '\\.' + trail
   })
-  // Ensure blank line before opening fences that are glued to preceding text
-  s = s.replace(/([^\n])(\n?)(```\w*\n)/g, (_, pre, nl, fence) =>
+  // Ensure blank line before opening fences that are glued to preceding text.
+  // The info string is the whole backtick-free line, including attributes and
+  // a leading space, matching FENCE_OPEN in useBlockAssembler.
+  s = s.replace(/([^\n])(\n?)(```[^`\n]*\n)/g, (_, pre, nl, fence) =>
     nl ? pre + nl + fence : pre + '\n\n' + fence
   )
   // Split closing fences glued to trailing text: ```358KB → ```\n358KB
-  // Preserves valid opening fences (```diff, ```json5, ```c++) via negative lookahead
-  s = s.replace(/^(```)(?![a-zA-Z][\w+#-]*\s*$)(.+)$/gm, '$1\n$2')
+  // Preserves valid opening fences (```diff, ``` python, ```c++, ```asp.net)
+  // via negative lookahead: optional info-string whitespace may precede a tag
+  // that starts with a letter and continues as a backtick-free info string,
+  // while a size like ```358KB still splits.
+  s = s.replace(/^(```)(?!\s*[a-zA-Z][^`]*$)(.+)$/gm, '$1\n$2')
   // Split opening fences glued to uppercase text
   s = s.replace(/```([A-Z])/g, '```\n$1')
   return s
@@ -3866,6 +4008,19 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   // streaming transitions or when the agent emits protocol markup as text.
   // Both passes preserve mentions inside inline-code spans.
   let clean = stripStrayToolUseTags(stripStrayWidgetTags(content))
+  // Cap whitespace runs before parsing. Tree depth is bounded on the parsed
+  // tree (see markdownDepthBound), but the parser's own per-line container
+  // scan is O(depth), so a list indented to hundreds of levels costs seconds
+  // before any tree exists. Lexical, construct-agnostic, and an identity on
+  // any message without a whitespace run wider than 256 columns.
+  //
+  // Gated off in sourcePos mode, like every other column-shifting pass in
+  // this function: `data-sourcepos` maps a DOM selection back to source
+  // coordinates, and a shortened run would shift every later column on that
+  // line and anchor a comment to the wrong occurrence. The crash bound does
+  // not depend on the cap (the tree bounds hold either way); only the
+  // parser-time bound is given up on that surface.
+  if (!sourcePos) clean = capWhitespaceRuns(clean)
   // `glow` marks the live streaming tail block: while streaming, hold back an
   // incomplete trailing table so it doesn't paint as pipe text then snap into a
   // <table> when the delimiter row arrives.
@@ -3980,7 +4135,7 @@ import WidgetFrame from './WidgetFrame'
 import WidgetPlaceholder from './WidgetPlaceholder'
 
 import { i18nT } from '../i18n/t'
-import { fmtNumber } from '../i18n/format'
+import { fmtNumber, toDate } from '../i18n/format'
 /** Try to extract a file path from chat text immediately preceding a diff
  * block. Tools sometimes emit "Created /path/to/file:" or "Modified ..."
  * before a bare diff with no +++/--- headers; this hint lets DiffBlock's
@@ -4010,7 +4165,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
   return undefined
 }
 
-function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean }) {
+function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean }) {
   switch (block.type) {
     case 'diff': {
       const pathHint = prevBlock?.type === 'markdown'
@@ -4072,7 +4227,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
     }
     case 'widget':
       return block.complete
-        ? <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} widgetIndex={widgetIndex} slotKey={slotKey} />
+        ? <WidgetFrame html={block.content} title={block.language} slug={block.slug} messageTs={messageTs} slotKey={slotKey} />
         : <WidgetPlaceholder title={block.language} />
     case 'markdown':
       // `live` = this block is the streaming tail (see MarkdownRenderer). ORed
@@ -4119,29 +4274,37 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
    *  this component does. */
   const pathActions = useMemo<PathActions>(() => ({ onFileOpen, onFolderOpen }), [onFileOpen, onFolderOpen])
   const sessionActions = useMemo<SessionActions>(
-    () => ({ onSessionOpen, sessions, activeSession }),
-    [onSessionOpen, sessions, activeSession],
+    // The write time the SHORT-name chip needs. Absent, non-absolute, or
+    // unparseable yields undefined, and a short name then resolves to NOTHING —
+    // fail closed, because this is compared against server-clock slot mint epochs
+    // and a wrong comparison opens the wrong conversation silently.
+    //
+    // Validated, not trusted: `messageTs` is DECLARED `string` but crosses an API
+    // boundary that does not enforce it, and the transcript endpoint really does
+    // send epoch NUMBERS (see the fixture in `playwright/voice-recovery.spec.ts`).
+    // Calling a string method on that value threw and blanked the transcript, so
+    // the shape is checked here rather than assumed.
+    //
+    // A number is an epoch and already absolute; `toDate` owns the
+    // seconds-vs-milliseconds rule for the whole app, so it is not re-guessed here.
+    // A STRING has to carry `Z` or an explicit `±HH:MM`: `Date.parse('2026-09-11T23:39:00')`
+    // reads a bare local time, so the same row would mean a different instant per
+    // viewer timezone, and a viewer behind UTC shifts it forward far enough to let a
+    // slot minted after the row pass the check.
+    () => {
+      const raw: unknown = messageTs
+      const absolute = typeof raw === 'number'
+        || (typeof raw === 'string' && /(?:Z|[+-]\d{2}:?\d{2})$/.test(raw.trim()))
+      const when = absolute ? toDate(raw as string | number) : null
+      return {
+        onSessionOpen,
+        sessions,
+        activeSession,
+        writtenAtEpoch: when ? Math.floor(when.getTime() / 1000) : undefined,
+      }
+    },
+    [onSessionOpen, sessions, activeSession, messageTs],
   )
-
-  // Pre-compute the widget index for each widget block (0-based ordinal of
-  // widgets within this message). WidgetFrame uses (messageTs, widgetIndex)
-  // to derive a stable slug when the agent didn't emit an explicit one, so
-  // bookmark state survives refreshes and prevents save→refresh duplicates.
-  // Memoized so each BlockRenderer gets a stable widgetIndex reference
-  // between renders, so it doesn't defeat memo() if anyone later wraps
-  // BlockRenderer.
-  //
-  // Must run before any conditional return — Rules of Hooks. (rawMode flips
-  // via a settings toggle which usually re-mounts this component anyway,
-  // but we keep hook order strict for safety.)
-  const widgetIndices = useMemo(() => {
-    const out: number[] = new Array(blocks.length).fill(-1)
-    let n = 0
-    for (let i = 0; i < blocks.length; i++) {
-      if (blocks[i].type === 'widget') { out[i] = n; n++ }
-    }
-    return out
-  }, [blocks])
 
   // Index of the last markdown block — the streaming tail that gets the glow
   // (only when `glow` is set). -1 if the message ends in a non-markdown block.
@@ -4230,7 +4393,6 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             key={block.startLine != null ? `line-${block.startLine}` : `idx-${i}`}
             block={block} prevBlock={blocks[i - 1]} onFileOpen={onFileOpen} sourcePos={sourcePos}
             messageTs={messageTs}
-            widgetIndex={widgetIndices[i] >= 0 ? widgetIndices[i] : undefined}
             slotKey={slotKey}
             glow={glow && i === lastMarkdownIdx}
             // Same gate `glow` uses — the last markdown block of a streaming

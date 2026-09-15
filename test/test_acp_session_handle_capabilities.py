@@ -494,35 +494,40 @@ def test_both_drivers_classify_a_config_option_rejection_alike():
     """The two model-push copies must recognise the same rejection signals.
 
     The ladder's ORDER is shared -- both drivers call
-    ``AcpClient._model_config_candidates`` -- but the CLASSIFICATION cannot be,
-    because each copy calls its own send seam. That leaves the subtle half
-    duplicated, and its divergence is silent: a copy that stopped treating one
-    signal as a value refusal would re-raise instead of trying the next spelling,
-    the session would fail to start, and both copies would still parse and still
-    pass their own tests.
-
-    Three signals, and each means "the host rejected the VALUE, try the next
-    spelling" rather than "this option does not exist": one substring for a host
-    that names the option in its message, one for a host that names it
-    differently, and a bare invalid-params CODE for a host that sends no detail at
-    all -- there the code IS the rejection, because the request shape is fixed and
-    the value is the only thing that varied.
+    ``AcpClient._model_config_candidates`` -- and so is the CLASSIFICATION now:
+    both call the module-level ``_is_config_value_rejection``, so the value
+    signals ("the host rejected the VALUE, try the next spelling") have one home
+    and cannot drift. What each copy still owns is the ``unknown config option``
+    branch (the OPTION does not exist) and the effort-pair split that runs once
+    the ladder is exhausted; this guard pins that both copies carry both, and
+    that the shared classifier carries every value signal.
     """
     import inspect
 
+    from kiro_crew.acp import client as client_mod
     from kiro_crew.acp.client import AcpClient
     from kiro_crew.acp.session_handle import AcpSessionHandle
 
-    signals = ("unknown config option", "config option model", "_JSONRPC_INVALID_PARAMS")
     client_src = inspect.getsource(AcpClient._push_model_config_option)
     handle_src = inspect.getsource(AcpSessionHandle._push_model_config_option)
-    for signal in signals:
-        assert signal in client_src, f"client lost {signal!r}"
-        assert signal in handle_src, f"handle lost {signal!r}"
+    for shared in (
+        "unknown config option",
+        "_is_config_value_rejection(exc, MODEL_CONFIG_ID)",
+        "_push_model_via_effort_split(",
+    ):
+        assert shared in client_src, f"client lost {shared!r}"
+        assert shared in handle_src, f"handle lost {shared!r}"
 
     # Neither copy may grow a branch the other lacks: an extra `in lowered` test on
     # one side is a rejection the other still re-raises on.
     assert client_src.count("in lowered") == handle_src.count("in lowered")
+
+    # The shared classifier is where the value signals live: one substring for a
+    # host that names the option in its message, and a bare invalid-params CODE for
+    # a host that sends no detail at all.
+    classifier_src = inspect.getsource(client_mod._is_config_value_rejection)
+    assert 'f"config option {config_id}"' in classifier_src
+    assert "_JSONRPC_INVALID_PARAMS" in classifier_src
 
 
 def test_the_candidate_ladder_has_one_home():

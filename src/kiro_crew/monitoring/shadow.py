@@ -106,6 +106,12 @@ async def run_shadow_probe(
         staged.last_observation = deepcopy(result.canonical)
         staged.last_fingerprint = observation.fingerprint
         staged.last_observed_at = now
+    if decision is MonitorDecision.WAKE_ACTIONABLE:
+        # Record that a wake was DECIDED for this fingerprint, next to the
+        # persist. The shadow path deliberately does not deliver, but the field
+        # records the decision, not the delivery, so the re-alert period is
+        # measured from here exactly as on the delivering path.
+        staged.coalesce_alerted[observation.fingerprint] = now
     if decision in {
         MonitorDecision.STOP_SUCCESS,
         MonitorDecision.STOP_BLOCKED,

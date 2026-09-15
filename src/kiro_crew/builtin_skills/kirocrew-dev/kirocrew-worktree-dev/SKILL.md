@@ -43,33 +43,36 @@ make it green. For test authoring, flakes, isolation or suite speed, load
 `writing-tests` and the owning section of
 `docs/system-specs/common/testing-conventions.md` before fixing the test.
 
-During iteration, run `python3 scripts/local-gate.py` from the worktree.
-`--dry-run` prints the plan, `--base REF` selects a base and `--full` forces both
-surfaces. Do not hand-narrow its classification: meta, mixed or unreadable diffs
-fall back to the full gate. The script is an ITERATION gate, never a push gate.
-Before publication, MUST load [prepare-pr](../prepare-pr/SKILL.md) and run its
-complete resolved `gates[]` floor from the base-ref profile. That skill alone owns
-PR preparation, local reviewers, history, dispositions and push-to-green steps.
+During iteration, run `python3 scripts/local-gate.py` from the worktree. It
+runs the tests RELATED to the diff on both surfaces with a bounded worker count
+and never escalates to a full suite -- meta, mixed and large diffs all get a
+related set; an unreadable diff exits 2 and runs nothing. The full suite is CI's
+job; `--full` exists for a human who asks. `--dry-run` prints the plan,
+`--base REF` selects a base. Before publication, MUST load
+[prepare-pr](../prepare-pr/SKILL.md) and run its complete resolved `gates[]`
+floor from the base-ref profile. That skill alone owns PR preparation, local
+reviewers, history, dispositions and push-to-green steps.
 
 Minimum manual checks, not a replacement for that floor:
 
 ```bash
-python -m pytest -q
+python3 scripts/local-gate.py
 isort --check-only src/kiro_crew test
 flake8 src/kiro_crew test
 mypy src/kiro_crew/
 cd website
-npx tsc -b
+npx tsc -p tsconfig.app.json
 npx vitest run
 cd ..
 ```
 
 - Rebuild and stage frontend dist BEFORE backend tests that read static assets.
-- Full pytest uses `setup.cfg`'s `-n auto --dist loadgroup` and
-  `--max-worker-restart=2`. Keep grouping for `xdist_group` serialization. The
-  root conftest budgets workers by free memory and concurrent runs; explicit
-  `-n <N>` bypasses it. Check host headroom before a full suite. A scoped
-  subagent may use serial targeted tests; the parent owns aggregate gates.
+- A bare `python -m pytest` (the full suite, for a human who wants it) uses
+  `setup.cfg`'s `-n auto --dist loadgroup` and `--max-worker-restart=2`. Keep
+  grouping for `xdist_group` serialization. The root conftest budgets workers by
+  free memory and concurrent runs; explicit `-n <N>` bypasses it. Check host
+  headroom before a full suite. The gate scripts pass their own bounded `-n`.
+  A scoped subagent may use serial targeted tests; the parent owns aggregate gates.
 - To omit coverage during iteration without dropping the parallel safeguards:
 
   ```bash

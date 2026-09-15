@@ -133,6 +133,18 @@ silently. If those two fields are far behind main, distrust the status.
 | `implemented` | Every phase is verifiably on main. |
 | `superseded` | Replaced. `superseded-by` names the replacement. |
 
+The First Principles review lane reads this field, from the **base** commit,
+as the record of a product-shape decision: a change to a default, to what a
+first-class loop, monitor, agent, skill or command does by default, or a
+removal or replacement of a user-facing capability, must trace to a document
+here whose status is one of `accepted`, `in-progress`, `partial` or `implemented`
+(a closed set: `draft`, `superseded` and any undefined value are not a decision,
+and a `partial` plan main deliberately diverged from does not cover the diverged
+shape) -- or to a maintainer's
+`/ai-review override first-principles <head>` on the PR. A PR that flips this
+field, or ships the RFC beside the change, has proposed a decision, not
+recorded one; see `docs/ci/ci-and-reviews.md`.
+
 `partial` is the most common status and the most dangerous one to read
 carelessly — several documents here describe a plan that main only partly
 follows, and two describe a plan main **deliberately diverged from**.

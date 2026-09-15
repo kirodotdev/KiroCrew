@@ -4,6 +4,11 @@
 
 Persistent conversation history with provenance tracking and LLM-driven consolidation. Conversations survive session expiry and gateway restarts.
 
+Private essential-context receipts are not transcript metadata and are never
+restored as authority. A resumed provider gets a current complete snapshot even
+when native history contains the previous copy. User/history replay identity and
+current-request exclusion remain independent of essential-envelope deduplication.
+
 Consolidation resolves its destination through the same strict recorded memory
 binding as interactive turns, before starting an extraction provider. A named
 member store must be declared, readable and prepared; malformed or unavailable
@@ -87,6 +92,12 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
 - `recent_with_provenance(key)` — entries with source citations
 - `list_sessions()` — lists all sessions with title (first user message or LLM-generated). Sort key uses ISO `created` string consistently (defaults to ISO from `st_mtime` if no metadata `created` field, ensuring string-only comparisons). Each returned session's meta dict also carries `folder_id` when present in the persisted metadata line, so sessions can be grouped by the folder they were filed in.
 - `agent_usage()` — returns `{agent_name: (session_count, last_used_mtime)}`; built on `list_sessions()` so it inherits canonical-session dedup + symlink-skip (counts per logical conversation). Used by `GET /api/agents` to order the roster most-used-first, degrading to config order on failure.
+- `history_index.py` stores file freshness identities without truncation: signed-64-bit
+  `st_dev`/`st_ino` values remain SQLite INTEGERs; wider values use prefixed decimal
+  TEXT (`i:<value>`) to avoid INTEGER-affinity conversion to floating point. Sync,
+  freshness checks, shortlist validation and snippet reads use the same encoding.
+  Existing integer rows and schema version 2 remain compatible; unsigned Windows
+  device IDs and 128-bit inode IDs do not require an index migration.
 - `search_sessions(query, limit=50)` — case-insensitive substring content search over the newest `_SEARCH_SCAN_WINDOW` session JSONL files; the ONE ranking shared by the dashboard history filter, the `search_chat_history` MCP tool, and Discord session resume. The query is parsed by `parse_search_query` into needles: non-CJK terms are required substrings (AND over the document); a spaceless-script run (Han ideographs + kana; NOT Hangul, since modern Korean is space-separated) gates on its individual characters (required, down-weighted) plus an adjacency floor — at least one of the run's character bigrams must hit somewhere, so a spaceless multi-word CJK query matches documents containing the words apart (each word is a bigram hit) while scatter-only character noise is excluded, and adjacency dominates the ranking; the floor is waived when the query's bigram set exceeds its cap (a partial set cannot prove no-adjacency-anywhere, so truncation only ever loosens). Occurrence counts are weighted per needle, length-normalized, title-boosted, phrase-bonused, then multiplied by a bounded recency boost (×2.5 for a session modified now, decaying toward ×1 with a 30-day half-weight — never a penalty; sized so a year-old double mention loses to today's single mention while a decisively better old match still wins), and capped to `limit` results. Exposed via `GET /api/sessions/search?q=<q>&limit=<n>` (min 2 chars); used by the dashboard history filter to find sessions by content (CR ids, error messages, file paths) rather than title alone. Returns the same meta dicts as `list_sessions()`, so each search hit likewise carries `folder_id` (when present), letting the sidebar group results by folder. Snippet builders (`_content_snippet`, mcp_core's `_extract_history_snippet`) derive their needles from the same parse via `snippet_needles` (phrase first, then whole terms/bigrams, lone CJK characters last) so match and excerpt cannot drift apart. The fold/snippet memos backing the search are keyed by the sanitized `path.stem` (from `list_sessions`' meta dicts) while writers invalidate under the logical session key; `_invalidate_cache`'s identity-wide pops are what connect the two spellings, so a housekeeping rewrite that restores the file's mtime still drops the memo and search stops matching text the transcript no longer contains.
 - `needles_match_text(needles, folded_text)` — the single-string form of `search_sessions`' match gate (required needles as substrings + the CJK adjacency floor), for callers filtering one text field; Discord session resume's zero-hit title fallback uses it so title matching cannot grow a second spelling of tokenization.
 - `read_file_change_messages(key)` — a lightweight Artifacts projection that streams one transcript as bytes, skips lines without the serialized `"file_changes"` key before JSON parsing, and retains only `ts` plus `meta.file_changes` in its own bounded, file-stamped cache. It never warms `_msg_cache`, so scanning the session-document firehose cannot retain the full parsed transcript corpus.
@@ -866,6 +877,106 @@ inner JSONL fallback; only an absent replay requests fallback construction.
 4. Session expires (30min idle) → provider killed
 5. User returns → new session with history re-injected
 6. After 10+ messages → background consolidation → structured memory updated
+
+## Inline Image Attachments (`chat_attachments.py`)
+
+A message's inline images are session-scoped content and are stored with its
+transcript. `![alt](/abs/path.png)` is resolved off disk by the dashboard at VIEW
+time (`/api/file-raw`), and the path an agent writes normally points into its own
+per-process scratch directory (`agent_scratch.py`), which is reclaimed when the
+agent process dies — so the reference outlives the bytes and the transcript
+renders a missing-file chip.
+
+At each write boundary the referenced image is copied into
+`<sessions dir>/<transcript stem>.attachments/<sha256[:16]>-<basename>` and the
+**persisted** destination is rewritten to point there. Two boundaries share the
+one helper, `persist_inline_images`:
+
+| Boundary | Covers |
+|---|---|
+| `ConversationLog.append` / `append_if_absent` | agent, channel, cron and workflow rows |
+| `chat_persistence._build_message_entry` | the dashboard slot save's window re-serialization |
+
+Contract:
+
+- **Copy, never move.** The original file stays where the agent put it. The
+  dashboard slot save COMMITS the rewritten destination back into its in-memory
+  row: the save re-serializes the whole window on every flush, so a row still
+  naming the scratch file would be re-resolved each time and, once scratch is
+  reclaimed, overwrite the good persisted path with the dead one. The live UI
+  reads the image from disk at view time either way.
+- **Content-addressed**, so one image referenced by many messages is stored once.
+- **Idempotent**: a destination already inside the attachments directory is left
+  alone, which lets the two boundaries compose and lets the slot save
+  re-serialize its window on every flush without re-copying.
+- **A preserved image corroborates an id match.** The two boundaries can meet
+  one message at different times: the slot save (or an injector's
+  `append_if_absent`) lands it with the image rewritten to its stored copy, and
+  by the time the other writer runs the agent's scratch file can be gone, so
+  that writer's rewrite fails open to the original path and the bodies disagree.
+  Both id-aware dedup sites — `append_if_absent`'s same-`meta.mid` check and the
+  slot save's pass-0 fold in `_frozen_prefix_and_foreign_appends` — therefore
+  accept `same_text_modulo_images` (equal text, image destinations compared by
+  the stored copy's own naming, at least one already inside this transcript's
+  attachments directory) as corroboration alongside equal body or equal `ts`.
+  Corroboration stays required, because `meta.mid` is caller-suppliable; body
+  equality stays the rule for id-less callers.
+- **`role != "user"`**, the same gate the redaction boundary uses: an inline image
+  is agent output, and a path the user typed names a file of their own.
+- **Bounded scan.** A row with more than `MAX_IMAGE_OPENERS_PER_MESSAGE` (256)
+  `![` openers is left as written without scanning: the reference scanner is
+  quadratic in the opener count and this runs under the session lock on
+  LLM-authored text. The Storage page's empty-shell `rmdir` of a drained
+  attachments directory re-takes the transcript lock, because a resuming writer
+  creates that directory and lands its first image under the same lock.
+- **Fail-open per image**, at debug level. Skipped: remote and `data:`
+  destinations, relative paths, non-image extensions, anything over 25 MiB,
+  sensitive paths, and non-regular files — **symlinks are refused, never
+  followed**, because the copy lands where the dashboard serves it.
+- `delete_session` takes the attachments with the transcript in three
+  all-or-nothing steps: rename the directory aside (one atomic rename — a failure
+  aborts with transcript and images intact), unlink the transcript (a failure
+  renames the directory back, so the retained rows still resolve), then purge the
+  staged copy. A purge residue (Windows: a file still open in a viewer) is an
+  orphan under a `.attachments.trash-*` name that nothing serves, logged at
+  WARNING for the operator; it never fails the delete and never leaves a
+  transcript pointing at missing pictures.
+- The Storage page's reclaim (`session_storage.py`) treats the directory as the
+  session's third half: `_unit_paths` lists its files, so they are measured with
+  the session, moved to the trash batch under `crew/<stem>.attachments/`, restored
+  with it, and emptied with it; an image written recently keeps the session
+  fresh. The drained directory is removed after the batch is durable and
+  recreated by restore. Only regular files are taken -- a foreign entry stays,
+  and so does the directory holding it.
+
+Reads go through `hooks.safe_read_file_bytes_nolink`, the house chokepoint: it
+opens the final component as itself on every platform and validates the
+descriptor it opened (regular, not hardlinked, not sensitive), so no
+check-to-use window remains.
+
+**Reclamation is delete-only, by decision.** Rotation moves old rows to
+`archive/`, and those rows still name their attachments — so rotation orphans
+nothing and must not sweep; sweeping against the live transcript alone would
+break the references the archive keeps. An attachment becomes genuinely
+unreferenced only when archive retention expires its last row. The ceilings are
+**per message** (12 images, 64 MiB, 25 MiB each); across messages a session's
+attachments grow with every distinct image it posts until the session is
+deleted — content-addressing dedups repeats, not a stream of unique pictures. A
+per-session byte ceiling, or a sweep coupled to archive-retention expiry, is a
+follow-up ([issue #10437](https://github.com/kirodotdev/KiroCrew/issues/10437)), not part of the write
+boundary.
+
+**Known limitation:** the rewritten destination is the absolute path of the
+attachments directory. Relocating or restoring the data home under a different
+path breaks every persisted image reference the same way the original scratch
+path did; a home-relative encoding belongs with the next renderer change. For
+the same reason attachments do not travel with a session transfer or export
+(`session_transfer.py` carries the transcript text and drops host-local
+references by design), exactly as the scratch path they replace never did.
+
+`sessions/` is write-protected but deliberately not read-sensitive
+(`security/paths.py`), so `/api/file-raw` serves an attachment under the existing
+sensitive-path policy.
 
 ## Source Provenance
 

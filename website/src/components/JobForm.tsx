@@ -130,13 +130,13 @@ function buildBody(
     // Edit mode always sends model so clearing an override ("" = inherit)
     // persists; create mode omits it when empty like other optional fields.
     if (isEdit || f.model) body.model = f.model
-    if (f.approvalMode) body.approval_mode = f.approvalMode
+    if (isEdit || f.approvalMode) body.approval_mode = f.approvalMode
     // Only the agent kind has an injected context to trim. A script or command
     // job takes no agent turn, so sending this would store a flag that can
     // never do anything.
     body.minimal_context = f.minimalContext
   }
-  if (f.channel) body.channel = f.channel
+  if (isEdit || f.channel) body.channel = f.channel
   body.silent = f.silent
   body.strict_schedule = f.strictSchedule
   body.hide_in_chat = f.hideInChat

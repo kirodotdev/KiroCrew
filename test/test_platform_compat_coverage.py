@@ -2850,7 +2850,7 @@ class TestDescendantHandleScanCleanup:
 
         closed: list[int] = []
         monkeypatch.setattr(pc, "_windows_process_parent_map", _parent_map)
-        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 9001)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: 9001)
         monkeypatch.setattr(
             pc,
             "_windows_process_handle_identity",
@@ -2861,16 +2861,54 @@ class TestDescendantHandleScanCleanup:
             pc.descendant_termination_handles(100, {}, 8001)
         assert closed == [9001]
 
-    def test_skips_children_whose_handle_cannot_be_opened(self, monkeypatch):
-        # A child that exits between the snapshot and the open is not an error;
-        # it just is not ours to terminate.
+    @pytest.mark.parametrize("outcome", ["live", "unknown", "gone"])
+    def test_unopenable_child_requires_proven_absence(self, monkeypatch, outcome):
+        # OpenProcess denial is not death, even if a query-only probe says False.
+        # Only a fresh complete snapshot can prove that the child disappeared.
+        scans = 0
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            if scans > 1:
+                if outcome == "unknown":
+                    raise OSError("snapshot unavailable")
+                if outcome == "gone":
+                    return {}
+            return {101: 100}
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: None)
+        monkeypatch.setattr(pc, "pid_exists", lambda _pid: False)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+        if outcome == "gone":
+            assert pc.descendant_termination_handles(100, {}, 8001) == {}
+        else:
+            with pytest.raises(OSError, match="unavailable"):
+                pc.descendant_termination_handles(100, {}, 8001)
+        assert scans == 2
+
+    @pytest.mark.parametrize("unreadable", [True, False])
+    def test_unknown_identity_refuses_but_proven_foreign_child_is_excluded(
+        self, monkeypatch, unreadable
+    ):
+        closed: list[int] = []
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: {101: 100})
-        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: None)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: 9001)
         monkeypatch.setattr(
-            pc, "_windows_process_handle_identity", lambda _h: (100, 10, None)
+            pc,
+            "_windows_process_handle_identity",
+            {8001: (100, 10, 20), 9001: None if unreadable else (101, 21, None)}.get,
         )
-        assert pc.descendant_termination_handles(100, {}, 8001) == {}
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        if unreadable:
+            with pytest.raises(OSError, match="identity unreadable"):
+                pc.descendant_termination_handles(100, {}, 8001)
+        else:
+            assert pc.descendant_termination_handles(100, {}, 8001) == {}
+        assert closed == [9001]
 
 
 class TestCloseProcessHandleWindows:

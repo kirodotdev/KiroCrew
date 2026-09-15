@@ -57,7 +57,7 @@ const NOTES = [
   '- Touch devices get a Paste soft key in the terminal',
   '- MCP servers are probed instead of assumed, so the panel reports what is genuinely usable',
   '',
-  '### Before you upgrade',
+  '### Choosing your update lane',
   '',
   '- Updates follow **Stable** by default; re-opt into Insider from Settings \u2192 About',
 ].join('\n')

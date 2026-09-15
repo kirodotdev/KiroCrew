@@ -27,6 +27,7 @@ from aiohttp import web
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew import session_directive
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
+from kiro_crew.agent_discovery import AmbiguousAgentSpecError, spec_by_declared_name
 
 # The migration module owns the pre-migration leftover-tab spelling.
 from kiro_crew.channel_transcript_migration import _orphan_target_stem
@@ -2835,7 +2836,7 @@ def _service_wait_ping(
         state.push_slots_update()
 
 
-def _read_managed_tool_policy_sync(agent_path: Path) -> dict[str, Any] | None:
+def _read_managed_tool_policy_sync(agents_dir: Path, agent_name: str) -> dict[str, Any] | None:
     """Read one agent's ``managedToolPolicy`` from disk. Blocking.
 
     Split out so the whole filesystem transaction -- the existence probe, the
@@ -2843,16 +2844,38 @@ def _read_managed_tool_policy_sync(agent_path: Path) -> dict[str, Any] | None:
     the read would leave the ``stat`` and the parse on the gateway's single event
     loop, which is the same defect in a smaller form.
 
+    The spec is resolved by its declared ``name`` first, through
+    :func:`kiro_crew.agent_discovery.spec_by_declared_name`, and
+    ``<agent_name>.json`` is read only when no spec declares the name -- the
+    same order the KAS projection uses to start the session, so the policy
+    handed to a session's MCP servers is the policy of the spec that session
+    runs. A package-installed agent is namespaced on disk as
+    ``<package>-<name>.json`` and dispatchable under its bare name, so a
+    filename-only read here would hand exactly that agent an empty policy;
+    and a misnamed ``<agent_name>.json`` declaring some other agent must not
+    hand this one that agent's policy. The scan reads specs it did not name in
+    a user-writable directory, so it goes through the hardened reader,
+    labelled ``session_tool_policy`` / ``dashboard``.
+
     ``None`` means "no policy to report", and is deliberately distinct from an
     empty dict. The caller answers ``{}`` for both, but only a dict is an agent
     whose config was read and understood, which is what its SEL ``ok`` record
     attests -- an unreadable or malformed file is not an agent with no policy.
     Collapsing the two would start logging success for files this never parsed.
+
+    Propagates :class:`kiro_crew.agent_discovery.AmbiguousAgentSpecError` when
+    two specs declare *agent_name*: that is not "no policy" either, and the
+    caller records it as a denial rather than answering it silently.
     """
+    agent_path = agents_dir / f"{agent_name}.json"
     try:
-        if not agent_path.is_file():
-            return None
-        config = json.loads(agent_path.read_text(encoding="utf-8"))
+        config: Any = spec_by_declared_name(
+            agents_dir, agent_name, operation="session_tool_policy", source="dashboard"
+        )
+        if config is None:
+            if not agent_path.is_file():
+                return None
+            config = json.loads(agent_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(config, dict):
@@ -2940,8 +2963,23 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
     # calls this to filter its tool list, so it runs on ordinary request traffic
     # rather than at startup: the stat, the read and the parse would otherwise
     # execute on the single loop every gateway request shares.
-    agent_path = kiro_agents_dir() / f"{agent_name}.json"
-    policy = await asyncio.to_thread(_read_managed_tool_policy_sync, agent_path)
+    try:
+        policy = await asyncio.to_thread(
+            _read_managed_tool_policy_sync, kiro_agents_dir(), agent_name
+        )
+    except AmbiguousAgentSpecError as exc:
+        # Two specs declare this agent's name. The policy is undefined, not
+        # empty, so the empty answer the caller fails open on is recorded as a
+        # denial naming both files rather than passed off as "no policy".
+        _sel().log_api_access(
+            caller=session_key,
+            operation="session_tool_policy",
+            outcome="denied",
+            source="dashboard",
+            resources=f"agent={agent_name}",
+            error=str(exc),
+        )
+        return web.json_response({})
     if policy is None:
         # Missing, unreadable, malformed, or a non-dict policy: answer the same
         # empty policy as before and, as before, do not log it as a success.

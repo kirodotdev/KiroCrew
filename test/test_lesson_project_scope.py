@@ -418,6 +418,103 @@ class TestLessonStoreScope:
         assert rows == {None: None, "src/pkg": "not this"}
 
 
+class TestLessonStoreRemoveScope:
+    """``LessonStore.remove`` honours ``(rule, repo_scope)`` identity.
+
+    Substring matching on the rule is deliberate -- ``test_learn`` pins it --
+    so scope is a DISCRIMINATOR, not an exact-match switch: the same rule
+    scoped to a repo and stored globally are two distinct rows, and a selector
+    picks which of them a delete reaches.
+    """
+
+    def _store(self, tmp_path):
+        return LessonStore(base_dir=tmp_path)
+
+    def _two_rows(self, tmp_path):
+        store = self._store(tmp_path)
+        store.save(Lesson(ts="t", rule="run the gate", category="tool"))
+        store.save(Lesson(ts="t", rule="run the gate", category="tool", repo_scope="src/pkg"))
+        return store
+
+    def test_no_selector_removes_every_scope_as_before(self, tmp_path):
+        # The historical caller passes no scope; both the global and the scoped row
+        # match the substring and both go. This is the behaviour existing callers
+        # and test_learn's test_remove_matching rely on -- unchanged.
+        store = self._two_rows(tmp_path)
+        assert store.remove("run the gate")
+        assert store.load_all() == []
+
+    def test_selector_removes_only_the_named_scope(self, tmp_path):
+        store = self._two_rows(tmp_path)
+        assert store.remove("run the gate", "src/pkg")
+        left = store.load_all()
+        assert [le.repo_scope for le in left] == [None]
+
+    def test_empty_selector_removes_only_the_global_row(self, tmp_path):
+        # An empty selector canonicalises to None and targets the unscoped rows,
+        # leaving the scoped one -- the mirror of the case above.
+        store = self._two_rows(tmp_path)
+        assert store.remove("run the gate", "")
+        left = store.load_all()
+        assert [le.repo_scope for le in left] == ["src/pkg"]
+
+    def test_selector_for_an_absent_scope_removes_nothing(self, tmp_path):
+        store = self._two_rows(tmp_path)
+        assert not store.remove("run the gate", "some/other")
+        assert len(store.load_all()) == 2
+
+    def test_selector_folds_trailing_slash_and_backslash(self, tmp_path):
+        # canonical_scope on both sides, so "src/pkg", "src/pkg/" and "src\\pkg"
+        # all address the one stored scope -- matching the write path's identity.
+        store = self._two_rows(tmp_path)
+        assert store.remove("run the gate", "src\\pkg/")
+        assert [le.repo_scope for le in store.load_all()] == [None]
+
+    def test_substring_still_matches_within_the_named_scope(self, tmp_path):
+        # Scope narrows the match; it does not turn the rule match exact.
+        store = self._store(tmp_path)
+        store.save(
+            Lesson(ts="t", rule="always run the gate first", category="tool", repo_scope="src/pkg")
+        )
+        store.save(Lesson(ts="t", rule="always run the gate first", category="tool"))
+        assert store.remove("run the gate", "src/pkg")
+        assert [le.repo_scope for le in store.load_all()] == [None]
+
+    def test_a_selector_naming_no_usable_scope_is_refused(self, tmp_path):
+        # "/" names nothing; "/src/pkg" is the absolute spelling the write
+        # surface refuses, and canonical folding would land it on the stored
+        # "src/pkg" rows -- rows the caller never admissibly named. Both are
+        # refused outright and no row is touched.
+        store = self._two_rows(tmp_path)
+        with pytest.raises(ValueError):
+            store.remove("run the gate", "/")
+        with pytest.raises(ValueError):
+            store.remove("run the gate", "/src/pkg")
+        assert len(store.load_all()) == 2
+
+    def test_a_broken_stored_scope_is_not_claimed_by_the_global_selector(self, tmp_path):
+        # The write path canonicalises a scope before storing it, so a stored
+        # "/" can only arrive from an imported or hand-edited file -- seeded
+        # here as a raw JSONL line. That row is scoped-but-broken, not global:
+        # the injection gate withholds it, so the explicit-global selector
+        # must not fold it to None and tombstone it. Only the unselective
+        # (absent) path reaches it.
+        store = self._store(tmp_path)
+        store.save(Lesson(ts="t", rule="run the gate", category="tool"))
+        with store._path.open("a") as fh:
+            fh.write(
+                json.dumps(
+                    {"ts": "t", "rule": "run the gate", "category": "tool", "repo_scope": "/"}
+                )
+                + "\n"
+            )
+        assert store.remove("run the gate", "")
+        left = store.load_all()
+        assert [le.repo_scope for le in left] == ["/"]
+        assert store.remove("run the gate")
+        assert store.load_all() == []
+
+
 class TestVectorStoreLessonScope:
     """The vector store is the PRIMARY injection path, so the gate must hold here.
 
@@ -769,5 +866,114 @@ class TestVectorStoreLessonScope:
             assert "prefer tabs over spaces" in out
             assert "bump the manifest version" not in out
             assert "omitted" not in out
+        finally:
+            store.close()
+
+
+class TestVectorStoreDeleteScope:
+    """``VectorMemoryStore.delete_lesson`` honours ``(rule, repo_scope)``.
+
+    The vector store is the PRIMARY path, so the same-rule-in-two-scopes rows
+    it keeps distinct (``test_the_same_rule_in_two_scopes_is_two_rows``) are
+    deletable independently. Substring matching on the rule stays; scope is
+    the discriminator.
+    """
+
+    def _store(self, tmp_path):
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "m.db", embedding_dim=4)
+        store.init()
+        return store
+
+    def _two_rows(self, store):
+        assert store.write_lesson("run the gate", "tool")
+        assert store.write_lesson("run the gate", "tool", None, repo_scope="src/pkg")
+
+    def _scopes(self, store):
+        return {_lesson_scope(json.loads(r["value_json"])) for r in store.get_lessons()}
+
+    def test_no_selector_removes_every_scope_as_before(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            self._two_rows(store)
+            assert store.delete_lesson("run the gate")
+            assert store.get_lessons() == []
+        finally:
+            store.close()
+
+    def test_selector_removes_only_the_named_scope(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            self._two_rows(store)
+            assert store.delete_lesson("run the gate", "src/pkg")
+            assert self._scopes(store) == {None}
+        finally:
+            store.close()
+
+    def test_empty_selector_removes_only_the_global_row(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            self._two_rows(store)
+            assert store.delete_lesson("run the gate", "")
+            assert self._scopes(store) == {"src/pkg"}
+        finally:
+            store.close()
+
+    def test_selector_for_an_absent_scope_removes_nothing(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            self._two_rows(store)
+            assert not store.delete_lesson("run the gate", "no/such")
+            assert len(store.get_lessons()) == 2
+        finally:
+            store.close()
+
+    def test_selector_folds_trailing_slash_and_backslash(self, tmp_path):
+        store = self._store(tmp_path)
+        try:
+            self._two_rows(store)
+            assert store.delete_lesson("run the gate", "src\\pkg/")
+            assert self._scopes(store) == {None}
+        finally:
+            store.close()
+
+    def test_a_selector_naming_no_usable_scope_is_refused(self, tmp_path):
+        # "/" names nothing; "/src/pkg" is the absolute spelling the write
+        # surface refuses, and canonical folding would land it on the stored
+        # "src/pkg" rows -- rows the caller never admissibly named. Both are
+        # refused outright and no row is touched.
+        store = self._store(tmp_path)
+        try:
+            self._two_rows(store)
+            with pytest.raises(ValueError):
+                store.delete_lesson("run the gate", "/")
+            with pytest.raises(ValueError):
+                store.delete_lesson("run the gate", "/src/pkg")
+            assert len(store.get_lessons()) == 2
+        finally:
+            store.close()
+
+    def test_a_broken_stored_scope_is_not_claimed_by_the_global_selector(self, tmp_path):
+        # set_semantic validates size, not scope admissibility, so a lesson
+        # row can carry a stored scope the gate refuses ("/"). That row is
+        # scoped-but-broken, not global: the injection gate withholds it
+        # (_lesson_scope_unusable), so the explicit-global selector must not
+        # fold it to None and tombstone it. The unselective (absent) path is
+        # what removes it.
+        store = self._store(tmp_path)
+        try:
+            assert store.write_lesson("run the gate", "tool")
+            store.set_semantic(
+                "lesson.broken",
+                {"rule": "run the gate", "category": "tool", "repo_scope": "/"},
+                1.0,
+                "test",
+            )
+            assert store.delete_lesson("run the gate", "")
+            left = [json.loads(r["value_json"]).get("repo_scope") for r in store.get_lessons()]
+            assert left == ["/"]
+            assert store.delete_lesson("run the gate")
+            assert store.get_lessons() == []
         finally:
             store.close()

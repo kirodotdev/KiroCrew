@@ -23,12 +23,14 @@ from kiro_crew.agent_discovery import (
     SCOPE_GLOBAL,
     SCOPE_PROJECT,
     AgentInfo,
+    AmbiguousAgentSpecError,
     clear_list_agents_cache,
     clear_project_agent_cache,
     list_agents,
     project_agent_files,
     project_agent_name,
     project_agent_names,
+    spec_by_declared_name,
 )
 
 # caplog collects records from EVERY logger, not just the one at_level() names, so
@@ -1006,3 +1008,89 @@ class TestForkLineageEnrichment:
         (agent,) = list_agents(agents_dir=d)
         assert agent.forked_from == ""
         assert agent.private_to == ""
+
+
+class TestSpecByDeclaredName:
+    """The shared declared-name scan two session-start surfaces resolve through."""
+
+    @staticmethod
+    def _write(agents_dir: Path, filename: str, **fields: object) -> Path:
+        path = agents_dir / filename
+        path.write_text(json.dumps({"name": "kirocrew", **fields}), encoding="utf-8")
+        return path
+
+    def test_a_namespaced_spec_resolves_by_its_declared_name(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="namespaced")
+
+        spec = spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        assert spec is not None and spec["description"] == "namespaced"
+
+    def test_no_declared_match_is_none(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "SomePackage-other.json", name="other")
+        (tmp_path / "other.json").write_text(json.dumps({"name": "other"}), encoding="utf-8")
+
+        assert spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test") is None
+
+    def test_two_specs_declaring_one_name_are_refused_naming_both(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "Alpha-kirocrew.json")
+        self._write(tmp_path, "Beta-kirocrew.json")
+
+        with pytest.raises(AmbiguousAgentSpecError) as exc:
+            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        assert "Alpha-kirocrew.json" in str(exc.value)
+        assert "Beta-kirocrew.json" in str(exc.value)
+
+    def test_only_the_first_matching_parse_is_held(self, tmp_path: Path, monkeypatch) -> None:
+        """The refusal needs the duplicates' PATHS, not their parses.
+
+        Each file is capped by the reader, so the parsed-spec memory the scan
+        holds at its peak is set by how many parses it keeps at once. Holding
+        one per match makes that the number of same-name files in a
+        user-writable directory times the cap; holding one total makes it the
+        cap. (Paths are kept one per candidate either way; they are small and
+        the refusal message needs them.) The bound is a property of
+        the scan WHILE it runs -- once it raises, any list it held dies with its
+        frame either way -- so the probe sits inside the reader: on every read,
+        each earlier parse except the first and the one the loop body last
+        assigned must already be unreachable.
+        """
+        import gc
+        import weakref
+
+        from kiro_crew import agent_discovery
+
+        class _Spec(dict):
+            """A dict that can be weakly referenced."""
+
+        for stem in ("Alpha", "Beta", "Gamma", "Delta"):
+            self._write(tmp_path, f"{stem}-kirocrew.json")
+
+        handed_out: list[weakref.ref] = []
+        retained_mid_scan: list[str] = []
+
+        def _reader(path: Path, *, operation: str, source: str) -> dict:
+            # Reads 0..n-2 are done; read n-2's parse is still the loop's own
+            # ``spec`` local until this call returns, so it is exempt. Read 0 is
+            # the match the scan may return, so it is exempt. Everything else
+            # must be gone.
+            gc.collect()
+            for ref in handed_out[1:-1]:
+                spec = ref()
+                if spec is not None:
+                    retained_mid_scan.append(spec["origin"])
+            spec = _Spec(name="kirocrew", origin=path.name)
+            handed_out.append(weakref.ref(spec))
+            return spec
+
+        monkeypatch.setattr(agent_discovery, "_read_agent_spec", _reader)
+
+        with pytest.raises(AmbiguousAgentSpecError) as exc:
+            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        assert len(handed_out) == 4, "the scan must have read every candidate"
+        assert retained_mid_scan == [], f"parses held past their read: {retained_mid_scan}"
+        # The refusal still names every duplicate: paths are kept, parses are not.
+        for stem in ("Alpha", "Beta", "Gamma", "Delta"):
+            assert f"{stem}-kirocrew.json" in str(exc.value)

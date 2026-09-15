@@ -232,7 +232,7 @@ async def api_members(request: web.Request) -> web.Response:
     # transcript's mtime is the one durable signal that survives restarts and
     # covers live and dormant threads alike. File stats are IO — one thread
     # hop for the whole roster, mirroring the binding reads above.
-    def _read_transcript_tails() -> dict[str, tuple[float, str]]:
+    def _read_transcript_tails() -> dict[str, tuple[float, str, bool]]:
         if state is None or state.conversation_log is None:
             return {}
 
@@ -244,7 +244,7 @@ async def api_members(request: web.Request) -> web.Response:
             text, _ = _h.redact_credentials(text)
             return text
 
-        out: dict[str, tuple[float, str]] = {}
+        out: dict[str, tuple[float, str, bool]] = {}
         for row in rows:
             if not row["slot_key"]:
                 continue
@@ -258,19 +258,30 @@ async def api_members(request: web.Request) -> web.Response:
             mt = state.conversation_log.session_mtime(log_key)
             if not mt:
                 continue
-            preview, msg_ts = state.conversation_log.last_message_info(log_key, sanitize=_sanitize)
+            preview, msg_ts, stopped = state.conversation_log.last_message_info(
+                log_key, sanitize=_sanitize
+            )
             # Order by the newest MESSAGE, not the file: metadata writes and
             # rehydration bump the mtime without any new message, which made
             # rows reorder with no visible cause. mtime remains only as the
             # fallback for pre-timestamp transcript rows.
-            out[row["slot_key"]] = (msg_ts or mt, preview)
+            out[row["slot_key"]] = (msg_ts or mt, preview, stopped)
         return out
 
     tails = await asyncio.to_thread(_read_transcript_tails)
     for row in rows:
-        mt, preview = tails.get(row["slot_key"], (0.0, ""))
+        mt, preview, stopped = tails.get(row["slot_key"], (0.0, "", False))
         row["last_active_ts"] = mt
         row["last_message"] = preview
+        # A locale-independent boolean, NEVER the word "Stopped": the preview
+        # is computed here where the client's locale is unknown, which is why
+        # the trailing stop is SKIPPED from `last_message` rather than rendered
+        # as a sentence. This flag lets the locale-aware client render its own
+        # "Stopped" chip beside the preview, so a thread the user has stopped
+        # does not read as ongoing work. Omitted when false so the common row
+        # stays byte-for-byte what it is without it.
+        if stopped:
+            row["last_message_stopped"] = True
 
     return web.json_response({"members": rows})
 

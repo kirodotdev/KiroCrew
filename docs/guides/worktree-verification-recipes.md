@@ -288,7 +288,7 @@ KIROCREW_E2E_SCENARIOS=1 \
   -n0 --timeout=600 test/e2e/scenarios/
 ```
 
-Add `KIROCREW_E2E_SCENARIOS_REQUIRE=1` when you need a verdict rather than a
+Add `KIROCREW_E2E_REQUIRE=1` when you need a verdict rather than a
 best-effort run: it turns every precondition skip into a failure, so a missing
 venv, an unbuilt SPA bundle or a host with no pod backend cannot read as a pass.
 That is the setting the nightly job uses. Each file also runs alone, so
@@ -310,3 +310,18 @@ correctly and permanently while the pod still answers health.
 
 CI runs this phase nightly on Linux and macOS. See
 [../ci/e2e-gate.md](../ci/e2e-gate.md) for that job.
+
+## Restarting a harness-owned gateway
+
+`spawn_feature_gateway` handles expose `restart()`. It shuts down only the
+process tree owned by that live harness context, refuses if teardown cannot be
+confirmed, then returns a new handle for a new gateway process using the same
+isolated data and agent-spec homes. It does not reseed configuration or replace
+memory bindings. The context manager cleans up the final process and home;
+a handle used after context exit cannot restart anything.
+
+The private workflow E2E uses this operation to reload the original run and
+replay a subtree after a real process restart. That scenario still requires
+actual namespace support and cannot substitute mocked proof or ownership checks.
+The separate gateway restart smoke checks process supervision and V1 replay;
+it is not private-memory isolation evidence.

@@ -261,6 +261,17 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#7248",
         new_default_display="0 (automatic: as many as are registered)",
     ),
+    # A stored False keeps every peer-session tool disabled, including a
+    # conductor whose agent spec deliberately mounts the dashboard server. False
+    # is also the supported global withdrawal, so this stays report-only: Doctor
+    # can name the stale-default possibility without overriding an operator's
+    # explicit security choice.
+    SupersededDefault(
+        dotted_key="agent.session_control",
+        old_default=False,
+        new_default=True,
+        changed_in="#8375",
+    ),
     # A stored 7200 cuts a turn at two hours, which is BELOW the longest turn the
     # shipped budgets legitimately produce, so the turn ends mid-work and reads as
     # the agent

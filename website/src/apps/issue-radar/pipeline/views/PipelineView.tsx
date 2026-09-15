@@ -672,9 +672,9 @@ function LaneRow({
             {lane.title}
           </div>
         ) : null}
-        {/* chips row — Issue Radar's label-chip row. Carries the PR pill (chamfered
-            chip vs plain lane) and any reopen count, as pill chips rather than a
-            bare `▸ #` line. */}
+        {/* chips row — Issue Radar's label-chip row. Carries the `#N` PR pill and
+            any reopen count as pill chips rather than a bare `▸ #` line; renders
+            nothing when the lane has neither. */}
         {(lane.prNumber != null || lane.reopens > 0) && (
           <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
             {lane.prNumber != null && (

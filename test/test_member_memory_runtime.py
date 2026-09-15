@@ -1445,3 +1445,93 @@ def test_transient_history_cleanup_refuses_a_mismatched_protected_store(member_s
     with pytest.raises(ValueError, match="another private store"):
         log.delete_memory_consolidation_session(key, writer)
     assert log._path(key).read_bytes() == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+async def test_task_plan_policy_survives_fresh_gateway_context(tmp_path, monkeypatch, mode):
+    from kiro_crew.context import ContextBuilder, inherit_session_memory
+    from kiro_crew.dashboard.state import DashboardState
+    from kiro_crew.subagent_persistence import read_session_memory_mode
+    from kiro_crew.task_models import SESSION_PREFIX
+    from kiro_crew.taskrunner import TaskRunner
+
+    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", tmp_path / "subagents")
+    log = ConversationLog()
+    builder = ContextBuilder(conversation_log=log)
+    sessions = MagicMock()
+    state = DashboardState(sessions, None, None, 0, context_builder=builder, conversation_log=log)
+    state._slots["parent"] = SimpleNamespace(
+        is_restricted=mode != "persistent", blocks_reads=mode == "temporary"
+    )
+    runner = TaskRunner(sessions=sessions, context_builder=builder, work_dir=tmp_path)
+    run = await runner.plan(
+        input_text="agents:\n  inspect:\n    prompt: Inspect the input\n",
+        source="yaml",
+        session_key="dashboard:parent",
+    )
+    root = f"{SESSION_PREFIX}:{run.task_id}:runtime"
+    assert read_session_memory_mode(root) == mode
+
+    # Neither the original slot, the old context map nor editable metadata is authority.
+    await asyncio.to_thread(log.update_metadata, root, {"memory_mode": "persistent"})
+    fresh = ContextBuilder(conversation_log=ConversationLog())
+    fresh_state = DashboardState(sessions, None, None, 0, context_builder=fresh)
+    assert not fresh._session_memory_modes
+    assert fresh_state._slots.get("parent") is None
+    child = f"{SESSION_PREFIX}:{run.task_id}:task1"
+    from kiro_crew.context import prepare_store_vectors
+
+    with patch("kiro_crew.context.prepare_store_vectors", wraps=prepare_store_vectors) as prepare:
+        assert await inherit_session_memory(fresh, root, child) == ""
+    assert prepare.call_count == (0 if mode == "temporary" else 1)
+    if mode != "persistent":
+        assert fresh.conversation_log.get_metadata(child)["memory_mode"] == mode
+    assert fresh._session_memory_modes[child] == mode
+    assert read_session_memory_mode(child) == mode
+    with patch.object(fresh, "build_session_context", wraps=fresh.build_session_context) as build:
+        await asyncio.to_thread(fresh.build_message, "Inspect", True, child)
+    assert build.call_args.kwargs["blocks_reads"] == (mode == "temporary")
+
+    # Automatic failure learning observes the same recovered policy.
+    runner._ctx = fresh
+    runner._lesson_store = MagicMock()
+    runner._call_llm_for_lesson = AsyncMock(return_value={"rule": "use bounded waits"})
+    await runner._extract_lesson(run.tasks[0], run)
+    assert runner._call_llm_for_lesson.call_count == (1 if mode == "persistent" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "mode"])
+async def test_runtime_policy_damage_refuses_even_with_persistent_history(
+    tmp_path, monkeypatch, damage
+):
+    from kiro_crew.context import ContextBuilder, inherit_session_memory
+    from kiro_crew.dashboard.state import DashboardState
+    from kiro_crew.subagent_persistence import (
+        _session_mode_identity_path,
+        bind_session_memory_mode,
+    )
+
+    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", tmp_path / "subagents")
+    root = "taskrunner:damaged:runtime"
+    bind_session_memory_mode(root, "temporary")
+    record = _session_mode_identity_path(root)
+    if damage == "missing":
+        record.unlink()
+    elif damage == "corrupt":
+        record.write_text("invalid", encoding="utf-8")
+    else:
+        row = json.loads(record.read_text(encoding="utf-8"))
+        row.pop("memory_mode")
+        record.write_text(json.dumps(row), encoding="utf-8")
+    log = ConversationLog()
+    await asyncio.to_thread(log.update_metadata, root, {"memory_mode": "persistent"})
+    builder = ContextBuilder(conversation_log=log)
+    DashboardState(MagicMock(), None, None, 0, context_builder=builder, conversation_log=log)
+    child = "taskrunner:damaged:task1"
+    with pytest.raises(ValueError, match="memory binding unavailable"):
+        await inherit_session_memory(builder, root, child)
+    assert child not in builder._session_memory_modes
+    with pytest.raises(ValueError, match="memory binding unavailable"):
+        bind_session_memory_mode(root, "persistent")

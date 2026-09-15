@@ -14,6 +14,9 @@ const UNUSED_REASON_KEYS = {
 } as const
 import { Btn, IconButton, Input, PanelSectionHeader } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
+import { Link } from 'react-router-dom'
+import { settingsPath } from '../../components/settingsPath'
+import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 
 /**
  * Parse a JSON response, REJECTING on a non-2xx status.
@@ -402,6 +405,30 @@ export function SecretsPanel() {
               </p>
               <div className="space-y-2">
                 {managed.map(secret => (
+                  secret.kind === 'connections_client_secret' ? (
+                    // Owned by Settings → OAuth Apps: the entry is one half of a
+                    // two-store record and its mutation must rebuild the agent
+                    // spec, which only that panel's routes do (the generic vault
+                    // routes answer 409 for this name). Listed so it is not
+                    // mistaken for a stray user secret; edited elsewhere.
+                    <div
+                      key={secret.name}
+                      className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg px-3 py-2 text-sm"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate font-medium text-text">{secret.name}</div>
+                        <div className="text-xs text-muted">
+                          {i18nT('settings.secrets.connections_client_secret_description')}
+                        </div>
+                      </div>
+                      <Link
+                        to={settingsPath({ tab: 'connections', highlight: secret.host ? connectionsOAuthClientEntryId(secret.host) : undefined })}
+                        className="shrink-0 text-xs text-accent hover:underline"
+                      >
+                        {i18nT('settings.secrets.connections_client_secret_manage')}
+                      </Link>
+                    </div>
+                  ) : (
                   <ManagedSecretRow
                     key={secret.name}
                     secret={secret}
@@ -411,6 +438,7 @@ export function SecretsPanel() {
                     onPendingChange={handleManagedPendingChange}
                     frozenByAdd={pendingAddManagedName === secret.name}
                   />
+                  )
                 ))}
               </div>
               </div>

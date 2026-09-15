@@ -967,9 +967,9 @@ def test_write_denied_state_does_not_fall_back_to_chmod_safe(
     def _spy(path, *args, **kwargs):
         if Path(str(path)).resolve() == config_file.resolve():
             captured["called"] = True
-        # No-op: don't run real atomic_write (which would shell out to icacls
-        # on Windows and may fail in the test sandbox). The audit pin is on
-        # routing, not on the lockdown step itself.
+        # No-op: don't run real atomic_write (which would apply a real
+        # owner-only lockdown on Windows and may fail in the test sandbox).
+        # The audit pin is on routing, not on the lockdown step itself.
 
     import asyncio
 

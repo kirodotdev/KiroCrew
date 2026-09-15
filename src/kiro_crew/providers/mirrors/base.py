@@ -113,6 +113,15 @@ class SessionProjection:
 
     params: dict[str, Any]
     denied_tools: frozenset[tuple[str, str]] = frozenset()
+    derived_spec_snapshot: Any = None
+    """The ``agent.DerivedSpecSnapshot`` the ``mcpServers`` array was built from.
+
+    A second client obligation the wire must not carry: for a derived agent the
+    array in ``params`` IS the spec the host consumes, so the client re-verifies this
+    snapshot once the host has taken it (the ``session/new`` / ``session/load``
+    response) and ends the session on a change. ``None`` for an agent that mirrors
+    nothing, and for a mirror that built no array.
+    """
 
 
 class AgentConfigMirror(ABC):

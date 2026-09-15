@@ -150,7 +150,7 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras()
 
-        def _build() -> list[dict[str, Any]]:
+        def _build() -> tuple[list[dict[str, Any]], Any]:
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -158,6 +158,29 @@ class KasHarness(MembershipHarness):
                 logger.warning(
                     "pre-session agent materialization failed for %r", agent, exc_info=True
                 )
+            # OUTSIDE that handler, deliberately. The materialization above is
+            # best-effort -- a missing default spec costs a set_mode fallback -- but a
+            # STALE derived spec is the hazard itself, so its refusal must abort the
+            # session the way ``require_fork_governance`` above does. Inside the block
+            # the broad ``except`` would log the refusal and project the stale spec.
+            try:
+                snapshot = agent_mod.require_fresh_derived_spec(agent, work_dir)
+            except agent_mod.DerivedSpecStale as exc:
+                raise AcpRuntimeError(str(exc)) from exc
+            # The spec the projection runs on comes from the GATE for a derived agent, so
+            # this path reads the file ZERO times. A read placed here instead would be a
+            # second observation of a file the gate had already finished with, however
+            # tight the sequence looks, and a revocation landing between the two would
+            # reach the session as its whole tool surface as though it had been checked.
+            # No lock closes that -- both halves are this process's own reads -- so the
+            # second read is removed rather than re-verified. Every other agent mirrors
+            # nothing, has no snapshot, and is read here as before.
+            agents_dir = paths_mod.kiro_agents_dir()
+            spec = (
+                snapshot.spec
+                if snapshot is not None and snapshot.spec is not None
+                else kas_agents_mod.load_agent_spec(agents_dir, agent)
+            )
             try:
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds
@@ -181,15 +204,25 @@ class KasHarness(MembershipHarness):
                 from kiro_crew.members import MEMBER_DISPATCH_SERVER
 
                 stubbed = frozenset(stubbed) | {MEMBER_DISPATCH_SERVER}
-            return kas_agents_mod.build_kas_custom_agents(
-                paths_mod.kiro_agents_dir(),
-                agent,
-                stub_server_names=stubbed,
-                member_dispatch=member_dispatch,
+            # The snapshot travels WITH the payload it built. This payload is where the
+            # spec is CONSUMED on this host -- ``set_mode`` activates what is already
+            # registered and reads nothing -- so the check that proves the consumed spec
+            # did not change has to compare against this snapshot rather than against a
+            # fresh read of the file.
+            return (
+                kas_agents_mod.build_kas_custom_agents(
+                    agents_dir,
+                    agent,
+                    spec,
+                    stub_server_names=stubbed,
+                    member_dispatch=member_dispatch,
+                ),
+                snapshot,
             )
 
         try:
-            return SessionExtras(custom_agents=await asyncio.to_thread(_build))
+            built, built_from = await asyncio.to_thread(_build)
+            return SessionExtras(custom_agents=built, derived_spec_snapshot=built_from)
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
         except KasAgentTranslationError as exc:

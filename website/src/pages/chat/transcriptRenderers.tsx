@@ -190,6 +190,7 @@ export function createTranscriptRenderers(
           onSessionOpen={o.onSessionOpen}
           sessions={o.sessions}
           activeSession={o.activeSession}
+          messageTs={m.ts}
           disclosureKey={ctx.key}
           onOpenPanel={o.onOpenSubagentPanel}
         />,
@@ -338,6 +339,7 @@ export function createTranscriptRenderers(
           onSessionOpen={o.onSessionOpen}
           sessions={o.sessions}
           activeSession={o.activeSession}
+          messageTs={m.ts}
           disclosureKey={ctx.key}
         />,
         true,

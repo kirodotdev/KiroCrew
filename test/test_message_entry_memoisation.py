@@ -262,9 +262,9 @@ def test_a_concurrent_double_insert_does_not_inflate_the_byte_counter(
     barrier = threading.Barrier(2)
     real = chat_persistence._build_message_entry_uncached
 
-    def blocking_build(msg: dict):
+    def blocking_build(msg: dict, **kwargs):
         barrier.wait(timeout=10)
-        return real(msg)
+        return real(msg, **kwargs)
 
     monkeypatch.setattr(chat_persistence, "_build_message_entry_uncached", blocking_build)
     threads = [threading.Thread(target=_build_message_entry, args=(m,)) for _ in range(2)]
@@ -373,10 +373,10 @@ def test_a_mutation_during_the_build_is_not_cached() -> None:
     real = _build_message_entry_uncached
     m = {"role": "assistant", "content": "variant A", "ts": "t1", "variant_idx": 0}
 
-    def mutating(msg: dict) -> dict | None:
+    def mutating(msg: dict, **kwargs: object) -> dict | None:
         msg["content"] = "variant B"
         msg["variant_idx"] = 1
-        return real(msg)
+        return real(msg, **kwargs)  # type: ignore[arg-type]
 
     chat_persistence._build_message_entry_uncached = mutating  # type: ignore[assignment]
     try:
@@ -400,10 +400,10 @@ def test_switching_back_after_a_racing_mutation_recomputes() -> None:
     real = _build_message_entry_uncached
     m = {"role": "assistant", "content": "variant A", "ts": "t1", "variant_idx": 0}
 
-    def mutating(msg: dict) -> dict | None:
+    def mutating(msg: dict, **kwargs: object) -> dict | None:
         msg["content"] = "variant B"
         msg["variant_idx"] = 1
-        return real(msg)
+        return real(msg, **kwargs)  # type: ignore[arg-type]
 
     chat_persistence._build_message_entry_uncached = mutating  # type: ignore[assignment]
     try:

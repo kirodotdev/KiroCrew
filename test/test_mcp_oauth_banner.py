@@ -1397,9 +1397,12 @@ class _FakeProviderClient:
 
 # A real registry slug with a rendered card, and a real slug whose launch gate is
 # closed. Read from the registry rather than hardcoded so a gate flip fails here
-# instead of silently changing which requests get annotated.
+# instead of silently changing which requests get annotated. The gated slug must
+# also NOT be pre-registered (registry ``auth.mode``): a pre-registered provider
+# is visible regardless of the gate, which rules GitHub and Asana out.
 CARDED_SLUG = "notion"
-GATED_SLUG = "github"
+GATED_SLUG = "superhuman"
+GATED_MCP_URL = "https://mcp.mail.superhuman.com/mcp"
 
 
 def _own(tmp_path, monkeypatch, servers) -> None:
@@ -1480,7 +1483,7 @@ class TestEveryPendingRequestIsEmitted:
     async def test_launch_gated_provider_is_not_annotated(self, tmp_path, monkeypatch):
         """No card is rendered behind a closed launch gate, so chat stays the prompt."""
         assert GATED_SLUG not in {p["slug"] for p in get_visible_providers()}
-        _own(tmp_path, monkeypatch, {GATED_SLUG: {"url": "https://api.githubcopilot.com/mcp/"}})
+        _own(tmp_path, monkeypatch, {GATED_SLUG: {"url": GATED_MCP_URL}})
         slot = _ChatSlot("s1")
         await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(GATED_SLUG))
         assert _owned_flags(slot) == [False]

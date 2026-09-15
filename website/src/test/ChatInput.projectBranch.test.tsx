@@ -114,6 +114,26 @@ describe('ChatInput project chip branch copy', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(long))
   })
 
+  it('withholds confirmation when both clipboard paths fail', async () => {
+    originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const writeText = vi.fn().mockRejectedValue(new DOMException('denied', 'NotAllowedError'))
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
+    const execCommand = vi.fn().mockReturnValue(false)
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+    try {
+      renderWithProviders(<ChatInput {...defaultProps} projectBranch="feat/example" />)
+      fireEvent.click(branchBtn())
+      await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'))
+      expect(screen.getByRole('button', { name: 'Copy branch name feat/example' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Copied branch name feat/example' })).not.toBeInTheDocument()
+    } finally {
+      if (originalExecCommand) Object.defineProperty(document, 'execCommand', originalExecCommand)
+      else delete (document as { execCommand?: unknown }).execCommand
+    }
+  })
+
   it('clicking the branch does not open the project picker', () => {
     stubClipboard()
     const onProjectClick = vi.fn()

@@ -149,7 +149,9 @@ async def _capture(backend: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     async def _fake_kas_agents(agent, *, member_dispatch=False):
         # The real projection reads ~/.kiro/agents; the GATE it is behind is what
         # this capture is about, so the payload is pinned and the gate is not.
-        return _KAS_AGENTS if backend == ACP_BACKEND_KAS else None
+        from kiro_crew.acp.harness import SessionExtras
+
+        return SessionExtras(custom_agents=_KAS_AGENTS if backend == ACP_BACKEND_KAS else None)
 
     monkeypatch.setattr(rt, "_kas_custom_agents", _fake_kas_agents)
 

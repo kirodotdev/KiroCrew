@@ -76,6 +76,7 @@ claim that a hostile in-process agent is fully contained.
 | `source.py` | Detect and package an editable local checkout (`git archive`, tarfile fallback) and upload it to a per-account S3 bucket; packaged installs instead use the template's public-repo clone fallback. The secret-excluding filter is shared by both packaging paths. Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. |
 | `config.py` | Persisted profile / region / tag (**never credentials**); `load()` tolerates a hand-edited/corrupt `cloud.json` — bad JSON *or* a non-object shape falls back to defaults rather than crashing every cloud command. |
 | `sizes.py` | arm64/Graviton size tiers (16 GB default `t4g.xlarge`). |
+| `fargate/` | A crew's Fargate task definition and `RunTask` request produced as **data**, by pure functions that call nothing. `identity.py` recovers which crew an ARN belongs to and refuses a document naming more than one; `taskdef.py` holds the revision key and the `RegisterTaskDefinition` document; `runtask.py` holds the launch request and the closed set of overrides it may carry. See "Fargate task definitions as data" below. |
 | `ui.py` / `wizard.py` | Terminal UI + the interactive launch flow. `_deploy_with_progress` runs the blocking deploy on a daemon thread and captures the `aws cloudformation deploy` child via a `proc_sink`, so a Ctrl+C on the main (poll) thread terminates it instead of orphaning it (~1800s). An unknown `--size`/`size_key` on the public `launch()` entrypoint yields a clean rc=1 + message, not an uncaught `KeyError`. Resuming a saved stack (`launch` after `stop`) first calls `_ensure_running_and_ssm_ready` — starts a `stopped` instance and waits for SSM `Online` before sign-in/tunnel (which are SSM-only and would otherwise fail); a `terminated` instance fails clean pointing at `--new`. `last_tag` is persisted (`cfg.save()`) **only after** a deploy confirms healthy — a failed first launch leaves no saved pointer, so the next `launch` retries clean instead of resuming a rolled-back/instance-less stack; `_saved_launch_is_usable` additionally ignores a stale saved tag (from an older build) whose stack is in a `_FAILED_STATES` status or has no instance. |
 | `templates/kirocrew-ec2.yaml` | The CloudFormation stack. |
 
@@ -379,6 +380,317 @@ When that delete fails, `cli_cloud._cloud_destroy()` prints an unpinned `aws s3 
   filenames) and drop a custom-named `KIROCREW_HOME` (incl. nested) under the
   repo. `redact_token()` strips JWTs before any log line.
 
+## Fargate task definitions as data
+
+A second compute backend for remote instances runs a crew as a Fargate task
+rather than an EC2 host
+([rfc-remote-instance-on-fargate](../../request-for-change/rfc-remote-instance-on-fargate.md)).
+`fargate/` produces the two AWS payloads that backend sends, as values. Nothing
+in it calls AWS: `run_aws` refuses a non-read-only call from an agent session and
+carries no `ecs` pair in its allowlist, so a launch engine performs the calls and
+this package decides what they would say. That split is what makes the two
+security decisions a crew task carries reviewable without a credential, because
+each is a property of a `dict` that a test can state.
+
+### What a revision is keyed on
+
+One task-definition family per crew, one revision per (image digest, secret ARN
+set, cpu architecture, log configuration), registered on demand against a cached
+ARN. The key is dictated by the API, not chosen: `RunTask` can override `cpu`,
+`memory`, `ephemeralStorage`, `taskRoleArn`, `executionRoleArn` and a container's
+`command` and `environment`, and it cannot override `image`, `secrets`,
+`logConfiguration` or `runtimePlatform`. Those four are therefore the only fields
+a launch cannot bend at run time, so they are the only ones that can force a new
+revision. Steady state is one API call, two on the first launch of a new digest.
+
+Two consequences follow. Keying on size is wrong because size is an override, and
+`TaskDefinitionSpec` carries no size field, so it is absent as an input rather
+than excluded from a hash. The same now holds for both roles, which `RunTask` can
+also override: nothing `RunTask` can override is a field of the spec at all, so
+the key cannot read one. Registering per launch is wrong, because
+`RegisterTaskDefinition` has no upsert and leaks a revision on every call.
+
+`portMappings`, `networkMode` and `requiresCompatibilities` are equally beyond
+`RunTask`'s reach and are still not in the key: the key is the fields that are
+unoverridable **and** variable, and the front port is a constant of the image.
+`FRONT_PORT` is a module constant for that reason, and a `RunTask` environment
+override naming `SMC_FRONT_PORT` is refused, since a task whose front port
+disagrees with the declared `portMappings` is unreachable and an unreachable task
+is indistinguishable from a slow one.
+
+A registered revision carries its own key as the `kirocrew:revision-key` tag.
+That is not telemetry: without it a lost local cache has no witness, the launcher
+re-registers, and the revision leak the key exists to prevent happens anyway.
+The account can answer what a revision was keyed on.
+
+Both emitted payloads carry `kirocrew:managed=true`, and its value is derived. The
+rest of the code base matches this tag **by value**, not merely by key: `ec2.py`
+discovers with `Key=kirocrew:managed,Values=true` and refuses a stack whose value
+is not `true`, and `iam.py` conditions resource permissions on
+`aws:ResourceTag/kirocrew:managed` equalling `true`. A task carrying any other
+value is therefore a running task teardown does not enumerate and the teardown
+role is not permitted to stop, billing in the owner's account with nothing
+pointing at it. The caller's own correlation value has its own key,
+`kirocrew:launch`, because the two answers have opposite requirements: the marker
+must be constant for teardown to match it, and the correlation value must vary for
+a caller to find one launch. `ec2.py` already separates them the same way, tagging
+`kirocrew:managed=true` beside `kirocrew:instance=<tag>`; collapsing both into one
+key let a caller's value displace the marker.
+
+### The credential reaches the container through the definition
+
+The model credential arrives as `secrets[].valueFrom`, fetched by the **execution
+role** before the container starts. `ContainerOverride` has no `secrets` field,
+so the only way to put a credential in a `RunTask` request is `environment`, in
+plain text, where it is written to the CloudTrail record of the request and can
+be read back out of `DescribeTasks`. The value is a long-lived model credential.
+
+Nothing downstream can tell a wrong credential from a right one. The container's
+`require_api_key` proves a key was supplied, not that it is this crew's key, so a
+definition naming another crew's secret produces a task that starts, answers, and
+serves turns under the wrong identity, silently at both ends.
+
+**IAM is the primary control.** Each crew's execution role is derived per crew
+(`kirocrew-crew-<crew>-exec`), so it can be granted that crew's secret and no
+other, and a definition naming another crew's ARN fails when the role cannot read
+it, before the container starts. **Refusing at generation is defence in depth**,
+and it earns its place: a refusal names the problem, while the same mistake
+reaching AWS surfaces as a permission error at task start that says nothing about
+which crew was confused. It is neither the only barrier between crews nor
+redundant with the one that is.
+
+The refusal would be the whole of the guarantee for a deployment that shared one
+execution role across crews, because such a role must hold every crew's secret
+ARN and its fetch for crew A is then indistinguishable from its fetch for crew B.
+This design does not share a role, and the cost of that choice belongs to the
+deploy track: **one execution role per crew, not one for the fleet.**
+
+The refusals, each stated as a property rather than as the case that prompted it:
+
+- Every `secrets[].valueFrom` is a full, unambiguous, crew-bearing secret ARN.
+  The six-character Secrets Manager suffix is required, because a partial ARN is
+  resolved by search and a secret whose name ends in a hyphen and six characters
+  resolves that search to a **different** secret. A version or JSON-key tail is
+  refused too: a crew credential is the whole secret string.
+- The variable a secret lands in is derived from the secret's own name, never
+  supplied beside it. `TaskDefinitionSpec.secrets` is a sequence of ARNs, so
+  nothing names the destination a second time and a container cannot receive one
+  secret's value under another secret's name. Two ARNs deriving the same variable
+  are refused, since one variable takes one value and a tie has no winner.
+- `environment` is a **closed channel**, not a filtered one. Four review rounds on
+  this module found one defect four times, once per variable: a caller could
+  contradict the spec through an override, and each fix closed a single name.
+  `task_definition`, then the model credential, then `SMC_CONTROL_SECRET`, then
+  `SMC_CREW_NAME`. A guarantee that holds only for the names someone has already
+  thought of is not a guarantee, so the channel is closed by set membership and
+  this module writes the derived values itself.
+- A name belongs to the closed set when a caller-supplied value could CONTRADICT
+  what the request already asserts, on one of two limbs: it decides **what the
+  task is**, which the spec's secrets fix through the crew they name, or it
+  decides **who may reach it**, which is the credential set and the trust-domain
+  declaration. `SMC_CREW_NAME` and `SMC_SINGLE_PRINCIPAL` are derived and written
+  here; `SMC_CONTROL_SECRET`, `KIRO_API_KEY`, `SMC_BUNDLE_DIR` and
+  `SMC_FRONT_PORT` are refused and never written. Everything else stays the
+  caller's: a bucket cannot contradict the spec, because the spec says nothing
+  about buckets.
+- Writing `SMC_CREW_NAME` is what gives the container's own
+  `manifest crew_name == SMC_CREW_NAME` refusal something to catch. When both
+  values came from the caller they could agree with each other while contradicting
+  the spec; now pairing one crew's secrets with another crew's image fails inside
+  the container with a message naming both crews.
+- The container's config module owns which names it reads. A test derives that set
+  from `load()` and fails when a name is neither derived, refused, nor
+  deliberately left to the caller, so the next variable added there is decided
+  before it can arrive as an open channel. The caller-owned entries carry a
+  written reason each, because an unexplained allowlist is the next thing to go
+  stale.
+- A placement with no security group. ECS substitutes the VPC's default group,
+  which admits traffic from anything else in it, and the task's front process
+  answers a turn and a liveness check without the control secret, so a workload
+  sharing that group could take a turn on the crew using the crew's own model
+  credential.
+
+### A name is never recovered from a string that can contain its own delimiter
+
+Three places in this module read an identifier out of a string it was handed, and
+the same defect was found in two of them a review apart. The practice, stated
+generally: **recovering a name by stripping a suffix is unsafe wherever the name
+can itself contain the suffix shape.** All three are now on the safe side of it,
+by two different mechanisms, because the strings differ in whether they are
+derivable.
+
+`parse_role_arn` strips `-exec` or `-task`. A role ARN has no service-generated
+component, so re-deriving it from a candidate crew reproduces the input exactly
+and the round trip IS the parse: a candidate is accepted only when it rebuilds the
+input byte for byte. That is what makes a crew called `a-exec` unambiguous, rather
+than a claim about how the pattern backtracks.
+
+`parse_secret_arn` cannot be verified the same way, because Secrets Manager's
+six-character suffix is chosen by the service and nothing here can reproduce it. A
+secret named `.../KIRO_API_KEY-AbCdEf` has the complete ARN
+`.../KIRO_API_KEY-AbCdEf-XyZ123`, and the string `.../KIRO_API_KEY-AbCdEf` is both
+that secret's partial ARN and a well-formed complete ARN for a different secret.
+So the reader takes a `SecretRef` carrying the canonical name, verifies the ARN is
+that name plus exactly one suffix, and reads the destination from the verified
+name. A test asserts both readers' signatures require a reference, so a
+plain-string entry point cannot arrive as a convenience.
+
+Reading the CREW out of a secret ARN was never in the unsafe class and still is
+not. A crew sits between two `/` characters and `/` is outside the crew charset,
+so the segment's end is marked in the string rather than inferred. That is why the
+document walk still establishes a binding from an ARN alone. It also refuses a
+remainder that is not shaped like a name plus one suffix, which keeps the
+partial-ARN refusal; checking that shape is a property of the string, while
+deciding which part is the variable needs the split point that only a reference
+states.
+
+**What this does not do.** Nothing here can confirm that AWS resolves a secret
+ARN to the named secret, because that depends on which secrets exist and only
+`DescribeSecret` can answer it. This module checks that a reference is internally
+consistent. Authority for the pairing belongs to the API that created the secret,
+so a caller passes the ARN as `CreateSecret` returned it together with the name it
+was given, and never a pair assembled by hand.
+
+### Absent is not a value
+
+Every field of every type in this module refuses empty, zero and unparseable
+rather than letting it carry a meaning. The rule is written into the module
+docstring because the opposite kept happening one field at a time, and each fix
+was correct and too narrow: a missing task size let the registration floor become
+the runtime shape, an open `environment` let a caller contradict the spec, an
+unparseable ARN was readable to one parser and refused by the other, and an empty
+`security_groups` made ECS substitute the VPC default group. Every one of those
+produced a request that looked correct.
+
+The sweep is enforced rather than performed once. A test reads
+`dataclasses.fields` for each public type and fails when a field is not decided
+by an emptiness test, so a field added later cannot arrive as an untested
+permissive default. `CrewBinding` validates its partition, account and crew on
+construction, so every derived name is well-formed because the binding exists
+rather than because a parser was used. `LogSpec` refuses the values that leave a
+task running with no readable log stream, and one `validated_region` governs both
+an ARN's region and a log configuration's.
+
+The package's EXPORT LIST is held to the same standard, because a name a consumer
+cannot import is a name it re-spells. That is not cosmetic: a launch engine that
+wrote its own `"kirocrew:task"` rather than importing `LAUNCH_TAG_KEY` classified
+every managed task as foreign, so its teardown planner returned an empty delete
+set and reported success while every task kept running and kept billing in the
+owner's account. Absent from an export list read as a value, exactly as an empty
+collection and a missing field had. A constant is therefore on the surface when a
+caller cannot build an acceptable input without reading it, or cannot interpret a
+produced payload without reading it, and a test derives both limbs from the source
+rather than listing names: the refusal limb from the functions that raise, resolved
+to a fixpoint through the helper they delegate to, and the payload limb from the
+values that actually appear in a produced document and request. The derivation
+prefixes and suffixes are deliberately excluded, each with its reason recorded next
+to it, because the derived name is already a function and exporting the fragment
+would offer a second way to spell what the function returns.
+
+Fargate's valid CPU and memory pairs and its ephemeral-storage bounds are encoded
+here rather than left to `RunTask`. Deferring to AWS turns a generation-time
+refusal into a launch-time one, which is the failure this module converts.
+
+Two defaults are deliberate exceptions, recorded so they are not later mistaken
+for oversights:
+
+- `assign_public_ip = False`, because false is the safe direction and the flag is
+  not the boundary. A Fargate task in a public subnet with no NAT gateway cannot
+  pull its image without an address, so what bounds who reaches the container is
+  the security group.
+- A task size equal to the registration floor, because requiring the field
+  already removed the silence. The floor arriving because nobody chose was the
+  defect; the floor's value was never wrong.
+
+`Placement.cluster` is caller-owned but refused when empty, and the two questions
+have different answers. An empty cluster means the account's implicit `default`
+cluster, which is absent read as a value. It is not in the closed set, because
+nothing in a task-definition spec says anything about a cluster and so no cluster
+can contradict one.
+
+- A container `command` override is not offered. Secrets are injected and the task
+  role attached before any command runs, so replacing the image's command would run
+  arbitrary code holding the model credential with none of the supervisor's sandbox
+  verification or environment scrubbing. Pinning the override to the supervisor's
+  own command instead would copy the image's entrypoint here and create two places
+  to keep in agreement.
+- Every crew-bearing ARN anywhere in the produced document resolves to one
+  `CrewBinding`: partition, account and crew together, so another account's
+  secret is refused by the same code path as another crew's. The check walks the
+  finished document rather than reading named fields, so a field added to the
+  shape later is covered without anyone extending a list.
+- Neither role is an input. `TaskDefinitionSpec` carries no role ARN and no crew
+  name: the crew comes from the secrets and both roles are derived from it, so a
+  role naming the wrong crew, and a swap of the two, are unconstructible rather
+  than refused. The swap matters and agreement on the crew would not have caught
+  it, because both of a crew's roles name that crew. A container's model
+  subprocess can read the task role's credential out of its own environment and
+  act as it, so a task carrying the **execution** role can re-read secrets, and a
+  shared execution role holds every crew's.
+- The definition that runs is not an input either. `run_task_request` derives the
+  family from the spec and takes only a revision NUMBER, so a caller cannot pair
+  one crew's spec with another crew's family. That pairing would pass every
+  refusal in the module, because each reads the spec while the identifier decides
+  what executes. What the module does not establish, and says so in that
+  function's docstring, is that revision N holds the content the spec describes:
+  that needs the registered definition's `kirocrew:revision-key` tag, which is an
+  AWS call. The caller verifies it, and a mismatch is a stale cache.
+- The definition delivers the model credential, and a `RunTask` environment
+  override may not name anything the definition delivers. Those two are one
+  property: the credential always arrives, and it arrives only this way.
+- The image is digest-pinned. A movable tag would let the content behind a
+  revision key change after the revision was registered, and every property built
+  on the key assumes it cannot.
+
+`image` stays an input and the log GROUP no longer is. Which way each fails is the
+reason, and the earlier version of this paragraph got the log group wrong, so the
+correction is recorded rather than quietly replaced. It argued a foreign group was
+safe as an input because a per-crew execution role carries `logs` permission for
+its own group only, making IAM the guard. No such role document exists in this
+repository: the only `logs`-scoped policy here belongs to the deploy-app track and
+is scoped to `/kirocrew-deploy-app/*`. The guard was an assumption about a document
+the deploy track has not written, and until it is written a caller-supplied group
+decides where the transcript of every turn is stored with nothing checking it.
+Nothing else catches it either, because a log group name is not an ARN and so the
+document walk that refuses a foreign crew's ARN never sees one. The group is
+therefore derived from the crew where the document is built, and `LogSpec` carries
+only the region and the stream prefix, which cannot name another crew: the region
+selects a regional endpoint, and the prefix distinguishes streams inside a group
+the crew already fixes. One image serves every crew by design, so its registry
+account is not a crew-identity question, and the content behind it is pinned by
+digest.
+
+The task role holds no `secretsmanager` permission. That belongs to the role
+documents rather than to these payloads, and the structural half is here: the two
+roles are never the same ARN, and only `executionRoleArn` sits where a secret is
+fetched.
+
+`RunTask` accepts `executionRoleArn` and `taskRoleArn` as overrides, and neither
+is ever emitted. Overriding the execution role would reopen exactly the hole the
+document's agreement check closes, running a definition that names one crew under
+another crew's fetcher. The override key sets are closed and are enforced against
+the produced request, so widening them takes an edit to the allowlist in the same
+change.
+
+### What refusal does not cover
+
+A `valueFrom` that agrees on the crew but names a secret that does not exist is
+accepted, and that is deliberate rather than an omission. Existence is a property
+of the account at task-start time, not of the document, so no pure function
+decides it and a check would be a read that can go stale before the launch. More
+to the point, the two failures are not the same shape. A nonexistent secret fails
+the execution-role fetch before the container starts, so the task never runs,
+`require_api_key` never executes, no turn is served, and the operator sees
+`ResourceInitializationError`. A crew disagreement succeeds. Only the silent
+failure has to be unrepresentable; the loud one can be left to fail loudly.
+
+The same reasoning covers an invalid Fargate cpu/memory pair, which `RunTask`
+rejects outright, and is why the definition's registration floor
+(`REGISTRATION_CPU`/`REGISTRATION_MEMORY`) is never allowed to become an
+effective size: `run_task_request` requires a `TaskSize` and refuses one that is
+not a positive integer of Fargate units. A floor that silently became the running
+shape would be the quiet failure this module exists to avoid.
+
 ## Bootstrappers
 
 `install.ps1` (Windows client) and `cloud-install.sh` (macOS/Linux) ensure the
@@ -406,3 +718,12 @@ import test so a future bare `import fcntl` on the CLI path is caught.)
 `test/test_cloud_{aws,ec2,iam,ssm,login,connect,source,config,sizes,ui,wizard,cli}.py`
 plus `test_update_git_guard.py`. AWS I/O is mocked at the `cloud.aws` chokepoint;
 `kiro-cli` is never spawned for real.
+
+`test/test_fargate_{identity,taskdef,runtask}.py` need no mock at all, because
+the modules under test perform no I/O. Their assertions are written against the
+property rather than an instance of it: the spec-field table that decides which
+fields the revision key reads is checked against `dataclasses.fields`, so a field
+added later fails the suite until it is classified; the cross-crew refusal is
+parametrised over every ARN-bearing position and every part of the identity; and
+the no-role-in-the-request check walks the whole produced request instead of
+reading the two keys a defect was first found under.

@@ -38,6 +38,54 @@ AUTHENTICATED_USERS = "S-1-5-11"
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="needs a Windows ACL")
 
 
+def _set_owner_to_current_user(path: Path) -> None:
+    """Give this test-owned file an explicit current-user owner on Windows.
+
+    Elevated Python processes commonly create temp files owned by the built-in
+    Administrators group. That host policy is valid, but it is not the fixture this
+    owner-reader test claims to exercise, so set the owner on this file only.
+    """
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    se_file_object = 1
+    owner_security_information = 0x00000001
+    sid = ctypes.c_void_p()
+
+    convert = advapi32.ConvertStringSidToSidW
+    convert.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p)]
+    convert.restype = ctypes.c_int
+    if not convert(platform_compat.current_user_sid(), ctypes.byref(sid)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        set_owner = advapi32.SetNamedSecurityInfoW
+        set_owner.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        set_owner.restype = ctypes.c_ulong
+        rc = set_owner(
+            str(path),
+            se_file_object,
+            owner_security_information,
+            sid,
+            None,
+            None,
+            None,
+        )
+        if rc:
+            raise ctypes.WinError(rc)
+    finally:
+        local_free = kernel32.LocalFree
+        local_free.argtypes = [ctypes.c_void_p]
+        local_free.restype = ctypes.c_void_p
+        local_free(sid)
+
+
 def _security(
     *,
     owner: str = SYSTEM,
@@ -916,6 +964,7 @@ class TestDescribeAgainstRealAcls:
     def test_a_user_owned_tree_reports_the_user_as_owner(self, tmp_path: Path) -> None:
         binary = tmp_path / "gh.exe"
         binary.write_text("stub")
+        _set_owner_to_current_user(binary)
         security = windows_acl.describe(binary)
         assert security.owner_sid == platform_compat.current_user_sid()
         assert not security.null_dacl

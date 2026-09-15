@@ -258,7 +258,7 @@
         "titleblock_live": "IN FLIGHT",
         "notes_heading": "NOTES",
         "note_1": "A lane runs left to right across the phase columns; the head marks the item's live phase.",
-        "note_2": "A chamfered chip has a PR open; a plain rect has none yet.",
+        "note_2": "A #N pill means the item has a PR; a lane with no PR shows no #N pill.",
         "note_3": "A dot-dash span means the item skipped a phase; an under-lane arc is a re-entered phase.",
         "note_4": "A stub off the lane is an exit — skipped, yielded, handed back, preempted, or awaiting a reply.",
         "note_5": "A dwell over an hour is flagged; the open dwell counts from the most recent entry into the current phase.",
@@ -1011,7 +1011,7 @@
     },
     "devFleet": {
       "manifest": {
-        "description": "A control panel for working on Kiro Crew itself. Lists every feature worktree alongside its pull request state, commit count, and disk usage, and can bring any of them up as a pod: a complete preview instance on its own port with its own data directory, so you can click through an unfinished change without disturbing your live gateway. It also handles the chores around that — pulling main and rebuilding, rebasing a branch, streaming pod logs, and pruning worktrees whose work has already merged.",
+        "description": "A control panel for working on Kiro Crew itself. Lists every feature worktree alongside its pull request state, commit count, and disk usage, and can bring any of them up as a pod: a complete preview instance on its own port with its own data directory, so you can click through an unfinished change without disturbing your live gateway. It also handles the chores around that — pulling main and rebuilding, rebasing a branch, streaming pod logs, and pruning worktrees whose work has already merged. Enabling it also lets AGENT sessions start and stop pods through the pod tools, which means code from a worktree an agent can write runs outside the agent's sandbox, as you.",
         "display_name": "Dev Fleet",
         "highlight_1": "Bring up any worktree as an isolated pod on its own port and data directory, leaving your live gateway untouched",
         "highlight_2": "Fleet view with per-branch PR status, commit counts, and disk usage",
@@ -1487,6 +1487,14 @@
             "your": "Your"
           },
           "repoSettings": {
+            "browse_for_workspace_folder": "Browse for workspace folder",
+            "browse": "Browse",
+            "workspace": "Workspace",
+            "local_workspace_path": "Local workspace path",
+            "where_this_repo_is_checked_out_investigate_cwd": "Where this repo is checked out on the machine running the gateway. Investigate opens its chat session in this directory so the agent sees the repo's real source. Local-only — never sent to the source host.",
+            "users_you_code_owner_repo": "/Users/you/code/owner/repo",
+            "investigate_will_run_in": "New Investigate sessions will run in",
+            "leave_empty_to_use_the_default_working_directory": "Leave empty to use the default working directory.",
             "ai_label_recommendations": "AI label recommendations",
             "also_treat_issues_with": "Also treat issues with",
             "and_can_t_be_changed_here_to_add_or_remove_a_mem": "and can't be changed here — to add or remove a member or\n              collaborator, manage access on",
@@ -4232,7 +4240,7 @@
       "message_input": "Message input",
       "model": "Model",
       "optimizing_prompt": "Optimizing prompt…",
-      "plan_pre_filled_add_context_then_send": "Plan pre-filled — add context then Send",
+      "plan_pre_filled_add_context_then_send": "Prompt pre-filled — add context, then Send",
       "queue_message": "Queue message",
       "quick_actions_like_clearing_the_chat_or_checking": "Quick actions like clearing the chat or checking usage",
       "reference_a_file": "Reference a file",
@@ -4731,15 +4739,17 @@
       "auto_default": "Default",
       "credit_multiplier": "{{value}} the credit cost of Auto",
       "credit_multiplier_baseline": "{{value}}, the baseline credit cost",
+      "loading_models": "Loading models…",
       "no_matches": "No matches"
     },
     "modelEffortDropdown": {
+      "manage_in_settings": "Manage in Settings",
+      "manage_visible_models": "Manage visible models",
       "default_for_agent": "Default model for <agent/>",
       "filter_models": "Filter models",
       "model_list": "Model list",
-      "models": "Models",
+      "models_failed": "Couldn't load the remote crew's models.",
       "pin_model_unavailable": "<model/> isn't offered right now",
-      "reasoning": "Reasoning",
       "set_default_for_agent": "Set <model/> as default model for <agent/>",
       "set_default_for_new_sessions": "Global default for new sessions…",
       "type_to_filter": "Type to filter…"
@@ -4804,6 +4814,12 @@
       "skip": "Skip",
       "tell_kiro_about_you": "Tell Kiro about you",
       "your_role": "Your role"
+    },
+    "pierreEditorImpl": {
+      "highlighting_restarting_editing_available": "Syntax highlighting is restarting. Editing remains available.",
+      "highlighting_starting_editing_available": "Syntax highlighting is starting. Editing remains available.",
+      "highlighting_unavailable_content_readable_reload": "Syntax highlighting is unavailable until you reload. Content remains readable.",
+      "highlighting_unavailable_reload": "Syntax highlighting is unavailable. Save or copy your draft, then reload to restore syntax highlighting; editing remains available."
     },
     "projectPicker": {
       "back": "Back",
@@ -7014,6 +7030,7 @@
       "thread_repair_failed": "Couldn't reconnect this conversation. Reopen the member to try again.",
       "title": "Crew Members",
       "unread_message": "Unread message",
+      "stopped_indicator": "Stopped",
       "workspace": "Workspace",
       "drawer_working": "Working",
       "stat_today": "Today",
@@ -7196,7 +7213,6 @@
         "next_update_check_cycle": "Next update check cycle.",
         "no_agents_defined": "No agents defined",
         "no_memory_stores": "No memory stores",
-        "orchestrator_mode": "Orchestrator Mode",
         "pool_agent": "Pool Agent",
         "pool_size": "Pool Size",
         "pool_ttl": "Pool TTL",
@@ -7475,7 +7491,6 @@
         "delete": "Delete",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · runs locally in-process",
-        "embeddings": "Embeddings",
         "entries": "entries",
         "episodic_context_injected_per_message": "Episodic Context (injected per-message)",
         "episodic_memory": "Episodic Memory",

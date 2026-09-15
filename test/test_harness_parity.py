@@ -35,6 +35,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -50,12 +51,15 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
     PROVIDER_LABEL_OPENCODE,
+    PROVIDER_LABEL_PI,
 )
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_PRIVATE_MEMORY_MCP,
     ACP_BACKENDS_SIDE_READONLY,
@@ -247,6 +251,17 @@ def test_session_sharing_is_opt_in() -> None:
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_SESSION_SHARING
 
 
+def test_member_capabilities_are_opt_in() -> None:
+    """H6: full member-spec loading has its own opt-in, not harness identity."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    for provider in (providers_acp.AcpProvider, AcpSessionProvider):
+        source = inspect.getsource(provider.member_capabilities_supported.fget)
+        assert "in ACP_BACKENDS_MEMBER_CAPABILITIES" in source
+    assert ACP_BACKENDS_MEMBER_CAPABILITIES == frozenset({ACP_BACKEND_KIRO})
+    assert ACP_BACKENDS_MEMBER_CAPABILITIES is not ACP_BACKENDS_SESSION_SHARING
+
+
 def test_steer_is_opt_in() -> None:
     """H6: the ``_session/steer`` extension is claimed by membership."""
     source = inspect.getsource(acp_client.AcpClient.supports_steer.fget)
@@ -351,6 +366,7 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         # refuses an unknown id, so this is the belt to that braces — a member
         # arriving some other way still has to be a backend the code recognizes.
         ("selectable_backends()", selectable_backends()),
+        ("ACP_BACKENDS_MEMBER_CAPABILITIES", ACP_BACKENDS_MEMBER_CAPABILITIES),
         ("ACP_BACKENDS_SESSION_SHARING", ACP_BACKENDS_SESSION_SHARING),
         ("ACP_BACKENDS_STEER", ACP_BACKENDS_STEER),
         ("ACP_BACKENDS_INTERNAL_SANDBOX", ACP_BACKENDS_INTERNAL_SANDBOX),
@@ -361,6 +377,7 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         ("ACP_BACKENDS_SIDE_READONLY", ACP_BACKENDS_SIDE_READONLY),
         ("ACP_BACKENDS_STRUCTURED_REFUSAL", ACP_BACKENDS_STRUCTURED_REFUSAL),
         ("ACP_BACKENDS_HOST_AUTH_CALLBACK", ACP_BACKENDS_HOST_AUTH_CALLBACK),
+        ("ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS", ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS),
     ):
         assert members <= ACP_BACKENDS_KNOWN, f"{name} names an unknown backend"
 
@@ -433,6 +450,7 @@ def test_every_known_backend_has_a_label() -> None:
         ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
         ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
         ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
+        ACP_BACKEND_PI: PROVIDER_LABEL_PI,
     }
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
         "a known backend has no PROVIDER_LABEL_* of its own, so it would persist "
@@ -465,6 +483,31 @@ def test_opencode_is_selectable_and_answerable() -> None:
     assert tool_gate.is_enforced(ACP_BACKEND_OPENCODE), (
         "opencode is offered in the switch, so its routing must be one this core "
         "enforces -- its own permission default asks for nothing"
+    )
+
+
+def test_pi_is_selectable_and_answerable() -> None:
+    """H1/H8: the same pairing, for a harness with NO permission gate of its own.
+
+    The second half is sharper here than for either sibling: pi does not merely
+    default to permissive, it has no setting to seed at all. Enforcement means Kiro
+    Crew's own gate extension is loaded into it and verified, so the routing member
+    it declares must be one this core enforces or the switch offers a harness that
+    runs every tool call unasked.
+    """
+    from kiro_crew.agent_sdk import tool_gate
+    from kiro_crew.agent_sdk.backend_install import _PROBES
+
+    assert ACP_BACKEND_PI in ACP_BACKENDS_KNOWN
+    assert ACP_BACKEND_PI in BASELINE_SELECTABLE_BACKENDS
+    assert ACP_BACKEND_PI in selectable_backends()
+    assert ACP_BACKEND_PI in _PROBES, (
+        "pi is offered in the switch, so backend_install must be able to say which "
+        "of its two components is missing when a session fails to start"
+    )
+    assert tool_gate.is_enforced(ACP_BACKEND_PI), (
+        "pi is offered in the switch, so its routing must be one this core enforces "
+        "-- the harness has no gate of its own"
     )
 
 

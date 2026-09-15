@@ -50,7 +50,11 @@ NOT seed a first message: that would be delivery.
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as
-part of creation (#6118). Filing used to be a second call
+part of creation (#6118). The caller's OWN slot is filed the same way with
+`chat_folder_file_self` (folder tools, same server): it takes no `session`
+argument, resolves the target from the verified caller key, and so can be
+granted where `chat_folder_move_session` is withheld — a conductor files itself
+in the goal's folder and then creates its workers under `<goal>/<agent>`. Filing used to be a second call
 (`chat_folder_move_session`), and the window between the two was a real defect
 path: a folder deleted in between left the session unfiled with the create
 already done. The handler assigns `folder_id` inside the same synchronous window

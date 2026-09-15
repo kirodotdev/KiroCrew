@@ -299,10 +299,10 @@ class TestSaveOrEnrich:
         assert store.save_or_enrich(_make_lesson("Pin the port", "tool", 123)) == "unchanged"
         assert [le.negative for le in store.load_all()] == ["Do not autopick"]
 
-    def test_save_still_returns_none(self, tmp_path: Path) -> None:
-        """save() delegates but keeps its signature, so existing callers are unaffected."""
+    def test_save_returns_its_outcome(self, tmp_path: Path) -> None:
+        """Automatic callers need the outcome to avoid reporting a refused write."""
         store = LessonStore(base_dir=tmp_path)
-        assert store.save(_make_lesson("Pin the port", "tool")) is None
+        assert store.save(_make_lesson("Pin the port", "tool")) == "inserted"
 
     def test_save_does_not_overwrite_a_stored_clause(self, tmp_path: Path) -> None:
         """An AUTOMATIC writer must not replace a clause a human authored.

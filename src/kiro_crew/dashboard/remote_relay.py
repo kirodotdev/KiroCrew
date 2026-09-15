@@ -494,6 +494,13 @@ def remote_bound_refusal(slot: "_ChatSlot") -> "web.Response | None":
     Keyed on ``executor == "remote"`` (the binding intent), not ``is_remote`` (the
     fully-populated triple): a half-open binding must be refused here too, exactly
     as the send path refuses it — never silently run locally.
+
+    ``selectContinuable`` (``website/src/store/chatSlice.ts``) carries the same
+    guard so the control is never OFFERED on a bound slot. That mirror is load
+    bearing rather than cosmetic: :func:`relay_remote_turn`'s failure path appends
+    a trailing ``error`` row, which is the exact shape ``selectTurnInterrupted``
+    reads as an interruption, so without it such a relay failure ends with a Resume
+    button whose only possible answer is this 409.
     """
     if slot.executor == "remote":
         return web.json_response(

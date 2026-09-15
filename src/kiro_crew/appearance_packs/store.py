@@ -39,8 +39,8 @@ from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
 
 logger = logging.getLogger(__name__)
 
-#: The built-in ghost's id lives in ``kiro_crew.appearance_packs.ids``
-#: (re-exported above) so the config can name it without reading the filesystem.
+# The built-in ghost's id lives in ``kiro_crew.appearance_packs.ids``
+# (re-exported above) so the config can name it without reading the filesystem.
 
 #: Custom packs live one directory each, named by id, under this subdirectory.
 PACKS_DIRNAME = "appearances"
@@ -236,12 +236,12 @@ class AppearanceStore:
 
         animations: dict[str, Any] = {}
         # `meta` may be present but the WRONG TYPE (a hand-edited or legacy
-        # on-disk manifest with `"meta": []`): `.get("meta", {})` only
-        # defaults when the key is absent, so `[].get(...)` raised
-        # AttributeError and the detail endpoint 500ed — for the ACTIVE pack
-        # that meant the avatar could not load at all. The save path and the
-        # listing path both already require a dict; the detail read must
-        # tolerate what older writers left on disk.
+        # on-disk manifest with `"meta": []`), so the type is checked rather
+        # than defaulted: `.get("meta", {})` defaults only when the key is
+        # absent, and `[].get(...)` raises AttributeError, which 500s the
+        # detail endpoint — for the ACTIVE pack that means the avatar cannot
+        # load at all. The save path and the listing path both require a dict;
+        # the detail read tolerates what older writers left on disk.
         meta_section = manifest.get("meta")
         fmt = meta_section.get("format", "svg") if isinstance(meta_section, dict) else "svg"
 
@@ -263,13 +263,12 @@ class AppearanceStore:
         # content actually loaded, mirroring the skip-on-missing-content above.
         #
         # `categories` is the AUTHORITATIVE taxonomy: which slot belongs to which
-        # of the three category maps. This is the FOURTH place the flattening bug
-        # appeared (detail read, editor load, editor save, bundle export) — each
-        # consumer was re-deriving the taxonomy from the flat map and each got it
-        # wrong the same way. One source of truth here ends that class of bug:
-        # every consumer that must rebuild a categorized manifest reads this
-        # instead of guessing. `randomNames` stays for the editor's existing
-        # contract; it equals categories["random"].
+        # of the three category maps. A consumer that re-derives it from the flat
+        # map gets it wrong, because states, moods and random clips are
+        # indistinguishable once folded together — so the bundle export, which
+        # rebuilds a categorized manifest from this payload, reads this one
+        # source instead of guessing. `randomNames` stays for the editor's
+        # existing contract; it equals categories["random"].
         random_names: list[str] = []
         categories: dict[str, list[str]] = {"states": [], "moods": [], "random": []}
         for category in ("states", "moods", "random"):
@@ -554,10 +553,10 @@ class AppearanceStore:
 
     # ── sounds ──────────────────────────────────────────────────────────────
 
-    def _pack_sound_entries(self, pack_id: str) -> dict[str, tuple[str, str, bytes, str]]:
-        """Every USABLE cue in a pack: state -> (filename, base64, bytes, mime).
+    def _pack_sound_entries(self, pack_id: str) -> dict[str, tuple[bytes, str]]:
+        """Every USABLE cue in a pack: state -> (bytes, mime).
 
-        One reader behind all three public shapes, so presence can never disagree
+        One reader behind both public shapes, so presence can never disagree
         with what the byte route serves. Every rejection is a warning and a skip,
         never an exception: a pack is third-party content, and one hand-edited
         sound entry must not cost the pack its art.
@@ -574,7 +573,7 @@ class AppearanceStore:
         section = manifest.get("sounds")
         if not isinstance(section, dict):
             return {}
-        out: dict[str, tuple[str, str, bytes, str]] = {}
+        out: dict[str, tuple[bytes, str]] = {}
         for state in SOUND_STATES:
             filename = section.get(state)
             if filename is None:
@@ -598,7 +597,7 @@ class AppearanceStore:
                     ident,
                 )
                 continue
-            out[state] = (safe, text or "", body[0], body[1])
+            out[state] = body
         return out
 
     def pack_sounds(self, pack_id: str) -> dict[str, bool]:
@@ -609,10 +608,7 @@ class AppearanceStore:
         """One state's audio as raw bytes plus the type to serve it as."""
         if not isinstance(state, str):
             return None
-        entry = self._pack_sound_entries(pack_id).get(state)
-        if entry is None:
-            return None
-        return entry[2], entry[3]
+        return self._pack_sound_entries(pack_id).get(state)
 
     def pack_sound_payload(self, pack_id: str) -> tuple[dict[str, str], dict[str, str]] | None:
         """Every declared cue that READS, in STORE shape -- or ``None`` when one that
@@ -627,12 +623,11 @@ class AppearanceStore:
         later import restores from), and a retry after the condition clears loses
         nothing, so the whole operation waits.
 
-        ONE traversal decides both answers. They were once two methods -- the
-        refuse set and the carry payload -- each opening the manifest and each
-        reading every cue file for itself, and a read that failed only on the
-        SECOND pass produced a carry with a cue missing and a refuse set that did
-        not mention it: the save went through and the cue was gone. Reading each
-        file exactly once cannot disagree with itself.
+        ONE traversal decides both answers. Two passes over the same files -- one
+        for the refuse set, one for the carry payload -- can disagree when a read
+        fails on the second only: the carry comes back with a cue missing while
+        the refuse set does not mention it, so the save goes through and the cue
+        is gone. Reading each file exactly once cannot disagree with itself.
 
         Keyed on READABILITY, not on playability, and the difference is data loss:
         the reader DROPS a cue whose bytes are not audio, so a carry keyed on what
@@ -762,11 +757,11 @@ class AppearanceStore:
             return None
         # The DIRECTORY is the identity, never the manifest's self-declared id.
         # Every write path validates and uses the directory name (save targets
-        # _root/<ident>, detail resolves by it) — but listing trusted the inner
-        # `meta.id`, so a hand-edited or legacy-imported pack could list itself
-        # under ANOTHER pack's id, and deleting/selecting that entry hit the
-        # victim's directory. Same identity-spoof class as the import fix; this
-        # closes the local half.
+        # _root/<ident>, detail resolves by it). Trusting the inner `meta.id`
+        # here would let a hand-edited or legacy-imported pack list itself under
+        # ANOTHER pack's id, so deleting or selecting that entry would hit the
+        # victim's directory. `transfer.import_bundle` normalizes that inner id
+        # against the same invariant; this is the reader's half of it.
         ident = pack_dir.name
         fmt = meta.get("format")
         return PackMeta(

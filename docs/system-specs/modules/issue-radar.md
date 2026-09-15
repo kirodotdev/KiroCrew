@@ -236,6 +236,28 @@ triage prompt. When the agent concludes it writes its verdict back into the
 item's investigation record — that is what puts a verdict + summary on the
 issue's card instead of leaving it in chat scrollback.
 
+The session opens in the repo's configured **`workspace_path`** (a per-repo,
+local-only triage setting stored in `config.json`, alongside `triage_labels` and
+`notify_on_new_issue`, and normalized by `store._normalize_settings`) so the agent
+sees the repo's real source instead of the gateway's default cwd. The frontend forwards it as the new slot's
+`project` on `createSlot`, which sets the working directory via `chatSlotProject`
+after create. An empty setting passes `null`, leaving the slot on the default cwd
+(the pre-workspace behavior). It is applied only when a FRESH session is opened;
+a resumed slot keeps the working directory it was born with, so changing the
+setting never moves the cwd of a conversation already running — which is why the
+Repo Settings readout says "New Investigate sessions will run in …", not that the
+next click will. The path is stored verbatim and never validated against the
+filesystem — the path resolves on the machine running the gateway (which may be a
+different host than the operator's), and a not-yet-checked-out path is a
+legitimate empty state. Because it is unvalidated, `chatSlotProject` can still
+reject it at slot-create time (missing dir on the gateway host, or a sensitive
+path); `createSlot` then deletes the just-made slot and throws, which reaches
+`openSession`'s `catch` and surfaces in the hook's `error` state — the same
+contract the chat sidebar uses ("Not a directory"). A bad path is deliberately
+NOT swallowed into a default-cwd session: doing so would silently pin the whole
+investigation thread in the wrong directory, recreating the wrong-cwd failure
+this feature removes.
+
 That write goes through the **`issue_radar_record_investigation` MCP tool**, not
 a raw HTTP call. An agent session holds no dashboard credential:
 
@@ -336,6 +358,17 @@ the same lock discipline on its own `.lock` sidecar: every mutation is a merge
 would otherwise lose an update. An analysed issue the model declined to label is
 stored as an EMPTY list, not omitted — otherwise "the next un-analysed slice"
 would return the same unlabelable issues forever.
+
+The connected-repo reader treats a non-object `config.json` as an empty config,
+and filters non-object rows from its `repos` list. A malformed row cannot stop
+the app from listing or updating other connected repositories.
+
+Every cache reader applies the same rule to its own file: a JSON root that parses
+but is not an object reads as a MISS, so the route refetches and the next write
+heals the file. Without that, a hand-edited or restored cache fails its route with
+the same error on every request until someone deletes the file. The investigation
+record is deliberately excluded — it is the only copy of a user's findings, so
+reading a malformed root as "absent" would let the next write replace it.
 
 ## Permissions
 

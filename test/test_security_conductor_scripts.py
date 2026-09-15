@@ -1157,9 +1157,43 @@ def test_a_proof_that_errors_rather_than_fails_is_needs_human(
     assert verdict_rows(ledger, db, finding_id) == [("verifier", "needs-human")]
 
 
+def test_windows_resolves_only_the_canonical_python3_command(verify_finding, monkeypatch):
+    """The Store alias must not inherit into a command proof on Windows.
+
+    Resolution is deliberately narrower than finding a convenient Python: the
+    documented canonical token means "this verifier's Python", while every
+    other executable name remains untrusted finding input for ``Popen`` to
+    resolve under the existing child environment.
+    """
+    active_python = r"C:\runtime\.venv\Scripts\python.exe"
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "executable", active_python)
+
+    canonical = verify_finding.poc_argv('cmd::python3 -c "raise SystemExit(3)"')
+    foreign = verify_finding.poc_argv('cmd::python3.12 -c "raise SystemExit(3)"')
+
+    assert canonical == ([active_python, "-c", "raise SystemExit(3)"], "cmd")
+    assert foreign == (["python3.12", "-c", "raise SystemExit(3)"], "cmd")
+
+
+def test_posix_leaves_the_canonical_python3_command_unchanged(verify_finding, monkeypatch):
+    """POSIX keeps PATH-based ``python3`` resolution exactly as documented."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "executable", "/unrelated/active/python")
+
+    parsed = verify_finding.poc_argv("cmd::python3 -c pass")
+
+    assert parsed == (["python3", "-c", "pass"], "cmd")
+
+
 def test_a_nonzero_command_proof_confirms_and_a_zero_one_rejects(
     ledger, verify_finding, db, worktree, capsys
 ):
+    """Run real Python commands and preserve both verdict directions.
+
+    A Windows Store alias exits 9009 without running either Python program.
+    The active interpreter exits 3 for confirmation and 0 for rejection.
+    """
     reproduces = a_finding(
         ledger, db, poc='cmd::python3 -c "raise SystemExit(3)"', title="exits nonzero"
     )

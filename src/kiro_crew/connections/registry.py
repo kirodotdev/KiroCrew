@@ -47,6 +47,47 @@ class L0Expectations(TypedDict):
     verified_on: str
 
 
+class AuthConfig(TypedDict, total=False):
+    """How the OAuth client that talks to this provider comes into existence.
+
+    ``mode`` is ``"dcr"`` (the default when the block is absent: kiro-cli
+    registers a public client at runtime, RFC 7591) or ``"preregistered"``: the
+    provider refuses dynamic registration, so an OPERATOR registers an OAuth app
+    in the vendor console and hands Kiro Crew its client id (and, for a
+    confidential client, its secret) through Settings → OAuth Apps. Which
+    providers are which is a vendor fact, not a preference, so it lives in the
+    registry rather than in config.
+
+    The remaining keys are meaningful only for ``preregistered``:
+
+    ``confidential`` -- the vendor requires a ``client_secret`` at the token
+    endpoint. When false the vendor accepts a public PKCE client and the secret
+    field is optional (Slack, once PKCE is enabled on the app).
+
+    ``redirect_host`` / ``redirect_port`` -- a pre-registered app must name its
+    redirect URI EXACTLY, so the loopback listener kiro-cli opens cannot pick a
+    random port the way it does for a DCR client. The registry pins one port
+    per provider (unique, so two providers warming at boot cannot collide on
+    the bind) and the host the vendor accepts: ``127.0.0.1`` by default, the
+    RFC 8252 §7.3 recommendation,
+    or ``localhost`` for a vendor that only exempts that spelling from its
+    https rule (HubSpot refuses IP literals outright). The path is the constant
+    :data:`CALLBACK_PATH`, so every runbook can print the URI to register
+    verbatim -- see :func:`redirect_uri`.
+
+    ``registration_guide`` -- path under ``docs/guides/`` of the runbook that
+    walks an operator through the vendor console. Surfaced by the "needs
+    configuration" card and the Settings tab so the instruction is one click
+    away from the field it fills in.
+    """
+
+    mode: str
+    confidential: bool
+    redirect_host: str
+    redirect_port: int
+    registration_guide: str
+
+
 class _RequiredProviderFields(TypedDict):
     """Fields every registry entry must declare."""
 
@@ -75,13 +116,17 @@ class _RequiredProviderFields(TypedDict):
 class Provider(_RequiredProviderFields, total=False):
     """One official MCP provider exposed to the Connections experience.
 
-    ``client_id`` is present only for providers that require a pre-registered
-    OAuth client instead of Dynamic Client Registration (``l0_expectations.dcr``
-    false).  It is a PUBLIC identifier forwarded to the runtime as the remote
-    entry's ``clientId``; the corresponding secret is never stored here.
-    GitHub is the one such provider today and its value is deliberately UNSET
-    pending the Kiro app registration, which is why the field is optional
-    rather than required — an entry without it simply carries no clientId.
+    ``client_id`` is a VENDOR-DEFAULT public client id for a provider whose
+    ``auth.mode`` is ``preregistered`` -- the value Kiro itself registered, if
+    any. It is a PUBLIC identifier forwarded to the runtime as the remote
+    entry's ``clientId``; the corresponding secret is never stored here. An
+    operator-configured client (Settings → OAuth Apps) always takes precedence
+    over it, and no entry sets it today, which is why the field is optional
+    rather than required — an entry without it simply carries no default.
+
+    ``auth`` declares how the OAuth client comes into being; see
+    :class:`AuthConfig`. Absent means dynamic client registration, which is
+    what every launch provider does, so only the exceptions carry the block.
 
     ``prerequisite_copy`` is the one string the Connections card renders as a
     warning before Connect. It exists only for a provider with a BLOCKING,
@@ -114,6 +159,7 @@ class Provider(_RequiredProviderFields, total=False):
     """
 
     client_id: str
+    auth: AuthConfig
     prerequisite_copy: str
     revoke_manual_path: str
     tool_aliases: dict[str, str]
@@ -184,11 +230,33 @@ _L0_EXPECTATION_FIELDS = {"authorization_server", "dcr", "pkce", "verified_on"}
 # tool names do not collide with any other mounted provider declares none.
 _OPTIONAL_PROVIDER_FIELDS = {
     "client_id",
+    "auth",
     "prerequisite_copy",
     "revoke_manual_path",
     "tool_aliases",
     "category",
 }
+# ``auth`` block vocabulary. Closed on purpose: the runtime branches on the mode
+# and the runbooks print the redirect host, so a misspelling must fail the load,
+# not silently fall back to DCR against a provider that refuses it.
+AUTH_MODE_DCR = "dcr"
+AUTH_MODE_PREREGISTERED = "preregistered"
+_AUTH_MODES = frozenset({AUTH_MODE_DCR, AUTH_MODE_PREREGISTERED})
+_AUTH_FIELDS = {"mode", "confidential", "redirect_host", "redirect_port", "registration_guide"}
+# The two loopback spellings kiro-cli's callback listener accepts
+# (``RedirectUriConfig`` in its ``oauth_util``) and RFC 8252 §7.3 names.
+# ``127.0.0.1`` first because the RFC prefers it; ``localhost`` exists for the
+# vendors whose https exemption names only that host.
+REDIRECT_HOSTS: tuple[str, ...] = ("127.0.0.1", "localhost")
+DEFAULT_REDIRECT_HOST = "127.0.0.1"
+# Fixed callback path. A constant rather than a per-provider field so a runbook
+# and the runtime can never disagree about it; kiro-cli appends it verbatim.
+CALLBACK_PATH = "/callback"
+# Non-privileged and below the ephemeral range on every platform, so the pinned
+# listener neither needs root nor races the OS's own outbound port allocation.
+_REDIRECT_PORT_MIN = 1024
+_REDIRECT_PORT_MAX = 49151
+_REGISTRATION_GUIDE_PATTERN = re.compile(r"^oauth-app-registration/[a-z0-9]+(?:-[a-z0-9]+)*\.md$")
 # Closed vocabulary for ``Provider.category``. Mirrors the buckets the ChatGPT
 # and Claude connector directories group by, so the coverage report can diff the
 # registry against them bucket-for-bucket. Add a bucket here, never inline in
@@ -327,6 +395,92 @@ def is_local_host(hostname: str | None) -> bool:
     return True
 
 
+def auth_mode(provider: Provider) -> str:
+    """The provider's OAuth client mode; absent block means DCR."""
+
+    auth = provider.get("auth")
+    if isinstance(auth, dict):
+        return str(auth.get("mode") or AUTH_MODE_DCR)
+    return AUTH_MODE_DCR
+
+
+def is_preregistered(provider: Provider) -> bool:
+    """Whether the provider needs an operator-registered OAuth client."""
+
+    return auth_mode(provider) == AUTH_MODE_PREREGISTERED
+
+
+def redirect_host(provider: Provider) -> str:
+    """The loopback host the provider's pre-registered redirect URI names."""
+
+    auth = provider.get("auth") or {}
+    return str(auth.get("redirect_host") or DEFAULT_REDIRECT_HOST)
+
+
+def redirect_uri(provider: Provider) -> str | None:
+    """The EXACT redirect URI an operator registers for ``provider``.
+
+    ``None`` for a DCR provider: its listener picks a free port per mint and the
+    registration carries whatever kiro-cli chose, so there is nothing to print.
+    The value is also what the runtime is told to pin (``oauth.redirectUri``),
+    which is the whole point -- one string, derived once, used in both places.
+    """
+
+    if not is_preregistered(provider):
+        return None
+    port = provider["auth"]["redirect_port"]
+    return f"http://{redirect_host(provider)}:{port}{CALLBACK_PATH}"
+
+
+def _validate_auth(raw: object, index: int) -> None:
+    """Validate an ``auth`` block; see :class:`AuthConfig` for the contract."""
+
+    if not isinstance(raw, dict):
+        raise _validation_error(index, "auth must be an object")
+    fields = set(raw)
+    if "mode" not in fields:
+        raise _validation_error(index, "auth.mode is required")
+    extra = fields - _AUTH_FIELDS
+    if extra:
+        raise _validation_error(index, f"auth has unknown fields: {', '.join(sorted(extra))}")
+    mode = raw["mode"]
+    if mode not in _AUTH_MODES:
+        raise _validation_error(index, "auth.mode must be one of " + ", ".join(sorted(_AUTH_MODES)))
+    if mode == AUTH_MODE_DCR:
+        # The block exists to name the exception; a DCR provider declaring
+        # pre-registration details would be two contradictory statements.
+        if fields != {"mode"}:
+            raise _validation_error(index, "auth with mode 'dcr' must carry no other fields")
+        return
+
+    missing = {"confidential", "redirect_port", "registration_guide"} - fields
+    if missing:
+        raise _validation_error(
+            index, "preregistered auth is missing fields: " + ", ".join(sorted(missing))
+        )
+    if not isinstance(raw["confidential"], bool):
+        raise _validation_error(index, "auth.confidential must be a boolean")
+    port = raw["redirect_port"]
+    if isinstance(port, bool) or not isinstance(port, int):
+        raise _validation_error(index, "auth.redirect_port must be an integer")
+    if not _REDIRECT_PORT_MIN <= port <= _REDIRECT_PORT_MAX:
+        raise _validation_error(
+            index,
+            f"auth.redirect_port must be between {_REDIRECT_PORT_MIN} and {_REDIRECT_PORT_MAX}",
+        )
+    if "redirect_host" in fields and raw["redirect_host"] not in REDIRECT_HOSTS:
+        raise _validation_error(
+            index, "auth.redirect_host must be one of " + ", ".join(REDIRECT_HOSTS)
+        )
+    guide = raw["registration_guide"]
+    if not isinstance(guide, str) or not _REGISTRATION_GUIDE_PATTERN.fullmatch(guide):
+        raise _validation_error(
+            index,
+            "auth.registration_guide must be a docs/guides path of the form "
+            "oauth-app-registration/<slug>.md",
+        )
+
+
 def _validate_provider(raw: object, index: int) -> Provider:
     if not isinstance(raw, dict):
         raise _validation_error(index, "must be an object")
@@ -350,6 +504,9 @@ def _validate_provider(raw: object, index: int) -> Provider:
         raise _validation_error(
             index, "category must be one of " + ", ".join(sorted(PROVIDER_CATEGORIES))
         )
+
+    if "auth" in raw:
+        _validate_auth(raw["auth"], index)
 
     # Bound before the ``tool_aliases`` block below, which validates each alias
     # against this provider's own slug prefix.
@@ -439,9 +596,7 @@ def _validate_provider(raw: object, index: int) -> Provider:
     for field in ("dcr", "pkce"):
         if not isinstance(expectations[field], bool):
             raise _validation_error(index, f"l0_expectations.{field} must be a boolean")
-    captured_on = _iso_date(
-        expectations["verified_on"], index, "l0_expectations.verified_on"
-    )
+    captured_on = _iso_date(expectations["verified_on"], index, "l0_expectations.verified_on")
     # A future stamp would push the entry past every freshness tier forever,
     # which is the one way a hand-typed date could evade being noticed. Compared
     # in UTC because that is what the recorder stamps -- see utc_today.
@@ -455,9 +610,7 @@ def _validate_provider(raw: object, index: int) -> Provider:
     # host at a glance, and no real provider publishes one.
     authorization_server = expectations["authorization_server"]
     if not isinstance(authorization_server, str):
-        raise _validation_error(
-            index, "l0_expectations.authorization_server must be an HTTPS URL"
-        )
+        raise _validation_error(index, "l0_expectations.authorization_server must be an HTTPS URL")
     try:
         authorization_parts = urlsplit(authorization_server)
         authorization_parts.port
@@ -473,9 +626,7 @@ def _validate_provider(raw: object, index: int) -> Provider:
         or authorization_parts.query
         or authorization_parts.fragment
     ):
-        raise _validation_error(
-            index, "l0_expectations.authorization_server must be an HTTPS URL"
-        )
+        raise _validation_error(index, "l0_expectations.authorization_server must be an HTTPS URL")
     if is_local_host(authorization_parts.hostname):
         raise _validation_error(
             index,
@@ -511,12 +662,23 @@ def _load_registry(path: Path = REGISTRY_PATH) -> tuple[Provider, ...]:
 
     providers: list[Provider] = []
     seen_slugs: set[str] = set()
+    seen_ports: dict[int, str] = {}
     for index, raw_provider in enumerate(raw_registry):
         provider = _validate_provider(raw_provider, index)
         slug = provider["slug"]
         if slug in seen_slugs:
             raise _validation_error(index, f"duplicate slug: {slug}")
         seen_slugs.add(slug)
+        if is_preregistered(provider):
+            # Two providers on one port cannot both hold their listener when the
+            # warm path mints them together at boot, and the loser's card would
+            # fail in a way no runbook explains.
+            port = provider["auth"]["redirect_port"]
+            if port in seen_ports:
+                raise _validation_error(
+                    index, f"auth.redirect_port {port} is already used by {seen_ports[port]}"
+                )
+            seen_ports[port] = slug
         providers.append(provider)
 
     if not providers:
@@ -558,13 +720,33 @@ def get_provider(slug: str) -> Provider | None:
 
 
 def get_visible_providers() -> list[Provider]:
-    """Return providers whose launch gate passed and which are not vendor-blocked."""
+    """Return providers the gallery shows.
+
+    Two ways in. A provider whose launch gate passed and which is not
+    vendor-blocked, as before. And a PRE-REGISTERED provider regardless of the
+    launch gate, because its card is not yet an offer to connect: until an
+    operator has configured a client it renders as an instruction ("an
+    administrator must configure an OAuth app") and hiding an instruction is
+    how the operator never learns the step exists. The launch gate still
+    governs the entry's own quality claims (revoke link, L0 baseline), which is
+    why a pre-registered entry keeps ``launch_gate_passed`` honest instead of
+    flipping it to become visible. Vendor approval remains a hard hide in both
+    cases: a card no per-install app can ever satisfy is a dead end, not an
+    instruction.
+    """
 
     return [
         _copy_provider(provider)
         for provider in _PROVIDERS
-        if provider["launch_gate_passed"] and not provider["vendor_approval_pending"]
+        if not provider["vendor_approval_pending"]
+        and (provider["launch_gate_passed"] or is_preregistered(provider))
     ]
+
+
+def get_preregistered_providers() -> list[Provider]:
+    """Every registry entry that needs an operator-registered client, gated or not."""
+
+    return [_copy_provider(provider) for provider in _PROVIDERS if is_preregistered(provider)]
 
 
 def get_tier(n: int) -> list[Provider]:

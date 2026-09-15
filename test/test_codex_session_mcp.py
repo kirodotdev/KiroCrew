@@ -831,14 +831,14 @@ class TestClientSeam:
             servers={"narrowed": {"command": "/bin/foo", "disabledTools": ["x"]}},
             tools=["@narrowed"],
         )
-        real = session_mcp._agent_spec_for
+        real = session_mcp._agent_spec_and_snapshot_for
         calls: list[object] = []
 
         def counting(agent, work_dir=None):
             calls.append(agent)
             return real(agent, work_dir)
 
-        monkeypatch.setattr(session_mcp, "_agent_spec_for", counting)
+        monkeypatch.setattr(session_mcp, "_agent_spec_and_snapshot_for", counting)
         params = CodexMirror().session_params("kirocrew", session_key="k", channel_id="c")
 
         assert len(calls) == 1, f"the codex projection parsed the agent spec {len(calls)} times"
@@ -853,17 +853,17 @@ class TestClientSeam:
         comes from one revision of the file and the array from another.
         """
         _write_spec(agents_dir, servers={"narrowed": {"command": "/bin/foo"}}, tools=["@narrowed"])
-        real = session_mcp._agent_spec_for
+        real = session_mcp._agent_spec_and_snapshot_for
         seen = {"n": 0}
 
         def drifting(agent, work_dir=None):
-            spec = real(agent, work_dir)
+            spec, snapshot = real(agent, work_dir)
             seen["n"] += 1
             if seen["n"] >= 2 and isinstance(spec, dict):
                 spec["mcpServers"]["narrowed"]["disabledTools"] = ["x"]
-            return spec
+            return spec, snapshot
 
-        monkeypatch.setattr(session_mcp, "_agent_spec_for", drifting)
+        monkeypatch.setattr(session_mcp, "_agent_spec_and_snapshot_for", drifting)
         params = CodexMirror().session_params("kirocrew", session_key="k", channel_id="c")
 
         assert seen["n"] == 1

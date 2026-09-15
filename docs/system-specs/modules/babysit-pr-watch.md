@@ -15,9 +15,13 @@ advisory review text. Its stateless directive is validated by
 `mcp_tools.control.monitor_start`, then applied by
 `dashboard.session_directive_apply._monitor_start` through
 `autonudge_authz.authorize_and_add_nudge`. `AutoNudgeService` persists and
-schedules the loop. A loop whose instruction names exactly one public GitHub pull
-request may still attach `PrWatchProbe` as a compatibility gate, but that path is
-the bounded legacy fallback rather than the babysit recipe.
+schedules the loop. Those two `monitor_start` surfaces are the only callers that
+ask for the gate; the chokepoint defaults every other caller UNGATED, the generic
+REST route included. Gating is the state that can silently stop work, so a caller
+that names no value resolves toward spending a turn per interval rather than toward
+a watch that deactivates itself. A loop whose instruction names exactly one public
+GitHub pull request may still attach `PrWatchProbe` as a compatibility gate, but
+that path is the bounded legacy fallback rather than the babysit recipe.
 
 The bundled `pr_watch.py:watch` cron adapter remains a compatibility asset for
 existing registered jobs. New babysit requests do not copy or register it; they

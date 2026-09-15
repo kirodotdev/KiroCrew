@@ -4154,12 +4154,13 @@ class TestTerminalWsIntegration:
         # (``PC' \r'NOW``), which is where the raw form failed on a hosted runner.
         flat = _unwrapped(tail)
         # (1) It ran at the FIRST prompt, i.e. it was appended after the hook
-        # rather than only restored: its output precedes the echo of the probe
-        # this test typed afterwards.
-        assert b"PREV_RAN" in flat and b"PC''NOW" in flat, (
+        # rather than only restored: its output precedes the probe's EXECUTION
+        # output. The PTY may echo the input before the first hook finishes;
+        # PC''NOW in that echo cannot match the execution-only PCNOW= marker.
+        assert b"PREV_RAN" in flat and b"PCNOW=" in flat, (
             f"probe never completed. PTY tail: {tail[-500:]!r}"
         )
-        assert flat.index(b"PREV_RAN") < flat.index(b"PC''NOW"), (
+        assert flat.index(b"PREV_RAN") < flat.index(b"PCNOW="), (
             "the gateway's exported PROMPT_COMMAND did not run at the first "
             f"prompt, so it was not appended after the hook. PTY: {tail[:600]!r}"
         )

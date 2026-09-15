@@ -427,4 +427,83 @@ describe('parseBlocks', () => {
       expect(blocks[0].content).toContain('Done')
     })
   })
+
+  describe('info strings beyond \\w (hyphen, +, #, dot, attributes)', () => {
+    it('skips leading info-string whitespace before the language tag', () => {
+      const blocks = parseBlocks('``` python\nx = 1\n```', false)
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0]).toMatchObject({ type: 'code', language: 'python', content: 'x = 1' })
+    })
+
+    it('does not treat an inner tagged fence as nesting when the outer tag follows whitespace', () => {
+      const blocks = parseBlocks('``` python\n```js\nx\n```\nafter', false)
+      expect(blocks.map(b => b.type)).toEqual(['code', 'markdown'])
+      expect(blocks[0]).toMatchObject({ type: 'code', language: 'python', content: '```js\nx' })
+      expect(blocks[1]).toMatchObject({ type: 'markdown', content: 'after' })
+    })
+
+    // Regression: `error-report` (the dashboard's own error->agent prompt tag,
+    // utils/errorReport.prompt.ts) was not matched by FENCE_OPEN, so the
+    // opening line fell through as prose and the bare closing fence was read
+    // as a NEW opening fence. The user saw the body under a label truncated to
+    // "error" plus a phantom empty "code" block that swallowed the rest of the
+    // message.
+    it('opens and closes a ```error-report fence as one code block', () => {
+      const input = 'Diagnose this.\n\n```error-report\n- Message: [Errno 16] Device or resource busy\n```\n'
+      const blocks = parseBlocks(input, false)
+      expect(blocks).toHaveLength(2)
+      expect(blocks[0]).toMatchObject({ type: 'markdown', content: 'Diagnose this.\n' })
+      expect(blocks[1]).toEqual({
+        type: 'code',
+        content: '- Message: [Errno 16] Device or resource busy',
+        language: 'error-report',
+        complete: true,
+        startLine: 4,
+      })
+    })
+
+    it('does not leave a phantom empty block after the closing fence', () => {
+      const input = 'lead\n```error-report\nbody\n```'
+      const blocks = parseBlocks(input, false)
+      expect(blocks.map(b => b.type)).toEqual(['markdown', 'code'])
+      expect(blocks.some(b => b.type === 'code' && b.content === '')).toBe(false)
+    })
+
+    it.each([
+      ['objective-c', 'NSLog(@"hi");'],
+      ['shell-session', '$ ls'],
+      ['c++', 'int main() {}'],
+      ['f#', 'let x = 1'],
+      ['asp.net', '<%= 1 %>'],
+    ])('accepts %s as a language tag', (lang, body) => {
+      const blocks = parseBlocks(`\`\`\`${lang}\n${body}\n\`\`\``, false)
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0]).toMatchObject({ type: 'code', language: lang, content: body, complete: true })
+    })
+
+    it('takes the first word of an attributed info string as the tag', () => {
+      // CommonMark: the info string may carry anything but backticks; only its
+      // first word is the language.
+      const blocks = parseBlocks('```js {1,3} title="a.js"\nconst a = 1\n```', false)
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0]).toMatchObject({ type: 'code', language: 'js', content: 'const a = 1', complete: true })
+    })
+
+    it('a hyphenated tag is not in the nestable set, so an inner ```lang stays literal', () => {
+      // Same rule as any other code language: depth tracking is only for
+      // markup/doc outer tags, so the first bare ``` closes the block.
+      const input = '```error-report\n```python\n```\ntrailing'
+      const blocks = parseBlocks(input, false)
+      expect(blocks.map(b => b.type)).toEqual(['code', 'markdown'])
+      expect(blocks[0].content).toBe('```python')
+      expect(blocks[1].content).toBe('trailing')
+    })
+
+    it('still rejects an info string containing backticks', () => {
+      // CommonMark: a backtick fence's info string may not contain backticks.
+      const blocks = parseBlocks('``` ```\nnot code', false)
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0].type).toBe('markdown')
+    })
+  })
 })

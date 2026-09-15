@@ -84,6 +84,34 @@ class TestRunOnceEarlyReturns:
             _run(hooks._run_once())
         probe.assert_not_called()
 
+    def test_the_nightly_identity_probe_bypasses_the_cache(self):
+        """The account this loop keys backups by must not come from memory.
+
+        ``resolve_default_account_profile`` reaches ``_fold_profile``, which probes
+        every registry entry with the cache ON, so a cached probe here answers from
+        an entry primed moments earlier -- the comment's "live probe" would never
+        run live. A repoint inside that window keys ``due_for_nightly``,
+        ``find_drive`` and the snapshot record to the wrong account, unattended.
+
+        Asserted on the KEYWORD rather than on a real cache because the loop's own
+        guards stub the probe out; the cache behaviour itself is pinned where the
+        cache lives.
+        """
+        with (
+            mock.patch.object(
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
+            ),
+            mock.patch.object(
+                hooks.aws_consent,
+                "probe_identity",
+                AsyncMock(return_value=aws_consent.Identity(ok=False, account="")),
+            ) as probe,
+        ):
+            _run(hooks._run_once())
+        assert probe.await_args.kwargs.get("use_cache") is False
+
     def test_unresolved_identity_skips(self):
         # A profile NAME is not an account; if the live probe cannot resolve one
         # (ok False or empty account) the loop cannot key backup state, so it

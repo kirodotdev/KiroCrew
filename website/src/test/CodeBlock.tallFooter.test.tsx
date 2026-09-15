@@ -120,13 +120,4 @@ describe('CodeBlock: the copy button never confirms a copy that failed', () => {
     expect(screen.queryByLabelText('Copied!')).toBeNull()
     expect(screen.getByLabelText('Copy')).toBeInTheDocument()
   })
-
-  it('stays on the idle icon when copyCode rejects', async () => {
-    vi.mocked(copyCode).mockRejectedValue(new Error('clipboard denied'))
-    render(<CodeBlock code="const x = 1" lang="ts" complete />)
-    fireEvent.click(screen.getByLabelText('Copy'))
-    await waitFor(() => expect(copyCode).toHaveBeenCalled())
-    expect(screen.queryByLabelText('Copied!')).toBeNull()
-    expect(screen.getByLabelText('Copy')).toBeInTheDocument()
-  })
 })

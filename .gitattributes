@@ -9,6 +9,9 @@
 # file non-text disables newline conversion entirely.
 *.pem -text
 
+# Retired generated-skill fixtures pin exact bytes across checkout platforms.
+test/fixtures/retired_conductor_skill/*.md -text
+
 # Screenshots and other image assets are binary even when their compressed prefix
 # happens not to contain a NUL byte. Git's heuristic otherwise renders some images
 # as text and applies whitespace/newline checks to compressed image bytes.
@@ -40,3 +43,13 @@
 src/kiro_crew/_vendor/**/*.py text eol=lf
 src/kiro_crew/_vendor/**/*.md text eol=lf
 src/kiro_crew/_vendor/**/*.typed text eol=lf
+
+# The generated config snapshot is compared byte-for-byte with UTF-8/LF output.
+# Keep checkout conversion from changing it under core.autocrlf=true.
+/config-baseline.json text eol=lf
+
+# The pi gate extension is loaded only after its SHA-256 matches the digest this
+# build pinned (acp/client.py PI_GATE_EXTENSION_SHA256). The digest is over the
+# checkout bytes, so a CRLF rewrite on a Windows clone would refuse every pi
+# session there and only there. Pin LF like the vendor manifest above.
+src/kiro_crew/agent_sdk/gate_extensions/**/*.ts text eol=lf

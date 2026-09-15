@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Check,
   Cloud,
   CloudOff,
   Copy,
@@ -18,6 +19,7 @@ import { Badge } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import { framablePreviewUrl, safeHttpUrl } from '../lib/safeUrl'
 import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
+import { copyToClipboard } from '../utils/clipboard'
 import type { Artifact, WebAppMetadata } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -339,9 +341,15 @@ export default function WebAppArtifactCard({
     },
   })
 
-  const handleCopy = useCallback(() => {
+  const [urlCopied, setUrlCopied] = useState(false)
+  const handleCopy = useCallback(async () => {
+    // safeHttpUrl runs first: only a validated http(s) URL is ever handed to
+    // the clipboard, deployed target or not.
     const safe = dt ? safeHttpUrl(dt.public_url) : null
-    if (safe) navigator.clipboard.writeText(safe)
+    if (safe && await copyToClipboard(safe)) {
+      setUrlCopied(true)
+      setTimeout(() => setUrlCopied(false), 1500)
+    }
   }, [dt])
 
   const navigate = useNavigate()
@@ -553,7 +561,7 @@ export default function WebAppArtifactCard({
                 title={i18nT('components.webAppArtifactCard.copy_url')}
                 aria-label={i18nT('components.webAppArtifactCard.copy_url')}
               >
-                <Copy className="lucide-inline" />
+                {urlCopied ? <Check className="lucide-inline text-ok" /> : <Copy className="lucide-inline" />}
               </button>
               {safeUrl && (
                 <a

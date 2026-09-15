@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import stat as _stat
+import sys
 import tempfile
 import threading
 import time
@@ -2531,16 +2532,66 @@ def unc_probe_allowed(raw: str) -> bool:
     return False
 
 
+def _is_representable_path(raw: str) -> bool:
+    """Can the OS path layer represent this string at all?
+
+    ``realpath``/``lstat`` raise on a string the filesystem cannot carry:
+    ``ValueError`` for an embedded NUL, and ``UnicodeEncodeError`` (a
+    ``ValueError`` subclass) for a lone surrogate the platform's own error
+    handler cannot round-trip. Callers of :func:`validate_file_path` treat only
+    ``None`` as a refusal, so such a path resolved into the resolution below and
+    surfaced from the dashboard file handlers as an uncaught HTTP 500 rather than
+    the 400 it is.
+
+    Scoped to strings that are genuinely unrepresentable, and nothing else. This
+    is a SHARED chokepoint -- ``safe_read_file_bytes_nolink`` routes through it,
+    and its callers include diagnostics that deliberately enumerate a file whose
+    name holds a control character in order to report on it (an agent-writeable
+    directory can contain one, and the reporting layer escapes the name for
+    display). Refusing a broader class here would turn such a report into "could
+    not be compared" and so suppress the finding it exists to make. A path whose
+    control characters must be refused is refused by the boundary that receives
+    it, not here: see ``_validate_dashboard_path`` in the dashboard file
+    handlers. Only NUL is refused here, because no file can be named with one, so
+    no consumer loses a real name.
+
+    Nor is this "refuse anything a sanitizer would alter". A canonically
+    decomposed name is the form macOS stores and a name may legally end in a
+    space; both differ from their sanitized form and both resolve correctly.
+
+    The encoding attempt is the discriminator rather than a character list,
+    because it asks the question the syscall will ask: it accepts a surrogate the
+    platform's own error handler round-trips -- ``surrogateescape`` for a POSIX
+    name holding non-UTF-8 bytes, ``surrogatepass`` for an unpaired surrogate in
+    a legal NTFS name -- and rejects one it cannot. Both the encoding and the
+    error handler are read from ``sys``, which is what makes this the same
+    operation as ``os.fsencode`` on every platform rather than only on POSIX.
+    ``sys`` rather than ``os`` because this module's ``os`` is substituted
+    wholesale by tests exercising the Windows gates below, and a check a stub can
+    silently remove is not a check.
+    """
+    if "\x00" in raw:
+        return False
+    try:
+        raw.encode(sys.getfilesystemencoding(), sys.getfilesystemencodeerrors())
+    except (UnicodeError, ValueError):
+        return False
+    return True
+
+
 def validate_file_path(raw: str) -> str | None:
     """Validate and canonicalize a file path for dashboard file I/O.
 
-    Enforces: the Windows UNC trusted-root gate (BEFORE any resolution --
+    Enforces: representability in the OS path layer (BEFORE any syscall sees the
+    string), the Windows UNC trusted-root gate (BEFORE any resolution --
     ``realpath`` on a UNC path is itself the outbound SMB probe), the Windows
     linked-ancestor gate (a linked ancestor launders the same probe past the
     lexical UNC check), is_sensitive_path(), realpath canonicalization.
     Returns the canonical path or None if rejected.
     """
     if not raw:
+        return None
+    if not _is_representable_path(raw):
         return None
     if os.name == "nt":
         # Fold a ``\\?\<drive>:\...`` extended-length LOCAL path down to its

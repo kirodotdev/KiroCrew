@@ -35,17 +35,15 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Pre-owner exclusions: routes that intentionally only require authentication
 # (not ownership) because they execute during the initial onboarding flow
 # BEFORE an owner is configured.
+#
+# Empty by intent: the onboarding import routes are owner-gated like every
+# other mutating route. The pre-owner shape needs no exemption because
+# ``is_owner_dashboard_request`` accepts the signed local bootstrap subjects
+# (``local-app`` / ``local-startup``) whenever no ``owner_id`` is configured,
+# so the local onboarding flow passes the ordinary gate. A pre-owner route
+# that must skip the gate for a real reason belongs here, with justification.
 # --------------------------------------------------------------------------- #
-_PRE_OWNER_EXCLUSIONS: frozenset[tuple[str, str]] = frozenset(
-    {
-        # Onboarding import routes use ``_caller()`` which checks authentication
-        # but not ownership. These routes run during initial setup when the user
-        # is importing configuration from another installation -- there is no
-        # configured owner yet, so the owner gate cannot apply.
-        ("POST", "/api/onboarding/import/apply"),
-        ("PUT", "/api/onboarding/import/state"),
-    }
-)
+_PRE_OWNER_EXCLUSIONS: frozenset[tuple[str, str]] = frozenset()
 
 # --------------------------------------------------------------------------- #
 # Known ungated routes: mutating routes that predate the owner-gating effort.
@@ -114,7 +112,7 @@ _MAX_KNOWN_UNGATED_ROUTES = 20
 # back to the real count is a manual, unenforced step -- do it whenever you
 # touch this file, or the slack this floor exists to prevent regrows.
 # --------------------------------------------------------------------------- #
-_MINIMUM_GATED_ROUTES = 26
+_MINIMUM_GATED_ROUTES = 28
 
 
 class _FakeState:

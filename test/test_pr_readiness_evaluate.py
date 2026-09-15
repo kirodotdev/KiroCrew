@@ -322,6 +322,78 @@ def runner(tmp_path: Path) -> Runner:
     return Runner(tmp_path)
 
 
+class TestPendingLanesAreNamedInTheStatus:
+    """A monitored lane can produce ZERO runs for an immutable head when
+    GitHub does not create the run, and no event creates one on an unchanged
+    commit. Such a lane sits `(not started)` and the required "PR Readiness"
+    status stays `pending`. The status description names the waiting lane(s),
+    bounded to the commit-status API's 140-char limit, so the culprit is
+    legible at a glance and a human can re-run that lane instead of pushing an
+    empty commit."""
+
+    @staticmethod
+    def _empty(name: str) -> str:
+        return json.dumps({"workflow_runs": []})
+
+    def test_a_never_started_lane_is_named_not_just_counted(self, runner: Runner):
+        # One monitored lane produces no run for this head, everything else
+        # green. The description names the stuck lane, not just its count.
+        (runner.fixtures / "ci_runs.json").write_text(self._empty("ci.yml"))
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        # The classification is unchanged -- still pending, still checking.
+        assert outputs["status_state"] == "pending"
+        assert outputs["label"] == "readiness: checking"
+        # ...but the description now NAMES the lane instead of only counting it.
+        assert "1 readiness check(s) still pending" in outputs["description"]
+        assert "CI (not started)" in outputs["description"]
+        # The lane-state log line names it; the status a human sees on the PR
+        # names it too.
+        assert "CI (not started)" in _lane_log(proc)
+
+    def test_the_named_description_never_exceeds_the_api_limit(self, runner: Runner):
+        # Every lane empty -> the widest possible waiting list. The commit-status
+        # POST silently truncates past 140 chars, so the named list must be
+        # capped with "+N more" rather than run past the limit.
+        (runner.fixtures / "ci_runs.json").write_text(self._empty("ci.yml"))
+        (runner.fixtures / "green_runs.json").write_text(self._empty("x.yml"))
+        (runner.fixtures / "codeql_runs.json").write_text(self._empty("codeql"))
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert len(outputs["description"]) <= 140
+        # It still leads with the full count, and it named at least the first
+        # lane before spending its character budget.
+        assert outputs["description"].startswith("")
+        assert "readiness check(s) still pending" in outputs["description"]
+        assert "waiting on" in outputs["description"]
+        # A wide overflow is reported, not silently dropped.
+        assert "+" in outputs["description"] and "more)" in outputs["description"]
+
+    def test_a_single_pending_lane_needs_no_overflow_suffix(self, runner: Runner):
+        # One waiting lane fits comfortably, so the "(+N more)" suffix must not
+        # appear -- it is only for a list the budget could not hold.
+        (runner.fixtures / "codeql_runs.json").write_text(
+            _run_json("codeql", status="queued", conclusion="")
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert "CodeQL (queued)" in outputs["description"]
+        assert "more)" not in outputs["description"]
+        assert len(outputs["description"]) <= 140
+
+    def test_a_green_revision_description_is_unchanged(self, runner: Runner):
+        # The naming touches only the checking branch: a fully-green revision's
+        # passed description must be byte-for-byte what it was.
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+        assert outputs["description"] == (
+            "Eligible automated validation passed for this revision"
+        )
+
+
 class TestTransientFailureIsRetried:
     def test_one_flake_still_reaches_the_real_verdict(self, runner: Runner):
         # The failure site this guards: the per-workflow runs read. One

@@ -174,6 +174,80 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/restart-gateway` | — | Restart the live gateway through its service-manager backend; returns the pre-restart `start_id` for the restart handshake |
 | `/apps/dev-fleet/api/make-live` | `{path, dry_run?}` | Repoint the live gateway at another worktree (see Make Live); a real cutover returns `start_id` for the restart handshake |
 
+### Agent surface (gateway process, `/api/apps/dev-fleet/pod/*`)
+
+A second, deliberately small pod surface exists for AGENT sessions, served **in the
+gateway process** rather than by the backend subprocess (`agent_pod_api.py`).
+
+Why it is separate rather than a reuse of the proxied routes above: an agent session
+runs behind a sandbox with its own user namespace, so it cannot `connect(2)` the
+systemd user-bus socket that every pod verb needs, and `kirocrew pod up` in an agent
+shell fails with a bare `Permission denied`. The gateway is the process the sandbox
+launcher descends from, so it holds the host bus. The agent reaches these routes the
+way it reaches any tool — an MCP call, then loopback HTTP — with no D-Bus passthrough
+into the sandbox. The proxied `/apps/dev-fleet/api/*` routes cannot serve this: they
+require a dashboard cookie or token, which an agent does not hold, and admitting an
+internal-secret caller there would expose the app's whole backend surface.
+
+| Method | Route | Input | Description |
+|--------|-------|-------|-------------|
+| POST | `/api/apps/dev-fleet/pod/up` | `{worktree}` | Boot a pod; answers the CLI's `--json` handle (`base_url`, `token`, `port`, `ttl`). Provisioning is NOT reachable here: a cold venv + SPA build is minutes of work, and one blocking request for that dies to any timeout with no way to learn the outcome. An unbuilt worktree is refused with the CLI's own remedy; the dashboard's Provision button streams the same work under a run id |
+| POST | `/api/apps/dev-fleet/pod/down` | `{worktree}` | Stop the pod and reclaim its isolated HOME |
+| GET | `/api/apps/dev-fleet/pod/status?worktree=` | — | `{name, status, port, health}`, as `pod status --json` reports it |
+| GET | `/api/apps/dev-fleet/pod/list` | — | `{pods: [{name, port, health}]}` for every pod active on the host, unfiltered by repo |
+
+Contract:
+
+- **Gated on the app being enabled** (`_require_enabled`), since routes are
+  registered at startup and Dev Fleet ships `defaultEnabled: false`.
+- **No operator opt-in and no per-call approval, deliberately.** A pod runs the code
+  in a git worktree an agent can write, started by the user systemd manager, so it
+  executes outside the agent's sandbox. That reachability is Kiro Crew's DOCUMENTED
+  posture rather than something these routes introduce: `security.md`, under "Scoped
+  user-bus locator forward", records that sandboxed agent shells legitimately run
+  `systemctl --user` and the `kirocrew pod` CLI, and names the residual in the same
+  paragraph; the builtin `pod-e2e` skill has always told agents to boot pods. An
+  extra gate here would not close that residual — every other path to it stays open —
+  it would only stop the agent-driven QA loop these routes exist to restore. Agent
+  pod control is an intended capability, so it is not gated. State the residual
+  precisely rather than comfortably: on a host whose OUTER sandbox denies the user
+  bus, these routes are the one path from an agent-writable worktree to code running
+  unsandboxed as the user, so enabling Dev Fleet on such a host now carries that
+  surface. App admission policy can deny the app outright where that is unwanted.
+- **Named one by one in `server._STRICT_INTERNAL_API_PATHS`**, never as a
+  `/api/apps/dev-fleet/pod` prefix. That table is exact-or-prefix
+  (`path == entry or path.startswith(entry + "/")`), and this app's neighbourhood
+  includes worktree prune and the Make Live cutover, which must not become reachable
+  by holding the internal secret.
+- **STRICT, not mixed** — no browser calls them. Each handler re-asserts local origin
+  AND `internal_auth`, because a `local_only=False` deployment reclassifies strict
+  paths as mixed (same reason `/api/computer-use/frame` re-asserts both). Local origin
+  is the UNION of the AF_UNIX socket and a loopback address, mirroring the
+  middleware's own `_unix_sock is not None or is_loopback(...)`: `mcp_core` prefers
+  the gateway's unix socket whenever the file exists, and `request.remote` is empty
+  over AF_UNIX, so testing the loopback half alone would refuse every call on the
+  platform pods actually run on.
+- **No pod logic of its own.** Every handler delegates to the same `worktree_ops`
+  helpers the dashboard's buttons call, so "up" means one thing and a pod's status
+  has one definition.
+- **Refusals are 409 with a literal `code`** (`pod_up_failed`, `pod_down_failed`,
+  `pod_status_failed`, `pod_list_failed`); malformed input is 400
+  (`invalid_worktree`, `invalid_body`). A refused lifecycle op is a host-state
+  answer, not a gateway bug. `repository._repo()` raises when no main checkout is
+  configured, and the read verbs catch that rather than letting a setup problem
+  surface as a 500.
+- **Every lifecycle CHANGE and every guard denial is written to the Security Event
+  Log** under `dev_fleet.agent.*` (`pod_up`, `pod_down`, `machine_guard`): the caller
+  is unattended, so the trail is what makes the run reviewable. The read verbs are
+  not audited there — they change nothing, and the framework-level tool log already
+  records the call.
+
+The model-facing half is the `pod_up` / `pod_down` / `pod_status` / `pod_ls` tools on
+`kirocrew-core` (`mcp_tools/apps.py`). The pod token is returned to the agent
+verbatim — redacting it would hand back an unusable handle — which is safe because it
+is a 2h credential scoped to that pod's own gateway, minted server-side from the
+pod's `.local_secret` so the agent never touches the secret itself.
+
 ## Authorization
 
 All endpoints inherit gateway session auth. No additional RBAC — all authenticated users
@@ -573,6 +647,26 @@ scheduling the restart and hands it to the frontend:
   `POST …/make-live` cutover also returns the pre-restart `start_id` and the UI
   recovers on an identity change.
 
+### Completed-cutover Undo banner
+
+After the reloaded fleet proves the pointer target is the checkout actually
+running, `undo_target` exposes the validated, still-discovered
+`previous_checkout`. The page renders a persistent success banner naming the
+current checkout and a **Switch back to `<previous>`** button. The inverse action opens a confirmation
+that names the destination and accurately distinguishes an automatic restart
+from a staged/manual one, then posts `{path, undo: true}` through the same Make
+Live transaction and restart handshake.
+
+The banner is deliberately absent while a pointer is staged but not running:
+**Cancel staged cutover** is the inverse in that state, while Undo is the inverse
+of a completed cutover. Dismissing the banner stores its current
+`current→previous` pair in per-tab `sessionStorage`, so page reloads and Dev Fleet
+revisits keep that pair hidden. The stored pair is spent as soon as a loaded fleet
+payload reports a different pair or none at all, so a later Make Live is visible
+even when it recreates the very same pair (feature → main dismissed, back to main,
+the same feature live again). A successful Undo consumes `previous_checkout`, so the reloaded page has
+no accidental redo banner.
+
 ### Restarting UI state
 
 While the handshake runs, the frontend holds an explicit **"Restarting —
@@ -950,8 +1044,22 @@ Location: `config_dir() / "live_target.json"` (inside the active data home,
 typically `~/.kiro/crew/live_target.json`). Contents:
 
 ```json
-{"checkout": "/absolute/path/to/worktree"}
+{
+  "checkout": "/absolute/path/to/worktree",
+  "previous_checkout": "/absolute/path/to/previous-worktree"
+}
 ```
+
+`previous_checkout` is optional and records exactly one completed cutover for the
+post-restart **Undo** banner. Both fields validate as executable Kiro Crew
+checkouts before they are written. At read time, `checkout` follows the normal
+boot validation, while the Undo path validates `previous_checkout`; rebuilding
+the checkout already running does not hide an otherwise safe return target.
+Ordinary Make Live replaces the history with the checkout currently
+running when that checkout validates; otherwise the cutover succeeds without an
+Undo destination. Undo consumes the stored history (the rewritten pointer omits `previous_checkout`) rather than turning the inverse into an
+implicit redo. Legacy pointers containing only `checkout` remain valid and
+simply expose no Undo action.
 
 Written atomically (temp file + `os.replace`) with mode `0o600`. The file is
 **keystone-fenced** (in `_CREW_SECRET_LEAVES`) so agent tools can neither read
@@ -969,9 +1077,13 @@ Reading the definition first would report that stale checkout as live.
 
 ### Request / Response
 
-Request body: `{path, dry_run?}` — `path` is a worktree path (validated against
-the discovered set, never an arbitrary path); `dry_run` (bool, default false)
-returns the plan without writing the pointer.
+Request body: `{path, dry_run?, undo?}` — `path` is a worktree path
+(validated against the discovered set, never an arbitrary path); `dry_run` (bool,
+default false) returns the plan without writing the pointer. `undo` (bool,
+default false) requires `path` to equal the pointer's validated
+`previous_checkout`; that binding is checked again under the Make Live lock, so
+a stale banner cannot reverse a newer cutover. `undo` and `expected_staged` are
+mutually exclusive.
 
 - **dry_run success:** `{ok: true, dry_run: true, plan: {mechanism, pointer_path,
   exec, restart, target, [manual_restart]}}`
@@ -980,6 +1092,9 @@ returns the plan without writing the pointer.
 - **cutover success (staged only):** `{ok: true, cutover: true, staged_only: true,
   target, plan, manual_restart, notice}` — the pointer is written and correct;
   the operator finishes the cutover by restarting the gateway themselves.
+- **Undo success:** the same automatic/staged result shapes; the target becomes
+  the prior checkout and `previous_checkout` is consumed before the restart is
+  scheduled.
 - **refusal:** `{ok: false, code, error}` — `code` is one of the values below.
 
 The handler additionally returns HTTP 400 for a missing/non-string `path` or a
@@ -1004,6 +1119,8 @@ The `plan` object describes the cutover mechanism:
 | `pod` | called from inside a pod — a throwaway test instance must never repoint the live gateway |
 | `pod_indeterminate` | pod status could not be resolved (config home unresolvable) — **fail-closed**, never treated as "not a pod" |
 | `already_live` | the target is already the live gateway |
+| `undo_changed` | the requested Undo path no longer equals the pointer's validated previous checkout (stale banner or newer cutover); refresh before retrying |
+| `undo_not_ready` | the requested inverse is still the running checkout, so the original cutover is only staged; use Cancel staged cutover instead |
 | `missing_venv` | the worktree has no `.venv/bin/kirocrew` (Provision it first) |
 | `venv_not_executable` | the worktree's `.venv/bin/kirocrew` exists but is **not executable** (`chmod +x` it or re-Provision) — a non-executable binary would stop the live gateway but could not start the replacement, leaving no gateway running |
 | `missing_dist` | the worktree has no built `src/kiro_crew/static/dist/index.html` (Pull+Build first) — a cutover without a built dist serves a broken dashboard |

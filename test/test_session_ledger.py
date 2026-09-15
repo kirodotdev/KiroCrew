@@ -424,14 +424,12 @@ class TestBoundedWriteIsLoudAboutLoss:
         assert events + tried > budget, "the eviction branch would be unreachable"
 
 
-def test_purge_removes_dir_and_tolerates_bad_keys():
-    key = "chat-10-000"
-    sl.record(key, goal="x")
-    assert sl.has_ledger(key)
-    sl.purge(key)
-    assert not sl.has_ledger(key)
-    sl.purge("")  # hostile key: no-op, never raises
-    sl.purge("a/b")
+def test_purge_matching_tolerates_bad_and_absent_keys():
+    """The one delete primitive: a hostile or unknown key removes nothing and never
+    raises."""
+    sl.record("chat-10-000", goal="x")
+    assert sl.purge_matching({"", "a/b", "chat-never"}, guard=lambda _d: True) == 0
+    assert sl.has_ledger("chat-10-000")
 
 
 @pytest.mark.skipif(not IS_POSIX, reason="flock-based holder simulation is POSIX-only")
@@ -740,21 +738,324 @@ async def test_delete_with_folded_spelling_preserves_exact_channel_key_ledger():
     assert sl.has_ledger(channel_key)
 
 
-def test_purge_matching_exact_and_folded_and_nonmatch():
+@pytest.mark.skipif(not IS_POSIX, reason="symlink creation needs no privilege on POSIX")
+def test_purge_matching_never_follows_a_linked_store_or_a_linked_entry(tmp_path):
+    """A linked store directory is skipped whatever its breadcrumb says, and a
+    linked entry INSIDE a store is unlinked as a name, never walked."""
+    import shutil
+
+    # A whole store that is a link: skipped, target untouched.
+    key = "chat-60-linked-store"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+    target = tmp_path / "store-target"
+    shutil.move(str(directory), str(target))
+    directory.symlink_to(target, target_is_directory=True)
+    assert sl.purge_matching({key}, guard=lambda _d: True) == 0
+    assert (target / "state.json").exists()
+
+    # A linked entry inside a real store: the link goes, the target stays.
+    key2 = "chat-61-linked-entry"
+    sl.record(key2, goal="g", phase="done", event="x", event_kind="phase")
+    directory2 = sl.ledger_dir(key2)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "precious.txt").write_text("keep", encoding="utf-8")
+    (directory2 / "attachments").symlink_to(elsewhere, target_is_directory=True)
+    assert sl.purge_matching({key2}, guard=lambda _d: True) == 1
+    assert not directory2.exists()
+    assert (elsewhere / "precious.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_purge_matching_is_exact_and_a_folded_spelling_matches_nothing():
+    """The primitive matches exact keys only: the folded spelling of a channel key
+    names no ledger, so a lossy alias can never remove one the caller did not
+    list by its exact key."""
     from kiro_crew.dashboard.state import _normalize_slot_key
 
     sl.record("slack:C1:1.1", goal="a")
     sl.record("slack:C2:2.2", goal="b")
     sl.record("chat-keep-1", goal="keep")
     removed = sl.purge_matching(
-        {"slack:C1:1.1"},
-        {_normalize_slot_key("slack:C2:2.2")},
-        _normalize_slot_key,
+        {"slack:C1:1.1", _normalize_slot_key("slack:C2:2.2")}, guard=lambda _d: True
     )
-    assert removed == 2
+    assert removed == 1
     assert not sl.has_ledger("slack:C1:1.1")
-    assert not sl.has_ledger("slack:C2:2.2")
+    assert sl.has_ledger("slack:C2:2.2"), "a folded spelling is not the exact key"
     assert sl.has_ledger("chat-keep-1")
+
+
+def test_guarded_purge_keeps_the_record_and_breadcrumb_when_any_content_survives(
+    monkeypatch,
+):
+    """Removal is ordered and the identity files go LAST, only once everything
+    else is gone -- so a failed removal (a Windows sharing violation on one held
+    entry) leaves a store that still has its record and still names itself,
+    never a residue no purge can address."""
+    key = "chat-30-held"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+    (directory / "stray.bin").write_bytes(b"held by another handle")
+    real_unlink = os.path.exists  # placeholder to keep the name in scope
+
+    import pathlib
+
+    original = pathlib.Path.unlink
+
+    def _refuse_stray(self, *args, **kwargs):
+        if self.name == "stray.bin":
+            raise PermissionError(32, "sharing violation")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _refuse_stray)
+
+    removed = sl.purge_matching({key}, guard=lambda _d: True)
+
+    assert removed == 0, "a store that could not be fully removed is not counted"
+    assert (directory / "state.json").exists(), "the record must survive"
+    assert (directory / "slot_key").exists(), "the breadcrumb must survive"
+    assert sl.read_state(key)["phase"] == "done", "the store is still a ledger"
+    del real_unlink
+
+
+def test_guarded_purge_counts_rmtree_failures_instead_of_ignoring_them(monkeypatch):
+    key = "chat-31-subtree"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+    (directory / "attachments").mkdir()
+    (directory / "attachments" / "a.bin").write_bytes(b"x")
+    real_rmtree = sl.shutil.rmtree
+
+    def _refuse(path, *args, **kwargs):
+        onerror = kwargs.get("onerror")
+        if onerror is not None:
+            onerror(None, str(path), None)
+            return None
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(sl.shutil, "rmtree", _refuse)
+
+    with sl._locked(directory):
+        assert sl._remove_store_contents(directory) is False
+    assert (directory / "state.json").exists()
+    assert (directory / "slot_key").exists()
+
+
+@pytest.mark.skipif(not IS_POSIX, reason="the detached-inode shape needs POSIX unlink semantics")
+def test_a_record_queued_behind_a_purge_refuses_instead_of_publishing():
+    """A writer that acquires ``_locked`` on an inode the store does not have must
+    refuse, not write a breadcrumb-less state into a recreated directory."""
+    key = "chat-40-purged-under-me"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+    lock_path = directory / ".lock"
+    import shutil
+
+    fd = os.open(str(lock_path), os.O_RDWR)
+    try:
+        shutil.rmtree(directory)  # the purge completes while this writer holds a stale fd
+        with pytest.raises(OSError, match="removed while waiting"):
+            sl.require_lock_inode(fd, lock_path)
+    finally:
+        os.close(fd)
+    # The store is gone and stays gone: nothing was published into it.
+    assert not directory.exists()
+
+
+def test_locked_runs_the_inode_check_inside_the_hold(monkeypatch):
+    seen: list[str] = []
+    real = sl.require_lock_inode
+
+    def _spy(fd, path):
+        seen.append(path.name)
+        return real(fd, path)
+
+    monkeypatch.setattr(sl, "require_lock_inode", _spy)
+    sl.record("chat-41-checked", goal="g")
+    assert seen == [".lock"]
+
+
+@pytest.mark.skipif(not IS_POSIX, reason="in-hold unlink is the POSIX path; Windows refuses it")
+def test_the_lock_inode_is_unlinked_inside_the_hold(monkeypatch):
+    """Unlinked INSIDE the hold, a queued writer that acquires the old inode finds
+    its path gone and refuses. Unlinked after release there is a window where it
+    acquires, validates against a path that still exists, proceeds, and the late
+    unlink detaches the inode it holds -- so the next writer gets a second inode
+    and the two are not serialised."""
+    key = "chat-50-inhold"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+    lock_path = directory / ".lock"
+
+    gone_while_held: list[bool] = []
+    real_release = sl.release_lock
+
+    def _observe_then_release(fd):
+        # Observed on the way OUT of the hold: the lock path must already be gone.
+        gone_while_held.append(not lock_path.exists())
+        return real_release(fd)
+
+    monkeypatch.setattr(sl, "release_lock", _observe_then_release)
+
+    assert sl.purge_matching({key}, guard=lambda _d: True) == 1
+    assert gone_while_held == [True], "the lock inode must be unlinked before release"
+    assert not directory.exists()
+
+
+def test_purge_matching_succeeds_under_windows_unlink_rules(monkeypatch):
+    """Windows: a handle has no FILE_SHARE_DELETE, so unlinking a held lock raises.
+    The store's lock must therefore be unlinked only after its descriptor is
+    closed -- by the shell, after release -- or the directory stays non-empty and
+    the purge reports nothing removed over a store it already emptied. Simulated
+    portably by making every lock-file unlink raise while its fd is open; the
+    work half has the same test, and its earlier version was blind to one of the
+    two lock handles."""
+    from pathlib import Path
+
+    key = "chat-52-windows"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+
+    open_locks: set[Path] = set()
+    fd_paths: dict[int, Path] = {}
+    real_os_open, real_close, real_unlink = os.open, os.close, Path.unlink
+
+    def _tracking_open(path, flags, *args, **kwargs):
+        fd = real_os_open(path, flags, *args, **kwargs)
+        p = Path(path)
+        if p.name.endswith(".lock"):
+            fd_paths[fd] = p
+            open_locks.add(p.resolve())
+        return fd
+
+    def _tracking_close(fd):
+        p = fd_paths.pop(fd, None)
+        if p is not None:
+            open_locks.discard(p.resolve())
+        return real_close(fd)
+
+    def _windows_unlink(self, *args, **kwargs):
+        if self.name.endswith(".lock") and self.resolve() in open_locks:
+            raise PermissionError(32, "The process cannot access the file because it is being used")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", _tracking_open)
+    monkeypatch.setattr(os, "close", _tracking_close)
+    monkeypatch.setattr(Path, "unlink", _windows_unlink)
+
+    assert sl.purge_matching({key}, guard=lambda _d: True) == 1
+    assert not directory.exists()
+    assert not open_locks, "every lock handle was closed"
+
+
+def test_purge_matching_with_an_accept_all_guard_is_still_locked_and_ordered(monkeypatch):
+    """There is one spelling of deletion: an accept-all guard means the match alone
+    decides, under the same hold and the same identity-last ordering. A refused
+    stray entry therefore keeps the record and breadcrumb exactly as it does with
+    a selective guard."""
+    key = "chat-51-noguard"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+    (directory / "stray.bin").write_bytes(b"held")
+    import pathlib
+
+    original = pathlib.Path.unlink
+
+    def _refuse_stray(self, *args, **kwargs):
+        if self.name == "stray.bin":
+            raise PermissionError(32, "sharing violation")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _refuse_stray)
+    seen: list[str] = []
+    real = sl.require_lock_inode
+    monkeypatch.setattr(
+        sl, "require_lock_inode", lambda fd, path: (seen.append(path.name), real(fd, path))[1]
+    )
+
+    assert sl.purge_matching({key}, guard=lambda _d: True) == 0
+    assert seen == [".lock"], "the removal ran under the ledger lock"
+    assert (directory / "state.json").exists() and (directory / "slot_key").exists()
+
+
+@pytest.mark.skipif(not IS_POSIX, reason="in-hold unlink is the POSIX path")
+def test_the_post_release_shell_never_touches_a_lock_the_hold_already_removed():
+    """After the in-hold unlink a refused writer may retry, rebuild the store and
+    take a FRESH lock at the same path. The post-release shell must not unlink
+    that: it would detach the fresh inode under its holder and hand the next
+    writer a third one, un-serialised against the second."""
+    key = "chat-52-rebuilt"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+    lock_path = directory / ".lock"
+
+    # Simulate the race: the hold removed the lock (lock_gone=True) and, before the
+    # shell runs, a writer rebuilt the store with a fresh lock inode.
+    lock_path.unlink()
+    lock_path.touch()
+    fresh = os.stat(lock_path).st_ino
+
+    sl._remove_store_shell(directory, lock_gone=True)
+
+    assert lock_path.exists(), "a fresh lock at the path is not ours to remove"
+    assert os.stat(lock_path).st_ino == fresh
+    # And the Windows-shaped case, where the hold could NOT unlink: the shell may.
+    sl._remove_store_shell(directory, lock_gone=False)
+    assert not lock_path.exists()
+
+
+def test_a_partial_identity_removal_is_logged_accurately(monkeypatch, caplog):
+    """If ``state.json`` went and only ``slot_key`` refused, the log must not claim
+    both were kept -- an operator reading it would look for a record that is gone."""
+    import logging
+    import pathlib
+
+    key = "chat-53-partial"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+    original = pathlib.Path.unlink
+
+    def _refuse_breadcrumb(self, *args, **kwargs):
+        if self.name == "slot_key":
+            raise PermissionError(32, "sharing violation")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _refuse_breadcrumb)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.session_ledger"):
+        assert sl.purge_matching({key}, guard=lambda _d: True) == 0
+
+    assert not (directory / "state.json").exists()
+    assert (directory / "slot_key").exists()
+    text = caplog.text
+    assert "kept: slot_key" in text
+    assert "state.json and slot_key kept" not in text
+
+
+def test_a_purge_racing_a_finished_purge_recreates_nothing(monkeypatch):
+    """Same property on the session half: a store removed between the listing and
+    the purge's lock is skipped, never rebuilt as a lock-only directory."""
+    import shutil
+
+    key = "chat-54-raced"
+    sl.record(key, goal="g", phase="done", event="x", event_kind="phase")
+    directory = sl.ledger_dir(key)
+    real_locked = sl._locked
+
+    def _first_sweep_wins(dir_path, **kwargs):
+        shutil.rmtree(dir_path)  # the other sweep finished just before our acquire
+        return real_locked(dir_path, **kwargs)
+
+    monkeypatch.setattr(sl, "_locked", _first_sweep_wins)
+
+    assert sl.purge_matching({key}, guard=lambda _d: True) == 0
+    assert not directory.exists(), "the purge must not recreate the store it found gone"
+
+
+def test_a_writer_lock_still_creates_the_store():
+    directory = sl.ledger_dir("chat-55-fresh")
+    assert not directory.exists()
+    with sl._locked(directory):
+        assert (directory / ".lock").exists()
 
 
 # ── MCP tool identity ─────────────────────────────────────────────────────

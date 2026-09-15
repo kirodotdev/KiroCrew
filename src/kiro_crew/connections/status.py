@@ -41,7 +41,7 @@ from typing import TypedDict
 
 from kiro_crew import mcp_grant
 from kiro_crew.config.loader import data_home
-from kiro_crew.connections.registry import Provider, get_visible_providers
+from kiro_crew.connections.registry import Provider, get_visible_providers, is_preregistered
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,43 @@ class ConnectionStatus(TypedDict, total=False):
     #: unreadable state into a claim, and so the recorded timestamp is preserved.
     grantIndeterminate: bool
     connectedSince: str
+    #: True for a pre-registered provider (registry ``auth.mode``) whose operator has
+    #: not yet entered a usable OAuth client. Present only when true. The card renders
+    #: an instruction instead of Connect: a mint would fail at the vendor with a
+    #: registration error no user can act on, so the row says what the missing step
+    #: is and where it lives (Settings → OAuth Apps).
+    needsClientConfig: bool
+
+
+def _client_config_map(providers: list[Provider]) -> dict[str, bool]:
+    """slug -> whether a usable operator client exists, for pre-registered providers.
+
+    One vault name listing for the whole page rather than a decryption per provider;
+    the view function never sees a secret VALUE, so nothing here can leak into the
+    status payload by construction. Worker-thread only (file reads).
+    """
+    from kiro_crew.config import config_dir
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.oauth_clients import oauth_client_view
+    from kiro_crew.secrets import SecretVault
+
+    pending = [p for p in providers if is_preregistered(p)]
+    if not pending:
+        return {}
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- unreadable config reads as "not configured"
+        config = {}
+    try:
+        names = set(SecretVault(config_dir()).list_names())
+    except Exception:  # noqa: BLE001 -- an unreadable vault must not take the page down
+        names = set()
+    return {
+        str(p["slug"]): bool(
+            oauth_client_view(p, config=config, vault_names=names).get("configured")
+        )
+        for p in pending
+    }
 
 
 def _connection_state_path() -> Path:
@@ -379,6 +416,7 @@ async def collect_connection_statuses() -> list[ConnectionStatus]:
             unclaimed.add(str(provider["slug"]))
 
     grants = await asyncio.to_thread(_grant_presence_map, providers)
+    client_configured = await asyncio.to_thread(_client_config_map, providers)
 
     statuses: list[ConnectionStatus] = []
     for provider in providers:
@@ -396,6 +434,23 @@ async def collect_connection_statuses() -> list[ConnectionStatus]:
         }
         if granted is None:
             entry["grantIndeterminate"] = True
+        if (
+            slug in client_configured
+            and not client_configured[slug]
+            and granted is not True
+            and status != STATUS_AWAITING_CONSENT
+        ):
+            # An existing grant outranks the flag: a client the operator later
+            # removed does not un-authorize a session kiro-cli still holds a token
+            # for, and the card must not tell a connected user to go configure.
+            # A consent already in flight outranks it too -- a mint could not have
+            # started without a client, so the row keeps saying what it is doing.
+            entry["needsClientConfig"] = True
+            if reason == "no_grant":
+                # Only a CONFIRMED absence is renamed: an unreadable grant lookup
+                # keeps ``grant_unreadable`` so the "could not look" signal survives
+                # next to the flag rather than being overwritten by it.
+                entry["reason"] = "client_not_configured"
         statuses.append(entry)
 
     recorded = await asyncio.to_thread(reconcile_connected_since, statuses, now)

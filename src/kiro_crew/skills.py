@@ -1768,8 +1768,170 @@ def _ensure_builtin_skills(base: Path) -> None:
                     )
 
 
+#: SHA-256 of the static outputs from the retired conductor skill generator.
+#: Exact identity keeps user-authored or edited files outside cleanup scope.
+RETIRED_CONDUCTOR_SKILL_SHA256 = frozenset(
+    {
+        # select_crew-era text (crew triggers, `spawn_run(crew=...)` guidance)
+        "ee91da7d58b89ddc4cd3ff097a87f520335193d78cb5937d7636e5baa9ee6ca5",
+        # the first select_crew revision, before the crew= vs agent= warning
+        "e967c693613dca258f66992b9788a8e5e8e12c4397147f58f6595ee42ffa21be",
+    }
+)
+_RETIRED_CONDUCTOR_SKILL_MAX_BYTES = 16 * 1024
+
+
+def is_retired_conductor_skill(data: bytes) -> bool:
+    """Return whether *data* is a generated conductor skill revision.
+
+    CRLF output from Windows is normalized to the generator's LF form before
+    hashing. Bare carriage returns stay significant, as the generator emits none.
+    """
+    normalized = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(normalized).hexdigest() in RETIRED_CONDUCTOR_SKILL_SHA256
+
+
 def skills_dir() -> Path:
     return config_dir() / SKILLS_DIR_NAME
+
+
+def remove_retired_conductor_skill() -> bool:
+    """Remove a byte-exact generated conductor skill through pinned descriptors.
+
+    Return ``True`` only when the skill file is removed. Missing, user-authored,
+    and edited files return ``False``. Read and unlink errors propagate so each
+    caller can report them without blocking setup or gateway startup; an empty-dir
+    prune failure is ignored. A linked conductor directory is refused before any
+    file is read.
+
+    The conductor directory is opened relative to the pinned skills-root
+    descriptor with ``O_NOFOLLOW``, so a link swapped in at that name raises
+    ``OSError`` and propagates to the caller instead of being followed.
+
+    Platforms without descriptor-relative opens keep the no-link final-name and
+    bounded-read checks, but ancestor pinning and atomic identity-checked unlink
+    degrade to by-name checks around the open and unlink.
+    """
+    skill_path = skills_dir() / "conductor" / "SKILL.md"
+    parent = skill_path.parent
+    parent_info = pinned_fs.lstat_by_name(parent)
+    if (
+        parent_info is None
+        or not stat.S_ISDIR(parent_info.st_mode)
+        or pinned_fs.is_reparse_point(parent)
+    ):
+        return False
+
+    if not pinned_fs.supports_pinned_walk():
+        before = pinned_fs.lstat_by_name(skill_path)
+        if (
+            before is None
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_size > _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
+        ):
+            return False
+        fd = os.open(skill_path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        try:
+            opened = os.fstat(fd)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_size > _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
+                or (
+                    before.st_ino
+                    and opened.st_ino
+                    and (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                )
+            ):
+                return False
+            data = os.read(fd, _RETIRED_CONDUCTOR_SKILL_MAX_BYTES)
+            if os.fstat(fd).st_size != len(data):
+                return False
+        finally:
+            os.close(fd)
+        if not is_retired_conductor_skill(data):
+            return False
+        current = pinned_fs.lstat_by_name(skill_path)
+        if (
+            current is None
+            or not stat.S_ISREG(current.st_mode)
+            or (
+                opened.st_ino
+                and current.st_ino
+                and (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            )
+        ):
+            return False
+        skill_path.unlink()
+        try:
+            if not os.listdir(parent):
+                parent.rmdir()
+        except OSError:
+            pass
+        return True
+
+    root_fd = pinned_fs.pin_parent(
+        os.path.realpath(parent.parent),
+        what="retired conductor skill directory",
+        refusal=OSError,
+    )
+    dir_fd: int | None = None
+    try:
+        current_parent = pinned_fs.stat_at(root_fd, parent.name)
+        if (
+            current_parent is None
+            or not stat.S_ISDIR(current_parent.st_mode)
+            or (current_parent.st_dev, current_parent.st_ino)
+            != (parent_info.st_dev, parent_info.st_ino)
+        ):
+            return False
+        dir_fd = os.open(parent.name, pinned_fs.dir_flags(), dir_fd=root_fd)
+        pinned_parent = os.fstat(dir_fd)
+        parent_identity = (pinned_parent.st_dev, pinned_parent.st_ino)
+        if parent_identity != (current_parent.st_dev, current_parent.st_ino):
+            return False
+        before = pinned_fs.stat_at(dir_fd, skill_path.name)
+        if (
+            before is None
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_size > _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
+        ):
+            return False
+        fd = os.open(
+            skill_path.name,
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=dir_fd,
+        )
+        try:
+            opened = os.fstat(fd)
+            identity = (opened.st_dev, opened.st_ino)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_size > _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
+            ):
+                return False
+            data = os.read(fd, _RETIRED_CONDUCTOR_SKILL_MAX_BYTES)
+            if os.fstat(fd).st_size != len(data):
+                return False
+        finally:
+            os.close(fd)
+        if not is_retired_conductor_skill(data):
+            return False
+        if not pinned_fs.unlink_verified(dir_fd, skill_path.name, identity):
+            return False
+        try:
+            if not os.listdir(dir_fd):
+                pinned_fs.remove_dir_verified(
+                    root_fd,
+                    parent.name,
+                    expect=parent_identity,
+                )
+        except OSError:
+            pass
+        return True
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+        os.close(root_fd)
 
 
 class SkillsLoader:

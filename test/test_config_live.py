@@ -1538,7 +1538,6 @@ class TestRestartHintIsSchemaDriven:
         "subagent_max_turns",
         "subagent_auto_max",
         "max_subagents",
-        "conductor_skill",
     )
 
     def test_every_put_settable_field_is_hot(self) -> None:

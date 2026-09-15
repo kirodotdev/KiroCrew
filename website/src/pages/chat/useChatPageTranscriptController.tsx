@@ -316,6 +316,15 @@ export function useChatPageTranscriptEarlyController({
         const reduced = typeof window.matchMedia === 'function'
           && window.matchMedia('(prefers-reduced-motion: reduce)').matches
         const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3)
+        // Reduced motion removes the eased TRAVEL, not the convergence above.
+        // `goal` is re-derived every frame because rows mount, images load and
+        // the banner swaps DURING the jump — and the swap is caused by our own
+        // write, so it is only visible on the frame AFTER it. Landing after a
+        // single frame therefore reads geometry that was true before those
+        // shifts, which is the stale landing this glide exists to avoid. The
+        // reduced path jumps straight to `goal` each frame and stops once `goal`
+        // has stopped moving.
+        let lastGoal: number | null = null
         const glide = () => {
           if (cancelled) { detach2?.(); return }
           const sc = scrollerRef.current
@@ -325,7 +334,19 @@ export function useChatPageTranscriptEarlyController({
             + (row.getBoundingClientRect().top - sc.getBoundingClientRect().top)
             - pinnedJumpChrome()
           const goal = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, liveTarget))
-          const t = reduced ? 1 : Math.min(1, (performance.now() - t0) / GLIDE_MS)
+          if (reduced) {
+            sc.scrollTop = goal
+            const settled = lastGoal != null && Math.abs(goal - lastGoal) < 1
+            lastGoal = goal
+            // Bounded by the same GLIDE_MS the eased path spends, so a row that
+            // never stops resizing cannot hold the loop open.
+            if (settled || performance.now() - t0 >= GLIDE_MS) {
+              detach2?.(); navPollCancelRef.current = null; return
+            }
+            navScrollRafRef.current = requestAnimationFrame(glide)
+            return
+          }
+          const t = Math.min(1, (performance.now() - t0) / GLIDE_MS)
           sc.scrollTop = from + (goal - from) * easeOutCubic(t)
           if (t >= 1) { detach2?.(); navPollCancelRef.current = null; return }
           navScrollRafRef.current = requestAnimationFrame(glide)

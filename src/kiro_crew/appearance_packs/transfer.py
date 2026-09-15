@@ -337,11 +337,10 @@ def _export_one_revision(appearances: Any, pack_id: str) -> dict[str, Any] | Non
 
     ident = str(meta.get("id") or pack_id)
 
-    # Carry the ORIGINAL sheet too, when the pack kept one for re-editing.
-    # Export built files from the animation slots only, so an exported pack
-    # rendered fine but lost its sheet — export -> delete -> import destroyed
-    # it permanently, closing off ever re-slicing the pack. Same class as the
-    # detail-payload omission fixed alongside this.
+    # Carry the ORIGINAL sheet too, when the pack kept one for re-editing. It is
+    # not an animation slot, so a bundle built from the slots alone renders fine
+    # and carries no sheet — export -> delete -> import would then destroy it
+    # permanently, closing off ever re-slicing the pack.
     sprite = detail.get("sprite") or {}
     source_name = sprite.get("source") if isinstance(sprite, dict) else None
     source_image = detail.get("sourceImage")
@@ -364,7 +363,7 @@ def _export_one_revision(appearances: Any, pack_id: str) -> dict[str, Any] | Non
         "states": manifest_maps["states"],
         "moods": manifest_maps["moods"],
         "random": manifest_maps["random"],
-        "sprite": detail.get("sprite") or {},
+        "sprite": sprite,
     }
     carried = appearances.pack_sound_payload(pack_id)
     if carried is None:
@@ -499,10 +498,10 @@ def import_bundle(appearances: Any, payload: Any) -> dict[str, Any]:
             return {"ok": False, "error": f"File too large in bundle: {safe}"}
         clean[safe] = content
 
-    # ART, not "any file": widening the allowlist to audio made a sound-only
-    # bundle pass a `not clean` check, and such a pack installs with nothing to
-    # draw -- a face that is silent art is a pack, a face that is art-less sound
-    # is a blank.
+    # ART, not "any file": `clean` collects every accepted file, audio included,
+    # so a `not clean` check would pass a sound-only bundle, and such a pack
+    # installs with nothing to draw -- a face that is silent art is a pack, a
+    # face that is art-less sound is a blank.
     if not art:
         return {"ok": False, "error": "That bundle has no art in it"}
 
@@ -512,18 +511,19 @@ def import_bundle(appearances: Any, payload: Any) -> dict[str, Any]:
 
     # Refuse rather than clobber: the user may not realise the id collides.
     # `pack_exists`, not the listing: list_packs skips a pack whose manifest is
-    # corrupt, so a listing-based check let an import silently REPLACE an
-    # unreadable pack — destroying art that was still recoverable on disk.
+    # corrupt, so a listing-based check would let an import silently REPLACE an
+    # unreadable pack, destroying art that is still recoverable on disk.
     if appearances.pack_exists(ident):
         return {"ok": False, "error": f'A pack called "{ident}" is already installed'}
 
     # NORMALIZE the manifest's inner identity to the validated outer id. The
-    # bundle names its id twice — the outer `id` (validated, collision-checked
-    # above) and `manifest.meta.id` (until now saved verbatim). A bundle whose
-    # inner id named an INSTALLED pack saved under the outer id but displayed as
-    # the victim, and deleting the displayed entry deleted the victim's files.
-    # Overwriting (not rejecting) keeps old exports importable: bundles written
-    # before this fix may carry a stale inner id with no malicious intent.
+    # bundle names its id twice — the outer `id` (validated and collision-checked
+    # above) and `manifest.meta.id`. `store._read_meta` answers identity from the
+    # DIRECTORY, so an inner id naming an INSTALLED pack reaches no reader today;
+    # this is the other half of that invariant, keeping the two spellings from
+    # disagreeing on disk where the next reader of a raw manifest would find the
+    # disagreement. Overwriting rather than rejecting keeps old exports
+    # importable: a bundle may carry a stale inner id with no malicious intent.
     meta = manifest.get("meta")
     if not isinstance(meta, dict):
         meta = {}

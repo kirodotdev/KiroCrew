@@ -1,11 +1,11 @@
 """Deterministic widget-artifact slug derivation (Python side of a two-language pair).
 
 Every ``<mcwidget>`` emitted in chat is auto-registered as an artifact keyed by a
-slug derived from its location in the conversation — the parent message timestamp
-plus the widget's 0-based ordinal within that message. The frontend
-(``website/src/lib/widgetSlug.ts``) derives the SAME slug from the SAME inputs so
-a ``WidgetFrame`` impression can look up the artifact the backend registered
-without the two sides exchanging an id.
+slug derived from the parent message timestamp plus a fingerprint of the widget
+body. The frontend (``website/src/lib/widgetSlug.ts``) derives the SAME slug from
+the SAME inputs so a ``WidgetFrame`` impression can look up the artifact the
+backend registered without the two sides exchanging an id. The index-keyed form
+remains available for image artifact identities.
 
 **This file and ``widgetSlug.ts`` MUST stay byte-identical in output.** If they
 diverge, every auto-registered widget becomes invisible to the frontend (the
@@ -46,16 +46,8 @@ _U32 = 0xFFFFFFFF
 DERIVED_SLUG_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
-def derive_widget_slug(message_ts: str, widget_index: int) -> str:
-    """Return the deterministic 16-hex-char slug for a widget impression.
-
-    ``message_ts`` is the parent message's timestamp (any stable string id);
-    ``widget_index`` is the widget's 0-based ordinal within that message. Two
-    widgets in one message differ only by the index.
-
-    Must match ``deriveWidgetSlug`` in ``website/src/lib/widgetSlug.ts``.
-    """
-    seed = f"{message_ts}#{widget_index}"
+def _fnv_pair(seed: str) -> tuple[int, int]:
+    """Return the two FNV-1a words for ``seed``, matching JS UTF-16 iteration."""
     h1 = _FNV_OFFSET_A
     h2 = _FNV_OFFSET_B
     for ch in seed:
@@ -71,4 +63,30 @@ def derive_widget_slug(message_ts: str, widget_index: int) -> str:
             continue
         h1 = ((h1 ^ code) * _FNV_PRIME) & _U32
         h2 = ((h2 ^ code) * _FNV_PRIME) & _U32
+    return h1, h2
+
+
+def derive_widget_slug(message_ts: str, widget_index: int) -> str:
+    """Return the deterministic 16-hex-char index slug used by image artifacts.
+
+    ``message_ts`` is the parent message's timestamp (any stable string id);
+    ``widget_index`` is the 0-based ordinal within that message.
+
+    This ordinal form is backend-only: its sole consumer is
+    ``image_artifacts._derive_image_slug``, which seeds ``message_ts`` with a
+    ``"<ts>#image"`` namespace. It has no counterpart in
+    ``website/src/lib/widgetSlug.ts``. Widget identity is keyed on the body via
+    :func:`derive_widget_body_slug`, which must match ``deriveWidgetBodySlug``
+    on the TS side.
+    """
+    h1, h2 = _fnv_pair(f"{message_ts}#{widget_index}")
+    return f"{h1:08x}{h2:08x}"
+
+
+def derive_widget_body_slug(message_ts: str, body: str) -> str:
+    """Return the deterministic 16-hex-char slug for a widget body.
+
+    Must match ``deriveWidgetBodySlug`` in ``website/src/lib/widgetSlug.ts``.
+    """
+    h1, h2 = _fnv_pair(f"{message_ts}#w:{body}")
     return f"{h1:08x}{h2:08x}"

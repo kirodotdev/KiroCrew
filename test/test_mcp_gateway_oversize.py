@@ -121,7 +121,7 @@ class TestSpillToFile:
             wrong: list[str] = []
             monkeypatch.setattr(pc, "restrict_dir_to_owner", lambda p: calls.append(str(p)))
             # The file-shaped helper must NOT be what a directory goes through:
-            # its icacls grants carry no (OI)(CI), so spilled payloads written
+            # its grants carry no (OI)(CI), so spilled payloads written
             # into the directory afterwards would not inherit the lockdown.
             monkeypatch.setattr(pc, "restrict_to_owner", lambda p: wrong.append(str(p)))
         loose = tmp_path / "mcp_spill"

@@ -5,11 +5,14 @@ an optional builtin (``defaultEnabled: false``), so a dashboard that reads a pac
 cannot reach into that app's tree for the store — the crew's face has to render
 whether the app is enabled, disabled, or absent.
 
-Three modules, split by what each is allowed to depend on:
+Four modules, split by what each is allowed to depend on:
 
 * :mod:`~kiro_crew.appearance_packs.ids` — what a legal pack id is. It imports
   nothing but the standard library, because ``config/sections.py`` reads it and is
   deliberately one-way.
+* :mod:`~kiro_crew.appearance_packs.sounds` — what a pack-carried audio cue may
+  be, and the one predicate that decides it, so the reader and the bundle
+  importer cannot disagree.
 * :mod:`~kiro_crew.appearance_packs.store` — the on-disk library: list, read,
   save, delete.
 * :mod:`~kiro_crew.appearance_packs.transfer` — the outside boundary: bundle

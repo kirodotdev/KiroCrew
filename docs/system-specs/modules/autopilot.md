@@ -39,7 +39,6 @@ is Autopilot") so the model recognizes user references to *autopilot* /
 | `config/prompt-orchestrator.md` | System prompt: plan format, stage execution, delegation, escalation |
 | `slack/gateway.py` | `_subagent_done` orchestration guard: per-task failures, per-stage rounds, escalation text |
 | `session_workspace.py` | `~/.kiro/crew/sessions/<id>/` layout for sub-agent result files |
-| `conductor_skill.py` | Always-on delegation skill (`agent.conductor_skill`, default `false`); independent of Autopilot |
 | `website/src/app-sdk/protocol/options.ts` | `parseOptions` — turns `[OPTION: …]` into buttons and sets `isPlan`. `website/src/pages/chat/AssistantMessage.tsx` is its consumer |
 | `website/src/pages/ChatPage.tsx` | Routes a plan-option click to `api.planAction()` |
 
@@ -382,7 +381,6 @@ the wrong trade.
 |-----|---------|---------|
 | `orchestrator.stage_timeout_seconds` | `1800` | Wall-clock budget per stage before auto-run stops. `0` disables the check. |
 | `orchestrator.max_plan_duration_seconds` | `7200` | Wall-clock budget for the WHOLE plan, checked at each stage boundary, with one warning at 75%. `0` disables the check. |
-| `agent.conductor_skill` | `false` | Emits the always-on delegation skill. Independent of Autopilot: it changes routing knowledge, not the prompt. |
 
 Frontend-side, `defaultAutopilot` in the browser-local chat config
 (`localStorage` key `mc-chat-config`, `website/src/pages/chat/ChatSettings.tsx`)

@@ -1083,6 +1083,62 @@ class TestLoadSessionWithRetry:
         assert rt.load_session.await_count == 1  # a genuine failure is not retried
         assert sleep_mock.await_count == 0
 
+    # The exact RPC error kiro-cli returns on the dashboard hard-stop path: the
+    # killed holder's exit handler unlinks the lock between the new holder's
+    # create and its confirming re-read.
+    _LOCK_FILE_RACE = (
+        "RPC error: {'code': -32603, 'message': 'Internal error', 'data': "
+        "'Failed to start session: failed to re-read lock file "
+        '"/home/u/.kiro/sessions/cli/ee21.lock": No such file or directory '
+        "(os error 2)'}"
+    )
+
+    @pytest.mark.asyncio
+    async def test_lock_file_race_is_retried_and_recovers(self):
+        """A missing-lock-file re-read failure is a transient race with the dying
+        holder, not a genuine load failure: retry, and resume losslessly once
+        the holder is gone instead of demoting the tab to conversation-log
+        replay for the rest of its life."""
+        provider = _build_provider(backend="")
+        handle = object()
+        rt = self._runtime(
+            AsyncMock(side_effect=[RuntimeError(self._LOCK_FILE_RACE), handle]),
+        )
+        with patch("kiro_crew.providers.acp.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            got = await provider._load_session_with_retry(rt, "/s.json", "sid", None, None)
+        assert got is handle
+        assert rt.load_session.await_count == 2
+        assert sleep_mock.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_lock_file_race_exhausts_and_falls_back(self):
+        from kiro_crew.providers.acp import _RESUME_MAX_ATTEMPTS
+
+        provider = _build_provider(backend="")
+        rt = self._runtime(AsyncMock(side_effect=RuntimeError(self._LOCK_FILE_RACE)))
+        with patch("kiro_crew.providers.acp.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            got = await provider._load_session_with_retry(rt, "/s.json", "sid", None, None)
+        assert got is None  # Phase 2 (fresh session + history replay) still applies
+        assert rt.load_session.await_count == _RESUME_MAX_ATTEMPTS
+        assert sleep_mock.await_count == _RESUME_MAX_ATTEMPTS - 1
+
+    def test_transient_classifier_is_narrow(self):
+        """Only the two known lock shapes are transient. An unrelated 'No such
+        file' (a missing session file) and a PERMANENT lock failure (permission
+        denied on the lock path) must both still fail fast: a wrong 'transient'
+        verdict there costs the whole 1s+2s+4s backoff before the identical
+        fresh-session fallback."""
+        from kiro_crew.providers.acp import _is_transient_resume_lock_error as transient
+
+        assert transient(RuntimeError("Session is ACTIVE in another process"))
+        assert transient(RuntimeError(self._LOCK_FILE_RACE))
+        assert transient(RuntimeError("Failed to Re-Read Lock File: gone"))
+        assert not transient(RuntimeError("failed to open lock file: Permission denied"))
+        assert not transient(RuntimeError("corrupt lock file"))
+        assert not transient(RuntimeError("session file not found: No such file or directory"))
+        assert not transient(RuntimeError("session/load parse error"))
+        assert not transient(RuntimeError(""))
+
     @pytest.mark.asyncio
     async def test_dead_runtime_stops_retry(self):
         provider = _build_provider(backend="")
@@ -1095,6 +1151,108 @@ class TestLoadSessionWithRetry:
         assert got is None
         assert rt.load_session.await_count == 1  # bail as soon as the runtime is dead
         assert sleep_mock.await_count == 0
+
+
+class TestToolSearchResumeCompatibility:
+    """Dashboard-native ``session/load`` loses deferred-tool activation state.
+
+    A dashboard Tool Search session therefore resumes through a fresh native
+    session plus Kiro Crew's conversation-log replay. Operators who disable Tool
+    Search, and every non-dashboard dispatcher, keep native resume.
+    """
+
+    @staticmethod
+    def _provider(tool_search: bool) -> AcpProvider:
+        provider = _build_provider(backend="")
+        provider._client._work_dir = "/tmp/ws"
+        provider._client._agent = "kirocrew"
+        provider._client._sandbox_mode = "auto"
+        provider._client._extra_env = {}
+        provider._client._mcp_gateway_overlay = None
+        provider._client._mcp_gateway_socket = None
+        provider._client._resume_session_id = "old-sess-id"
+        provider._client._session_key = "dashboard:chat-1"
+        provider._client._channel_id = None
+        provider._client._model = "auto"
+        provider._tool_search = tool_search
+        return provider
+
+    @staticmethod
+    async def _start(provider: AcpProvider, *, load_succeeds: bool = True) -> MagicMock:
+        handle = MagicMock()
+        handle.session_id = "live-sess-id"
+        handle.available_models = []
+        handle.set_model = AsyncMock()
+
+        runtime = MagicMock()
+        runtime.pid = 4321
+        runtime.spawn = AsyncMock()
+        runtime.is_alive = MagicMock(return_value=True)
+        runtime.saw_not_logged_in = MagicMock(return_value=False)
+        runtime.kill = AsyncMock()
+        runtime.load_session = AsyncMock(return_value=handle if load_succeeds else None)
+        runtime.create_session = AsyncMock(return_value=handle)
+
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=runtime),
+            patch(
+                "kiro_crew.providers.acp.AcpSessionProvider",
+                side_effect=lambda h, r, **kw: MagicMock(_handle=h, _runtime=r, resumed=False),
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            await provider._start_kiro_runtime()
+        return runtime
+
+    @pytest.mark.asyncio
+    async def test_enabled_uses_fresh_session_with_history_replay(self):
+        provider = self._provider(tool_search=True)
+
+        runtime = await self._start(provider)
+
+        runtime.load_session.assert_not_awaited()
+        runtime.create_session.assert_awaited_once()
+        assert provider._history_replay_needed is True
+        assert provider._defer_replay_sid_promotion is True
+        assert provider.defer_replay_sid_promotion is True
+
+    @pytest.mark.asyncio
+    async def test_disabled_preserves_native_session_load(self):
+        provider = self._provider(tool_search=False)
+
+        runtime = await self._start(provider)
+
+        runtime.load_session.assert_awaited_once()
+        runtime.create_session.assert_not_awaited()
+        assert provider._history_replay_needed is False
+        assert provider._defer_replay_sid_promotion is False
+        assert provider.defer_replay_sid_promotion is False
+
+    @pytest.mark.asyncio
+    async def test_enabled_linked_slack_session_preserves_native_load(self):
+        provider = self._provider(tool_search=True)
+        provider._client._session_key = "dashboard:chat-linked"
+        provider._client._channel_id = "C123"
+
+        runtime = await self._start(provider)
+
+        runtime.load_session.assert_awaited_once()
+        runtime.create_session.assert_not_awaited()
+        assert provider._history_replay_needed is False
+        assert provider._defer_replay_sid_promotion is False
+        assert provider.defer_replay_sid_promotion is False
+
+    @pytest.mark.asyncio
+    async def test_native_load_fallback_replays_without_deferring_sid(self):
+        provider = self._provider(tool_search=False)
+
+        runtime = await self._start(provider, load_succeeds=False)
+
+        runtime.load_session.assert_awaited_once()
+        runtime.create_session.assert_awaited_once()
+        assert provider._history_replay_needed is True
+        assert provider._defer_replay_sid_promotion is False
+        assert provider.defer_replay_sid_promotion is False
 
 
 class TestStartKiroRuntimeModelEntitlement:

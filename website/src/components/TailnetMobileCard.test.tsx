@@ -413,17 +413,18 @@ describe('TailnetMobileCard — copy', () => {
     await waitFor(() => expect(btn.querySelector('.lucide-check')).not.toBeNull())
   })
 
-  it('does not tick when the clipboard write rejects', async () => {
+  it('does not tick when the clipboard write resolves false', async () => {
     // The defect this pins: the previous form called
     // `navigator.clipboard?.writeText(...)` and set the tick unconditionally, so
     // on a non-secure origin — where the optional chain short-circuits and
     // nothing is written — the user was shown a success tick over an empty
-    // clipboard, on the one string this feature exists to hand to a phone.
+    // clipboard, on the one string this feature exists to hand to a phone. The
+    // shared helper reports that refusal by resolving `false`; it never rejects.
     //
     // Asserted on the ICON, not the accessible name: `aria-label` is the static
     // `label` prop either way, so a name-based assertion holds whether the tick
     // appeared or not and cannot fail against the bug.
-    mockCopy.mockRejectedValue(new Error('zzz clipboard unavailable'))
+    mockCopy.mockResolvedValue(false)
     await mount()
     const btn = screen.getByRole('button', { name: 'Copy' })
 

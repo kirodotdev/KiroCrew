@@ -505,10 +505,10 @@ async def test_apply_rebuilds_inherited_vectors_only_after_config_succeeds(
         elif mode in {"write_failure", "reconcile_failure"}:
             assert status["step"] == "failed"
             assert [vectors(store) for store in stores] == before
-            assert (
-                json.loads(config.read_text(encoding="utf-8"))["memory"]
-                == json.loads(original_config)["memory"]
-            )
+            saved_memory = json.loads(config.read_text(encoding="utf-8"))["memory"]
+            if mode == "reconcile_failure":
+                assert saved_memory.pop("embed_rebuild_generation")
+            assert saved_memory == json.loads(original_config)["memory"]
             assert emb._shared_embedder is None
             assert calls == []
         else:

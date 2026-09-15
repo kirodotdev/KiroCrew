@@ -1319,6 +1319,40 @@ Examples:
         help="Collect logs + crash reports into a redacted diagnostics zip",
     )
 
+    # ledger-sweep -- its own command, NOT a ``doctor`` mode. ``doctor`` is
+    # read-only by its own contract (a diagnostic you run because something
+    # broke must not unlink files), and ``--purge`` is irreversible; hosting the
+    # purge there also gave every modifier a way to be parsed without its mode.
+    ls_parser = cli_help.add_command(
+        sub,
+        "ledger-sweep",
+        description=(
+            "List the session and conductor-work ledgers that look finished. A dry "
+            "run by default: nothing is deleted without --purge, and --purge is a "
+            "second, separate invocation over the report the dry run printed."
+        ),
+    )
+    ls_parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="Actually delete the listed ledgers (irreversible)",
+    )
+    ls_parser.add_argument(
+        "--older-than-days",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Idle window before a ledger qualifies (default: 30)",
+    )
+    ls_parser.add_argument(
+        "--purge-unreadable",
+        action="store_true",
+        help=(
+            "With --purge: also delete records this sweep could not parse "
+            "(they are listed but kept by default)"
+        ),
+    )
+
     # gateway
     gw_parser = cli_help.add_command(sub, "gateway")
     gw_parser.add_argument(
@@ -1932,6 +1966,20 @@ Examples:
             "skips its speech-to-text (whisper) model download too."
         ),
     )
+    pod_up.add_argument(
+        "--wait-secs",
+        dest="wait_secs",
+        type=int,
+        metavar="SECS",
+        default=None,
+        help=(
+            "Health-wait budget in seconds before `pod up` gives up on the "
+            "gateway answering /api/health (default: 90; a first boot does "
+            "migration and staging work, so slow hosts may need more). Also "
+            "settable via KIROCREW_POD_HEALTH_SECS; the flag wins. Values "
+            "below 5 are raised to 5, values above 3600 are capped at 3600."
+        ),
+    )
     pod_down = pod_sub.add_parser("down", help="Evict a pod (zero residue)")
     pod_down.add_argument("name", help="Worktree name")
     pod_ls = pod_sub.add_parser("ls", help="List running pods")
@@ -2447,6 +2495,18 @@ Examples:
     learn_sub.add_parser("list", help="List all lessons")
     learn_rm = learn_sub.add_parser("remove", help="Remove lessons matching a substring")
     learn_rm.add_argument("query", help="Substring to match against lesson rules")
+    learn_rm.add_argument(
+        "--repo-scope",
+        dest="repo_scope",
+        default=None,
+        help=(
+            "Only remove lessons carrying this repo scope. A lesson's "
+            "identity is (rule, repo_scope), so a scoped and a global lesson can "
+            "share rule text; without this flag a matching substring removes both. "
+            "Omit to match every scope (the default). Pass an empty string to "
+            'target only the unscoped (global) rows: --repo-scope "".'
+        ),
+    )
 
     # artifact
     art_parser = cli_help.add_command(
@@ -3011,7 +3071,18 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             whatsapp=getattr(args, "whatsapp", False),
         )
     elif args.command == "doctor":
-        _doctor(platform_boot_error=_platform_boot_error, bundle=getattr(args, "bundle", False))
+        _doctor(
+            platform_boot_error=_platform_boot_error,
+            bundle=getattr(args, "bundle", False),
+        )
+    elif args.command == "ledger-sweep":
+        # Lazy on purpose, through ``importlib`` like ``secrets`` above: the
+        # store modules behind the sweep are not part of the CLI's start-up cost.
+        importlib.import_module("kiro_crew.ledger_sweep").run_command(
+            purge=args.purge,
+            older_than_days=args.older_than_days,
+            purge_unreadable=args.purge_unreadable,
+        )
     elif args.command == "manifest":
         _manifest(
             alias=getattr(args, "alias", None),

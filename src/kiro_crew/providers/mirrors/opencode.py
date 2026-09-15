@@ -332,7 +332,9 @@ def opencode_projection(
         # itself would be false of the other the moment the gateway's entry shape
         # gained one.
         out.append(without_stdio_tag(dict(stub)))
-    return SessionProjection(params={"mcpServers": out})
+    return SessionProjection(
+        params={"mcpServers": out}, derived_spec_snapshot=projection.derived_spec_snapshot
+    )
 
 
 class OpenCodeMirror(AgentConfigMirror):

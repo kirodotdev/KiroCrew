@@ -462,19 +462,23 @@ Artifacts tab list widgets at all (a widget's HTML is inline in the message and
 never written to disk, so the file-backed session-docs scan cannot see it).
 
 **Identity — a two-language contract.** The slug is derived from
-`(message_ts, widget_index)`:
+`(message_ts, body)` — the parent message's timestamp plus a fingerprint of the
+widget's body:
 
-- `src/kiro_crew/widget_slug.py` → `derive_widget_slug`
-- `website/src/lib/widgetSlug.ts` → `deriveWidgetSlug`
+- `src/kiro_crew/widget_slug.py` → `derive_widget_body_slug`
+- `website/src/lib/widgetSlug.ts` → `deriveWidgetBodySlug`
 
-Both MUST produce identical output (two FNV-1a passes, 32-bit prime, 16 hex
-chars); the frontend uses it to find the artifact the backend wrote, with no id
-exchanged. Likewise `widget_parse.parse_widgets` mirrors the frontend's
-`parseBlocks` widget detection, because a disagreement about *which* spans are
-widgets shifts `widget_index` and mis-keys every subsequent artifact. Parity is
-pinned by shared vectors/fixtures in `test/test_widget_slug.py`,
-`test/test_widget_parse.py`, and `website/src/test/widgetSlug.test.ts` — a change
-to one side fails all three.
+Both MUST produce identical output (seed `<ts>#w:<body>`, two FNV-1a passes,
+32-bit prime, 16 hex chars); the frontend uses it to find the artifact the
+backend wrote, with no id exchanged. Because the body is part of the key, a slug
+hit implies the same body: a disagreement about *which* spans are widgets can
+only cause a probe miss (the star shows unsaved), never a binding to the wrong
+artifact. `widget_parse.parse_widgets` mirrors the frontend's `parseBlocks`
+widget detection so both sides agree which spans are widgets and what their exact
+bodies are. Parity is pinned by shared body-slug vectors in
+`test/test_widget_slug.py` and `website/src/test/widgetSlug.test.ts`, and by
+shared parser fixtures in `test/test_widget_parse.py` and
+`website/src/test/widgetSlug.test.ts` — a change to one side fails the other.
 
 Registration is **idempotent and non-destructive**: an existing slug is left
 untouched (a replayed or rehydrated message never duplicates or clobbers content
@@ -1269,10 +1273,15 @@ and each one is registered, copying the bytes immediately so temp-file cleanup
 cannot strip them.
 
 - **Identity.** Slugs are derived deterministically from `(message_ts, index)`
-  via the widget-slug contract, where `index` counts **every** image match in the
-  message including skipped ones — so an image's ordinal is stable regardless of
-  which siblings were skipped. A replayed message is therefore idempotent and
-  never clobbers an artifact the user has since edited.
+  via `widget_slug.derive_widget_slug` on the Python side —
+  `image_artifacts._derive_image_slug` seeds it with `<ts>#image` so an image and
+  a widget in the same message never collide. This ordinal form is backend-only:
+  the frontend has no counterpart, because widget identity is keyed on the body
+  (see the widget Identity contract above), not on an ordinal. `index` counts
+  **every** image match in the message including skipped ones — so an image's
+  ordinal is stable regardless of which siblings were skipped. A replayed message
+  is therefore idempotent and never clobbers an artifact the user has since
+  edited.
 - **Destination parsing.** Balanced-paren walk, so `screenshot(1).png` survives;
   `<...>` destinations are unwrapped so a path containing spaces survives;
   backslashes are treated as escapes **only** before markdown-significant

@@ -371,7 +371,11 @@ def codex_projection(
             continue
         out.append(dict(stub))
     denied = frozenset((codex_name(server), tool) for server, tool in projection.disabled_tools)
-    return SessionProjection(params={"mcpServers": out}, denied_tools=denied)
+    return SessionProjection(
+        params={"mcpServers": out},
+        denied_tools=denied,
+        derived_spec_snapshot=projection.derived_spec_snapshot,
+    )
 
 
 class CodexMirror(AgentConfigMirror):

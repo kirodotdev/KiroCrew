@@ -262,6 +262,10 @@ if [ "$_pod_is_up" = "yes" ]; then
   ALREADY_UP=1
   POD_JSON="$_pod_status_json"
 else
+  # The health-wait budget of the `pod up` below is tunable from THIS shell:
+  # KIROCREW_POD_HEALTH_SECS is inherited by the spawned command (default 90s;
+  # see `kirocrew pod up --help`). Raise it on a loaded host where a healthy
+  # gateway boots slowly and pod-up.log ends mid-boot.
   POD_JSON=$("$KIROCREW_CLI" pod up "$NAME" --json 2>"$ARTIFACT_DIR/pod-up.log")
   if [ $? -ne 0 ]; then
     fail "up — pod failed to start (see $ARTIFACT_DIR/pod-up.log)"
@@ -420,7 +424,9 @@ if [ "$RUN_FE" -eq 1 ] && [ "$HEALTHY" -eq 1 ]; then
       esac
       PW_ARGS+=(--spec "$PLAYWRIGHT_SPEC")
     fi
-    # Every other phase here is bounded (health polling caps at 45s); this one
+    # Every other phase here is bounded (the `up` health wait defaults to 90s,
+    # tunable via KIROCREW_POD_HEALTH_SECS; this harness's own health poll caps
+    # at 60s); this one
     # used to be unbounded and could stall forever in browser teardown, burning
     # a whole agent budget after the verdict was already decided. `python -u`
     # keeps playwright.log flushed so a stall is still diagnosable.

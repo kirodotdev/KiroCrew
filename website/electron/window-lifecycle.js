@@ -20,6 +20,7 @@ const { resolveThemeSource } = require("./native-theme");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { clampZoomFactor, stepZoomFactor } = require("./zoom");
 const { createBrowserViewManager, isUntrustedContents } = require("./browser-view");
+const { registerCaptureSurface, createCaptureTrust } = require("./capture-trust");
 const {
   canAgentControl,
   isLoopbackUrl,
@@ -470,6 +471,11 @@ function createWindowLifecycle(options) {
     };
     win._mcGetCustomName = () => customName;
     win._mcBackendUrl = windowBackendUrl;
+    // The dashboard SPA is a capture surface (the chat composer's snip and the
+    // web-preview crop). Registered against the gateway origin THIS window was
+    // opened on, so a secondary window pointed at a remote gateway is bound to
+    // its own origin and never to a sibling's.
+    registerCaptureSurface(view.webContents, windowBackendUrl);
     win._mcView = view;
 
     // One native browser view/control plane per dashboard panel. The renderer
@@ -1501,9 +1507,15 @@ function createWindowLifecycle(options) {
     if (sessionSecurityConfigured) return;
 
     // Screen capture has its own handler. Prefer the native system picker when
-    // available and fall back to desktopCapturer elsewhere.
+    // available and fall back to desktopCapturer elsewhere. WHO may be granted a
+    // screen is decided by identity in capture-trust.js: a registered surface,
+    // its own main frame, still on its registered origin. Without this dep the
+    // handler denies everything, so the wiring is not optional.
     session.defaultSession.setDisplayMediaRequestHandler(
       createDisplayMediaHandler({
+        isTrustedRequest: createCaptureTrust({
+          fromFrame: (frame) => webContents.fromFrame(frame),
+        }),
         getSources: () => desktopCapturer.getSources({
           types: ["screen", "window"],
         }),
@@ -1513,7 +1525,18 @@ function createWindowLifecycle(options) {
             : "granted"
         ),
         onPermissionNeeded: (reason) => {
-          if (reason === "denied") showScreenPermissionDialog();
+          if (reason === "denied") return showScreenPermissionDialog();
+          // No dialog for a trust refusal: an embedded pane or a browsed page
+          // asked, and nothing the user can change in System Settings would
+          // make that grantable. One breadcrumb instead, for the same reason
+          // permission-handler.js logs its denials -- a silent refusal is
+          // indistinguishable from an OS one when someone has to diagnose it.
+          if (reason === "untrusted-frame") {
+            // eslint-disable-next-line no-console -- see the note above
+            console.warn(
+              "[display-media] DENY capture: requester is not a registered capture surface",
+            );
+          }
         },
       }),
       { useSystemPicker: true },

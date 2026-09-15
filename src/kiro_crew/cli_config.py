@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from kiro_crew import beacon
 from kiro_crew.config import KiroCrewConfig
@@ -30,6 +31,9 @@ from kiro_crew.config.superseded_defaults import (
 )
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.sel import sel
+
+if TYPE_CHECKING:
+    from kiro_crew.config.schema import ConfigEntry
 
 _MISSING = object()
 
@@ -184,12 +188,21 @@ def _config_cmd(args: argparse.Namespace) -> None:
                 )
                 print(f"✅ {key} = {json.dumps(parsed)} (saved to config.local.json)")
             else:
-                # Validate the key exists before taking the lock.
+                # Validate the key exists before taking the lock. A declared
+                # leaf counts as existing even when it is not stored yet, but
+                # then its value is type-checked here: this is its first write,
+                # so no stored value stands in for the declaration.
                 cfg = KiroCrewConfig.load()
                 d = cfg.to_dict()
                 if not _dict_set(d, key, parsed):
-                    print(f"❌ Unknown key: {key}", file=sys.stderr)
-                    sys.exit(1)
+                    declared = _declared_entry(key)
+                    if declared is None:
+                        print(f"❌ Unknown key: {key}", file=sys.stderr)
+                        sys.exit(1)
+                    type_error = _declared_type_error(declared, parsed)
+                    if type_error:
+                        print(f"❌ {key}: {type_error}", file=sys.stderr)
+                        sys.exit(1)
 
                 def _mutate_base(existing: dict) -> dict:
                     # Apply the set on the freshly-locked raw data.
@@ -502,6 +515,76 @@ def _dict_set_create(d: dict, key: str, value: object) -> None:
             cur[p] = {}
         cur = cur[p]
     cur[parts[-1]] = value
+
+
+def _declared_entry(key: str) -> ConfigEntry | None:
+    """The ``SCHEMA_REGISTRY`` entry for *key*, or None when nothing declares it.
+
+    ``_dict_set`` navigates the CURRENT document, so a declared sub-key of a
+    dict-typed field - ``dashboard.terminal.shell``, ``completion.enabled`` - is
+    unreachable from ``config set`` until something else writes it first: the
+    field's ``default_factory`` does not carry it and nothing merges the schema's
+    defaults into a stored dict. This restores the key the schema promises.
+
+    Membership in ``SCHEMA_REGISTRY`` is the strict reading of "declared", and
+    the reason the check is not a walk of ``JSON_SCHEMA``: such a field sets
+    ``additionalProperties: True``, so a walk would also accept a typo under it
+    and write the misspelling to disk. A wildcard entry (``agents.*``) does not
+    match a concrete path here, which leaves those keys exactly as they were.
+
+    The entry itself is returned, not a bool, because the caller must also check
+    the value against the declared type: this is the key's FIRST write, so there
+    is no stored value whose type could stand in for the declaration.
+
+    Imported lazily to mirror ``config.validation``: the registry is built at
+    import time, and the CLI's other verbs should not pay for it.
+    """
+    from kiro_crew.config.schema import SCHEMA_REGISTRY
+
+    for entry in SCHEMA_REGISTRY:
+        if entry.path == key:
+            return entry
+    return None
+
+
+#: Declared JSON Schema type -> the Python types ``_parse_value`` may produce for
+#: it. Absent from this table means "no opinion": a type the CLI cannot usefully
+#: check (or a future one) must not become a refusal.
+_DECLARED_VALUE_TYPES: dict[str, tuple[type, ...]] = {
+    "array": (list,),
+    "boolean": (bool,),
+    "integer": (int,),
+    "number": (int, float),
+    "object": (dict,),
+    "string": (str,),
+}
+
+
+def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
+    """Why *value* does not fit *entry*'s declared type, or None when it fits.
+
+    ``_parse_value`` cannot fail: an unparsable word becomes the string itself,
+    so ``config set <integer key> nope`` would otherwise store ``"nope"`` and
+    surface as a TypeError deep in whatever compares it (a terminal open reads
+    ``max_sessions`` and does ``len(registry) >= max_sessions``). Refusing at the
+    write is the only place the mistake is still attributable to the command.
+
+    Checked ONLY on the first write of a declared-but-unstored key, which is the
+    path :func:`_declared_entry` opens. A key that is already in the document
+    keeps its historical behaviour, type check included: widening this to every
+    ``config set`` is a larger, separate change.
+    """
+    expected = _DECLARED_VALUE_TYPES.get(entry.type)
+    if expected is None:
+        return None
+    if value is None and entry.nullable:
+        return None
+    # bool is a subclass of int, so an integer leaf would silently accept `true`.
+    if isinstance(value, bool) and bool not in expected:
+        return f"expected {entry.type}, got boolean"
+    if not isinstance(value, expected):
+        return f"expected {entry.type}, got {type(value).__name__}"
+    return None
 
 
 def _parse_value(raw: str) -> object:

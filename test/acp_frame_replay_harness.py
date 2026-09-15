@@ -207,13 +207,21 @@ def _response_summary(msg: JsonRpcMessage) -> dict[str, Any]:
     return summary
 
 
-def replay_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def replay_frames(
+    frames: list[dict[str, Any]], *, gate_envelope_nonce: str | None = None
+) -> list[dict[str, Any]]:
     """Turn a raw frame sequence into the snapshot form.
 
     Mirrors the dispatch the two reader loops perform: classify, then hand the
     frame to the parser for its action. Caches are per replay, matching the
     runtime's per-session caches, so a ``tool_call_update`` recovers the input
     its originating ``tool_call`` recorded.
+
+    ``gate_envelope_nonce`` is what a session running Kiro Crew's gate extension
+    hands the permission builder; a fixture recorded on such a session declares
+    the value its extension echoed as ``_meta.gate_envelope_nonce`` so the replay
+    reads its permission frames the way the live session did. Absent, as on every
+    other harness, no frame is read as an envelope.
     """
     caches: dict[str, Any] = {
         "tool_input_cache": {},
@@ -241,7 +249,9 @@ def replay_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
         update = params.get("update") if isinstance(params.get("update"), dict) else {}
 
         if action == "permission":
-            event, options = build_permission_event(msg, **caches)
+            event, options = build_permission_event(
+                msg, gate_envelope_nonce=gate_envelope_nonce, **caches
+            )
             entry["events"] = [event_dict(event)]
             entry["recorded_options"] = options
         elif action in ("update", "subagent_activity"):

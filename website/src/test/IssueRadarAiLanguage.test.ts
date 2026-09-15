@@ -41,7 +41,13 @@ vi.mock('../apps/issue-radar/context', async () => {
   const actual = await vi.importActual<typeof import('../apps/issue-radar/context')>(
     '../apps/issue-radar/context',
   )
-  return { ...actual, useIssueRadar: () => ({ aiLanguage: livePref }) }
+  return {
+    ...actual,
+    // `repoSettings` is part of the context contract (useInvestigate reads
+    // `workspace_path` off it); this suite only varies `aiLanguage`, so the rest
+    // stays at defaults.
+    useIssueRadar: () => ({ aiLanguage: livePref, repoSettings: { workspace_path: '' } }),
+  }
 })
 
 const {

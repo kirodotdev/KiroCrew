@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
+from kiro_crew.chat_attachments import (
+    purge_staged_attachments,
+    restore_staged_attachments,
+    stage_attachments_removal,
+)
 from kiro_crew.history_cache import _FileChangeCacheEntry
 from kiro_crew.jsonl_util import bounded_raw_records
 
@@ -936,14 +941,29 @@ class TranscriptReadProjection:
         self,
         key: str,
         sanitize: Callable[[str], str] | None = None,
-    ) -> tuple[str, float]:
-        """Return the newest message preview and the thread's recency epoch.
+    ) -> tuple[str, float, bool]:
+        """Return the newest preview, the recency epoch, and a stop flag.
 
-        The two can come from different rows: the preview text is the newest
-        CONVERSATIONAL row, while the epoch reads a newer skipped stop row
-        when one exists (a stop is activity — see the comment on
-        ``newest_epoch`` below). Every other skip keeps the timestamp with
-        the previewed row.
+        Three values from the tail walk, because the preview text and the two
+        facts about it can come from different rows:
+
+        - ``preview`` — the newest CONVERSATIONAL row's text, with the trailing
+          stop card (and other non-previewable rows) skipped.
+        - ``epoch`` — the thread's recency; it reads a newer skipped stop row
+          when one exists (a stop is activity — see ``newest_epoch`` below).
+          Every other skip keeps the timestamp with the previewed row.
+        - ``newest_is_stop`` — True when the NEWEST real row (the first
+          non-metadata row walking back) is a stop card. This is the one signal
+          a locale-unaware server hands a locale-aware client so it can render
+          a localized "Stopped" chip beside the preview: the preview text alone
+          reads as ongoing work ("Running the analysis now.") on a thread the
+          user has stopped. The flag rides the SAME ``is_stop_event_row``
+          predicate the skip below uses, so there is one notion of a stop event,
+          not a second. It is False again once a newer conversational row lands
+          — the next real message — which is the honest reading of "the newest
+          event is a stop": a bare resume that only re-arms the same stop card
+          leaves the stop newest, so the flag holds until the member says
+          something again.
         """
         # Function-local: dashboard.state imports kiro_crew.history at module
         # scope, which lands back here, so a top-level import would be a
@@ -954,7 +974,7 @@ class TranscriptReadProjection:
         try:
             size = path.stat().st_size
         except OSError:
-            return "", 0.0
+            return "", 0.0, False
         windows = (
             self._log._PREVIEW_TAIL_BYTES,
             self._log._PREVIEW_TAIL_BYTES * 16,
@@ -981,6 +1001,12 @@ class TranscriptReadProjection:
         # keeps the long-standing contract that the timestamp travels with
         # the row the preview came from (test_preview_text.py pins it).
         newest_epoch = 0.0
+        # Whether the NEWEST real row (first non-metadata row walking back) is
+        # a stop card. `None` until the first real row is seen, so the
+        # larger-window retry below cannot re-answer it: the small window is the
+        # tail, so the newest real row it holds IS the thread's newest real row,
+        # and a second pass reading further back must not overwrite that verdict.
+        newest_is_stop: bool | None = None
         for window in windows:
             try:
                 with open(path, "rb") as handle:
@@ -989,7 +1015,7 @@ class TranscriptReadProjection:
                         handle.readline()
                     tail = handle.read().decode("utf-8", errors="replace")
             except OSError:
-                return "", 0.0
+                return "", 0.0, False
             for line in reversed(tail.splitlines()):
                 line = line.strip()
                 if not line:
@@ -1009,7 +1035,12 @@ class TranscriptReadProjection:
                 # session-list preview both render it verbatim otherwise.
                 # Reuse the shared predicate rather than a fresh kind check:
                 # its docstring documents why matching one carrier is the trap.
-                if is_stop_event_row(data):
+                row_is_stop = is_stop_event_row(data)
+                # The first real row's stop-ness is the thread's `newest_is_stop`,
+                # fixed here and never revised by a later row.
+                if newest_is_stop is None:
+                    newest_is_stop = row_is_stop
+                if row_is_stop:
                     if not newest_epoch:
                         newest_epoch = _row_epoch(data)
                     continue
@@ -1025,10 +1056,10 @@ class TranscriptReadProjection:
                     preview = sanitize(preview)
                 if len(preview) > self._log._PREVIEW_MAX_CHARS:
                     preview = preview[: self._log._PREVIEW_MAX_CHARS].rstrip() + "…"
-                return preview, newest_epoch or _row_epoch(data)
+                return preview, newest_epoch or _row_epoch(data), bool(newest_is_stop)
             if size <= window:
                 break
-        return "", newest_epoch
+        return "", newest_epoch, bool(newest_is_stop)
 
     @staticmethod
     def _content_text(content: object) -> str:
@@ -1220,10 +1251,32 @@ class SessionMetadataProjection:
                         key,
                     )
                     return False
+                # The images this session's messages showed are its content,
+                # served by ``/api/file-raw`` the way the transcript's text is
+                # served by the session view. They leave with the transcript in
+                # three all-or-nothing steps: the attachments directory is moved
+                # aside in ONE rename (a failure aborts with everything intact),
+                # the transcript is unlinked (a failure moves the directory back,
+                # so the retained rows still resolve), and only then are the
+                # staged bytes purged -- nothing references them any more, so a
+                # leftover is an orphan for an operator, never a served image.
+                try:
+                    staged = stage_attachments_removal(path.parent, path.stem)
+                except OSError:
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: cannot move attachments aside for key=%s, not deleting",
+                        key,
+                        exc_info=True,
+                    )
+                    return False
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
+                    if staged is not None:
+                        restore_staged_attachments(staged, path.parent, path.stem)
                     return False
+                if staged is not None:
+                    purge_staged_attachments(staged)
                 for sidecar in (
                     self._log._summary_cache_path(key),
                     self._log._intent_summary_cache_path(key),

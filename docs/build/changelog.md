@@ -91,12 +91,15 @@ A subsection whose whole surface sits behind Developer Mode or Feature Previews
 carries `(Preview)` at the end of its heading, so the reader knows before the first
 bullet that it is opt-in.
 
-## The two named sections
+## The named sections
 
-- **`### Before you upgrade` leads** when the release removes a capability, raises a
-  floor (a minimum Node or Python version), changes a default, or alters behaviour a
-  user has configured around. This is the part of a changelog with no substitute: a
-  reader can discover a new feature later, but a withdrawn one costs them an outage.
+- **No `### Before you upgrade` section.** The changelog says what a reader gets, so
+  a release does not open with an enumeration of removals, moved defaults and
+  tightened gates, and does not carry one further down either. A withdrawal or a
+  migration step needs more room than a changelog line and a reader who will act on
+  it, so it belongs in the release announcement and in the docs for the area that
+  changed, not compressed into a bullet next to a new feature. Older sections carry
+  one; leave them alone and do not add one to a new section.
 - **A closing `### Notable fixes` section is allowed, and is not a commit dump.** It
   exists so a reader can check whether their particular annoyance is gone, written as
   what is now true ("Teams retries a rate-limited message instead of dropping it").

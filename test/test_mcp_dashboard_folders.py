@@ -29,8 +29,19 @@ _FOLDERS = [
     {"id": "cccccccccccc", "name": "Travel", "parent_id": "", "history_count": 0},
 ]
 
+#: The caller slot's birth stamp — ``created`` on every real row. It rides on
+#: the self-filing PATCH as ``expected_created`` so the endpoint can refuse a
+#: write aimed at a slot that was recreated under the same key.
+_CALLER_BORN = "2026-09-14T05:00:00.000001+00:00"
+
 _SLOTS = [
-    {"key": "chat-1-100", "title": "Backup M1", "folder_id": "aaaaaaaaaaaa", "running": True},
+    {
+        "key": "chat-1-100",
+        "title": "Backup M1",
+        "folder_id": "aaaaaaaaaaaa",
+        "running": True,
+        "created": _CALLER_BORN,
+    },
     {"key": "chat-2-200", "title": "Folder MCP", "folder_id": "bbbbbbbbbbbb"},
     {"key": "chat-3-300", "title": "Scratch", "folder_id": ""},
 ]
@@ -59,6 +70,7 @@ _CALLER_ROW = {
     "title": "Caller",
     "folder_id": "",
     "memory_mode": "incognito",
+    "created": _CALLER_BORN,
 }
 
 
@@ -1809,6 +1821,7 @@ class TestAdvertisedSet:
             "chat_folder_create",
             "chat_folder_move",
             "chat_folder_move_session",
+            "chat_folder_file_self",
             "session_create",
             "session_stop",
             "session_close",
@@ -2663,3 +2676,247 @@ class TestPositionIsAdvertised:
     def test_an_unknown_field_is_still_rejected(self) -> None:
         with pytest.raises(ValidationError):
             _call_tool_inner("chat_folder_move", {"folder": "Delta", "position": "first"})
+
+
+class TestFolderFileSelf:
+    """``chat_folder_file_self`` files the CALLER's own slot and nothing else.
+
+    It exists because the conductor grant is name-scoped: ``allowedTools`` can
+    admit a tool but not an argument, so ``chat_folder_move_session`` (target
+    from the arguments) stays behind a prompt on an unattended conductor, and
+    the conductor could not put ITSELF in the goal's folder — it floated at the
+    top level while its workers sat inside. This verb takes no ``session``
+    argument at all; the target is the verified caller key, so the one placement
+    it can write is its own.
+    """
+
+    def test_files_the_callers_own_slot_never_an_argument(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._patch", return_value={"ok": True}) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_file_self", {"folder": "Travel"})
+        path, body = mock_patch.call_args.args
+        # The autouse fixture verifies the caller as dashboard:chat-1-100.
+        assert path == "/api/chat/slots/chat-1-100/folder"
+        assert body == {"folder_id": "cccccccccccc", "expected_created": _CALLER_BORN}
+        assert mock_patch.call_args.kwargs["session_key"] == "dashboard:chat-1-100"
+        assert "Travel" in out and "chat-1-100" in out
+
+    def test_the_patch_pins_the_slot_generation_it_resolved(self) -> None:
+        """Between the rows read and the PATCH this tab can close and its key be
+        recreated for another conversation; the recreated slot shares the
+        ``dashboard:<key>`` transcript key, so the endpoint's history pin alone
+        cannot tell them apart. The row's ``created`` goes along as
+        ``expected_created`` and the endpoint refuses on a mismatch — the write
+        can land only on the slot generation this call actually resolved."""
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._patch", return_value={"ok": True}) as mock_patch,
+        ):
+            _call_tool_inner("chat_folder_file_self", {"folder": "Travel"})
+        assert mock_patch.call_args.args[1]["expected_created"] == _CALLER_BORN
+
+    def test_a_row_without_a_birth_stamp_sends_no_token(self) -> None:
+        """The token is a pin, not a requirement: a row with no ``created``
+        (an older gateway) files without one rather than failing."""
+        bare = [{k: v for k, v in _SLOTS[0].items() if k != "created"}]
+
+        def _get(path: str) -> list[dict]:
+            return [dict(f) for f in _FOLDERS] if path == "/api/chat/folders" else bare
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch("kiro_crew.mcp_dashboard._patch", return_value={"ok": True}) as mock_patch,
+        ):
+            _call_tool_inner("chat_folder_file_self", {"folder": "Travel"})
+        assert mock_patch.call_args.args[1] == {"folder_id": "cccccccccccc"}
+
+    def test_a_session_argument_is_rejected_by_the_schema(self) -> None:
+        """No argument may name the target — that is the whole grant argument."""
+        with pytest.raises(ValidationError):
+            _call_tool_inner("chat_folder_file_self", {"session": "chat-3-300", "folder": "Travel"})
+
+    def test_the_tool_advertises_no_session_field(self) -> None:
+        tool = next(t for t in _list_tools() if t["name"] == "chat_folder_file_self")
+        assert set(tool["inputSchema"]["properties"]) == {"folder"}
+        assert "required" not in tool["inputSchema"]
+
+    def test_creates_the_missing_path_under_the_verified_key(self) -> None:
+        """mkdir -p, like session_create's ``folder``: one call stands up
+        ``<goal>/<agent>`` and files the caller in the leaf."""
+        counter = iter(range(1, 10))
+
+        def _post(_path: str, body: dict, *, session_key: str = "") -> dict:
+            n = next(counter)
+            return {"id": f"new00000000{n}", "name": body["name"], "parent_id": body["parent_id"]}
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._post", side_effect=_post) as mock_post,
+            patch("kiro_crew.mcp_dashboard._patch", return_value={"ok": True}) as mock_patch,
+        ):
+            out = _call_tool_inner(
+                "chat_folder_file_self", {"folder": "Flaky backlog/kirocrew-conductor"}
+            )
+        assert mock_post.call_count == 2
+        for call in mock_post.call_args_list:
+            assert call.kwargs["session_key"] == "dashboard:chat-1-100"
+        # Filed in the LEAF the walk just created, not the first segment.
+        assert mock_patch.call_args.args[1] == {
+            "folder_id": "new000000002",
+            "expected_created": _CALLER_BORN,
+        }
+        assert "created folder path: Flaky backlog/kirocrew-conductor" in out
+
+    def test_unfiles_when_no_folder_is_given(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._patch", return_value={"ok": True}) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_file_self", {})
+        assert mock_patch.call_args.args == (
+            "/api/chat/slots/chat-1-100/folder",
+            {"folder_id": "", "expected_created": _CALLER_BORN},
+        )
+        assert out.startswith("Unfiled")
+
+    def test_an_unverifiable_caller_is_refused(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_core._resolve_session_key_strict", return_value=""),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+            patch("kiro_crew.mcp_dashboard._post") as mock_post,
+        ):
+            out = _call_tool_inner("chat_folder_file_self", {"folder": "Travel"})
+        assert out.startswith("Error:") and "cannot verify which session" in out
+        mock_patch.assert_not_called()
+        mock_post.assert_not_called()
+
+    def test_a_caller_with_no_sidebar_slot_has_nothing_to_file(self) -> None:
+        """A Slack thread passes the tree-shaping gate (it is the person, with no
+        app to be confined to) but owns no slot, so there is no placement."""
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch(
+                "kiro_crew.mcp_core._resolve_session_key_strict",
+                return_value="slack:C0123:1700000000.000100",
+            ),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_file_self", {"folder": "Travel"})
+        assert out.startswith("Error:") and "no sidebar slot" in out
+        mock_patch.assert_not_called()
+
+    def test_a_closed_tab_mid_call_is_refused_not_filed_as_someone_else(self) -> None:
+        """A ``dashboard:`` key naming a slot that is gone is the closed-tab
+        race; it must not resolve to any other row."""
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch(
+                "kiro_crew.mcp_core._resolve_session_key_strict",
+                return_value="dashboard:chat-9-999",
+            ),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_file_self", {"folder": "Travel"})
+        assert out.startswith("Error:")
+        mock_patch.assert_not_called()
+
+    def test_a_linked_session_is_refused_not_matched_on_its_binding(self) -> None:
+        """A channel-bound slot presents ``linked_session_key``, and that binding
+        is rebound on live slots with no running gate — so a match on it at
+        read time could name a different conversation by the time the PATCH
+        lands. Refused, never raced: the slot key is the only stable handle."""
+        linked = _slots_with_caller(
+            {
+                "key": "chat-7-700",
+                "title": "Telegram bridge",
+                "folder_id": "",
+                "linked_session_key": "telegram:4242",
+            }
+        )
+
+        def _get(path: str) -> list[dict]:
+            return [dict(f) for f in _FOLDERS] if path == "/api/chat/folders" else linked
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch(
+                "kiro_crew.mcp_core._resolve_session_key_strict",
+                return_value="telegram:4242",
+            ),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+            patch("kiro_crew.mcp_dashboard._post") as mock_post,
+        ):
+            out = _call_tool_inner("chat_folder_file_self", {"folder": "Travel"})
+        assert out.startswith("Error:") and "no sidebar slot" in out
+        mock_patch.assert_not_called()
+        mock_post.assert_not_called()
+
+    def test_a_crew_members_pinned_thread_is_not_filed(self) -> None:
+        """The member DM thread (``mode == "member"``) spans every goal the
+        member runs and lives on the Crew page, outside the sidebar tree. A
+        conductor running as a member gets a refusal that names the alternative
+        (workers under ``<goal>/<agent>``), and nothing is written."""
+        member = [
+            {
+                "key": "member-atlas",
+                "title": "Atlas",
+                "folder_id": "",
+                "mode": "member",
+                "memory_mode": "persistent",
+            }
+        ]
+
+        def _get(path: str) -> list[dict]:
+            return [dict(f) for f in _FOLDERS] if path == "/api/chat/folders" else member
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch(
+                "kiro_crew.mcp_core._resolve_session_key_strict",
+                return_value="dashboard:member-atlas",
+            ),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+            patch("kiro_crew.mcp_dashboard._post") as mock_post,
+        ):
+            out = _call_tool_inner("chat_folder_file_self", {"folder": "Travel"})
+        assert out.startswith("Error:") and "Crew page" in out and "<goal>/<agent>" in out
+        mock_patch.assert_not_called()
+        mock_post.assert_not_called()
+
+    def test_a_private_session_cannot_file_itself(self) -> None:
+        """The caller row in ``_slots_with_caller`` is incognito on purpose."""
+
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in _FOLDERS]
+            return _slots_with_caller()
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_file_self", {"folder": "Travel"})
+        assert out.startswith("Error:") and "private" in out
+        mock_patch.assert_not_called()
+
+    def test_an_unresolvable_folder_writes_no_placement(self) -> None:
+        """Refuse the whole call rather than file into the wrong folder; the
+        ambiguity fixture has two ``0811`` siblings under ``kirocrew``."""
+        dup = [
+            *_FOLDERS,
+            {"id": "dddddddddddd", "name": "0811", "parent_id": "aaaaaaaaaaaa"},
+        ]
+
+        def _get(path: str) -> list[dict]:
+            return [dict(f) for f in dup] if path == "/api/chat/folders" else _rows(path)
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_file_self", {"folder": "kirocrew/0811"})
+        assert out.startswith("Error:")
+        mock_patch.assert_not_called()

@@ -16,6 +16,7 @@ const {
   BROWSER_PARTITION,
   createWindowLifecycle,
 } = require("../window-lifecycle");
+const { registerCaptureSurface } = require("../capture-trust");
 
 function validOptions(overrides = {}) {
   return {
@@ -68,6 +69,9 @@ describe("window lifecycle module boundary", () => {
   });
 });
 
+const DASH_ORIGIN = "http://localhost:5476";
+const PANE_ORIGIN = "http://localhost:7778";
+
 function securityHarness() {
   const calls = {
     display: [],
@@ -98,6 +102,18 @@ function securityHarness() {
       calls.defaultCheck.push(handler);
     },
   };
+  // The dashboard's capture surface, registered the way setupWindowContents
+  // does, plus a pane subframe inside it. `fromFrame` is what Electron gives the
+  // real handler to map a request's frame back to its contents.
+  const dashboardMain = { parent: null, url: `${DASH_ORIGIN}/chat` };
+  const dashboardWc = { mainFrame: dashboardMain };
+  const paneFrame = { parent: dashboardMain, url: `${PANE_ORIGIN}/?token=x` };
+  registerCaptureSurface(dashboardWc, DASH_ORIGIN);
+  const frameOwners = new Map([
+    [dashboardMain, dashboardWc],
+    [paneFrame, dashboardWc],
+  ]);
+
   const electron = {
     session: {
       defaultSession,
@@ -106,6 +122,7 @@ function securityHarness() {
         return browserSession;
       },
     },
+    webContents: { fromFrame: (frame) => frameOwners.get(frame) },
     desktopCapturer: {
       async getSources(options) {
         calls.getSources += 1;
@@ -120,12 +137,12 @@ function securityHarness() {
     electron,
     platform: "win32",
   }));
-  return { calls, lifecycle };
+  return { calls, lifecycle, dashboardMain, paneFrame };
 }
 
 describe("session security registration", () => {
   it("registers every default and browser-partition policy exactly once", async () => {
-    const { calls, lifecycle } = securityHarness();
+    const { calls, lifecycle, dashboardMain, paneFrame } = securityHarness();
 
     lifecycle.security.configureSession();
     lifecycle.security.configureSession();
@@ -171,11 +188,41 @@ describe("session security registration", () => {
       false,
     );
 
+    // Screen capture is authorized by IDENTITY, asserted through the handler
+    // configureSession actually registered — so the decision cannot be wired
+    // into capture-trust.js and left out of the call site.
     let displayResult = null;
-    await calls.display[0].handler({}, (result) => { displayResult = result; });
+    await calls.display[0].handler({ frame: dashboardMain }, (result) => { displayResult = result; });
     assert.deepEqual(displayResult, {
       video: { id: "screen:0", name: "Screen" },
     });
+    assert.equal(calls.getSources, 1);
+
+    // An instances pane's subframe. Refused BEFORE desktopCapturer is asked —
+    // the call count is what separates a denial from a granted stream nobody
+    // read.
+    let paneResult = "untouched";
+    await calls.display[0].handler({ frame: paneFrame }, (result) => { paneResult = result; });
+    assert.deepEqual(paneResult, {});
+    assert.equal(calls.getSources, 1);
+
+    // A pane that promoted itself: `target="_top"` replaces the dashboard's top
+    // document, so the SAME main frame now hosts the pane's origin. Frame
+    // position no longer separates them; the registered origin does.
+    dashboardMain.url = `${PANE_ORIGIN}/hostile`;
+    let promotedResult = "untouched";
+    await calls.display[0].handler({ frame: dashboardMain }, (result) => { promotedResult = result; });
+    assert.deepEqual(promotedResult, {});
+    assert.equal(calls.getSources, 1);
+
+    // An unregistered surface: any webContents this app did not open for its own
+    // documents is refused without having to be named.
+    let strangerResult = "untouched";
+    await calls.display[0].handler(
+      { frame: { parent: null, url: `${DASH_ORIGIN}/chat` } },
+      (result) => { strangerResult = result; },
+    );
+    assert.deepEqual(strangerResult, {});
     assert.equal(calls.getSources, 1);
   });
 });
@@ -235,6 +282,23 @@ describe("window lifecycle source contracts", () => {
     assert.ok(
       stop < destroyPanels && destroyPanels < closeDashboard,
       "cleanup order must be channel -> panels/control -> dashboard contents",
+    );
+  });
+
+  it("registers the dashboard view as a capture surface on its own gateway origin", () => {
+    // Screen capture is authorized against this registry, so a dashboard that is
+    // never registered silently loses the chat composer's snip and the
+    // web-preview crop. Pinned on the source because the security harness
+    // registers a surface of its own, which would mask the call going missing.
+    const setupStart = SOURCE.indexOf("function setupWindowContents");
+    const setupEnd = SOURCE.indexOf("function applyDashboardChrome", setupStart);
+    assert.notEqual(setupStart, -1);
+    assert.notEqual(setupEnd, -1);
+    const setup = SOURCE.slice(setupStart, setupEnd);
+    assert.match(
+      setup,
+      /registerCaptureSurface\(view\.webContents, windowBackendUrl\)/,
+      "the dashboard view must be registered against THIS window's gateway origin",
     );
   });
 

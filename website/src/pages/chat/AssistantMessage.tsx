@@ -1,12 +1,12 @@
 import { useState, useMemo, useEffect, memo, useRef, useId, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, Pin, PinOff, MoreHorizontal, Share2, X } from 'lucide-react'
+import { Copy, Check, Volume2, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, Pin, PinOff, MoreHorizontal, Share2, X } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { copyToClipboard } from '../../utils/clipboard'
 import { stripKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { copySessionLink } from '../../utils/shareUrl'
-import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
+import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
 import SelectionToolbar, { useSelectionActions } from '../../components/SelectionToolbar'
@@ -93,7 +93,7 @@ const LazyShareMessageModal = lazy(() => import('./share/ShareMessageModal'))
 
 /** The footer's hover-reveal + touch-target contract, shared by the action row and the
     unavailable fork affordance that sits outside it. */
-const ACTIONS_REVEAL_CLS = `flex items-center gap-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 ${HOVER_NONE_ACTIONS_ROW_CLS}`
+const ACTIONS_REVEAL_CLS = `flex items-center gap-y-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 ${ICON_ACTION_ROW_CLS}`
 
 const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, timestampTitle, showFooter = true, revealActions = false, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, onPlanFromHere, forkIndex, forkMessageId, onLoadEarlier, loadingOlder, earlierRemaining, onQuote, onAsk, messageTs, slotKey, slotTitle, mode, fileChanges, onOpenDiff, fileChipStyle, artifactPaths, turnStats, linkPreviews, pinned, onTogglePin, suppressSteerAck, prevUserText, shareEnabled = false }: { content: string; isStreaming: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: (content: string) => void; timestamp?: string; timestampTitle?: string; showFooter?: boolean; revealActions?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number, messageId?: string) => void | Promise<void>; onPlanFromHere?: (index: number, messageId?: string) => void | Promise<void>; forkIndex?: number; forkMessageId?: string; onLoadEarlier?: () => void; loadingOlder?: boolean; earlierRemaining?: number; onQuote?: (text: string, rect: DOMRect) => void; onAsk?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats; linkPreviews?: boolean; pinned?: boolean; onTogglePin?: () => void; /** Drop the steer chip: this turn's steer was a system policy notice, not the user's. */ suppressSteerAck?: boolean; /** The user question this reply answered — enables the share card's Q&A pairing. */ prevUserText?: string; /** Governance answer from `/api/dashboard/config` (`social_share_enabled`). The host passes it explicitly; an absent prop hides Share, so a forgotten wire fails closed. */ shareEnabled?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -171,6 +171,24 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     onLoadEarlier()
   }, [pagingToTarget, forkIndex, loadingOlder, earlierRemaining, onLoadEarlier])
   const [rawMode, setRawMode] = useState(false)
+  // Entering raw view holds the bubble at the height the rendered view had, and
+  // the source scrolls inside that box. Raw markdown wraps differently from its
+  // rendering, so without this the footer row (and the toggle under the
+  // pointer) jumped by the height difference on every flip. Freezing the height
+  // also means the transcript virtualizer sees no row resize at all, so no
+  // reprice or bottom re-pin fires. Cleared on the way back and while streaming.
+  const [rawBoxHeight, setRawBoxHeight] = useState<number | null>(null)
+  // The pin exists for the flip itself. A viewport resize or a content change
+  // (variant switch, late edit) re-wraps the whole transcript anyway, so a
+  // snapshot taken before either would leave a wrong-sized scroll box; release
+  // it and let the raw view take its own height from then on.
+  useEffect(() => {
+    if (rawBoxHeight === null) return
+    const release = () => setRawBoxHeight(null)
+    window.addEventListener('resize', release)
+    return () => window.removeEventListener('resize', release)
+  }, [rawBoxHeight])
+  useEffect(() => { setRawBoxHeight(null) }, [content, variantIdx])
   const [localIdx, setLocalIdx] = useState<number | null>(null)
   useEffect(() => { setLocalIdx(null) }, [content, variants?.length])
 
@@ -228,6 +246,17 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   }, [effectiveContent, isStreaming, planTaskId])
 
   const contentRef = useRef<HTMLDivElement>(null)
+  const toggleRaw = () => {
+    if (!rawMode) {
+      // Fractional, not offsetHeight: a rounded integer moves the row by up to
+      // half a pixel, which is exactly the jitter this exists to remove.
+      const measured = contentRef.current?.getBoundingClientRect().height ?? 0
+      setRawBoxHeight(measured > 0 ? measured : null)
+    } else {
+      setRawBoxHeight(null)
+    }
+    setRawMode(!rawMode)
+  }
   const selectionActions = useSelectionActions(onQuote, onAsk)
 
   const { term, caseSensitive } = useSearchHighlight()
@@ -308,7 +337,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // The overflow menu lives IN the footer action row, in EVERY state. Upstream
   // placed it below the row to keep the row from growing, but the below-row
   // placement is a SECOND `ACTIONS_REVEAL_CLS` row carrying its own `mt-1`, and
-  // HOVER_NONE_ACTIONS_ROW_CLS makes these rows permanently visible with 44px
+  // ICON_ACTION_ROW_CLS makes these rows permanently visible with 36x32
   // targets on touch -- so it added a full row of height to EVERY completed
   // turn's footer. Rows above a reader growing by that much is a page-scale
   // downward displacement the first time they re-measure (reported from a phone
@@ -389,7 +418,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             </DropdownMenuItem>
           )}
           {oldMenuContext && shareEnabled && (
-          <DropdownMenuItem data-testid="share-message" onSelect={() => setShareOpen(true)}>
+          <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="share-message" onSelect={() => setShareOpen(true)}>
             <span className="flex items-center gap-2">
               <Share2 size={13} className="shrink-0" />
               <span>{i18nT('pages.chat.assistantMessage.share_message')}</span>
@@ -403,7 +432,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
               // so the unavailable reason stays reachable through aria-disabled.
               aria-disabled={forkIndex === undefined || busyAction !== null || undefined}
               aria-describedby={forkIndex === undefined ? `${reasonId}-fork` : undefined}
-              className="flex-col items-start gap-0.5"
+              // Same 40px touch floor as Speak, so the items sit at one rhythm on a phone.
+              className="flex-col items-start justify-center gap-0.5 [@media(hover:none)]:min-h-10"
               data-testid="fork-from-here"
               onSelect={(e) => {
                 if (busyAction !== null) { e.preventDefault(); return }
@@ -428,7 +458,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             <DropdownMenuItem
               aria-disabled={forkIndex === undefined || busyAction !== null || undefined}
               aria-describedby={forkIndex === undefined ? `${reasonId}-plan` : undefined}
-              className="flex-col items-start gap-0.5"
+              className="flex-col items-start justify-center gap-0.5 [@media(hover:none)]:min-h-10"
               data-testid="plan-from-here"
               onSelect={(e) => {
                 if (busyAction !== null) { e.preventDefault(); return }
@@ -456,7 +486,9 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
 
   return <div data-role="assistant" className="group/msg">
     {/* 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md */}
-    <div ref={contentRef} className="message-bubble msg-content group/bubble relative text-sm leading-6 text-text overflow-hidden" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+    <div ref={contentRef} className="message-bubble msg-content group/bubble relative text-sm leading-6 text-text overflow-hidden" data-testid="message-bubble" style={rawMode && rawBoxHeight !== null && !isStreaming
+      ? { overflowWrap: 'anywhere', wordBreak: 'break-word', height: rawBoxHeight, overflowY: 'auto' }
+      : { overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       <MessageErrorBoundary rawContent={smoothedText}>
         <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} collapseDiffs mdCardToggle />
       </MessageErrorBoundary>
@@ -534,9 +566,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         })()}
       </div>
     )}
-    {/* Where the pointer cannot hover, the footer's descendant overrides grow
-        every action to a 40px touch target (20px icon + 10px padding); pointer
-        devices keep the compact 14px icons untouched. */}
+    {/* Where the pointer cannot hover, the footer uses compact cells: 28px on
+        pointer devices and 36×32px on touch, with 14px/16px glyphs. */}
     {!isStreaming && showFooter && (<>
       <div className={`${ACTIONS_REVEAL_CLS} has-[[data-state=open]]:opacity-100 ${revealActions && hasSpeak ? '!opacity-100 !delay-0' : ''}`}>
         {/* No `font-mono`: a formatted date is prose, and Tailwind's `font-mono`
@@ -555,8 +586,11 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             controls taxed chats the bound never touched. */}
         {onFork && forkIndex !== undefined && !forkMessageId && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="fork-from-here" title={forkLabel} aria-label={forkLabel} onClick={() => { void runForkAction() }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}</button>}
         {onPlanFromHere && forkIndex !== undefined && !forkMessageId && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="plan-from-here" title={planLabel} aria-label={planLabel} onClick={() => { void runPlanAction() }}>{busyAction === 'plan' ? <Loader2 size={14} className="animate-spin" /> : <ClipboardList size={14} />}</button>}
-        {/* Raw mode stays visible; Speak lives in More so adding voice never grows the row. */}
-        {text.length > 20 && <button className={`p-0.5 rounded transition-colors flex items-center gap-0.5 text-[11px] leading-4 ${rawMode ? 'text-text' : 'text-muted hover:text-text'}`} title={rawMode ? i18nT('pages.chat.assistantMessage.rendered_view') : i18nT('pages.chat.assistantMessage.raw_markdown')} aria-label={rawMode ? i18nT('pages.chat.assistantMessage.switch_to_rendered_view') : i18nT('pages.chat.assistantMessage.switch_to_raw_markdown_view')} onClick={() => setRawMode(!rawMode)}><Code size={14} />{rawMode ? i18nT('pages.chat.assistantMessage.rendered') : i18nT('pages.chat.assistantMessage.raw')}</button>}
+        {/* Icon-only, like every other row action. State is carried the way the
+            pin button carries it: the glyph names the view a click will GET
+            (code brackets while rendered, an eye for "preview" while raw) and
+            aria-pressed says which one is showing. Speak lives in More. */}
+        {text.length > 20 && <button className={`p-0.5 rounded transition-colors ${rawMode ? 'text-text' : 'text-muted hover:text-text'}`} aria-pressed={rawMode} data-testid="toggle-raw-view" title={rawMode ? i18nT('pages.chat.assistantMessage.rendered_view') : i18nT('pages.chat.assistantMessage.raw_markdown')} aria-label={rawMode ? i18nT('pages.chat.assistantMessage.switch_to_rendered_view') : i18nT('pages.chat.assistantMessage.switch_to_raw_markdown_view')} onClick={toggleRaw}>{rawMode ? <Eye size={14} /> : <Code size={14} />}</button>}
         {onRegenerate && !slotRunning && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.regenerate')} aria-label={i18nT('pages.chat.assistantMessage.regenerate_response')} onClick={onRegenerate}><RefreshCw size={14} /></button>}
         {hasVariants && (() => {
           const curIdx = activeIdx

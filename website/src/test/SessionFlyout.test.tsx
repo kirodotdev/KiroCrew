@@ -215,7 +215,9 @@ describe('SessionFlyout status markers', () => {
     })
     expect(marker(container, 'a')).toContain('bg-warn')
     expect(marker(container, 'r')).toContain('animate-pulse')
-    expect(marker(container, 'u')).toContain('bg-accent')
+    // Unread reads the status token, not the brand accent -- and no longer
+    // shares a hue with `running`'s `bg-accent` (#10479).
+    expect(marker(container, 'u')).toContain('bg-ok')
     expect(marker(container, 'u')).not.toContain('animate-pulse')
   })
 

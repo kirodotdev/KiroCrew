@@ -339,12 +339,39 @@ class TestAnswerOnlyBlock:
         """
         assert "one risk line for anything touching security, data or spend" in self._block()
 
-    def test_asking_why_keeps_the_checks_and_adds_one_line_per_point(self):
-        """A request for the reason is not a request for a document: the reason
-        turns on, the three checks stay on.
+    def test_asking_why_teaches_with_one_picture_not_a_list_of_verdicts(self):
+        """The word check alone is half of Age 5. A child knows every word in
+        "the path was read as a key" and still learns nothing from it; the same
+        child follows a dog that hides the wrong thing. So a "why" reply keeps
+        the small words and swaps the shape: one everyday picture carried to
+        the end, the objection as a character in it, then the reasons in the
+        picture's own words. "Teach it, do not state it" names the mode; the
+        picture is bounded to ONE so it cannot sprawl into a parade of
+        metaphors.
         """
         block = self._block()
-        assert "Asked why? Same three checks, plus the reason as one line per point" in block
+        assert "Asked why? Teach it, do not state it." in block
+        assert "One picture from daily life" in block
+        assert "Keep it to the end" in block
+        assert "An objection is a character in it" in block
+        assert "The reasons, numbered, one short line each, in the picture's words" in block
+        # The story ends on the literal answer, so a reader who skipped the
+        # picture still gets the fact.
+        assert "End: what it is, one line" in block
+
+    def test_asking_why_keeps_the_word_check_and_narrows_the_cut_check(self):
+        """The picture is what the cut check would otherwise delete ("why",
+        "options you rejected"). The carve-out is explicit and named -- the
+        picture and the reasons -- so the rest of the cut list still applies
+        (no preamble, no "what I did", no offers). The word check is restated
+        because a story invites long sentences and the register is the point.
+        """
+        block = self._block()
+        assert "Word check still runs" in block
+        assert "Cut check spares the picture and the reasons" in block
+        # "may" -- permission, not a target. The default reply stays short.
+        assert "This reply may run long" in block
+        assert "Same three checks, plus the reason as one line per point" not in block
 
     def test_the_reason_stays_discoverable_by_a_three_word_offer(self):
         """The delete-list drops offers to help, not the one offer that tells

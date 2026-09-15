@@ -28,7 +28,7 @@ import {
 
 /** Which pane the editor body is showing. */
 export type CrewPaneKey =
-  | 'overview' | 'template' | 'model' | 'place' | 'schedules' | 'routing' | 'webhook' | 'danger'
+  | 'overview' | 'template' | 'capabilities' | 'model' | 'place' | 'schedules' | 'routing' | 'webhook' | 'danger'
 
 export interface CrewEditorSection {
   key: CrewPaneKey
@@ -120,6 +120,12 @@ export function useCrewEditorSections(facts: CrewEditorFacts): CrewEditorSection
         group: t('components.crewEditor.group_what_it_can_do'),
         icon: Boxes,
         label: templateLabel,
+      },
+      {
+        key: 'capabilities',
+        group: t('components.crewEditor.group_what_it_can_do'),
+        icon: Boxes,
+        label: t('crewCapabilities.title'),
       },
       {
         key: 'model',

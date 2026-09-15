@@ -28,6 +28,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import (
     DOWNLOAD_ATTEMPTS_INTERACTIVE,
     LEGACY_EMBEDDING_WARNING,
+    ReembedProgress,
     _custom_model_id,
     _model_file_stamp,
     _read_memory_config,
@@ -36,6 +37,7 @@ from kiro_crew.embeddings import (
     build_gated_bundled,
     build_gated_candidate,
     embedding_backend_serving,
+    embedding_rebuild_generation,
     get_shared_embedder,
     install_shared_embedder,
     legacy_embedding_ids,
@@ -257,6 +259,21 @@ def _store_unavailable_response(store: str, error: Exception | None = None) -> w
     )
 
 
+def _private_profile_unavailable_response(store: str, error: Exception) -> web.Response:
+    """Keep identity/filesystem diagnostics in the log, not the profile response."""
+    logger.warning(
+        "Private memory profile write refused: %s",
+        redact_log_via_context(f"store={store!r}: {type(error).__name__}: {error}"),
+    )
+    return web.json_response(
+        {
+            "error": "Private memory profile is unavailable. Check the gateway log before retrying.",
+            "code": "store_unavailable",
+        },
+        status=503,
+    )
+
+
 async def _vector_tier_for_request(
     request: web.Request,
     state: DashboardState,
@@ -389,7 +406,7 @@ async def api_memory_preferences(request: web.Request) -> web.Response:
                 except _MemoryDocumentRedacted:
                     return _memory_document_redacted_response()
                 except (UnknownMemoryStore, OSError) as exc:
-                    return _store_unavailable_response(store, exc)
+                    return _private_profile_unavailable_response(store, exc)
                 except ValueError as exc:
                     return web.json_response(
                         {
@@ -471,7 +488,7 @@ async def api_memory_projects(request: web.Request) -> web.Response:
                 except _MemoryDocumentRedacted:
                     return _memory_document_redacted_response()
                 except (UnknownMemoryStore, OSError) as exc:
-                    return _store_unavailable_response(store, exc)
+                    return _private_profile_unavailable_response(store, exc)
                 except ValueError as exc:
                     return web.json_response(
                         {
@@ -989,7 +1006,10 @@ async def _write_embed_model_config(
     path: str, dim: int
 ) -> tuple[Callable[[], Awaitable[None]], bool]:
     """Return a conditional rollback and inheritance from the locked prior settings."""
+    import uuid
+
     path = str(Path(path).expanduser()) if path else ""
+    rebuild_generation = uuid.uuid4().hex
 
     def _record_model() -> tuple[str, list[int]]:
         model = Path(path)
@@ -1014,6 +1034,7 @@ async def _write_embed_model_config(
         memory = data.setdefault("memory", {})
         previous.update({key: memory[key] for key in keys if key in memory})
         memory.pop("embed_model_legacy_ids", None)
+        memory["embed_rebuild_generation"] = rebuild_generation
         if path:
             memory["embed_model_path"] = path
             memory["embed_model_id"] = model_id
@@ -1028,7 +1049,7 @@ async def _write_embed_model_config(
         return data
 
     try:
-        await run_config_write(update_config_locked, config_path(), mutate=_apply)
+        await run_config_write(update_config_locked, config_path(), mutate=_apply, fsync=True)
     except ConfigReadError as exc:
         raise ValueError(
             "config.json could not be parsed; fix it before changing the model"
@@ -1037,8 +1058,12 @@ async def _write_embed_model_config(
     async def rollback() -> None:
         def restore(data: dict) -> dict:
             memory = data.get("memory", {})
-            if {key: memory[key] for key in keys if key in memory} != written:
+            if {key: memory[key] for key in keys if key in memory} != written or memory.get(
+                "embed_rebuild_generation"
+            ) != rebuild_generation:
                 raise ValueError("Model settings changed during apply; rollback refused")
+            # Keep the repair request: some stores may already be invalidated,
+            # while closed stores still need it even when the model rolls back.
             for key in keys:
                 memory.pop(key, None)
             memory.update(previous)
@@ -1047,6 +1072,39 @@ async def _write_embed_model_config(
         await run_config_write(update_config_locked, config_path(), mutate=restore)
 
     return rollback, bool(legacy_embedding_ids(previous.get("embed_model_legacy_ids")))
+
+
+def _store_progress_adapter(
+    prog: ReembedProgress, base: int, total: int
+) -> Callable[[int, int], None]:
+    """Map one store's ``(done, total)`` backfill stream onto the multi-store bar.
+
+    ``backfill_missing_embeddings`` reports per-batch progress for ONE store, and
+    resets ``done`` to 0 between its lesson and episodic phases (each phase has
+    its own denominator). The dashboard bar counts every store's work against
+    one total, so this adapter offsets the store's stream by ``base`` (rows
+    completed by earlier stores), folds a phase reset into a running offset
+    instead of letting the bar jump backward, and never lets the reported total
+    fall below what has already been counted. The caller reconciles the exact
+    count after the store finishes; this only keeps the bar moving meanwhile.
+    """
+    phase_base = 0
+    last = 0
+    high_water = base
+
+    def report(done: int, _phase_total: int) -> None:
+        nonlocal phase_base, last, high_water
+        done = max(0, done)
+        if done < last:
+            # A new phase started (lessons -> episodes): keep what the previous
+            # phase already counted rather than restarting from zero.
+            phase_base += last
+        last = done
+        current = max(high_water, base + phase_base + done)
+        high_water = current
+        prog.advance(current, max(total, current))
+
+    return report
 
 
 def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEventLoop") -> None:
@@ -1155,10 +1213,6 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
             target.embed_fn = make_sync_embed_fn()  # type: ignore[attr-defined]
             retargeted.add(target)
             reconcile_store_embedding_space(target)  # type: ignore[arg-type]
-            if inherited_vectors:
-                target.reconcile_embedding_space(  # type: ignore[attr-defined]
-                    active_embedding_space_signature(), clear_when_unknown=True, force=True
-                )
 
         # Reconcile DELIBERATELY does not stamp the signature when it could not
         # unlink the stale FAISS pair (read-only memory dir; Windows while the
@@ -1170,6 +1224,7 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
             target
             for target in stores
             if target.recorded_embedding_space() != active_embedding_space_signature()  # type: ignore[attr-defined]
+            or target.recorded_rebuild_generation() != embedding_rebuild_generation()  # type: ignore[attr-defined]
         ]
         if unreconciled:
             raise RuntimeError(
@@ -1190,11 +1245,27 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
         # progress bar, and semantic search stays degraded until the sweep ends.
         # Bulk pacing exists to keep an UNATTENDED sweep quiet — spreading a wait
         # someone explicitly asked for only doubles it.
-        embedded = sum(
-            target.backfill_missing_embeddings(progress=prog.advance, pace=False)  # type: ignore[attr-defined]
-            for target in stores
-        )
-        prog.finish(embedded)
+        # Count resolved NULL work across all three kinds. Concurrent edits or
+        # forgetting can resolve work too, so this is not an inference counter.
+        generation = embedding_rebuild_generation()
+        total = sum(target.embedding_repair_state(generation)[1] for target in stores)  # type: ignore[attr-defined]
+        prog.begin_run(total)
+        completed = 0
+        for target in stores:
+            before = target.embedding_repair_state(generation)[1]  # type: ignore[attr-defined]
+            # Per-batch progress within this store, offset by the stores already
+            # done. Without it the bar sits at 0/total for the whole sweep on the
+            # common single-store install and only moves once the store finishes.
+            target.backfill_missing_embeddings(  # type: ignore[attr-defined]
+                progress=_store_progress_adapter(prog, completed, total), pace=False
+            )
+            after = target.embedding_repair_state(generation)[1]  # type: ignore[attr-defined]
+            # Reconcile against the store's own NULL count, exactly as before: the
+            # adapter cannot see semantic-KV rows (that phase reports no progress)
+            # and must not count rows a concurrent writer resolved.
+            completed += max(0, before - after)
+            prog.advance(completed, max(total, completed))
+        prog.finish(completed)
     except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard, never crashes the app
         logger.warning("Applying the embedding model failed", exc_info=True)
         if candidate_installed and not embedding_backend_serving():
@@ -1338,6 +1409,54 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "size_bytes": size_bytes, "status": "applying"})
 
 
+def _embedding_repair_status(state: object, generation: str) -> dict[str, object]:
+    """Inspect open handles only; closed or unreadable stores remain deferred."""
+    from kiro_crew.context import cached_vector_store_entries
+    from kiro_crew.memory_stores import active_store_names, require_memory_store
+
+    result: dict[str, object] = {
+        "generation": generation,
+        "scope": "open_stores",
+        "pending_invalidation": 0,
+        "pending_vectors": 0,
+        "deferred_stores": 0,
+        "unknown_scope": False,
+    }
+    if not generation:
+        return result
+    try:
+        cfg = KiroCrewConfig.load()
+        if cfg.degraded_sections:
+            result["unknown_scope"] = True
+        names = set(active_store_names())
+        handles = dict(cached_vector_store_entries())
+        global_store = getattr(
+            getattr(getattr(state, "context_builder", None), "memory", None), "vector_store", None
+        )
+        if global_store is not None:
+            handles["default"] = global_store
+        pending = remaining = deferred = 0
+        for name in names:
+            store = handles.get(name)
+            if store is None:
+                deferred += 1
+                continue
+            try:
+                require_memory_store(name, config=cfg)
+                needs_invalidation, nulls = store.embedding_repair_state(generation)
+                pending += int(needs_invalidation)
+                remaining += nulls
+            except Exception:
+                deferred += 1
+                result["unknown_scope"] = True
+        result.update(
+            pending_invalidation=pending, pending_vectors=remaining, deferred_stores=deferred
+        )
+    except Exception:
+        result["unknown_scope"] = True
+    return result
+
+
 async def api_memory_embedding_status(request: web.Request) -> web.Response:
     """GET /api/memory/embedding-status — embedding system status + setup progress."""
     embedder = get_shared_embedder()
@@ -1363,6 +1482,34 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             setup_step = "done"
             setup_error = ""
 
+    memory_config = await asyncio.to_thread(_read_memory_config)
+    generation = embedding_rebuild_generation(memory_config)
+    repair = await asyncio.to_thread(
+        _embedding_repair_status, getattr(request, "app", {}).get("state"), generation
+    )
+    inherited = bool(
+        custom is not None and legacy_embedding_ids(memory_config.get("embed_model_legacy_ids"))
+    )
+    error_code = (
+        (custom.error_code or "model_path_unreadable")
+        if custom is not None and setup_error
+        else "model_download_failed" if setup_error else ""
+    )
+    progress = reembed_progress().snapshot()
+    if (
+        generation
+        and progress["step"] in ("idle", "done")
+        and any(
+            repair[key]
+            for key in (
+                "pending_invalidation",
+                "pending_vectors",
+                "deferred_stores",
+                "unknown_scope",
+            )
+        )
+    ):
+        progress["step"] = "deferred"
     return web.json_response(
         {
             # Embeddings are always-on; this field is not a toggle.
@@ -1399,17 +1546,21 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             "bytes_downloaded": mgr.status.get("bytes_downloaded", 0),
             "bytes_total": mgr.status.get("bytes_total", 0),
             "setup_error": setup_error,
-            "setup_warning": (
-                LEGACY_EMBEDDING_WARNING
-                if custom is not None
-                and legacy_embedding_ids(_read_memory_config().get("embed_model_legacy_ids"))
-                else ""
-            ),
+            "setup_error_code": error_code,
+            "setup_error_params": {
+                "path": str(custom.path) if custom is not None else "",
+                "error": setup_error,
+            },
+            "setup_warning": LEGACY_EMBEDDING_WARNING if inherited else "",
+            "setup_warning_code": "legacy_embedding_vectors" if inherited else "",
+            "setup_warning_params": {},
+            "repair": repair,
+            "model_active": embedding_backend_serving() and embedder.is_ready(),
             "can_retry": can_retry,
             # Live re-embed progress for the Memory tab indicator. Same
             # in-memory pattern as the download status above, so the card's
             # existing 2s poll picks it up with no new endpoint.
-            "reembed": reembed_progress().snapshot(),
+            "reembed": progress,
         }
     )
 

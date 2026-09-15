@@ -5173,13 +5173,16 @@ class TestSentinelPathRepair:
         # Idempotent: a second pass must not append another segment either.
         assert _an.repair_sentinel_path(_an.repair_sentinel_path(original)) == original
 
-    def test_unnormalized_path_escaping_legacy_is_preserved(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("home_parent", ["plain", ".kiro/crew/scratch"])
+    def test_unnormalized_path_escaping_legacy_is_preserved(
+        self, tmp_path, monkeypatch, home_parent
+    ):
         """``~/.kirocrew/../workspace/STOP`` normalizes OUTSIDE the legacy root.
 
         A purely lexical prefix test would treat it as legacy-contained and
         rewrite an external workspace sentinel to the wrong location.
         """
-        home = tmp_path / "home"
+        home = tmp_path / home_parent / "home"
         current = home / ".kiro" / "crew"
         current.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
@@ -5190,7 +5193,7 @@ class TestSentinelPathRepair:
         # Preserved verbatim — it normalizes outside the legacy root, so there is
         # nothing to re-home, and rewriting it would point at the wrong place.
         assert repaired == original
-        assert ".kiro/crew" not in repaired
+        assert not Path(repaired).resolve().is_relative_to(current.resolve())
 
     def test_live_legacy_rooted_workspace_is_not_rehomed(self, tmp_path, monkeypatch):
         """An absolute workspace dir INSIDE the legacy tree must be left alone.
@@ -5477,34 +5480,47 @@ class TestPersistenceIsOffLoopAndOrdered:
         assert writes == []
 
     @pytest.mark.asyncio
-    async def test_cancelled_removal_holds_the_lock_until_the_write_settles(self, tmp_path):
+    @pytest.mark.parametrize("delay_start", [False, True])
+    async def test_cancelled_removal_holds_the_lock_until_the_write_settles(
+        self, tmp_path, delay_start
+    ):
         svc = AutoNudgeService(base_dir=tmp_path)
         doomed = await svc.add(slot_key="dashboard:a", message="a", idle_secs=60, max_cycles=1)
 
         order: list[str] = []
         release = threading.Event()
+        entered = asyncio.Event()
+        loop = asyncio.get_running_loop()
         real_write = svc._write_state
 
         def _slow_write(payload):
             order.append("write-start")
-            release.wait(2.0)
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(2.0):
+                raise AssertionError("test did not release the writer")
             real_write(payload)
             order.append("write-done")
 
         svc._write_state = _slow_write  # type: ignore[method-assign]
 
-        remover = asyncio.create_task(svc.remove(doomed.id))
-        await asyncio.sleep(0.05)
-        remover.cancel()
-        await asyncio.sleep(0.05)
+        async def _remove():
+            if delay_start:
+                # Exercise a dispatch later than the old 50ms cancellation sleep.
+                await asyncio.sleep(0.1)
+            await svc.remove(doomed.id)
 
-        assert svc._lock.locked(), "lock released while the write was in flight"
-
-        release.set()
+        remover = asyncio.create_task(_remove())
         try:
-            await remover
-        except (asyncio.CancelledError, BaseException):
-            pass
+            await asyncio.wait_for(entered.wait(), timeout=1.0)
+            remover.cancel()
+            # Deliver cancellation without spending the writer's deadline asleep.
+            await asyncio.sleep(0)
+            assert svc._lock.locked(), "lock released while the write was in flight"
+            assert not remover.done(), "cancellation escaped before the write settled"
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(remover, timeout=2.0)
 
         assert order == ["write-start", "write-done"], order
 

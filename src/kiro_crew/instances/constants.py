@@ -240,17 +240,32 @@ DEFAULT_SEARCH_PROXY_TIMEOUT_SECS: float = 6.0
 SEARCH_REPLY_MAX_BYTES: int = 4 * 1024 * 1024
 
 # Timeout (secs) for one peer capability read over an already-open tunnel (GET
-# the peer's /api/version, /api/agents, /api/models, /api/effort-levels or
-# /api/workspaces — no SSH spawn). Larger than the token probe (2s) because the
-# peer does real work for some of these (the model list can round-trip to its
-# own provider), and kept as short as that work allows because a capability read
-# blocks a chat header from rendering: a user watching an empty model picker is
-# better served by a fast "peer did not answer" than by a long wait. It is the
-# one peer budget ABOVE the federated-search timeout (6s), which fans out reads
-# that a partial result set can absorb; a missing capability read has no partial
-# form — the picker is simply empty — so it is the one worth waiting out.
-# The reads run concurrently, so this is the worst-case latency for the set.
+# the peer's /api/version, /api/agents, /api/effort-levels or /api/workspaces —
+# no SSH spawn; /api/models carries its own larger budget below). Larger than
+# the token probe (2s) because the peer does real work for some of these, and
+# kept as short as that work allows because a capability read blocks a chat
+# header from rendering: a user watching an empty picker is better served by a
+# fast "peer did not answer" than by a long wait. It sits above the
+# federated-search timeout (6s), which fans out reads that a partial result set
+# can absorb; a missing capability read has no partial form — the picker is
+# simply empty — so it is the one worth waiting out.
+# The reads run concurrently, so the slowest budget in the set is the
+# worst-case latency for the whole aggregated reply.
 DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS: float = 8.0
+
+# Timeout (secs) for the peer's /api/models capability read specifically. The
+# other four reads answer from state the peer already holds, but the model list
+# is the one read whose COLD path runs real subprocess work on the peer: up to
+# 5s of sandbox-backend detection plus up to 10s of `kiro-cli chat
+# --list-models` before the first reply is cached, ~15s worst case end to end.
+# Budgeting it at the shared 8s guarantees the cold read is killed by this side
+# while the peer's own bounded work is still running, and the aggregator then
+# reports `capability_unreachable` for a peer that is healthy — the model
+# picker of every fresh remote-bound chat opens empty. 20s clears the
+# peer's worst case with margin without turning a genuinely dead tunnel into a
+# minute-long hang; the reads run concurrently, so the four cheap reads still
+# settle at 8s and only the model list waits this long.
+DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS: float = 20.0
 
 # Byte ceiling for one peer capability reply, enforced BEFORE JSON decoding for
 # the same reason as the search cap above. Sized for the largest honest payload

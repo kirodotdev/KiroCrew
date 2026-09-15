@@ -1651,15 +1651,6 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
                 agent["max_subagents"] = val
                 applied.append("max_subagents")
 
-            for key in ("conductor_skill",):
-                if key in agent_settings:
-                    val = agent_settings[key]
-                    if not isinstance(val, bool):
-                        _validation_error.append((f"{key} must be a boolean", 400))
-                        return None
-                    agent[key] = val
-                    applied.append(key)
-
             if not applied:
                 _validation_error.append(("no recognized settings provided", 400))
                 return None
@@ -1674,11 +1665,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         try:
             async with _get_config_lock():
                 try:
-                    # update_config_locked returns the final config dict (after
-                    # mutation); use it directly rather than re-reading from disk
-                    # (a blocking read on the loop, and it writes the callback's
-                    # output verbatim — there is no concurrent merge to observe).
-                    final = await asyncio.to_thread(
+                    await asyncio.to_thread(
                         update_config_locked, cfg_path, mutate=_mutate_config_put
                     )
                 except ConfigReadError:
@@ -1698,34 +1685,12 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
                     return _deny(msg, status)
 
                 applied: list[str] = _result["applied"]  # type: ignore[assignment]
-                agent = final.get("agent") or {}
                 _sel().log_api_access(
                     caller=caller,
                     operation="config.update",
                     outcome="ok",
                     resources=",".join(applied),
                 )
-                # Regenerate or clean up conductor skill on toggle. Held INSIDE
-                # the lock so a concurrent enable/disable cannot interleave and
-                # leave the persisted flag disagreeing with the skill file on
-                # disk (config says enabled while SKILL.md is absent, or vice
-                # versa).
-                if "conductor_skill" in applied:
-                    if agent.get("conductor_skill"):
-                        from kiro_crew.dashboard.handlers.agents import (  # noqa: F811
-                            _regen_conductor,
-                        )
-
-                        _regen_conductor()
-                    else:
-                        try:
-                            from kiro_crew.skills import SkillsLoader  # noqa: F811
-
-                            p = SkillsLoader()._dir / "conductor" / "SKILL.md"
-                            if p.exists():
-                                p.unlink()
-                        except Exception:
-                            logger.exception("Failed to clean up conductor skill")
         except OSError:
             _sel().log_api_access(
                 caller=caller,

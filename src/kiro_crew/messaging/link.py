@@ -149,10 +149,14 @@ TELEMETRY_CHANNELS: frozenset[str] = frozenset(
 
 
 def telemetry_channel_of(key: str | None) -> str:
-    """Classify *key* into a bounded metric label for the conversation source.
+    """Classify *key* into the bounded canonical conversation-source label.
 
     Answers "who paid this cost" for latency instruments, which otherwise record
-    a duration with no way to group it by where the conversation came from.
+    a duration with no way to group it by where the conversation came from. The
+    same closed classification is also a behavioral dispatch contract for callers
+    that need to distinguish dashboard, channel, and non-interactive sessions;
+    reclassifying a key shape is therefore an application behavior change, not a
+    metrics-only refactor, and must preserve the pinned surface tests below.
 
     Returns a member of :data:`TELEMETRY_CHANNELS`: a transport namespace
     (``telegram``, ``slack``, …) for channel keys, a local label

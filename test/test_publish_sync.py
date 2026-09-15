@@ -13,6 +13,7 @@ overwrite) is covered end-to-end with no real provider present.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
@@ -1356,11 +1357,32 @@ from kiro_crew.artifacts import ForkMetadata  # noqa: E402
 
 
 def _remote_get(
-    tmp_path, content, *, version, sha, owner="alice", ctype="text/plain", shared=None, shared_v2=None
+    tmp_path,
+    content: str | bytes,
+    *,
+    version,
+    sha,
+    owner="alice",
+    ctype="text/plain",
+    shared=None,
+    shared_v2=None,
 ):
-    """A fake get_artifact response: artifact metadata + downloaded localPath."""
+    """A fake get_artifact response: artifact metadata + downloaded localPath.
+
+    ``content`` lands on disk the way a real download does: ``bytes`` verbatim (a
+    binary upstream such as a PNG), ``str`` as UTF-8. The encoding is EXPLICIT on
+    purpose. A bare ``write_text`` uses the locale codec, and the hosted Windows
+    runners default to cp1252, where U+0089 has no mapping -- so the binary-upstream
+    tests raised ``UnicodeEncodeError('charmap')`` inside this helper before the code
+    under test ran, while passing on every UTF-8 host (``PYTHONUTF8=1``, macOS,
+    Linux). ``test_remote_get_*_under_a_strict_cp1252_locale`` below pins this
+    without depending on the host's code page.
+    """
     f = tmp_path / f"remote-{version}-{sha}.txt"
-    f.write_text(content)
+    if isinstance(content, bytes):
+        f.write_bytes(content)
+    else:
+        f.write_text(content, encoding="utf-8")
     return {
         "artifact": {
             "title": "Doc",
@@ -1534,18 +1556,83 @@ async def test_overwrite_upstream_file_backed_pushes_live_file_bytes(store, fake
     assert src.read_text(encoding="utf-8") == "my file content"  # local file untouched
 
 
+# A real PNG signature: 0x89 is not a valid UTF-8 lead byte, and U+0089 is unmapped in
+# cp1252, so this content is non-text under BOTH codecs the helper could have picked.
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+
+
 @pytest.mark.asyncio
 async def test_pull_upstream_rejects_non_text_content_type(store, fake_client, tmp_path):
     """A binary upstream (image/PDF/…) is refused, not read as UTF-8 mojibake."""
     art = store.create(name="Doc", content="old", kind="text")
     _track_publication(store, art.slug)
     fake_client.get_response = _remote_get(
-        tmp_path, "\x89PNG...", version=2, sha="sha-v2", ctype="image/png"
+        tmp_path, _PNG_BYTES, version=2, sha="sha-v2", ctype="image/png"
     )
     result = await publish_sync.pull_upstream(art.slug)
     assert result["pulled"] is False
     assert "unsupported content type" in result["reason"]
     assert store.get(art.slug).content == "old"  # untouched
+
+
+def _simulate_strict_cp1252_text_default(tmp_path, monkeypatch) -> None:
+    """Make an OMITTED text encoding resolve to strict cp1252, as on hosted Windows.
+
+    ``pathlib`` resolves a missing ``encoding`` through ``io.text_encoding``, so
+    patching that one seam reproduces the runners' locale codec on any host,
+    including one running under ``PYTHONUTF8=1`` (where the same tests XPASS and
+    hide the bug). An explicit ``encoding=`` is passed through untouched, which is
+    exactly the distinction the helper must get right.
+    """
+    real_text_encoding = io.text_encoding
+
+    def _cp1252_when_omitted(encoding, stacklevel=2):
+        return "cp1252" if encoding is None else real_text_encoding(encoding, stacklevel)
+
+    monkeypatch.setattr(io, "text_encoding", _cp1252_when_omitted)
+    # Prove the simulation bites before relying on it: this is the exact failure
+    # the Windows shards reported from the unfixed helper. A patch that stopped
+    # reaching pathlib would otherwise turn the two tests below into no-ops.
+    with pytest.raises(UnicodeEncodeError):
+        (tmp_path / "probe.txt").write_text("\x89PNG")
+
+
+def test_remote_get_writes_binary_upstream_bytes_verbatim_under_a_strict_cp1252_locale(
+    tmp_path, monkeypatch
+):
+    """The helper must never route binary content through the locale codec."""
+    _simulate_strict_cp1252_text_default(tmp_path, monkeypatch)
+    res = _remote_get(tmp_path, _PNG_BYTES, version=2, sha="sha-v2", ctype="image/png")
+    assert Path(res["localPath"]).read_bytes() == _PNG_BYTES
+
+
+def test_remote_get_writes_text_upstream_as_utf8_under_a_strict_cp1252_locale(
+    tmp_path, monkeypatch
+):
+    """Text content is UTF-8 on disk regardless of locale -- the codec the provider
+    reads it back with -- so a non-cp1252 character neither raises nor mojibakes."""
+    _simulate_strict_cp1252_text_default(tmp_path, monkeypatch)
+    text = "collab edit \u2192 \u4e2d\u6587"  # U+2192 and CJK: outside cp1252
+    res = _remote_get(tmp_path, text, version=2, sha="sha-v2")
+    assert Path(res["localPath"]).read_bytes() == text.encode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_pull_upstream_rejects_binary_upstream_under_a_strict_cp1252_locale(
+    store, fake_client, tmp_path, monkeypatch
+):
+    """The affected scenario end to end, with the runners' codec forced on: the
+    refusal is decided by content type, so no locale may turn it into an error."""
+    _simulate_strict_cp1252_text_default(tmp_path, monkeypatch)
+    art = store.create(name="Doc", content="old", kind="text")
+    _track_publication(store, art.slug)
+    fake_client.get_response = _remote_get(
+        tmp_path, _PNG_BYTES, version=2, sha="sha-v2", ctype="image/png"
+    )
+    result = await publish_sync.pull_upstream(art.slug)
+    assert result["pulled"] is False
+    assert "unsupported content type" in result["reason"]
+    assert store.get(art.slug).content == "old"
 
 
 @pytest.mark.asyncio

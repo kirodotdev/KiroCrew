@@ -46,7 +46,6 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.client import (
     _COMPACTION_FAILED_TURN_BUDGET,
-    _JSONRPC_INVALID_PARAMS,
     DEFAULT_MODEL,
     AcpClient,
     AcpError,
@@ -55,9 +54,11 @@ from kiro_crew.acp.client import (
     AcpTimeoutError,
     AcpToolGateUnroutable,
     _effective_prompt_timeout_async,
+    _is_config_value_rejection,
     _is_safe_oauth_url,
     _is_tool_interrupted_marker,
     _jsonrpc_error_code,
+    _push_model_via_effort_split,
     _raise_acp_error,
     compaction_failure_detail,
     compaction_failure_is_transient,
@@ -87,6 +88,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_STEER,
     EVENT_AGENT_SWITCHED,
@@ -126,6 +128,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     AcpPromptStats,
     JsonRpcMessage,
+    effort_config_option_id,
 )
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
@@ -634,11 +637,19 @@ class AcpSessionHandle:
         crew_agent: str = "",
     ) -> None:
         self._session_id = session_id
+        self.native_context_documents: dict[str, str] = {}
         self._queue = queue
         self._runtime = runtime
         # When True, destroy() skips the transcript unlink (subagent
         # continuability: the transcript is spawn_continue's resume material).
         self.keep_transcript = False
+        # Token carried by THIS session's injected broker-stub entries
+        # (``mcp_gateway.claim.mint_stub_session_token``), set by the runtime
+        # that created the session. It is what a later claim-push names so
+        # gatewayd re-targets this session's stub connections and not every
+        # session's on the shared runtime. Empty when the gateway injected no
+        # stubs. Never logged: it is a bearer name for this session's identity.
+        self.stub_session_token: str = ""
         # Watchdog windows are snapshotted here (construction time) so the
         # dispatch loop never reads config; the liveness oracle carries the
         # per-session evidence state (tracked child, counter samples).
@@ -790,6 +801,7 @@ class AcpSessionHandle:
         self.last_prompt_stats = AcpPromptStats()
         # State tracking (populated from session/new response via store_session_config)
         self._model: str = ""
+        self.active_agent: str = ""
         # Model id kiro-cli RESOLVED the session to (from currentModelId in the
         # session/new|load response), kept separate from _model (the user-picked
         # alias) so it feeds ONLY the context-window backfill — never slot.model
@@ -1486,6 +1498,8 @@ class AcpSessionHandle:
 
     async def set_mode(self, agent_name: str) -> None:
         """Activate an agent via session/set_mode."""
+        # send_request only queues the request; it does not await a mode ACK.
+        self.active_agent = ""
         await self._runtime.send_request(
             METHOD_SET_MODE,
             set_mode_params(self._session_id, agent_name),
@@ -1604,11 +1618,7 @@ class AcpSessionHandle:
                         MODEL_CONFIG_ID,
                     )
                     return ""
-                value_rejected = (
-                    f"config option {MODEL_CONFIG_ID}" in lowered
-                    or getattr(exc, "code", None) == _JSONRPC_INVALID_PARAMS
-                )
-                if not value_rejected:
+                if not _is_config_value_rejection(exc, MODEL_CONFIG_ID):
                     raise
                 last_exc = exc
                 continue
@@ -1619,6 +1629,14 @@ class AcpSessionHandle:
                     cand,
                 )
             return cand
+        # Every spelling refused as one value. A ``<model>[<effort>]`` pair --
+        # the shape codex-acp advertises but its ``model`` option does not take --
+        # is applied as its two halves instead (shared seam with AcpClient).
+        split_applied = await _push_model_via_effort_split(
+            self, self._runtime.acp_backend, model_id
+        )
+        if split_applied:
+            return split_applied
         # Redacted through the platform context before the id reaches a log or an
         # exception message: it is caller-supplied text on a path that ends up in
         # front of a user, and this process can compose a companion redactor -- so
@@ -1626,14 +1644,27 @@ class AcpSessionHandle:
         # this file already makes for the unserved-default warning, which is the
         # same shape of value going to the same kind of place.
         _rejected_log = redact_log_via_context(str(model_id))
+        advertised_ids = self._advertised_model_ids()
         if strict:
-            raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids()) from last_exc
+            raise AcpModelUnavailable(
+                _rejected_log,
+                advertised_ids,
+                # Only a pair-id harness earns the adapter-mismatch wording: on
+                # those the advertised list IS the entitlement, so refusing
+                # something on it is the adapter contradicting itself. Elsewhere an
+                # advertised id may simply be out of the account's reach, and the
+                # entitlement wording plus the `whoami` hint is the true answer.
+                advertised_but_refused=(
+                    model_id in advertised_ids
+                    and self._runtime.acp_backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+                ),
+            ) from last_exc
         logger.warning(
             "ACP model %s rejected by the adapter; staying on the backend default %s "
             "(advertised: %s)",
             _rejected_log,
             self._resolved_model_id or DEFAULT_MODEL,
-            ", ".join(self._advertised_model_ids()) or "none",
+            ", ".join(advertised_ids) or "none",
         )
         return ""
 
@@ -2066,11 +2097,18 @@ class AcpSessionHandle:
         )
 
     def get_valid_effort_levels(self) -> list[str]:
-        """Return valid effort levels from config options, preserving order."""
+        """Return valid effort levels from config options, preserving order.
+
+        The option id is resolved per backend (``effort`` for most,
+        ``reasoning_effort`` for codex-acp): a hard-coded spelling returns an
+        empty list on a backend that spells it differently, which every caller
+        reads as "this model has no effort levels".
+        """
+        effort_option = effort_config_option_id(self._runtime.acp_backend)
         for opt in self._config_options:
             if not isinstance(opt, dict):
                 continue
-            if opt.get("id") == "effort":
+            if opt.get("id") == effort_option:
                 options = opt.get("options", [])
                 if isinstance(options, list):
                     return [
@@ -2108,6 +2146,9 @@ class AcpSessionHandle:
 
         Called after create_session() or load() to populate state.
         """
+        modes = resp.get("modes")
+        current_agent = modes.get("currentModeId") if isinstance(modes, dict) else None
+        self.active_agent = current_agent if isinstance(current_agent, str) else ""
         config_options = resp.get("configOptions")
         if isinstance(config_options, list):
             self._config_options = config_options
@@ -2888,6 +2929,7 @@ class AcpSessionHandle:
                                     else ""
                                 )
                                 if name:
+                                    self.active_agent = name
                                     yield AcpEvent(kind=EVENT_AGENT_SWITCHED, text=name)
                     reason, _refusal = self.last_prompt_stats.terminal_refusal(reason)
                     self._last_stop_reason = reason
@@ -3065,6 +3107,8 @@ class AcpSessionHandle:
                 elif action == "agent_switched":
                     saw_agent_switch = True
                     params = msg.params or {}
+                    name = params.get("agentName", "")
+                    self.active_agent = name if isinstance(name, str) else ""
                     yield AcpEvent(kind=EVENT_AGENT_SWITCHED, text=params.get("agentName", ""))
                 elif action == "subagent_list":
                     params = msg.params or {}

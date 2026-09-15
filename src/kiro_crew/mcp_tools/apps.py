@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 from kiro_crew import mcp_core
 from kiro_crew.platform import redact_via_context as redact
@@ -151,6 +152,101 @@ def schemas() -> list[dict[str, Any]]:
                 },
                 "required": ["method", "path"],
             },
+        },
+        {
+            "name": "pod_up",
+            "description": (
+                "Boot a Kiro Crew POD -- a complete preview gateway for one git "
+                "worktree, on its own port with its own data directory -- and get "
+                "back the {base_url, token} handle for driving it. On a host whose "
+                "sandbox denies this session the systemd user bus, this is the only "
+                "way to start a pod: a pod is a systemd --user unit, and "
+                "`kirocrew pod up` in your shell then fails with `Permission "
+                "denied`. Check with `systemctl --user is-system-running` if you "
+                "want to know which case you are in; either way this tool works, "
+                "because the gateway holds the host bus and does the systemd part "
+                "for you. Use it to test an unfinished change end to end without "
+                "touching the live gateway. Blocking: it returns once the pod "
+                "answers its own health check, a few seconds for a worktree that "
+                "is already built. A worktree with no built dist is REFUSED with "
+                "the CLI's own remedy in the message -- provisioning (venv + SPA "
+                "build) is minutes of work and is not reachable from here; run it "
+                "from the Dev Fleet page or `kirocrew pod provision <wt>`. "
+                "Requires the Dev Fleet app to be enabled. The returned token is a "
+                "2h credential scoped to that pod alone; it is not the live "
+                "gateway's, and no secret of the host is exposed by it. "
+                "Release the pod with `pod_down` when done -- a pod holds a port "
+                "and memory until it is stopped."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "worktree": {
+                        "type": "string",
+                        "description": (
+                            "The worktree to bring up, named the way `pod_ls` and "
+                            "the Dev Fleet page name it -- its directory basename, "
+                            "e.g. 'kc-wt-10732'. NOT a path and NOT a branch"
+                        ),
+                    },
+                },
+                "required": ["worktree"],
+            },
+        },
+        {
+            "name": "pod_down",
+            "description": (
+                "Stop a pod and reclaim its isolated data directory. Call this when "
+                "you are finished with a pod you started: until then it holds its "
+                "port, its memory and its unit. Same reason as `pod_up` for why "
+                "this is a tool and not a shell command -- the systemd user bus is "
+                "not reachable from this session. This DELETES that pod's data "
+                "directory, which is by design (a pod is disposable) but is not "
+                "undoable: anything you want to keep must be copied out of the pod "
+                "first. It does not touch the worktree, its branch, or your commits."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "worktree": {
+                        "type": "string",
+                        "description": "The worktree whose pod should be stopped",
+                    },
+                },
+                "required": ["worktree"],
+            },
+        },
+        {
+            "name": "pod_status",
+            "description": (
+                "Whether one worktree's pod is up, on which port, and what its "
+                "health probe answers. Use it to check a pod you started is still "
+                "serving before driving it, and to tell 'my request failed' apart "
+                "from 'the pod is not running'. A `health` of 200/401/403 means "
+                "something is answering on that port; 0 means nothing is."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "worktree": {
+                        "type": "string",
+                        "description": "The worktree whose pod state you want",
+                    },
+                },
+                "required": ["worktree"],
+            },
+        },
+        {
+            "name": "pod_ls",
+            "description": (
+                "Every pod currently ACTIVE on this host, with its port and health. "
+                "Takes no arguments. Read this before starting a pod: it is what "
+                "tells you a pod you need is already up (start nothing), or that "
+                "someone else's run owns the port yours would derive. The list is "
+                "deliberately not filtered to one repository -- a filtered list "
+                "would hide exactly the pod that explains a refusal."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
         },
         {
             "name": "issue_radar_crew_read",
@@ -442,6 +538,117 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
     return _omc_text
 
 
+_POD_API_BASE = "/api/apps/dev-fleet/pod"
+
+# Client-side ceilings, each one step above the ceiling the gateway route enforces
+# on its own subprocess (180s for a pod boot). Ordered that way on purpose: the
+# server's bound is the one that produces a DIAGNOSIS ("systemd refused", "no built
+# dist"), so it must be the one that fires. A tighter client timeout would replace
+# every real failure with a bare "no response".
+_POD_UP_TIMEOUT_S = 210.0
+_POD_DOWN_TIMEOUT_S = 60.0
+# A read still spawns `python -m kiro_crew pod ...` in the gateway, so it pays a
+# cold interpreter start -- more than the 10s a pure telemetry read is given.
+_POD_READ_TIMEOUT_S = 45.0
+
+
+def _pod_failure(payload: dict[str, Any], verb: str) -> str | None:
+    """The error line for a refused pod call, or None when it succeeded.
+
+    Two failure shapes arrive here and both must read as errors: a transport-level
+    ``{"error": ...}`` from the gateway helper, and the route's own
+    ``{"ok": false, "error": ..., "code": ...}``. Reporting only the first would
+    let a refused pod boot read as a success with no handle in it.
+    """
+    if payload.get("error") and not payload.get("ok"):
+        _code = payload.get("code")
+        _suffix = f" [{_code}]" if _code else ""
+        return f"Error: {verb} failed{_suffix}: {redact(str(payload['error']))}"
+    if not payload.get("ok"):
+        return f"Error: {verb} returned no result: {redact(json.dumps(payload, default=str))}"
+    return None
+
+
+def pod_up(name: str, args: dict[str, Any]) -> str:
+    _pu_worktree = args["worktree"]
+    _pu_resp = mcp_core._post(
+        f"{_POD_API_BASE}/up", {"worktree": _pu_worktree}, timeout=_POD_UP_TIMEOUT_S
+    )
+    _pu_err = _pod_failure(_pu_resp, f"pod up {_pu_worktree!r}")
+    if _pu_err:
+        return _pu_err
+    # The token is the DELIVERABLE, so it is the one string here that must survive
+    # verbatim -- redacting it would return a handle that cannot be used. Scope is
+    # what makes that safe: it is a 2h credential for this pod's own gateway, not
+    # the live one. Everything else in the payload is echoed as the route sent it.
+    _pu_port = _pu_resp.get("port")
+    _pu_base = _pu_resp.get("base_url") or (f"http://127.0.0.1:{_pu_port}" if _pu_port else "")
+    _pu_token = _pu_resp.get("token") or ""
+    _pu_lines = [
+        f"Pod `{_pu_worktree}` is up on port {_pu_port}.",
+        f"base_url: {_pu_base}",
+    ]
+    if _pu_token:
+        _pu_lines.append(f"token: {_pu_token}  (ttl {_pu_resp.get('ttl') or '2h'})")
+        _pu_lines.append(f"open: {_pu_base}/?token={_pu_token}")
+    else:
+        # `pod up --json` emits an empty token when it could not PROVE it owns the
+        # port, and withholding the credential is the correct outcome there. Say so:
+        # a missing token read as an oversight sends the agent hunting for a bug.
+        _pu_lines.append(
+            "token: (withheld -- the CLI could not prove this port belongs to the "
+            "pod it just started; check `pod_status` before trusting the port)"
+        )
+    _pu_lines.append(f"Stop it with pod_down when you are done: {_pu_worktree}")
+    return "\n".join(_pu_lines)
+
+
+def pod_down(name: str, args: dict[str, Any]) -> str:
+    _pd_worktree = args["worktree"]
+    _pd_resp = mcp_core._post(
+        f"{_POD_API_BASE}/down", {"worktree": _pd_worktree}, timeout=_POD_DOWN_TIMEOUT_S
+    )
+    _pd_err = _pod_failure(_pd_resp, f"pod down {_pd_worktree!r}")
+    if _pd_err:
+        return _pd_err
+    return f"Pod `{_pd_worktree}` is stopped and its data directory reclaimed."
+
+
+def pod_status(name: str, args: dict[str, Any]) -> str:
+    _ps_worktree = args["worktree"]
+    _ps_resp = mcp_core._get(
+        f"{_POD_API_BASE}/status?worktree={quote(_ps_worktree, safe='')}",
+        timeout=_POD_READ_TIMEOUT_S,
+    )
+    _ps_err = _pod_failure(_ps_resp, f"pod status {_ps_worktree!r}")
+    if _ps_err:
+        return _ps_err
+    return redact(
+        f"Pod `{_ps_resp.get('name') or _ps_worktree}`: "
+        f"{_ps_resp.get('status') or 'unknown'} "
+        f"port={_ps_resp.get('port')} health={_ps_resp.get('health')}"
+    )
+
+
+def pod_ls(name: str, args: dict[str, Any]) -> str:
+    _pl_resp = mcp_core._get(f"{_POD_API_BASE}/list", timeout=_POD_READ_TIMEOUT_S)
+    _pl_err = _pod_failure(_pl_resp, "pod ls")
+    if _pl_err:
+        return _pl_err
+    _pl_pods = _pl_resp.get("pods") or []
+    if not _pl_pods:
+        return "No pods are active on this host."
+    _pl_lines = [f"{len(_pl_pods)} pod(s) active:"]
+    for _pl_row in _pl_pods:
+        if not isinstance(_pl_row, dict):
+            continue
+        _pl_lines.append(
+            f"  {_pl_row.get('name')}  port={_pl_row.get('port')} "
+            f"health={_pl_row.get('health')}"
+        )
+    return redact("\n".join(_pl_lines))
+
+
 def issue_radar_crew_read(name: str, args: dict[str, Any]) -> str:
     _crew_sk, _crew_err = _crew_session_key()
     if _crew_err:
@@ -608,6 +815,10 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "issue_radar_record_investigation": issue_radar_record_investigation,
     "ops_mission_control_api": ops_mission_control_api,
+    "pod_up": pod_up,
+    "pod_down": pod_down,
+    "pod_status": pod_status,
+    "pod_ls": pod_ls,
     "issue_radar_crew_read": issue_radar_crew_read,
     "issue_radar_crew_record": issue_radar_crew_record,
 }

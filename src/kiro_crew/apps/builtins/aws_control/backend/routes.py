@@ -588,8 +588,24 @@ async def _resolve_target(account: str) -> tuple[str, str, str] | web.Response:
     the mapping alone must never pick which account an operation runs
     against. A LIVE identity probe re-verifies that the chosen profile still
     resolves to the REQUESTED account, and a mismatch refuses rather than
-    executing against whatever the profile now points at. The probe's short
-    cache (~30s) bounds the cost without reopening the five-minute window.
+    executing against whatever the profile now points at.
+
+    ``use_cache=False`` is the whole point of the probe here and is NOT a cost
+    oversight. :func:`aws_consent.probe_identity` memoises per
+    ``(profile, region)`` for 30 seconds, which is right for the consent and
+    voice paths that ask "who would bill this" repeatedly. It is wrong for an
+    authorization decision: a cached answer of account A, honoured for a full
+    30 seconds after the profile was repointed to B, verifies A while the read
+    that follows runs against B's live credentials. Switching a profile between
+    accounts is an ordinary operator action, not an extreme one, so that window
+    is reachable in normal use. An authorization check that may answer from
+    memory is not a check.
+
+    What this buys and what it does not: the probe and the read are still two
+    operations, so a repoint landing between them is not caught by anything
+    here. That window is one call wide instead of thirty seconds, which is the
+    difference between a race and a TTL, and closing it entirely would need an
+    atomicity the AWS CLI does not offer.
 
     Takes the id rather than the request because ``GET /shares`` scopes by
     QUERY parameter, not by path segment, and a second copy of this resolution
@@ -604,7 +620,7 @@ async def _resolve_target(account: str) -> tuple[str, str, str] | web.Response:
             "account_unavailable",
         )
     profile, region = resolved
-    identity = await aws_consent.probe_identity(profile, region)
+    identity = await aws_consent.probe_identity(profile, region, use_cache=False)
     if not identity.ok or identity.account != account:
         return _conflict(
             "this connection no longer points at the requested account — "

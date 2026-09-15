@@ -9,6 +9,11 @@ import {
 } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
+// Leaf modules, deliberately not `../api/client`: that module is mocked with a
+// bare factory across most of the test corpus, and the replay path below must
+// not depend on exports those mocks never define.
+import { ApiError } from '../api/apiError'
+import { pendingRefresh } from '../api/refreshOnce'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from '../utils/safeStorage'
 // Every stylesheet TEXT this hook injects is built there, so the i18n gate does
@@ -611,7 +616,7 @@ function useThemeState(): ThemeContextValue {
   const legacyMigrationStartedRef = useRef(false)
   const [themeBootReady, setThemeBootReady] = useState(false)
 
-  const loadCustomThemes = useCallback(async () => {
+  const loadCustomThemes = useCallback(async (replayed = false): Promise<void> => {
     try {
       const res = await api.themes()
       const themes: ThemeEntry[] = (res.themes || []).map(
@@ -639,8 +644,20 @@ function useThemeState(): ThemeContextValue {
       setCustomThemeDataMap(dataMap)
       setCustomThemesLoaded(true)
       bumpThemeVersion()
-    } catch {
-      // API not available yet — ignore
+    } catch (e) {
+      // `/api/theme/boot` is public and restores a persisted `custom-<slug>`
+      // selection on every load, but `/api/themes` is not: on a cold load with a
+      // lapsed access cookie it answers 403, the client starts a silent refresh
+      // in the background, and this ORIGINAL request still rejects. Every later
+      // request in the app succeeds on the refreshed cookie, so nothing else
+      // notices — but this is a one-shot boot fetch with no poll to bring it
+      // back, and swallowing the rejection left the selected theme's variables,
+      // fonts, and branding unloaded until the user reloaded by hand. Wait for
+      // the refresh that this failure triggered and replay exactly once.
+      if (replayed || !(e instanceof ApiError && e.authRequired)) return // API not available yet — ignore
+      const recovery = pendingRefresh()
+      if (recovery && !(await recovery).ok) return // refresh failed: the banner owns it now
+      await loadCustomThemes(true)
     }
   }, [bumpThemeVersion])
 

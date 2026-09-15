@@ -538,7 +538,9 @@ def test_up_pins_the_checkout_inside_the_name_mutex(cfg, monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "is_active", lambda c, n: False)
     monkeypatch.setattr(rt, "start_pod", lambda c, n: (events.append("start"), _cp())[1])
     monkeypatch.setattr(rt, "mint_token", lambda c, n, ttl: "t")
-    monkeypatch.setattr(pod_cli, "_wait_healthy", lambda c, n, p: (events.append("wait"), 200)[1])
+    monkeypatch.setattr(
+        pod_cli, "_wait_healthy", lambda c, n, p, tries=0: (events.append("wait"), 200)[1]
+    )
     monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
     args = argparse.Namespace(
         name="smoke", seed=None, json=True, provision=False, checkout=None, ttl="2h"
@@ -598,7 +600,7 @@ def test_up_failure_cleanup_stops_the_pod_inside_the_mutex(cfg, monkeypatch, tmp
     monkeypatch.setattr(rt, "start_pod", lambda c, n: _cp())
     monkeypatch.setattr(rt, "recent_journal", lambda c, n, lines: "")
     monkeypatch.setattr(rt, "stop_pod", lambda c, n: (events.append("stop"), _cp())[1])
-    monkeypatch.setattr(pod_cli, "_wait_healthy", lambda c, n, p: -1)  # boot failed
+    monkeypatch.setattr(pod_cli, "_wait_healthy", lambda c, n, p, tries=0: -1)  # boot failed
     monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
     args = argparse.Namespace(
         name="smoke", seed=None, json=True, provision=False, checkout=None, ttl="2h"

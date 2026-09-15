@@ -113,7 +113,10 @@ Replace the example URL with the real target. Keep `gate: false`: provider-fact
 gating cannot observe generic comments or advisory findings and could suppress
 a cycle while that evidence waits. All three limits must be positive and finite;
 never use `0` for unlimited work. Every delivered legacy cycle is a full model
-turn even if nothing changed. Follow the execution steps below.
+turn even if nothing changed. Name the readiness conditions below by reference
+rather than copying their text into the message: a copy inside the instruction
+drifts from the list it duplicates while still reading as authoritative.
+Follow the execution steps below.
 
 ### Same-session timer
 
@@ -183,7 +186,13 @@ and stop, regardless of check colors. Ask the host for its aggregate verdict;
 never hand-roll a green result by filtering only check conclusions. Unknown or
 unmapped states fail closed. Mergeability can be asynchronous: `unknown`,
 `checking` or `unchecked` means wait, never pass; a closed object may never settle.
-Collapse superseded attempts to the newest per workflow/check identity.
+Collapse superseded attempts to the newest per workflow/check identity when you
+read the rollup yourself and a start time orders the attempts; keep every row you
+cannot strictly order. A typed provider does not collapse: a display label cannot
+prove that two rows are one dispatch retried, so it keeps same-labelled rows
+independent and a `checks_failed` wake can name an attempt a newer run already
+replaced. On such a wake, resolve the newest run for that identity before treating
+the failure as live.
 
 Green checks do not answer review threads or advisory findings. Establish once
 per repo what its reviewer check means, and repeat when its fleet changes:
@@ -261,6 +270,10 @@ For comment-aware legacy monitoring, declare review-ready only when all hold:
   on passing checks. The current head has every required reviewer's fresh verdict
   and no blocking marker. Do not wait for zero findings: a rebutted or deferred
   finding can remain visible after it is answered.
+- Before rebutting a finding a lane has raised a third time, re-run that lane on
+  the unchanged head and re-derive the claim. A third raise is either a rebuttal
+  that did not answer the finding or a lane whose verdict is not reproducible on
+  an identical tree, and only the re-run separates those.
 - No conflict, behind-base state, draft or changes-requested hold remains.
 - No current-head finding lacks a disposition. For Kiro Crew, use prepare-pr's
   disposition contract rather than inventing a second ledger format.

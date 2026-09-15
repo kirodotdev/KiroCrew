@@ -70,7 +70,7 @@ export default function RemoteArtifactDetailPage() {
   const [forkError, setForkError] = useState('')
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const mdPreviewRef = useRef<HTMLDivElement>(null)
-  const [popover, setPopover] = useState<{ x: number; y: number; quote: string; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
+  const [popover, setPopover] = useState<{ x: number; y: number; quote: string; copyText?: string; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
   const [flashComment, setFlashComment] = useState<{ id: string; nonce: number } | null>(null)
   const [iframeScrollTarget, setIframeScrollTarget] = useState<{ id: string; nonce: number } | null>(null)
   const mdScrollerRef = useRef<HTMLDivElement>(null)
@@ -271,7 +271,7 @@ export default function RemoteArtifactDetailPage() {
     const rect = range.getBoundingClientRect()
     const startOffset = idx
     const endOffset = idx + quote.length
-    setPopover({ x: rect.left, y: rect.bottom, quote, prefix, suffix, startOffset, endOffset })
+    setPopover({ x: rect.left, y: rect.bottom, quote, copyText: raw, prefix, suffix, startOffset, endOffset })
   }, [isMarkdown])
 
   if (detailQuery.isLoading) return <div className="p-6 text-muted">{i18nT('pages.remoteArtifactDetailPage.loading')}</div>
@@ -409,6 +409,12 @@ export default function RemoteArtifactDetailPage() {
                     ref={iframeRef}
                     src={blobUrl}
                     sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+                    // NO clipboard-write delegation here, deliberately. These frames host
+                    // agent-generated HTML whose scripts run on load, so a delegated
+                    // permission would let one overwrite the user's clipboard with no Copy
+                    // action at all. Copying still works: lib/widgetSrcdoc.ts injects an
+                    // execCommand fallback that a real button press satisfies and a
+                    // gesture-less on-load script does not.
                     className="w-full border-none bg-card"
                     style={{
                       height: 'calc(100vh - 240px)',
@@ -456,6 +462,7 @@ export default function RemoteArtifactDetailPage() {
                 y={popover.y}
                 onSubmit={onAddAnchored}
                 onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
+                copyText={popover.copyText ?? popover.quote}
               />
             )}
           </div>

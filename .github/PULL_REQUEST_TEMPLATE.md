@@ -21,7 +21,16 @@
      - Bug fix: observed symptom → underlying root cause → the specific change
        that addresses that cause.
      - New feature / enhancement: goal → the approach/design you chose (and why,
-       over the alternatives you considered) → what you actually built. -->
+       over the alternatives you considered) → what you actually built.
+     - Product-shape change (a changed default, what a loop/monitor/agent/command
+       does by default, a removed or replaced user-facing capability): link the
+       RFC under docs/request-for-change/ that records the decision. It must
+       already be on main with a non-draft status; an RFC shipped in this PR, or
+       whose status this PR flips, does not count. Without one the First
+       Principles lane BLOCKs until a maintainer records the decision with
+       `/ai-review override first-principles <head-sha>: <reason>` (same-repo
+       PRs only -- on a fork PR the override is not consumed: merge the RFC
+       first, or ask a maintainer to push the branch to this repository). -->
 
 ## Tests
 

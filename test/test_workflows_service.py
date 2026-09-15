@@ -140,6 +140,16 @@ async def _wait_terminal(svc: WorkflowService, run_id: str, timeout: float = 3.0
     raise AssertionError("run did not finish")
 
 
+async def _wait_durable_terminal(svc: WorkflowService, run_id: str):
+    """An orderly restart waits for the driver's terminal flush, not just RAM status."""
+    handle = svc.registry.get(run_id)
+    assert handle is not None and handle.task is not None
+    await asyncio.wait_for(asyncio.shield(handle.task), timeout=3.0)
+    snap = svc.status(run_id)
+    assert snap and snap["status"] != "running"
+    return snap
+
+
 # --------------------------------------------------------------------------- #
 # author
 # --------------------------------------------------------------------------- #
@@ -247,6 +257,48 @@ async def test_author_retries_then_succeeds(monkeypatch) -> None:
     svc = WorkflowService(sessions=FakeSessions([]))
     out = await svc.author("x")
     assert out["ok"] is True
+
+
+async def test_author_revises_budget_rebinding_before_returning_script(monkeypatch) -> None:
+    import kiro_crew.workflows.service as svc_mod
+
+    bad_script = GOOD_SCRIPT.replace("    ctx.log('hi')", "    ctx.budget = 7200")
+    prompts: list[str] = []
+
+    async def generate(provider, message, **kwargs):
+        prompts.append(message)
+        return bad_script if len(prompts) == 1 else GOOD_SCRIPT
+
+    monkeypatch.setattr(svc_mod, "stream_and_collect", generate)
+    sessions = FakeSessions([])
+    svc = WorkflowService(sessions=sessions, persist=False)
+
+    out = await svc.author("Audit changes within the caller's token budget")
+
+    assert out["ok"] is True
+    assert out["source"] == GOOD_SCRIPT
+    assert len(prompts) == 2
+    assert "ctx.budget is read-only" in prompts[1]
+    assert "budget_total" in prompts[1]
+    assert "Budget object" in prompts[0]
+    assert sessions.destroyed == [sessions.acquired[0][0]]
+
+
+async def test_author_budget_rebinding_stops_at_validation_retry_limit(monkeypatch) -> None:
+    from kiro_crew.workflows.service import _AUTHOR_RETRIES
+
+    bad_script = GOOD_SCRIPT.replace("    ctx.log('hi')", "    ctx.budget = 7200")
+    generated = _patch_stream(monkeypatch, [bad_script])
+    sessions = FakeSessions([])
+    svc = WorkflowService(sessions=sessions, persist=False)
+
+    out = await svc.author("Audit changes")
+
+    assert out["ok"] is False
+    assert generated["i"] == _AUTHOR_RETRIES + 1
+    assert any("ctx.budget is read-only" in error for error in out["errors"])
+    assert svc.list_runs() == []
+    assert sessions.destroyed == [sessions.acquired[0][0]]
 
 
 async def test_author_retries_transient_startup_with_fresh_session(monkeypatch) -> None:
@@ -828,7 +880,7 @@ async def test_promote_run_rejects_redacted_source_restored_after_restart(tmp_pa
     sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('AKIAIOSFODNN7EXAMPLE')")
     original = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
     started = await original.start(sensitive, name="Sensitive")
-    await _wait_terminal(original, started["run_id"])
+    await _wait_durable_terminal(original, started["run_id"])
 
     restored = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
     promoted = await restored.promote_run_definition(
@@ -855,7 +907,7 @@ async def test_promote_run_accepts_exact_source_restored_after_restart(tmp_path)
     library = WorkflowDefinitionLibrary(tmp_path / "library")
     original = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
     started = await original.start(GOOD_SCRIPT, name="Exact")
-    await _wait_terminal(original, started["run_id"])
+    await _wait_durable_terminal(original, started["run_id"])
 
     restored = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
     promoted = await restored.promote_run_definition(started["run_id"], name="Still exact")
@@ -1052,8 +1104,8 @@ async def test_result_and_list(monkeypatch) -> None:
 
 async def test_run_ids_are_deterministic_monotonic() -> None:
     svc = WorkflowService(sessions=FakeSessions([]))
-    a = svc._new_run_id()
-    b = svc._new_run_id()
+    a = await svc._new_run_id()
+    b = await svc._new_run_id()
     assert a == "wf_000001" and b == "wf_000002"
 
 
@@ -1365,3 +1417,225 @@ async def test_pool_agents_false_uses_per_call_sessions() -> None:
     # and a no-op when the run armed no nudges.
     assert runner._on_complete is not None
     await runner._on_complete()  # no nudge tasks → returns immediately
+
+
+async def test_author_publishes_identity_before_each_revision(monkeypatch):
+    from kiro_crew.messaging import identity
+    from kiro_crew.workflows import service as service_module
+
+    sessions = FakeSessions([])
+    events = []
+    replies = iter(["invalid syntax !", GOOD_SCRIPT])
+
+    async def publish(owner, key):
+        assert owner is sessions
+        assert sessions.acquired[-1][0] == key
+        events.append(("publish", key))
+
+    async def stream(provider, message, **kwargs):
+        key = sessions.acquired[-1][0]
+        assert events[-1] == ("publish", key)
+        events.append(("stream", key))
+        return next(replies)
+
+    monkeypatch.setattr(identity, "publish_turn_identity", publish)
+    monkeypatch.setattr(service_module, "stream_and_collect", stream)
+    service = WorkflowService(sessions=sessions, persist=False)
+    result = await service.author("draft a workflow")
+    assert result["ok"] is True
+    assert [event for event, _ in events] == ["publish", "stream", "publish", "stream"]
+    assert sessions.destroyed == [sessions.acquired[-1][0]]
+
+
+@pytest.mark.parametrize("entry", ["start", "intent", "rerun"])
+async def test_admission_closed_during_scope_binding_rejects_launch(monkeypatch, entry):
+    from kiro_crew.workflows.service import WorkflowScope
+
+    sessions = FakeSessions([])
+    service = WorkflowService(sessions=sessions, persist=False)
+    previous = None
+    if entry == "rerun":
+        previous = (await service.start(GOOD_SCRIPT))["run_id"]
+        await _wait_terminal(service, previous)
+    before = {row["run_id"] for row in service.list_runs()}
+    admit = WorkflowScope.admit
+
+    async def close_during_admission(*args, **kwargs):
+        scope = await admit(*args, **kwargs)
+        sessions.admission_closed = True
+        return scope
+
+    monkeypatch.setattr(WorkflowScope, "admit", close_during_admission)
+    if entry == "start":
+        result = await service.start(GOOD_SCRIPT)
+    elif entry == "intent":
+        result = await service.start_from_intent("draft a workflow")
+    else:
+        result = await service.rerun_subtree(previous, 0)
+    assert result == {"error": "gateway admission is closed"}
+    assert {row["run_id"] for row in service.list_runs()} == before
+
+
+async def test_cancelled_allocator_worker_burns_id_across_service_restart(monkeypatch):
+    import kiro_crew.workflow_memory as wm
+
+    written = threading.Event()
+    release = threading.Event()
+    done = threading.Event()
+    real_write = wm._write_run_high_water
+
+    def blocked_write(path, value):
+        real_write(path, value)
+        if value == 1:
+            written.set()
+            try:
+                assert release.wait(5)
+            finally:
+                done.set()
+
+    monkeypatch.setattr(wm, "_write_run_high_water", blocked_write)
+    service = WorkflowService(sessions=FakeSessions([]), persist=False)
+    task = asyncio.create_task(service._new_run_id())
+    try:
+        assert await asyncio.to_thread(written.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+    assert await asyncio.to_thread(done.wait, 5)
+    restarted = WorkflowService(sessions=FakeSessions([]), persist=False)
+    assert await restarted._new_run_id() == "wf_000002"
+    assert wm.read_binding("wf_000001") is None
+
+
+async def test_author_only_id_survives_service_restart(monkeypatch):
+    _patch_stream(monkeypatch, [GOOD_SCRIPT])
+    service = WorkflowService(sessions=FakeSessions([]), persist=False)
+    authored = await service.author("demo")
+    assert authored.get("ok"), authored
+    assert service.list_runs() == []
+    restarted = WorkflowService(sessions=FakeSessions([]), persist=False)
+    assert await restarted._new_run_id() == "wf_000002"
+
+
+async def test_restored_floor_advances_allocator_without_becoming_authority():
+    service = WorkflowService(sessions=FakeSessions([]), persist=False)
+    service._seq = 80
+    assert await service._new_run_id() == "wf_000081"
+    restarted = WorkflowService(sessions=FakeSessions([]), persist=False)
+    assert restarted._seq == 0
+    assert await restarted._new_run_id() == "wf_000082"
+
+
+async def test_evicted_identity_survives_an_empty_registry_restart():
+    from kiro_crew.workflows.registry import STATUS_FINISHED, RunHandle, RunRegistry
+
+    service = WorkflowService(sessions=FakeSessions([]), persist=False)
+    service.registry = RunRegistry(max_runs=0)
+    allocated = await service._new_run_id()
+    service.registry.register(RunHandle(allocated, "evicted", status=STATUS_FINISHED))
+    assert service.registry.list() == []
+    restarted = WorkflowService(sessions=FakeSessions([]), persist=False)
+    assert await restarted._new_run_id() == "wf_000002"
+
+
+async def test_orderly_restart_waits_for_terminal_snapshot(tmp_path, monkeypatch) -> None:
+    """Force RAM/disk disagreement; provenance checks run only after the flush."""
+    store = WorkflowRunStore(tmp_path / "store")
+    library = WorkflowDefinitionLibrary(tmp_path / "library")
+    entered = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    real_save = store.save
+
+    def delayed_save(run_id, payload):
+        if payload["status"] == "finished":
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(2.0), "test did not release terminal write"
+        real_save(run_id, payload)
+
+    monkeypatch.setattr(store, "save", delayed_save)
+    original = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
+    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('AKIAIOSFODNN7EXAMPLE')")
+    started = await original.start(sensitive)
+    waiter = asyncio.create_task(_wait_durable_terminal(original, started["run_id"]))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        # This is what the old helper observed before the restart raced disk.
+        assert (await _wait_terminal(original, started["run_id"]))["status"] == "finished"
+        saved = await asyncio.wait_for(asyncio.to_thread(store.load_all), timeout=1.0)
+        assert saved[0]["status"] == "running"
+        assert not waiter.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(waiter, timeout=3.0)
+
+    restored = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
+    promoted = await restored.promote_run_definition(started["run_id"])
+    assert promoted["ok"] is False
+    assert promoted["source_not_original"] is True
+    assert library.list() == []
+
+
+@pytest.mark.parametrize("async_factory", [False, True])
+@pytest.mark.parametrize("failure", ["reported-load", "directory-scan"])
+async def test_failed_store_load_refuses_service_without_overwriting_legacy_run(
+    tmp_path, monkeypatch, async_factory, failure
+):
+    """A failed inventory must not seed allocation from an empty sequence floor."""
+    store = WorkflowRunStore(tmp_path / "store")
+    store.runs_dir.mkdir(parents=True)
+    legacy = store.runs_dir / "wf_000001.json"
+    legacy.write_text('{"run_id":"wf_000001","status":"finished"}', encoding="utf-8")
+    before = legacy.read_bytes()
+
+    def cannot_load():
+        raise OSError("inventory unavailable")
+
+    if failure == "reported-load":
+        monkeypatch.setattr(store, "load_all", cannot_load)
+    else:
+        from pathlib import Path
+
+        real_glob = Path.glob
+
+        def unreadable_inventory(path, pattern):
+            if path == store.runs_dir:
+                raise OSError("inventory unavailable")
+            return real_glob(path, pattern)
+
+        monkeypatch.setattr(Path, "glob", unreadable_inventory)
+    with pytest.raises(OSError, match="inventory unavailable"):
+        if async_factory:
+            await WorkflowService.create(sessions=FakeSessions([]), store=store)
+        else:
+            WorkflowService(sessions=FakeSessions([]), store=store)
+    assert legacy.read_bytes() == before
+
+
+@pytest.mark.parametrize("original", ["persistent", "incognito", "temporary"])
+@pytest.mark.parametrize("caller", ["persistent", "incognito", "temporary"])
+async def test_rerun_keeps_birth_mode_and_current_caller_policy(original, caller):
+    from types import SimpleNamespace
+
+    from kiro_crew.messaging.privacy_mode import strictest
+    from kiro_crew.workflow_memory import read_binding
+
+    modes = {"dashboard:original": original, "dashboard:caller": caller}
+
+    async def resolve_mode(key):
+        return modes[key]
+
+    context = SimpleNamespace(_session_memory_modes={}, memory_mode_for_session=resolve_mode)
+    svc = WorkflowService(sessions=FakeSessions([]), context_builder=context)
+    first = await svc.start(GOOD_SCRIPT, session_key="dashboard:original")
+    assert "run_id" in first, first
+    await _wait_terminal(svc, first["run_id"])
+    del modes["dashboard:original"]
+    again = await svc.rerun_subtree(first["run_id"], caller_session="dashboard:caller", owner=True)
+    assert "run_id" in again, again
+    result = await _wait_terminal(svc, again["run_id"])
+    assert result["status"] == "finished"
+    binding = await asyncio.to_thread(read_binding, again["run_id"], required=True)
+    assert binding["memory_mode"] == (strictest((original, caller)) or "persistent")

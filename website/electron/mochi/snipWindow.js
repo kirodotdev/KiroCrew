@@ -28,6 +28,7 @@ const path = require("path");
 const { BrowserWindow, screen } = require("electron");
 
 const { mochiPageUrl } = require("./pageUrl");
+const { registerCaptureSurface } = require("../capture-trust");
 
 /** The live crop window, or null. One at a time: a second would cover the first. */
 let snipWin = null;
@@ -79,6 +80,9 @@ function openSnipWindow(baseUrl, token = "") {
   });
 
   snipWin = win;
+  // The crop surface is the window that actually calls getDisplayMedia, at the
+  // display's native resolution.
+  registerCaptureSurface(win.webContents, baseUrl);
   win.loadURL(mochiPageUrl(baseUrl, "snip.html", token));
   // Above the pet (which is "screen-saver" too but created earlier); the crop
   // surface must be the topmost thing on screen while it is up.

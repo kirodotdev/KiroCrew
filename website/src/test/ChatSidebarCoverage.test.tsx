@@ -323,6 +323,33 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     expect(await screen.findByText('gateway down')).toBeTruthy()
   })
 
+  it('renders the failure notice as a block on its own line above the button row', async () => {
+    // At sidebar width an inline notice inside the Cancel/Switch flex row gets
+    // only the leftover width (flex-1 = flex-basis 0), and the inline variant's
+    // overflow-wrap:anywhere then wraps it one character per line (#10814).
+    // The notice must sit outside the row, as the Clean Up panel's does.
+    mocks.chatSlotsModel.mockRejectedValue(new Error('gateway down'))
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByText(/^Switch 1 session$/))
+    const notice = await screen.findByTestId('bulk-model-error')
+    // Outside the button row: the element holding Cancel + Switch does not
+    // contain the notice, and the notice is a preceding sibling (same parent,
+    // earlier in document order — exact adjacency is not the invariant).
+    const row = screen.getByText('Cancel').closest('button')!.parentElement!
+    expect(within(row).getByText(/^Switch 1 session$/)).toBeTruthy()
+    expect(row.contains(notice)).toBe(false)
+    expect(notice.parentElement).toBe(row.parentElement)
+    expect(row.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    // Block variant: the boxed banner div, not the inline-flex span.
+    expect(notice.tagName).toBe('DIV')
+    expect(notice.getAttribute('role')).toBe('alert')
+    expect(notice.className).not.toMatch(/\binline-flex\b/)
+    // No flex-1: the notice must not compete with the buttons for row width.
+    expect(notice.className).not.toMatch(/\bflex-1\b/)
+  })
+
   it('closes on Cancel and does not call the endpoint', async () => {
     renderSidebar({ slots: SLOTS })
     await openHeaderPanel('Switch all to model…')

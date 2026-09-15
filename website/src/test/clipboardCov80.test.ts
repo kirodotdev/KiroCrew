@@ -55,12 +55,78 @@ describe('copyToClipboard', () => {
     expect(document.querySelector('textarea')).toBeNull()
   })
 
-  it('still removes the textarea when the copy command itself throws', async () => {
+  it('resolves false, never rejects, when the copy command itself throws', async () => {
     stubClipboard(() => Promise.reject(new Error('zzz denied')))
     execCommand.mockImplementation(() => { throw new Error('zzz no copy') })
 
-    await expect(copyToClipboard('zzz-boom')).rejects.toThrow('zzz no copy')
+    await expect(copyToClipboard('zzz-boom')).resolves.toBe(false)
     expect(document.querySelector('textarea')).toBeNull()
+  })
+
+  it('falls back straight to execCommand when navigator.clipboard is absent entirely', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+
+    await expect(copyToClipboard('zzz-nonsecure')).resolves.toBe(true)
+    expect(execCommand).toHaveBeenCalledWith('copy')
+    expect(document.querySelector('textarea')).toBeNull()
+  })
+
+  it('restores focus to the previously focused element after the fallback runs', async () => {
+    stubClipboard(() => Promise.reject(new Error('zzz denied')))
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    expect(document.activeElement).toBe(input)
+
+    await copyToClipboard('zzz-focus')
+
+    expect(document.activeElement).toBe(input)
+    document.body.removeChild(input)
+  })
+
+  it('restores focus even when execCommand throws (restore runs in a finally)', async () => {
+    stubClipboard(() => Promise.reject(new Error('zzz denied')))
+    execCommand.mockImplementation(() => { throw new Error('zzz no copy') })
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    expect(document.activeElement).toBe(input)
+
+    await copyToClipboard('zzz-focus-throw')
+
+    expect(document.activeElement).toBe(input)
+    document.body.removeChild(input)
+  })
+
+  it('preserves a pre-existing document selection across the fallback copy', async () => {
+    stubClipboard(() => Promise.reject(new Error('zzz denied')))
+    const p = document.createElement('p')
+    p.textContent = 'select me'
+    document.body.appendChild(p)
+    const range = document.createRange()
+    range.selectNodeContents(p)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    await copyToClipboard('zzz-selection')
+
+    expect(selection.rangeCount).toBe(1)
+    expect(selection.getRangeAt(0).toString()).toBe('select me')
+    document.body.removeChild(p)
+  })
+
+  it('stages a readonly textarea, so focusing it cannot raise a touch keyboard', async () => {
+    stubClipboard(() => Promise.reject(new Error('zzz denied')))
+    let seenReadOnly: boolean | null = null
+    execCommand.mockImplementation(() => {
+      seenReadOnly = document.querySelector('textarea')?.readOnly ?? null
+      return true
+    })
+
+    await copyToClipboard('zzz-readonly')
+
+    expect(seenReadOnly).toBe(true)
   })
 })
 

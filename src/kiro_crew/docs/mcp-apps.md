@@ -233,10 +233,43 @@ these being absent, per the spec's own graceful-degradation rule:
 | app-initiated `resources/read`, `ping` | not answered |
 | `pip` display mode | not offered (`availableDisplayModes` is `inline`, `fullscreen`) |
 
-The `hostContext` reply carries `theme`, `displayMode`, `availableDisplayModes` and
-`containerDimensions`. The spec's `styles.variables` theming channel is not sent,
-so an app should declare its own fallbacks for every CSS variable it consumes and
-key off `theme` for light/dark.
+The `hostContext` reply carries `theme`, `displayMode`, `availableDisplayModes`,
+`containerDimensions` and — when the dashboard palette resolves —
+`styles.variables`. Kiro Crew resolves its own design tokens for the active
+theme and mode, maps them onto the spec's `McpUiStyleVariableKey` set, and sends
+them in `hostContext.styles.variables` both in the `ui/initialize` result and in
+`ui/notifications/host-context-changed` when the theme changes under a mounted
+app. An app on the SDK's `applyHostStyleVariables` / `useHostStyleVariables`
+therefore paints in the user's active dashboard palette, and `theme` is still
+sent alongside so `applyDocumentTheme` gets the right `color-scheme`.
+
+The honest residue, so a spec-conforming app is not surprised:
+
+- **`styles.css.fonts` is still not sent.** The default app CSP allows fonts only
+  from `'self'` and `data:`, so a forwarded `@font-face` naming a dashboard-origin
+  or remote URL would be blocked inside the frame anyway.
+- **`--font-sans` / `--font-mono` usually do not survive sanitization.** The value
+  filter rejects the quoted family names in Kiro Crew's font stacks, so those two
+  keys are typically absent from the payload; they resolve only for a locally
+  installed face named by a bare identifier.
+- **`--color-background-info` arrives as a `color-mix()` expression**, not a flat
+  color: the dashboard derives that one wash from its info hue rather than storing
+  it, and the handoff passes the derivation through with the hue resolved
+  (`color-mix(in srgb, #0891b2 12%, transparent)`). It paints identically, but if
+  your app nests host variables inside a `color-mix()` of its own — which is what
+  Tailwind's `/40`-style opacity modifiers compile to — that key is the one that
+  will not survive the nesting. Consume it directly, or declare a fallback.
+- **No typography scale is sent — keep your own.** `--font-weight-*`, every
+  `--font-*-size` and `--font-*-line-height`, plus `--border-radius-xs`,
+  `--border-radius-full`, `--border-width-regular` and `--shadow-hairline`, are
+  never in the payload. Kiro Crew has no stored value for them, and sending an
+  invented number would make your app paint a size the dashboard does not render.
+  What you DO get is the palette, the two font families, `--border-radius-sm/md/lg/xl`
+  and `--shadow-sm/md/lg`. Pair those with your own type scale.
+- **Still declare your own fallbacks.** Colors arrive all-or-nothing and the
+  non-color keys arrive independently, so any given variable may be absent. Declare
+  a fallback for every CSS variable your app consumes, and keep keying off `theme`
+  for light/dark.
 
 Everything in the spec's `draft` revision — app-provided tools,
 `sampling/createMessage`, `ui/download-file` — is out of scope until that revision

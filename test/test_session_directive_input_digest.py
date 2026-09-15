@@ -377,7 +377,9 @@ class TestTheKeyStillGrantsNothing:
         assert directive_queue.depth(effective_session_key(slot)) == 1
 
     @pytest.mark.asyncio
-    async def test_a_record_from_an_earlier_turn_is_not_claimed(self, tmp_path, monkeypatch):
+    async def test_a_record_from_an_earlier_turn_is_not_claimed(
+        self, tmp_path, monkeypatch, caplog
+    ):
         state = _stub_state(tmp_path)
         slot = state.get_or_create_slot("stale")
         slot._titled = True
@@ -396,11 +398,17 @@ class TestTheKeyStillGrantsNothing:
             session_directive.call_input_digest("monitor_start", CALL_ARGS),
         )
         monkeypatch.setattr(directive_queue.time, "monotonic", _real)
-        spy = await _drive(
-            state, slot, _kas_events(_kas_duplicated(_tool_text())), monkeypatch, park=False
-        )
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            spy = await _drive(
+                state,
+                slot,
+                _kas_events(_kas_duplicated(_tool_text())),
+                monkeypatch,
+                park=False,
+            )
         spy.assert_not_called()
         assert directive_queue.depth(effective_session_key(slot)) == 1
+        assert "UNCLAIMED_AT_TURN_END" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_duplicate_result_frames_apply_once(self, tmp_path, monkeypatch):
@@ -1361,7 +1369,9 @@ class TestOpenCodeBackendResolvesTheTool:
         assert session_directive.directive_tool_from_call("", "", title) == ""
 
     @pytest.mark.asyncio
-    async def test_the_directive_lands_out_of_band_on_an_opencode_turn(self, tmp_path, monkeypatch):
+    async def test_the_directive_lands_out_of_band_on_an_opencode_turn(
+        self, tmp_path, monkeypatch, caplog
+    ):
         """End to end through the REAL consumer, on the captured frame shape: the
         opencode-spelled title is what records the input digest, the REFINEMENT is
         where the complete arguments arrive (the ``tool_call`` carried ``{}``), and
@@ -1370,27 +1380,61 @@ class TestOpenCodeBackendResolvesTheTool:
         state = _stub_state(tmp_path)
         slot = state.get_or_create_slot("opencode-directive")
         slot._titled = True
-        spy = await _drive(state, slot, _opencode_events(), monkeypatch)
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            spy = await _drive(state, slot, _opencode_events(), monkeypatch)
         spy.assert_awaited_once()
         assert spy.call_args.args[3] == "monitor_start"
         assert spy.call_args.args[4] == VALIDATED_ARGS, "the RECORD's payload is applied"
         assert directive_queue.depth(effective_session_key(slot)) == 0
+        assert "UNCLAIMED_AT_TURN_END" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_a_lookalike_title_claims_nothing_on_an_opencode_turn(
-        self, tmp_path, monkeypatch
+    async def test_a_lookalike_title_logs_the_unclaimed_record_at_turn_end(
+        self, tmp_path, monkeypatch, caplog
     ):
-        """Fail-closed: same turn, same arguments, same parked record -- but the
-        call is a NON-directive tool whose name merely looks like one. It records no
-        digest, so the record stays parked and nothing is applied."""
+        """Fail-closed and visible: the unknown title records no call digest, so
+        the parked record cannot be claimed. The turn-end warning correlates the
+        record without changing that outcome."""
         state = _stub_state(tmp_path)
         slot = state.get_or_create_slot("opencode-lookalike")
         slot._titled = True
-        spy = await _drive(
-            state,
-            slot,
-            _opencode_events(wire_title="kirocrew-core_monitor_start_extra"),
-            monkeypatch,
-        )
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            spy = await _drive(
+                state,
+                slot,
+                _opencode_events(wire_title="kirocrew-core_monitor_start_extra"),
+                monkeypatch,
+            )
         spy.assert_not_called()
         assert directive_queue.depth(effective_session_key(slot)) == 1, "record left parked"
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if "UNCLAIMED_AT_TURN_END" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        warning = warnings[0]
+        digest = session_directive.call_input_digest("monitor_start", CALL_ARGS)[:12]
+        assert f"session_key={effective_session_key(slot)!r}" in warning
+        assert "count=1" in warning
+        assert f"record_digests=('monitor_start:{digest}',)" in warning
+        assert "tool_identities=('tc-oc:-:-',)" in warning
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_no_parked_record_logs_no_unclaimed_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("opencode-no-record")
+        slot._titled = True
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            spy = await _drive(
+                state,
+                slot,
+                _opencode_events(wire_title="kirocrew-core_monitor_start_extra"),
+                monkeypatch,
+                park=False,
+            )
+        spy.assert_not_called()
+        assert directive_queue.depth(effective_session_key(slot)) == 0
+        assert "UNCLAIMED_AT_TURN_END" not in caplog.text

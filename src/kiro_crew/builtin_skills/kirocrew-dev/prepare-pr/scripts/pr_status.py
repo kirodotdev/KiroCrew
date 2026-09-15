@@ -3,7 +3,9 @@
 
 Prints PR state + every CI check + advisory unresolved-thread count and returns
 an exit code that drives the poll loop. The aggregate ``PR Readiness`` status is
-authoritative when present; older PRs fall back to the full check rollup.
+one signal folded with the rows, never an override of them: its FAILURE blocks
+and its PENDING waits, but its green does not clear an observed failing or
+pending row, because its context name is a forgeable display string.
 Stdlib only; portable.
 
 Usage:  python3 pr_status.py [pr-number] [--readiness-context NAME]
@@ -28,10 +30,12 @@ Usage:  python3 pr_status.py [pr-number] [--readiness-context NAME]
 
 Exit codes:
    0  CLEAN     - open, non-draft, MERGEABLE, no CHANGES_REQUESTED, aggregate
-                  PR Readiness (or the legacy full rollup) passed, every
-                  reviewer stamp matches the current head, no [BLOCK-MERGE]
-                  marker for the current head, and a pull_request-event run
-                  exists for the current head (when the repo uses Actions)
+                  PR Readiness (or the legacy full rollup) passed with no
+                  observed failing row (a passed aggregate does not clear a
+                  failing row), every reviewer stamp matches the current head,
+                  no [BLOCK-MERGE] marker for the current head, and a
+                  pull_request-event run exists for the current head (when the
+                  repo uses Actions)
   10  RUNNING   - a required check is still queued/in-progress, or mergeability
                   has not been computed yet
   20  BLOCKED   - failing readiness, merge conflict, draft, CHANGES_REQUESTED,
@@ -1347,9 +1351,16 @@ def decide(
     if blocked_now:
         return 20, "STATUS: BLOCKED - " + "; ".join(blocked_now)
 
-    # Once published, the aggregate is authoritative over stale duplicate
-    # checks in the rollup. Legacy PRs without it still use the full rollup.
-    if readiness_kind == "running" or (readiness_kind is None and n_running > 0):
+    # An observed running lane keeps the round open regardless of the
+    # aggregate. The aggregate's context name is a forgeable display string, so
+    # if a passed aggregate could conclude the "still running" gate, a forged
+    # green posted while a real lane is still QUEUED/IN_PROGRESS would skip this
+    # branch and reach CLEAN before the real failure lands -- the same
+    # forged-green-to-CLEAN vector, moved into a timing window. So an observed
+    # running row means RUNNING on its own terms, and a failing aggregate is
+    # reported below. The aggregate subtracts neither a pending nor a failing
+    # row.
+    if readiness_kind == "running" or n_running > 0:
         return 10, "STATUS: RUNNING (round not complete)"
     if mergeable not in ("MERGEABLE", "CONFLICTING"):
         return 10, "STATUS: RUNNING (mergeability not yet computed: {})".format(
@@ -1357,9 +1368,17 @@ def decide(
         )
 
     reasons = []
+    # An observed failing row is authoritative on its own terms: a passed
+    # aggregate does not clear it. The aggregate's context name is a display
+    # string any status publisher on the pull request can set, so letting a
+    # green aggregate erase a failing row would let a forged green flip this
+    # tool to CLEAN over a real failure. So report a failing row whenever one
+    # exists, independent of the aggregate, and report a failing aggregate as
+    # its own reason. The aggregate subtracts no observed row -- neither a
+    # pending one (handled by the running gate above) nor a failing one here.
     if readiness_kind == "fail":
         reasons.append("{} reported action required".format(readiness_context))
-    elif readiness_kind is None and n_fail > 0:
+    if n_fail > 0:
         reasons.append("{} check(s) failed".format(n_fail))
     if n_checks == 0:
         # An empty rollup has two very different causes, and the reason chosen

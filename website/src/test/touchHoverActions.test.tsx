@@ -21,6 +21,7 @@ vi.mock('mermaid', () => ({
 }))
 
 import { CodeBlock } from '../components/CodeBlock'
+import { ICON_ACTION_ROW_CLS } from '../utils/touchActions'
 import DiffBlock from '../components/DiffBlock'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { PinnedMessagesPanel } from '../pages/chat/PinnedMessagesPanel'
@@ -37,6 +38,26 @@ const ROW_TOUCH_CLASSES = [
 const expectRowTouchOverrides = (cls: string) => {
   for (const c of ROW_TOUCH_CLASSES) expect(cls).toContain(c)
 }
+
+describe('ICON_ACTION_ROW_CLS (icon-only footers)', () => {
+  // The message footers use a third shape that styles BOTH pointer types:
+  // fixed square cells sitting flush, 28px for a pointer and 36x32 for touch,
+  // with the same reveal on touch as the row shape.
+  it('sizes cells instead of padding, flush, for pointer and touch alike', () => {
+    expect(ICON_ACTION_ROW_CLS).toContain('gap-x-0')
+    expect(ICON_ACTION_ROW_CLS).toContain('[&_button]:h-7')
+    expect(ICON_ACTION_ROW_CLS).toContain('[&_button]:w-7')
+    expect(ICON_ACTION_ROW_CLS).toContain('[&_button]:p-0')
+    expect(ICON_ACTION_ROW_CLS).toContain('[&_button:hover]:bg-bg-hover')
+    expect(ICON_ACTION_ROW_CLS).toContain('[&>button:first-child]:-ms-[7px]')
+    expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:opacity-100')
+    expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:flex-wrap')
+    expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:[&_button]:h-8')
+    expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:[&_button]:w-9')
+    expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:[&>button:first-child]:-ms-2.5')
+    expect(ICON_ACTION_ROW_CLS).not.toContain('[&_button]:p-3')
+  })
+})
 
 const SIMPLE_DIFF = `--- a/file.ts
 +++ b/file.ts

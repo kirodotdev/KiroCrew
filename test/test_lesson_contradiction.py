@@ -569,7 +569,7 @@ class TestApiLessonsDeleteOffloadsRemove:
         seen: dict[str, int] = {}
 
         class _RecordingStore:
-            def remove(self, rule_sub):  # noqa: ANN001 - test double
+            def remove(self, rule_sub, repo_scope=None):  # noqa: ANN001 - test double
                 seen["remove"] = threading.get_ident()
                 return True
 
@@ -1252,7 +1252,8 @@ class TestApiLessonsReturnsTheNewest:
 
         state = MagicMock()
         state.lessons.load_all.return_value = [
-            SimpleNamespace(rule=r, category="tool", ts=f"t{i}") for i, r in enumerate(rules)
+            SimpleNamespace(rule=r, category="tool", ts=f"t{i}", negative=None)
+            for i, r in enumerate(rules)
         ]
         with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
              patch.object(cron, "_get_active_workspace", return_value="default"), \

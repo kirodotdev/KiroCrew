@@ -697,7 +697,26 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `session_create`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
+
+`kirocrew-dashboard` is one transport carrying **two** authorization models, which is
+what makes its assignment decision larger than its name suggests. The
+`chat_folder_*` verbs are bounded by RESOURCE ownership — a folder created by an app
+carries it in `owner_app`, and an app may reshape only its own. The `session_*` verbs
+are bounded by CALLER class instead, and one of them (`session_send`) writes a turn
+into another session's conversation; [session-control.md](../system-specs/modules/session-control.md)
+is their spec and carries that reasoning.
+
+The consequence to know before granting: an agent handed the whole server for folder
+organization has the session verbs too. Whether they prompt depends on how the grant
+is spelled — `_mcp_pattern` maps a bare `@kirocrew-dashboard` entry to a one-level
+glob, so it auto-approves all ten, while naming tools individually leaves the rest
+to `hooks.on_tool_call`. `_CONDUCTOR_DASHBOARD_GRANTS` and
+`_MEMBER_DASHBOARD_GRANTS` (`agent.py`) are the shipped examples of the individual
+form, and they differ from each other on exactly this axis: the member's list
+includes `session_send` and `session_stop` because `authorize_target` refuses a
+member caller on any session it did not create, and the conductor's withholds them
+because it has no such fence.
 
 CLI commands and their MCP twins:
 
@@ -792,8 +811,9 @@ answers `tools/list` from):
   the tool is called when earlier facts or experiences are needed. Owner-selected copying is a dashboard action, not an MCP
   capability. The full contract is in
   [memory](../system-specs/modules/memory-skills-hooks.md#member-memory-experience-and-lifecycle).
-- **Structured monitor read:** `monitor_inspect` (strict authenticated session
-  identity only; no ancestor fallback)
+- **Monitor read:** `monitor_inspect` (strict authenticated session
+  identity only; no ancestor fallback; reports a structured monitor or a legacy
+  timer loop's presence reading, whichever the session holds)
 - **Crew routing:** `select_crew`
 - **Sessions and history:** `list_sessions`, `get_chat_session`,
   `search_chat_history`
@@ -998,6 +1018,33 @@ the tool layer could only drift or race. What the tool layer still decides is th
 one question the endpoint cannot: whether the caller can be placed at all, since
 an unverifiable or delegated caller has no scope to bound a write to.
 
+**Filing your own session is a separate verb, `chat_folder_file_self`, because
+the grant is name-scoped.** `chat_folder_move_session` takes its target from an
+argument, so it is the one dashboard tool that writes a session OTHER than the
+caller's, and the conductor agents keep it behind an approval: they ingest
+untrusted content on unattended cycles, and `allowedTools` can name a tool but
+not an argument. That left the conductor unable to file ITSELF without a prompt,
+so it floated at the top level while its workers sat in the goal's folder.
+`chat_folder_file_self` has no `session` argument — the target is resolved from
+the verified caller key (`_own_chat_slot`: only a `dashboard:<slot>` key
+qualifies, because the slot key is stable for the tab's life while a
+channel- or cron-bound slot's `linked_session_key` can be rebound between the
+read and the write, so matching on it could file a different conversation;
+a private session and a crew member's pinned DM thread are refused too) — so the one
+placement it can write is the caller's own, which is exactly the placement the
+conductor grant invariant (create or read, never mutate what is not your own)
+admits. It resolves `folder` with `mkdir -p` semantics behind the same
+tree-shaping gate as `session_create`'s `folder`, and PATCHes the same
+`/api/chat/slots/<slot>/folder` route under the gate's verified key, carrying
+the slot's `created` stamp as `expected_created`: the endpoint's own identity
+re-check covers its own awaits, but the tool resolves the slot in an EARLIER
+request, and a tab that closes and is recreated under the same key in that gap
+would share the `dashboard:<key>` transcript key — so the endpoint refuses (409
+`session_gone`) when the token does not match the live slot's `created_at`. The
+conductors call it once in their first turn, then create every worker with
+`folder="<goal>/<agent>"`, giving one heading per goal with the conductor
+directly under it and one subfolder per agent kind.
+
 **Position is the one folder write the tool layer has to compose.** A folder's
 place among its siblings is an `order` int the endpoint stores verbatim and never
 renumbers, so there is no single value a caller could compute — which is why
@@ -1189,6 +1236,74 @@ parent's tree. `mcp_core.py` offers two resolvers:
   the wrong conversation.
 - `_resolve_session_key()` (lenient, still walks ancestors) is only for read-only
   and telemetry callers where misattribution is harmless.
+
+**What names a session on the stub path: the stub session token.** The injected
+caller context above is the only identity channel a pooled backend has, and every
+input gatewayd had for building it answered per RUNTIME, not per session: the
+stub's own self-report (its `KIROCREW_SESSION_KEY` or `session_pid_<pid>.txt`
+walk), gatewayd's own SO_PEERCRED `/proc` walk, and claim-push, which re-targeted
+every connection indexed under a runtime PID. One kiro-cli process hosts N ACP
+sessions, so all three answered with the parent slot for a `spawn_run` subagent's
+stub, and a parent re-claim overwrote whatever a subagent had. So Kiro Crew mints
+one unguessable token per ACP session (`claim.mint_stub_session_token`), puts it
+in the `env` of that session's injected stub entries
+(`session_servers.attach_stub_session_token`), and remembers it on the session
+handle. The stub returns it on its `register` frame as a sibling field — never a
+`PoolKey` dimension, which would make every session's backend private and turn
+pooling into a no-op — and `claim` frames carry it too. gatewayd then keys claims
+by `(pid, token)`: a claim re-targets the connections carrying its token, plus any
+connection carrying none, and a claim with NO token re-targets every connection
+under the PID exactly as before, which is what a stub launched from a
+hand-written config or an older overlay still needs.
+
+**The token narrows within a runtime; the runtime bounds who may present the
+token.** A claim binds the token together with the PID it named, and a register is
+answered from that binding only when the same PID is in the chain gatewayd walks
+from the **SO_PEERCRED peer pid** — never the stub's self-reported
+`ancestor_pids`. That distinction is the whole value of the second factor: the
+register frame is peer-supplied in full, so an actor who has read another
+session's token out of `/proc/<pid>/environ` (readable at the operator's own uid)
+can equally name that session's runtime in its own chain, and one actor would then
+satisfy both halves. The peer pid comes from the kernel and the walk is gatewayd's
+own, so the registrant cannot author it. The self-reported pids stay in the claim
+INDEX, where they are harmless: a claim only ever narrows to connections carrying
+its own token or none. A connection whose ancestry the kernel did not attest loses
+the register-time shortcut, not its identity — claim-push still reaches it through
+the index. (What a same-uid process can assert on the register frame itself is a
+separate, pre-existing question — a tokenless register's self-reported
+`session_key` is believed as it always was.)
+
+**A token nothing has claimed is refused, not resolved.** A binding outranks both
+process-tree sources at register time, and where no claim has named the token yet
+the connection stays identity-less — the stub's own self-report and the peer walk
+are not consulted, and neither is the stub-initiated `recaller` frame, whose key
+comes from the same walk. The refusal cannot be made conditional on some sibling
+session happening to be named: an empty binding table is the state a fresh daemon,
+a respawn and an evicted binding all share, and in each of those the tree answer
+would hand a subagent its parent's session. What repairs a deferred identity is
+the owning session's own claim — pushed before `session/new` where the owner is
+known, at `rekey()` on a pooled claim, and after `new_conversation` re-launches a
+worker's stubs.
+
+**And re-pushed at the start of every turn**, which is what re-binds a token whose
+daemon restarted under it and bounds that outage to the turn it happened in. Two
+places do it, because no single one sees every session: the shared identity
+publisher (`messaging/identity.py`, the same boundary that rewrites
+`session_pid_<pid>.txt`) covers each surface that drives a user turn, and
+`AcpSessionProvider.stream` covers the sessions no surface publishes for — which
+is where a subagent's turns live, the session type the token exists to protect.
+
+A claim carries a session key or gatewayd discards it, so every provider is told
+which session it serves when it is CONSTRUCTED rather than only at `rekey()`: that
+is a warm-pool event, and a cold start (pool miss, pooling off, a subagent's own
+session) reaches it never. A provider that learned its key there would re-claim
+with an empty one, which is rejected as malformed before the binding is recorded —
+so the token could never be re-bound and the session would stay identity-less for
+the rest of its life rather than for one turn.
+
+The token is a bearer name for a session's identity, so it is never logged, never
+in `stats()`, and stripped from the register payload before the prewarm recorder
+can persist it.
 
 `register_hook` also resolves through `require_strict_session_key`. Legacy
 Global hooks can still be registered without a conversation; private hooks
@@ -1432,3 +1547,19 @@ or the watcher failed at runtime, which the skip cannot see: `POST
 /api/sessions/restart` is the recovery. On an older kiro-cli, or another
 harness, the warm pool holds pre-spawned processes carrying the old config. Use
 Apply & Restart, or `kirocrew config set`, which triggers a restart.
+
+## Private workflow callers
+
+Workflow writes resolve the current strict MCP session and pass that same key
+to HTTP. This includes authoring, saved-definition runs, ad-hoc `source` and
+`intent` runs, cancellation and subtree reruns. Missing strict identity refuses
+the write before HTTP; a lenient ancestor-session fallback cannot authorize it.
+Kernel identity or a validated member proof still decides authority;
+headers, workflow ids and template names never select a private store. Workflow
+run/detail/list/cancel/rerun enforce the recorded execution scope. Private worker
+processes use direct projected MCP servers inside their existing OS sandbox,
+not shared V1 broker sessions. The deterministic workflow E2E model executes
+these real MCP transports through `sandboxed_spawn_argv` and `popen_limited`,
+which applies resource limits after exec rather than running Python in a fork
+child. Temporary launcher profiles are cleaned up even when spawning fails;
+synthetic tool events are not memory-access evidence.

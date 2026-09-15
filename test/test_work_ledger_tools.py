@@ -392,6 +392,9 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "invalid_action": 400,
         "invalid_status": 400,
         "invalid_value": 400,
+        # Maintenance-only: raised by ``purge_conductor``, reachable from no
+        # route. Mapped so the exhaustiveness property above keeps its meaning.
+        "ledger_not_finished": 409,
     }
 
 

@@ -40,7 +40,6 @@
         "yolo_duration": "6h",
         "notify_override_expiry": true,
         "bot_name": "",
-        "conductor_skill": false,
         "tool_search": true,
         "tool_search_min_pct": 5,
         "tool_search_min_tokens": 50000,
@@ -542,20 +541,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
-    },
-    {
-      "path": "agent.conductor_skill",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Conductor Skill",
-      "help": "Enable agent delegation — loads conductor skill with agent roster.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
     },
     {
       "path": "agent.tool_search",
@@ -1477,6 +1462,7 @@
         "embed_model_path": "",
         "embed_model_id": "",
         "embed_model_stamp": [],
+        "embed_rebuild_generation": "",
         "embed_model_legacy_ids": [],
         "semantic_confidence_threshold": 0.8,
         "episodic_dedup_threshold": 0.88,
@@ -1636,6 +1622,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "memory.embed_rebuild_generation",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Embedding Rebuild Generation",
+      "help": "Managed explicit-apply request identity. Stores acknowledge it only after invalidating their previous vectors; empty preserves ordinary upgrade behavior.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "memory.embed_model_legacy_ids",
@@ -6062,6 +6062,8 @@
         "auto_open_browser": true,
         "prevent_sleep": false,
         "quick_send": false,
+        "model_picker_configured": false,
+        "model_picker_hidden_models": [],
         "session_grid": false,
         "mcp_app_panel": false,
         "auto_open_git_panel": false,
@@ -6591,6 +6593,48 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.model_picker_configured",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Model Picker Visibility Saved",
+      "help": "Internal marker set after the user saves the interactive model picker visibility list. It lets the dashboard distinguish a never-configured picker from one intentionally saved with no hidden models.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.model_picker_hidden_models",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Selectable Models",
+      "help": "Model IDs hidden from the interactive chat model picker. Empty shows every advertised model; 'auto' is always shown. This preference does not change entitlement, provider model discovery, defaults, role models, fallback models, bulk switching, or app-specific model lists.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "dashboard.model_picker_hidden_models.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "dashboard.session_grid",
       "kind": "core",
       "type": "boolean",
@@ -6677,6 +6721,34 @@
       "defaultValue": ""
     },
     {
+      "path": "dashboard.terminal.max_sessions",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max terminal sessions",
+      "help": "Ceiling on concurrent terminal sessions across every chat, server-wide. Each chat's activity bar caps its own terminals below this; a session beyond the ceiling is refused.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 12
+    },
+    {
+      "path": "dashboard.terminal.cwd",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Default working directory",
+      "help": "Directory a terminal opens in when the chat passes no project directory of its own. Empty = $HOME.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "dashboard.terminal.completion",
       "kind": "core",
       "type": "object",
@@ -6703,6 +6775,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.terminal.completion.commands",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Completion protocol overrides",
+      "help": "Re-point an already-allowlisted command at a different completion protocol, e.g. {\"docker\": \"cobra\"}. It can only change the protocol of a command the release already knows - it cannot add one, because the allowlist is the set of tools whose probe argv is known to be inert.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
     },
     {
       "path": "dashboard.default_project",

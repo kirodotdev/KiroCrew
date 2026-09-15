@@ -390,7 +390,34 @@ def test_start_does_not_run_a_task_it_could_not_create(cfg, monkeypatch):
     assert len(calls) == 1, "a failed /Create must not be followed by /Run"
 
 
-def test_stop_ends_then_deletes_and_drops_the_wrapper(cfg, monkeypatch):
+@pytest.fixture
+def drainable_stop_root(monkeypatch):
+    """Deletion tests still traverse the real exact-handle drain first."""
+    active = {8001}
+    opened: list[tuple[int, str]] = []
+    closed: list[int] = []
+    monkeypatch.setattr(win, "time", _FakeClock())
+    monkeypatch.setattr(win, "handoff_in_progress", lambda *_a: False)
+    monkeypatch.setattr(win, "supervised_pid", lambda *_a: 4242 if active else None)
+    monkeypatch.setattr(win, "pid_exists", lambda pid: pid == 4242 and bool(active))
+    monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
+    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "1000"))
+    monkeypatch.setattr(
+        win,
+        "open_process_termination_handle",
+        lambda pid, token: opened.append((pid, token)) or 8001,
+    )
+    monkeypatch.setattr(win, "descendant_termination_handles", lambda *_a, **_k: {})
+    monkeypatch.setattr(win, "process_handle_active", lambda handle: handle in active)
+    monkeypatch.setattr(win, "terminate_process_handle", lambda handle: active.discard(handle))
+    monkeypatch.setattr(win, "close_process_handle", closed.append)
+    yield
+    assert not active, "task deletion must follow a drained root"
+    assert opened == [(4242, "1000")]
+    assert closed == [8001]
+
+
+def test_stop_ends_then_deletes_and_drops_the_wrapper(cfg, monkeypatch, drainable_stop_root):
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(win, "schtasks", lambda *a: calls.append(a) or _cp())
     win.write_task_script(cfg, "smoke")
@@ -405,51 +432,83 @@ def test_stop_ends_then_deletes_and_drops_the_wrapper(cfg, monkeypatch):
     assert not win.task_script_path(cfg, "smoke").exists()
 
 
-def test_stop_waits_for_the_supervised_pid_before_deleting_anything(cfg, monkeypatch):
-    """`/End` is asynchronous and reaches only the task's own process.
-
-    Returning while the gateway is alive makes the caller reap the HOME from
-    under a live writer: the removal then fails quietly while the CLI reports
-    zero residue.
-    """
-    import os
+@pytest.mark.parametrize("recycled", [False, True])
+def test_stop_waits_for_the_supervised_pid_before_deleting_anything(cfg, monkeypatch, recycled):
+    """`/End` is asynchronous; stop must poll the exact root handle."""
 
     monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
     monkeypatch.setattr(win, "time", _FakeClock())
     seen = {"n": 0}
 
-    def dying(_cfg, _name):
+    def _active(_handle):
         seen["n"] += 1
-        return os.getpid() if seen["n"] < 4 else None
+        return seen["n"] < 4
 
-    monkeypatch.setattr(win, "supervised_pid", dying)
+    monkeypatch.setattr(
+        win,
+        "supervised_pid",
+        lambda *_a: 4242 if seen["n"] < 4 else None,
+    )
+    # Answer liveness from the same poll counter so the liveness view and the
+    # handle view flip together, and a real host process at the invented PID
+    # cannot trip the reuse guard. The recycled arm keeps the pid ALIVE past the
+    # poll, which is the unattributable shape the teardown must refuse on.
+    monkeypatch.setattr(win, "pid_exists", lambda pid: pid == 4242 and (seen["n"] < 4 or recycled))
+    monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
+    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "1000"))
+    monkeypatch.setattr(
+        win,
+        "open_process_termination_handle",
+        lambda _pid, expected: 8001 if expected == "1000" else None,
+    )
+    monkeypatch.setattr(win, "descendant_termination_handles", lambda *_a, **_k: {})
+    monkeypatch.setattr(win, "process_handle_active", _active)
+    monkeypatch.setattr(win, "terminate_process_handle", lambda _handle: True)
+    monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
     win.write_task_script(cfg, "smoke")
-    assert win.stop(cfg, "smoke").returncode == 0
+
+    result = win.stop(cfg, "smoke")
+    assert result.returncode == (1 if recycled else 0), result.stderr
     assert seen["n"] >= 4, "stop must poll rather than trust /End's return"
+    assert win.task_script_path(cfg, "smoke").exists() is recycled
+    if recycled:
+        assert "ALIVE but does not carry" in result.stderr
 
 
 def test_stop_preserves_everything_when_the_gateway_will_not_die(cfg, monkeypatch):
-    import os
-
     monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
     monkeypatch.setattr(win, "time", _FakeClock())
-    monkeypatch.setattr(win, "supervised_pid", lambda *_: os.getpid())
-    # The escalation must be PINNED, so a recycled pid can never be signalled.
-    killed: list[tuple[int, str]] = []
+    monkeypatch.setattr(win, "supervised_pid", lambda *_a: 4242)
+    monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
+    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "1000"))
     monkeypatch.setattr(
         win,
-        "kill_process_tree_pinned",
-        lambda pid, token, sig=None: killed.append((pid, token)) or True,
+        "open_process_termination_handle",
+        lambda _pid, expected: 8001 if expected == "1000" else None,
     )
+    monkeypatch.setattr(win, "descendant_termination_handles", lambda *_a, **_k: {})
+    monkeypatch.setattr(win, "process_handle_active", lambda _handle: True)
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        win,
+        "terminate_process_handle",
+        lambda handle: terminated.append(handle) or True,
+    )
+    monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
     win.write_task_script(cfg, "smoke")
+
     cp = win.stop(cfg, "smoke")
+
     assert cp.returncode == 1
-    assert "NOT zero-residue" in cp.stderr
-    assert killed and killed[0][0] == os.getpid()
+    # A root that stays active is a KNOWN survivor, reported as such -- not
+    # folded into the "enumeration failed" refusal, which has no pid to name.
+    assert "is still running" in cp.stderr and "NOT zero-residue" in cp.stderr
+    assert "enumeration failed" not in cp.stderr
+    assert terminated and terminated[0] == 8001
     assert win.task_script_path(cfg, "smoke").exists(), "a live pod keeps its definition"
 
 
-def test_stop_reports_a_task_it_could_not_delete(cfg, monkeypatch):
+def test_stop_reports_a_task_it_could_not_delete(cfg, monkeypatch, drainable_stop_root):
     def fake(*a):
         if a[0] == "/Delete":
             return _cp(returncode=1, stderr="ERROR: Access is denied.")
@@ -463,7 +522,9 @@ def test_stop_reports_a_task_it_could_not_delete(cfg, monkeypatch):
     assert win.task_script_path(cfg, "smoke").exists()
 
 
-def test_deleting_a_task_that_is_already_gone_is_a_no_op_not_a_failure(cfg, monkeypatch):
+def test_deleting_a_task_that_is_already_gone_is_a_no_op_not_a_failure(
+    cfg, monkeypatch, drainable_stop_root
+):
     """Judged by re-probing existence, never by /Delete's own localized error."""
 
     def fake(*a):

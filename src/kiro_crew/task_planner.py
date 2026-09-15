@@ -301,6 +301,8 @@ async def decompose(
                 agent=agent or None,
                 project=work_dir or None,
                 memory_store=memory_store,
+                context_provider=client,
+                resumed=_resumed,
             )
         else:
             full_prompt = prompt

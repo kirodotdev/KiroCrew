@@ -13,6 +13,7 @@ from aiohttp import web
 
 from kiro_crew.config.loader import coerce_dict_section, update_config_locked
 from kiro_crew.dashboard.chat_utils import run_config_write
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.loop_lock import LoopBoundLock
 
 logger = logging.getLogger(__name__)
@@ -585,12 +586,15 @@ def _persist_state(completed: bool) -> None:
 
 
 async def api_onboarding_import_scan(request: web.Request) -> web.Response:
-    """GET /api/onboarding/import/scan."""
+    """GET /api/onboarding/import/scan. Owner-only."""
     operation = "onboarding.import.scan"
     caller, error_response = _caller(request, operation)
     if error_response is not None:
         return error_response
     assert caller is not None
+    denied = await require_owner_dashboard_request(request, operation)
+    if denied is not None:
+        return denied
 
     try:
         result = await asyncio.to_thread(_backend().preview_import, source_ids=None)
@@ -605,12 +609,15 @@ async def api_onboarding_import_scan(request: web.Request) -> web.Response:
 
 
 async def api_onboarding_import_apply(request: web.Request) -> web.Response:
-    """POST /api/onboarding/import/apply."""
+    """POST /api/onboarding/import/apply. Owner-only."""
     operation = "onboarding.import.apply"
     caller, error_response = _caller(request, operation)
     if error_response is not None:
         return error_response
     assert caller is not None
+    denied = await require_owner_dashboard_request(request, operation)
+    if denied is not None:
+        return denied
 
     try:
         body = await request.json()
@@ -691,12 +698,15 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
 
 
 async def api_onboarding_import_state(request: web.Request) -> web.Response:
-    """PUT /api/onboarding/import/state."""
+    """PUT /api/onboarding/import/state. Owner-only."""
     operation = "onboarding.import.state"
     caller, error_response = _caller(request, operation)
     if error_response is not None:
         return error_response
     assert caller is not None
+    denied = await require_owner_dashboard_request(request, operation)
+    if denied is not None:
+        return denied
 
     try:
         body = await request.json()

@@ -70,13 +70,15 @@ SHARED_FIXTURES = [
         [(0, "<div>never closed", "Open", "")],
     ),
     (
-        # REGRESSION: Python's `\w` is Unicode-aware, JS's is ASCII-only. With a
-        # bare `\w`, Python treated ```例 as a fence (making the example inert and
-        # returning the REAL widget at index 0) while JS saw plain markdown
-        # (returning the EXAMPLE at index 0) — same slug, different content, so the
-        # frontend linked and pinned an artifact holding HTML the user never
-        # starred. Both sides must agree the example IS the widget at index 0.
-        "non-ASCII fence info string is NOT a fence (JS \\w is ASCII-only)",
+        # Cross-language parity on a non-ASCII info string. Both parsers apply
+        # the CommonMark rule (any non-backtick info string opens a fence), so
+        # ```例 is a fence on BOTH sides: the example inside it is inert code and
+        # the real widget is index 0. If either side regressed to its own `\w`
+        # (Python Unicode-aware, JS ASCII-only) they would return DIFFERENT
+        # widgets at index 0 — same slug, different content — and the frontend
+        # would link/pin an artifact the user never starred. widgetSlug.test.ts
+        # holds the twin fixture.
+        "non-ASCII fence info string is a fence on both sides",
         "\n".join(
             [
                 "以下のように書きます:",
@@ -87,7 +89,27 @@ SHARED_FIXTURES = [
                 '<mcwidget title="グラフ">REAL-CHART</mcwidget>',
             ]
         ),
-        [(0, "demo", "サンプル", "")],
+        [(0, "REAL-CHART", "グラフ", "")],
+    ),
+    (
+        "hyphenated fence info string is a fence on both sides",
+        '```error-report\n<mcwidget title="Inert">in code</mcwidget>\n```\n<mcwidget title="Real">out</mcwidget>',
+        [(0, "out", "Real", "")],
+    ),
+    (
+        "leading whitespace before the tag keeps the tag on both sides",
+        '``` python\n```js\n<mcwidget title="Inert">in code</mcwidget>\n```\n<mcwidget title="Real">out</mcwidget>',
+        [(0, "out", "Real", "")],
+    ),
+    (
+        "attributed fence info string is a fence on both sides",
+        '```js {1,3}\n<mcwidget title="Inert">in code</mcwidget>\n```\n<mcwidget title="Real">out</mcwidget>',
+        [(0, "out", "Real", "")],
+    ),
+    (
+        "a backtick in the info string is not a fence on either side",
+        '``` `x`\n<mcwidget title="Real">first</mcwidget>\nprose\n<mcwidget title="Second">second</mcwidget>',
+        [(0, "first", "Real", ""), (1, "second", "Second", "")],
     ),
     (
         "a documented example does not shift the real widget's index",

@@ -109,13 +109,29 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
       ? el.querySelector(`[data-display-index="${nextIdx}"]`) as HTMLElement | null
       : null
     const nextTop = nextEl ? nextEl.getBoundingClientRect().top : null
-    // Measure the live card when it is mounted, and otherwise fall back to the
-    // last SETTLED collapsed height PinnedPrompt reported: the push threshold
-    // below has to be decidable even while nothing is mounted, or dropping the
-    // banner would zero the height, zero the push, re-mount it, and oscillate at
-    // frame rate.
-    const measured = pinCardRef.current?.getBoundingClientRect().height ?? 0
-    const bannerH = measured > 0 ? measured : pinCollapsedHRef.current
+    // The SETTLED resting height, never the live card rect.
+    //
+    // The card grows past its resting size in two states — the hover peek
+    // (PINNED_RESTING_LINES -> PINNED_PREVIEW_LINES) and the expansion — and
+    // `peek` is itself gated on `pushUp <= 0`. Reading the live rect here
+    // therefore closed a cycle: the peek grows the card, the taller card
+    // lengthens `pinPushTravel`, the longer travel makes `push` positive for any
+    // incoming prompt sitting between the resting and peeked travels, a positive
+    // push closes the peek, the card shrinks back, `push` returns to 0, and the
+    // peek reopens under the still-resting pointer. The card flipped between its
+    // one-line and three-line heights for as long as the pointer stayed put.
+    //
+    // The resting height is what this geometry was always documented to use:
+    // `pinHandoffY` above already derives from it, PinnedPrompt's own `peek`
+    // comment says "`pinHandoffY` and `pinPushTravel` are derived from the
+    // RESTING height", and PINNED_RESTING_LINES says a card growing after it
+    // mounts "can never invalidate the pin that mounted it". This read was the
+    // one place that was not true.
+    //
+    // No fallback is needed for an unmounted card: `pinCollapsedHRef` is seeded
+    // with DEFAULT_PINNED_CARD_H and only ever written from PinnedPrompt's
+    // `!expanded && !peek` report, so it is always known and always settled.
+    const bannerH = pinCollapsedHRef.current
     const push = computePinPush(bannerH, foldY, nextTop)
     // Fully pushed out: DROP the banner instead of rendering it clipped to
     // nothing. A tall incoming prompt holds this state for its whole length (it
@@ -219,6 +235,14 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     const reduced = typeof window.matchMedia === 'function'
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3)
+    // Reduced motion removes the eased TRAVEL, not the convergence. `goal` is
+    // re-derived every frame because rows mount, images load and the banner
+    // swaps DURING the jump — and the swap is caused by our own write, so it can
+    // only be seen on the frame AFTER it. Landing after a single frame therefore
+    // reads geometry that was true before those shifts, which is exactly the
+    // stale landing this self-driven glide replaced. The reduced path jumps
+    // straight to `goal` each frame and stops once `goal` has stopped moving.
+    let lastGoal: number | null = null
     const glide = () => {
       if (cancelled) { detach(); return }
       const sc = scrollerRef.current
@@ -228,7 +252,19 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
         + (row.getBoundingClientRect().top - sc.getBoundingClientRect().top)
         - pinnedJumpChrome()
       const goal = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, liveTarget))
-      const t = reduced ? 1 : Math.min(1, (performance.now() - t0) / GLIDE_MS)
+      if (reduced) {
+        sc.scrollTop = goal
+        const settled = lastGoal != null && Math.abs(goal - lastGoal) < 1
+        lastGoal = goal
+        // Bounded by the same GLIDE_MS the eased path spends, so a row that
+        // never stops resizing (an animated widget) cannot hold the loop open.
+        if (settled || performance.now() - t0 >= GLIDE_MS) {
+          detach(); jumpCancelRef.current = null; return
+        }
+        jumpRafRef.current = requestAnimationFrame(glide)
+        return
+      }
+      const t = Math.min(1, (performance.now() - t0) / GLIDE_MS)
       sc.scrollTop = from + (goal - from) * easeOutCubic(t)
       if (t >= 1) { detach(); jumpCancelRef.current = null; return }
       jumpRafRef.current = requestAnimationFrame(glide)

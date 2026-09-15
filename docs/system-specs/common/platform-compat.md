@@ -45,6 +45,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Wait on a subprocess PIPE with a deadline | a daemon reader thread feeding a `queue.Queue`, consumed with a bounded `get` (`testing/harness.py`'s `_StdoutPump`) | `selectors.DefaultSelector()` on the pipe (select()-based on Windows, which accepts SOCKETS only, so registering a pipe RAISES there) |
 | Re-exec the current Python module | `reexec_python_module(module, args)` | `os.execv(sys.executable, [sys.executable, ...])` (breaks when the Windows interpreter path contains spaces) |
 | Replace the current process with another program (a supervised service body) | spawn a child, record its pid + `process_start_time`, and `wait()` on it under `IS_WINDOWS` (see `pod.windows.supervise_gateway`) | `os.execve` (on Windows this SPAWNS and terminates the caller, so the pid changes and the service manager sees the unit exit while the real program keeps running orphaned) |
+| Open an exact Windows process object for later tree discovery/termination | `open_process_termination_handle(pid, expected_token)` validates the opened handle's creation identity before returning it (caller closes with `close_process_handle`); combine with `descendant_termination_handles` so the anchored root and each retained child receive a final post-exit snapshot | opening by PID and checking the token beforehand (PID reuse can occur between those operations) |
 | Race-free Job object assignment | `creationflags \|= CREATE_SUSPENDED`, then `apply_job_limits`, then `resume_process_main_thread` | assigning a job to an already-running child (descendants it already spawned escape) |
 | Fork-bomb / memory ceiling on a spawned tree | `sandbox.apply_windows_resource_ceiling(pid)` after the spawn, alongside `cgroup_scope_argv` | `cgroup_scope_argv` alone (a no-op on Windows, so no ceiling at all) |
 | File mode | `chmod_safe(path, mode)` / `fchmod_safe(fd, mode)` | `os.chmod` / `os.fchmod` (no `os.fchmod` on Windows) |
@@ -70,6 +71,67 @@ Executor admission follows the underlying future's completion, never the
 cancelled asyncio waiter's lifetime. Cache stripes and dispatch locks never
 cover native inference; store alignment holds only Python locks and performs
 no model load or inference.
+
+## Exact-handle descendant continuity on Windows
+
+An open Windows process handle pins its process object and prevents PID reuse even
+through exit; reuse is possible only after exit and the last handle closes
+([Windows process-object lifetime](https://devblogs.microsoft.com/oldnewthing/20110107-00/?p=11803)).
+`windows.stop` retains root/descendant handles through every scan and closes them
+only in its outer `finally`, so excluding retained PIDs cannot hide a replacement.
+Host-effect tests must attempt authoritative teardown in `finally`; OS refusal or
+incomplete identity proof must fail loudly and preserve isolated HOME/service
+evidence, never certify zero residue or invoke an unsafe duplicate cleanup authority.
+Service-free, newly owned precondition cleanup is a separate case.
+
+A missing live root is not a completed drain. Before `/End`, `windows.stop`
+refuses when it cannot anchor a live root and finds a PID record (including
+malformed/unreadable/dead/reused identities), wrapper, result, handoff marker,
+HOME, or registered task. State observed before settling is retained as evidence
+if the supervisor clears it while stop waits. A settled handoff does not prove
+its descendants stopped; a handoff observed after the original tree drain also
+blocks deletion, even if its marker disappears while waiting. Only a plane with
+no prior runtime evidence can take the unanchored, never-started no-op path.
+These refusals preserve records, task, and HOME; they do not infer descendant
+death from root death or grant termination authority over a recycled PID.
+
+`descendant_termination_handles` checks every first-snapshot edge against exact
+handle creation/exit times, then rechecks identity and lifetime bounds after a
+second snapshot. If an observed intermediary exits and disappears from Toolhelp,
+its pinned handle preserves the first edge only when the second identity read
+confirms the same PID/creation time and a published exit time. A surviving child's
+PPID must still agree; its creation time must precede that intermediary's exit.
+Changed parent links and positively disproven identities/lifetimes are excluded.
+Unknown is not an exclusion: an unopenable candidate must be absent from a fresh,
+successful full process snapshot, or discovery raises `OSError`. Absence alone
+is insufficient when that same fresh snapshot contains an entry referencing the
+observed, now-vanished unopened parent: discovery refuses even if the child and
+its descendants first appeared after the initial snapshot. This guard reports
+only a total and at most three child/parent PID pairs, takes no extra snapshot,
+and grants no identity or termination authority. A vanished unopened child with
+no fresh descendant reference remains admissible.
+A false `pid_exists` result is not sufficient because query denial can produce it too.
+Unreadable opened/retained identities, missing live objects, and a surviving
+child whose vanished unpinned parent has no lifetime proof also raise, so callers
+must preserve HOME/task state rather than certify a partial tree as drained.
+For an unopenable candidate still present in the fresh snapshot, the refusal
+includes failure-only diagnostics for at most three candidates and eight PIDs
+per first/fresh ancestry chain. The opener captures the immediate native error
+(or Python exception type only); the report includes the root identity at scan
+start and current identity/lifetime observations from already-pinned relevant
+handles. A separate query-only handle may observe the candidate, but is always
+closed and is explicitly unvalidated: no observation changes the refusal or
+provides kill authority. Diagnostic failures leave the original refusal intact.
+No command lines, environment, file contents, or unrelated process inventory
+are emitted, and successful discovery does not collect or log this report.
+All newly opened handles are closed on failure, including failures partway through
+opening candidates; root and retained handles remain caller-owned. Positively
+rejected newly opened handles are closed before returning the proven subset.
+
+This covers an **already observed, handle-pinned** chain. An intermediary that died
+before it was ever observed/pinned remains unverifiable; a single numeric snapshot
+is not enough to recover that chain. The deterministic and self-owned native
+regressions are in `test/test_platform_compat.py`, `TestProcessDescendants`.
 
 ## Verifying a change
 

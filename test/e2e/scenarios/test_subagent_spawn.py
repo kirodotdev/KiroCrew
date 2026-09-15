@@ -61,6 +61,10 @@ def test_one_agent_turn_completes_with_a_tool_call(pod) -> None:
         "tool call never reached the dashboard stream.\n"
         f"stream tail: {text[-2000:]!r}"
     )
+    assert any("hello-from-fake" in str(row.get("content", "")) for row in tool_rows), (
+        f"the {TOOL_TRIGGER} turn emitted no expected tool output.\n"
+        f"stream tail: {text[-2000:]!r}"
+    )
 
     # The turn is also durable, not just streamed: the slot must now hold it.
     slots = pod.api("GET", "chat/slots")

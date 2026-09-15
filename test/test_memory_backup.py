@@ -202,11 +202,18 @@ class TestABackupIsConsistentUnderALiveWriter:
         stages: list[Path] = []
         stages_lock = threading.Lock()
         real_restrict = mb.platform_compat.restrict_to_owner
+        backup_dir = mb.backup_dir_for(src)
 
-        def restrict(stage: Path) -> None:
+        def restrict(stage: Path | str) -> None:
+            # This module is shared with atomic config writes and directory setup.
+            # Inject failure only into this test's backup stages.
+            stage_path = Path(stage)
+            if stage_path.parent != backup_dir or stage_path.suffix != ".partial":
+                real_restrict(stage)
+                return
             with stages_lock:
                 index = len(stages)
-                stages.append(stage)
+                stages.append(stage_path)
             if index == 0:
                 first_ready.set()
                 assert second_ready.wait(timeout=10)
@@ -216,14 +223,20 @@ class TestABackupIsConsistentUnderALiveWriter:
             real_restrict(stage)
 
         with mock.patch.object(mb.platform_compat, "restrict_to_owner", side_effect=restrict):
+            # An unrelated config write must not consume either barrier participant.
+            mb.platform_compat.restrict_to_owner(src.parent / "config.json")
+            mb.platform_compat.restrict_to_owner(str(src.parent / "config.json"))
+            assert stages == []
             with ThreadPoolExecutor(max_workers=2) as executor:
                 failed = executor.submit(mb.backup_store, src, now=stamp)
                 assert first_ready.wait(timeout=10)
                 surviving = executor.submit(mb.backup_store, src, now=stamp)
-                assert second_ready.wait(timeout=10)
-                with pytest.raises(mb.MemoryBackupFailed, match="first backup interrupted"):
-                    failed.result(timeout=10)
-                let_second_finish.set()
+                try:
+                    assert second_ready.wait(timeout=10)
+                    with pytest.raises(mb.MemoryBackupFailed, match="first backup interrupted"):
+                        failed.result(timeout=10)
+                finally:
+                    let_second_finish.set()
                 backup = surviving.result(timeout=10)
 
         assert backup is not None and backup.exists()

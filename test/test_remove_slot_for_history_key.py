@@ -124,7 +124,6 @@ def _guard_work_ledger_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     def unexpected(*_args, **_kwargs):
         raise AssertionError("history deletion must preserve work ledgers")
 
-    monkeypatch.setattr(session_ledger, "purge", unexpected)
     monkeypatch.setattr(session_ledger, "purge_matching", unexpected)
 
 

@@ -610,6 +610,11 @@ async def api_dev_fleet_make_live(request: web.Request) -> web.Response:
     dry_run = body.get("dry_run")
     if dry_run is not None and not isinstance(dry_run, bool):
         return web.json_response({"error": "dry_run must be a boolean"}, status=400)
+    undo = body.get("undo")
+    if undo is not None and not isinstance(undo, bool):
+        return web.json_response(
+            {"code": "invalid_undo", "error": "undo must be a boolean"}, status=400
+        )
     expected_staged = body.get("expected_staged")
     if expected_staged is not None and (
         not isinstance(expected_staged, str) or not expected_staged or "\x00" in expected_staged
@@ -621,8 +626,21 @@ async def api_dev_fleet_make_live(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if undo is True and expected_staged is not None:
+        return web.json_response(
+            {
+                "code": "undo_conflicts_with_expected_staged",
+                "error": "undo and expected_staged are mutually exclusive",
+            },
+            status=400,
+        )
     return web.json_response(
-        await live._make_live(path, dry_run is True, expected_staged=expected_staged)
+        await live._make_live(
+            path,
+            dry_run is True,
+            expected_staged=expected_staged,
+            undo=undo is True,
+        )
     )
 
 

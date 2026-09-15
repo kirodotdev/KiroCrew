@@ -223,19 +223,35 @@ export function computePinPush(bannerH: number, foldY: number, nextTop: number |
 }
 
 /**
- * Lines of prompt text the COLLAPSED card shows before clamping.
+ * Lines of prompt text the card shows AT REST — one.
  *
- * One line was the original choice and it loses too much: a long prompt is the
- * one most worth summarising, and a single clamped line of it is usually just its
- * opening clause. Three keeps the card small enough to sit under the title
- * without dominating the viewport, and it widens the range over which the card is
- * a pixel-exact copy of the bubble it replaces — every prompt up to three lines
- * now hands over with no size change at all, where before only a one-liner did.
+ * The card sits over the top of whatever reply the reader is scrolling through,
+ * so its resting height is space taken from that reply. Three resting lines
+ * (the earlier value) cost ~13% of a phone viewport on every long turn, and the
+ * reporter of #4984 named it as the one piece of chrome that actively gets in
+ * the way of reading. One line is enough to answer "what did I ask" at a
+ * glance; the fuller preview is one hover away (`PINNED_PREVIEW_LINES`), and
+ * the whole prompt one click away (the chevron).
  *
- * Consequence for the hand-off line: a taller card pushes `pinHandoffY` DOWN,
- * which makes the pin condition (`rowBottom <= handoffY`) EASIER to satisfy, so a
- * card growing after it mounts can never invalidate the pin that mounted it. The
- * coupling is monotone in the safe direction — see the test of the same name.
+ * Consequence for the hand-off line: the card's settled resting height is what
+ * `pinHandoffY` is derived from, and a SHORTER card moves that line UP, so a
+ * prompt hands over sooner. The pin condition (`rowBottom <= handoffY`) is
+ * evaluated against this settled height only — the hover peek and the full
+ * expansion grow the live card but never re-report a collapsed height — so a
+ * card growing after it mounts can never invalidate the pin that mounted it.
+ * See the test of the same name.
+ */
+export const PINNED_RESTING_LINES = 1
+
+/**
+ * Lines of prompt text the card shows while the pointer is over it or a control
+ * inside it has keyboard focus — the PEEK.
+ *
+ * A single clamped line of a long prompt is usually just its opening clause;
+ * three lines is the amount that reliably carries the ask. Hover is the right
+ * trigger because it costs the reader nothing when they are not interested: the
+ * card grows only while they point at it and shrinks back the moment they leave.
+ * Touch has no hover, so on touch the chevron is the way to more than one line.
  */
 export const PINNED_PREVIEW_LINES = 3
 

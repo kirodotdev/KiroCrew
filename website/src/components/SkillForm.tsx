@@ -186,9 +186,12 @@ function backendFoldsLiteral(block: string, headerEnd: number, header: string): 
  *  no comparison.
  *
  *  `SKILL_LOADER` reads a column-0 `key: value` line, takes the rest of the line, and
- *  strips quote characters off both ends. It never unescapes, and it never continues a
- *  plain scalar onto the next line. Block scalars are excluded here: the backend
- *  implements the same folding the parser does, so the two agree by construction. */
+ *  removes exactly ONE level of wrapping quotes -- only when the first and last
+ *  characters are the same quote character -- collapsing a single-quoted scalar's `''`
+ *  to `'`. It never unescapes a double-quoted scalar's backslashes, and it never
+ *  continues a plain scalar onto the next line. Block scalars are excluded here: the
+ *  backend implements the same folding the parser does, so the two agree by
+ *  construction. */
 function backendReadsValue(block: string, pair: Pair<unknown, unknown>): string | null {
   const keyRange = isScalar(pair.key) ? pair.key.range : null
   if (!keyRange) return null
@@ -217,7 +220,11 @@ function backendReadsValue(block: string, pair: Pair<unknown, unknown>): string 
      is in that safe direction -- it can only refuse a block both sides agree on, never
      accept one they read differently. */
   if (/^\|[+-]?$/.test(rhs)) return backendFoldsLiteral(block, lineEnd, rhs)
-  return rhs.replace(/^["']+/, '').replace(/["']+$/, '')
+  if (rhs.length >= 2 && (rhs[0] === '"' || rhs[0] === "'") && rhs[rhs.length - 1] === rhs[0]) {
+    const inner = rhs.slice(1, -1)
+    return rhs[0] === "'" ? inner.replace(/''/g, "'") : inner
+  }
+  return rhs
 }
 
 /** Whether the BACKEND would read a managed field differently than YAML decodes it.
@@ -561,12 +568,12 @@ const RENDER_OPTIONS = { lineWidth: 0, flowCollectionPadding: false } as const
 
 /** Whether a rendered field is a form the BACKEND reader cannot decode.
  *
- *  `SKILL_LOADER` strips quote characters and resolves bare `|` / `>` block scalars,
- *  and does nothing else. Two rendered shapes are therefore off-limits, both
- *  measured against the real reader rather than inferred: a quoted scalar carrying a
- *  backslash escape (the quotes come off, the escape does not, so the value gains
- *  backslashes) and an explicit indentation indicator like `|2-` (the reader takes
- *  the header itself as the value and discards the content).
+ *  `SKILL_LOADER` unwraps one matched level of quotes and resolves bare `|` / `>`
+ *  block scalars, and does nothing else. Two rendered shapes are therefore
+ *  off-limits, both measured against the real reader rather than inferred: a quoted
+ *  scalar carrying a backslash escape (the wrapper comes off, the escape does not,
+ *  so the value gains backslashes) and an explicit indentation indicator like `|2-`
+ *  (the reader takes the header itself as the value and discards the content).
  *
  *  This is the writer's contract: it is bound by the READER's dialect, not by YAML. */
 function readerCannotDecode(rendered: string): boolean {
@@ -576,17 +583,17 @@ function readerCannotDecode(rendered: string): boolean {
 
 /** Whether the VALUE's own text begins or ends with a quote character.
  *
- *  The reader unquotes with `value.strip("\"'")`, which cannot tell a wrapping quote
- *  from one that belongs to the text: `description: Runs "build"` reads back as
- *  `Runs "build`, and `it's a mess'` loses its final apostrophe. Measured, along with
- *  the rescue -- a bare block literal carries either faithfully.
- *
- *  This asks about the VALUE, not the rendered line, and the distinction is the whole
- *  point: a correctly wrapper-quoted scalar starts and ends with a quote by
- *  construction, and the reader strips exactly those two and is right to. Testing the
+ *  The reader removes exactly one MATCHED level of wrapping quotes, so most
+ *  boundary-quote values would survive an inline spelling: the YAML writer wraps
+ *  them in the other quote style and the reader takes that one wrapper off. The
+ *  block-literal route is kept anyway, exactly as the explicit-indicator refusal
+ *  above is: it is the one representation with no quoting subtleties on either
+ *  side, and relaxing it is a capability change, not a correctness one -- the safe
+ *  direction. This asks about the VALUE, not the rendered line: a correctly
+ *  wrapper-quoted scalar starts and ends with a quote by construction. Testing the
  *  rendered form instead sent `"  padded"` -- quoted only to protect its leading
- *  spaces -- down the block-literal path, where no bare form can keep that whitespace,
- *  so it came back as `padded`. Interior quotes are never at risk either way. */
+ *  spaces -- down the block-literal path, where no bare form can keep that
+ *  whitespace, so it came back as `padded`. Interior quotes are never at risk. */
 function valueHasBoundaryQuote(value: string): boolean {
   return /^["']/.test(value) || /["']$/.test(value)
 }

@@ -474,14 +474,6 @@ describe('SelectionToolbar — composer mode', () => {
     expect(onDraftChange).toHaveBeenLastCalledWith(false, null)
   })
 
-  it('a clipboard write that REJECTS (execCommand fallback threw) is reported like a refusal', async () => {
-    copyToClipboardMock.mockRejectedValue(new Error('execCommand failed'))
-    render(<Harness actions={actions} composer={composer} />)
-    const input = await openComposer()
-    fireEvent.keyDown(input, { key: 'c', metaKey: true })
-    expect(await screen.findByText(/^Copy failed/)).toBeInTheDocument()
-  })
-
   it('a "Copy failed" notice does not survive a close to greet the next selection', async () => {
     copyToClipboardMock.mockResolvedValue(false)
     render(<Harness actions={actions} composer={composer} />)

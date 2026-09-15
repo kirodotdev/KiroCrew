@@ -12,6 +12,7 @@ import {
   ROW_PAD_Y,
   DEFAULT_PINNED_CARD_H,
   PINNED_PREVIEW_LINES,
+  PINNED_RESTING_LINES,
 } from '../utils/pinnedPrompt'
 import type { DisplayItem } from '../pages/chat/types'
 
@@ -336,24 +337,29 @@ describe('pinnedImageUrl', () => {
   })
 })
 
-describe('collapsed preview line count', () => {
-  it('shows more than one line', () => {
-    expect(PINNED_PREVIEW_LINES).toBeGreaterThan(1)
+describe('preview line counts', () => {
+  it('rests on one line and peeks to more', () => {
+    expect(PINNED_RESTING_LINES).toBe(1)
+    expect(PINNED_PREVIEW_LINES).toBeGreaterThan(PINNED_RESTING_LINES)
   })
 
   it('couples to the hand-off line in the SAFE direction', () => {
-    // The clamp makes the collapsed card taller, and its measured height feeds
-    // pinHandoffY. A taller card must only ever move the line DOWN, making the pin
-    // condition (rowBottom <= handoffY) easier — otherwise a card growing after it
-    // mounts could invalidate the very pin that mounted it and oscillate.
+    // The card's RESTING height is what feeds pinHandoffY; the peek and the full
+    // expansion grow the live card but never re-report a collapsed height. So the
+    // only height the line ever sees is the smallest one, and a card growing
+    // after it mounts (a hover, a chevron) leaves the line where it was — it can
+    // never invalidate the very pin that mounted it and oscillate. A taller
+    // reported height would only ever move the line DOWN, which makes the pin
+    // condition (rowBottom <= handoffY) EASIER, so even a stale taller report is
+    // safe.
     const foldY = 100
-    const oneLine = pinHandoffY(foldY, DEFAULT_PINNED_CARD_H)
-    const threeLine = pinHandoffY(foldY, DEFAULT_PINNED_CARD_H * PINNED_PREVIEW_LINES)
-    expect(threeLine).toBeGreaterThan(oneLine)
-    // A row that qualified against the shorter line still qualifies against the
+    const resting = pinHandoffY(foldY, DEFAULT_PINNED_CARD_H * PINNED_RESTING_LINES)
+    const peeked = pinHandoffY(foldY, DEFAULT_PINNED_CARD_H * PINNED_PREVIEW_LINES)
+    expect(peeked).toBeGreaterThan(resting)
+    // A row that qualified against the resting line still qualifies against the
     // taller one.
-    const rowBottom = oneLine
-    expect(rowBottom <= oneLine).toBe(true)
-    expect(rowBottom <= threeLine).toBe(true)
+    const rowBottom = resting
+    expect(rowBottom <= resting).toBe(true)
+    expect(rowBottom <= peeked).toBe(true)
   })
 })

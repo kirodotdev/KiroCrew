@@ -39,6 +39,55 @@ def _cp(stdout: str = "", returncode: int = 0, stderr: str = "") -> subprocess.C
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+def _exact_stop_model(
+    monkeypatch,
+    *,
+    root_pid: int,
+    tokens: dict[int, str],
+    alive: set[int],
+    children: dict[int, list[int]],
+    terminate=None,
+) -> list[int]:
+    """Model the authoritative record and exact handles production stop requires."""
+
+    handles = {pid: pid + 10_000 for pid in tokens}
+    by_handle = {handle: pid for pid, handle in handles.items()}
+    terminated: list[int] = []
+    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (root_pid, tokens[root_pid]))
+    monkeypatch.setattr(
+        win,
+        "open_process_termination_handle",
+        lambda pid, expected: handles[pid] if expected == tokens[pid] else None,
+    )
+
+    def _descendants(pid, retained=None, root_handle=None):
+        assert root_handle == handles[pid]
+        retained = retained or {}
+        return {
+            child: handles[child]
+            for child in children.get(pid, [])
+            if child in alive and child not in retained
+        }
+
+    def _terminate(handle):
+        pid = by_handle[handle]
+        terminated.append(pid)
+        if terminate is not None:
+            return terminate(pid)
+        alive.discard(pid)
+        return True
+
+    monkeypatch.setattr(win, "descendant_termination_handles", _descendants)
+    monkeypatch.setattr(
+        win,
+        "process_handle_active",
+        lambda handle: by_handle[handle] in alive,
+    )
+    monkeypatch.setattr(win, "terminate_process_handle", _terminate)
+    monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
+    return terminated
+
+
 @pytest.fixture
 def cfg(tmp_path, monkeypatch) -> PodConfig:
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -499,7 +548,26 @@ def test_record_supervised_pid_raises_instead_of_swallowing(cfg, monkeypatch):
 # --------------------------------------------------------------------------
 # stop(): the symmetric case
 # --------------------------------------------------------------------------
-def test_stop_refuses_when_a_recorded_pid_is_alive_but_unattributable(cfg, monkeypatch):
+@pytest.fixture
+def preserved_stop_home(cfg, monkeypatch):
+    """Exercise the cleanup caller and require byte-preserved runtime state."""
+    monkeypatch.setattr(rt, "IS_MACOS", False)
+    monkeypatch.setattr(rt, "IS_WINDOWS", True)
+    monkeypatch.setattr(rt, "cleanup_home", lambda *_a: pytest.fail("stop must preserve HOME"))
+    home = cfg.home_dir("demo")
+    home.mkdir(parents=True)
+    state = home / "state.json"
+    state.write_text("{}", encoding="utf-8")
+    wrapper = win.write_task_script(cfg, "demo")
+    wrapper_bytes = wrapper.read_bytes()
+    yield
+    assert state.read_text(encoding="utf-8") == "{}"
+    assert wrapper.read_bytes() == wrapper_bytes
+
+
+def test_stop_refuses_when_a_recorded_pid_is_alive_but_unattributable(
+    cfg, monkeypatch, preserved_stop_home
+):
     """ "Cannot tell" must not be rendered as "not running" on the teardown path.
 
     A record naming a LIVE pid whose creation-time identity does not match is
@@ -511,43 +579,57 @@ def test_stop_refuses_when_a_recorded_pid_is_alive_but_unattributable(cfg, monke
     monkeypatch.setattr(win, "schtasks", lambda *a: calls.append(a[0]) or _cp())
     win.write_task_script(cfg, "demo")
 
-    cp = win.stop(cfg, "demo")
+    record = win.pid_record_path(cfg, "demo")
+    record_bytes = record.read_bytes()
+    cp = rt.stop_pod(cfg, "demo")
 
     assert cp.returncode == 1
-    assert "does not carry the creation-time identity" in cp.stderr
-    assert str(win.pid_record_path(cfg, "demo")) in cp.stderr
-    assert str(os.getpid()) in cp.stderr
-    assert "/Delete" not in calls, "the task must not be deleted on an unprovable stop"
+    assert "no provable live root" in cp.stderr
+    assert "cannot prove its descendants stopped" in cp.stderr
+    assert str(record) in cp.stderr
+    assert record.read_bytes() == record_bytes
+    assert calls == [], "an unattributable root must be refused before /End"
     assert win.task_script_path(cfg, "demo").exists(), "per-pod state must be preserved"
 
 
-def test_stop_still_reclaims_a_stale_record_for_a_dead_pid(cfg, monkeypatch):
-    """The ordinary hard-stop leftover must keep passing through.
-
-    A ``/End`` reaps the wrapper before its cleanup runs, so a record naming a
-    pid that is GONE is routine. Refusing on that would block every `pod down`
-    after a hard stop.
-    """
-    win.pid_record_path(cfg, "demo").write_text("999999999\nstale-token\n")
-    monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
+def test_stop_preserves_a_stale_record_for_a_dead_pid(cfg, monkeypatch, preserved_stop_home):
+    """A hard-stop leftover cannot prove the dead gateway's descendants exited."""
+    record = win.pid_record_path(cfg, "demo")
+    record.write_text("999999999\nstale-token\n", encoding="utf-8")
+    record_bytes = record.read_bytes()
+    calls: list[str] = []
+    monkeypatch.setattr(win, "schtasks", lambda *a: calls.append(a[0]) or _cp())
     monkeypatch.setattr(win, "pid_exists", lambda pid: False)
-    win.write_task_script(cfg, "demo")
 
-    cp = win.stop(cfg, "demo")
+    cp = rt.stop_pod(cfg, "demo")
 
-    assert cp.returncode == 0
-    assert not win.task_script_path(cfg, "demo").exists()
-    assert not win.pid_record_path(cfg, "demo").exists()
+    assert cp.returncode == 1
+    assert "no provable live root" in cp.stderr
+    assert "cannot prove its descendants stopped" in cp.stderr
+    assert calls == [], "a dead root must not authorize /End or /Delete"
+    assert win.task_script_path(cfg, "demo").exists()
+    assert record.read_bytes() == record_bytes
 
 
-def test_stop_refuses_when_the_task_wrapper_cannot_be_deleted(cfg, monkeypatch):
+def test_stop_refuses_when_the_task_wrapper_cannot_be_deleted(
+    cfg, monkeypatch, preserved_stop_home
+):
     wrapper = win.task_script_path(cfg, "demo")
-    win.write_task_script(cfg, "demo")
-    monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
-    monkeypatch.setattr(win, "supervised_pid", lambda c, n: None)
-    monkeypatch.setattr(win, "handoff_in_progress", lambda c, n: False)
-    monkeypatch.setattr(win, "process_start_time", lambda pid: None)
-    monkeypatch.setattr(win.time, "sleep", lambda seconds: None)
+    alive = {4242}
+    calls: list[str] = []
+
+    def schtasks(*args):
+        calls.append(args[0])
+        if args[0] == "/End":
+            alive.clear()
+        return _cp()
+
+    monkeypatch.setattr(win, "schtasks", schtasks)
+    monkeypatch.setattr(win, "supervised_pid", lambda *_a: 4242 if alive else None)
+    monkeypatch.setattr(win, "pid_exists", lambda pid: pid in alive)
+    monkeypatch.setattr(win, "handoff_in_progress", lambda *_a: False)
+    monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
+    _exact_stop_model(monkeypatch, root_pid=4242, tokens={4242: "1000"}, alive=alive, children={})
     real_unlink = win.Path.unlink
 
     def _unlink(path, *args, **kwargs):
@@ -557,19 +639,33 @@ def test_stop_refuses_when_the_task_wrapper_cannot_be_deleted(cfg, monkeypatch):
 
     monkeypatch.setattr(win.Path, "unlink", _unlink)
 
-    cp = win.stop(cfg, "demo")
+    cp = rt.stop_pod(cfg, "demo")
 
     assert cp.returncode == 1
     assert str(wrapper) in cp.stderr
     assert "access is denied" in cp.stderr
+    assert "could not be deleted" in cp.stderr
+    assert calls == ["/End", "/Delete"]
+    assert not alive
     assert wrapper.exists(), "the caller must preserve state after a stop failure"
 
 
-def test_stop_with_no_record_at_all_is_the_plain_stopped_path(cfg, monkeypatch):
-    """A cleanly stopped pod unlinks its record, so absence is not ambiguity."""
-    monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
-    win.write_task_script(cfg, "demo")
-    assert win.stop(cfg, "demo").returncode == 0
+def test_stop_without_a_record_preserves_existing_runtime_state(
+    cfg, monkeypatch, preserved_stop_home
+):
+    """A cleared record does not prove the old gateway's descendants stopped."""
+    calls: list[str] = []
+    monkeypatch.setattr(win, "schtasks", lambda *a: calls.append(a[0]) or _cp())
+    record = win.pid_record_path(cfg, "demo")
+    assert not record.exists()
+
+    cp = rt.stop_pod(cfg, "demo")
+
+    assert cp.returncode == 1
+    assert "no provable live root" in cp.stderr
+    assert "cannot prove its descendants stopped" in cp.stderr
+    assert calls == [], "missing identity must not authorize /End or /Delete"
+    assert not record.exists()
 
 
 def test_the_unattributable_probe_ignores_a_provable_record(cfg):
@@ -597,9 +693,6 @@ def test_stop_ends_the_gateways_children_after_the_gateway_itself(cfg, monkeypat
     alive = {4242, 4300, 4301}
     monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
     monkeypatch.setattr(
-        win, "attributed_descendants", lambda pid, token: [4300, 4301] if pid == 4242 else []
-    )
-    monkeypatch.setattr(
         win, "process_start_time", lambda pid: tokens[pid] if pid in alive else None
     )
     # `alive` is this test's model of liveness, so it must drive BOTH facets the
@@ -614,19 +707,18 @@ def test_stop_ends_the_gateways_children_after_the_gateway_itself(cfg, monkeypat
         return 4242 if 4242 in alive else None
 
     monkeypatch.setattr(win, "supervised_pid", _supervised)
-    killed: list[tuple[int, str]] = []
-
-    def _kill(pid, token, sig=None):
-        killed.append((pid, token))
-        alive.discard(pid)
-        return True
-
-    monkeypatch.setattr(win, "kill_process_tree_pinned", _kill)
+    terminated = _exact_stop_model(
+        monkeypatch,
+        root_pid=4242,
+        tokens=tokens,
+        alive=alive,
+        children={4242: [4300, 4301]},
+    )
 
     cp = win.stop(cfg, "demo", timeout=0.5)
 
     assert cp.returncode == 0, cp.stderr
-    assert (4300, "1010") in killed and (4301, "1020") in killed
+    assert 4300 in terminated and 4301 in terminated
     assert alive == set()
 
 
@@ -637,9 +729,6 @@ def test_stop_keeps_the_pod_when_a_child_survives_the_gateway(cfg, monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(win, "schtasks", lambda *a: calls.append(a[0]) or _cp())
     monkeypatch.setattr(
-        win, "attributed_descendants", lambda pid, token: [4300] if pid == 4242 else []
-    )
-    monkeypatch.setattr(
         win, "process_start_time", lambda pid: tokens[pid] if pid in alive else None
     )
     # `alive` is this test's model of liveness, so it must drive BOTH facets the
@@ -651,33 +740,41 @@ def test_stop_keeps_the_pod_when_a_child_survives_the_gateway(cfg, monkeypatch):
     monkeypatch.setattr(win, "pid_exists", lambda pid: pid in alive)
     monkeypatch.setattr(win, "supervised_pid", lambda c, n: 4242 if 4242 in alive else None)
 
-    def _kill(pid, token, sig=None):
+    def _terminate(pid):
         if pid == 4242:
             alive.discard(pid)
-        return True  # the child ignores it and stays alive
+        return True  # the child ignores termination and stays alive
 
-    monkeypatch.setattr(win, "kill_process_tree_pinned", _kill)
-    monkeypatch.setattr(win.time, "sleep", lambda s: alive.discard(4242))
+    terminated = _exact_stop_model(
+        monkeypatch,
+        root_pid=4242,
+        tokens=tokens,
+        alive=alive,
+        children={4242: [4300]},
+        terminate=_terminate,
+    )
+    monkeypatch.setattr(win.time, "sleep", lambda _seconds: alive.discard(4242))
 
     cp = win.stop(cfg, "demo", timeout=0.5)
 
     assert cp.returncode == 1
+    # A child that is still active at the drain deadline is a KNOWN survivor and
+    # the refusal must name it; "enumeration failed" is reserved for the case
+    # where nothing is live but a terminal snapshot never completed.
     assert "child processes are still running" in cp.stderr and "4300" in cp.stderr
+    assert "enumeration failed" not in cp.stderr
+    assert 4300 in terminated
     assert "/Delete" not in calls, "a pod with a live child must not be deleted"
     assert win.task_script_path(cfg, "demo").exists()
 
 
 def test_stop_treats_a_child_that_vanished_under_the_kill_as_gone(cfg, monkeypatch):
-    """taskkill reports rc=128 when a tree member exits between the snapshot and
-    the kill; that raises ProcessLookupError, and the child being gone is the
-    outcome wanted, so the stop must finish rather than traceback."""
+    """An exact child handle that becomes inactive during termination is gone,
+    not residue, even when the termination primitive reports no action."""
     win.write_task_script(cfg, "demo")
     tokens = {4242: "1000", 4300: "1010"}
     alive = {4242, 4300}
     monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
-    monkeypatch.setattr(
-        win, "attributed_descendants", lambda pid, token: [4300] if pid == 4242 else []
-    )
     monkeypatch.setattr(
         win, "process_start_time", lambda pid: tokens[pid] if pid in alive else None
     )
@@ -690,13 +787,18 @@ def test_stop_treats_a_child_that_vanished_under_the_kill_as_gone(cfg, monkeypat
     monkeypatch.setattr(win, "pid_exists", lambda pid: pid in alive)
     monkeypatch.setattr(win, "supervised_pid", lambda c, n: 4242 if 4242 in alive else None)
 
-    def _kill(pid, token, sig=None):
+    def _terminate(pid):
         alive.discard(pid)
-        if pid == 4300:
-            raise ProcessLookupError("[taskkill rc=128] no running instance of the task")
-        return True
+        return pid != 4300  # False means the exact child object was already gone.
 
-    monkeypatch.setattr(win, "kill_process_tree_pinned", _kill)
+    _exact_stop_model(
+        monkeypatch,
+        root_pid=4242,
+        tokens=tokens,
+        alive=alive,
+        children={4242: [4300]},
+        terminate=_terminate,
+    )
 
     cp = win.stop(cfg, "demo", timeout=0.5)
 
@@ -708,9 +810,9 @@ def test_stop_leaves_alone_a_stray_the_parent_map_lists_under_a_recycled_pid(cfg
 
     Windows keeps a dead parent's pid on its children, so when that pid is recycled
     to the gateway an unrelated process shows up as the gateway's child. Telling the
-    two apart is `platform_compat.attributed_descendants`' job -- it validates every
-    parent-child edge, and `test_platform_compat.py` pins the exclusion against the
-    primitive itself, where the parent map is the input.
+    two apart is `platform_compat.descendant_termination_handles`' job -- it validates
+    every parent-child edge against exact-handle lifetimes, and `test_platform_compat.py`
+    pins the exclusion against the primitive itself, where the parent map is the input.
 
     What THIS test pins is the pod backend's half of the contract: whatever the walk
     excludes is neither killed nor allowed to hold the stop open. 7777 is present and
@@ -722,9 +824,6 @@ def test_stop_leaves_alone_a_stray_the_parent_map_lists_under_a_recycled_pid(cfg
     alive = {4242, 4300, 7777}
     monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
     monkeypatch.setattr(
-        win, "attributed_descendants", lambda pid, token: [4300] if pid == 4242 else []
-    )
-    monkeypatch.setattr(
         win, "process_start_time", lambda pid: tokens[pid] if pid in alive else None
     )
     # `alive` is this test's model of liveness, so it must drive BOTH facets the
@@ -735,20 +834,19 @@ def test_stop_leaves_alone_a_stray_the_parent_map_lists_under_a_recycled_pid(cfg
     # existence, which is the confusion `_still_alive` exists to remove.
     monkeypatch.setattr(win, "pid_exists", lambda pid: pid in alive)
     monkeypatch.setattr(win, "supervised_pid", lambda c, n: 4242 if 4242 in alive else None)
-    killed: list[int] = []
-
-    def _kill(pid, token, sig=None):
-        killed.append(pid)
-        alive.discard(pid)
-        return True
-
-    monkeypatch.setattr(win, "kill_process_tree_pinned", _kill)
+    terminated = _exact_stop_model(
+        monkeypatch,
+        root_pid=4242,
+        tokens=tokens,
+        alive=alive,
+        children={4242: [4300]},
+    )
 
     cp = win.stop(cfg, "demo", timeout=0.5)
 
     assert cp.returncode == 0, cp.stderr
-    assert 7777 not in killed and 7777 in alive
-    assert 4300 in killed
+    assert 7777 not in terminated and 7777 in alive
+    assert 4300 in terminated
 
 
 def test_a_failed_tree_kill_still_runs_the_fallback_kill(cfg, monkeypatch):
@@ -852,6 +950,7 @@ class TestHandoffWindow:
         win.write_task_script(cfg, "demo")
         calls: list[str] = []
         live = {"pid": 4242}
+        alive = {4242}
 
         def _schtasks(*argv):
             calls.append(argv[0])
@@ -861,12 +960,19 @@ class TestHandoffWindow:
                 dead_supervisor = f"{2**22 + 91}\n1000\n"
                 win.handoff_marker_path(cfg, "demo").write_text(dead_supervisor, encoding="utf-8")
                 live["pid"] = None
+                alive.discard(4242)
             return _cp()
 
         monkeypatch.setattr(win, "schtasks", _schtasks)
         monkeypatch.setattr(win, "supervised_pid", lambda c, n: live["pid"])
         monkeypatch.setattr(win, "process_start_time", lambda pid: "1000" if pid == 4242 else None)
-        monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
+        _exact_stop_model(
+            monkeypatch,
+            root_pid=4242,
+            tokens={4242: "1000"},
+            alive=alive,
+            children={},
+        )
         monkeypatch.setattr(win, "_unattributable_live_pid", lambda c, n: None)
 
         cp = win.stop(cfg, "demo", timeout=1.0)
@@ -921,9 +1027,15 @@ class TestHandoffWindow:
         assert win._await_handoff_outcome(cfg, "demo", bound=30.0) is False
         assert time.monotonic() - started < 5.0, "must not run to the bound"
 
-    def test_stop_settles_a_missing_pid_before_deleting_the_task(self, cfg, monkeypatch):
-        """A handoff marker can appear just after the predecessor pid dies."""
-        win.write_task_script(cfg, "demo")
+    def test_stop_settles_missing_pid_but_preserves_unanchored_task(
+        self, cfg, monkeypatch, preserved_stop_home
+    ):
+        """Settling a handoff without a live root does not authorize deletion."""
+        record = win.pid_record_path(cfg, "demo")
+        record.write_text("4242\n1000\n", encoding="utf-8")
+        record_bytes = record.read_bytes()
+        stop = win.stop
+        monkeypatch.setattr(win, "stop", lambda c, n: stop(c, n, timeout=0.5))
         calls: list[str] = []
         clock = {"now": 0.0, "handoff": False, "publish": True}
 
@@ -940,19 +1052,24 @@ class TestHandoffWindow:
 
         monkeypatch.setattr(win.time, "sleep", _sleep)
 
-        refused = win.stop(cfg, "demo", timeout=0.5)
+        refused = rt.stop_pod(cfg, "demo")
 
         assert refused.returncode == 1
+        assert "handing off" in refused.stderr
         assert calls == [], "a marker seen during settling must block task deletion"
         assert win.task_script_path(cfg, "demo").exists()
+        assert record.read_bytes() == record_bytes
 
         clock.update(now=0.0, handoff=False, publish=False)
-        stopped = win.stop(cfg, "demo", timeout=0.5)
+        stopped = rt.stop_pod(cfg, "demo")
 
-        assert stopped.returncode == 0
-        assert calls == ["/End", "/Delete"]
+        assert stopped.returncode == 1
+        assert "no provable live root" in stopped.stderr
+        assert "cannot prove its descendants stopped" in stopped.stderr
+        assert calls == [], "settling alone must not authorize /End or /Delete"
         assert clock["now"] == pytest.approx(win._HANDOFF_SETTLE_TIMEOUT_SECS, abs=0.001)
-        assert not win.task_script_path(cfg, "demo").exists()
+        assert win.task_script_path(cfg, "demo").exists()
+        assert record.read_bytes() == record_bytes
 
     def test_a_stale_marker_does_not_wedge_teardown_forever(self, cfg, monkeypatch):
         """A supervisor killed mid-handoff cannot retract its own marker.

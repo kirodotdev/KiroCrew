@@ -111,6 +111,23 @@ def _is_bundled_skill_asset(path: Path) -> bool:
     return parts[:2] == ("apps", "builtins") and "skills" in parts[2:]
 
 
+def _is_container_image_asset(path: Path) -> bool:
+    """True for a container image's own source rather than gateway runtime code.
+
+    ``apps/builtins/<app>/crew/runtime/**`` is the build context of a Linux image: a
+    Dockerfile, the processes that image runs, and their tests. The gateway does not
+    import it, which ``test_container_image_assets_are_not_imported`` pins and which the
+    tree itself enforces by assuming an installed layout where ``kiro_crew`` is absent.
+
+    Its subprocess calls are the image's supervisor starting the image's own children,
+    inside a container the owner's machine never runs. The sandbox chokepoint governs the
+    gateway's OWN spawning, so it has nothing to say about them -- the same reasoning as
+    ``_is_bundled_skill_asset`` above, applied to a different shape.
+    """
+    parts = path.relative_to(_SRC_ROOT).parts
+    return parts[:2] == ("apps", "builtins") and "crew" in parts and "runtime" in parts
+
+
 # Attribute names that actually spawn a child process.
 _SPAWN_ATTRS = {
     "Popen",
@@ -283,6 +300,23 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``test_the_routing_read_back_runs_off_the_event_loop`` in
         # ``test/test_acp_opencode_backend.py`` pins that.
         "acp/client.py::_verify_opencode_routing",
+        # The pi gate read-back, the same shape as the opencode one above. ONE fixed
+        # argv -- Kiro Crew's own gate launcher (a file this core wrote into the
+        # sandbox run directory, execing the resolved ``pi`` binary) plus the three
+        # literal words in ``_PI_RPC_ARGS`` (``--mode rpc --no-themes``, what the
+        # adapter itself passes) -- no shell, a 30s timeout, and a cwd that is the
+        # session work dir. The only input written to the child is
+        # ``_PI_READBACK_REQUEST``, a constant ``get_commands`` frame on stdin; the
+        # agent supplies nothing to it. Stdout is read for one response, whose
+        # command list decides whether the session may start at all.
+        #
+        # SANDBOX-WRAPPED before it is spawned, by the same caller pattern: the
+        # floor check runs first and the argv arrives through ``wrap_argv_async``
+        # with the same credential mask the session spawn gets, because the child
+        # is the agent itself loading extensions out of the operator's own
+        # directories. Called from a worker thread, never the event loop --
+        # ``test/test_acp_pi_backend.py`` pins that.
+        "acp/client.py::_verify_pi_gate",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent
@@ -700,10 +734,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``). These four TEST functions drive Code Review
         # Sage's ``_save_runs`` coroutine to completion without a running loop --
-        # the registry write is a coroutine because its owner-only lockdown spawns
-        # ``icacls`` on Windows and so must be offloaded off the event loop (that
-        # real spawn is ``platform_compat.py::restrict_to_owner``, allowlisted
-        # below). No child process is created here and nothing is
+        # the registry write is a coroutine because it is blocking file IO that
+        # must be offloaded off the event loop (see the offload rationale on
+        # ``_write_runs``). No child process is created here and nothing is
         # agent-influenced: every run record in these tests is a literal dict.
         # Same classification as the other ``asyncio.run`` sites in this list.
         "apps/builtins/code_review_sage/tests/test_backend_routes.py"
@@ -1481,6 +1514,17 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # agent-influenced input; sandboxing the probe would be circular for the
         # same reason as the other boot-time self-checks above.
         "slack/gateway.py::_warn_if_kiro_cli_outdated",
+        # Only spawn_feature_gateway calls this helper, for initial boot and
+        # restart. It fixes sys.executable -m kiro_crew gateway --test-mode;
+        # no executable/argv parameter exists. Home/env come from the isolated
+        # test supervisor, never HTTP/MCP requests. Dynamic projected MCP
+        # commands in workflow_memory_scenario instead use sandboxed_spawn_argv.
+        "testing/harness.py::_launch_gateway",
+        # before_spawn still seeds via sys.executable -c with a literal seed
+        # program and the test's fixture name as data, never interpolated code.
+        # harness_environment pins the owned temporary home and checkout src;
+        # seed keeps its fixture-containment/main-home/nonempty guards and the
+        # call has timeout=30. No HTTP/MCP-selected command reaches this site.
         "testing/harness.py::spawn_feature_gateway",
         # Apple on-device speech (macOS only). None of these takes an agent-authored
         # command: the argv is a fixed toolchain path or the helper Kiro Crew itself
@@ -1699,7 +1743,7 @@ def _collect_first_party_flag_sites() -> frozenset[str]:
     out: set[str] = set()
     for path, source in candidate_sources(require_all=(_FIRST_PARTY_KWARG,)):
         rel = path.relative_to(_SRC_ROOT).as_posix()
-        if rel == "sandbox.py" or _is_bundled_skill_asset(path):
+        if rel == "sandbox.py" or _is_bundled_skill_asset(path) or _is_container_image_asset(path):
             continue
         tree = ast.parse(source, str(path))
         funcs = [
@@ -1839,8 +1883,9 @@ def _collect_spawn_functions() -> dict[str, str]:
     needles = tuple(_SPAWN_ATTRS | _SPAWN_NAMES)
     for path, source in candidate_sources(require_any=needles):
         # A skill's own helper scripts are not gateway runtime code paths --
-        # see ``_is_bundled_skill_asset`` for why they are out of scope.
-        if _is_bundled_skill_asset(path):
+        # see ``_is_bundled_skill_asset`` for why they are out of scope. A container
+        # image's own source is the same kind of exclusion for a different shape.
+        if _is_bundled_skill_asset(path) or _is_container_image_asset(path):
             continue
         tree = ast.parse(source, str(path))
         spawn_bases = _spawn_module_bindings(tree)
@@ -2120,6 +2165,60 @@ def test_bundled_skill_assets_are_not_imported():
     )
 
 
+def test_container_image_assets_are_not_imported():
+    """The container-image exemption is only honest while the gateway never imports one.
+
+    ``_is_container_image_asset`` takes a Linux image's own source out of the spawn audit
+    on the premise that the image runs it, not this package. That premise has one failure
+    mode: gateway code imports one of those modules, and its unrouted spawns become
+    gateway spawns while staying invisible to the audit.
+
+    The tree also cannot be imported in practice: it assumes an installed layout where
+    ``kiro_crew`` is absent, so an import would fail at runtime rather than quietly work.
+    This test makes the premise explicit instead of leaving it to that accident.
+
+    Reading these files as DATA is expected: the image build copies the tree, and tests in
+    the tree's own suite compare its source text against the gateway's copy of a duplicated
+    helper. Neither is an import.
+    """
+    assets = [p for p in _SRC_ROOT.rglob("*.py") if _is_container_image_asset(p)]
+    # Non-vacuity: a predicate matching nothing would make this pass while pinning
+    # nothing, and would mean the exemption itself is dead.
+    assert assets, "no container image assets found -- the exemption matches nothing"
+
+    asset_modules = {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).with_suffix("").as_posix().replace("/", ".")
+        for p in assets
+    }
+    asset_packages = {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).parent.as_posix().replace("/", ".") for p in assets
+    }
+
+    offenders: list[str] = []
+    for path in _SRC_ROOT.rglob("*.py"):
+        if _is_container_image_asset(path):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        rel = path.relative_to(_SRC_ROOT).as_posix()
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                names = [node.module]
+            for name in names:
+                if name in asset_modules or name in asset_packages:
+                    offenders.append(f"{rel}:{node.lineno} imports {name}")
+
+    assert not offenders, (
+        "Gateway code imports a container image asset, which the spawn audit "
+        "exempts:\n  " + "\n  ".join(sorted(offenders)) + "\n\nThat tree runs inside a "
+        "Linux image on an installed copy where kiro_crew is absent, so the import would "
+        "fail there anyway. Move the shared logic into a real module under src/kiro_crew, "
+        "or duplicate it deliberately and pin the copies equal by source text."
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Gateway spawn timeout discipline
 #
@@ -2307,3 +2406,33 @@ def test_gateway_proc_waits_all_kill_on_timeout_and_cancel():
         "TimeoutError and CancelledError arms that call _kill_and_reap (or the "
         "startup-child kill/reap pair) on the proc before returning/re-raising."
     )
+
+
+def test_harness_preflight_seed_is_fixed_argv():
+    """The preflight exemption covers one fixed seed call, not dynamic MCP."""
+    source = (_SRC_ROOT / "testing" / "harness.py").read_text(encoding="utf-8")
+    function = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "spawn_feature_gateway"
+    )
+    calls = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+        and node.func.attr in _SPAWN_ATTRS
+    ]
+    assert len(calls) == 1
+    expected = ast.parse(
+        "subprocess.run([sys.executable, '-c', "
+        "'from kiro_crew.seed import seed; import sys; seed(sys.argv[1])', fixture], "
+        "cwd=str(spawn_cwd), env=env, capture_output=True, text=True, "
+        "encoding='utf-8', errors='replace', timeout=30)",
+        mode="eval",
+    ).body
+    assert ast.dump(calls[0]) == ast.dump(expected)
+    assert "testing/harness.py::_launch_gateway" in BENIGN_SPAWNS
+    assert "testing/harness.py::spawn_feature_gateway" in BENIGN_SPAWNS

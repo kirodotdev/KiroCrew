@@ -312,10 +312,10 @@ describe('WebPreviewPanel', () => {
     try {
       renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
       const input = screen.getByLabelText('Preview URL')
-      fireEvent.change(input, { target: { value: 'http://localhost:5173/very/long/path' } })
+      fireEvent.change(input, { target: { value: 'http://0.0.0.0:5173/very/long/path' } })
       fireEvent.submit(input.closest('form') as HTMLFormElement)
 
-      const shown = 'http://localhost:5173/very/long/path'
+      const shown = 'http://0.0.0.0:5173/very/long/path'
       expect(screen.getByText("Can't embed an http:// page here")).toBeInTheDocument()
       expect(screen.getByText(shown).tagName).toBe('CODE')
       expect(screen.getByText('Open in browser').closest('a')).toHaveAttribute('href', shown)
@@ -323,6 +323,81 @@ describe('WebPreviewPanel', () => {
     } finally {
       window.location.href = originalHref
     }
+  })
+
+  // The refusal is about the TARGET's origin, not the dashboard's scheme alone.
+  // Loopback is potentially trustworthy, so an https-served dashboard (a tunnel,
+  // which is the deployment the CLI browser view's port pin exists for) has to
+  // frame it rather than explain a block the engine never makes.
+  it.each([
+    ['http://127.0.0.1:9223/', 'http://127.0.0.1:9223/'],
+    ['http://localhost:5173/', 'http://localhost:5173/'],
+  ])('frames a loopback target on an https dashboard (%s)', (typed, expected) => {
+    const originalHref = window.location.href
+    window.location.href = 'https://dashboard.example.com/'
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      const input = screen.getByLabelText('Preview URL')
+      fireEvent.change(input, { target: { value: typed } })
+      fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+      expect(screen.queryByText("Can't embed an http:// page here")).toBeNull()
+      const frame = screen.getByTitle('Web preview') as HTMLIFrameElement
+      expect(targetOf(frame)).toBe(expected)
+    } finally {
+      window.location.href = originalHref
+    }
+  })
+
+  // `*.localhost` is potentially trustworthy too, but the dashboard's frame-src
+  // only admits it in instances mode, so relaxing the guard for it would trade
+  // the explanation for a CSP-blanked frame.
+  it('still refuses a *.localhost target on an https dashboard', () => {
+    const originalHref = window.location.href
+    window.location.href = 'https://dashboard.example.com/'
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      const input = screen.getByLabelText('Preview URL')
+      fireEvent.change(input, { target: { value: 'http://myapp.localhost:5173/' } })
+      fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+      expect(screen.getByText("Can't embed an http:// page here")).toBeInTheDocument()
+      expect(screen.queryByTitle('Web preview')).toBeNull()
+    } finally {
+      window.location.href = originalHref
+    }
+  })
+
+  // A public http:// host never reaches the frame on this transport at all: it is
+  // handed to the gateway host's browser. Pinned so the relaxed guard is not read
+  // as having opened the iframe to non-loopback plaintext.
+  it('hands a public http target to the host browser instead of framing it', async () => {
+    const originalHref = window.location.href
+    window.location.href = 'https://dashboard.example.com/'
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      const input = screen.getByLabelText('Preview URL')
+      fireEvent.change(input, { target: { value: 'http://example.com/' } })
+      fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+      await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith('http://example.com/', 'sess-1'))
+      expect(screen.queryByTitle('Web preview')).toBeNull()
+    } finally {
+      window.location.href = originalHref
+    }
+  })
+
+  // The http-served dashboard (the default install) never had this refusal and
+  // must not gain one.
+  it('frames a loopback target on an http dashboard', () => {
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'http://127.0.0.1:9223/' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    expect(screen.queryByText("Can't embed an http:// page here")).toBeNull()
+    expect(targetOf(screen.getByTitle('Web preview') as HTMLIFrameElement))
+      .toBe(`http://${iso('127.0.0.1')}:9223/`)
   })
 
   it('still frames an ordinary dev server on another port', () => {

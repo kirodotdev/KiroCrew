@@ -14,6 +14,7 @@ from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_k
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -68,9 +69,23 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         msgs = slot.messages
         ai_idx = -1
         for i in range(len(msgs) - 1, -1, -1):
-            if msgs[i].get("role") == "assistant":
-                ai_idx = i
+            role = msgs[i].get("role")
+            # Never cross a real user turn: the truncation below deletes
+            # everything after the target reply's user row, so a reply found
+            # PAST a newer user row (e.g. a /compact row awaiting only its
+            # notice) would take that newer turn with it, irreversibly.
+            if role == "user":
                 break
+            if role != "assistant":
+                continue
+            # A system notice (compaction / session reload) is a status row,
+            # not the reply being regenerated: capturing it as the variant
+            # would silently drop the real reply from variant history. The
+            # frontend's optimistic truncation runs the same skip.
+            if is_system_notice("assistant", msgs[i].get("meta")):
+                continue
+            ai_idx = i
+            break
         if ai_idx < 0:
             return web.json_response(
                 {"error": "no assistant message to regenerate", "code": "no_assistant_message"},

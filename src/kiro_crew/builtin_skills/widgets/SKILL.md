@@ -90,6 +90,14 @@ renders in the same themed iframe:
   literal fallback inside the var: `color:var(--text,#111);
   background:var(--bg,#fff)`. Inside the dashboard the theme wins;
   standalone, the fallback reproduces the intended palette.
+- **The renderer has a last-resort fallback, not a licence.** When a widget
+  carries a hardcoded light background (`bg-white`, `bg-<hue>-50|100|200`, a
+  light `#hex`) and references no `var(--…)` at all, a dark dashboard renders
+  it on a neutral light canvas with dark text instead of white-on-white.
+  That is a readability floor for content that already slipped through: it
+  cannot honor the user's palette, it turns off the moment a single theme var
+  appears, and it does nothing for a dark hardcoded palette. Write to the
+  contract above; never design for the fallback.
 - `artifact_save` / `artifact_update` attach a `⚠️` hint when widget/html
   content carries literal colors (`#hex` / `rgb()` / `hsl()`) and no
   `var(--…)` reference. Treat that hint as a defect to fix in the same

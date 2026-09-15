@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import stat as _stat
+import sys
 import uuid
 from pathlib import Path
 
@@ -2642,3 +2643,97 @@ class TestVerifiedReplaceFileNolink:
         f = _write(tmp_path / "a.txt", "old")
         assert safe_write_file_nolink(str(f), "new") is True
         assert f.read_text(encoding="utf-8") == "new"
+
+
+class TestValidateFilePathRepresentability:
+    """Only an UNREPRESENTABLE path is refused here -- deliberately not more.
+
+    This is a shared chokepoint: `safe_read_file_bytes_nolink` routes through it,
+    and its callers include diagnostics that enumerate a file whose name holds a
+    control character in order to report on it. A broader refusal here turns such
+    a report into "could not be compared" and suppresses the finding, so the
+    control-character class belongs to the boundary that receives the path
+    (`_validate_dashboard_path`) rather than to this function.
+
+    Every caller treats None as the refusal, so a string that got past this point
+    surfaced from the dashboard handlers as an uncaught HTTP 500 rather than a 400.
+    """
+
+    def test_refuses_an_embedded_nul(self):
+        # realpath raises ValueError on it, and no file can be named with one, so
+        # refusing it costs no real name.
+        assert validate_file_path("/tmp/a\x00b") is None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "/tmp/(a\x1b[2Jb)",
+            "/tmp/a\x9bb",
+            "/tmp/a\rb",
+            "/tmp/a\tb",
+        ],
+    )
+    def test_does_not_refuse_another_control_character(self, raw):
+        # An agent-writeable directory can hold such a name, and a diagnostic
+        # enumerates it to report divergence, escaping the name for display. If
+        # this function refused it, that report would degrade to "could not be
+        # compared" and the divergence would go unreported -- a suppressed
+        # finding, which is worse than the display hazard it would be guarding.
+        assert validate_file_path(raw) is not None
+
+    def test_refuses_a_path_the_platform_cannot_encode(self):
+        """A lone surrogate: refused where the platform's own encoder refuses it.
+
+        Which answer is correct here is a PLATFORM FACT, not a policy choice, and
+        that is the point of asking the encoder rather than listing characters.
+        On POSIX the handler is surrogateescape, which cannot carry U+D800, so
+        realpath would raise and the path is refused. On Windows it is
+        surrogatepass, which carries it -- and an unpaired surrogate can appear in
+        a legal NTFS name, so refusing it there would reject a real file, which is
+        the harm this gate exists to avoid.
+
+        So the expectation is derived from the same encoder the code consults,
+        rather than hardcoded: a fixed answer here would assert POSIX behaviour on
+        Windows and fail against correct code.
+        """
+        raw = "/tmp/\ud800x"
+        try:
+            raw.encode(sys.getfilesystemencoding(), sys.getfilesystemencodeerrors())
+        except (UnicodeError, ValueError):
+            assert validate_file_path(raw) is None
+        else:
+            assert validate_file_path(raw) is not None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # Canonically composed and canonically DECOMPOSED spellings of the
+            # same name. macOS stores the decomposed form, so refusing every
+            # string a sanitizer would alter would reject real files there.
+            "caf\u00e9.md",
+            "cafe\u0301.md",
+            # A name may legally end in a space on POSIX.
+            "trailing ",
+            # The reserved-character shape the schema gate was widened for.
+            "One on one (2026) #1.md",
+        ],
+    )
+    def test_accepts_a_representable_name(self, tmp_path, name):
+        target = tmp_path / name
+        target.write_text("x", encoding="utf-8")
+        assert validate_file_path(str(target)) is not None
+
+    def test_accepts_a_surrogate_escaped_raw_byte_name(self, tmp_path):
+        # A filename holding bytes that are not valid UTF-8 arrives
+        # surrogate-escaped. The platform's own filesystem error handler
+        # round-trips that range, so it is a real file rather than a crash, and
+        # must not be refused alongside the lone surrogate above. Reading the
+        # handler from sys rather than hardcoding one is what keeps this true on
+        # Windows, where it is surrogatepass and an unpaired surrogate can appear
+        # in a legal NTFS name.
+        target = tmp_path / "\udc80raw.md"
+        try:
+            target.write_text("x", encoding="utf-8")
+        except (OSError, UnicodeEncodeError):
+            pytest.skip("filesystem refuses non-UTF-8 names")
+        assert validate_file_path(str(target)) is not None

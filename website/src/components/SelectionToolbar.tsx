@@ -768,8 +768,9 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       // composer renders it; the plain row simply shows no checkmark). A void
       // action keeps the optimistic flash it always had.
       if (outcome && typeof (outcome as Promise<boolean>).then === 'function') {
-        // `copyToClipboard` REJECTS when the execCommand fallback throws (its
-        // documented contract), so a rejection is a failure too, not a crash.
+        // `outcome` is the copy action's own return, not the shared copy helper
+        // (which never rejects), so a rejection here is a failed action, not a
+        // crash.
         void (outcome as Promise<boolean>).then(
           ok => { if (ok) flashCopied(); else setCopyFailed(true) },
           () => setCopyFailed(true),
@@ -874,8 +875,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     const text = selectedTextRef.current
     if (!text) return false
     setCopyFailed(false)
-    // A rejection (execCommand fallback threw) is a failed copy, not a crash.
-    const ok = await copyToClipboard(text).catch(() => false)
+    const ok = await copyToClipboard(text)
     if (ok) flashCopied(); else setCopyFailed(true)
     return ok
   }, [flashCopied])
@@ -943,7 +943,6 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
         >
           {composer ? (
             <ComposerBox
-              workspaceOwnerId={containerRef.current?.closest('[data-workspace-panel]')?.id}
               inputRef={composerInputRef}
               autoFocus={composerAutoFocus}
               actions={actions}
@@ -1031,8 +1030,7 @@ const COMPOSER_MAX_INPUT_H = 160
  * its placeholder naming the way in (Enter), and the toolbar's document-level
  * Enter handler moves focus here.
  */
-function ComposerBox({ workspaceOwnerId, inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed }: {
-  workspaceOwnerId?: string
+function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed }: {
   inputRef: React.RefObject<HTMLTextAreaElement>
   autoFocus: boolean
   actions: SelectionAction[]
@@ -1144,7 +1142,6 @@ function ComposerBox({ workspaceOwnerId, inputRef, autoFocus, actions, copiedId,
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
     <div
       data-testid="selection-composer"
-      data-workspace-escape-owner={workspaceOwnerId || undefined}
       data-layout={stacked ? 'stack' : 'row'}
       className={`rounded-lg bg-bg-elevated border border-border shadow-lg p-1.5 flex gap-1.5 ${stacked ? 'flex-col w-[calc(100vw-16px)]' : 'items-start flex-wrap w-[520px] max-w-[calc(100vw-16px)]'}`}
       onKeyDown={e => {

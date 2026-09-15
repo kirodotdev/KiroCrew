@@ -4176,6 +4176,73 @@ class TestTheDiscoveryAgentIsNotPreAuthorized:
         assert {"fs_read", "execute_bash"} <= set(spec.get("tools") or [])
 
 
+class TestQueuedDiffTransport:
+    @pytest.fixture
+    def git_calls(self, monkeypatch):
+        calls: list[tuple[str, ...]] = []
+
+        def _git(clone, *args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(commit_mod, "resolve_origin_url", lambda config: "")
+        monkeypatch.setattr(commit_mod, "_git", _git)
+        return calls
+
+    @pytest.mark.parametrize("line_ending", [b"\n", b"\r\n"])
+    def test_patch_stdin_preserves_line_endings_and_non_utf8_bytes(
+        self, tmp_path, monkeypatch, git_calls, line_ending
+    ) -> None:
+        raw = line_ending.join(
+            [b"--- a/app.py", b"+++ b/app.py", b"@@ -1 +1 @@", b"-old", b"+caf\xc3\xa9\xff", b""]
+        )
+        captured: dict[str, object] = {}
+
+        def _run(argv, **kwargs):
+            captured.update(kwargs)
+            assert argv == ["git", "-C", str(tmp_path), "apply", "--index", "-"]
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        monkeypatch.setattr(commit_mod.subprocess, "run", _run)
+        out = commit_mod.materialize_queued_diff(
+            clone=tmp_path,
+            branch="work",
+            config={},
+            diff_text=raw.decode("utf-8", errors="surrogateescape"),
+        )
+        assert out == {"ok": True, "base": "origin/work"}
+        assert captured == {
+            "input": raw,
+            "capture_output": True,
+            "timeout": commit_mod._GIT_TIMEOUT_S,
+        }, "text-mode stdin can translate patch newlines on Windows"
+        assert git_calls[-1] == ("checkout", "-B", "work", "origin/work")
+
+    @pytest.mark.parametrize("stderr", [b"private\xff" + b"x" * 200, b""])
+    def test_apply_failure_decodes_then_redacts_bounds_and_rolls_back(
+        self, tmp_path, monkeypatch, git_calls, stderr
+    ) -> None:
+        monkeypatch.setattr(
+            commit_mod.subprocess,
+            "run",
+            lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, b"", stderr),
+        )
+        decoded: list[str] = []
+        redacted = "[redacted]" + "x" * 200
+
+        def _redact(text):
+            decoded.append(text)
+            return redacted
+
+        monkeypatch.setattr(commit_mod, "redact_via_context", _redact)
+        out = commit_mod.materialize_queued_diff(
+            clone=tmp_path, branch="work", config={}, diff_text="patch\n"
+        )
+        assert decoded == [stderr.decode("utf-8", errors="replace")]
+        assert out == {"ok": False, "error": f"the queued diff did not apply: {redacted[:160]}"}
+        assert git_calls[-1] == ("reset", "--hard", "origin/work")
+
+
 class TestOneClickCommitWorksInAPushDisabledClone:
     """One-click commit ran `git fetch origin` inside a clone whose origin is neutralized.
 
@@ -4204,7 +4271,18 @@ class TestOneClickCommitWorksInAPushDisabledClone:
             "GIT_COMMITTER_NAME": "t",
             "GIT_COMMITTER_EMAIL": "t@t",
         }
-        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env=env)
+        result = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+        assert result.returncode == 0, (
+            f"git {' '.join(args)} failed with rc={result.returncode}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
 
     def _upstream_and_clone(self, tmp_path: Path) -> tuple[Path, Path, str]:
         """A bare 'remote', a seeded branch, and a clone with BOTH urls neutralized."""
@@ -4215,7 +4293,8 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         subprocess.run(
             ["git", "clone", "-q", str(upstream), str(seed)], check=True, capture_output=True
         )
-        (seed / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        # The literal patches below target an LF blob, even when autocrlf is disabled.
+        (seed / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8", newline="\n")
         self._git("add", "-A", cwd=seed)
         self._git("commit", "-qm", "init", cwd=seed)
         self._git("branch", "-M", "work", cwd=seed)
@@ -4441,7 +4520,11 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         self._git("commit", "-qm", "two files", cwd=seed)
         self._git("push", "-q", "origin", branch, cwd=seed)
         self._git(
-            "fetch", "-q", str(upstream), f"+{branch}:refs/remotes/origin/{branch}", cwd=clone
+            "fetch",
+            "-q",
+            str(upstream),
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            cwd=clone,
         )
 
         store.write_json_atomic(

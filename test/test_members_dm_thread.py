@@ -221,6 +221,51 @@ class TestMemberRoutes:
         # A member with no transcript stays at 0 — sorted last, never an error.
         assert rows["Docs_Writer"]["last_active_ts"] == 0.0
         assert rows["Docs_Writer"]["last_message"] == ""
+        # No stop card in either thread, so the flag is absent (omitted when
+        # false — see below) on both rows.
+        assert "last_message_stopped" not in rows[CREW]
+        assert "last_message_stopped" not in rows["Docs_Writer"]
+
+    @pytest.mark.asyncio
+    async def test_roster_flags_a_thread_whose_newest_event_is_a_stop(self, tmp_path):
+        """A just-stopped thread carries last_message_stopped=True on the wire.
+
+        The preview is the last CONVERSATIONAL line (the stop card's JSON is
+        skipped), but that line reads as ongoing work on a thread the user has
+        stopped. So the row also carries a locale-independent boolean the
+        locale-aware client turns into a "Stopped" chip — never the word
+        "Stopped" from here, where the client's locale is unknown. The flag is
+        OMITTED (not False) when the newest event is not a stop, so the common
+        row stays byte-for-byte what it is without it; a later real message
+        leaves it absent.
+        """
+        state = _make_state(tmp_path)
+        write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
+        key = f"dashboard:{member_slot_key(CREW)}"
+        state.conversation_log.append(key, "assistant", "Running the analysis now.")
+        stop_payload = json.dumps({"kind": "stop_event", "id": "s1", "state": "stopped"})
+        state.conversation_log.append(key, "system", stop_payload, cls=stop_payload)
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                assert resp.status == 200
+                data = await resp.json()
+        row = {r["name"]: r for r in data["members"]}[CREW]
+        # Preview is the conversational line, not the stop JSON…
+        assert row["last_message"] == "Running the analysis now."
+        # …and the flag says the newest event is a stop, so the chip renders.
+        assert row["last_message_stopped"] is True
+
+        # The member speaks again: the newest real row is now that message, the
+        # flag clears to absent, and the chip comes down.
+        state.conversation_log.append(key, "user", "actually, hold on")
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                data = await resp.json()
+        row = {r["name"]: r for r in data["members"]}[CREW]
+        assert row["last_message"] == "actually, hold on"
+        assert "last_message_stopped" not in row
 
     @pytest.mark.asyncio
     async def test_roster_preview_redacts_before_truncation(self, tmp_path):

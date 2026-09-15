@@ -20,7 +20,6 @@ from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cli_chat import _ensure_default_agent_in_config
-from kiro_crew.conductor_skill import generate_conductor_skill
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     _WORKSPACE_DIR_NAME,
@@ -41,7 +40,7 @@ from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.sel import sel
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills import remove_retired_conductor_skill
 from kiro_crew.validation import USER_ID_RE
 
 
@@ -334,19 +333,10 @@ def _setup_impl(
     # 2b. Ensure config.json has default KiroCrew agent for fresh installs
     _ensure_default_agent_in_config()
 
-    # 2c. Generate conductor skill if enabled (agent delegation).
-    try:
-        cfg = KiroCrewConfig.load()
-        if cfg.agent.conductor_skill:
-            generate_conductor_skill(SkillsLoader())
-            print("  ✅ Conductor skill generated")
-        else:
-            # Clean up stale skill if previously enabled then disabled.
-            skill_path = SkillsLoader()._dir / "conductor" / "SKILL.md"
-            if skill_path.exists():
-                skill_path.unlink()
-    except Exception as exc:
-        print(f"  ⚠️  Conductor skill generation failed: {exc}")
+    # 2c. Remove the delegation skill the retired `agent.conductor_skill` flag
+    #     generated. Only bytes that generator itself wrote are removed, so a
+    #     user skill that happens to share the directory name is left alone.
+    _remove_retired_conductor_skill()
 
     # 2d. Offer the unconfined-exec opt-in on a host with no sandbox backend.
     #     Runs BEFORE the agent-only early return: the servers this unblocks are
@@ -1060,6 +1050,15 @@ def _setup_slash_command() -> None:
         print("  ⚠️  'slack' section is not an object; leaving config untouched.\n")
         return
     print(f"  ✅ Slash command: /{raw}\n")
+
+
+def _remove_retired_conductor_skill() -> None:
+    """Run retired conductor skill cleanup without interrupting setup."""
+    try:
+        if remove_retired_conductor_skill():
+            print("  ✅ Removed retired conductor skill")
+    except Exception as exc:
+        print(f"  ⚠️  Retired conductor skill cleanup failed: {exc}")
 
 
 def _setup_sandbox_consent() -> None:

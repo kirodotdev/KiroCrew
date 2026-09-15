@@ -1,9 +1,9 @@
 """Slug-derivation parity tests (Python side).
 
-The vectors in :data:`PARITY_VECTORS` are duplicated verbatim in
+The vectors in :data:`BODY_PARITY_VECTORS` are duplicated verbatim in
 ``website/src/test/widgetSlug.test.ts``. They are the contract that keeps
-``kiro_crew.widget_slug.derive_widget_slug`` and the frontend's
-``deriveWidgetSlug`` producing identical output — if they drift, an
+``kiro_crew.widget_slug.derive_widget_body_slug`` and the frontend's
+``deriveWidgetBodySlug`` producing identical output — if they drift, an
 auto-registered widget artifact becomes invisible to the frontend probe and the
 star button creates a duplicate. Change a vector here and the TS suite fails too.
 """
@@ -12,7 +12,13 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.widget_slug import DERIVED_SLUG_RE, derive_widget_slug
+from kiro_crew.widget_slug import DERIVED_SLUG_RE, derive_widget_body_slug, derive_widget_slug
+
+BODY_PARITY_VECTORS = [
+    ("1779995123.456789", "<div>Hello</div>", "2f1bd76ebf6f069e"),
+    ("1779995123.456789", "<p>日本語</p>", "ecbde055a9fcc025"),
+    ("1779995123.456789", "<p>\U0001f600</p>", "bc39b62700f9e297"),
+]
 
 #: ``(message_ts, widget_index) -> slug``. Values captured from the frontend
 #: implementation; both suites assert against these exact strings.
@@ -69,3 +75,18 @@ class TestDeriveWidgetSlug:
         for message_ts, widget_index, _ in PARITY_VECTORS:
             slug = derive_widget_slug(message_ts, widget_index)
             assert _validate_slug(slug) == slug
+
+
+class TestDeriveWidgetBodySlug:
+    @pytest.mark.parametrize("message_ts,body,expected", BODY_PARITY_VECTORS)
+    def test_matches_frontend_vector(self, message_ts: str, body: str, expected: str):
+        assert derive_widget_body_slug(message_ts, body) == expected
+
+    def test_different_bodies_same_ts_differ(self):
+        assert derive_widget_body_slug("ts", "body-a") != derive_widget_body_slug("ts", "body-b")
+
+    def test_same_body_different_ts_differ(self):
+        assert derive_widget_body_slug("ts-a", "body") != derive_widget_body_slug("ts-b", "body")
+
+    def test_body_slug_differs_from_index_slug(self):
+        assert derive_widget_body_slug("ts", "0") != derive_widget_slug("ts", 0)

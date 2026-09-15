@@ -343,6 +343,32 @@ function isLoopbackHost(h: string): boolean {
   return LOOPBACK_HOSTS.has(h) || h === 'localhost' || h.endsWith('.localhost')
 }
 
+/** Loopback hosts an `http://` preview may be FRAMED on while the dashboard
+ *  itself is served over `https`. Two conditions, and a host has to meet both:
+ *
+ *  1. **The engine must not block the frame as mixed content.** `127.0.0.1` and
+ *     `localhost` are potentially trustworthy origins under W3C Secure Contexts,
+ *     so an `http://` document on them is exempt. `0.0.0.0` is the unspecified
+ *     address rather than loopback, so it is not exempt and really is blocked.
+ *  2. **The dashboard's own CSP must admit the origin.** `frame-src` carries
+ *     `http://127.0.0.1:*` and `http://localhost:*` unconditionally (`server.py`
+ *     `_LOOPBACK_FRAME_SRC`), while `http://*.localhost:*` is added only in
+ *     instances mode, and no wildcard-port entry for the rest of `127.0.0.0/8`
+ *     or for a bracketed IPv6 literal exists at all — the latter is invalid CSP
+ *     grammar.
+ *
+ *  A host missing either condition keeps the explanatory card, which is strictly
+ *  better than a frame the engine or the CSP silently blanks. IPv6 loopback still
+ *  reaches the frame: `isolatePreviewHost` canonicalizes `[::1]` to `127.0.0.1`
+ *  before the target is ever framed. */
+const EMBEDDABLE_LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost'])
+
+/** A URL's hostname, or `''` when it will not parse — so a caller deciding
+ *  whether to RELAX a guard fails closed instead of throwing during render. */
+function hostnameOf(url: string): string {
+  try { return new URL(url).hostname } catch { return '' }
+}
+
 /** A URL's port as the browser resolves it, so `:80` and an absent port on
  *  `http://` compare equal. */
 function effectivePort(u: URL): string {
@@ -1416,10 +1442,17 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // An http:// frame inside an https:// dashboard (remote/tunnel) is blocked by
   // the browser as mixed content — detect it so we can explain + offer the
   // open-in-new-tab fallback instead of rendering a silently-blank frame.
+  //
+  // The scheme alone does not decide it: a loopback target is a potentially
+  // trustworthy origin the engine does NOT block, so a scheme-only test refuses
+  // a dev server (or the CLI browser view) that would have loaded, and blames the
+  // browser for a refusal that is ours. See `EMBEDDABLE_LOOPBACK_HOSTS` for which
+  // hosts qualify and why the rest still do not.
   const mixedContent = useMemo(
     () => typeof window !== 'undefined'
       && window.location.protocol === 'https:'
-      && url.startsWith('http://'),
+      && url.startsWith('http://')
+      && !EMBEDDABLE_LOOPBACK_HOSTS.has(hostnameOf(url)),
     [url],
   )
 

@@ -151,6 +151,7 @@ async def test_definition_update_returns_conflict_and_run_maps_input() -> None:
             "args": {"level": "deep"},
             "author": "slot:main",
             "session_key": "slot:main",
+            "expected_store": None,
             "budget_total": None,
             "timeout_secs": None,
         },

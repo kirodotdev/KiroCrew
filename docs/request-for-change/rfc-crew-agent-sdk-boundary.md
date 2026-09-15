@@ -1,6 +1,6 @@
 ---
 title: Crew Agent SDK Boundary — isolate the codebase from ACP, and name the host contract
-status: partially-implemented
+status: partial
 revision: v4
 author: zejiangg, with Kiro
 created: 2026-08-28
@@ -131,6 +131,18 @@ The first domain vocabulary now owned by `kiro_crew.agent_sdk` is the minimal
 completed-turn contract used by structured monitors: provider-neutral input and
 output token dimensions plus terminal stop reasons. Monitor accounting consumes
 that SDK surface instead of importing ACP's `TurnUsage` and constants directly.
+
+Prompt delivery consumes the SDK-owned `ContextStreamEvent` read-only protocol
+and semantic event vocabulary. `ContextPromptProvider` exposes only context
+capabilities, not ACP handles. `context_provider_of()` delegates implementation
+recognition to the single SDK ACP driver; structural mocks and proxies cannot
+opt in by advertising attributes or a forged `__class__`. The bridge uses
+function-local concrete imports so the SDK remains import-light and does not
+cycle through provider receipt state. The workflow test scenario uses
+`drivers.acp.projected_session_mcp_servers(agent, work_dir=...)` to delegate the
+existing filtered projection through that same driver. It returns plain
+dictionaries without granting authority or starting MCP and is not exported
+from the SDK root.
 
 ### 2.2 The boundary is bypassed
 

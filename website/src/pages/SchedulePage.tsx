@@ -447,7 +447,7 @@ export default function SchedulePage() {
       return rank(a) - rank(b);
     },
     lastRun: (a: CronJob, b: CronJob) => (a.last_run_ts || 0) - (b.last_run_ts || 0),
-    nextRun: (a: CronJob, b: CronJob) => (a.next_run_ts || 0) - (b.next_run_ts || 0),
+    nextRun: (a: CronJob, b: CronJob) => (a.next_run_ts ?? Infinity) - (b.next_run_ts ?? Infinity),
   }), [])
   const { sorted: sortedScheduleJobs, sort: schedSort, toggle: toggleSchedSort } = useSortableTable(filteredJobs, 'cron-schedule', scheduleComparators, { key: 'nextRun', dir: 'asc' })
 

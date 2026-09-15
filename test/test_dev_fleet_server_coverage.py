@@ -2220,7 +2220,9 @@ async def test_make_live_handler_forwards_dry_run(monkeypatch):
 
     resp = await http_api.api_dev_fleet_make_live(_json_request({"path": "/w", "dry_run": True}))
     assert resp.status == 200
-    make_live.assert_awaited_once_with("/w", True, expected_staged=None)
+    make_live.assert_awaited_once_with(
+        "/w", True, expected_staged=None, undo=False
+    )
     assert sink.events[0]["resources"] == "/w"
 
 

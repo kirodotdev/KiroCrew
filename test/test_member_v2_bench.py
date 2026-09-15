@@ -259,13 +259,25 @@ class TestMainCli:
         assert not out_json.exists()
 
     def test_main_writes_a_report_with_a_fake_backend(
-        self, tmp_path: Path, home: Path, monkeypatch, capsys
+        self, tmp_path: Path, home: Path, sound_report: dict, monkeypatch, capsys
     ) -> None:
         model_path = tmp_path / "fake-model.gguf"
         model_path.write_bytes(b"not a real model, just needs to exist")
         out_json = tmp_path / "report.json"
         skip_download_before = os.environ.get("KIROCREW_SKIP_MODEL_DOWNLOAD")
+        evaluations: list[tuple[TestMainCli._FakeBackend, Path]] = []
 
+        def cli_report(embed, temporary: Path) -> dict:
+            # The shared report fixture covers evaluation; this test owns CLI wiring.
+            assert isinstance(embed.__self__, self._FakeBackend)
+            assert embed("CLI wiring probe") == _fake_vector("CLI wiring probe")
+            assert temporary.is_dir()
+            assert os.environ["KIROCREW_HOME"] == str(temporary)
+            assert os.environ["KIROCREW_SKIP_MODEL_DOWNLOAD"] == "1"
+            evaluations.append((embed.__self__, temporary))
+            return copy.deepcopy(sound_report)
+
+        monkeypatch.setattr(member_v2, "evaluate", cli_report)
         monkeypatch.setattr(
             "kiro_crew.embeddings.LlamaCppEmbedder", self._FakeBackend, raising=True
         )
@@ -276,6 +288,11 @@ class TestMainCli:
 
         member_v2.main()
 
+        assert len(evaluations) == 1
+        backend, temporary = evaluations[0]
+        assert backend.model_path == model_path
+        assert backend.closed is True
+        assert not temporary.exists()
         assert out_json.exists()
         written = json.loads(out_json.read_text(encoding="utf-8"))
         assert written["model"]["model_id"] == "fake-test-model"

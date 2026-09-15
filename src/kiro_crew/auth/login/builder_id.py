@@ -164,10 +164,11 @@ async def poll_token_once(
     async with session.post(url, json=payload, headers=_HEADERS) as resp:
         try:
             data = await resp.json(content_type=None)
-        except (aiohttp.ClientError, ValueError):
-            # Malformed/empty body (e.g. a proxy or LB error page during an
-            # outage): "not yet", mirroring the social poll's guard — the
-            # flow's own expiry bounds how long a caller retries.
+        except (aiohttp.ClientError, ValueError, asyncio.TimeoutError):
+            # Malformed, empty or unreadable body (e.g. a proxy or LB error page
+            # during an outage): "not yet", mirroring the social poll's guard --
+            # the issuer did answer, so the flow's own expiry bounds how long a
+            # caller retries and no transport budget is charged.
             return None
         if resp.status == 200:
             if not isinstance(data, dict):

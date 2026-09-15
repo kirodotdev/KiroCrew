@@ -1,11 +1,14 @@
 """Tests for the change-scoped local gate (``scripts/local-gate.py``).
 
-The gate narrows the LOCAL iteration suite the same way CI narrows its matrix:
-three diff buckets, narrowing only on a provably single-surface diff, full run
-on any doubt. These tests pin the two contracts that make it safe:
+The gate runs the tests a diff is RELATED to, on both surfaces, and leaves the
+full suite to CI. These tests pin the contracts that make it safe:
 
-1. **Fail-open**: every unreadable/ambiguous input produces the FULL plan.
-2. **CI parity**: the bucket prefixes here are the SAME ones ci.yml's
+1. **No automatic full run**: no diff shape -- meta, both surfaces, evidence
+   only, a large related set -- ever produces the full plan. Only ``--full``
+   does, and it is for a human who asks.
+2. **Fail closed, not open**: an unreadable diff or an untrustworthy selection
+   raises ``GateCannotSee`` (exit 2, run nothing) instead of running everything.
+3. **CI parity**: the bucket prefixes here are the SAME ones ci.yml's
    ``changes`` job uses, asserted against the workflow text so the two cannot
    drift apart silently.
 """
@@ -13,6 +16,7 @@ on any doubt. These tests pin the two contracts that make it safe:
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import re
 import subprocess
@@ -60,7 +64,7 @@ def test_script_exists(gate) -> None:
         (".github/workflows/ci.yml", (False, True, False)),
         ("scripts/local-gate.py", (False, True, False)),
         ("src/kiro_crew/gateway.py", (False, False, True)),
-        ("test/test_gateway.py", (False, False, True)),
+        ("test/test_gatewayd_diag.py", (False, False, True)),
         ("docs/README.md", (False, False, True)),  # catch-all: unrecognised = backend
         ("newtoplevel.cfg", (False, False, True)),
         ("websites/evil.py", (False, False, True)),  # prefix, not substring
@@ -136,7 +140,7 @@ def test_bucket_prefixes_match_ci_changes_job(gate) -> None:
     A one-directional substring pin would catch a local prefix missing from
     ci.yml but not a bucket CI adds (a new frontend tree, a path moved into
     meta): the local gate would misclassify it into the backend catch-all and
-    skip locally what CI runs. Parse the workflow's ``filters:`` block and
+    report the wrong surface. Parse the workflow's ``filters:`` block and
     assert set equality, so any divergence — either direction — fails here.
     """
     yaml = pytest.importorskip("yaml")
@@ -196,13 +200,10 @@ def test_bucket_prefixes_match_ci_changes_job(gate) -> None:
     ), "_IGNORED_PREFIXES must not overlap the frontend/meta bucket prefixes"
 
 
-# ---------------------------------------------------------------------------
-# build_plan(): fail-open on every doubtful input
-# ---------------------------------------------------------------------------
-
 def test_electron_filter_is_still_mirrored_from_ci(gate) -> None:
-    """build_plan() filters ``website/electron/`` guards out of the vitest
-    hand-off the same way ci.yml's frontend-test scope step does. That step is
+    """The cross-surface set the gate hands vitest (via
+    ``run_scoped_tests.cross_surface_targets``) strips ``website/electron/``
+    guards the same way ci.yml's frontend-test scope step does. That step is
     bash, so full structural parity isn't parseable — pin the observable
     contract instead: the frontend-test job still strips electron specs with
     ``grep -v '^electron/'`` after re-rooting to cwd=website. If this
@@ -218,9 +219,13 @@ def test_electron_filter_is_still_mirrored_from_ci(gate) -> None:
     assert "grep -v '^electron/'" in frontend_job, (
         "ci.yml's frontend-test job no longer filters electron specs from the "
         "vitest hand-off -- re-examine the electron filtering in "
-        "scripts/local-gate.py build_plan()"
+        "scripts/run_scoped_tests.py cross_surface_targets()"
     )
 
+
+# ---------------------------------------------------------------------------
+# build_plan(): never a full suite unless asked; fail closed on doubt
+# ---------------------------------------------------------------------------
 
 def _plan_labels(plan) -> list[str]:
     return [label for label, _cmd, _cwd in plan.commands]
@@ -230,103 +235,264 @@ def _is_full(plan) -> bool:
     return _plan_labels(plan) == ["backend (full)", "frontend (full)"]
 
 
+def _related(monkeypatch, gate, table: dict[str, list[str]]) -> None:
+    """Stub the selection so build_plan is tested on shape, not on repo content.
+
+    Targets still pass through the real ``backend_argv`` / ``frontend_argv``
+    and therefore the real ``validated_targets`` admission check.
+    """
+    def fake_related(surface, paths, root=None):
+        targets = table.get(surface, [])
+        return targets, f"related: {len(targets)} test file(s) (full suite deferred to CI)"
+    monkeypatch.setattr(gate, "related_targets", fake_related)
+
+
 def test_full_flag_forces_full_gate(gate) -> None:
-    assert _is_full(gate.build_plan(_args(full=True)))
-
-
-def test_unreadable_diff_falls_open(gate, monkeypatch) -> None:
-    monkeypatch.setattr(gate, "changed_files", lambda base: None)
-    plan = gate.build_plan(_args())
+    plan = gate.build_plan(_args(full=True))
     assert _is_full(plan)
-    assert "fail-open" in plan.reason
+    assert "--full requested" in plan.reason
 
 
-def test_empty_diff_falls_open(gate, monkeypatch) -> None:
+def test_full_flag_runs_the_budgeted_auto_with_a_capped_env(gate, monkeypatch) -> None:
+    """Even the human-requested full run must not own the whole box -- and the
+    bound goes through xdist_budget's knob, not an explicit -n that would bypass
+    the budget's memory clamp and shared slots."""
+    _label, cmd, _cwd = gate.build_plan(_args(full=True)).commands[0]
+    assert cmd[cmd.index("-n") + 1] == "auto"
+    assert cmd[cmd.index("--dist") + 1] == "loadgroup"
+    monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
+    env = gate.pytest_worker_env()
+    cap = int(env["PYTEST_XDIST_AUTO_NUM_WORKERS"])
+    assert 2 <= cap <= 12
+
+
+def test_an_inherited_tighter_cap_is_never_raised(gate, monkeypatch) -> None:
+    """Kiro Crew seeds PYTEST_XDIST_AUTO_NUM_WORKERS at every agent spawn; the
+    gate must not hand a run more workers than its parent asked for."""
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", "1")
+    assert gate.pytest_worker_env()["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "1"
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", "200")
+    assert int(gate.pytest_worker_env()["PYTEST_XDIST_AUTO_NUM_WORKERS"]) <= 12
+
+
+def test_main_passes_the_capped_env_to_every_command(gate, monkeypatch) -> None:
+    plan = gate.Plan("test plan")
+    plan.add("backend (related)", [gate.sys.executable, "-m", "pytest", "-n", "auto"], gate._REPO_ROOT)
+    monkeypatch.setattr(gate, "build_plan", lambda _args: plan)
+    monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
+    seen: list[dict] = []
+
+    def fake_run(cmd, cwd, env=None, **_kwargs):
+        seen.append(env or {})
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    assert gate.main([]) == 0
+    assert seen and 2 <= int(seen[0]["PYTEST_XDIST_AUTO_NUM_WORKERS"]) <= 12
+
+
+def test_unreadable_diff_fails_closed(gate, monkeypatch) -> None:
+    monkeypatch.setattr(gate, "changed_files", lambda base: None)
+    with pytest.raises(gate.GateCannotSee, match="running nothing"):
+        gate.build_plan(_args())
+
+
+def test_unreadable_diff_exits_two_from_main(gate, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(gate, "changed_files", lambda base: None)
+    assert gate.main(["--dry-run"]) == 2
+    assert "running nothing" in capsys.readouterr().err
+
+
+def test_empty_diff_runs_nothing(gate, monkeypatch) -> None:
     monkeypatch.setattr(gate, "changed_files", lambda base: [])
-    assert _is_full(gate.build_plan(_args()))
+    plan = gate.build_plan(_args())
+    assert plan.commands == []
+    assert "CI" in plan.reason
 
 
-def test_meta_diff_runs_full(gate, monkeypatch) -> None:
+def test_meta_diff_does_not_run_full(gate, monkeypatch) -> None:
+    """A scripts/ (meta) change gets its related set, not the full gate."""
     monkeypatch.setattr(gate, "changed_files", lambda base: ["scripts/clean.sh"])
-    assert _is_full(gate.build_plan(_args()))
+    _related(monkeypatch, gate, {"backend": ["test/test_local_gate.py"]})
+    plan = gate.build_plan(_args())
+    assert not _is_full(plan)
+    assert _plan_labels(plan) == ["backend (related)"]
+    assert "meta=True" in plan.reason and "deferred to CI" in plan.reason
 
 
-def test_evidence_only_diff_falls_open(gate, monkeypatch) -> None:
-    """A screenshots-only diff matches no bucket in CI (full matrix runs);
-    the local gate mirrors that with the full plan (fail-open)."""
+def test_evidence_only_diff_runs_nothing(gate, monkeypatch) -> None:
+    """A screenshots-only diff matches no bucket in CI, which runs its full
+    matrix. Locally there is nothing related to run and the full suite stays
+    CI's."""
     monkeypatch.setattr(
         gate, "changed_files",
         lambda base: ["temp-screenshots/feature/shot.png"],
     )
     plan = gate.build_plan(_args())
-    assert _is_full(plan)
-    assert "fail-open" in plan.reason
+    assert plan.commands == []
+    assert "CI" in plan.reason
 
 
-def test_both_surfaces_runs_full(gate, monkeypatch) -> None:
+def test_both_surfaces_does_not_run_full(gate, monkeypatch) -> None:
+    """One backend file plus one frontend file: each surface gets its related
+    set; neither surface, and not the pair, is a reason for the full suite."""
     monkeypatch.setattr(
         gate, "changed_files",
         lambda base: ["website/src/App.tsx", "src/kiro_crew/gateway.py"],
     )
-    assert _is_full(gate.build_plan(_args()))
-
-
-def test_selector_failure_falls_open(gate, monkeypatch) -> None:
-    monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
-    monkeypatch.setattr(gate, "selector_must_run", lambda surface: None)
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_gatewayd_diag.py"],
+        "frontend": ["src/test/App.deployRoute.test.tsx"],
+    })
     plan = gate.build_plan(_args())
-    assert _is_full(plan)
-    assert "fail-open" in plan.reason
+    assert not _is_full(plan)
+    assert _plan_labels(plan) == ["backend (related)", "frontend (related)"]
 
 
-# ---------------------------------------------------------------------------
-# build_plan(): the two narrowed shapes
-# ---------------------------------------------------------------------------
-
-def test_frontend_only_diff_narrows_backend(gate, monkeypatch) -> None:
-    monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
-    monkeypatch.setattr(
-        gate, "selector_must_run",
-        lambda surface: ["test/test_redaction_mirror_parity.py"],
-    )
-    plan = gate.build_plan(_args())
-    labels = _plan_labels(plan)
-    assert labels == ["frontend (full)", "backend (cross-surface guards)"]
-    _label, cmd, _cwd = plan.commands[1]
-    assert cmd[-1] == "test/test_redaction_mirror_parity.py"
-
-
-def test_frontend_only_diff_with_no_guards_runs_frontend_alone(gate, monkeypatch) -> None:
-    monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
-    monkeypatch.setattr(gate, "selector_must_run", lambda surface: [])
-    plan = gate.build_plan(_args())
-    assert _plan_labels(plan) == ["frontend (full)"]
-
-
-def test_backend_only_diff_narrows_frontend(gate, monkeypatch) -> None:
+def test_no_env_var_selects_full(gate, monkeypatch) -> None:
+    """Only the flag reaches the full suite. An env var must not."""
+    monkeypatch.setenv("KIROCREW_LOCAL_GATE_FULL", "1")
     monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
-    monkeypatch.setattr(
-        gate, "selector_must_run",
-        # REAL paths on purpose: the gate refuses a target the tree does not
-        # carry, so a placeholder would exercise the fail-open branch instead
-        # of the narrowed shape this test is about.
-        lambda surface: [
-            "website/src/test/AcpAdapter.defaults.test.ts",
-            "website/electron/test/app-menu.test.js",  # electron job's guard: filtered
-        ],
-    )
+    _related(monkeypatch, gate, {"backend": ["test/test_gatewayd_diag.py"]})
+    assert not _is_full(gate.build_plan(_args()))
+
+
+def test_large_related_set_still_runs_as_related(gate, monkeypatch) -> None:
+    """Size is printed, never used as a reason to switch to the full suite."""
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/context.py"])
+    many = [f"test/test_m{i}.py" for i in range(500)]
+    _related(monkeypatch, gate, {"backend": many})
+    monkeypatch.setattr(gate, "backend_argv", lambda targets: ["pytest", "--", *targets])
     plan = gate.build_plan(_args())
     labels = _plan_labels(plan)
-    assert labels == ["backend (full)", "frontend (cross-surface guards)"]
-    _label, cmd, cwd = plan.commands[1]
-    # electron guard filtered out; path re-rooted for cwd=website
-    assert cmd[-1] == "src/test/AcpAdapter.defaults.test.ts"
-    assert not any("electron" in part for part in cmd)
-    assert cwd.name == "website"
+    assert labels and all(label.startswith("backend (related)") for label in labels)
+    assert not any("(full)" in label for label in labels)
+    covered = [t for _l, cmd, _c in plan.commands for t in cmd[cmd.index("--") + 1 :]]
+    assert covered == many
+
+
+def test_related_set_is_batched_under_the_windows_argv_limit(gate, monkeypatch) -> None:
+    """1,000+ targets must never reach one CreateProcess call.
+
+    Windows caps a command line at 32,767 chars; a `session.py` change selects
+    ~1,045 files (~36K chars) and the gate died with WinError 206 before pytest
+    ran. Each batch's joined argv stays under `ARGV_CHAR_LIMIT`, every target
+    lands in exactly one batch in order, and the labels number the batches.
+    """
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/session.py"])
+    many = [f"test/test_widely_referenced_module_{i:04d}.py" for i in range(1100)]
+    _related(monkeypatch, gate, {"backend": many})
+    monkeypatch.setattr(
+        gate, "backend_argv",
+        lambda targets: ["python", "-m", "pytest", "-q", "-n", "12", "--no-cov", "--", *targets],
+    )
+    plan = gate.build_plan(_args())
+    cmds = [cmd for _l, cmd, _c in plan.commands]
+    assert len(cmds) > 1
+    limit = importlib.import_module("run_scoped_tests").ARGV_CHAR_LIMIT
+    assert all(len(" ".join(cmd)) <= limit for cmd in cmds)
+    covered = [t for cmd in cmds for t in cmd[cmd.index("--") + 1 :]]
+    assert covered == many
+    labels = _plan_labels(plan)
+    assert labels[0] == f"backend (related) 1/{len(cmds)}"
+    assert labels[-1] == f"backend (related) {len(cmds)}/{len(cmds)}"
+
+
+def test_selector_failure_fails_closed(gate, monkeypatch) -> None:
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
+
+    def boom(surface, paths, root=None):
+        raise gate.SelectionUntrustworthy("cross-surface selector failed")
+
+    monkeypatch.setattr(gate, "related_targets", boom)
+    with pytest.raises(gate.GateCannotSee, match="cannot select related tests"):
+        gate.build_plan(_args())
 
 
 # ---------------------------------------------------------------------------
-# build_plan(): the selector's stdout is argv, so it is admitted, not trusted
+# build_plan(): the related shapes
+# ---------------------------------------------------------------------------
+
+def test_frontend_only_diff_runs_related_on_both_surfaces(gate, monkeypatch) -> None:
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_redaction_mirror_parity.py"],
+        "frontend": ["src/test/App.deployRoute.test.tsx"],
+    })
+    plan = gate.build_plan(_args())
+    labels = _plan_labels(plan)
+    assert labels == ["backend (related)", "frontend (related)"]
+    _label, cmd, _cwd = plan.commands[0]
+    assert cmd[-1] == "test/test_redaction_mirror_parity.py"
+    assert not any("(full)" in label for label in labels)
+
+
+def test_surface_with_nothing_related_is_skipped_with_a_note(gate, monkeypatch) -> None:
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
+    _related(monkeypatch, gate, {"frontend": ["src/test/App.deployRoute.test.tsx"]})
+    plan = gate.build_plan(_args())
+    assert _plan_labels(plan) == ["frontend (related)"]
+    assert any(note.startswith("backend: related: 0") for note in plan.notes)
+
+
+def test_missing_node_does_not_discard_the_backend_plan(gate, monkeypatch, capsys) -> None:
+    """A box without Node still runs the backend related set.
+
+    The frontend related set is non-empty for a backend diff (it carries CI's
+    cross-surface specs), so ``frontend_argv`` is reached and cannot find ``npx``.
+    That is an environment gap, not an untrustworthy selection: the plan keeps the
+    backend command, notes the skipped surface, and exits 0 with a loud line
+    saying CI runs those specs. It must NOT surface as ``GateCannotSee``.
+    """
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_gatewayd_diag.py"],
+        "frontend": ["src/test/AcpAdapter.defaults.test.ts"],
+    })
+
+    def no_node(targets):
+        raise gate.LauncherMissing("npx is not on PATH, so the frontend suite cannot be launched")
+
+    monkeypatch.setattr(gate, "frontend_argv", no_node)
+    plan = gate.build_plan(_args())
+    assert _plan_labels(plan) == ["backend (related)"]
+    assert plan.skipped == ["frontend"]
+    assert any("NOT RUN HERE" in note and "CI runs them" in note for note in plan.notes)
+
+    monkeypatch.setattr(gate, "build_plan", lambda _args: plan)
+    monkeypatch.setattr(
+        gate.subprocess, "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0),
+    )
+    assert gate.main([]) == 0
+    err = capsys.readouterr().err
+    assert "frontend related set NOT run here" in err
+
+
+def test_a_missing_runner_is_a_selection_error_everywhere_else(gate) -> None:
+    """``LauncherMissing`` stays a ``SelectionUntrustworthy`` so single-surface
+    callers (the profile's per-surface gates) still exit 2 on it."""
+    assert issubclass(gate.LauncherMissing, gate.SelectionUntrustworthy)
+
+
+def test_backend_only_diff_runs_related_not_full(gate, monkeypatch) -> None:
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_gatewayd_diag.py"],
+        "frontend": ["src/test/AcpAdapter.defaults.test.ts"],
+    })
+    plan = gate.build_plan(_args())
+    assert _plan_labels(plan) == ["backend (related)", "frontend (related)"]
+    _label, be_cmd, be_cwd = plan.commands[0]
+    assert be_cwd == gate._REPO_ROOT
+    assert be_cmd[be_cmd.index("-n") + 1] == "auto"  # budgeted; the cap rides in the env
+    _label, fe_cmd, fe_cwd = plan.commands[1]
+    assert fe_cwd == gate._REPO_ROOT / "website"
+    assert fe_cmd[-1] == "src/test/AcpAdapter.defaults.test.ts"
+
+
+# ---------------------------------------------------------------------------
+# admission: a selected target must never reach a runner as an option
 # ---------------------------------------------------------------------------
 
 HOSTILE_TARGETS = [
@@ -338,28 +504,26 @@ HOSTILE_TARGETS = [
 
 
 @pytest.mark.parametrize("hostile", HOSTILE_TARGETS)
-def test_hostile_backend_target_falls_open(gate, monkeypatch, hostile: str) -> None:
-    """A target that could act as an option or escape the tree runs everything.
+def test_hostile_backend_target_fails_closed(gate, monkeypatch, hostile: str) -> None:
+    """A target that could act as an option or escape the tree runs NOTHING.
 
-    The selector's stdout is spliced straight into a pytest argv, so a file
+    The selection's output is spliced straight into a pytest argv, so a file
     named ``--config=evil.ini`` would be read as a FLAG rather than a path.
     There is no shell (argv is always a list), so the exposure is argument
     injection -- and a test runner's own flags are quite enough to do damage.
 
-    Falling open is this file's existing contract for anything doubtful, and
-    it is also what ``SelectionUntrustworthy`` documents: the caller runs
-    everything.
+    The old contract fell OPEN to the full suite here. Now the gate exits 2:
+    a selection it cannot explain is not one it may run, and the full suite is
+    not a hiding place for that.
     """
     monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
-    monkeypatch.setattr(gate, "selector_must_run", lambda surface: [hostile])
-    plan = gate.build_plan(_args())
-    assert _is_full(plan)
-    assert "fail-open" in plan.reason
-    assert not any(hostile in part for _l, cmd, _c in plan.commands for part in cmd)
+    _related(monkeypatch, gate, {"backend": [hostile]})
+    with pytest.raises(gate.GateCannotSee, match="cannot select related tests"):
+        gate.build_plan(_args())
 
 
 @pytest.mark.parametrize("hostile", ["--reporter=evil", "../outside.test.ts"])
-def test_hostile_frontend_target_falls_open(gate, monkeypatch, hostile: str) -> None:
+def test_hostile_frontend_target_fails_closed(gate, monkeypatch, hostile: str) -> None:
     """Same admission on the vitest hand-off.
 
     Checked separately because the frontend path re-roots each target to
@@ -367,25 +531,22 @@ def test_hostile_frontend_target_falls_open(gate, monkeypatch, hostile: str) -> 
     single shared assertion would not prove both.
     """
     monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
-    monkeypatch.setattr(gate, "selector_must_run", lambda surface: ["website/" + hostile])
-    plan = gate.build_plan(_args())
-    assert _is_full(plan)
-    assert "fail-open" in plan.reason
+    _related(monkeypatch, gate, {"frontend": [hostile]})
+    with pytest.raises(gate.GateCannotSee):
+        gate.build_plan(_args())
 
 
 def test_one_hostile_target_condemns_the_whole_selection(gate, monkeypatch) -> None:
-    """A good target beside a bad one must not be run as a narrowed plan.
+    """A good target beside a bad one must not be run as a partial plan.
 
     Dropping the bad entry and keeping the rest would be the tempting
     behaviour and the wrong one: a selection containing something the gate
-    cannot explain is not a selection it can justify narrowing on.
+    cannot explain is not a selection it can justify running.
     """
     monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
-    monkeypatch.setattr(
-        gate, "selector_must_run",
-        lambda surface: ["test/test_local_gate.py", "--config=evil.ini"],
-    )
-    assert _is_full(gate.build_plan(_args()))
+    _related(monkeypatch, gate, {"backend": ["test/test_local_gate.py", "--config=evil.ini"]})
+    with pytest.raises(gate.GateCannotSee):
+        gate.build_plan(_args())
 
 
 def test_backend_targets_are_preceded_by_a_double_dash(gate, monkeypatch) -> None:
@@ -397,28 +558,16 @@ def test_backend_targets_are_preceded_by_a_double_dash(gate, monkeypatch) -> Non
     scope while everything ran.
     """
     monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
-    monkeypatch.setattr(
-        gate, "selector_must_run", lambda surface: ["test/test_local_gate.py"],
-    )
-    _label, cmd, _cwd = gate.build_plan(_args()).commands[1]
+    _related(monkeypatch, gate, {"backend": ["test/test_local_gate.py"]})
+    _label, cmd, _cwd = gate.build_plan(_args()).commands[0]
     assert cmd[-2] == "--" and cmd[-1] == "test/test_local_gate.py"
 
 
 def test_vitest_targets_are_not_preceded_by_a_double_dash(gate, monkeypatch) -> None:
     monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
-    monkeypatch.setattr(
-        gate, "selector_must_run",
-        lambda surface: ["website/src/test/AcpAdapter.defaults.test.ts"],
-    )
-    _label, cmd, _cwd = gate.build_plan(_args()).commands[1]
+    _related(monkeypatch, gate, {"frontend": ["src/test/AcpAdapter.defaults.test.ts"]})
+    _label, cmd, _cwd = gate.build_plan(_args()).commands[0]
     assert "--" not in cmd
-
-
-def test_backend_only_diff_with_no_guards_runs_backend_alone(gate, monkeypatch) -> None:
-    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
-    monkeypatch.setattr(gate, "selector_must_run", lambda surface: [])
-    plan = gate.build_plan(_args())
-    assert _plan_labels(plan) == ["backend (full)"]
 
 
 # ---------------------------------------------------------------------------
@@ -443,8 +592,7 @@ def test_non_node_command_is_unchanged(gate) -> None:
 
 
 def test_missing_node_launcher_fails_cleanly(gate, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(gate, "build_plan", lambda _args: gate.Plan("test plan"))
-    plan = gate.build_plan(None)
+    plan = gate.Plan("test plan")
     plan.add("frontend", ["npx", "vitest", "run"], gate._REPO_ROOT / "website")
     monkeypatch.setattr(gate, "build_plan", lambda _args: plan)
     monkeypatch.setattr(gate.shutil, "which", lambda _candidate: None)
@@ -464,10 +612,20 @@ def test_missing_node_launcher_fails_cleanly(gate, monkeypatch, capsys) -> None:
 # End-to-end dry run against the real repo (no tests executed)
 # ---------------------------------------------------------------------------
 
-def test_dry_run_exits_zero_and_prints_plan(gate, capsys) -> None:
+def test_dry_run_full_exits_zero_and_prints_plan(gate, capsys) -> None:
     rc = gate.main(["--dry-run", "--full"])
     assert rc == 0
     err = capsys.readouterr().err
     assert "local-gate:" in err
     assert "backend (full)" in err
     assert "frontend (full)" in err
+
+
+def test_dry_run_against_the_real_repo_never_plans_a_full_suite(gate, capsys) -> None:
+    """Whatever this checkout's diff looks like, the default plan is related-only."""
+    rc = gate.main(["--dry-run"])
+    err = capsys.readouterr().err
+    assert rc in (0, 2), err
+    assert "(full)" not in err
+    if rc == 0:
+        assert "deferred to CI" in err

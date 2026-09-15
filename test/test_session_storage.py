@@ -93,6 +93,17 @@ def _archive_segment(crew_home: Path, stem: str, stamp: str, *, size: int, age_d
     return size
 
 
+def _attachment(crew_home: Path, stem: str, name: str, *, size: int, age_days: float) -> int:
+    """One image in the session's attachments directory, aged with its transcript."""
+    adir = crew_home / "sessions" / f"{stem}.attachments"
+    adir.mkdir(exist_ok=True)
+    path = adir / name
+    path.write_bytes(b"i" * size)
+    mtime = _NOW - age_days * _DAY
+    os.utime(path, (mtime, mtime))
+    return size
+
+
 def _index(pairs: dict[str, str] | None = None, active: set[str] | None = None) -> SessionIndex:
     """Build an index from a readable {sid: stem} mapping.
 
@@ -1290,6 +1301,197 @@ class TestSidecarFiles:
         assert staged.read_bytes() == b"lock"
         assert session_storage.restore(batch.batch_id) == 1
         assert sidecar.read_bytes() == b"lock"
+
+
+class TestAttachmentsAreTheThirdHalf:
+    """``<stem>.attachments/`` holds the images a transcript's rows reference, so it
+    is measured, moved, restored and emptied with the transcript -- leaving it
+    behind would keep served images for a session the user reclaimed."""
+
+    def test_attachment_bytes_are_the_sessions(self, stores: tuple[Path, Path]) -> None:
+        crew_home, kiro_home = stores
+        cli = _cli_half(kiro_home, "aaaa1111", log_bytes=100, age_days=40)
+        crew = _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        img = _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=900, age_days=40)
+
+        report = session_storage.measure(_index({"aaaa1111": "dashboard_chat-1"}), now=_NOW)
+
+        assert report.total_sessions == 1
+        assert report.total_bytes == cli + crew + img
+
+    def test_a_fresh_attachment_keeps_the_session_fresh(self, stores: tuple[Path, Path]) -> None:
+        """An image written hours ago is activity on the session, whatever the
+        transcript's own mtime says."""
+        crew_home, _ = stores
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=9, age_days=0.2)
+
+        with pytest.raises(SessionStorageError, match="touched in the last"):
+            session_storage.move_to_trash(
+                ["dashboard_chat-1"], reason="manual", index=_index(), now=_NOW
+            )
+
+    def test_attachments_move_restore_and_empty_with_the_session(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=33, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "ef01-other.png", size=44, age_days=40)
+        adir = crew_home / "sessions" / "dashboard_chat-1.attachments"
+
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+
+        # Moved: the images travel under the directory's own name, and the drained
+        # directory does not linger as an empty shell beside the live sessions.
+        staged = session_storage.trash_root() / batch.batch_id / "crew" / adir.name
+        assert (staged / "abcd-shot.png").read_bytes() == b"i" * 33
+        assert (staged / "ef01-other.png").read_bytes() == b"i" * 44
+        assert not adir.exists()
+        entry = json.loads(
+            (session_storage.trash_root() / batch.batch_id / session_storage.MANIFEST_NAME)
+            .read_text(encoding="utf-8")
+            .splitlines()[1]
+        )
+        assert str(adir / "abcd-shot.png") in {r["origin"] for r in entry["files"]}
+
+        # Restored: the directory comes back with its files.
+        assert session_storage.restore(batch.batch_id) == 1
+        assert (adir / "abcd-shot.png").read_bytes() == b"i" * 33
+        assert (adir / "ef01-other.png").read_bytes() == b"i" * 44
+        assert (crew_home / "sessions" / "dashboard_chat-1.jsonl").is_file()
+
+        # Emptied: nothing of the session is left anywhere.
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+        freed = session_storage.empty_trash([batch.batch_id])
+        assert freed >= 8 + 8 + 33 + 44
+        assert not adir.exists()
+        assert not (session_storage.trash_root() / batch.batch_id).exists()
+        assert session_storage.list_trash() == []
+
+    def test_the_drained_attachments_dir_is_removed_under_the_transcript_lock(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The empty-shell ``rmdir`` runs while the unit's transcript lock is held.
+
+        A writer resuming the session creates the directory and lands its first
+        image under that same lock, so an ``rmdir`` issued after the lock is
+        released could take the directory between the ``mkdir`` and the file --
+        the image copy fails open and the row keeps its scratch path.
+        """
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=33, age_days=40)
+        adir = crew_home / "sessions" / "dashboard_chat-1.attachments"
+
+        events: list[tuple[str, str]] = []
+        real_locked_stem = ConversationLog._locked_stem
+
+        @contextlib.contextmanager
+        def recording_locked_stem(self: ConversationLog, key: str):
+            events.append(("enter", key))
+            try:
+                with real_locked_stem(self, key):
+                    yield
+            finally:
+                events.append(("exit", key))
+
+        real_rmdir = os.rmdir
+
+        def recording_rmdir(path, *args, **kwargs):
+            events.append(("rmdir", str(path)))
+            return real_rmdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(ConversationLog, "_locked_stem", recording_locked_stem)
+        monkeypatch.setattr(os, "rmdir", recording_rmdir)
+
+        session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+        assert not adir.exists()
+
+        rmdir_at = events.index(("rmdir", str(adir)))
+        before = events[:rmdir_at]
+        opened = [i for i, e in enumerate(before) if e == ("enter", "dashboard_chat-1")]
+        assert opened, "the transcript lock was never taken before the rmdir"
+        assert ("exit", "dashboard_chat-1") not in before[
+            opened[-1] :
+        ], "the attachments directory was removed after the transcript lock was released"
+
+    def test_a_foreign_entry_in_the_attachments_dir_is_not_taken(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """This code writes only flat files there. A subdirectory is not the
+        session's and is left alone -- and so is the now non-empty directory."""
+        crew_home, _ = stores
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=5, age_days=40)
+        adir = crew_home / "sessions" / "dashboard_chat-1.attachments"
+        (adir / "foreign").mkdir()
+        aged = _NOW - 40 * _DAY
+        os.utime(adir / "foreign", (aged, aged))
+
+        batch = session_storage.move_to_trash(
+            ["dashboard_chat-1"], reason="manual", index=_index(), now=_NOW
+        )
+
+        assert batch.sessions == 1
+        assert not (adir / "abcd-shot.png").exists()
+        assert (adir / "foreign").is_dir()
+        assert session_storage.restore(batch.batch_id) == 1
+        assert (adir / "abcd-shot.png").read_bytes() == b"i" * 5
+
+    def test_an_unreadable_attachments_dir_leaves_the_session_whole(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Files the scan cannot see cannot be moved, so nothing of the session is:
+        moving the transcript alone would orphan images that are still served."""
+        crew_home, _ = stores
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=5, age_days=40)
+        adir = crew_home / "sessions" / "dashboard_chat-1.attachments"
+        real_scandir = os.scandir
+
+        def refusing(path=".", *a, **k):
+            if isinstance(path, (str, os.PathLike)) and Path(path) == adir:
+                raise PermissionError(errno.EACCES, "denied", str(path))
+            return real_scandir(path, *a, **k)
+
+        monkeypatch.setattr(session_storage.os, "scandir", refusing)
+        with pytest.raises(SessionStorageError, match="none of the selected sessions"):
+            session_storage.move_to_trash(
+                ["dashboard_chat-1"], reason="manual", index=_index(), now=_NOW
+            )
+
+        assert (crew_home / "sessions" / "dashboard_chat-1.jsonl").is_file()
+        assert (adir / "abcd-shot.png").is_file()
+
+    def test_a_manifest_cannot_route_an_attachment_outside_its_store(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The origin is DERIVED from the staged path, and the directory name in it
+        must be a session id: a tampered record cannot name another directory."""
+        assert session_storage._canonical_origin("crew/../x.attachments/a.png") is None
+        assert session_storage._canonical_origin("crew/not a session.attachments/a.png") is None
+        assert session_storage._canonical_origin("crew/x.attachments/a/b.png") is None
+        crew_home, _ = stores
+        origin = session_storage._canonical_origin("crew/dashboard_chat-1.attachments/a.png")
+        assert origin == crew_home / "sessions" / "dashboard_chat-1.attachments" / "a.png"
 
 
 class TestFreshSessionsAreProtected:

@@ -1487,3 +1487,39 @@ def test_no_transport_still_carries_a_replay_hook() -> None:
     assert not hasattr(S, "ReplayOutcome")
     assert not hasattr(S, "conversation_moved_on")
     assert S.__all__ == ["InboundRoute", "replay_spooled", "spool_refused_turn"]
+
+
+# ── Webex spool notice against the real egress gate ──────────────────────────
+#
+# Pins that Webex's ``may_send_to`` room-id arm grants a spooled space route that
+# carries no principal, using the REAL transport gate rather than a stand-in.
+
+
+def test_a_webex_allowed_space_gets_its_notice_at_the_room_root(spool_home: Path) -> None:
+    """Against the REAL Webex egress gate: an allow-listed space route is delivered.
+
+    ``may_send_to`` checks the room-id arm first (``room_id in _allowed_rooms``
+    with group rooms on) and grants there, so a space route carrying no principal
+    is authorized by its ``room_id`` alone and the notice posts at the room root.
+    """
+    from kiro_crew.webex.transport import WEBEX_CAPABILITIES, WebexTransport
+
+    transport = WebexTransport.__new__(WebexTransport)
+    transport._allowed = frozenset()  # no sender principal; the room-id arm grants it
+    transport._allow_group_rooms = True
+    transport._allowed_rooms = frozenset({"SPACE9"})
+    transport.capabilities = WEBEX_CAPABILITIES
+    sent: list[Any] = []
+
+    async def _send(conversation_id: str, content: str, thread_id: str | None = None) -> str:
+        sent.append((conversation_id, thread_id))
+        return "mid"
+
+    transport.send_message = _send  # type: ignore[method-assign]
+    # A space entry with no principal, authorized by the room-id arm alone.
+    _spool(spool_home, channel_type="webex", conversation_id="SPACE9", text="please check CI")
+
+    report = asyncio.run(replay_spooled(transports={"webex": transport}))
+
+    assert report.notified and not report.dropped, "an allow-listed space was not noticed"
+    assert sent == [("SPACE9", None)]

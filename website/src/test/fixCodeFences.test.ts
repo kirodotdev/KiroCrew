@@ -107,3 +107,34 @@ describe('fixCodeFences — bare number-dot escaping', () => {
     expect(fixCodeFences(input)).not.toContain('4\\.')
   })
 })
+
+describe('fixCodeFences — info strings beyond \\w', () => {
+  it('leaves a language tag after leading info-string whitespace unchanged', () => {
+    const input = '``` python\nbody\n```'
+    expect(fixCodeFences(input)).toBe(input)
+  })
+
+  it('separates a ```error-report fence glued to preceding text too', () => {
+    // Same repair the `\w*` tags get; a hyphenated tag was skipped, so the
+    // fence stayed glued to the preceding text and did not open a block.
+    expect(fixCodeFences('note```error-report\nbody\n```')).toBe('note\n\n```error-report\nbody\n```')
+    expect(fixCodeFences('note```objective-c\nbody\n```')).toBe('note\n\n```objective-c\nbody\n```')
+  })
+
+  it('separates glued fences with attributed or space-prefixed info strings', () => {
+    expect(fixCodeFences('note```js {1,3}\nx\n```')).toBe('note\n\n```js {1,3}\nx\n```')
+    expect(fixCodeFences('note``` python\nx\n```')).toBe('note\n\n``` python\nx\n```')
+  })
+
+  it('leaves a hyphenated fence on its own line untouched', () => {
+    const input = 'note\n```error-report\nbody\n```'
+    expect(fixCodeFences(input)).toBe(input)
+  })
+
+  it('keeps a dotted tag as an opening fence but still splits a glued size', () => {
+    // The split-closing-fence pass must not tear ```asp.net apart, while the
+    // ```358KB shape (digit first, so not a tag) keeps being separated.
+    expect(fixCodeFences('```asp.net\nbody\n```')).toBe('```asp.net\nbody\n```')
+    expect(fixCodeFences('```\ncode\n```358KB')).toBe('```\ncode\n```\n358KB')
+  })
+})

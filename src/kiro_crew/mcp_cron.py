@@ -38,6 +38,7 @@ from kiro_crew.cron import (
     CronService,
     CronStoreBusy,
     CronStoreUnreadable,
+    agent_sequence_dispatches,
     compute_next_run_ts,
     cron_job_id_from_session_key,
     cron_session_key_is_stable,
@@ -2310,7 +2311,9 @@ def _owner_unusable_caveat(svc: "CronService", session_key: str, job_id: str) ->
     )
 
 
-def _ephemeral_authority_caveat(persistent: bool, is_agent_job: bool, sequence_len: int) -> str:
+def _ephemeral_authority_caveat(
+    persistent: bool, is_agent_job: bool, agent_sequence: list[str]
+) -> str:
     """Warn when the job BEING created or updated is the one that loses authority.
 
     Distinct from :func:`_owner_unusable_caveat`, which is about the caller. Here
@@ -2325,7 +2328,8 @@ def _ephemeral_authority_caveat(persistent: bool, is_agent_job: bool, sequence_l
     * NOT an agent job. A script cron is launched with
       ``KIROCREW_SESSION_KEY=cron:<job_id>`` unconditionally and a command cron
       issues no MCP call at all.
-    * ``agent_sequence`` longer than one. That path mints a stable
+    * a dispatching ``agent_sequence`` (:func:`cron.agent_sequence_dispatches`,
+      the one spelling of that gate). That path mints a stable
       ``cron:<job_id>:<agent>`` key and ignores ``persistent_session``, so the
       warning would be false -- the same conflation
       :func:`cron.cron_session_key_is_stable` exists to prevent.
@@ -2339,7 +2343,7 @@ def _ephemeral_authority_caveat(persistent: bool, is_agent_job: bool, sequence_l
     revokes the job's authority over the scheduler. That gap is why this is worth
     a sentence rather than a docs line.
     """
-    if persistent or not is_agent_job or sequence_len > 1:
+    if persistent or not is_agent_job or agent_sequence_dispatches(agent_sequence):
         return ""
     return (
         " Note: persistent_session is false, so every run of this job gets a fresh "
@@ -2584,7 +2588,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         caveats = _owner_unusable_caveat(svc, session_key, job.id) + _ephemeral_authority_caveat(
             persistent_session if isinstance(persistent_session, bool) else True,
             not (command or script),
-            len(args.get("agent_sequence") or []),
+            list(args.get("agent_sequence") or []),
         )
         return (
             f"Added job: {job.id} ({job.name}) [{sched_str}]. "
@@ -2701,7 +2705,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         caveat = _ephemeral_authority_caveat(
             updated.persistent_session,
             not (updated.command or updated.script),
-            len(updated.agent_sequence),
+            updated.agent_sequence,
         )
         note = _sub_floor_timeout_note(args["timeout_secs"]) if "timeout_secs" in args else ""
         return f"Updated job: {updated.id} ({updated.name}) [{sched_str}]{caveat}{note}"

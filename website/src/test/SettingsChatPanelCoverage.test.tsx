@@ -562,10 +562,10 @@ describe('ChatPanel — Context', () => {
     wrap()
     const opts = await openSelect('Auto-Compact Threshold')
     expect(opts.map(o => o.textContent)).toEqual([
-      '20% (aggressive)',
+      '20%',
       '40%',
       '60%',
-      '70% (default)',
+      '70% (Default)',
       '80%',
       '90%',
     ])

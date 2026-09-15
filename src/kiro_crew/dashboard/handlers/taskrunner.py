@@ -15,6 +15,7 @@ from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.task_planner import plan_to_yaml
+from kiro_crew.taskrunner import WorkflowInitializing
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import TaskRunner
@@ -32,7 +33,7 @@ async def _taskrunner_request_origin(request: web.Request) -> tuple[str, web.Res
     )
 
     if not await asyncio.to_thread(private_memory_boundaries_active):
-        return "", None
+        return request.headers.get("X-Session-Key", ""), None
     actual, verified = await asyncio.to_thread(memory_request_identity, request)
     if not verified:
         return "", web.json_response(
@@ -340,6 +341,8 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
                     created_spec,
                     exc_info=True,
                 )
+        if isinstance(exc, WorkflowInitializing):
+            return web.json_response({"error": str(exc), "code": exc.code}, status=503)
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "spec": spec_path, "task_id": task_id})
 
@@ -447,7 +450,10 @@ async def api_taskrunner_delete(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     if run.status in ("running", "cancelling"):
         return web.json_response({"error": "cancel first"}, status=409)
-    await state.task_runner.delete_run(task_id)
+    try:
+        await state.task_runner.delete_run(task_id)
+    except WorkflowInitializing as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     return web.json_response({"ok": True})
 
 
@@ -505,6 +511,8 @@ async def api_taskrunner_update_task(request: web.Request) -> web.Response:
             metadata={"task_id": task_id, "index": index, "fields": list(data.keys())},
         )
         return web.json_response({"ok": True, **result})
+    except WorkflowInitializing as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except ValueError as exc:
         _sel().log_tool_invocation(
             session_key="dashboard",
@@ -537,6 +545,8 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
             task_id, from_step, agent=state.task_runner._agent or ""
         )
         return web.json_response({"ok": True, "task_id": task_id})
+    except WorkflowInitializing as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
@@ -755,6 +765,8 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
         )
         state.task_runner._plan_task = asyncio.current_task()
         run = await plan_coro
+    except WorkflowInitializing as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except asyncio.CancelledError:
         return web.json_response({"error": "Planning was cancelled."}, status=400)
     except (FileNotFoundError, ValueError) as exc:
@@ -824,6 +836,8 @@ async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
     steps = body.get("steps", [])
     try:
         run = await state.task_runner.update_plan(task_id, steps)
+    except WorkflowInitializing as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response(
@@ -883,6 +897,8 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
             workspace_dir=workspace_dir,
             auto_approve=auto_approve,
         )
+    except WorkflowInitializing as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "task_id": task_id})
@@ -907,6 +923,8 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     if not steps or not isinstance(steps, list):
         return web.json_response({"error": "steps array required"}, status=400)
     try:
+        # This path allocates its own placeholder before calling update_plan.
+        state.task_runner._require_workflow_ready()
         if task_id:
             refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
             if refusal is not None:
@@ -955,6 +973,8 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
                     except OSError:
                         logger.warning("Failed to remove rejected chat plan directory %s", task_dir)
                 raise
+    except WorkflowInitializing as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=503)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response(

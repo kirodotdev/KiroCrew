@@ -1804,6 +1804,67 @@ class TestStaleMappingGuard:
         assert _payload(resp)["code"] == "account_mismatch"
         find.assert_not_called()
 
+    def test_a_cached_identity_cannot_authorize_a_read(self):
+        """The probe must not answer an authorization question from memory.
+
+        The test above mocks ``probe_identity`` outright, so it proves the refusal
+        and says nothing about WHERE the identity came from. The real function
+        memoises per ``(profile, region)`` for 30 seconds, which is why this one
+        drives the actual cache: it primes an answer of ACCOUNT, repoints the
+        underlying credentials at another account, and then asks for ACCOUNT.
+
+        Against a cached probe the route reads ACCOUNT's inventory out of the
+        OTHER account, and nothing anywhere reports a problem: the caller asked
+        for an account they own, the check passed, and the rows came back. That is
+        disclosure, and it is silent, which is why the assertion below is that no
+        AWS read was attempted at all.
+        """
+        handlers = _registered()
+        other = "444455556666"
+        answer = {"account": ACCOUNT}
+
+        def fake_run(args, profile, region):
+            return 0, json.dumps({"Account": answer["account"], "Arn": "arn:aws:iam::x:user/y"}), ""
+
+        async def drive():
+            # Prime the cache the way an ordinary earlier request would.
+            primed = await aws_consent.probe_identity("prof", "us-west-2")
+            assert primed.account == ACCOUNT
+            # The profile is now a different account. An operator switching a role
+            # or an SSO session does exactly this, and nothing tells the console.
+            answer["account"] = other
+            return await handlers[("GET", "/drive/{account}")](  # type: ignore[operator]
+                _request("GET", f"/drive/{ACCOUNT}", match_info={"account": ACCOUNT})
+            )
+
+        aws_consent._probe_cache.clear()
+        try:
+            with (
+                mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
+                mock.patch.object(
+                    routes_mod.accounts_mod,
+                    "resolve_account_profile",
+                    AsyncMock(return_value=("prof", "us-west-2")),
+                ),
+                mock.patch.object(aws_consent, "_aws_cli_resolvable", return_value=True),
+                mock.patch.object(aws_consent, "_run_aws", side_effect=fake_run),
+                mock.patch.object(
+                    routes_mod.storage_mod,
+                    "find_drive",
+                    side_effect=AssertionError(
+                        "find_drive ran: the identity was taken from the probe cache, "
+                        "so the account was never re-derived before the read"
+                    ),
+                ) as find_drive,
+            ):
+                resp = asyncio.run(drive())
+        finally:
+            aws_consent._probe_cache.clear()
+
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "account_mismatch"
+        find_drive.assert_not_called()
+
 
 class TestRound16Hardening:
     """Round-16 pins: egress redaction, corrupt-shape survival, grant audit."""

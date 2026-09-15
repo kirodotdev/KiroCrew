@@ -43,6 +43,45 @@ class WaveDigestCoordinator(ManagerComponent):
             return True
         return any(p.get("batch_id") == batch_id for p in self._manager._queue)
 
+    def wave_has_live_nested_spawns_impl(self, batch_id: str) -> bool:
+        """True when a member of *batch_id* itself spawned further work that is
+        still outstanding (running or queued).
+
+        The wave-completion count (``done >= total``) is a claim about the
+        wave's DIRECT members only. A member that calls ``spawn_run`` gets its
+        own independent ``batch_id`` for the work it spawns, so those nested
+        children are not counted against this wave's total; the digest can read
+        ``N ✅ · 0 ❌`` while a member's descendant is still writing its result.
+        This answers whether that is the case, so the digest can decline to
+        assert a completion it cannot substantiate.
+
+        Scope is deliberately narrow: a nested child's ``parent_session_key`` is
+        its spawning member's own session key (``conversation_key`` else
+        ``subagent:<id>``), so this matches on THIS wave's members' session
+        keys, never on a shared grandparent. A sibling wave's members are not
+        children of this wave's members, so a sibling wave under the same
+        parent cannot make this True. It is read-only and never withholds the
+        digest — it only informs the wording.
+        """
+        if not batch_id:
+            return False
+        member_keys = {
+            (a.conversation_key or f"subagent:{a.id}")
+            for a in self._manager._agents.values()
+            if a.batch_id == batch_id
+        }
+        if not member_keys:
+            return False
+        if any(
+            not a.done and a.batch_id != batch_id and a.parent_session_key in member_keys
+            for a in self._manager._agents.values()
+        ):
+            return True
+        return any(
+            p.get("batch_id") != batch_id and p.get("parent_session_key") in member_keys
+            for p in self._manager._queue
+        )
+
     def finalize_batch_impl(self, batch_id: str) -> None:
         """Prune per-wave bookkeeping once the wave digest has fired.
 

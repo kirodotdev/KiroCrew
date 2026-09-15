@@ -49,6 +49,41 @@ describe('MicSourceMenu', () => {
     expect(screen.queryByText('FaceTime HD')).toBeNull()
   })
 
+  it('remeasures the open menu when the visual viewport changes', async () => {
+    const originalViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport')
+    const viewport = new EventTarget()
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: viewport as unknown as VisualViewport,
+    })
+
+    try {
+      render(<MicSourceMenu onSelect={() => {}} />)
+      const trigger = screen.getByRole('button')
+      const wrap = trigger.parentElement
+      expect(wrap).toBeInstanceOf(HTMLElement)
+
+      let anchor = DOMRect.fromRect({ x: 100, y: 600, width: 120, height: 20 })
+      vi.spyOn(wrap as HTMLElement, 'getBoundingClientRect').mockImplementation(() => anchor)
+
+      fireEvent.click(trigger)
+      const menu = await screen.findByRole('menu')
+      expect(menu.style.bottom).toBe(`${window.innerHeight - anchor.top + 4}px`)
+
+      // The mobile keyboard closing moves the anchor and announces itself only
+      // on window.visualViewport -- window resize/scroll never fire.
+      anchor = DOMRect.fromRect({ x: 100, y: 700, width: 120, height: 20 })
+      fireEvent(viewport, new Event('resize'))
+
+      await waitFor(() => {
+        expect(menu.style.bottom).toBe(`${window.innerHeight - anchor.top + 4}px`)
+      })
+    } finally {
+      if (originalViewport) Object.defineProperty(window, 'visualViewport', originalViewport)
+      else delete (window as { visualViewport?: VisualViewport }).visualViewport
+    }
+  })
+
   it('reports the chosen deviceId and closes', async () => {
     const onSelect = vi.fn()
     render(<MicSourceMenu onSelect={onSelect} />)

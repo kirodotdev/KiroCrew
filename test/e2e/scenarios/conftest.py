@@ -33,7 +33,7 @@ cannot go stale the way this paragraph would.
 
 from __future__ import annotations
 
-import contextlib
+import http.cookiejar
 import json
 import os
 import shutil
@@ -41,14 +41,18 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 import pytest
 
-from kiro_crew import platform_compat
-from kiro_crew.pod import launchd
+from kiro_crew.loopback_http import build_loopback_opener
+from kiro_crew.platform_compat import IS_WINDOWS
+from kiro_crew.pod import provision as prov
 
 # The pod plane these scenarios run on is hermetic: its own roots, its own unit
 # prefix and its own port band, so a run can never collide with (or reclaim) a
@@ -95,7 +99,7 @@ def unresolved(reason: str) -> None:
     pytest.skip(reason)
 
 
-@dataclass(frozen=True)
+@dataclass
 class PodClient:
     """What a scenario is handed: where the pod is, and how to call it."""
 
@@ -106,6 +110,9 @@ class PodClient:
     checkout: Path
     cli: Path
     env: dict[str, str]
+    _windows_opener: urllib.request.OpenerDirector | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     # -- transport ---------------------------------------------------------
     def api(
@@ -117,19 +124,34 @@ class PodClient:
         expect_ok: bool = True,
         timeout: float = 120.0,
     ) -> Any:
-        """One authenticated request through ``kirocrew pod api``.
+        """One authenticated request through ``kirocrew pod api`` -- or, on
+        Windows, its documented equivalent.
 
-        Deliberately NOT httpx against the TCP port. ``pod api`` mints its own
-        token and sends it over the pod's private dashboard unix socket, and it
-        refuses when the socket is absent rather than falling back to
+        Deliberately NOT httpx against the TCP port on POSIX. ``pod api`` mints
+        its own token and sends it over the pod's private dashboard unix socket,
+        and it refuses when the socket is absent rather than falling back to
         ``127.0.0.1:<port>`` -- which is what stops a scenario from driving
         whatever else answered that port after the pod released it. Reusing it
         also means these scenarios exercise the shipped verb rather than a
         second, test-only client that could drift from it.
 
+        CPython on win32 has no ``AF_UNIX`` at all, so the pod's gateway binds no
+        dashboard socket there and ``kirocrew pod api`` REFUSES unconditionally
+        on that platform (``runtime.pod_api``'s own ``IS_WINDOWS`` branch) --
+        that refusal is by design, not a gap to route around by weakening
+        production code. Its own message names the supported alternative:
+        ``kirocrew pod token <name>`` then an authenticated request to
+        ``127.0.0.1:<port>`` directly. This method takes exactly that path on
+        Windows: mint via the shipped ``pod token`` verb (never read the pod's
+        ``.local_secret`` from the test), then dial the SAME loopback port every
+        other platform reaches through the unix socket. No TCP fallback exists on
+        POSIX and none is introduced there; this branch is Windows-only.
+
         Returns the envelope's ``body``. ``expect_ok=False`` returns the whole
         envelope so a scenario can assert on a deliberate non-2xx.
         """
+        if IS_WINDOWS:
+            return self._api_windows(method, path, payload, expect_ok=expect_ok, timeout=timeout)
         argv = [str(self.cli), "pod", "api", self.name, method.upper(), path]
         if method.upper() not in {"GET", "HEAD"}:
             argv.append("--allow-write")
@@ -152,6 +174,104 @@ class PodClient:
             envelope.get("ok") is True
         ), f"{method} {path} -> status {envelope.get('status')}: {envelope.get('body')!r}"
         return envelope.get("body")
+
+    def _api_windows(
+        self,
+        method: str,
+        path: str,
+        payload: Any | None,
+        *,
+        expect_ok: bool,
+        timeout: float,
+    ) -> Any:
+        """Windows leg of :meth:`api`: mint once, exchange once, then use the
+        durable session cookie on the pod's loopback port.
+
+        The one-time token is presented only to ``/api/status`` through
+        :func:`build_loopback_opener`, whose explicit empty proxy handler and
+        no-redirect handler prevent either environment proxies or a 3xx from
+        receiving it. The gateway exchanges that link token for a distinct
+        ``mc_token_<port>`` cookie; every requested endpoint -- including the
+        mixed-internal routes -- is then called without a token in its URL.
+        """
+        from kiro_crew.pod.runtime import api_path
+
+        opener = self._windows_opener
+        if opener is None:
+            minted = subprocess.run(
+                [str(self.cli), "pod", "token", self.name],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                env=self.env,
+                cwd=_plane_cwd(self.env),
+            )
+            if minted.returncode != 0:
+                pytest.fail(
+                    f"`pod token {self.name}` failed (exit {minted.returncode}), so "
+                    f"{method} {path} cannot be authenticated on Windows.\n"
+                    f"stdout: {minted.stdout!r}\nstderr: {minted.stderr!r}"
+                )
+            token = (minted.stdout or "").strip()
+            if not token:
+                pytest.fail(
+                    f"`pod token {self.name}` printed no token, so {method} {path} "
+                    f"cannot be authenticated on Windows.\nstderr: {minted.stderr!r}"
+                )
+
+            jar = http.cookiejar.CookieJar()
+            opener = build_loopback_opener()
+            opener.add_handler(urllib.request.HTTPCookieProcessor(jar))
+            query = urllib.parse.urlencode({"token": token})
+            prime = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/status?{query}", method="GET"
+            )
+            try:
+                with opener.open(prime, timeout=timeout):
+                    pass
+            except urllib.error.HTTPError as exc:
+                # The exception carries the credential-bearing request URL.
+                # Report only status and the fixed endpoint, never ``exc``.
+                pytest.fail(
+                    f"GET /api/status token exchange on pod {self.name!r} "
+                    f"returned HTTP {exc.code}"
+                )
+            except (urllib.error.URLError, OSError) as exc:
+                # URLError may also render request.full_url. Type only.
+                pytest.fail(
+                    f"GET /api/status token exchange on pod {self.name!r} did "
+                    f"not complete ({type(exc).__name__})"
+                )
+            self._windows_opener = opener
+
+        normalized = api_path(path)
+        url = f"http://127.0.0.1:{self.port}{normalized}"
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"Content-Type": "application/json"} if body is not None else {}
+        request = urllib.request.Request(url, data=body, headers=headers, method=method.upper())
+        try:
+            with opener.open(request, timeout=timeout) as resp:
+                status = resp.status
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            raw = exc.read().decode("utf-8", "replace") if exc.fp else ""
+        except (urllib.error.URLError, OSError) as exc:
+            pytest.fail(
+                f"{method} {normalized} on pod {self.name!r} did not complete over "
+                f"127.0.0.1:{self.port} ({type(exc).__name__})"
+            )
+            raise  # unreachable: pytest.fail always raises
+        try:
+            decoded: Any = json.loads(raw) if raw else None
+        except ValueError:
+            decoded = raw
+        if not expect_ok:
+            return {"ok": 200 <= status < 300, "status": status, "body": decoded}
+        assert 200 <= status < 300, f"{method} {normalized} -> status {status}: {decoded!r}"
+        return decoded
 
     def health(self) -> int:
         """The pod's OWN health code, via ``pod status --json``.
@@ -226,33 +346,6 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def _sweep_stale_plane_roots(base: Path) -> None:
-    """Remove suite-marked ``kce2e-<pid>`` roots whose owning pytest is gone.
-
-    A hard kill (pytest-timeout, a cancelled CI job) skips the fixture's
-    ``finally``, and a root outside pytest's own temp tree has no other sweeper.
-    The pid in the leaf is the pytest process that made it, so a dead pid is a
-    root nobody will reclaim. Best-effort and never raises.
-    """
-    try:
-        candidates = list(base.glob("kce2e-*"))
-    except OSError:
-        return
-    for stale in candidates:
-        pid_text = stale.name.rsplit("-", 1)[-1]
-        if (
-            not stale.is_dir()
-            or not (stale / _PLANE_MARKER).is_file()
-            or not pid_text.isdigit()
-            or int(pid_text) == os.getpid()
-        ):
-            continue
-        # pid_exists, never os.kill(pid, 0): on Windows signal zero TERMINATES
-        # the target, which here would be another live pytest process.
-        if not platform_compat.pid_exists(int(pid_text)):
-            shutil.rmtree(stale, ignore_errors=True)
-
-
 def _plane_root(name: str, basetemp: Path | None) -> Path:
     """A plane root SHORT enough that the pod's unix socket path fits AF_UNIX.
 
@@ -269,12 +362,10 @@ def _plane_root(name: str, basetemp: Path | None) -> Path:
     socket path is measured and a root that cannot host one is refused up front
     with the number, rather than producing a pod whose API is unreachable.
 
-    pytest's own basetemp is tried FIRST: pytest keeps only the last few
-    basetemps and removes older ones on the next run, so a root there is
-    reclaimed even when a hard kill skipped this fixture's ``finally``. The
-    fallbacks (``TMPDIR``, ``/tmp``, the home directory) are for a basetemp too
-    deep to host a socket, and each is swept of roots left by dead pytest
-    processes before it is used, for the same reason.
+    pytest's own basetemp is tried FIRST. The fallbacks (``TMPDIR``, ``/tmp``,
+    the home directory) are for a basetemp too deep to host a socket. Never
+    sweep another plane based on its pytest owner's death: a service-managed
+    gateway can outlive pytest, even without a PID record or an argv marker.
     """
     leaf = f"kce2e-{os.getpid()}"
 
@@ -286,14 +377,26 @@ def _plane_root(name: str, basetemp: Path | None) -> Path:
     if basetemp is not None:
         bases.append(basetemp)
     bases += [Path(tempfile.gettempdir()), Path("/tmp"), Path.home()]
+
+    if IS_WINDOWS:
+        # CPython on win32 has no AF_UNIX at all (measured:
+        # ``hasattr(socket, "AF_UNIX")`` is False there), so the pod's gateway
+        # binds no dashboard socket on this platform and `pod api` reaches it
+        # over the loopback TCP port + a minted token instead (see PodClient.api
+        # below). The length constraint this function exists to enforce is
+        # therefore not a constraint on Windows at all -- picking pytest's own
+        # basetemp (or the first fallback that exists) is sufficient.
+        for base in bases:
+            root = base / leaf
+            return root
+        raise AssertionError("unreachable: bases is never empty")
+
     tried: list[tuple[Path, int]] = []
     for base in bases:
         root = base / leaf
         width = _worst(root)
         tried.append((root, width))
         if width <= _AF_UNIX_MAX:
-            if base != basetemp:
-                _sweep_stale_plane_roots(base)
             return root
     detail = ", ".join(f"{r} ({w} bytes)" for r, w in tried)
     unresolved(
@@ -323,6 +426,11 @@ def _plane_env(root: Path, scratch: Path, fake_backend: Path | None) -> dict[str
             # The pods' homes live under KIROCREW_POD_ROOT and are unaffected.
             "KIROCREW_HOME": str(scratch / "kh"),
             "KIROCREW_WORKSPACE": str(scratch / "kw"),
+            # Separate from KIROCREW_HOME: kiro-cli's own agents/settings home
+            # is machine-wide. The fake ACP backend means the pod gateway never
+            # needs it, but every control-plane CLI child still inherits this
+            # pin, so no incidental resolver can reach ~/.kiro.
+            "KIRO_HOME": str(scratch / "kk"),
             # `h`, not `pod-homes`: every character here is charged against the
             # pod socket's AF_UNIX budget (see _plane_root).
             "KIROCREW_POD_ROOT": str(scratch / "h"),
@@ -339,15 +447,13 @@ def _plane_env(root: Path, scratch: Path, fake_backend: Path | None) -> dict[str
     return env
 
 
-def _resolve_backend() -> Path | None:
+def _resolve_backend(scratch: Path) -> Path | None:
     """The agent backend a pod in this suite should spawn, or ``None`` for the real one.
 
     Mirrors ``pod-e2e.sh``'s honest refusal: a requested driver that is missing
-    is never quietly downgraded to green. Here the two answers are both valid --
-    the fake backend is the offline default, and ``KIROCREW_E2E_SCENARIOS_REAL_AGENT=1``
-    opts into the host's signed-in ``kiro-cli`` -- but a request for the REAL
-    agent on a host with no ``kiro-cli`` on PATH is refused rather than silently
-    served by the fake.
+    is never quietly downgraded to green. The fake path goes through the shared
+    harness launcher so Windows gets a runnable ``.cmd`` instead of a raw ``.py``
+    path that ``CreateProcess`` rejects with WinError 193.
     """
     if os.environ.get("KIROCREW_E2E_SCENARIOS_REAL_AGENT", "") == "1":
         if shutil.which("kiro-cli") is None:
@@ -356,11 +462,11 @@ def _resolve_backend() -> Path | None:
                 "requested driver is absent; unset it to run against the fake backend"
             )
         return None
-    from kiro_crew.testing import fake_acp_backend
+    from kiro_crew.testing.harness import fake_acp_backend_launcher
 
-    backend = Path(fake_acp_backend.__file__)
+    backend = fake_acp_backend_launcher(scratch)
     if not backend.is_file():
-        unresolved(f"packaged fake ACP backend not found at {backend}")
+        unresolved(f"packaged fake ACP backend launcher not found at {backend}")
     return backend
 
 
@@ -389,9 +495,16 @@ def skip_unless_required():
 
 
 @pytest.fixture(scope="session")
-def render_service_definition():
-    """Render THIS host's service definition, print-only, in a chosen environment."""
-    return render_host_service_definition
+def render_service_definition(pod: PodClient):
+    """Render the service artifact for this exact isolated pod plane."""
+
+    def _render(env_overrides: dict[str, str] | None = None) -> str:
+        env = dict(pod.env)
+        env["KIROCREW_E2E_POD_NAME"] = pod.name
+        env.update(env_overrides or {})
+        return render_host_service_definition(env)
+
+    return _render
 
 
 @pytest.fixture(scope="session")
@@ -436,12 +549,14 @@ def pod(tmp_path_factory: pytest.TempPathFactory):
         unresolved(f"this host cannot run pods: {exc}")
 
     root = _repo_root()
-    cli = root / ".venv" / "bin" / "kirocrew"
+    cli = prov.venv_bin(root)
     if not (cli.is_file() and os.access(cli, os.X_OK)):
         unresolved(
             f"no kirocrew in the checkout venv at {cli}; the suite must drive the "
             "branch under test, not the host's installed build "
-            "(build it: python3 -m venv .venv && .venv/bin/pip install -e .)"
+            "(build it: python -m venv .venv && "
+            + (".venv\\Scripts\\pip install -e ." if IS_WINDOWS else ".venv/bin/pip install -e .")
+            + ")"
         )
     if not (root / "src" / "kiro_crew" / "static" / "dist").is_dir():
         unresolved(
@@ -449,12 +564,19 @@ def pod(tmp_path_factory: pytest.TempPathFactory):
             "a pod refuses to come up without one (cd website && npm ci && npm run build)"
         )
 
-    backend = _resolve_backend()
     name = root.name
     scratch = _plane_root(name, tmp_path_factory.getbasetemp())
-    scratch.mkdir(parents=True, exist_ok=True)
-    (scratch / _PLANE_MARKER).write_text(str(os.getpid()), encoding="ascii")
-    env = _plane_env(root, scratch, backend)
+    # A reused pytest PID must not adopt a preserved plane from a failed run.
+    scratch.mkdir(parents=True)
+    try:
+        (scratch / _PLANE_MARKER).write_text(str(os.getpid()), encoding="ascii")
+        backend = _resolve_backend(scratch)
+        env = _plane_env(root, scratch, backend)
+    except BaseException:
+        # No service has started; this invocation owns the newly created plane.
+        # pytest skip/fail outcomes inherit BaseException, not Exception.
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
 
     # Cheapest possible probe that the CLI can BOOT before any assertion depends
     # on it. `kirocrew` fails closed on a host whose platform profile it cannot
@@ -569,20 +691,16 @@ def pod(tmp_path_factory: pytest.TempPathFactory):
 
         yield client
     finally:
-        # Every cleanup step is guarded SEPARATELY, because `_run_cli` raises on a
-        # timeout (`subprocess.run(timeout=...)`) and the first step here is a
-        # 300-second `pod down`. A single flat `finally` meant that one timeout
-        # skipped the rest of it: the plane root stayed (and `_plane_root` may put it
-        # outside pytest's temp tree, so nothing else would ever reclaim it), the
-        # systemd template this suite installed stayed on the HOST, and the pod it
-        # failed to stop stayed RUNNING.
-        #
-        # But guarding is not enough on its own: deletion is conditioned on the pod
-        # being CONFIRMED GONE. `pod down` timing out means it may still be serving,
-        # and reclaiming the plane root then would rmtree a live pod's state from
-        # under it -- the same irreversible shape this suite exists to catch. So a
-        # confirmed teardown reclaims everything, and an unconfirmed one deletes
-        # NOTHING and says so with the paths, leaving a live pod stoppable by name.
+        # Host-effect tests must attempt the pod's authoritative teardown here.
+        # OS refusal or incomplete identity proof means failure with HOME/service
+        # evidence preserved, not zero residue or a duplicate cleanup authority.
+        # Service-free, newly owned precondition cleanup above is distinct.
+        # Only the pod's own stop path can prove its writers are gone. In
+        # particular, /End may stop a wrapper but leave the gateway running:
+        # its argv names the checkout, not the plane it inherited through env.
+        # Neither a process scan nor a missing PID/handoff record can authorize
+        # deleting the plane. Keep failed stops recoverable, without duplicating
+        # runtime.stop's identity and service-manager protocol here.
         down: Optional[subprocess.CompletedProcess[str]] = None
         after: Optional[subprocess.CompletedProcess[str]] = None
         down_error = ""
@@ -594,18 +712,16 @@ def pod(tmp_path_factory: pytest.TempPathFactory):
             after = _run_cli(cli, ["pod", "ls", "--json"], env)
         except (subprocess.TimeoutExpired, OSError):
             after = None
-        leaked_home = client.home.exists() if client is not None else False
-        rows: list[object] = []
+        leaked_home = (Path(env["KIROCREW_POD_ROOT"]) / name).exists()
+        rows: object = None
         if after is not None and after.returncode == 0:
             try:
-                rows = json.loads(after.stdout or "[]")
+                rows = json.loads(after.stdout)
             except ValueError:
-                rows = []
-        # Confirmed absent = `pod down` completed cleanly AND the listing was READ
-        # and is empty. An unreadable listing is NOT agreement: `rows` is empty in
-        # that case too, so it is checked separately -- unknown counts as
-        # possibly-alive, because the cost of being wrong is one-directional.
-        listing_read = after is not None and after.returncode == 0
+                pass
+        # An unreadable/malformed listing or a remaining HOME is not proof of
+        # shutdown, even if down returned zero. Preserve the plane in either case.
+        listing_read = isinstance(rows, list)
         pod_is_gone = (
             not down_error
             and down is not None
@@ -613,7 +729,7 @@ def pod(tmp_path_factory: pytest.TempPathFactory):
             and listing_read
             and rows == []
         )
-        if pod_is_gone:
+        if pod_is_gone and not leaked_home:
             # Read every fact the assertions need FIRST, then reclaim the plane root
             # itself: it may sit outside pytest's temp tree (see _plane_root), so
             # nothing else would ever remove it.
@@ -630,134 +746,16 @@ def pod(tmp_path_factory: pytest.TempPathFactory):
                 f"listing={'unreadable' if not listing_read else (after.stdout or '').strip()!r} "
                 f"stderr={'' if down is None else (down.stderr or '').strip()!r}."
             )
-            if sys.platform in {"linux", "darwin"}:
-                cleaned_services, cleaned_pids = _force_clean_plane(scratch, name, env)
-                service_kind = "units" if sys.platform == "linux" else "launchd_jobs"
-                raise AssertionError(
-                    f"`pod down {name}` did not confirm the pod is gone. {detail} "
-                    f"Force-cleaned this fixture's {service_kind}={cleaned_services}, "
-                    f"pids={cleaned_pids}, and plane={scratch}."
-                )
             raise AssertionError(
                 f"`pod down {name}` did not confirm the pod is gone. {detail} "
-                f"Kept plane={scratch} because forced cleanup is unavailable "
-                f"on platform={sys.platform}."
+                f"Kept plane={scratch} and its service/task definition because "
+                "no-writer shutdown was not proven; use the pod's own stop path "
+                "to recover it."
             )
         if client is not None:
             # Independent of the above: `down` can report success and still leave the
             # isolated home, which is the residue the scenario suite is here to catch.
             assert not leaked_home, f"pod down left the isolated home behind: {client.home}"
-
-
-def _matching_plane_units() -> list[str]:
-    """Loaded systemd units owned by this suite's dedicated prefix."""
-    if sys.platform != "linux":
-        return []
-    try:
-        cp = subprocess.run(
-            [
-                "systemctl",
-                "--user",
-                "list-units",
-                f"{PLANE_PREFIX}@*.service",
-                "--all",
-                "--plain",
-                "--no-legend",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if cp.returncode != 0:
-        return []
-    prefix = f"{PLANE_PREFIX}@"
-    return sorted(
-        {
-            line.split()[0]
-            for line in cp.stdout.splitlines()
-            if line.split()
-            and line.split()[0].startswith(prefix)
-            and line.split()[0].endswith(".service")
-        }
-    )
-
-
-def _force_clean_plane(
-    scratch: Path, name: str, env: dict[str, str]
-) -> tuple[list[str], list[int]]:
-    """Remove this scenario suite's services, processes, and scratch root."""
-    services: list[str]
-    if sys.platform == "linux":
-        units = sorted(set(_matching_plane_units()) | {f"{PLANE_PREFIX}@{name}.service"})
-        for unit in units:
-            for verb in ("stop", "reset-failed"):
-                try:
-                    subprocess.run(
-                        ["systemctl", "--user", verb, unit],
-                        check=False,
-                        capture_output=True,
-                        timeout=60,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-        services = units
-        _remove_plane_unit_template()
-    elif sys.platform == "darwin":
-        unit_prefix = env["KIROCREW_POD_UNIT_PREFIX"]
-        label_prefix = f"{launchd.LABEL_PREFIX}.{unit_prefix}."
-        pods_dir = Path(env["KIROCREW_POD_ROOT"])
-        try:
-            plists = sorted(pods_dir.glob(f"{label_prefix}*.plist"))
-        except OSError:
-            plists = []
-        labels = sorted(
-            {f"{label_prefix}{name}"}
-            | {plist.stem for plist in plists if plist.stem.startswith(label_prefix)}
-        )
-        for label in labels:
-            try:
-                subprocess.run(
-                    ["launchctl", "bootout", f"{launchd.domain()}/{label}"],
-                    check=False,
-                    capture_output=True,
-                    timeout=60,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        for plist in plists:
-            with contextlib.suppress(OSError):
-                plist.unlink()
-        services = labels
-    else:
-        services = []
-
-    killed = _kill_plane_processes(scratch)
-    shutil.rmtree(scratch, ignore_errors=True)
-    return services, killed
-
-
-def _kill_plane_processes(scratch: Path) -> list[int]:
-    """Kill pinned processes whose command line names this plane root."""
-    killed: list[int] = []
-    leaders = platform_compat.live_thread_group_leaders()
-    if leaders is None:
-        return killed
-    marker = str(scratch.resolve())
-    for pid in sorted(leaders):
-        if marker not in platform_compat.process_command_line(pid):
-            continue
-        token = platform_compat.process_start_time(pid)
-        if not token:
-            continue
-        with contextlib.suppress(OSError):
-            if platform_compat.kill_pid_pinned(pid, token, platform_compat.SIGKILL):
-                killed.append(pid)
-    return killed
 
 
 def _remove_plane_unit_template() -> None:
@@ -821,24 +819,38 @@ def render_host_service_definition(env_overrides: dict[str, str] | None = None) 
     rendering it in a child process IS the print-only path and it touches
     nothing -- no file written, no service manager consulted.
 
+    Windows has no host ``kirocrew service`` backend. There the equivalent
+    service-managed artifact in this suite is the pod's generated Task Scheduler
+    ``.cmd`` wrapper, so the child renders ``pod.windows.render_task_script``
+    from the isolated plane instead of calling an unsupported service command.
+
     Out-of-process for two reasons: the renderers read the process environment
     and ``Path.home()``, which must not be mutated inside a session holding a
     live pod, and a child is the only way to put a pod's own environment in scope
     without putting it in scope for everything else.
     """
-    script = (
-        "import sys\n"
-        "from kiro_crew.service.common import Platform, current_platform\n"
-        "plat = current_platform()\n"
-        "if plat is Platform.SYSTEMD:\n"
-        "    from kiro_crew.service import linux\n"
-        "    print(linux.render_unit(user_scope=True))\n"
-        "elif plat is Platform.LAUNCHD:\n"
-        "    from kiro_crew.service import macos\n"
-        "    print(macos.render_plist())\n"
-        "else:\n"
-        "    sys.exit(f'no service backend for {plat}')\n"
-    )
+    if IS_WINDOWS:
+        script = (
+            "import os\n"
+            "from kiro_crew.pod.config import PodConfig\n"
+            "from kiro_crew.pod.windows import render_task_script\n"
+            "name = os.environ['KIROCREW_E2E_POD_NAME']\n"
+            "print(render_task_script(PodConfig.load(), name), end='')\n"
+        )
+    else:
+        script = (
+            "import sys\n"
+            "from kiro_crew.service.common import Platform, current_platform\n"
+            "plat = current_platform()\n"
+            "if plat is Platform.SYSTEMD:\n"
+            "    from kiro_crew.service import linux\n"
+            "    print(linux.render_unit(user_scope=True))\n"
+            "elif plat is Platform.LAUNCHD:\n"
+            "    from kiro_crew.service import macos\n"
+            "    print(macos.render_plist())\n"
+            "else:\n"
+            "    sys.exit(f'no service backend for {plat}')\n"
+        )
     env = dict(os.environ)
     env.update(env_overrides or {})
     cp = subprocess.run(

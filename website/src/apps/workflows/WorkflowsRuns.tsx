@@ -70,6 +70,7 @@ export interface RunSummary {
   name: string
   status: RunStatus
   error: string | null
+  error_code?: string | null
   author: string | null
   session_key: string | null
   event_count: number
@@ -434,6 +435,7 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
             status={detail.status}
             result={detail.result}
             error={detail.error}
+            errorCode={detail.error_code}
           />
         )}
       </div>

@@ -464,14 +464,15 @@ class TestTheSpawnEndpointActuallyDelegates:
 
     def test_no_guidance_still_tells_the_model_to_use_agent_for_a_crew(self):
         """`spawn_run(agent=<crew>)` is accepted and runs on the DEFAULT store, so
-        guidance saying so is a leak the docs teach. The conductor skill is the
-        copy that matters most: it is `always: true`, loaded into every session."""
+        guidance saying so is a leak the docs teach. The `select_crew` tool text
+        is the copy that matters most: it is what the model reads at routing
+        time now that the always-on conductor skill is gone."""
         from pathlib import Path
 
         import kiro_crew
 
         root = Path(kiro_crew.__file__).parent
-        for rel in ("conductor_skill.py", "mcp_tools/control.py"):
+        for rel in ("mcp_tools/control.py",):
             text = (root / rel).read_text()
             assert 'spawn_run(agent="<name>"' not in text, rel
             assert "spawn_run(agent=<crew>" not in text, rel

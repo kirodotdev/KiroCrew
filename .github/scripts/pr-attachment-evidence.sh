@@ -51,6 +51,14 @@ n=0
 found=0
 fetched=0
 skipped=0
+# Transport failures alone -- a download that did not complete for a reason
+# a re-run can change (5xx, throttling, no answer). A file that downloaded
+# but typed as a non-image, or a URL the asset host definitively rejects
+# (404 and its 4xx kin: stale, deleted, or fabricated), is the author's
+# evidence problem, not a fetch failure, and is counted in `skipped` only.
+# The caller reads `failed` to tell "the lane could not fetch it" from
+# "nothing usable was supplied".
+failed=0
 clips=0
 while IFS= read -r url; do
   [ -n "$url" ] || continue
@@ -66,10 +74,30 @@ while IFS= read -r url; do
   # No Authorization header, deliberately: the asset host serves a
   # public repository's attachments anonymously and answers with a
   # redirect to a pre-signed object URL, which a forwarded credential
-  # header would invalidate. A failed download is logged and skipped,
-  # never fatal -- the image is then an evidence gap for the reviewer.
-  if ! curl -sSfL --proto '=https' --proto-redir '=https' --max-redirs 5 --max-time 60 --max-filesize 104857600 -o "$tmp" "$url"; then
-    echo "::warning::SKIPPED (download failed): $url"
+  # header would invalidate. A failed download is logged, skipped and
+  # counted; the sourcing workflow decides what the count means (both
+  # UX lanes fail their run on a non-zero `failed`).
+  # `-w '%{http_code}'` is the one thing on stdout, so the status is
+  # known even when `-f` fails the transfer: a definite 4xx (not 403, 408
+  # or 429) is the URL itself -- stale, deleted, or never real -- which is
+  # the author's evidence problem and counts in `skipped` only; anything
+  # else (5xx, 403/408/429 -- GitHub answers a secondary rate limit with
+  # 403 as well as 429 -- or a connection that never answered, code 000 or
+  # empty) is transport and counts in `failed` too.
+  rc=0
+  code="$(curl -sSfL --proto '=https' --proto-redir '=https' --max-redirs 5 --max-time 60 --max-filesize 104857600 -w '%{http_code}' -o "$tmp" "$url")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case "$code" in
+      403|408|429) transient=1 ;;
+      4[0-9][0-9]) transient=0 ;;
+      *) transient=1 ;;
+    esac
+    if [ "$transient" -eq 1 ]; then
+      echo "::warning::SKIPPED (download failed): $url"
+      failed=$((failed + 1))
+    else
+      echo "::warning::SKIPPED (HTTP $code, the attachment URL does not resolve to an asset): $url"
+    fi
     skipped=$((skipped + 1))
     rm -f -- "$tmp"
     continue

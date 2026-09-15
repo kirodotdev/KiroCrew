@@ -155,33 +155,46 @@ there.
 
 Strip comment-only lines before any such scan. `ci.yml` names commands in prose as
 well as running them — the Type check step's comment explains why it spells out
-`npx tsc -b` instead of going through a script — so a naive grep for
+`npx tsc -p tsconfig.app.json` instead of going through a script — so a naive grep for
 `npm run <script>` "finds" scripts no step invokes, the same trap as reading a
 ratchet number out of a comment.
 
-## A test gate may SKIP a surface, but must not narrow within one
+## A test gate runs the RELATED set; the full suite is CI's
 
 The two test gates are the most expensive entries on the floor by orders of
 magnitude: 62,108 collected backend tests — collection alone takes ~100s before a
 single test executes — and ~1,444 frontend spec files. CI shards that across eight
 backend runners plus several frontend shards and runs it on `refs/pull/<N>/merge`
 regardless, so paying for it serially on a workstation, once per iteration of a
-ten-round inner loop, buys a signal CI produces anyway.
+ten-round inner loop, buys a signal CI produces anyway — and with `-n auto` it did
+so with one xdist worker per core, starving every other session on a shared box.
 
-`scripts/run_scoped_tests.py` therefore does exactly one reduction, and it is CI's
-own: when a diff touches only ONE surface, the other surface runs the
-cross-surface set instead of its full suite. Measured on this checkout, that is
-**350** backend files for a frontend-only diff and **146** frontend specs for a
-backend-only one. Four verdicts, and every one that is not a reduction runs
-everything:
+`scripts/run_scoped_tests.py` therefore never escalates to a full suite on its
+own. For the surface it is asked about it runs the union of: test files in the
+diff; `test_<module>.py` / `test_<module>_*.py` (vitest: `<Stem>.*.test.ts`) for
+each changed module; test files that textually reference a changed file; and,
+when the OTHER surface changed, the cross-surface set `ci-surface-tests.py`
+computes for CI (**350** backend files / **146** frontend specs, measured). Two
+outcomes, and neither is "everything":
 
 | condition | verdict |
 |---|---|
-| base ref absent or unresolvable | **exit 2** — fail closed, run nothing |
-| broad-impact file changed (fixtures, collection config, workflows, lockfiles, the vitest setup graph, the runner itself) | full suite |
-| the diff touches CI **meta** paths (`.github/**`, `scripts/**`) | full suite |
-| the diff touches THIS surface | full suite |
-| the diff touches only the OTHER surface | cross-surface set |
+| base ref absent or unresolvable; diff or selector unreadable; a selected target could pass for an option | **exit 2** — fail closed, run nothing |
+| anything else — including a `scripts/` change, a diff touching both surfaces, a broad-impact file, or a large related set | `related: N test file(s) (full suite deferred to CI)` |
+| `local-gate.py --full` passed explicitly by a human | both surfaces' full suites, with bounded workers (`run_scoped_tests.py` itself has no full mode) |
+
+Workers: the gate runs `-n auto` and caps it by setting
+`PYTEST_XDIST_AUTO_NUM_WORKERS` to `min(max(cpu_count // 3, 2), 12)` in the
+subprocess environment (a tighter cap already in the environment is kept). An
+explicit `-n <N>` would bypass the root `xdist_budget.py` hook and with it the
+live free-memory clamp and the flock slots shared between concurrent runs; going
+through xdist's own knob keeps those and adds the gate's cap on top. A human who
+wants the machine saturated runs a bare `python -m pytest` and gets the budget's
+default.
+`scripts/local-gate.py` is the same selection for both surfaces in one command.
+`scripts/leaf_test_scope.py` is unchanged in contract: CI consumes its verdict to
+skip the matrix, so it must stay SOUND and its escalations still mean "CI runs
+the full suite" — which is exactly where the full suite belongs.
 
 **The surface split is transcribed from `ci.yml`'s `changes` job, buckets and veto
 alike, because that job is the authority for the question.** Its three buckets are
@@ -192,25 +205,30 @@ revision folded `meta` into `backend`, which is invisible until it bites:
 `website/src/test/frontendBlobReconcile.wireFormat.test.ts`, so a reduced frontend
 run dropped that spec, and `scripts/` and `docs/` are read by several i18n and
 settings specs too. Meta paths belong to neither surface and can be read from
-both. Note the corollary: this runner lives under `scripts/`, so any change to it
-disables its own reduction.
+both. Note the corollary for CI: this runner lives under `scripts/`, so a change
+to it puts CI's matrix on its full, un-narrowed path. Locally it just means the
+related set on both surfaces, like any other meta diff.
 
-### Why it does not narrow within a surface, and why that is not timidity
+### Why the within-surface scan is back, and what it is NOT claiming
 
-The obvious next step is to run only the tests that reference what the diff
-touched. That was implemented, reviewed six times, and removed. Nine findings
-came back, all real, and all one impossibility: **a text scan cannot enumerate the
-ways a test can reach a module.** The spellings found were absolute import,
-relative import (`from .store import ...`), barrel re-export, in-package fixture,
-global vitest setup, data-file read, cross-surface parity comparison, and
-documentation contract. Nothing suggested that list was finished.
+Running only the tests that reference what the diff touched was implemented,
+reviewed six times, and removed. Nine findings came back, all real, and all one
+impossibility: **a text scan cannot enumerate the ways a test can reach a
+module.** The spellings found were absolute import, relative import
+(`from .store import ...`), barrel re-export, in-package fixture, global vitest
+setup, data-file read, cross-surface parity comparison, and documentation
+contract. Nothing suggested that list was finished, and doing it soundly still
+needs a real import graph (a Python AST pass and a TS resolver that follows
+barrel re-exports).
 
-Every remedy also shrank the allowlist — "fall back to the full suite here",
-"escalate `index.ts`", "documentation is not inert". Extrapolated, the allowlist
-converges on "escalate everything", which is the gate this was meant to replace.
-Doing it soundly needs a real import graph: a Python AST pass, and a TS resolver
-that follows barrel re-exports. That is tracked separately, deliberately not
-smuggled in here.
+What changed is not the scan's soundness but what rides on it. The removed
+revision used the scan to decide which tests were SAFE TO SKIP, and a miss meant
+a skipped test. This revision uses it only to decide which tests are worth
+running FIRST, locally, with CI's full run on the merge ref behind it — a miss
+costs one CI round trip and nothing else. That is an acceptable price for taking
+an hour of a shared machine out of every iteration, and it is why every
+"fall back to the full suite here" remedy from the earlier review is gone: there
+is no full-suite fallback to fall back to.
 
 The measured traps from that attempt are recorded because they are not obvious and
 any future import-graph work will meet the same ones:

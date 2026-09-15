@@ -9,8 +9,9 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.autonudge import binding_key_for
 from kiro_crew.autonudge import get_instance as _autonudge_get
-from kiro_crew.autonudge import is_structured_monitor_loop, structured_monitor_binding_key_for
+from kiro_crew.autonudge import is_structured_monitor_loop
 
 # The security chokepoint lives in the transport-agnostic module (see its
 # docstring); re-exported here so existing importers keep working. This file
@@ -505,12 +506,19 @@ async def api_autonudge_get(request: web.Request) -> web.Response:
 
 
 async def api_session_monitor_get(request: web.Request) -> web.Response:
-    """Return only the structured monitor owned by the authenticated session."""
+    """Return the monitor owned by the authenticated session, whatever its shape.
+
+    Resolves the GENERAL binding so a legacy timer loop (including a Webex
+    session, which hosts one but no structured monitor) reports too. A structured
+    monitor comes back under ``monitor``; a legacy loop comes back under
+    ``autonudge_loop`` as a presence and cadence reading. The full structured
+    record still lives behind the owner-gated ``/api/monitors`` routes.
+    """
     denied = await _require_monitor_internal(request)
     if denied is not None:
         return denied
     session_key = request.headers.get("X-Session-Key", "")
-    binding = structured_monitor_binding_key_for(session_key)
+    binding = binding_key_for(session_key)
     if not binding:
         await _audit_monitor_access(
             request,

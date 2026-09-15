@@ -312,6 +312,147 @@ async def test_a_trailing_slash_issuer_is_a_mismatch():
     assert any("is not the requested issuer" in error for error in result["errors"])
 
 
+# --- the ONE sanctioned equivalence: an empty path against "/" -------------
+
+# A committed issuer with NO path, which is what Google and Box publish in one
+# document and with a root slash in the other (RFC 3986 §6.2.3 makes the two
+# equivalent for https). Every other spelling difference stays a mismatch.
+ROOT_ISSUER = "https://as.example"
+ROOT_AUTHORIZATION_URL = "https://as.example/.well-known/oauth-authorization-server"
+
+
+def root_routes(*, advertised=f"{ROOT_ISSUER}/", issuer=ROOT_ISSUER, dcr=True, pkce=True):
+    return {
+        RESOURCE_URL: FakeResponse(
+            200, {"resource": MCP_URL, "authorization_servers": [advertised]}
+        ),
+        ROOT_AUTHORIZATION_URL: FakeResponse(
+            200, authorization_document(dcr=dcr, pkce=pkce, issuer=issuer)
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("a", "b"), [(ROOT_ISSUER, f"{ROOT_ISSUER}/"), (f"{ROOT_ISSUER}/", ROOT_ISSUER)]
+)
+def test_same_issuer_folds_an_empty_path_against_a_root_slash_in_both_directions(a, b):
+    assert l0_probe.same_issuer(a, b) is True
+
+
+def test_same_issuer_is_true_on_identical_strings():
+    assert l0_probe.same_issuer(ISSUER, ISSUER) is True
+    assert l0_probe.same_issuer(ROOT_ISSUER, ROOT_ISSUER) is True
+    assert l0_probe.same_issuer(f"{ROOT_ISSUER}/", f"{ROOT_ISSUER}/") is True
+
+
+@pytest.mark.parametrize(
+    ("advertised", "committed", "label"),
+    [
+        ("https://AS.example/", ROOT_ISSUER, "host case"),
+        ("https://as.example:443/", ROOT_ISSUER, "explicit default port"),
+        ("https://as.example:443", ROOT_ISSUER, "explicit default port, no slash"),
+        ("https://as.example/?tenant=a", ROOT_ISSUER, "query"),
+        ("https://as.example?tenant=a", ROOT_ISSUER, "query, no slash"),
+        ("https://as.example//", ROOT_ISSUER, "double slash"),
+        ("http://as.example/", ROOT_ISSUER, "scheme"),
+        (f"{ISSUER}/", ISSUER, "trailing slash after a non-empty path"),
+        ("https://auth.example.com/tenant/", "https://auth.example.com/tenant", "tenant slash"),
+        (OTHER_TENANT, ISSUER, "realm substitution"),
+        ("https://as.example/tenant", ROOT_ISSUER, "path added to a root issuer"),
+        ("https://as.example/", "https://other.example/", "different host"),
+    ],
+)
+def test_same_issuer_refuses_every_other_variant_in_both_directions(advertised, committed, label):
+    """Only the root ``""`` / ``"/"`` pair is folded; nothing else is normalized."""
+
+    assert l0_probe.same_issuer(advertised, committed) is False, label
+    assert l0_probe.same_issuer(committed, advertised) is False, label
+
+
+@pytest.mark.asyncio
+async def test_a_root_slash_in_the_advertised_issuer_passes_end_to_end():
+    """PRM says ``https://as.example/``, AS metadata says ``https://as.example``,
+    the registry committed ``https://as.example``: one committed string must be
+    able to satisfy both documents."""
+
+    session = FakeSession(root_routes())
+
+    result = await l0_probe.probe_provider(
+        session, provider(authorization_server=ROOT_ISSUER), timeout_seconds=1.0
+    )
+
+    assert result["ok"] is True
+    assert result["errors"] == []
+    assert all(result["checks"].values())
+    # The committed spelling is what gets reported, not the vendor's slash.
+    assert result["observed"]["authorization_server"] == ROOT_ISSUER
+    # The committed issuer is still the only one fetched.
+    assert session.fetched == [RESOURCE_URL, ROOT_AUTHORIZATION_URL]
+
+
+@pytest.mark.asyncio
+async def test_a_root_slash_in_the_as_metadata_issuer_passes_end_to_end():
+    """The discrepancy can sit on the other side: AS metadata carries the slash."""
+
+    session = FakeSession(root_routes(advertised=ROOT_ISSUER, issuer=f"{ROOT_ISSUER}/"))
+
+    result = await l0_probe.probe_provider(
+        session, provider(authorization_server=ROOT_ISSUER), timeout_seconds=1.0
+    )
+
+    assert result["ok"] is True
+    assert result["errors"] == []
+    assert result["observed"]["authorization_server"] == ROOT_ISSUER
+
+
+@pytest.mark.asyncio
+async def test_a_root_slash_committed_issuer_accepts_the_bare_spelling():
+    """Whichever side the registry committed, the pair still folds."""
+
+    session = FakeSession(root_routes(advertised=ROOT_ISSUER, issuer=ROOT_ISSUER))
+
+    result = await l0_probe.probe_provider(
+        session, provider(authorization_server=f"{ROOT_ISSUER}/"), timeout_seconds=1.0
+    )
+
+    assert result["ok"] is True
+    assert result["errors"] == []
+    assert result["observed"]["authorization_server"] == f"{ROOT_ISSUER}/"
+
+
+@pytest.mark.asyncio
+async def test_record_mode_keeps_the_committed_spelling_when_only_the_root_slash_differs(
+    capsys,
+):
+    """A recorder that copied the vendor's slash back would churn the baseline on
+    every run, and the approval gate compares strings exactly."""
+
+    session = FakeSession(root_routes())
+
+    result = await l0_probe.probe_provider(
+        session, provider(authorization_server=ROOT_ISSUER), timeout_seconds=1.0, record=True
+    )
+
+    assert result["ok"] is True
+    assert result["observed"]["authorization_server"] == ROOT_ISSUER
+    # Not a finding, so not reported for approval either.
+    assert "needs human approval" not in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_a_root_issuer_with_a_real_variant_is_still_flagged_end_to_end():
+    """The equivalence is exactly one pair wide: host case on a root issuer fails."""
+
+    session = FakeSession(root_routes(advertised="https://AS.example/"))
+
+    result = await l0_probe.probe_provider(
+        session, provider(authorization_server=ROOT_ISSUER), timeout_seconds=1.0
+    )
+
+    assert result["ok"] is False
+    assert any("differs from the committed" in error for error in result["errors"])
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -630,6 +771,100 @@ async def test_recording_ignores_the_committed_dcr_and_pkce():
 
     assert result["ok"] is True
     assert result["observed"]["dcr"] is False
+
+
+# --- pre-registered providers: DCR is information, not a contract ---------
+
+
+def preregistered_provider(dcr=False, pkce=True):
+    """The example provider carrying GitHub's ``auth`` block (operator-registered)."""
+
+    item = provider(dcr=dcr, pkce=pkce)
+    github = get_provider("github")
+    assert github is not None
+    item["auth"] = deepcopy(github["auth"])
+    return item
+
+
+@pytest.mark.asyncio
+async def test_a_preregistered_provider_newly_advertising_dcr_still_passes():
+    """The operator brings the client, so a vendor adding a registration endpoint
+    nothing here would use must not turn the nightly red. The value is still
+    observed and recorded."""
+
+    session = FakeSession(routes(dcr=True))
+
+    result = await l0_probe.probe_provider(
+        session, preregistered_provider(dcr=False), timeout_seconds=1.0
+    )
+
+    assert result["ok"] is True
+    assert result["errors"] == []
+    assert result["checks"]["dcr_expectation"] is True
+    assert result["observed"] == {"authorization_server": ISSUER, "dcr": True, "pkce": True}
+
+
+@pytest.mark.asyncio
+async def test_a_dcr_provider_in_the_same_situation_still_fails():
+    """Same metadata, same committed dcr=False: without the auth block it is drift."""
+
+    session = FakeSession(routes(dcr=True))
+
+    result = await l0_probe.probe_provider(session, provider(dcr=False), timeout_seconds=1.0)
+
+    assert result["ok"] is False
+    assert result["checks"]["dcr_expectation"] is False
+    assert any("DCR advertised=True, expected=False" in error for error in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_a_preregistered_provider_dropping_dcr_is_equally_uninteresting():
+    session = FakeSession(routes(dcr=False))
+
+    result = await l0_probe.probe_provider(
+        session, preregistered_provider(dcr=True), timeout_seconds=1.0
+    )
+
+    assert result["ok"] is True
+    assert result["checks"]["dcr_expectation"] is True
+    assert result["observed"]["dcr"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_preregistered_provider_still_has_pkce_asserted():
+    """The operator's client cannot work without PKCE; only DCR is relaxed."""
+
+    session = FakeSession(routes(pkce=False))
+
+    result = await l0_probe.probe_provider(session, preregistered_provider(), timeout_seconds=1.0)
+
+    assert result["ok"] is False
+    assert result["checks"]["dcr_expectation"] is True
+    assert result["checks"]["pkce_expectation"] is False
+    assert any("PKCE S256 advertised=False" in error for error in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_a_preregistered_provider_still_has_metadata_reachability_asserted():
+    session = FakeSession({})
+
+    result = await l0_probe.probe_provider(session, preregistered_provider(), timeout_seconds=1.0)
+
+    assert result["ok"] is False
+    assert result["checks"]["protected_resource_metadata"] is False
+    assert result["checks"]["dcr_expectation"] is False  # never reached, never claimed
+
+
+@pytest.mark.asyncio
+async def test_a_preregistered_provider_records_the_observed_dcr_in_record_mode():
+    session = FakeSession(routes(dcr=True))
+
+    result = await l0_probe.probe_provider(
+        session, preregistered_provider(dcr=False), timeout_seconds=1.0, record=True
+    )
+
+    assert result["ok"] is True
+    assert result["observed"]["dcr"] is True
 
 
 # --- transport hardening ---------------------------------------------------

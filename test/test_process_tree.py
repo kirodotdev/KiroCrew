@@ -224,14 +224,15 @@ class TestSnapshotProcessTree:
             patch("kiro_crew.acp.client._get_start_time", side_effect=lambda p: p * 10),
             patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
             patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+            patch("kiro_crew.session_pid._pid_start_token", side_effect=lambda p: str(p * 10)),
         ):
             await client._snapshot_process_tree()
 
         assert client._child_pids == {200: (2000, b"proc200"), 300: (3000, b"proc300"), 400: (4000, b"proc400")}
-        # Verify child:parent lines written to kiro_pids.txt
+        # Verify child:parent:start-id lines written to kiro_pids.txt
         content = (tmp_path / "kiro_pids.txt").read_text(encoding="utf-8")
         lines = {ln.strip() for ln in content.splitlines() if ln.strip()}
-        assert lines == {"200:100", "300:100", "400:100"}
+        assert lines == {"200:100:2000", "300:100:3000", "400:100:4000"}
 
     @pytest.mark.asyncio
     async def test_witnesses_descendants_in_the_spawn_group(self, tmp_path, monkeypatch):

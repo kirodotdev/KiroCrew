@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { selectContinuable, selectTurnInterrupted } from '../store/chatSlice'
+import { slotIsRemoteBound } from '../store/dashboardSlice'
 import type { ChatMessage } from '../types'
 
 /**
@@ -20,7 +21,7 @@ import type { ChatMessage } from '../types'
 const msg = (role: string, content = 'x', meta?: Record<string, unknown>): ChatMessage =>
   ({ role, content, cls: '', ...(meta ? { meta } : {}) }) as ChatMessage
 
-const state = (over: Partial<{ messages: ChatMessage[]; slotRunning: boolean; slotStopping: boolean; pendingTurnSlot: string | null }> = {}, slots: Array<{ key: string; orchestrating?: boolean; subagents_running?: boolean }> = []) =>
+const state = (over: Partial<{ messages: ChatMessage[]; slotRunning: boolean; slotStopping: boolean; pendingTurnSlot: string | null }> = {}, slots: Array<{ key: string; orchestrating?: boolean; subagents_running?: boolean; executor?: 'local' | 'remote' }> = []) =>
   ({
     chat: {
       messages: [],
@@ -153,6 +154,34 @@ describe('selectContinuable', () => {
 
   it('is unaffected by another slot orchestrating', () => {
     expect(selectContinuable(state({ messages: [msg('user')] }, [{ key: 'other', orchestrating: true }]))).toBe(true)
+  })
+
+  it('is false on a crew-bound slot — the server refuses Continue there', () => {
+    // `remote_bound_refusal` answers 409 `remote_action_unsupported` for
+    // `executor == "remote"`, so an offer here is a button that cannot work.
+    expect(selectContinuable(state({ messages: [msg('user')] }, [{ key: 'slot-1', executor: 'remote' }]))).toBe(false)
+  })
+
+  it('is false on a crew-bound slot whose relayed turn died mid-stream', () => {
+    // The reported shape, and the reason the guard is not merely defensive:
+    // `relay_remote_turn`'s failure path appends this trailing `error` row, so
+    // without the guard a dropped tunnel leaves the composer offering a
+    // guaranteed-409 Resume. `selectTurnInterrupted` still reads it as
+    // interrupted — that half is true and unchanged; only availability moves.
+    const bound = state({ messages: [
+      msg('user', 'what shall we do?'),
+      msg('assistant', 'I’ll check whether the retrospective is still active'),
+      msg('error', 'The crew running this session stopped responding.'),
+    ] }, [{ key: 'slot-1', executor: 'remote' }])
+    expect(selectTurnInterrupted(bound)).toBe(true)
+    expect(selectContinuable(bound)).toBe(false)
+  })
+
+  it('still offers Continue on a local slot while another slot is crew-bound', () => {
+    expect(selectContinuable(state({ messages: [msg('user')] }, [
+      { key: 'other', executor: 'remote' },
+      { key: 'slot-1', executor: 'local' },
+    ]))).toBe(true)
   })
 
   it('is false when a queued message is waiting — the runner will resume on its own', () => {
@@ -338,5 +367,39 @@ describe('selectTurnInterrupted', () => {
     expect(selectTurnInterrupted(state({
       messages: [msg('user'), msg('inject', '[Continue — requested by the user]\nresume')],
     }))).toBe(true)
+  })
+})
+
+/**
+ * The shared crew-bound predicate. `selectContinuable` (above) and ChatPage's
+ * regenerate / edit-resend gates both route through this ONE spelling, so the
+ * two client surfaces cannot drift from each other or from the server's
+ * `remote_bound_refusal`. The `selectContinuable` cases above already exercise
+ * it end-to-end (executor: 'remote' -> not continuable); these pin the predicate
+ * itself, including the keying that a slot-object test could otherwise leave
+ * ambiguous.
+ */
+describe('slotIsRemoteBound', () => {
+  it('is true only when executor is "remote"', () => {
+    expect(slotIsRemoteBound({ executor: 'remote' })).toBe(true)
+  })
+
+  it('is false for a local slot', () => {
+    expect(slotIsRemoteBound({ executor: 'local' })).toBe(false)
+  })
+
+  it('is false when executor is absent — an older gateway still ships it, so an absent one is a missing lookup, not a bound slot', () => {
+    expect(slotIsRemoteBound({})).toBe(false)
+  })
+
+  it('is false for a missing slot (null / undefined)', () => {
+    expect(slotIsRemoteBound(undefined)).toBe(false)
+    expect(slotIsRemoteBound(null)).toBe(false)
+  })
+
+  it('keys on executor, not instance_id — a half-open binding (instance named, executor not yet remote) is NOT bound', () => {
+    // The server refuses this same half-open shape; the predicate must agree by
+    // reading `executor` alone, never the presence of an `instance_id`.
+    expect(slotIsRemoteBound({ instance_id: 'nobita' } as { executor?: string })).toBe(false)
   })
 })

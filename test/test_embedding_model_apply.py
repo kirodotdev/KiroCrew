@@ -735,17 +735,59 @@ class TestCommitTimeGenerationCheck:
 
     def test_both_persisting_paths_recheck_under_the_lock(self) -> None:
         """Guard against a refactor dropping the re-check from either path."""
+        import ast
         import inspect
+        import textwrap
 
         for fn in (VectorMemoryStore.write_episodic, VectorMemoryStore.write_lesson):
-            src = inspect.getsource(fn)
-            assert "_space_generation" in src, f"{fn.__name__} lost its generation check"
-            lock_at = src.find("with self._db_lock:")
-            check_at = src.find("self._space_generation !=")
-            assert -1 not in (lock_at, check_at), fn.__name__
-            assert check_at > lock_at, (
-                f"{fn.__name__} must re-check INSIDE the lock, not before it"
-            )
+            tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+            parents = {
+                child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
+            }
+            checks = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Compare)
+                and ast.dump(node.left)
+                == ast.dump(ast.parse("self._space_generation", mode="eval").body)
+                and any(isinstance(op, ast.NotEq) for op in node.ops)
+            ]
+            assert checks, f"{fn.__name__} lost its generation check"
+            for check in checks:
+                node = check
+                guarded = False
+                while node in parents:
+                    node = parents[node]
+                    if isinstance(node, ast.With):
+                        for item in node.items:
+                            expr = item.context_expr
+                            target = expr.func if isinstance(expr, ast.Call) else expr
+                            if (
+                                isinstance(target, ast.Attribute)
+                                and isinstance(target.value, ast.Name)
+                                and target.value.id == "self"
+                                and target.attr in {"_db_lock", "_vector_commit"}
+                            ):
+                                guarded = True
+                                break
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                        break
+                assert guarded, f"{fn.__name__} must re-check INSIDE the lock, not before it"
+
+    @pytest.mark.parametrize("placement", ["before", "after", "nested"])
+    def test_generation_guard_rejects_checks_outside_executing_lock(self, monkeypatch, placement):
+        import inspect
+
+        bodies = {
+            "before": "    if self._space_generation != 1: pass\n    with self._db_lock: pass\n",
+            "after": "    with self._db_lock: pass\n    if self._space_generation != 1: pass\n",
+            "nested": "    with self._vector_commit([]):\n        def later():\n            if self._space_generation != 1: pass\n",
+        }
+        monkeypatch.setattr(
+            inspect, "getsource", lambda fn: "def write(self):\n" + bodies[placement]
+        )
+        with pytest.raises(AssertionError, match="must re-check INSIDE the lock"):
+            self.test_both_persisting_paths_recheck_under_the_lock()
 
 
 class TestRevertToBundledIsGatedToo:

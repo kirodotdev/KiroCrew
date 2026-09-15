@@ -482,6 +482,38 @@ class TestExplicitBase:
 
         assert scope.resolve_base("main") == "main"
 
+    def test_the_fallback_announces_that_it_degraded(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A verdict computed against the tip must not look like one from the merge base.
+
+        The fallback answers a question it cannot answer exactly, and the pair
+        (exact answer, degraded answer) is indistinguishable in every gate's
+        report. So the degradation is stated where the gates already print, as a
+        ``warning`` so CI surfaces it as an annotation.
+        """
+        _git(repo, "checkout", "--orphan", "detached")
+        _git(repo, "commit", "-m", "unrelated root")
+
+        scope.resolve_base("main")
+
+        out = capsys.readouterr().out
+        assert "::warning::" in out
+        assert "base TIP" in out
+
+    def test_the_merge_base_path_announces_too(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Silence on success would make a lost announcement look like a clean run."""
+        _git(repo, "checkout", "feature")
+
+        resolved = scope.resolve_base("main")
+
+        out = capsys.readouterr().out
+        assert "::notice::" in out
+        assert resolved in out
+        assert "::warning::" not in out
+
 
 class TestParseAddedLines:
     """The text-level parser, reachable without a repository."""

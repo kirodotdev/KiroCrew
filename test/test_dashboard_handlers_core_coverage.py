@@ -1787,13 +1787,6 @@ class TestAgentSettingsPut:
         assert json.loads(seeded_config.read_text(encoding="utf-8"))["agent"]["max_subagents"] == 0
 
     @pytest.mark.asyncio
-    async def test_non_boolean_toggle_is_denied(self, seeded_config, fake_sel) -> None:
-        async with TestClient(TestServer(_agent_cfg_app())) as client:
-            resp = await _put_agent(client, {"conductor_skill": "yes"})
-            assert resp.status == 400
-            assert (await resp.json())["error"] == "conductor_skill must be a boolean"
-
-    @pytest.mark.asyncio
     async def test_empty_settings_is_denied(self, seeded_config, fake_sel) -> None:
         async with TestClient(TestServer(_agent_cfg_app())) as client:
             resp = await _put_agent(client, {"unknown_key": 1})
@@ -1815,33 +1808,6 @@ class TestAgentSettingsPut:
             resp = await _put_agent(client, {"subagent_max_turns": 9})
             assert resp.status == 200
             assert (await resp.json()) == {"ok": True, "restart_required": False}
-
-    @pytest.mark.asyncio
-    async def test_conductor_enable_regenerates_the_skill(
-        self, seeded_config, fake_sel, monkeypatch
-    ) -> None:
-        regen = MagicMock()
-        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents._regen_conductor", regen)
-        async with TestClient(TestServer(_agent_cfg_app())) as client:
-            resp = await _put_agent(client, {"conductor_skill": True})
-            assert resp.status == 200
-            # A conductor-only save is applied in-request, so no restart hint.
-            assert (await resp.json())["restart_required"] is False
-        regen.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_conductor_disable_removes_the_skill_file(
-        self, seeded_config, fake_sel, tmp_path
-    ) -> None:
-        from kiro_crew.skills import SkillsLoader
-
-        skill = SkillsLoader()._dir / "conductor" / "SKILL.md"
-        skill.parent.mkdir(parents=True, exist_ok=True)
-        skill.write_text("# conductor\n", encoding="utf-8", newline="\n")
-        async with TestClient(TestServer(_agent_cfg_app())) as client:
-            resp = await _put_agent(client, {"conductor_skill": False})
-            assert resp.status == 200
-        assert not skill.exists()
 
     @pytest.mark.asyncio
     async def test_get_drops_edition_contributed_sections(self, seeded_config) -> None:

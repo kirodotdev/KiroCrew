@@ -302,6 +302,7 @@ _SENSITIVE_RELATIVE_DIRS = (
     ".local/share/opencode/auth.json",
     ".netrc",
     ".npmrc",
+    ".pi/agent/auth.json",
     ".pypirc",
     ".ssh",
 )

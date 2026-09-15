@@ -35,6 +35,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from kiro_crew.metrics.events import WORKFLOW_RUNS, emit_counter
@@ -86,6 +87,37 @@ MAX_RUN_TIMEOUT_SECS = 6 * 3600
 # Cap on a persisted per-agent failure description: enough to identify the fault,
 # short enough that a wide fan-out of failures can't bloat the run record.
 MAX_AGENT_ERROR_CHARS = 500
+
+
+async def _drain_cleanup(task: asyncio.Future[Any]) -> bool:
+    """Drain owned cleanup and report caller cancellation without forwarding it."""
+    caller = asyncio.current_task()
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # A cleanup task cancelling itself is not a caller's cancel request.
+            cancelled = cancelled or (caller is not None and caller.cancelling() > 0)
+        except Exception:  # cleanup failures must not replace the run outcome
+            break
+    try:
+        task.result()
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        pass
+    return cancelled
+
+
+def host_now_iso() -> str:
+    """Real wall-clock UTC stamp for ONE event (the HOST clock).
+
+    Distinct from ``ctx.now`` (the fixed, script-visible run-start stamp): the
+    event journal records when each event actually happened, while the script's
+    only clock stays fixed for determinism / resume-stability. It lives in host
+    code and never reaches the sandboxed script, so it grants no new time
+    capability inside a workflow.
+    """
+    return datetime.now(timezone.utc).isoformat()
 
 
 def clamp_run_timeout(value: Optional[int], *, default: int = DEFAULT_RUN_TIMEOUT_SECS) -> int:
@@ -295,7 +327,7 @@ class _RunContext:
         self.args = args
         self.now = now
         self.owner_dm = owner_dm
-        self.budget = budget
+        self._budget = budget
         # Originating session key (dashboard slot / channel key) for this run.
         # Threaded from start()/run_background() so session-bound native ports
         # (e.g. ``ctx.nudge`` → AutoNudge) know which session to act on. Empty
@@ -336,6 +368,7 @@ class _RunContext:
         self.agent_errors: dict[int, str] = {}
         # Per-call durable checkpoint sink (see ``AgentResultFn``).
         self._on_agent_result = on_agent_result
+        self._execution_guard: Optional[Callable[[], Awaitable[None]]] = None
         # RUN-GLOBAL agent concurrency. ``parallel``/``pipeline`` each build their
         # OWN semaphore, so they bound one fan-out but not the run: nested or
         # sequentially overlapping combinators could exceed the configured cap, and
@@ -346,6 +379,11 @@ class _RunContext:
         self._agent_slots: Optional[asyncio.Semaphore] = (
             asyncio.Semaphore(concurrency) if (concurrency and concurrency > 0) else None
         )
+
+    @property
+    def budget(self) -> Budget:
+        """The host owns the binding; script aliases cannot replace its accounting."""
+        return self._budget
 
     # --- event sink (shared with the runner) ---
     def _record(self, event: WorkflowEvent) -> None:
@@ -374,6 +412,9 @@ class _RunContext:
     ) -> Any:
         # B6 cap + A4 ceiling are checked BEFORE the call so a script cannot run
         # past either limit. would_exceed lets us stop at the boundary cleanly.
+        guard = getattr(self, "_execution_guard", None)
+        if guard is not None:
+            await guard()
         self._counter.increment()
         if self.budget.would_exceed():
             raise BudgetExceeded("budget exhausted before agent call")
@@ -583,6 +624,7 @@ class WorkflowRunner:
         ports: Optional[dict] = None,
         on_complete: Optional[Callable[[], Awaitable[None]]] = None,
         pre_terminal: Optional[Callable[[], Awaitable[None]]] = None,
+        execution_guard: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         self._agent_fn = agent_fn
         self._timeout_secs = timeout_secs
@@ -600,6 +642,7 @@ class WorkflowRunner:
         # session-bound side effects (e.g. in-flight ctx.nudge arms) can land
         # their outcome logs inside the event stream's contract (terminal last).
         self._pre_terminal = pre_terminal
+        self._execution_guard = execution_guard
 
     async def run(
         self,
@@ -637,7 +680,7 @@ class WorkflowRunner:
         return a run_id instantly instead of blocking on a slow synchronous author.
         """
         args = args or {}
-        stream = EventStream(run_id)
+        stream = EventStream(run_id, clock=host_now_iso)
         events: list[WorkflowEvent] = []
 
         def emit(ev: WorkflowEvent) -> WorkflowEvent:
@@ -858,25 +901,29 @@ class WorkflowRunner:
             replay_before=replay_before,
             on_agent_result=on_agent_result,
         )
+        ctx._execution_guard = self._execution_guard
         ctx._events = events  # share the sink so phase/log/agent events land in order
         safe_globals = build_safe_globals(ctx)
 
-        async def _pre_terminal() -> None:
+        async def _pre_terminal() -> bool:
             """Drain session-bound side effects (ctx.nudge arms) BEFORE the
             terminal event: the event-stream contract says terminal events are
             last, so outcome logs must precede run_finished/failed/cancelled.
             Best-effort — teardown must never mask the run outcome."""
             if self._pre_terminal is not None:
                 try:
-                    await self._pre_terminal()
+                    return await _drain_cleanup(asyncio.ensure_future(self._pre_terminal()))
                 except Exception:  # noqa: BLE001
                     pass
+            return False
 
         # 3. Execute the statically validated module in the B7 restricted namespace,
         # then await it under a wall clock. This is the engine's sole execution boundary.
         started = time.monotonic()
         task: Optional["asyncio.Task[Any]"] = None
         try:
+            if self._execution_guard is not None:
+                await self._execution_guard()
             exec(  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
                 compile(source, f"<workflow:{run_id}>", "exec"), safe_globals
             )  # noqa: S102
@@ -897,10 +944,7 @@ class WorkflowRunner:
                 # Runaway: cancel it and drain its cancellation quietly so no
                 # CancelledError escapes and no "task was destroyed" warning fires.
                 run_task.cancel()
-                try:
-                    await run_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+                await _drain_cleanup(run_task)
                 await _pre_terminal()
                 emit(
                     stream.run_failed(
@@ -918,11 +962,15 @@ class WorkflowRunner:
                     source=source,
                 )
             result = run_task.result()  # re-raises the script's own exception, if any
+            if self._execution_guard is not None:
+                await self._execution_guard()
         except asyncio.CancelledError:
-            # The RUN itself was cancelled by our caller (not a timeout) — stop the
-            # in-flight script and report it as cancelled.
-            if task is not None and not task.done():
-                task.cancel()
+            # Drain owned work before publishing a terminal event, including any
+            # cleanup logs/checkpoints and exceptions raised during cancellation.
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await _drain_cleanup(task)
             await _pre_terminal()
             emit(stream.run_cancelled(now, reason="cancelled"))
             return RunResult(
@@ -963,7 +1011,20 @@ class WorkflowRunner:
             )
 
         duration = time.monotonic() - started
-        await _pre_terminal()
+        if await _pre_terminal():
+            # The script returned, but no terminal outcome had been published.
+            # Cleanup has already settled; do not invoke its hook a second time.
+            emit(stream.run_cancelled(now, reason="cancelled"))
+            return RunResult(
+                run_id,
+                ok=False,
+                result=None,
+                events=events,
+                error="cancelled",
+                agent_results=dict(ctx.agent_results),
+                agent_errors=dict(ctx.agent_errors),
+                source=source,
+            )
         emit(stream.run_finished(now, result=result, duration_s=duration))
         # B10: record successful completion with a result hash (never the raw data).
         self._audit(
@@ -1004,11 +1065,13 @@ class WorkflowRunner:
         replay_results: Optional[dict] = None,
         replay_before: int = 0,
         source_is_original: bool = True,
+        execution_binding_version: int = 0,
         workflow_id: str = "",
         workflow_slug: str = "",
         workflow_revision: int = 0,
         intent: str = "",
         author_fn: Optional[AuthorFn] = None,
+        admission_closed: Optional[Callable[[], bool]] = None,
     ) -> str:
         """Start this workflow as a BACKGROUND run tracked in ``registry``.
 
@@ -1034,7 +1097,7 @@ class WorkflowRunner:
                 h.source = src
                 # Durably checkpoint the script now so an authored-in-run
                 # workflow's source survives a restart even before it finishes.
-                persist = getattr(registry, "persist", None)
+                persist = getattr(registry, "persist_soon", None)
                 if persist is not None:
                     try:
                         persist(run_id)
@@ -1090,7 +1153,7 @@ class WorkflowRunner:
                 # released. Best-effort: never let teardown mask the run outcome.
                 if self._on_complete is not None:
                     try:
-                        await self._on_complete()
+                        await _drain_cleanup(asyncio.ensure_future(self._on_complete()))
                     except Exception:  # noqa: BLE001 - teardown must not mask outcome
                         pass
             # Belt-and-suspenders: ensure the final source is on the handle even if
@@ -1118,8 +1181,10 @@ class WorkflowRunner:
             session_key=session_key,
             source=source,
             source_is_original=source_is_original,
+            execution_binding_version=execution_binding_version,
             args=args or {},
             workflow_id=workflow_id,
             workflow_slug=workflow_slug,
             workflow_revision=workflow_revision,
+            admission_closed=admission_closed,
         )

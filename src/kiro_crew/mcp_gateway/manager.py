@@ -62,6 +62,15 @@ _LIVENESS_PING_INTERVAL_SECS = 30.0
 # threshold raced with run_chaos.py and produced spurious
 # "gatewayd_pid_changed_unexpectedly" during legitimate chaos tests.
 _LIVENESS_MAX_CONSECUTIVE_FAILURES = 3
+# Deadline for the ESCALATED probe, run once after a fast ping misses. The fast
+# ping's 2s bound measures load, not liveness: a daemon carrying 100+ concurrent
+# connections can be entirely healthy and still not reach its pong handler
+# inside 2s, and because ``_ping_raw`` gives up at its own deadline the manager
+# never SEES the late reply — so no amount of evidence in the pong helps unless
+# something waits long enough to collect it. That is this probe's whole job. It
+# runs at most once per interval, so the cost is one slow round-trip on a box
+# already in trouble, and it is what makes "busy" distinguishable from "dead".
+_LIVENESS_ESCALATED_TIMEOUT_SECS = 20.0
 # SIGTERM → SIGKILL grace period on shutdown. DERIVED, never a literal: a
 # hand-written 5.0 here was shorter than gatewayd's own 10s drain window, so the
 # supervisor SIGKILLed every restart that had attached stubs before the daemon
@@ -554,7 +563,15 @@ class GatewayManager:
         # live before we hand control back to the caller. Without this the
         # socket appearing only proves bind() succeeded; the handler task
         # might still be wiring up when the first stub connects.
-        pong = await self._ping_payload()
+        #
+        # Escalated, because the miss path TERMINATES the daemon this call just
+        # spawned. A cold start on a loaded host does its own work before it can
+        # answer -- fingerprint warming, prewarm, socket setup -- so the fast
+        # bound can time out against a daemon that is coming up correctly, and
+        # killing it reports the start as failed and drops every stub to
+        # per-session exec, which is the process pile-up this change exists to
+        # avoid.
+        pong = await self._ping_with_escalation()
         if pong is None:
             logger.warning("mcp-gateway ping failed — treating start as failure")
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
@@ -900,14 +917,16 @@ class GatewayManager:
             except Exception:
                 pass
 
-    async def _ping_payload(self) -> Optional[dict]:
+    async def _ping_payload(self, *, timeout: Optional[float] = None) -> Optional[dict]:
         """The daemon's ``pong`` payload, or ``None`` if it did not answer one.
 
         Split out of :meth:`_ping_once` so the adoption gate can read the
         coverage report the reply carries without changing the boolean contract
-        the five other call sites rely on.
+        the five other call sites rely on. ``timeout`` overrides the default
+        round-trip deadline for the escalated liveness probe, which must outlast
+        a loaded event loop to collect the load evidence at all.
         """
-        msg = await self._ping_raw()
+        msg = await self._ping_raw(timeout=timeout)
         return msg if isinstance(msg, dict) and msg.get("type") == "pong" else None
 
     async def _ping_once(self) -> bool:
@@ -916,15 +935,53 @@ class GatewayManager:
         """
         return (await self._ping_payload()) is not None
 
-    async def _ping_raw(self) -> Optional[dict]:
-        """One ping round-trip; the decoded reply, or ``None`` on any failure."""
+    async def _ping_raw(self, *, timeout: Optional[float] = None) -> Optional[dict]:
+        """One ping round-trip; the decoded reply, or ``None`` on any failure.
+
+        An explicit ``timeout`` bounds the WHOLE round-trip; without one, each
+        step keeps its own ``_PING_TIMEOUT_SECS``, which is what the fast-bound
+        call sites have always had.
+
+        Both halves of that are load-bearing, and the reason is arithmetic
+        rather than tidiness. The escalated bound has to reach every step: the
+        connect is what blocks against a saturated accept backlog, so a probe
+        that widened only the connect would collect no more late pongs than the
+        fast one. But it must not give each step its own 20s, because on the
+        adopted path this probe's duration IS the outage window -- nothing is
+        listening on that address until a replacement lands, so every attached
+        stub is unable to serve a call for as long as the probe runs. Per step
+        the escalated probe alone reaches 3 x 20s, and with the fast probe's own
+        3 x 2s ahead of it the worst case is 66s on top of the up-to-30s notice
+        latency. Shared, the pair is bounded at 26s. The outage is what the
+        number buys down; the probe should not be the largest term in it.
+
+        The fast path is deliberately NOT collapsed onto one 2s budget:
+        a loaded daemon needing 1.5s to accept and 1.5s to answer passes today
+        and would start reading as dead, which is the misverdict this module is
+        being fixed to stop producing.
+        """
+        loop = asyncio.get_running_loop()
+
+        if timeout is None:
+
+            def _left() -> float:
+                return _PING_TIMEOUT_SECS
+
+        else:
+            deadline = loop.time() + timeout
+
+            def _left() -> float:
+                # Never zero or negative: wait_for(0) raises immediately, which
+                # would report a spent budget as a transport failure.
+                return max(0.001, deadline - loop.time())
+
         try:
             reader, writer = await asyncio.wait_for(
                 transport.connect(
                     self._spec.socket_path,
                     limit=READ_BUFFER_LIMIT_BYTES,
                 ),
-                timeout=_PING_TIMEOUT_SECS,
+                timeout=_left(),
             )
         except (asyncio.TimeoutError, OSError) as exc:
             logger.warning("mcp-gateway ping connect failed: %s", exc)
@@ -932,12 +989,12 @@ class GatewayManager:
         try:
             writer.write(b'{"type":"ping"}\n')
             try:
-                await asyncio.wait_for(writer.drain(), timeout=_PING_TIMEOUT_SECS)
+                await asyncio.wait_for(writer.drain(), timeout=_left())
             except (asyncio.TimeoutError, ConnectionError):
                 return None
             try:
                 line = await asyncio.wait_for(
-                    reader.readuntil(b"\n"), timeout=_PING_TIMEOUT_SECS,
+                    reader.readuntil(b"\n"), timeout=_left(),
                 )
             except (asyncio.TimeoutError, asyncio.IncompleteReadError,
                     asyncio.LimitOverrunError):
@@ -1087,16 +1144,33 @@ class GatewayManager:
                     # drift too: an adopted daemon never re-applies a spec,
                     # so without this a survivor that goes stale after
                     # adoption stays stale for its whole life.
-                    pong = await self._ping_payload()
+                    # A miss here gets the same escalated probe the owned path
+                    # uses, and then acts on it -- deliberately, on ONE miss,
+                    # unlike the owned path's three-cycle grace. The two paths
+                    # differ in what a slow verdict costs. If an adopted daemon
+                    # really is gone, nothing is listening on its address, and
+                    # every attached stub is unable to serve a call until a
+                    # replacement binds -- so here the verdict's latency IS the
+                    # outage. One escalated miss displaces at 26s worst case
+                    # (2+2+2 fast, then 20 escalated); three cycles would take
+                    # 26 + 30 + 26 + 30 + 26 = 138s, five times the outage for
+                    # evidence the escalation already provides. The owned path
+                    # can afford its grace because its own socket stays bound
+                    # while it waits, so waiting there costs nothing.
+                    # The load misverdict this change exists to fix is already
+                    # handled by the escalation: a daemon that answers either
+                    # probe is alive and is never displaced.
+                    pong = await self._ping_with_escalation()
                     if pong is not None:
                         if await self._reconcile_adopted(pong):
                             continue
                         await asyncio.sleep(_LIVENESS_PING_INTERVAL_SECS)
                         continue
                     logger.warning(
-                        "mcp-gateway: adopted daemon on %s is gone — "
-                        "re-electing (spawning a replacement)",
+                        "mcp-gateway: adopted daemon on %s did not answer "
+                        "within %.0fs — re-electing (spawning a replacement)",
                         self._spec.socket_path,
+                        _LIVENESS_ESCALATED_TIMEOUT_SECS,
                     )
                     self._adopted = False
                     try:
@@ -1294,21 +1368,52 @@ class GatewayManager:
                 # Outer loop will notice _stopping and exit; yield a
                 # benign reason that gets ignored on stop.
                 return "stopping"
-            ok = await self._ping_once()
-            if ok:
+            # One probe pair per cycle: the fast ping, then -- only if it missed
+            # -- one escalated one. A miss is NOT yet evidence of death, because
+            # the fast bound measures how loaded the daemon is and ``_ping_raw``
+            # gives up at it, so a healthy daemon serving 100+ connections looks
+            # identical to a dead one. Killing the wrong one costs every attached
+            # session its tools.
+            if await self._ping_with_escalation() is not None:
                 consecutive_failures = 0
                 continue
             consecutive_failures += 1
             logger.warning(
-                "mcp-gateway: liveness ping failed (%d/%d consecutive)",
+                "mcp-gateway: liveness ping failed (%d/%d consecutive): "
+                "no reply within %.0fs",
                 consecutive_failures, _LIVENESS_MAX_CONSECUTIVE_FAILURES,
+                _LIVENESS_ESCALATED_TIMEOUT_SECS,
             )
             if consecutive_failures >= _LIVENESS_MAX_CONSECUTIVE_FAILURES:
                 return (
                     f"zombie detected: {consecutive_failures} consecutive "
                     f"ping failures over "
                     f"{int(consecutive_failures * _LIVENESS_PING_INTERVAL_SECS)}s"
+                    f" (no reply within {_LIVENESS_ESCALATED_TIMEOUT_SECS:.0f}s)"
                 )
+
+    async def _ping_with_escalation(self) -> Optional[dict]:
+        """The daemon's pong, allowing for a loaded event loop.
+
+        The fast probe's 2s bound measures load, not liveness, and
+        :meth:`_ping_raw` gives up at that bound — so a daemon serving 100+
+        connections can be entirely healthy and still look silent. One slow
+        round-trip is what separates the two, and every decision that would
+        DISPLACE a running daemon has to make it. ``None`` means no answer even
+        with the escalated deadline.
+
+        Not used by the one-shot assessment gates (start-up election, the
+        post-respawn incumbent check) or by the public status probe. For the
+        status probe that is deliberate: a UI poll is waiting on it. For the
+        assessment gates it is only a scope boundary — their miss path can
+        unlink a LIVE daemon's socket, because ``transport.probe_live`` reads a
+        saturated accept backlog as not-live. See the daemon-lifecycle spec;
+        that defect belongs to the endpoint lifecycle, not to this verdict.
+        """
+        pong = await self._ping_payload()
+        if pong is not None:
+            return pong
+        return await self._ping_payload(timeout=_LIVENESS_ESCALATED_TIMEOUT_SECS)
 
     async def _terminate_process(self, *, grace_secs: float) -> None:
         proc = self._process

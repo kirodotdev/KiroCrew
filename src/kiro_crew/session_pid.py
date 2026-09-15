@@ -770,15 +770,39 @@ def _sync_kill_provider(provider: object) -> None:
     logger.warning("_sync_kill_provider: killed PID %d (group %s) for leaked provider", pid, group)
 
 
+def _tracked_child_has_runtime_identity(child_pid: int) -> bool:
+    """Positive argv identity for the tracked sweep's systemd kill arm.
+
+    True only when the live process looks like something Kiro Crew tracks in
+    ``kiro_pids.txt``: a managed agent runtime (:data:`_MANAGED_AGENT_MARKERS`),
+    an MCP entrypoint (:func:`_is_orphan_mcp`), or a fingerprint-less MCP
+    launcher shape (:func:`_is_marked_mcp_launcher` -- callers pair this arm
+    with the environ marker). FAIL-CLOSED: unreadable argv is inconclusive and
+    returns ``False``, so the sweep prunes without killing. This keeps an
+    intentional survivor (a detached process that merely inherited the
+    tree-wide ``KIROCREW_SPAWNED`` marker, e.g. a preview server) out of the
+    systemd arm's kill authority even if a tracking entry names its PID.
+    """
+    if _is_managed_agent_process(child_pid):
+        return True
+    cmdline = _pid_cmdline(child_pid)
+    if not cmdline:
+        return False
+    return _is_orphan_mcp(cmdline) or _is_marked_mcp_launcher(cmdline)
+
+
 def _cleanup_orphaned_mcp_servers() -> int:
     """Kill tracked child PIDs whose parent kiro-cli session is dead.
 
-    Child entries are stored as ``child_pid:parent_pid`` in ``kiro_pids.txt``.
-    A child is orphaned when its parent PID is no longer alive.  Bare PID
-    lines (sandbox root PIDs) are pruned when the process is confirmed dead.
+    Child entries are stored as ``child_pid:parent_pid[:start-id]`` in
+    ``kiro_pids.txt`` (the optional third field is the child's process-start
+    identity, recorded at track time).  A child is orphaned when its parent
+    PID is dead.  Bare PID lines (sandbox root PIDs) are pruned
+    when the process is confirmed dead.
 
-    Zero false positives: we only kill PIDs we tracked, and only when the
-    specific parent session that spawned them is confirmed dead.
+    Zero false positives: we only kill PIDs we tracked, only when the
+    specific parent session that spawned them is confirmed dead, and never
+    when the start identity proves the PID was recycled.
     """
     path = _pid_file_path()
     if not path.exists():
@@ -792,6 +816,9 @@ def _cleanup_orphaned_mcp_servers() -> int:
         lines = path.read_text(encoding="utf-8").splitlines()
         killed = 0
         lines_to_remove: set[str] = set()
+        # Lazily computed on the first orphan-kill decision: the /proc scan is
+        # only worth paying when at least one tracked child has a dead parent.
+        accepted_ppids: set[int] | None = None
 
         for line in lines:
             stripped = line.strip()
@@ -806,12 +833,15 @@ def _cleanup_orphaned_mcp_servers() -> int:
                 if not platform_compat.pid_exists(bare_pid):
                     lines_to_remove.add(stripped)
                 continue
-            parts = stripped.split(":", 1)
+            parts = stripped.split(":")
             try:
                 child_pid = int(parts[0])
                 parent_pid = int(parts[1])
             except (ValueError, IndexError):
                 continue
+            # Optional third field: process-start identity recorded at track
+            # time (see _track_child_pids). Legacy two-field entries have none.
+            recorded_token = parts[2] if len(parts) >= 3 and parts[2] else None
 
             # Is the child still alive? (os.kill(pid, 0) would terminate on Windows)
             if not platform_compat.pid_exists(child_pid):
@@ -822,12 +852,47 @@ def _cleanup_orphaned_mcp_servers() -> int:
             if platform_compat.pid_exists(parent_pid):
                 continue  # parent alive (or unknown) — leave child running
 
-            # Parent confirmed dead → child is orphaned — kill it.
-            # Guard against PID reuse: if the child was truly ours, its PPid
-            # should be 1 (reparented to init) since the parent died. A reused
-            # PID would have a different PPid.
+            # Parent confirmed dead -> child is orphaned -- kill it, unless
+            # the PID names a different incarnation than the one we tracked.
+            #
+            # The start token (recorded at track time via _pid_start_token)
+            # is SUBTRACTIVE evidence only: a live token that differs from
+            # the recorded one proves the PID was recycled -> prune without
+            # killing. A matching or unreadable token never authorizes the
+            # kill by itself -- the record is same-uid-writable, so a forged
+            # line must not be able to aim the sweep at an arbitrary
+            # process. The kill still requires the reparent heuristic below,
+            # exactly the authority the sweep has always had.
+            #
+            # Heuristic: a true orphan reparented to init or the nearest
+            # subreaper (systemd --user) -- the same accepted-parent set
+            # _our_orphan_pids uses -- or still shows the dead parent's PID
+            # (kill/reparent race). The init and dead-parent arms keep their
+            # historical shape on every platform. The systemd arm is
+            # stricter: under systemd --user EVERY manager-started service
+            # carries the manager's PID as its PPid for its whole life, and
+            # the KIROCREW_SPAWNED environ marker is tree-wide (an
+            # intentional survivor such as a detached preview server
+            # inherits it too), so killing there requires BOTH the marker
+            # AND positive runtime argv identity -- the process must look
+            # like something this file tracks (managed agent runtime, MCP
+            # entrypoint, or marked launcher). Unreadable argv fails closed
+            # to prune-without-kill.
+            if recorded_token is not None:
+                live_token = _pid_start_token(child_pid)
+                if live_token is not None and live_token != recorded_token:
+                    # Provably a different incarnation -- PID reuse.
+                    lines_to_remove.add(stripped)
+                    continue
+            if accepted_ppids is None:
+                accepted_ppids = _accepted_subreaper_pids()
             actual_ppid = platform_compat.get_ppid(child_pid)
-            if actual_ppid not in (1, parent_pid):
+            ours = actual_ppid in (1, parent_pid) or (
+                actual_ppid in accepted_ppids
+                and _env_has_kirocrew_marker(child_pid)
+                and _tracked_child_has_runtime_identity(child_pid)
+            )
+            if not ours:
                 # PID was reused by an unrelated process — just prune
                 lines_to_remove.add(stripped)
                 continue
@@ -856,7 +921,7 @@ def cleanup_orphaned_sessions(*, narrow_with_leaders: bool = True) -> None:
     contains only PIDs from the previous run.
 
     Also sweeps orphaned MCP server processes via ``_cleanup_orphaned_mcp_servers``
-    which uses the separate ``kiro_pids.txt`` (child:parent format).
+    which uses the separate ``kiro_pids.txt`` (child:parent[:start-id] format).
 
     ``narrow_with_leaders`` is forwarded to
     :func:`_prune_stale_session_pid_files`. The gateway passes ``False`` on its
@@ -1161,7 +1226,14 @@ def _track_pid(pid: int) -> None:
 
 
 def _track_child_pids(pids: Mapping[int, object], parent_pid: int = 0) -> None:
-    """Append descendant PIDs to the tracking file as ``child:parent`` pairs."""
+    """Append descendant PIDs to the tracking file as ``child:parent[:start-id]``.
+
+    The third field is the child's process-start identity
+    (:func:`_pid_start_token` -- colon-free, in-process and non-blocking on
+    every platform), recorded so the orphan sweep can prove a PID was
+    recycled before killing it. A child whose identity cannot be read at
+    track time is written in the legacy two-field shape.
+    """
     if not pids:
         return
     with _pid_file_lock():
@@ -1170,10 +1242,13 @@ def _track_child_pids(pids: Mapping[int, object], parent_pid: int = 0) -> None:
         existing = set(path.read_text(encoding="utf-8").splitlines()) if path.exists() else set()
         with open(path, "a", encoding="utf-8") as f:
             for pid in pids:
-                entry = f"{pid}:{parent_pid}"
-                if entry not in existing:
-                    f.write(f"{entry}\n")
-                    existing.add(entry)
+                key = f"{pid}:{parent_pid}"
+                if any(e == key or e.startswith(key + ":") for e in existing):
+                    continue
+                token = _pid_start_token(pid)
+                entry = f"{key}:{token}" if token else key
+                f.write(f"{entry}\n")
+                existing.add(entry)
 
 
 def _untrack_child_pids(pids: Mapping[int, object]) -> None:
@@ -1536,6 +1611,47 @@ def _is_sweepable_orphan_browser_daemon(pid: int, cmdline: bytes, age_seconds: f
     return not _browser_session_owner_alive(pid, session)
 
 
+def _accepted_subreaper_pids() -> set[int]:
+    """PIDs an orphan may legitimately reparent to: init plus same-uid systemd.
+
+    An orphaned process reparents to init (pid 1) or the nearest subreaper --
+    under a ``systemd --user`` gateway that is the user manager process, not
+    pid 1. On Linux this scans ``/proc`` for same-uid processes whose comm is
+    ``systemd``; elsewhere only init/launchd (pid 1) is a reparent target.
+    Single source of truth shared by :func:`_our_orphan_pids` and the PID-reuse
+    guard in :func:`_cleanup_orphaned_mcp_servers`, so the two reapers agree on
+    what an orphan's parent may look like -- a guard accepting only pid 1 would
+    misread a systemd-reparented orphan as PID reuse and prune it without
+    killing.
+
+    We deliberately do NOT include the gateway's launcher ppid: doing so would
+    widen the candidate set to the launcher's other live children (peer
+    processes from the same shell/tmux/supervisor), adding wrong-kill surface
+    with no orphan-reaping benefit.
+    """
+    accepted: set[int] = {1}
+    if sys.platform != "linux":
+        return accepted
+    try:
+        my_uid = os.getuid()
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if entry.stat().st_uid != my_uid:
+                    continue
+                # Detect systemd --user (user-session subreaper)
+                if (entry / "comm").read_text().strip() == "systemd":
+                    accepted.add(int(entry.name))
+            except (OSError, ValueError):
+                continue
+    except Exception:
+        # Callers include the startup sweep, which has no catch-all of its
+        # own: degrade to the init-only set rather than aborting the sweep.
+        logger.warning("_accepted_subreaper_pids /proc scan failed", exc_info=True)
+    return accepted
+
+
 def _our_orphan_pids() -> list[int]:
     """PIDs owned by current user whose parent is init (pid 1) or systemd --user.
 
@@ -1546,35 +1662,13 @@ def _our_orphan_pids() -> list[int]:
     if platform_compat.IS_WINDOWS:
         return []
     my_uid = os.getuid()
-    # An orphaned process reparents to init (pid 1) or the nearest subreaper
-    # (systemd --user), never back to its original launcher. We deliberately do
-    # NOT include the gateway's launcher ppid: doing so would widen the
-    # candidate set to the launcher's other live children (peer processes from
-    # the same shell/tmux/supervisor), adding wrong-kill surface with no
-    # orphan-reaping benefit.
-    accepted_ppids: set[int] = {1}
+    # Pass 1 detects the accepted reparent targets (init + systemd --user
+    # subreapers); pass 2 classifies orphans (needs the complete subreaper set
+    # before any child can be matched against accepted_ppids).
+    accepted_ppids = _accepted_subreaper_pids()
     try:
         if sys.platform == "linux":
-            # Two /proc passes: pass 1 detects systemd --user subreaper PIDs,
-            # pass 2 classifies orphans (needs the complete subreaper set
-            # before any child can be matched against accepted_ppids).
             result: list[int] = []
-            for entry in Path("/proc").iterdir():
-                if not entry.name.isdigit():
-                    continue
-                try:
-                    if entry.stat().st_uid != my_uid:
-                        continue
-                    pid = int(entry.name)
-                    # Detect systemd --user (user-session subreaper)
-                    try:
-                        if (entry / "comm").read_text().strip() == "systemd":
-                            accepted_ppids.add(pid)
-                    except OSError:
-                        pass
-                except (OSError, ValueError):
-                    continue
-            # Second pass now that accepted_ppids is complete
             for entry in Path("/proc").iterdir():
                 if not entry.name.isdigit():
                     continue
@@ -1944,7 +2038,7 @@ _reported_untracked_agent_pids: set[int] = set()
 # is in.
 _REAPABLE_PID_FIELD: tuple[tuple[str, int], ...] = (
     ("session", 1),  # kiro_session_pids.txt: <gateway_pid>:<child_pid>[:start-id]
-    ("child", 0),  # kiro_pids.txt: <child_pid>:<parent_pid>
+    ("child", 0),  # kiro_pids.txt: <child_pid>:<parent_pid>[:start-id]
 )
 
 

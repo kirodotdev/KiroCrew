@@ -77,6 +77,9 @@ from kiro_crew.instances.constants import (
 )
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT_SECS
+from kiro_crew.instances.constants import (
+    DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS as _MODELS_CAPABILITY_PROXY_TIMEOUT,
+)
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _PROBE_FAILS
 from kiro_crew.instances.constants import DEFAULT_PROBE_INTERVAL_SECS as _PROBE_INTERVAL
 from kiro_crew.instances.constants import (
@@ -1252,6 +1255,66 @@ class SshTunnelManager:
         if cancelled is not None:
             raise cancelled
 
+    async def _forwarder_identity_hints(
+        self, instance_id: str, tunnel: _SshTunnel
+    ) -> dict[str, Any]:
+        """Build the registry hints that record *tunnel*'s live forwarder child.
+
+        The recorded identity is ``forwarder_pid`` + ``forwarder_start`` + the
+        ``local_port`` that child is bound to, authenticated by
+        ``forwarder_sig`` — a MAC over all three plus the instance id. Every
+        field is read from the LIVE tunnel, so the set describes one process
+        rather than a mix of one process and another's port: a pid recorded
+        against a port it was not signed with leaves the signature failing
+        verification, and the orphan reclaim then refuses the very child the
+        write exists to record.
+
+        ``was_connected=True`` rides along because a live forwarder is exactly
+        what makes an instance auto-reconnectable, so the flag and the identity
+        of the child it refers to become durable in the same write.
+
+        Two states persist as a deliberate fail-closed miss rather than an
+        error: a start time that cannot be read records as ``""``, and an
+        unreadable signing key leaves ``forwarder_sig`` empty. Either one
+        disables the reclaim for this child — :meth:`_reclaim_orphan_forwarder`
+        requires both — which loses a leaked process at the next hard-kill but
+        can never signal the wrong one.
+
+        Both blocking reads (the platform start-time query and the key read)
+        go off the event loop: every caller holds the manager lock, where a
+        synchronous read would stall unrelated requests and heartbeats.
+
+        Returns the COMPLETE kwarg set for :meth:`_persist_hint`; a caller adds
+        only its own extras. :meth:`connect` and :meth:`_mark_recovered` both
+        write this record, and one builder is what keeps their field sets
+        identical: a field added to the identity here reaches both writes,
+        where two hand-written kwarg lists can carry it in one and omit it in
+        the other — and a record missing the port ``forwarder_sig`` signs over
+        fails its own verification.
+        """
+        forwarder_pid = tunnel.pid or _NO_FORWARDER_PID
+        # The port the forwarder actually bound, which for a rebuild can differ
+        # from the one connect() first allocated (see _recover).
+        local_port = tunnel.status.local_port
+        forwarder_start = ""
+        forwarder_sig = ""
+        if forwarder_pid > 0:
+            started = await asyncio.to_thread(platform_compat.process_start_time, forwarder_pid)
+            forwarder_start = started or ""
+        if forwarder_pid > 0 and forwarder_start:
+            key = await asyncio.to_thread(_reclaim_identity_key)
+            if key is not None:
+                forwarder_sig = _forwarder_identity_sig(
+                    key, instance_id, forwarder_pid, forwarder_start, local_port
+                )
+        return {
+            "local_port": local_port,
+            "forwarder_pid": forwarder_pid,
+            "forwarder_start": forwarder_start,
+            "forwarder_sig": forwarder_sig,
+            "was_connected": True,
+        }
+
     def _reserved_ports(self) -> set[int]:
         """Ports already taken: live tunnels + local_port set on any instance."""
         reserved: set[int] = {t.status.local_port for t in self._tunnels.values()}
@@ -1754,39 +1817,23 @@ class SshTunnelManager:
             self._store_token(instance_id, token, inst.ttl)
             self._schedule_token_refresh(instance_id)
 
-            # Persist hints: port assignment, forwarder identity (pid + start
-            # time), was_connected, last-active — ONE
+            # Persist hints: the forwarder identity record built by
+            # _forwarder_identity_hints (port, pid, start time, signature,
+            # was_connected — the same record _mark_recovered writes) plus
+            # last-active, which is this site's alone — ONE
             # read-modify-rewrite of instances.json (fsync), so the set is
             # durable together and the manager lock is held for a single fsync
-            # round-trip. The identity pair is what a later connect uses to
-            # reclaim this child if a gateway hard-kill orphans it; a start
-            # time that cannot be read persists as "" and simply disables the
-            # reclaim for this child (fail closed).
+            # round-trip. The identity is what a later connect uses to
+            # reclaim this child if a gateway hard-kill orphans it.
             # _persist_hint runs it off the loop and does not
             # return — even under cancellation — until the write completes, so
             # the lock cannot release while the worker write is still in
             # flight (a late hint write would race a subsequent disconnect).
-            forwarder_pid = tunnel.pid or _NO_FORWARDER_PID
-            forwarder_start = ""
-            forwarder_sig = ""
-            if forwarder_pid > 0:
-                started = await asyncio.to_thread(platform_compat.process_start_time, forwarder_pid)
-                forwarder_start = started or ""
-            if forwarder_pid > 0 and forwarder_start:
-                key = await asyncio.to_thread(_reclaim_identity_key)
-                if key is not None:
-                    forwarder_sig = _forwarder_identity_sig(
-                        key, instance_id, forwarder_pid, forwarder_start, local_port
-                    )
             await self._persist_hint(
                 self._registry.update,
                 instance_id,
                 mark_last_active=True,
-                local_port=local_port,
-                forwarder_pid=forwarder_pid,
-                forwarder_start=forwarder_start,
-                forwarder_sig=forwarder_sig,
-                was_connected=True,
+                **await self._forwarder_identity_hints(instance_id, tunnel),
             )
             # A successful (re)connect clears any stale give-up counter so the next
             # unexpected drop gets a full fresh recovery budget instead of tripping
@@ -2077,16 +2124,16 @@ class SshTunnelManager:
         check refuses it) while the ACTUAL replacement child leaked
         unrecorded. All hints go in one write.
 
-        ``local_port`` belongs in that set for two reasons, and this write
-        carries the same fields as :meth:`connect`'s so the pair cannot drift
-        apart. A rebuild takes its port from the LIVE tunnel (see
-        :meth:`_recover`), which may differ from the recorded one. And
-        ``forwarder_sig`` is a MAC over the port, so recording a pid against
-        a different port than the one it was signed with leaves the signature
-        failing verification — the reclaim then refuses the very child this
-        write exists to record, and every consumer reading the recorded port
-        (the pane URL, :meth:`diagnose`'s fallback) addresses a port nothing
-        is listening on.
+        The record comes from :meth:`_forwarder_identity_hints`, so this write
+        carries exactly the fields :meth:`connect`'s does and the pair cannot
+        drift apart. ``local_port`` matters twice over here. A rebuild takes
+        its port from the LIVE tunnel (see :meth:`_recover`), which may differ
+        from the recorded one. And ``forwarder_sig`` is a MAC over the port, so
+        recording a pid against a different port than the one it was signed
+        with leaves the signature failing verification — the reclaim then
+        refuses the very child this write exists to record, and every consumer
+        reading the recorded port (the pane URL, :meth:`diagnose`'s fallback)
+        addresses a port nothing is listening on.
 
         The persist stays INSIDE the manager lock so write order equals
         lock-acquisition order: a concurrent :meth:`disconnect`'s
@@ -2103,30 +2150,10 @@ class SshTunnelManager:
             if tunnel is None:
                 return
             self._recover_attempts[instance_id] = 0
-            forwarder_pid = tunnel.pid or _NO_FORWARDER_PID
-            forwarder_start = ""
-            forwarder_sig = ""
-            if forwarder_pid > 0:
-                started = await asyncio.to_thread(platform_compat.process_start_time, forwarder_pid)
-                forwarder_start = started or ""
-            if forwarder_pid > 0 and forwarder_start:
-                key = await asyncio.to_thread(_reclaim_identity_key)
-                if key is not None:
-                    forwarder_sig = _forwarder_identity_sig(
-                        key,
-                        instance_id,
-                        forwarder_pid,
-                        forwarder_start,
-                        tunnel.status.local_port,
-                    )
             await self._persist_hint(
                 self._registry.update,
                 instance_id,
-                was_connected=True,
-                local_port=tunnel.status.local_port,
-                forwarder_pid=forwarder_pid,
-                forwarder_start=forwarder_start,
-                forwarder_sig=forwarder_sig,
+                **await self._forwarder_identity_hints(instance_id, tunnel),
             )
 
     async def _recover(self, instance_id: str) -> None:
@@ -2677,7 +2704,13 @@ class SshTunnelManager:
                     else "capability_no_credential"
                 ),
             }
-        timeout = aiohttp.ClientTimeout(total=_CAPABILITY_PROXY_TIMEOUT)
+        # /api/models is the one read whose cold path runs bounded subprocess
+        # work on the peer (~15s worst case), so it gets its own budget; the
+        # four cheap reads keep the short one. See both constants for sizing.
+        total = (
+            _MODELS_CAPABILITY_PROXY_TIMEOUT if path == "/api/models" else _CAPABILITY_PROXY_TIMEOUT
+        )
+        timeout = aiohttp.ClientTimeout(total=total)
         reminted = False
         for _attempt in range(2):
             try:

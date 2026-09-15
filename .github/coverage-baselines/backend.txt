@@ -57,7 +57,6 @@ src/kiro_crew/apps/route_registry.py 51.9   # 67/129
 src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py 14.8   # 34/229
 src/kiro_crew/cli_chat.py 29.5   # 46/156
 src/kiro_crew/cli_cloud.py 61.2   # 178/291
-src/kiro_crew/cli_config.py 70.8   # 114/161
 src/kiro_crew/cloud/ui.py 51.4   # 90/175
 src/kiro_crew/cloud/wizard.py 65.8   # 283/430
 src/kiro_crew/computer_use/cli.py 68.8   # 130/189
@@ -66,7 +65,6 @@ src/kiro_crew/conpty.py 27.9   # 12/43
 src/kiro_crew/dashboard/_types.py 0.0   # 0/3
 src/kiro_crew/dashboard/handlers/portability.py 17.0   # 15/88
 src/kiro_crew/dashboard/handlers/weixin_qr.py 47.0   # 119/253
-src/kiro_crew/dashboard/handlers/workflows.py 20.4   # 23/113
 src/kiro_crew/dashboard/handlers_channel.py 40.4   # 84/208
 src/kiro_crew/dashboard/handlers_system.py 75.2   # 354/471
 src/kiro_crew/dashboard/ws.py 64.4   # 130/202

@@ -27,6 +27,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
+from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 import kiro_crew.apps.routes as routes_mod
@@ -2263,6 +2264,50 @@ class TestRegistryInstallStream:
             events = _sse_events(await resp.text())
         assert json.loads(events[-1][1])["error"] == "clone exploded"
 
+    @pytest.mark.asyncio
+    async def test_client_gone_at_write_eof_is_not_an_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A browser tab closed mid-install makes the final write_eof raise
+        # ClientConnectionResetError ("Cannot write to closing transport").
+        # That is a routine disconnect, not a server error — it must not
+        # escape the handler, where aiohttp would log an unhandled
+        # "Error handling request" traceback.
+        _setup_env(tmp_path, monkeypatch)
+
+        async def _failed(name: str, log_lines: Any = None, **kw: Any) -> dict:
+            return {"ok": False, "name": name, "error": "build failed"}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _failed)
+
+        writes: list[bytes] = []
+
+        async def _prepare(self, request):  # noqa: ANN001 - stub mirrors aiohttp
+            return None
+
+        async def _write(self, data):  # noqa: ANN001 - stub mirrors aiohttp
+            writes.append(bytes(data))
+
+        async def _gone(self, data=b""):  # noqa: ANN001 - stub mirrors aiohttp
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+        monkeypatch.setattr(web.StreamResponse, "prepare", _prepare)
+        monkeypatch.setattr(web.StreamResponse, "write", _write)
+        monkeypatch.setattr(web.StreamResponse, "write_eof", _gone)
+
+        request = MagicMock()
+
+        async def _json() -> dict:
+            return {"name": "some-app"}
+
+        request.json = _json
+
+        resp = await routes_mod.handle_registry_install_stream(request)
+
+        assert isinstance(resp, web.StreamResponse)
+        # The done event was still flushed before the client vanished.
+        assert any(b"event: done" in w for w in writes)
+
 
 # ---------------------------------------------------------------------------
 # GET /apps/{name}/ui/{path} — path and type validation
@@ -4205,3 +4250,134 @@ async def test_enable_does_not_re_register_after_the_backend_starts(
         await client.post(f"/api/apps/{APP}/enable", json={})
 
     assert called == [], "enable re-registered after start; the adoption path owns that"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["prepare", "write", "write_eof"])
+async def test_app_ui_stream_client_disconnect_is_quiet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    """A closed tab is routine at every UI-file response boundary."""
+    home = _setup_env(tmp_path, monkeypatch)
+    ui = home / "apps" / APP / "ui"
+    ui.mkdir(parents=True)
+    (ui / "app.js").write_bytes(b"console.log('ok')")
+
+    calls: list[str] = []
+
+    async def _prepare(self: web.StreamResponse, request: web.Request) -> None:
+        calls.append("prepare")
+        if boundary == "prepare":
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+    async def _write(self: web.StreamResponse, data: bytes) -> None:
+        calls.append("write")
+        if boundary == "write":
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+    async def _write_eof(self: web.StreamResponse, data: bytes = b"") -> None:
+        calls.append("write_eof")
+        if boundary == "write_eof":
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+    monkeypatch.setattr(web.StreamResponse, "prepare", _prepare)
+    monkeypatch.setattr(web.StreamResponse, "write", _write)
+    monkeypatch.setattr(web.StreamResponse, "write_eof", _write_eof)
+
+    request = MagicMock()
+    request.match_info = {"name": APP, "path": "app.js"}
+    request.if_none_match = ()
+    request.if_modified_since = None
+
+    response = await routes_mod.handle_app_ui_file(request)
+
+    assert isinstance(response, web.StreamResponse)
+    expected = {
+        "prepare": ["prepare"],
+        "write": ["prepare", "write"],
+        "write_eof": ["prepare", "write", "write_eof"],
+    }
+    assert calls == expected[boundary]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["prepare", "write", "write_eof"])
+async def test_app_proxy_stream_client_disconnect_is_quiet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    """A closed browser must not turn a successful upstream stream into 502."""
+    _setup_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(routes_mod, "is_app_enabled", lambda name: True)
+    monkeypatch.setattr(
+        routes_mod,
+        "_resolve_app_backend_url",
+        lambda name: "http://127.0.0.1:7777",
+    )
+    monkeypatch.setattr(routes_mod, "_get_app_secret", lambda name: "proxy-secret")
+
+    class _Content:
+        async def iter_any(self):  # noqa: ANN202 - aiohttp stream stub
+            yield b"upstream payload"
+
+    class _Upstream:
+        status = 200
+        headers: dict[str, str] = {}
+        content = _Content()
+
+    class _Context:
+        async def __aenter__(self) -> _Upstream:
+            return _Upstream()
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class _Session:
+        closed = False
+
+        def request(self, **kwargs: Any) -> _Context:
+            return _Context()
+
+    calls: list[str] = []
+
+    async def _prepare(self: web.StreamResponse, request: web.Request) -> None:
+        calls.append("prepare")
+        if boundary == "prepare":
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+    async def _write(self: web.StreamResponse, data: bytes) -> None:
+        calls.append("write")
+        if boundary == "write":
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+    async def _write_eof(self: web.StreamResponse, data: bytes = b"") -> None:
+        calls.append("write_eof")
+        if boundary == "write_eof":
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+    monkeypatch.setattr(web.StreamResponse, "prepare", _prepare)
+    monkeypatch.setattr(web.StreamResponse, "write", _write)
+    monkeypatch.setattr(web.StreamResponse, "write_eof", _write_eof)
+
+    request = MagicMock()
+    request.match_info = {"name": APP, "path": "ping"}
+    request.get = lambda key, default="": default
+    request.rel_url = routes_mod.yarl.URL("/apps/cov-test-app/api/ping")
+    request.headers = {}
+    request.can_read_body = False
+    request.method = "GET"
+    request.app = {"_proxy_session": _Session()}
+
+    response = await routes_mod.handle_app_api_proxy(request)
+
+    assert isinstance(response, web.StreamResponse)
+    assert response.status == 200
+    expected = {
+        "prepare": ["prepare"],
+        "write": ["prepare", "write"],
+        "write_eof": ["prepare", "write", "write_eof"],
+    }
+    assert calls == expected[boundary]

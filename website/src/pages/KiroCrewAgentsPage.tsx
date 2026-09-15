@@ -30,6 +30,8 @@ import CrewWebhookSection from '../components/CrewWebhookSection'
 import CrewEditorRail from '../components/crew/CrewEditorRail'
 import CrewOverviewPane from '../components/crew/CrewOverviewPane'
 import AgentTemplateDetail from '../components/crew/AgentTemplateDetail'
+import CrewCapabilitiesPane from '../components/crew/CrewCapabilitiesPane'
+import { crewCapabilitiesApi, crewCapabilitiesKey } from '../api/crewCapabilities'
 import { useCrewEditorSections, type CrewPaneKey } from '../components/crew/crewEditorSections'
 import { wakesCrew, crewWakeQueryKey, crewWebhooksQueryKey, webhookBoundToCrew, webhookCanCallIn } from '../components/crew/wakesCrew'
 import type { CronJob } from '../types'
@@ -961,6 +963,20 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
   const editing = sheet?.mode === 'edit' ? sheet.name : ''
   const editingAgent = agents.find(a => a.name === editing)
+  const [capabilityDirty, setCapabilityDirty] = useState(false)
+  const [capabilityBusy, setCapabilityBusy] = useState(false)
+  const capabilityQuery = useQuery({
+    queryKey: crewCapabilitiesKey(editing),
+    queryFn: () => crewCapabilitiesApi.get(editing),
+    enabled: !!editing,
+    retry: false,
+  })
+  useEffect(() => { setCapabilityDirty(false); setCapabilityBusy(false) }, [sheet])
+  const capabilityManaged = capabilityQuery.data?.mode === 'inherited'
+  const capabilityReadFailed = capabilityQuery.isError && !(capabilityQuery.error instanceof ApiError && [404, 405, 501].includes(capabilityQuery.error.status))
+  useEffect(() => {
+    if (editing) void queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(editing) })
+  }, [editing, kiroAgent, queryClient])
 
   /** The model a new session on this crew would actually run on, resolved by
    *  the backend so the precedence is not re-derived (and drifted) here. */
@@ -1071,10 +1087,20 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    * every render would re-open the editor after the user closed it.
    */
   const [params, setParams] = useSearchParams()
+  useEffect(() => {
+    // A bare capabilities URL becomes the mobile root list. An open editor
+    // needs an explicit pane route before a resize can remove its ancestry.
+    if (!embedded || !sheet || params.get('tab') === 'crews') return
+    setParams(current => {
+      const next = new URLSearchParams(current)
+      next.set('tab', 'crews')
+      return next
+    }, { replace: true })
+  }, [embedded, sheet, params, setParams])
   const linkedCrew = params.get('crew')
   const linkedAvatar = params.get('avatar') === '1'
   useEffect(() => {
-    if (!linkedCrew || !agentsData) return
+    if (!linkedCrew || !agentsData || capabilityDirty || capabilityBusy) return
     const target = agents.find(a => a.name === linkedCrew)
     if (target) {
       openEdit(target)
@@ -1086,7 +1112,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       next.delete('crew'); next.delete('avatar')
       return next
     }, { replace: true })
-  }, [linkedCrew, linkedAvatar, agentsData, agents, openEdit, setParams])
+  }, [linkedCrew, linkedAvatar, agentsData, agents, openEdit, setParams, capabilityDirty, capabilityBusy])
 
   /**
    * Deep link: `?new=1` opens the editor in create mode straight away. This is
@@ -1108,14 +1134,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const linkedNew = params.get('new') === '1'
   const linkedFromMembers = params.get('from') === 'members'
   useEffect(() => {
-    if (!linkedNew) return
+    if (!linkedNew || capabilityDirty || capabilityBusy) return
     openCreateFrom(linkedFromMembers ? 'members' : undefined)
     setParams(prev => {
       const next = new URLSearchParams(prev)
       next.delete('new'); next.delete('from')
       return next
     }, { replace: true })
-  }, [linkedNew, linkedFromMembers, openCreateFrom, setParams])
+  }, [linkedNew, linkedFromMembers, openCreateFrom, setParams, capabilityDirty, capabilityBusy])
 
   const fromMembers = sheet?.mode === 'create' && sheet.origin === 'members'
   /** Every string in the create form names the thing the way the surface
@@ -1546,7 +1572,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const creating = sheet?.mode === 'create'
   const [avatarUploading, setAvatarUploading] = useState(false)
   const sheetBusy =
-    createMut.isPending || updateMut.isPending || deleteMut.isPending || provisionMut.isPending || avatarUploading
+    createMut.isPending || updateMut.isPending || deleteMut.isPending || provisionMut.isPending || avatarUploading || capabilityBusy
 
   /**
    * The subset of `sheetBusy` that has already COMMITTED something — a write
@@ -1655,8 +1681,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // rail's unsaved dot and the note, so closing the editor cannot silently
     // eat a half-typed schedule the way an untracked surface would.
     if (schedDraft) out.add('schedules')
+    if (capabilityDirty) out.add('capabilities')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, editAvatar])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, editAvatar, capabilityDirty])
 
   /** Rail-driven pane changes route through here: leaving the schedules pane
    *  while a schedule draft is open asks before destroying the typed work
@@ -1691,6 +1718,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    * it closes immediately too.
    */
   const requestClose = useCallback(() => {
+    if (capabilityBusy) return
     if (schedDraft) { setDiscardAsk('close'); return }
     // A template switch write still in the air cannot be discarded — the
     // request is already sent. Hold the close until it settles (the tracked
@@ -1717,7 +1745,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     const answered = new Promise<boolean>(resolve => { settle = resolve })
     discardAnswer.current = { answered, settle }
     setDiscardAsk('close')
-  }, [schedDraft, committing, dirtyPanes, closeSheet])
+  }, [schedDraft, committing, dirtyPanes, closeSheet, capabilityBusy])
 
   /** Latest requestClose, for the deferred re-invocation above — the settle
    *  callback must not capture a stale closure's dirty state. */
@@ -1728,9 +1756,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  chat slot, closes the sheet and navigates -- three steps that would
    *  destroy an open schedule draft as silently as an unguarded Escape. */
   const requestChat = useCallback(() => {
-    if (schedDraft) { setDiscardAsk('chat'); return }
+    if (capabilityBusy) return
+    if (schedDraft || capabilityDirty) { setDiscardAsk('chat'); return }
     void chatWith(editing)
-  }, [schedDraft, editing]) // eslint-disable-line react-hooks/exhaustive-deps -- chatWith is re-created per render; depping it would make this callback churn for no behavioural gain
+  }, [schedDraft, editing, capabilityDirty, capabilityBusy]) // eslint-disable-line react-hooks/exhaustive-deps -- chatWith is re-created per render; depping it would make this callback churn for no behavioural gain
 
   /** The wake section's own cancel toggle asks here before collapsing a
    *  dirty draft -- the one destruction path the page cannot intercept
@@ -2070,7 +2099,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
              machinery below exists to make the abandoned write land harmlessly,
              and suppressing it would break that. */
         >
-          <DialogHeader>
+          <DialogHeader className="flex-wrap sm:flex-nowrap">
             {/* The avatar is itself the entry point to the builder: the
                 first-run review's top finding was that a face setting filed
                 under "Triggers" has no scent — but everyone tries clicking
@@ -2087,7 +2116,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 pressable — it is not a peer of the two labelled actions, and
                 the header's action row stays at two (max-two-buttons-per-row
                 counts per visual group). */}
-            <div className="flex min-w-0 items-center gap-3" data-testid="crew-editor-identity">
+            <div className="flex w-full min-w-0 items-center gap-3 sm:w-auto sm:flex-1" data-testid="crew-editor-identity">
               {!creating && (
                 <CrewAvatarButton
                   size={28}
@@ -2105,7 +2134,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   <CrewStateAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} onImageError={() => setError(i18nT(packAvatarFrom(editAvatar) ? 'components.avatarBuilder.pack_load_failed' : 'components.avatarBuilder.image_load_failed'))} />
                 </CrewAvatarButton>
               )}
-              <DialogTitle className="font-mono">
+              <DialogTitle className="flex-1 font-mono">
                 {creating ? i18nT('pages.kiroCrewAgentsPage.add_crew_member') : editing}
               </DialogTitle>
               {!creating && editingAgent?.source && <SourceBadge source={editingAgent.source} />}
@@ -2198,7 +2227,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   role="tabpanel"
                   aria-labelledby={`${panelId}-tab-${pane}`}
                   tabIndex={-1}
-                  className="flex min-w-0 flex-1 flex-col gap-3.5 overflow-y-auto px-5 py-4"
+                  className={pane === 'capabilities'
+                    ? 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'
+                    : 'flex min-w-0 flex-1 flex-col gap-3.5 overflow-y-auto px-5 py-4'}
                 >
                   {pane === 'overview' && (
                     <CrewOverviewPane
@@ -2229,6 +2260,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                     />
                   )}
 
+                  {editing && <CrewCapabilitiesPane
+                    key={editing}
+                    member={editing}
+                    members={agents.map(agent => agent.name)}
+                    hidden={pane !== 'capabilities'}
+                    onDirtyChange={setCapabilityDirty}
+                    onBusyChange={setCapabilityBusy}
+                    onSaved={() => {
+                      const saved = queryClient.getQueryData<{ agents: KiroCrewAgent[] }>(['kirocrew-agents'])?.agents.find(agent => agent.name === editing)
+                      if (saved) setKiroAgent(saved.kiro_agent)
+                    }}
+                  />}
                   {pane === 'template' && (
                     /* The panel owns the selector: the template picker is
                        the header bar of the container holding the
@@ -2249,11 +2292,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                             the editor render in place, never as a
                             hand-off. */}
                         <ErrorNotice
-                          message={templateSwitchError || null}
+                          message={templateSwitchError || (capabilityReadFailed ? i18nT('crewCapabilities.failed') : null)}
                           variant="inline"
                           testId="crew-template-switch-error"
                         />
                         <AgentTemplateDetail
+                          actionsDisabled={capabilityDirty || capabilityBusy}
+                          readOnly={capabilityManaged || capabilityDirty || capabilityBusy || capabilityQuery.isLoading || capabilityReadFailed}
+                          onCapabilities={() => requestPane('capabilities')}
                           template={kiroAgent}
                           models={(availableModels || []).map((m: { name: string }) => m.name).filter(Boolean)}
                           crew={editing || undefined}
@@ -2453,7 +2499,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               Hidden entirely while the agent-template pane is the active surface:
               that pane saves as you go, so a Cancel + "Save changes" footer there
               is a second, contradictory save model (see templatePaneActive). */}
-          {!templatePaneActive && (
+          {!templatePaneActive && pane !== 'capabilities' && (
           <DialogFooter>
             {/* No hand-off: the crew sheet's unsaved pane edits (dirtyPanes) —
                 a failed save is exactly what did not persist them. */}
@@ -2466,9 +2512,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 {/* While the open schedule draft is what disables Save, the note
                     names that reason in visible text — the `title` on the button
                     is hover-only, which keyboard and touch users never see. */}
-                {schedDraft
-                  ? i18nT('pages.kiroCrewAgentsPage.finish_the_new_schedule_first')
-                  : i18nT('components.crewEditor.unsaved_changes')}
+                {capabilityDirty
+                  ? i18nT('crewCapabilities.finishDraftFirst')
+                  : schedDraft
+                    ? i18nT('pages.kiroCrewAgentsPage.finish_the_new_schedule_first')
+                    : i18nT('components.crewEditor.unsaved_changes')}
               </span>
             )}
             <Btn onClick={requestClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
@@ -2487,8 +2535,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             ) : (
               <SendBtn
                 onClick={saveEdit}
-                disabled={sheetBusy || dirtyPanes.size === 0 || schedDraft}
-                title={schedDraft ? i18nT('pages.kiroCrewAgentsPage.finish_the_new_schedule_first') : undefined}
+                disabled={sheetBusy || dirtyPanes.size === 0 || schedDraft || capabilityDirty || capabilityBusy}
+                title={capabilityDirty ? i18nT('crewCapabilities.finishDraftFirst') : schedDraft ? i18nT('pages.kiroCrewAgentsPage.finish_the_new_schedule_first') : undefined}
               >{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
             )}
           </DialogFooter>
@@ -2526,7 +2574,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 : i18nT('pages.kiroCrewAgentsPage.discard_unsaved_changes')}
             >
               <DialogHeader>
-                <DialogTitle>
+                {/* The shared title truncates by default; at 320px that
+                    clipped "Discard unsaved chang…", so this one wraps. */}
+                <DialogTitle className="whitespace-normal">
                   {askSchedOnly
                     ? i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')
                     : i18nT('pages.kiroCrewAgentsPage.discard_unsaved_changes')}
@@ -2536,7 +2586,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 <p className="m-0 text-sm text-text">
                   {schedDraft
                     ? i18nT('pages.kiroCrewAgentsPage.discard_new_schedule_body')
-                    : i18nT('pages.kiroCrewAgentsPage.discard_unsaved_body')}
+                    : i18nT('pages.kiroCrewAgentsPage.discard_unsaved_body', { name: editing })}
                 </p>
                 {/* Full contrast, same as the line above: this is the half of
                     the consequence the narrow question left out, so it must not

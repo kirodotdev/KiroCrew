@@ -190,3 +190,29 @@ async def test_agent_step_persists_usage_row_with_surface() -> None:
     assert kwargs["agent"] == "researcher"
     assert kwargs["context_used"] == 42
     assert kwargs["context_window"] == 200000
+
+
+@pytest.mark.parametrize("opts", [{}, {"session": "chain-A"}])
+async def test_identity_is_published_before_each_agent_turn(monkeypatch, opts):
+    from kiro_crew.messaging import identity
+
+    sessions = FakeSessions()
+    events = []
+
+    async def publish(owner, key):
+        assert owner is sessions
+        assert sessions.created[-1][0] == key
+        events.append(("publish", key))
+
+    async def stream(provider, message, **kwargs):
+        assert events[-1] == ("publish", provider.key)
+        events.append(("stream", provider.key))
+        return "done"
+
+    monkeypatch.setattr(identity, "publish_turn_identity", publish)
+    monkeypatch.setattr(agent_exec, "stream_and_collect", stream)
+    agent = build_agent_fn(sessions, run_id="wf_identity")
+    assert await agent("first", opts) == "done"
+    assert await agent("second", opts) == "done"
+    assert [event for event, _ in events] == ["publish", "stream", "publish", "stream"]
+    assert sessions.released == [key for key, _ in sessions.created]

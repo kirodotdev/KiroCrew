@@ -1888,7 +1888,7 @@ class TestLessonsDeleteGate:
                 headers={"X-Session-Key": "dashboard:ui"},
             )
             assert resp.status == 200
-        state.lessons.remove.assert_called_once_with("x")
+        state.lessons.remove.assert_called_once_with("x", None)
 
     @pytest.mark.asyncio
     async def test_delete_allowed_for_live_persistent_slot(self, tmp_path, monkeypatch):

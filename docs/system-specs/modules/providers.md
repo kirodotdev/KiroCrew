@@ -70,6 +70,194 @@ is why the enum stays closed.
 The Claude Code harness has its own page: [claude-code-provider.md](claude-code-provider.md).
 
 
+### Essential-context delivery contract
+
+Application code imports `ContextPromptProvider`, `ContextStreamEvent` and
+`context_provider_of` through `kiro_crew.agent_sdk`, never through the provider
+or ACP packages. The SDK driver admits real provider classes without evaluating
+dynamic proxy attributes. Event protocols expose only the read-only evidence the
+receipt needs; the receipt stream preserves the caller's concrete event type.
+
+`kiro_crew.agent_sdk.drivers.acp.projected_session_mcp_servers(agent, *, work_dir=None)`
+is a synchronous driver helper for the deterministic workflow test scenario,
+not a top-level SDK export. It returns the existing filtered list of dictionaries
+and preserves resolver errors; async callers offload it. Projection itself neither grants private authority nor
+starts a server, and does not replace protected-session admission.
+
+A caller holding its normal session lease supplies the actual `LLMProvider` as
+`context_provider=provider` to `ContextBuilder.build_message`, together with the
+trusted `session_key`, resolved `memory_store`, execution `agent`, project and
+scope flags. The builder validates and renders a complete snapshot and stages it
+in `provider.essential_delivery`; building or previewing is never acknowledgment.
+Previews omit `context_provider`. Shared-runtime callers pass their own project
+explicitly, rather than inferring a per-session cwd from the shared runtime.
+
+The returned prompt remains complete and may undergo the caller's normal prefix
+transforms. Send it through `provider.stream(prompt)` or `stream_and_collect`.
+No caller-side acknowledgment call is needed. ACP implementations match the exact
+staged envelope, remove it only when the same scope/content is acknowledged in
+that native conversation, and acknowledge only a raw successful end-turn after
+non-control output or tool activity. Empty, synthetic, cancelled and failed
+attempts cannot commit a receipt. Closing a stream after its genuine terminal is
+supported; closing earlier invalidates the receipt. Compaction, conversation
+clear, agent switch and client/process replacement invalidate prior evidence,
+including an in-flight candidate. `kiro_crew.agent_sdk` names every invalidating
+observation (`CONTEXT_EVENT_COMPACTION`, `CONTEXT_EVENT_CLEAR`,
+`CONTEXT_EVENT_AGENT_CHANGED`; the set is `essential_delivery
+.RECEIPT_INVALIDATING_EVENTS`). Both ACP providers also invalidate BEFORE
+dispatching a history-discarding slash command (`/compact` and `/clear`, the
+`RECEIPT_RESETTING_COMMANDS` set, applied through `EssentialDelivery
+.prepare_command`), because the status notification can be absent (a backend
+that treats the command as plain text) or arrive only inside the next turn's
+stream; other slash commands keep prior evidence. A `/clear` empties the native
+history while the session id and process stay the same, so without this the
+next warm turn would deduplicate against an acknowledgment the conversation no
+longer holds. The receipt observes events yielded inside a `stream` or
+`stream_command`. If a between-turn notification is yielded only after the next
+prompt is written, an otherwise unchanged warm prompt can omit essentials before
+that event invalidates the receipt. Whether kiro-cli emits such between-turn
+notifications, and whether the queued frame surfaces before or after the next
+prompt is written, has not been established by a live run (see "Native harness
+notifications relied on" below).
+
+##### Native harness notifications relied on
+
+This dedup depends on the harness reporting every native context loss it
+performs. That is not an ACP-spec guarantee: the public ACP protocol defines no
+compaction or truncation notification, and `_kiro.dev/*` is a Kiro-private
+extension without a published contract. What the code relies on, per backend:
+
+- kiro-cli: `_kiro.dev/compaction/status` (every `status.type`, including
+  started, completed, failed and the recovery variants, maps to
+  `compaction_status`), `_kiro.dev/clear/status` (→ `clear_status`) and
+  `_kiro.dev/agent/switched` (→ `agent_switched`). Evidence is the shipped
+  binary's own method strings (kiro-cli 2.21.4) plus the local parsers in
+  `acp/client.py` and `acp/session_handle.py`; no end-to-end run against a real
+  kiro-cli has confirmed that every silent trim path emits one of these.
+- KAS: `summarization_started/completed/failed` session-info frames map to
+  `compaction_status`; `/compact` and `/clear` are plain prompt text there,
+  which is why the command path pre-invalidates instead of waiting.
+- claude-agent-acp: the adapter announces a compaction with a `Compacting`
+  started text but emits `completed` only for a manual `/compact`; an
+  automatic mid-turn compaction leaves that started dangling (only a
+  `usage_update` follows), and `AcpClient` synthesizes the `completed`
+  `compaction_status` at the turn's `end_turn` terminal. This is a heuristic on
+  adapter text output, the weakest of the three.
+
+History loss without any observed invalidation is not detected by the receipt:
+unchanged warm turns can continue omitting the snapshot until another invalidation,
+content change or conversation replacement requires delivery. A notification
+observed only after a prompt was dispatched cannot repair that already-sent
+prompt; it invalidates the receipt for subsequent delivery. Neither behavior is
+a guarantee that a silent trim recovers on the next turn.
+
+`context_provider_type` reports the actual backend label, independent of the
+installation's `agent.provider` setting. `native_context_documents` defaults to
+empty. Kiro's launch plan captures admitted selected-template sources after
+materialization and governance checks. Successful activation of that same agent
+in the same cwd transfers source responsibility to the handle. This relies on
+Kiro's supported `--agent` prompt/resources contract, not a per-file model receipt.
+Changes to a launch-version source receive a complete manual replacement.
+Kiro's implicit workspace-root AGENTS and default/always steering in project and
+global steering directories also belong to that launch contract, even when no
+resource glob declares them. SOUL is native-owned only when explicitly declared.
+The mirrored steering reference records engine/version differences for conditional
+modes, so Kiro uses the fallback selector instead of claiming full native support.
+KAS inline prompts and file resources come from the actual `customAgents`
+definition sent by `session/new`. File expansion uses that definition, not a
+reread of a possibly different project template. Successful activation publishes
+those source versions to the direct `AcpSessionProvider`; other agents' definitions
+cannot supply its ownership. Resource URIs and their order remain unchanged on
+the wire, and conditional, skill and knowledge resources keep native selection.
+Exact template and body matches omit initial manual copies. The complete-envelope
+budget is checked BEFORE omission: 64,000 characters including wrappers; reads
+refuse above 256,000 bytes per source, and resource expansion is bounded to 64
+unique documents. KAS's existing registration ceiling is 50 custom agents, not a
+file-body budget. This repository does not establish a universal native model or
+resource truncation limit; real harness versions still need that integration check.
+Resume and replacement snapshots retain complete text. Frameworks without native steering receive a
+conditional discovery index: the agent reads a guide only after its explicit
+manual, file-pattern or description-relevance condition holds, never as an
+always-on body.
+
+#### Managed-source root checks
+
+Each `_refuse_managed_source` call loads configuration anew and resolves each
+unique declared admin/workspace root once through `_comparable_root`. The local
+results serve only that call's overlap and containment checks. Later calls
+revalidate configuration and link targets; no authorization is cached across
+requests or turns. Candidate paths remain lexical until the existing path gate
+admits them, and rejected UNC roots are never resolved. Every admin-overlap and
+managed-memory exclusion remains in force.
+
+#### Reproduce essential-context wire measurements
+
+`test/test_essential_delivery.py` keeps the fresh-plus-20-warm receipt assertions
+in the normal suite. Its companion no-receipt test also runs automatically and
+captures the exact submitted strings as JSON, with 21 complete essential
+snapshots and one current request per turn. The fake transport replaces only the
+external subprocess; context construction and the provider stream run for real.
+These are submitted UTF-8 prompt bytes, not model token counts or proof of native
+harness ingestion.
+
+For a before/after measurement, run that same capture test in a separate trusted
+Git snapshot, then pass its log as `KIROCREW_ESSENTIAL_BASELINE` to the current
+receipt test. This variable now names a UTF-8 capture log, **not a Git ref**.
+The current interpreter reads JSON data only; it never executes source from the
+baseline or replaces loaded modules/classes. All baseline production imports come
+from the complete snapshot, not old context code mixed with current providers.
+
+From the current checkout, the following Bash recipe uses an existing interpreter
+with the project's test dependencies. Set `PYTHON` to its absolute path and
+`BASELINE_SHA` to the full commit SHA of a reviewed, trusted pre-change revision.
+A separate checkout/process prevents module mixing, not hostile-code execution;
+never use an untrusted revision. No dependency install or live gateway is needed.
+
+```bash
+set -euo pipefail
+: "${KIROCREW_SCRATCH:?}" "${PYTHON:?}" "${BASELINE_SHA:?}"
+root=$(git rev-parse --show-toplevel)
+sha=$(git rev-parse --verify "${BASELINE_SHA}^{commit}")
+[ "$sha" = "$BASELINE_SHA" ]
+measurement=$(mktemp -d "$KIROCREW_SCRATCH/wire.XXXXXX")
+snapshot="$measurement/snapshot"
+mkdir "$snapshot"
+git archive --format=tar "$sha" > "$measurement/source.tar"
+tar -xf "$measurement/source.tar" -C "$snapshot"
+# Copy test instrumentation only; leave all production sources at the baseline.
+cp "$root/test/test_essential_delivery.py" "$snapshot/test/"
+cp "$root/test/test_member_essential_context.py" "$snapshot/test/"
+export PYTHONPYCACHEPREFIX="$measurement/pycache"
+export TMPDIR="$measurement"
+export KIROCREW_HOME="$measurement/home"
+export KIRO_HOME="$measurement/kiro"
+export KIROCREW_WORKSPACE="$measurement/workspace"
+export PYTEST_ADDOPTS=
+unset KIROCREW_ESSENTIAL_BASELINE
+printf 'BASELINE_COMMIT=%s\n' "$sha" > "$measurement/before.log"
+(
+  cd "$snapshot"
+  PYTHONPATH="$snapshot/src" "$PYTHON" -m pytest -n0 --no-cov -q -s \
+    -o addopts= --timeout=60 -p no:cacheprovider \
+    --basetemp="$measurement/before-tmp" \
+    test/test_essential_delivery.py::test_wire_without_receipt_fresh_and_twenty_warm_turns
+) >> "$measurement/before.log" 2>&1
+PYTHONPATH="$root/src" KIROCREW_ESSENTIAL_BASELINE="$measurement/before.log" \
+  "$PYTHON" -m pytest -n0 --no-cov -q -s -o addopts= --timeout=60 \
+  -p no:cacheprovider --basetemp="$measurement/after-tmp" \
+  "$root/test/test_essential_delivery.py::test_actual_wire_fresh_and_twenty_unchanged_warm_turns" \
+  > "$measurement/after.log" 2>&1
+printf 'Reports: %s/before.log %s/after.log\n' "$measurement" "$measurement"
+```
+
+The after log prints `BASELINE_BYTES` and `WIRE_BYTES`: fresh bytes, all 20 warm
+sizes, total bytes and envelope count. The baseline log retains the commit and
+all 21 strings so their byte lengths can be checked independently. Byte totals
+include real temporary-path lengths; the envelope-count and content assertions
+do not depend on those lengths. Missing, duplicated or incomplete captures fail
+rather than silently dropping the baseline. The recipe leaves only session-owned
+scratch output for inspection and normal scratch cleanup.
+
 ### LLMProvider ABC (`providers/base.py`)
 
 `providers/base.py` is the surface, and it is the only honest copy of it — the
@@ -90,6 +278,7 @@ harness can get wrong:
 | `has_active_turn`, `has_unfinished_turn`, `wait_turn_done` | Turn-state probes the session layer reads before reusing a process. |
 | `is_session_sharing_eligible` | Whether one process may host multiplexed sessions. |
 | `manual_compact_unsupported_backend`, `mcp_config_hot_reload`, `uses_kiro_identity_store` | Capability answers, each defaulting to the safe value so a Kiro path never needs a `hasattr` probe (harness-parity H14). |
+| `member_capabilities_supported`, `loaded_capability_template` | Full member-spec support defaults to false and is granted only by `ACP_BACKENDS_MEMBER_CAPABILITIES` membership (harness-parity H6); the observed loaded template defaults to empty. Only a dedicated Kiro runtime with a confirmed active template provides evidence; the session layer also validates the saved version and MCP registration report before showing applied. |
 | `billing_stats`, `child_fidelity_aware` | Accounting and subagent-fidelity reporting. |
 
 ### LLMEvent (`providers/base.py`)
@@ -154,8 +343,9 @@ in [agent-host-contract.md](agent-host-contract.md).
 - **Why the thresholds are not forced to 0:** deferral costs a round-trip — a deferred tool's spec is absent from the model's tool list, so the first direct call fails with `A tool with the name '<name>' does not exist` and has to be recovered with `tool_search`. That only pays once the specs are genuinely large, which is what the thresholds express (kiro-cli defers when EITHER is exceeded). An earlier build hard-coded both to `0`, imposing the round-trip on every install including ones far below the threshold. Setting both to `0` still restores unconditional deferral for operators who want it. The thresholds are written **explicitly** rather than omitted, so a machine carrying the old forced zeros is actually migrated instead of silently keeping them.
 - Writing both `true` and `false` makes the KiroCrew toggle authoritative over any value in the user's global `~/.kiro/settings/cli.json`. The write is merge-safe with the effort `chat.modelDefaults` keys in the same file.
 - **Non-kiro backends** — no-op. Tool Search is a kiro-cli feature; `_apply_tool_search_overlay` returns early when the backend does not read the overlay and when no toggle value was threaded in (`tool_search is None`).
+- **Native-resume compatibility:** for a direct dashboard turn with Tool Search enabled (dashboard session identity and no resumable linked-channel identity), the kiro backend does not use `session/load`. Before provider acquisition, dashboard chat resolves the slot's dedicated Slack field unconditionally and uses the channel-neutral `SessionMap.mirror` link only when `mirror_accepts_inbound` is true. Thus inbound-capable Telegram/Discord links remain distinguishable when they reuse a `dashboard:*` key after restart, while outbound-only iMessage/WhatsApp mirrors still take the direct-dashboard recovery path. A loaded transcript can return without Tool Search's activated schemas: `tool_search` reports a match, but the next inference still cannot invoke that tool. The provider instead creates a fresh native session and sets `_history_replay_needed`, so `SessionManager` marks conversation replay pending against the rebuilt tool registry. Only this direct-dashboard compatibility branch also makes `defer_replay_sid_promotion` true; `SessionMap` keeps the prior full-history SID durable while that lease is pending, allocation does not publish the fresh SID yet, and `close_all()` refuses to overwrite the retained mapping while `provider_switch_replay` remains armed. Generic `session/load` recovery still requests history replay but publishes its fresh SID immediately because non-dashboard dispatchers do not own the dashboard settlement contract; a later channel restart therefore resumes the recovered native transcript rather than the stale pre-recovery SID. Replay settlement runs from the dashboard turn's `finally`, so exceptions, task cancellation, early returns, and synthetic terminals cannot bypass it. A landed, non-synthetic replay-bearing `end_turn` promotes the fresh SID, as does confirmed `/clear` after native history deletion. Cancellation, incomplete streams, and every other non-committed terminal leave the prior SID in place and re-arm replay, so a second gateway restart cannot strand a slash-only or discarded transcript. That lease drives every replayable dashboard session-start prompt block (history, ContextBuilder, member context, folder, persona, and context telemetry). `AgentSpawn` hooks remain keyed to the actual provider spawn so script side effects execute once; a slash-first turn does not re-fire them during replay. Non-destructive native slash commands bypass `ContextBuilder` and leave the lease intact; a confirmed `/clear` consumes it at `EVENT_CLEAR_STATUS` so later replay cannot restore deleted history. Authorization, shutdown, or pre-dispatch Stop aborts preserve it. Async stream creation is not acceptance: a replay-bearing non-slash turn records acceptance in runner-local state only when its stream yields the first provider event, while the shared lease remains armed throughout the in-flight turn. Empty streams and pre-output failures therefore retain replay without settlement, and a concurrent shutdown can observe only the still-pending old SID. Final settlement synchronously promotes the fresh SID and consumes the lease only for a landed, non-synthetic, non-empty `end_turn`; every empty-response verdict is unlanded for replay durability, including the terminal give-up rung when retry budget is exhausted or auto-continue is disabled. If an accepted turn ends cancelled, the still-armed lease carries forward because kiro-cli discards that turn; the next prompt receives the full older replay plus its cancelled-turn preamble. This trades the native resume latency win for a usable dashboard tool surface without losing prior conversation or undoing an explicit clear. Setting `agent.tool_search=false` keeps dashboard-native `session/load`; a dashboard-keyed resumable channel turn and every channel dispatcher remain on native resume regardless of Tool Search.
 
-- **Resume guard:** `session/load` (resume) is only attempted when the prior session transcript exists on disk (`~/.kiro/sessions/cli/<sid>.json`). A stale persisted sid with no transcript falls back to `session/new`, preventing a fresh conversation from replaying old turns (which inflated base context).
+- **Resume guard:** `session/load` (resume) is only attempted when Tool Search is disabled and the prior session transcript exists on disk (`~/.kiro/sessions/cli/<sid>.json`). A stale persisted sid with no transcript falls back to `session/new`, preventing a fresh conversation from replaying old turns (which inflated base context).
 - **Working dir:** `AcpProvider.cwd` overrides the `LLMProvider` ABC default so `session_map` persists the real workspace path. AcpProvider's work_dir lives on the inner client (`_client._work_dir`), so a consumer reading `_work_dir` off the provider gets `""` for every ACP session; `provider.cwd` is the member to read.
 
 ### Config (`config/loader.py`)
@@ -194,6 +384,40 @@ are always present; user-configured servers from the agent config are merged in.
 - Provider-agnostic via factory (one provider, `AcpProvider`, over the resolved backend)
 - Calls `repair_agent_configs()` on gateway startup and periodically
 - Resume: calls `set_resume_session_id()` before `start()`
+
+#### Workflow one-shot session teardown is best-effort
+
+`workflows/agent_pool.py::_run_unpooled` (a `ctx.agent(session=...)` named
+call, or the identity-cap overflow valve) tears its session down in a
+`finally`: `release(key, cleanup=False)` for a named conversation (the turn
+lease is returned, the conversation is kept), `destroy(key)` for a one-shot
+`wf-unpooled:` key. That teardown is best-effort: a `release`/`destroy`
+exception is caught and dropped so it can never replace the step's real
+outcome. A successful result is still returned, and the body's own exception
+(a provider failure, a `WorkflowScope.validate()` rejection after the step)
+propagates unchanged; `CancelledError` is not caught, so a cancel still
+propagates after the teardown attempt. The failure is logged at WARNING with
+the exception TYPE only, no message and no `exc_info`, because this logger sits
+under the private-task diagnostics filter and a session error's text can carry
+private-memory detail. Pinned by `test/test_workflows_agent_pool_unpooled_teardown.py`.
+
+#### Workflow sessions publish their own turn identity
+
+A workflow worker's kiro-cli process has no ambient `KIROCREW_SESSION_KEY`
+(`AcpRuntime` does not export one), so its managed MCP calls carry a session key
+only through the gateway PID-walk. Every workflow send surface therefore calls
+`messaging.identity.publish_turn_identity(sessions, key)` at the same point in
+the turn as the chat and channel dispatchers: after `get_or_create` returned the
+session, before the prompt is built or streamed. `_WorkflowSessionWorker.send_message`
+publishes per turn (a hard reset respawns the process, so the pid can change) and
+`_run_unpooled` publishes for a named `session=` chain and for the identity-cap
+overflow session. The key published is always the worker's own
+(`wf-pool:{run}:{n}`, `wf-unpooled:{run}:{n}`, the named key, or the
+`WorkflowScope.worker_key` hash), never the parent chat's. The writer keeps its
+fail-safe contract: a session without a pid, or a fake without `get_pid`,
+skips publication and never fails the turn. Pinned by
+`test/test_workflow_memory_backend_reset.py::test_workflow_worker_publishes_identity_before_mcp_http`
+(real child transport) and `::test_unpooled_paths_publish_identity_before_prompt`.
 
 ### Subagent Approval Mode Inheritance (`subagent.py`)
 

@@ -78,6 +78,25 @@ def canonical_scope(raw: object) -> str | None:
     return raw.strip().replace("\\", "/").strip("/") or None
 
 
+def scope_selector_is_inadmissible(raw: str) -> bool:
+    """Whether a PRESENT delete selector names a scope that cannot exist.
+
+    A delete selector has three meanings: absent (scope stays out of the
+    match), empty or whitespace-only (the explicit selector for the unscoped
+    global rows), and a real fragment (match that scope only). A NONEMPTY
+    selector the write surface would refuse -- a bare ``/`` or ``\\``, an
+    absolute path, a dot segment -- fits none of the three: no admissibly
+    stored row can carry it, so honouring it means canonical folding lands
+    the delete on rows the caller never named (``/src/pkg`` folds onto the
+    stored scope ``src/pkg``). The bar is :func:`scope_is_admissible`, the
+    write path's own, so the destructive surface is exactly as strict as the
+    constructive one. Every entry point that accepts a raw selector refuses
+    through this one predicate, so the surfaces cannot drift on what counts
+    as inadmissible.
+    """
+    return bool(raw.strip()) and not scope_is_admissible(raw)
+
+
 def project_scope_satisfied(relpath: str, project_dir: str | Path | None) -> bool:
     """Whether an entry scoped to *relpath* applies to *project_dir*.
 

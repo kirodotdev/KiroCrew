@@ -594,5 +594,31 @@ def reset_providers() -> None:
 
 
 def list_providers() -> list[PublishProvider]:
-    """Return all registered providers (lazily instantiated)."""
-    return [get_provider(name) for name in _FACTORIES]
+    """Return each distinct registered provider once, lazily instantiated.
+
+    One provider may hold several registry keys. ``DEFAULT_PROVIDER`` is the
+    documented case: an edition registers its concrete name and aliases the
+    neutral default to the same factory, so the ~seven call sites that resolve an
+    artifact with no recorded provider find one instead of raising
+    ``PublishUnavailableError``. Both keys are needed -- the concrete name keeps
+    an already-published artifact resolving, the alias serves the unnamed
+    default -- so the duplication belongs in the registry.
+
+    It does not belong in the listing. Returning one entry per KEY hands the
+    picker two rows for one destination, identical down to the display name, and
+    a user cannot tell them apart or know which to choose. Keys are therefore
+    collapsed by the factory they name, and ``DEFAULT_PROVIDER`` is ordered last
+    so a concrete name represents the destination: the alias is a resolution
+    fallback, not a place anybody chose to publish to.
+    """
+    providers: list[PublishProvider] = []
+    seen: set[int] = set()
+    # Stable sort on a bool: concrete keys keep their registration order, the
+    # default alias moves to the end without disturbing them.
+    for name in sorted(_FACTORIES, key=lambda n: n == DEFAULT_PROVIDER):
+        factory_id = id(_FACTORIES[name])
+        if factory_id in seen:
+            continue
+        seen.add(factory_id)
+        providers.append(get_provider(name))
+    return providers

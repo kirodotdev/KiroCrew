@@ -39,6 +39,203 @@ Missing history must never silently turn a private topic into Global memory.
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 
+## Owner-reviewed capability inheritance
+
+`agent_capabilities.py` resolves one verified Parent and explicit per-item
+`set`, `remove` and `inherit` intent. The owner-only GET, POST preview and PUT
+routes at `/api/agents/{name}/capabilities` use schema version 1. Preview ends
+in `/preview`; PUT requires its opaque preview token and the GET revision.
+Unknown fields, null sets, stale sources and ambiguous names are refused.
+
+Enrollment is explicit. Shared members follow their selected Parent; a legacy
+private snapshot starts with every existing row local and every absent Parent
+row removed. Restoring one row leaves all other overrides intact. MCP transport
+replacement is whole-value; autoApprove is separate. Skills preserve manual
+resources and cannot change tool or approval lists. An exclusion still covered
+by a wildcard or another approval list is refused instead of claimed effective.
+Ordinary upstream changes reconcile through the same resolver. New capabilities,
+transport changes and broader approvals stay pending owner acceptance. Local
+conflicts retain their usable values: accepting a Parent row moves only the
+accepted Parent baseline, an explicit local override on that row keeps applying
+on top of it, and an `inherit` or restore on that row adopts the current
+Parent value and advances that row's accepted baseline. Selected Parent rows can be accepted for
+several already-enrolled members of the same exact Parent in one request. The
+editor offers those members as a checklist drawn from the declared crew roster
+(the current member excluded); the backend alone decides eligibility and
+answers `member_parent_mismatch` for a member outside this exact Parent. The
+checklist hint says only that the names are declared members and that
+eligibility is verified at review; it never calls a listed member eligible. The
+pane's mode badge names the persisted following mode without a `Saved:` prefix;
+the separate Saved/"Unsaved draft" badge reports draft state, using the same
+"draft" word as the footer, its confirmation and the stale notice. Ticking
+Follow changes the draft, not that persisted mode badge. One muted legend above
+the row list, rendered once rather than per row, defines the source select's
+three states: Inherited follows the parent's accepted value, Override sets this
+member's own value, Removed drops it for this member. A shared-reference row
+says it references a shared skill or resource with no private copy; it promises
+no propagation to running members. The locked Agent Template pane's navigation
+button reads "Edit in Capabilities"; the pane title stays "Capabilities".
+The preview lists every member the reviewed request covers, the current
+member first, and states "no effective value changes" when the effective values
+are unchanged, without implying that inheritance metadata is unchanged. Each
+Parent checkbox names its save-time action from the draft's actual Source first,
+then the saved row state: Override dismisses the update while keeping the override;
+Removed dismisses it while keeping the row removed; Inherited takes the Parent
+value or removal. An explicit `inherit` draft already takes the current Parent
+and advances its accepted baseline even unchecked, so its checkbox only selects
+that update for the chosen peers; a nearby accessible hint separates the current
+member's save outcome from the checkbox's peer-only effect in two short lines.
+Action labels lead with what is kept or taken.
+This replaces the generic acceptance label and duplicated selection/outcome prose.
+Parent change-kind badges say "Parent added/removed/changed this", separately from
+the impact list's Added/Removed/Changed labels and the conflict badge. The shared
+and legacy modes both say "Not following parent", with an independent-legacy-
+snapshot qualifier for the latter. The visible `local` state label is
+Override; its API value remains `local`. The receipt then
+names each kept row under the current member, derived only from the reviewed
+selection, the server view's conflict flag and the sanitized preview projection
+(a row still `local` and present, or still `removed` and absent, with no impact
+entry), and shows Override or Stays removed beside its reference; it
+never prints a value, never reads the raw draft, and never invents kept-row
+details for a peer member, whose rows the response does not project. An
+Inherited row that follows a Parent removal is never labelled as a kept local
+choice; it is an impact entry when its effective presence changes.
+The Follow checkbox places the unchanged-until-save and value/empty-field
+preservation guarantee beside the control; one state-carrying helper explains
+checked means overrides are editable and unchecked means read-only, replacing
+the duplicate enrollment callout. Both are accessible descriptions while the
+checkbox's accessible name stays stable. The label explicitly targets the native
+checkbox id, so clicking its text toggles enrollment. Conflict and receipt prose wraps at
+word boundaries; long code references can break anywhere. The transport option
+is "Command (local process)"; the conflict badge says "Conflicts with your
+override", distinct from the Override row state. Reload retrieves the server view
+without moving the draft's revision; "Use the new version for this draft" moves
+that revision and invalidates a prior preview, but does not review or save.
+Review and atomic save remain separate steps. Receipt counts use registered
+locale-specific plural forms. The approval helper states that
+making a tool available does not auto-approve it. A short live helper under the
+list selector states where the selected list is stored and which references it
+matches; the select and section labels stay short. Empty approval
+section headings are hidden, but their selector choices and draft additions
+remain available. Hidden transport leaves keep short placeholders; a separate
+hint explains that typing changes only the draft, saved hidden values remain
+until a replacement is saved, and discarding keeps the original. The footer's
+Discard draft opens a nested, always-mounted Radix confirmation rather than
+immediately clearing the draft. Cancelling keeps edits and the signed preview;
+confirming clears the draft and preview without closing the editor or calling
+the server. The editor's separate close guard states in its title that it closes
+the editor, names the member whose edits are unsaved, and says no other member
+is affected, since one editor holds one draft.
+
+Each owner save writes new private spec identities and switches all selected
+bindings through one config-delta publication. This includes changes to accepted
+Parent baselines or local intent whose effective values stay unchanged; only a
+save with unchanged spec and intent keeps its generation. Failed spec or config
+publication keeps the prior bindings, specs, accepted baselines and local choices;
+old generations may be marked pending, but staged choices remain private on new
+generations. Reconciliation can clear that pending marker without accepting the
+failed batch; the owner can review and retry the same selection. After binding
+publication, a failed final receipt leaves all selected new generations pending;
+reconciliation verifies them without minting replacements. Preview
+values redact credential containers. The existing governance sanitizer still
+runs at publication. Withheld shortcuts become tombstones, so a later policy
+relaxation does not resurrect them automatically.
+
+`prepare_member_capabilities(member, project_dir)` verifies the saved spec and
+Parent identity without claiming that a provider loaded it. API runtime state
+remains pending or unverified until runtime integration supplies observations.
+The existing fork refresh delegates enrolled definitions to this resolver.
+Legacy PATCH and direct rebind refuse an enrolled definition rather than
+bypassing its intent. Unreadable authoritative state returns bounded
+`503 capabilities_unavailable`; the final PATCH guard runs under the spec lock
+before bookkeeping. A late legacy publish rebind refusal retains the old binding
+and rolls back its staged destination, not a claim that no writes occurred.
+Runtime views are projected from allocation-owned state through the public
+`SessionManager.capability_runtime_view` facade; response rows expose no mutable
+registry dictionaries. The existing whole-reset button explicitly restores the
+verified current Parent through the capability transaction. Publish flattens
+only the saved valid snapshot, without accepting pending Parent expansions or
+exporting inheritance metadata. Publish records its member, source and target
+snapshot identities in the existing sidecar before creating the destination or
+committing the binding. The destination stays private until a second
+config-first transaction verifies its binding, ownership, bytes and current
+governance and clears only the temporary lineage. A failed final write returns
+the committed template with `warning: publish_incomplete`, matching legacy
+publish behavior. Retrying the same name completes that transition, including
+after restart or a lost response; changed source/target bytes, a newer binding
+or foreign ownership refuse without overwriting anything. Completed receipts
+remain for idempotent retries and never enter the shared agent JSON.
+
+Native permission policies that exactly match
+the existing allowedTools derivation follow owner approval edits. Custom
+permission policies and alternate toolsSettings shortcuts require a separate
+review and are refused rather than silently bypassed. Cleanup of superseded
+private generations is not implemented by this backend checkpoint, and no
+generation is deleted today. A future cleanup must retain every generation that
+a member binding names, that a live session's `LoadedCapabilities` stamp names,
+that a `CapabilityPreparation` returned by `prepare_runtime` still references
+between preparation and the loaded stamp, that a persisted resume record could
+lead back to, or that a retained publish receipt names as source or target.
+Because a preparation exists before any stamp and holds no registry entry, the
+three visible references (binding, stamp, receipt) do not prove a generation
+unreferenced. Deletion therefore requires a shared lock or explicit allocation
+lease taken by the reconciliation seam that mints generations, plus an audit of
+persisted resume references, and it fails closed: a generation whose absence of
+references cannot be proven is kept. Binding
+updates preserve config.local member overrides and write a narrow delta in the
+active layer under base-then-overlay locks. A batch spanning both layers uses
+one atomic overlay delta. Enrollment preserves absent fields, null prompt/model
+values, custom hooks/settings and the original includeMcpJson choice. Removing
+capabilities while provider-global MCP inclusion remains enabled is refused as
+unrepresentable; enrollment alone never silently disables that existing source.
+
+Parent selection reuses `agent_spec_path` with an explicit scope directory.
+Unrelated malformed files are skipped; duplicate names, a broken exact-name
+project claim and a changed pinned source still refuse resolution. Safe response
+projection retains arrays and maps and masks credential values. URL userinfo
+is masked from parsed username or password on every scheme, without relying on
+the shared redactor's known-scheme patterns; revision-bound URL retention still
+preserves the exact original bytes. Complete sensitive
+`NAME=VALUE` argument assignments are recognized on both sides of `--`; that
+terminator stops option inference, not assignment scanning. Retention preserves
+the entire original argument, including additional equals signs in its value. The
+`agent_capabilities.py` response boundary is registered in the security posture
+redaction inventory, so the omission gate checks it with the other outputs. MCP `set`
+accepts `retain_paths`, RFC6901 pointers into the complete replacement value.
+Each pointer must address exactly `[REDACTED]` and the same redacted scalar leaf
+in the current member transport. Empty/root, malformed, overlapping, duplicate
+and out-of-range pointers refuse the whole request; any unretained placeholder
+also refuses. Omitted fields are removed, not deep-merged. Retained bytes stay
+server-side and are covered by preview/revision checks. MCP rows carry an
+explicit `managed` flag; absent prompt/model rows remain editable. Rows do not
+carry constant `editable` or redundant `locked_reason` fields: managed transport
+fields stay read-only while Source and Enabled remain available. Runtime status
+is one of pending, unverified, applied or failed; the separate Saved configuration
+badge describes persisted configuration, not provider application.
+
+Owned Parents retain the existing dynamic command, hooks and data-home refresh.
+That pass cannot add omitted servers or tools and preserves local prompt/model
+and resource choices. App namespace transports require a current enabled app's
+exact declaration and use its authoritative transport. Safe ordinary Parent
+fields (description, welcomeMessage and keyboardShortcut) follow updates; legacy
+snapshots retain their explicit local baseline for these fields.
+
+Reconciliation publishes changed bytes under a new private name and atomically
+switches the member binding, leaving the old runtime's file unchanged. A no-op
+keeps its generation. Failed writes retain pending intent; retry completes it
+without modifying an earlier generation. Already-published pending receipts can
+finish without another generation. Public revisions are random version ids;
+source-content digests remain internal. The prepare seam refuses pending work
+and never reports provider application from a successful save. Enrollment
+intent lives in the shared `agent_model_state.json`, so an unreadable sidecar
+cannot prove any declared member unenrolled: `prepare_runtime` refuses every
+crew-member cold start with the closed code `capability_state_unreadable` (the
+capabilities API answers `503 capabilities_unavailable`) rather than inferring
+legacy mode, and a session that resolves to no crew never reads the sidecar.
+An explicit `crew_agent` claim naming no `config.agents` entry refuses with
+`capability_member_missing`; an implicit name outside the crew namespace
+resolves to no crew and is unaffected.
+
 ## Crew records and binding
 
 A crew lives only in `config.json` under `agents.<name>`. It is not a kiro-cli

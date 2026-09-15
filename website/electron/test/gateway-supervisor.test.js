@@ -92,6 +92,8 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 function harness(overrides = {}) {
   const logs = [];
+  const warnings = [];
+  const errors = [];
   const spawnCalls = [];
   const store = overrides.store || fakeStore();
   const mainWindow = overrides.mainWindow || null;
@@ -135,11 +137,19 @@ function harness(overrides = {}) {
     backendUrl: overrides.backendUrl || `http://localhost:${port}`,
     home: "/virtual/kirocrew-home",
     getMainWindow: () => mainWindow,
-    isQuitting: () => false,
+    isQuitting: overrides.isQuitting || (() => false),
     requestQuit: () => {},
     cancelPendingTrayHide: () => {},
     exitImmersiveModes: () => {},
     log: (message) => logs.push(message),
+    warn: (message) => {
+      logs.push(message);
+      warnings.push(message);
+    },
+    error: (message) => {
+      logs.push(message);
+      errors.push(message);
+    },
     logPath: () => "/virtual/logs/gateway-launch.log",
     fsMod,
     osMod: { homedir: () => "/virtual/home" },
@@ -166,7 +176,7 @@ function harness(overrides = {}) {
     dirname: "/virtual/electron",
   });
 
-  return { supervisor, store, logs, spawnCalls, fsMod };
+  return { supervisor, store, logs, warnings, errors, spawnCalls, fsMod };
 }
 
 test("module has no top-level Electron dependency and its factory accepts fakes", () => {
@@ -253,6 +263,65 @@ test("disabled local gateway does not spawn when the backend is unreachable", as
   assert.strictEqual(spawnCalls.length, 0);
   assert.ok(
     logs.some((line) => line.includes("local gateway is off — not starting one")),
+  );
+});
+
+test("AppImage sandbox advice uses the user-facing warning channel", async () => {
+  const baseFs = harness().fsMod;
+  const { supervisor, logs, warnings } = harness({
+    processRef: {
+      platform: "linux",
+      arch: "x64",
+      env: {
+        APPIMAGE: "/virtual/Kiro Crew.AppImage",
+        KIROCREW_HOME: "/virtual/kirocrew-home",
+      },
+      resourcesPath: "/virtual/resources",
+      kill() { throw new Error("process kill must not run in this harness"); },
+    },
+    fsMod: {
+      ...baseFs,
+      readFileSync(file) {
+        if (file === "/proc/sys/kernel/apparmor_restrict_unprivileged_userns") {
+          return "1\n";
+        }
+        throw new Error("unexpected filesystem read");
+      },
+    },
+  });
+
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(warnings.length, 2);
+  assert.ok(warnings[0].includes("WARN agent sandbox will fail closed"));
+  assert.ok(warnings[1].includes("HINT run this in a terminal"));
+  assert.ok(logs.includes(warnings[0]));
+  assert.ok(logs.includes(warnings[1]));
+});
+
+test("spawn errors use the user-facing error channel", async () => {
+  const { supervisor, spawnCalls, errors } = harness();
+
+  assert.strictEqual(await supervisor.start(), true);
+  const error = Object.assign(new Error("missing executable"), { code: "ENOENT" });
+  spawnCalls[0].child.emit("error", error);
+
+  assert.ok(errors.some((line) => line.includes("spawn ERROR code=ENOENT")));
+});
+
+test("unexpected child exits are visible but quit exits stay file-only", async () => {
+  const unexpected = harness();
+  assert.strictEqual(await unexpected.supervisor.start(), true);
+  unexpected.spawnCalls[0].child.emit("exit", 1, null);
+  assert.ok(
+    unexpected.errors.some((line) => line.includes("gateway child exited code=1")),
+  );
+
+  const quitting = harness({ isQuitting: () => true });
+  assert.strictEqual(await quitting.supervisor.start(), true);
+  quitting.spawnCalls[0].child.emit("exit", 0, "SIGTERM");
+  assert.strictEqual(quitting.errors.length, 0);
+  assert.ok(
+    quitting.logs.some((line) => line.includes("gateway child exited code=0 signal=SIGTERM")),
   );
 });
 
@@ -609,4 +678,28 @@ test("Linux and Windows keep their own stale-asset recovery", async () => {
     assert.strictEqual(spawnCalls.length, 1, platform);
     assert.deepStrictEqual(state.exits, [], platform);
   }
+});
+
+test("a macOS Gatekeeper hint uses the user-facing warning channel", async () => {
+  const { supervisor, spawnCalls, warnings } = staleBundleHarness();
+
+  assert.strictEqual(await supervisor.start(), true);
+  spawnCalls[0].child.emit("exit", null, "SIGKILL");
+
+  assert.ok(warnings.some((line) => line.includes("macOS Gatekeeper blocked")));
+});
+
+test("a stale child SIGKILL stays file-only during recovery", async () => {
+  const { supervisor, spawnCalls, logs, warnings, errors } = staleBundleHarness();
+
+  assert.strictEqual(await supervisor.start(), true);
+  const staleChild = spawnCalls[0].child;
+  staleChild.emit("exit", 75, null);
+  assert.strictEqual(spawnCalls.length, 2);
+
+  staleChild.emit("exit", null, "SIGKILL");
+
+  assert.ok(logs.some((line) => line.includes("gateway child exited code=null signal=SIGKILL")));
+  assert.ok(!warnings.some((line) => line.includes("macOS Gatekeeper blocked")));
+  assert.strictEqual(errors.length, 1, "only the first unexpected exit is user-visible");
 });

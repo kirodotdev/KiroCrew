@@ -183,7 +183,11 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
       raw: 'first prompt',
       full: 'first prompt',
       push: 0,
-      bannerH: 70,
+      // The height reported by `onPinCollapsedHeight` (60), not the live card
+      // rect (70): the push geometry is derived from the card's SETTLED resting
+      // height so a card grown by the hover peek cannot feed its own push. See
+      // usePinnedPrompt.test.tsx.
+      bannerH: 60,
     })
 
     act(() => {

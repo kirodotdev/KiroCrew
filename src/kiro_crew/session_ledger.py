@@ -213,8 +213,43 @@ def _clamp(value: Any, limit: int = _MAX_TEXT) -> str:
     return value[:limit]
 
 
+def require_lock_inode(fd: int, lock_path: Path) -> None:
+    """Refuse to enter a critical section on a lock inode the store does not have.
+
+    A path-based advisory lock is taken on an INODE, and a purge that removes the
+    store removes that inode. A writer that was queued on it still acquires it --
+    the kernel grants the lock on the detached file -- and would then write into
+    a directory that was deleted from under it (the ``mkdir`` a moment ago
+    recreates it), publishing a torn store into a purged key: state without a
+    breadcrumb, or a header-less item. This check, run immediately after the
+    acquire, is what makes the purge's inode deletion safe: the queued writer
+    compares the identity of the file it holds against the file now at the path
+    and REFUSES when they differ or the path is gone. The caller sees the same
+    ``OSError`` a held lock produces and retries; its next attempt opens whatever
+    is really at the path -- nothing, or a fresh store.
+
+    On Windows this check is a no-op by construction, and correctly so: a file
+    cannot be unlinked while any handle is open on it, and a queued writer HOLDS
+    a handle while it waits, so a purge running beside it either cannot remove
+    the lock file at all (the writer then acquires the same inode and rebuilds a
+    fresh store -- the ledger springs back, consistently) or removes it only when
+    no writer was queued. The OS preserves lock identity there; this check exists
+    for POSIX, where the unlink succeeds under an open handle. ``st_ino`` is
+    compared only when both sides report one, since a filesystem that reports
+    zero cannot be compared.
+    """
+    try:
+        on_disk = os.stat(lock_path)
+    except FileNotFoundError:
+        raise OSError("ledger was removed while waiting for its lock; try again") from None
+    held = os.fstat(fd)
+    if held.st_ino and on_disk.st_ino:
+        if (held.st_dev, held.st_ino) != (on_disk.st_dev, on_disk.st_ino):
+            raise OSError("ledger lock was replaced while waiting; try again")
+
+
 @contextmanager
-def _locked(dir_path: Path) -> Iterator[None]:
+def _locked(dir_path: Path, *, create: bool = True) -> Iterator[None]:
     """Bounded-against-a-holder exclusive lock over one ledger directory.
 
     The lock file is a dedicated inode that writes never replace (replacing
@@ -246,9 +281,19 @@ def _locked(dir_path: Path) -> Iterator[None]:
     on the pre-lock syscalls and leave a near-zero retry window for genuine
     contention, which is the inversion that must not recur.
     """
-    dir_path.mkdir(parents=True, exist_ok=True)
+    # ``create=False`` is the PURGE's form: a writer may bring a store into
+    # being by locking it, a deleter must not. With ``mkdir`` + ``O_CREAT`` a
+    # second sweep racing the first would recreate the store the first just
+    # removed -- a directory holding nothing but a lock file, with no breadcrumb,
+    # which no later purge can name -- and only then find nothing to guard. Without
+    # them the open raises ``FileNotFoundError`` for a store that is gone, and the
+    # caller skips it.
     lock_path = dir_path / _LOCK_FILE
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    if create:
+        dir_path.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    else:
+        fd = os.open(str(lock_path), os.O_RDWR)
     try:
         # Bound only the acquire poll: set the deadline adjacent to the loop
         # it governs, after the pre-lock syscalls (which it cannot bound).
@@ -258,6 +303,10 @@ def _locked(dir_path: Path) -> Iterator[None]:
                 raise OSError("ledger lock is held by another process; try again")
             time.sleep(_LOCK_POLL_SECS)
         try:
+            # The store may have been purged while this writer waited: see
+            # :func:`require_lock_inode`. Checked INSIDE the hold, so the answer
+            # cannot change between the check and the write.
+            require_lock_inode(fd, lock_path)
             yield
         finally:
             release_lock(fd)
@@ -543,27 +592,40 @@ def _serialize_bounded(state: dict[str, Any], source: str = "") -> str:
             )
 
 
-def purge(slot_key: str) -> None:
-    """Delete *slot_key*'s ledger directory. Best-effort maintenance API.
+def purge_matching(exact_keys: set[str], *, guard: Any) -> int:
+    """Purge the ledgers whose breadcrumb holds one of *exact_keys*, guarded.
 
-    History deletion deliberately does not call this function: a transcript can
-    be reclaimed while another process claims the same logical session. Callers
-    must establish their own ownership boundary before using this irreversible
-    primitive.
-    """
-    try:
-        dir_path = ledger_dir(slot_key)
-    except ValueError:
-        return
-    shutil.rmtree(dir_path, ignore_errors=True)
+    This is an explicit best-effort maintenance API with one production caller
+    (``ledger_sweep.purge``). It matches EXACT keys only, deliberately: a
+    caller-supplied fold is exactly the one way a caller could remove a ledger
+    it never listed, so there is no fold parameter, not even a defaulted one.
+    Callers must establish that every key is safe to remove before invoking it.
 
+    Every removal is locked, ordered and identity-last -- there is one spelling
+    of deletion in this module. *guard* is REQUIRED: it is called as
+    ``guard(dir_path)`` INSIDE that ledger's own :func:`_locked` hold, and the
+    store is removed only if it answers true. A caller that truly wants the match
+    alone to decide passes ``lambda _dir: True`` and says so at the call site;
+    the store does not offer a default that skips the re-decision.
+    That is what lets a caller re-read the record and stand down on one that
+    came back to life: a selection made outside the lock is a snapshot, and
+    between the snapshot and the delete a session can be resumed and write a
+    live phase into the very record the caller decided was finished. Selecting
+    under the lock is not enough on its own -- the removal has to happen in the
+    same hold, which is why the guard is a callback rather than a filter the
+    caller applies first.
 
-def purge_matching(exact_keys: set[str], folded_keys: set[str], fold: Any) -> int:
-    """Purge ledgers matching exact keys or a caller-supplied fold.
-
-    This is an explicit best-effort maintenance API. The fold selects targets;
-    it is never a storage identity. Callers must establish that every matching
-    exact key is safe to remove before invoking it.
+    The removal is ORDERED and the lock inode goes inside the hold where the OS
+    allows it: other entries first, then ``state.json`` and ``slot_key`` only
+    once every other removal succeeded (a failure never leaves a store without
+    its record or its name), then the lock file itself while the lock is still
+    held (:func:`unlink_lock_in_hold`) -- so a writer queued on that inode
+    finds the path gone when it acquires and refuses (:func:`require_lock_inode`)
+    rather than publishing into the removed store, and no later writer can be
+    handed a second inode while a first is still held. Windows refuses the
+    in-hold unlink and gets it after release instead, which is safe there
+    because it fails whenever a writer still holds a handle. A store that could
+    not be fully removed is left identifiable and is not counted as removed.
     """
     removed = 0
     try:
@@ -575,17 +637,159 @@ def purge_matching(exact_keys: set[str], folded_keys: set[str], fold: Any) -> in
         return 0
     for child in children:
         try:
-            if not child.is_dir():
+            if not child.is_dir() or is_link(child):
+                # A linked store directory names somewhere else; the delete
+                # would land there. Never followed, whatever its breadcrumb says.
                 continue
             key = (child / _KEY_FILE).read_text(encoding="utf-8").strip()
             if not key:
                 continue
-            if key in exact_keys or fold(key) in folded_keys:
-                shutil.rmtree(child, ignore_errors=True)
-                removed += 1
+            if key not in exact_keys:
+                continue
+            try:
+                lock_cm = _locked(child, create=False)
+                lock_cm.__enter__()
+            except FileNotFoundError:
+                # Removed between the listing and the lock -- by a concurrent
+                # sweep, or by the writer that owned it. Nothing to do, and
+                # nothing must be created in its place.
+                continue
+            try:
+                if not guard(child):
+                    continue
+                if not _remove_store_contents(child):
+                    # Something survived. When it was ordinary content, both
+                    # identity files were kept; when it was one of the identity
+                    # files themselves, whichever still exists is what names the
+                    # store to the next sweep. Say exactly which, so the log is
+                    # true in both cases.
+                    surviving = [n for n in (_STATE_FILE, _KEY_FILE) if (child / n).exists()]
+                    logger.warning(
+                        "ledger purge: %s not fully removed; kept: %s",
+                        child.name,
+                        ", ".join(surviving) or "(no identity file survived)",
+                    )
+                    continue
+                lock_gone = unlink_lock_in_hold(child / _LOCK_FILE)
+            finally:
+                lock_cm.__exit__(None, None, None)
+            _remove_store_shell(child, lock_gone=lock_gone)
+            removed += 1
         except Exception:
             continue
     return removed
+
+
+#: The two files that make a store a ledger and let a purge NAME it. They go
+#: last, and only when everything else is gone.
+_IDENTITY_FILES = frozenset({_STATE_FILE, _KEY_FILE})
+
+
+def _remove_store_contents(dir_path: Path) -> bool:
+    """Delete *dir_path*'s contents except the lock file. Returns whether all went.
+
+    Ordered, with the record and the breadcrumb LAST. Everything else is removed
+    first and every failure is counted -- ``rmtree(ignore_errors=True)`` would
+    report success over a subtree it silently left standing, and on Windows a
+    sharing violation on one held entry is exactly that case. ``state.json`` and
+    ``slot_key`` are unlinked only once the count is zero, so a failed removal
+    never leaves a store that has lost its record or its name: it stays a
+    ledger, stays addressable by key, and reads as damaged to the next sweep
+    rather than as a residue nothing can aim at. Call under the hold.
+    """
+    failures = 0
+
+    def _count(_fn: object, _path: object, _exc: object) -> None:
+        nonlocal failures
+        failures += 1
+
+    try:
+        children = list(dir_path.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if child.name == _LOCK_FILE or child.name in _IDENTITY_FILES:
+            continue
+        # A linked entry is unlinked as a NAME, never followed: ``is_dir`` is true
+        # through a link to a directory, and walking it would delete the target.
+        if child.is_dir() and not is_link(child):
+            shutil.rmtree(child, onerror=_count)
+        else:
+            try:
+                child.unlink()
+            except OSError:
+                failures += 1
+    if failures:
+        return False
+    for name in (_STATE_FILE, _KEY_FILE):
+        try:
+            (dir_path / name).unlink(missing_ok=True)
+        except OSError:
+            return False
+    return True
+
+
+def is_link(path: Path) -> bool:
+    """Whether *path* is a symbolic link or a Windows junction -- a name that
+    points somewhere else.
+
+    A delete primitive must never FOLLOW one: a store directory, or an ``items/``
+    inside one, that is a link would send the removal at whatever the link names,
+    and nothing about the store's own records could tell. Both stores' purges
+    refuse a linked store and a linked ``items/``, and both content walkers unlink
+    a linked entry itself rather than descending into it.
+    """
+    return path.is_symlink() or path.is_junction()
+
+
+def unlink_lock_in_hold(lock_path: Path) -> bool:
+    """Unlink *lock_path* while its lock is still HELD. Returns whether it went.
+
+    The one order that keeps lock identity stable through a purge. Unlinked
+    inside the hold, the inode a queued writer is waiting on is already detached
+    from the path by the time that writer acquires it, so its
+    :func:`require_lock_inode` check sees the path gone and refuses. Unlinked
+    AFTER release there is a window in which a queued writer acquires the old
+    inode, validates it against a path that still exists, and proceeds -- and the
+    late unlink then detaches the very inode it holds, so the next writer creates
+    a new one and the two are not serialised against each other.
+
+    POSIX permits the unlink under an open descriptor and this returns ``True``.
+    Windows refuses it and this returns ``False``; there the caller unlinks after
+    release instead, which is safe on Windows precisely because it fails whenever
+    any writer still holds a handle -- the OS keeps the identity stable, and a
+    successful late unlink proves nobody was queued.
+    """
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True
+
+
+def _remove_store_shell(dir_path: Path, *, lock_gone: bool) -> None:
+    """Remove the now-empty directory, and the lock file ONLY if the hold could not.
+
+    Call AFTER releasing. *lock_gone* is :func:`unlink_lock_in_hold`'s answer.
+    When it is true the lock path was unlinked inside the hold and MUST NOT be
+    touched again here: by now a writer that refused on the detached inode may
+    have retried, recreated the directory and taken a FRESH lock at the same path
+    -- a second unlink would detach that fresh inode under its holder, and the
+    next writer would take a third, un-serialised against the second. Only the
+    empty-directory ``rmdir`` is attempted, and it simply fails if a writer has
+    rebuilt the store. When *lock_gone* is false the OS refused the in-hold unlink
+    (Windows), and the late unlink is safe there because it fails whenever any
+    writer holds a handle.
+    """
+    if not lock_gone:
+        try:
+            (dir_path / _LOCK_FILE).unlink(missing_ok=True)
+        except OSError:
+            logger.debug("ledger purge: lock file still held; leaving it")
+    try:
+        dir_path.rmdir()
+    except OSError:
+        logger.debug("ledger purge: ledger directory not fully removed")
 
 
 #: Ceiling for the injected snapshot block. A nudge turn carries this every

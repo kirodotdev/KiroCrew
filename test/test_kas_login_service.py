@@ -10,11 +10,13 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import aiohttp
 import pytest
 
 from kiro_crew.auth.login import device
 from kiro_crew.auth.login.device import DeviceAuthorization
 from kiro_crew.auth.service import (
+    MAX_POLL_TRANSPORT_FAILURES,
     KasLoginService,
     SignedOutDuringLoginError,
     UnknownIdentityError,
@@ -58,6 +60,43 @@ class _FakeSession:
 
     async def close(self):
         self.closed = True
+
+
+class _FailingResp:
+    """A POST whose connection never completes.
+
+    Raises from ``__aenter__``, which is where aiohttp reports a closed keep-alive
+    connection, a DNS failure or a connect timeout.
+    """
+
+    def __init__(self, err: BaseException | None = None):
+        self._err = err or aiohttp.ClientConnectionError("connection closed by peer")
+
+    async def __aenter__(self):
+        raise self._err
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _UnreadableResp:
+    """A POST that ANSWERS and then fails while its body is read."""
+
+    def __init__(self, status: int = 200, err: BaseException | None = None):
+        self.status = status
+        self._err = err or asyncio.TimeoutError()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def json(self, *, content_type: str | None = "application/json"):
+        raise self._err
+
+    async def text(self):
+        raise self._err
 
 
 def _device_auth(expires_in_secs: float = 300) -> DeviceAuthorization:
@@ -941,3 +980,155 @@ async def test_oidc_poll_non_object_200_is_terminal_error(tmp_path, monkeypatch)
     begin = await _begin_oidc(service, monkeypatch, "builder_id")
     assert await service.poll_device(begin["login_id"]) == {"status": "error"}
     assert TokenStore(tmp_path).resolve() is None
+
+
+# ---------------------------------------------------------------------------
+# A poll that never reaches the issuer is a network hiccup, not a dead login.
+# The dashboard treats the handler's 502 as terminal, so the budget below is
+# what keeps one dropped packet from destroying an approvable login.
+# ---------------------------------------------------------------------------
+
+
+async def test_poll_absorbs_consecutive_transport_failures_then_recovers(tmp_path, monkeypatch):
+    service, _ = _service(
+        tmp_path,
+        responses=[_FailingResp() for _ in range(MAX_POLL_TRANSPORT_FAILURES)]
+        + [_authorized_google()],
+    )
+    begin = await _begin(service, monkeypatch, _device_auth())
+    for _ in range(MAX_POLL_TRANSPORT_FAILURES):
+        # Reported as pending, and the login stays registered: a following poll
+        # is answered rather than raising UnknownLoginError.
+        assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "authorized",
+        "provider": "Google",
+    }
+    assert TokenStore(tmp_path).resolve() is not None
+
+
+async def test_poll_transport_failure_budget_resets_after_an_answered_poll(tmp_path, monkeypatch):
+    """An answered poll clears the count, so only a SUSTAINED outage crosses it."""
+    failures = [_FailingResp() for _ in range(MAX_POLL_TRANSPORT_FAILURES)]
+    answered = _FakeResp(200, {"status": "authorization_pending"})
+    service, _ = _service(tmp_path, responses=failures + [answered] + list(failures))
+    begin = await _begin(service, monkeypatch, _device_auth())
+    for _ in range(MAX_POLL_TRANSPORT_FAILURES):
+        assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    # Fresh budget: the same number of failures is absorbed again.
+    for _ in range(MAX_POLL_TRANSPORT_FAILURES):
+        assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+
+
+async def test_poll_reports_a_sustained_outage(tmp_path, monkeypatch):
+    """Past the budget the error is raised, so the handler answers its coded 502."""
+    service, _ = _service(
+        tmp_path, responses=[_FailingResp() for _ in range(MAX_POLL_TRANSPORT_FAILURES + 1)]
+    )
+    begin = await _begin(service, monkeypatch, _device_auth())
+    for _ in range(MAX_POLL_TRANSPORT_FAILURES):
+        assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    with pytest.raises(aiohttp.ClientConnectionError):
+        await service.poll_device(begin["login_id"])
+
+
+async def test_poll_absorbs_a_connect_timeout(tmp_path, monkeypatch):
+    """A timeout is the same class of hiccup as a dropped connection."""
+    service, _ = _service(tmp_path, responses=[_FailingResp(asyncio.TimeoutError())])
+    begin = await _begin(service, monkeypatch, _device_auth())
+    assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+
+
+async def test_poll_oidc_absorbs_transport_failures_then_reports_outage(tmp_path, monkeypatch):
+    """The SSO-OIDC poll carries the same budget as the social one."""
+    service, _ = _service(
+        tmp_path, responses=[_FailingResp() for _ in range(MAX_POLL_TRANSPORT_FAILURES + 1)]
+    )
+    begin = await _begin_oidc(service, monkeypatch, "builder_id")
+    for _ in range(MAX_POLL_TRANSPORT_FAILURES):
+        assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    with pytest.raises(aiohttp.ClientConnectionError):
+        await service.poll_device(begin["login_id"])
+
+
+async def test_auth_session_binds_an_explicit_timeout(tmp_path):
+    """aiohttp's 5-minute default would hang a poll far past its own cadence."""
+    service = KasLoginService(TokenStore(tmp_path))
+    try:
+        session = await service._http()
+        assert session.timeout.total == 30
+        assert session.timeout.connect == 10
+    finally:
+        await service.close()
+
+
+async def test_poll_answer_that_cannot_be_read_costs_no_budget(tmp_path, monkeypatch):
+    """A body read that fails still proves the issuer is up, so it charges nothing.
+
+    Charging it would shorten the next outage's tolerance: an answered poll would
+    leave only two connection failures before the login is reported dead.
+    """
+    service, _ = _service(
+        tmp_path,
+        responses=[_UnreadableResp()]
+        + [_FailingResp() for _ in range(MAX_POLL_TRANSPORT_FAILURES)]
+        + [_authorized_google()],
+    )
+    begin = await _begin(service, monkeypatch, _device_auth())
+    assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    # Full budget still available after the unreadable answer.
+    for _ in range(MAX_POLL_TRANSPORT_FAILURES):
+        assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "authorized",
+        "provider": "Google",
+    }
+
+
+async def test_poll_unreadable_error_response_costs_no_budget(tmp_path, monkeypatch):
+    """Same for a non-200 whose body cannot be read."""
+    service, _ = _service(
+        tmp_path,
+        responses=[_UnreadableResp(status=503)]
+        + [_FailingResp() for _ in range(MAX_POLL_TRANSPORT_FAILURES)]
+        + [_FailingResp()],
+    )
+    begin = await _begin(service, monkeypatch, _device_auth())
+    assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    for _ in range(MAX_POLL_TRANSPORT_FAILURES):
+        assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    with pytest.raises(aiohttp.ClientConnectionError):
+        await service.poll_device(begin["login_id"])
+
+
+async def test_poll_error_response_in_a_broken_charset_is_still_pending(tmp_path, monkeypatch):
+    """A mislabelled charset makes decoding the body raise UnicodeDecodeError.
+
+    The body is only log material, so its decode failure must not escape as an
+    uncoded 500 and end an approvable login.
+    """
+    broken = UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+    service, _ = _service(
+        tmp_path,
+        responses=[_UnreadableResp(status=502, err=broken), _authorized_google()],
+    )
+    begin = await _begin(service, monkeypatch, _device_auth())
+    assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "authorized",
+        "provider": "Google",
+    }
+
+
+async def test_poll_oidc_answer_that_cannot_be_read_costs_no_budget(tmp_path, monkeypatch):
+    """The SSO-OIDC token poll reads its body the same way, so it counts nothing."""
+    service, _ = _service(
+        tmp_path,
+        responses=[_UnreadableResp()]
+        + [_FailingResp() for _ in range(MAX_POLL_TRANSPORT_FAILURES)],
+    )
+    begin = await _begin_oidc(service, monkeypatch, "builder_id")
+    assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+    for _ in range(MAX_POLL_TRANSPORT_FAILURES):
+        assert await service.poll_device(begin["login_id"]) == {"status": "pending"}

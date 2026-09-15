@@ -2024,8 +2024,11 @@ def test_registration_exposes_exactly_one_destination(monkeypatch):
 
 
 def test_provider_list_has_no_duplicate_rows(monkeypatch):
-    """``list_providers`` does not dedupe, so registering one provider under two keys
-    would render the same destination twice in the picker."""
+    """One row per destination in the picker.
+
+    ``list_providers`` collapses registry keys that name the same factory, so an
+    alias cannot add a row. This pins the other half: the public edition's
+    registration adds no distinct-but-redundant destination either."""
     _stub_profiles(monkeypatch, ["alpha", "beta"], default="alpha")
     pd.register_public_edition_providers()
     listed = pp.list_providers()

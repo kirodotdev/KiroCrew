@@ -287,6 +287,17 @@ Arm the patrol with `monitor_start` (interval ~120s), never `wait`. Pass
 loop then stops with no symptom. Call `autonudge_stop` yourself when a stop
 condition fires; coasting into the cycle cap is a failure, not a finish.
 
+**Before the first dispatch, file yourself in the audit's folder** — one
+`chat_folder_file_self` with `folder` set to a few-word name for the target
+under audit. It creates the folder if needed and moves only your own session,
+so it never prompts. Every session you then open goes to
+`<audit>/<agent>` via `session_create`'s `folder` argument — auditors,
+verifiers, the retrospective and fixers each under the subfolder named for
+the agent that runs them — so the person sees one heading for the audit, your
+session directly under it, and the fleet grouped by role beneath. A conductor
+floating at the top level while its fleet sits in a folder is the shape this
+step removes.
+
 Each cycle, in this order:
 
 1. **Read the ledger** — one `session_ledger_read`. The injected block is a

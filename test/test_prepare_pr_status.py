@@ -326,30 +326,67 @@ def test_report_emits_only_the_consumed_surface(capsys) -> None:
     }
 
 
-def test_passed_aggregate_overrides_old_failures_and_advisory_threads() -> None:
+def test_passed_aggregate_does_not_clear_an_observed_failing_row() -> None:
+    """A green aggregate must not suppress an observed failing row.
+
+    The aggregate's context name is a forgeable display string, so letting its
+    green erase a failing row would let a forged green flip the tool to CLEAN
+    over a real failure. An observed failure is authoritative: the failing row
+    survives the passed aggregate and the tool blocks.
+    """
     module = _load_script()
     payload = _pr_payload(
         [
-            {"name": "old duplicate check", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"name": "Backend Tests", "status": "COMPLETED", "conclusion": "FAILURE"},
             {"context": "PR Readiness", "state": "SUCCESS"},
         ]
     )
     _install_fake_gh(module, payload)
 
-    assert module.main(["pr_status.py", "42"]) == 0
+    assert module.main(["pr_status.py", "42"]) == 20
 
 
-def test_passed_aggregate_overrides_an_old_pending_check() -> None:
+def test_failing_aggregate_still_fails() -> None:
+    """A failing aggregate over no failing row is action required, not clean."""
     module = _load_script()
     payload = _pr_payload(
         [
-            {"name": "old duplicate check", "status": "IN_PROGRESS", "conclusion": ""},
+            {"name": "Backend Tests", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"context": "PR Readiness", "state": "FAILURE"},
+        ]
+    )
+    _install_fake_gh(module, payload)
+
+    assert module.main(["pr_status.py", "42"]) == 20
+
+
+def test_passed_aggregate_does_not_conclude_over_a_still_running_lane() -> None:
+    """A green aggregate must not conclude the round while a real lane runs.
+
+    The aggregate's context name is forgeable, so if a passed aggregate could
+    conclude the "still running" gate, a forged green posted while a real lane
+    is still IN_PROGRESS would skip it and reach CLEAN before the real failure
+    lands -- the forged-green-to-CLEAN vector moved into a timing window. An
+    observed running row keeps the round open on its own terms: RUNNING, not
+    CLEAN.
+
+    This reverses the inverted assertion below on purpose (recorded in the PR
+    description): the running gate does not defer to a passed aggregate, on the
+    same rule that governs the failing gate -- the forgeable aggregate subtracts
+    no observed row. The chosen cost is a genuinely stuck orphaned running row
+    holding the tool at RUNNING (exit 10, visible, self-correcting once the
+    check completes) rather than a silent CLEAN over a forged green.
+    """
+    module = _load_script()
+    payload = _pr_payload(
+        [
+            {"name": "Backend Tests", "status": "IN_PROGRESS", "conclusion": ""},
             {"context": "PR Readiness", "state": "SUCCESS"},
         ]
     )
     _install_fake_gh(module, payload)
 
-    assert module.main(["pr_status.py", "42"]) == 0
+    assert module.main(["pr_status.py", "42"]) == 10
 
 
 def test_legacy_pull_request_without_aggregate_still_fails_closed() -> None:

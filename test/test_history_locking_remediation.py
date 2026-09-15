@@ -2050,6 +2050,63 @@ class TestForeignFoldMidIdentity:
         assert foreign == [], "the stale persisted copy must fold, window wins"
         assert dedup_dropped == [], "an id+ts corroborated fold is silent"
 
+    def test_id_match_corroborated_by_a_preserved_image_folds(self, tmp_path, monkeypatch):
+        """Same id, fresh ts, bodies differing ONLY in an image destination the
+        durable copy preserved (the window entry's own rewrite failed open because
+        the agent's scratch file was already gone): pass 0 folds it. Without the
+        image allowance the id match has no corroboration, the line falls through
+        the id-less tiers, and the transcript keeps two copies of one message,
+        one naming a dead file.
+        """
+        import json
+
+        from kiro_crew.chat_attachments import attachments_dir
+        from kiro_crew.dashboard.chat_persistence import _frozen_prefix_and_foreign_appends
+        from kiro_crew.dashboard.chat_utils import _history_key_for
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = self._make_state(tmp_path)
+        slot = state.get_or_create_slot("imgfold")
+        path = state.conversation_log._path(_history_key_for(slot.key))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stored = attachments_dir(path.parent, path.stem) / "0123456789abcdef-shot.png"
+        scratch = tmp_path / "scratch" / "shot.png"  # never created: it is gone
+        disk_entries = [
+            {
+                "role": "assistant",
+                "content": f"see ![shot]({stored})",
+                "ts": "TY",
+                "meta": {"mid": "m-img"},
+            }
+        ]
+        lines = [json.dumps({"_type": "metadata", "created": "2026-01-01T00:00:00Z"})]
+        lines.extend(json.dumps(e) for e in disk_entries)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        slot._frozen_prefix_cache = None
+        window_entries = [
+            {
+                "role": "assistant",
+                "content": f"see ![shot]({scratch})",
+                "ts": "TZ",
+                "meta": {"mid": "m-img"},
+            }
+        ]
+
+        _prefix, foreign, dedup_dropped = _frozen_prefix_and_foreign_appends(
+            slot, path, 0, window_entries
+        )
+        assert foreign == [], "the preserved-image durable copy must fold into the window"
+        assert dedup_dropped == []
+
+        # The allowance is for preserved images only: a same-id line whose TEXT
+        # differs is still uncorroborated and still preserved.
+        slot._frozen_prefix_cache = None
+        window_entries[0]["content"] = f"look ![shot]({scratch})"
+        _prefix, foreign, _dropped = _frozen_prefix_and_foreign_appends(
+            slot, path, 0, window_entries
+        )
+        assert len(foreign) == 1
+
 
 class TestBestEffortSaveMarksDirty:
     """GPT 5.6 HIGH (chat_persistence.py:1087): metadata mutation endpoints

@@ -55,6 +55,16 @@ tests have moved off the corresponding legacy seam.
 
 ## Private member session ownership
 
+Private essential-context receipts live on the serving provider, not the logical
+session key or shared ContextBuilder. Their identity includes the inner client,
+native session ID and existing `process_instance` token. Replacing a client or
+provider, including an in-place `_Session.adopt_provider`, cannot inherit an old
+receipt. Explicit compaction and in-stream compaction events invalidate receipts;
+a late terminal from the pre-compaction epoch cannot restore one. The existing
+member lifecycle decides forced refresh for fresh, resumed and reinjection turns.
+Private minimal sessions retain their own initial snapshot and receipt.
+
+
 An ordinary dashboard chat that has already used private member memory keeps
 that ownership for its lifetime. The agent-switch endpoint reads the protected
 binding for the effective session key before changing any slot fields, resetting
@@ -112,6 +122,44 @@ turn. Global Memory V1 and a valid named V1 declaration retain speculative
 eager allocation. Store identity is part of the eager binding snapshot, and
 slot replacement, a running real turn or any binding change after an awaited
 lookup makes the eager task stand down before allocation.
+
+## Member capability generations
+
+Enrolled members prepare capabilities only when allocating a new runtime.
+`session_capabilities.prepare_runtime` reconciles ordinary Parent updates and
+verifies the saved materialization off-loop before provider construction. It
+passes the immutable template explicitly while preserving the canonical member,
+private memory binding, history key, caller model and approval policy. An explicit
+or resumed cwd wins; otherwise the member's configured workspace is used. A cwd
+that disagrees with the saved Parent identity refuses startup.
+
+Enrolled allocations bypass warm and shared processes. Full-spec loading is
+supported by the dedicated Kiro backend; other harnesses refuse explicitly rather
+than falling back to the default agent. A successful mode handshake, fresh process
+instance, live session id, and post-start saved-byte/ownership/governance checks
+are all required before `_Session.loaded_capabilities` is stamped. MCP hot reload
+is not evidence that prompt, resources and the rest of the spec were loaded.
+The applied view also checks that each enabled MCP connection in that saved
+version has reported ready through the provider's own MCP report. Missing reports
+remain unverified, authentication requests remain pending, and initialization
+failures or unresolved tool refs report failure. Later ready reports can clear
+that state without restarting the conversation; raw provider errors are not
+included in capability status responses.
+
+`SessionManager.capability_runtime_view(member, saved_revision)` delegates to
+`SessionAllocationService`, which projects its owned `SessionRegistryState` on
+the event loop through `session_capabilities.runtime_view`. The projection reads
+live occupants and failed allocations from that same state and returns fresh
+response rows, never mutable registry dictionaries. Dashboard handlers do not
+access the manager's private registries. Old live sessions report pending and keep
+their current turn and context; saving never resets them or requests history
+replay. A changed process, handle, active template or governance generation removes
+the applied claim. Replacing a provider clears its stamp. Failed starts leave a
+bounded retryable diagnostic; a successful retry replaces it with the real session.
+The owner capabilities GET and PUT handlers call this helper on the event loop
+for the saved revision. Preview never claims runtime adoption. A failed saved-byte
+or source validation remains failed even if an older provider is still alive;
+persistence alone cannot claim application.
 
 ## Background Session
 
@@ -1157,14 +1205,23 @@ explicit request rather than something the gateway does on its own.
 On restart / Make-Live cutover the previous gateway's kiro-cli is killed. If it
 died uncleanly (SIGKILL, crash, OOM, or a drain timeout), its per-session lock
 can stay held briefly, so the new gateway's `session/load` is rejected with an
-**"active in another process"** error. Recovery happens at the resume
+**"active in another process"** error. The dashboard's hard-stop path has a
+second shape of the same race: `stop_turn` resets the session and eagerly
+respawns it, and kiro-cli's `session/load` in the new holder creates its lock
+and re-reads it to confirm ownership — if the killed holder's exit handler
+unlinks the same path in that window the load fails with **"failed to re-read
+lock file ...: No such file or directory"**. Both are transient
+(`_RESUME_TRANSIENT_LOCK_MARKERS`: `"active in another process"`, `"re-read lock
+file"` — deliberately not a bare `"lock file"`, so a permanent failure such as
+`Permission denied` on the lock path still fails fast to Phase 2)
+and recovery happens at the resume
 chokepoint (`AcpProvider._load_session_with_retry`, `providers/acp.py`) and
 self-heals regardless of *why* the resume failed — it never depends on the dead
 holder cooperating (unlike cooperative drain), so it covers every kill mode:
 
 1. **Phase 1 — bounded retry (lossless).** Re-issue `session/load` up to
    `_RESUME_MAX_ATTEMPTS` (4) times with exponential backoff
-   (`_RESUME_BACKOFF_BASE_S` → 1s, 2s, 4s). If the stale lock releases, the
+   (`_RESUME_BACKOFF_BASE_S` → 1s, 2s, 4s). If the lock clears, the
    session resumes with full native history. A genuine (non-lock) load error is
    **not** retried, and a dead runtime aborts the loop immediately (the caller's
    respawn path takes over).
@@ -1200,8 +1257,12 @@ when a switch is detected (stored SID exists AND providers differ).
 4. The new provider's session_id (once obtained) is saved with the correct
    provider label
 5. On the first prompt after the switch, `chat_runner` detects the flag and
-   injects history from `compress_thread_history()` (KiroCrew's conversation_log)
-6. The flag is consumed (set to False) — replay fires exactly once per switch
+   injects history from `compress_thread_history()` (Kiro Crew's conversation_log)
+6. The flag remains armed through prompt acceptance and is settled only when the
+   replay-bearing turn lands. ACP providers promote a deliberately deferred fresh
+   SID before consuming the lease; non-ACP providers already published their SID
+   during allocation and consume the lease directly. Cancelled, failed, empty, or
+   synthetic terminals leave it armed for the next prompt.
 
 **Same-provider resume:** unaffected. Normal `session/load` path with full
 native fidelity.
@@ -1631,15 +1692,35 @@ session dies, `killpg` only reaches the kiro-cli process group — MCP servers
 in other groups get reparented to init and leak memory.
 
 **Tracking**: at session init, `AcpClient.ensure_ready()` snapshots all
-descendant PIDs and persists them to `kiro_pids.txt` as `child_pid:parent_pid`
-pairs via `_track_child_pids(pids, parent_pid=self._pid)`.  On clean shutdown,
+descendant PIDs and persists them to `kiro_pids.txt` as
+`child_pid:parent_pid[:start-id]` entries via
+`_track_child_pids(pids, parent_pid=self._pid)`; the third field is the
+child's process-start identity (`_pid_start_token`, colon-free, in-process
+and non-blocking on every platform), omitted only when unreadable at track
+time.  On clean shutdown,
 `_reset_state()` removes them via `_untrack_child_pids()`.  If the gateway
 crashes, the entries remain in the file for the next startup.
 
 **Detection**: reads `kiro_pids.txt`, processes only `child:parent` lines
 (bare PID lines are kiro-cli parents handled by `cleanup_orphaned_sessions()`).
 If the child is alive but its parent PID is dead, the child is orphaned and
-killed.
+killed.  Two guards run first.  The start identity (entries carrying the
+start-id field) is subtractive evidence: a live `_pid_start_token` that
+differs from the recorded one proves the PID was recycled, and the stale
+entry is pruned without killing.  A matching or unreadable token never
+authorizes the kill by itself -- the tracking file is same-uid-writable, so
+a forged line must not aim the sweep at an arbitrary process.  The kill is
+authorized only by the reparent heuristic: a genuine orphan reparented to
+init (pid 1), or still showing the dead parent's PID (kill/reparent race),
+is killed outright, while a PPid in the same-uid `systemd --user` subreaper
+set -- the same accepted-parent set `_our_orphan_pids()` uses, computed by
+the shared `_accepted_subreaper_pids()` -- additionally requires BOTH the
+`KIROCREW_SPAWNED` environ marker AND positive runtime argv identity
+(`_tracked_child_has_runtime_identity`: managed agent runtime, MCP
+entrypoint, or marked launcher shape; unreadable argv fails closed), because
+every manager-started user service holds the manager's PID as its PPid for
+its whole life and the marker is tree-wide, inherited even by intentional
+survivors.  Any other PPid means recycled: pruned without killing.
 
 **Why not ancestor walk?** MCP servers are spawned in separate process groups
 and immediately reparented to init (ppid=1) even while the session is alive.

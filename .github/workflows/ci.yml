@@ -834,12 +834,16 @@ jobs:
         # is red either way, and a named red in 12 minutes beats an
         # uninterpretable one at the 40-minute cap.
         shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
+          pytest -p scripts.ci_pytest_progress \
+            --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
+            -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }}
         # Nothing is deselected here either, and the same guards carry it: Windows has no
         # namespace sandbox at all, so `userns_available()` is False and every
@@ -847,6 +851,17 @@ jobs:
         # test_dogfood_learnings / test_pr_watchers stay tracked as node ids in
         # test/windows-expected-failures.txt, which is the mechanism a whole-file deselect
         # was standing in for.
+
+      - name: Upload Windows pytest progress
+        # Job timeout can skip even always() steps; periodic CI_PROGRESS lines
+        # retain partial evidence in the Actions log without relying on this upload.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-pytest-progress-${{ matrix.group }}
+          path: ${{ runner.temp }}/pytest-progress/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
 
   # `kirocrew pod` on Windows, booted for real under Task Scheduler.
   #
@@ -866,13 +881,32 @@ jobs:
   # dashboard socket does not exist there), and that `pod down` really reaps both
   # the task and the process tree. Every one of those is faked in the sharded
   # test_pod_windows.py, which is what makes this job worth its minutes.
+  #
+  # LABEL OPT-IN: a pull request carrying the `ci:pod-scenarios` label ALSO runs
+  # the full 55-test pod scenario suite (test/e2e/scenarios/) here, against a
+  # real Vite-built SPA, with the same invocation and count pin as nightly.yml's
+  # pod-scenarios leg. That is how a current revision gets hosted Windows
+  # evidence for the suite without dispatching the release-publishing nightly and
+  # without charging every PR for a Node toolchain, an SPA build, a wheel build
+  # and a second pod bring-up. Every step the label adds carries the same
+  # `if: env.POD_SCENARIOS == 'true'`; unlabelled PRs and pushes to main run the
+  # original boot-only shape, byte for byte. The workflow does not listen for
+  # `labeled`, so the label must be on the PR BEFORE the push that should run it,
+  # and a re-run of an earlier run keeps that run's original event payload.
+  # test/test_pod_scenario_matrix.py pins both shapes.
   pod-boot-windows:
     name: Pod Boot Canary (Windows)
     needs: [await-fast-gate]
     runs-on: windows-latest
     # A cold boot pays for the venv build, interpreter start, config seeding and
-    # the health wait. The test's own bound is 180s; this is the job's.
+    # the health wait. The test's own bound is 180s; this is the job's. The
+    # label opt-in measured 76s (boot canary) + 205s (55 scenarios) plus the SPA
+    # build on a hosted runner, well inside the same ceiling.
     timeout-minutes: 30
+    env:
+      # `true` only for a pull_request event whose labels include the opt-in;
+      # anything else (push to main, an unlabelled PR) is the string `false`.
+      POD_SCENARIOS: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:pod-scenarios') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -891,11 +925,28 @@ jobs:
             pyproject.toml
             setup.cfg
 
+      # Label opt-in only: the scenario suite's pod serves the built SPA, so the
+      # frontend toolchain is a prerequisite there. Same pin and cache shape as
+      # the `e2e` job. Skipped on the default boot-only run.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: env.POD_SCENARIOS == 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
       # The CONTROL plane: the interpreter that runs pytest and drives the pod
       # verbs. Deliberately separate from the payload below, which is the real
       # split the pod design rests on.
       - name: Install dependencies (control plane)
         run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # Label opt-in only: the wheel scenario runs `python -m build --wheel` with
+      # THIS interpreter (sys.executable) and, under KIROCREW_E2E_REQUIRE=1, fails
+      # rather than skips without it. `build` is not in the dev group on purpose.
+      - name: Install the wheel scenario's build tool (label opt-in)
+        if: env.POD_SCENARIOS == 'true'
+        run: uv pip install --system build==1.3.0
 
       # The PAYLOAD: the worktree's own `.venv\Scripts\kirocrew.exe`, which is
       # what the scheduled task actually boots. Without this the test FAILS
@@ -912,11 +963,30 @@ jobs:
       # placed by the WORKFLOW rather than by the test: a test that wrote into
       # the checkout could be killed by its own timeout before cleaning up.
       - name: Place a one-file SPA stand-in for `pod up`
+        if: env.POD_SCENARIOS != 'true'
         shell: bash
         run: |
           mkdir -p src/kiro_crew/static/dist
           [ -f src/kiro_crew/static/dist/index.html ] || \
             printf '<!doctype html><title>pod boot canary</title>' > src/kiro_crew/static/dist/index.html
+
+      # Label opt-in only: the scenario suite drives the served dashboard and
+      # packages it into the wheel it installs, so the bundle is the real Vite
+      # build, staged exactly as the `e2e` job and nightly.yml stage it. It
+      # replaces the stand-in above, so the boot canary serves the same bundle.
+      - name: Build and stage the SPA bundle (label opt-in)
+        if: env.POD_SCENARIOS == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd website
+          npm ci --no-audit --no-fund
+          npm run build
+          cd ..
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
+          test -f src/kiro_crew/static/dist/index.html
 
       - name: Assert a real pod boots and is reclaimed (not skipped)
         shell: bash
@@ -951,12 +1021,54 @@ jobs:
             exit 1
           }
 
+      # Label opt-in only: the full scenario suite, on the prerequisites the
+      # canary just used, with the SAME invocation and anchored count as
+      # nightly.yml's pod-scenarios leg so a green here is evidence for that
+      # matrix entry at THIS revision. `-o addopts=` drops `-n auto` (one pod for
+      # the whole session, and a killed xdist worker on Windows aborts the run),
+      # `--timeout=600` is the per-test cap (the wheel scenario carries its own
+      # wider mark), and `--basetemp` pins the plane under runner.temp so a failed
+      # run's pod logs land where the upload step below can find them.
+      # KIROCREW_E2E_REQUIRE=1 turns every precondition skip into a failure; the
+      # anchored `55 passed` grep is the second lock, for the same reason as the
+      # canary's: pytest exits 0 on a collected-but-skipped suite.
+      - name: Run the full pod scenario suite (label opt-in, 55 tests, not skipped)
+        if: env.POD_SCENARIOS == 'true'
+        shell: bash
+        env:
+          KIROCREW_E2E_SCENARIOS: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+        run: |
+          set -uo pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -p no:cacheprovider -o addopts= -n0 --timeout=600 \
+            --basetemp "${RUNNER_TEMP}/pod-scenarios-tmp" \
+            test/e2e/scenarios/ 2>&1 | tee pod-scenarios.log
+          status="${PIPESTATUS[0]}"
+          echo "pytest exit: ${status}"
+          # Six user-flow scenarios and 49 fixture-isolation checks must execute.
+          # Anchored so 155 passed cannot satisfy the 55-test contract; raise the
+          # number here AND in nightly.yml when you add a scenario.
+          if ! grep -qE '(^|[^0-9])55 passed' pod-scenarios.log; then
+            echo "::error::the pod scenario suite did not report 55 passed on windows-latest; a skipped or collapsed suite is not a pass"
+            exit 1
+          fi
+          exit "${status}"
+
+      # On the default run only pod-boot.log exists; the scenario globs match
+      # nothing and `if-no-files-found: ignore` keeps that from being a second
+      # failure. On a labelled run the pod's own log files are the only place a
+      # boot refusal is legible, and the plane root is the --basetemp above.
       - name: Upload the pod boot log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pod-boot-windows
-          path: pod-boot.log
+          path: |
+            pod-boot.log
+            pod-scenarios.log
+            ${{ runner.temp }}/pod-scenarios-tmp/kce2e-*/a/**
+            ${{ runner.temp }}/pod-scenarios-tmp/kce2e-*/h/**/*.log
           if-no-files-found: ignore
           retention-days: 7
   # The Windows fail-closed sandbox opt-in contract, asserted to have RUN.
@@ -1426,6 +1538,85 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+  backend-test-crew-container:
+    name: Backend Tests (crew container)
+    needs: [await-fast-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+            src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/requirements.txt
+
+      # Two installs, deliberately not merged into one resolution.
+      #
+      # `-e .` and the dev group are what every other backend lane installs, and this
+      # suite needs them for a reason that is not obvious: no container test imports
+      # `kiro_crew`, but the repo-root conftest's autouse isolation fixtures do
+      # (`importlib.import_module("kiro_crew.apps")`), so a venv without the package
+      # errors at test SETUP rather than at collection. Measured: 233 errors, every
+      # one a ModuleNotFoundError on a transitive app dependency.
+      #
+      # The image's own runtime pins come from `container/requirements.txt` and are
+      # installed ONLY here. That file's header forbids them becoming dependencies of
+      # the application ("the app's backend hooks are imported into every owner's
+      # gateway process, and a web framework there buys nothing"), which is exactly
+      # why this cannot be folded into the `backend-test` shards: their environment IS
+      # the application's.
+      #
+      # Not `container/requirements-dev.txt`, which is the file the review named. It
+      # carries `-r requirements.txt`, pytest and pytest-asyncio and nothing else,
+      # while this rootdir's addopts pass `-n auto --dist loadgroup
+      # --max-worker-restart=2 --timeout=120`; with no xdist and no pytest-timeout
+      # installed that is an argument error, not a test run. Its `pytest==8.3.4` also
+      # contradicts the dev group's `9.0.3` that the rootdir conftest is written
+      # against, so the two sets cannot share one resolution. The image build still
+      # uses that file; CI installs the runtime half plus this repo's own toolchain.
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e "." --group dev
+          uv pip install --system -r \
+            src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/requirements.txt
+
+      # CREW_CONTAINER_TESTS_REQUIRED is the point of this job, not a detail of it.
+      # The suite's conftest answers a missing image dependency with
+      # `collect_ignore_glob`, which takes the WHOLE suite out of collection while the
+      # run still reports success. Under this variable every reason it would decline to
+      # collect becomes a hard error, and the collection is additionally checked against
+      # the tree: every module that defines tests must yield at least one, and the total
+      # must clear a floor. So a dependency rename reds THIS lane instead of quietly
+      # restoring a lane that reports success while collecting nothing.
+      #
+      # `-n0`: the suite forks real process trees and binds real ports, so xdist
+      # workers would race each other for both. It runs in about ten seconds serially,
+      # which is less than the workers cost to start.
+      #
+      # `--no-cov` for the same reason as the sibling sandbox lane: this data is not
+      # part of the coverage gate's combine, and half-reported coverage is worse than
+      # none.
+      - name: Run the crew container suite
+        env:
+          CREW_CONTAINER_TESTS_REQUIRED: "1"
+        run: |
+          # As in backend-test (#7296): the `python` matcher annotates any traceback
+          # in the log, including one printed inside a warning, and never matches a
+          # pytest failure.
+          echo "::remove-matcher owner=python::"
+          pytest -q -n0 --timeout=180 --no-cov \
+            src/kiro_crew/apps/builtins/aws_control/crew/runtime/container_tests/
+
   coverage-combine:
     name: Coverage Combine
     needs: [backend-test, changes]
@@ -1788,10 +1979,13 @@ jobs:
       - name: Type check
         working-directory: website
         # Spelled out rather than `npm run typecheck` so this gate cannot be
-        # changed from package.json. Build mode is required either way: the root
-        # tsconfig is `files: []` + project references, and references are followed
-        # only by `-b`, so a plain `tsc --noEmit` there compiles an empty program.
-        run: npx tsc -b
+        # changed from package.json. The project is named explicitly: the root
+        # tsconfig is `files: []` + project references, so a bare `tsc --noEmit`
+        # there compiles an empty program. Not `tsc -b`: build mode judges
+        # "up to date" from the project's own inputs only, so with the incremental
+        # cache in tsconfig.app.json it would green-light a changed dependency
+        # `.d.ts` without re-checking a single file. `-p` re-hashes the whole program.
+        run: npx tsc -p tsconfig.app.json
 
       - name: Lint
         working-directory: website
@@ -2453,7 +2647,7 @@ jobs:
         working-directory: website
         run: npx playwright install chromium
 
-      - name: i18n render-time gate (en-XA + shipped locales)
+      - name: Resolve base for the parallel i18n render-time gate
         # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
         # JSON, so three defect classes are invisible to all of them: a string that
         # was never extracted (ordinary TypeScript to a scanner), a sentence
@@ -2488,29 +2682,35 @@ jobs:
         run: |
           I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
             "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
-          export I18N_BASE_REF
-          npm run i18n:render
+          printf 'I18N_BASE_REF=%s\n' "$I18N_BASE_REF" >> "$GITHUB_ENV"
 
-      - name: Run E2E (smoke + Playwright)
-        # KIROCREW_E2E=1 is set by `setup.py test_e2e` itself. KIROCREW_E2E_REQUIRE=1
-        # turns environment-resolution misses (missing website dir, Playwright CLI,
-        # or node<18) into HARD failures -- without it a skipped suite counts as a
-        # pass and the gate goes green having run zero browser specs. The suite
-        # wires the packaged fake ACP backend (KIROCREW_KIRO_BIN) internally, so
-        # every turn is deterministic and offline: no Kiro/model calls, no cost.
+      - name: Require real private workflow MCP execution
+        env:
+          KIROCREW_E2E: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+          KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
+        run: python -m pytest -q -n0 --no-cov --timeout=300 test/e2e/test_private_workflow_memory.py
+
+      - name: Run E2E and dedicated memory UI evidence in parallel
+        # Default success() keeps real private workflow MCP execution mandatory.
+        # Smoke and UI read the staged production bundle; i18n builds a separate
+        # dist-dev and a temporary base tree. All three share only read-only
+        # dependency/browser installs, with separate homes, ports and outputs.
+        # The helper awaits ALL outcomes even if one fails, preserves the UI's
+        # 12-minute cap, and drains adopted gateway/browser children on cancel.
+        # Overlap head+base i18n rendering rather than consume ~8 minutes of the
+        # fixed 25-minute job budget before the ordinary E2E lane can start.
+        # KIROCREW_E2E=1 is set by setup.py for smoke and only in the UI child
+        # for evidence; REQUIRE turns missing prerequisites into hard failures.
         env:
           KIROCREW_E2E_REQUIRE: "1"
           VOICE_EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          # CI-enforced on-loop persistence invariant: the e2e gateway boots with
-          # strict mode so any un-offloaded session-JSONL mutator that enters
-          # ``_locked`` on the event loop raises ``OnLoopPersistError`` and fails
-          # this gate at PR time (setup.py test_e2e also sets this; declared here
-          # for discoverability). See docs/system-specs/modules/history.md.
           KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
-        run: python setup.py test_e2e
+          KIROCREW_MEMORY_UI_EVIDENCE_DIR: ${{ runner.temp }}/memory-embedding-evidence
+        run: exec python scripts/ci_e2e_parallel.py
 
       - name: Upload read-aloud recovery evidence
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: voice-recovery-evidence
@@ -2519,7 +2719,7 @@ jobs:
           retention-days: 7
 
       - name: Upload member memory UI evidence
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: member-memory-ui-evidence
@@ -2530,6 +2730,8 @@ jobs:
             website/test-results/**/member-memory-evidence.json
             website/test-results/**/memory-v1-*.png
             website/test-results/**/memory-v2-*.png
+            ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-*.png
+            ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-evidence.json
           if-no-files-found: ignore
           retention-days: 7
 

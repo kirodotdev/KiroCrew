@@ -2,8 +2,9 @@
  * Settings registry extractor (Search Everywhere — Settings provider).
  *
  * Parses `src/pages/settings/*.tsx` for JSX usages of settings primitives
- * (SettingsToggle, SettingsSelect, SettingsInput, SettingsStepper,
- * SettingsButtonGroup) and extracts label + description + primitive type.
+ * (SettingsToggle, SettingsSelect, SettingsMultiSelect, SettingsInput,
+ * SettingsStepper, SettingsButtonGroup) and extracts label + description +
+ * primitive type.
  *
  * A label/description is read from EITHER form:
  *   - a string literal          `label="Zoom Level"`
@@ -112,6 +113,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ComputerUsePanel.tsx': 'computer-use',
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
+  'ConnectionsPanel.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
@@ -169,6 +171,7 @@ const PRIMITIVE_MAP: Record<string, SettingPrimitiveType> = {
   // nothing branches on `SettingEntry.type`, so a distinct value would be surface
   // with no reader. Give it a distinct one only when something renders it apart.
   SettingsCombobox: 'select',
+  SettingsMultiSelect: 'select',
   SettingsInput: 'input',
   SettingsStepper: 'stepper',
   SettingsButtonGroup: 'buttonGroup',

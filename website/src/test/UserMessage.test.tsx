@@ -12,6 +12,45 @@ import { copySessionLink } from '../utils/shareUrl'
 
 const renderContent = (content: string) => <span data-testid="content">{content}</span>
 
+describe('the write time handed to renderContent', () => {
+  // This value is compared against server-clock slot mint epochs by the session
+  // chip's short-name form, so the AUTHORITATIVE server ts has to win. `clientTs`
+  // is the optimistic bubble's own clock, retained through reconcile; preferring
+  // it let an ahead-skewed client clock pass the mint check and open the wrong
+  // conversation, silently.
+  const seen: (string | undefined)[] = []
+  const capture = (c: string, _m: Record<string, unknown> | undefined, ts?: string) => {
+    seen.push(ts)
+    return <span data-testid="content">{c}</span>
+  }
+
+  beforeEach(() => { seen.length = 0 })
+
+  it('prefers the server messageTs over a client clientTs', () => {
+    render(
+      <UserMessage
+        content="hi"
+        renderContent={capture}
+        messageTs="2026-09-12T09:00:00Z"
+        meta={{ clientTs: '2027-01-01T00:00:00Z' }}
+      />,
+    )
+    expect(seen).toEqual(['2026-09-12T09:00:00Z'])
+  })
+
+  it('falls back to clientTs only when there is no server ts yet', () => {
+    render(
+      <UserMessage content="hi" renderContent={capture} meta={{ clientTs: '2026-09-12T09:00:00Z' }} />,
+    )
+    expect(seen).toEqual(['2026-09-12T09:00:00Z'])
+  })
+
+  it('hands over undefined when neither exists, which fails the chip closed', () => {
+    render(<UserMessage content="hi" renderContent={capture} />)
+    expect(seen).toEqual([undefined])
+  })
+})
+
 describe('UserMessage', () => {
   it('renders message content', () => {
     render(<UserMessage content="hello" renderContent={renderContent} />)
@@ -459,20 +498,29 @@ describe('action footer on touch devices', () => {
     expect(cls).toContain('group-focus-within/msg:opacity-100')
   })
 
-  it('enlarges the actions to 40px touch targets where the pointer cannot hover', () => {
+  it('enlarges the actions to 36x32 touch targets where the pointer cannot hover', () => {
     render(<UserMessage content="hello" renderContent={renderContent} />)
     const cls = footer().className
-    expect(cls).toContain('[@media(hover:none)]:[&_button]:p-3')
+    // Same square-cell shape as the assistant footer, so the two rows share one
+    // rhythm on a phone.
+    expect(cls).toContain('[@media(hover:none)]:[&_button]:h-8')
+    expect(cls).toContain('[@media(hover:none)]:[&_button]:w-9')
+    expect(cls).toContain('gap-x-0')
     expect(cls).toContain('[@media(hover:none)]:[&_svg]:h-4')
     expect(cls).toContain('[@media(hover:none)]:[&_svg]:w-4')
-    // Three 40px actions plus a localized timestamp can exceed a narrow
+    // Three 36px-wide actions plus a localized timestamp can exceed a narrow
     // phone's width, so the grown row must wrap rather than clip.
     expect(cls).toContain('[@media(hover:none)]:flex-wrap')
   })
 
-  it('keeps the compact sizing on the buttons for pointer devices', () => {
+  it('lays the pointer row out as flush 28px cells, matching the assistant footer', () => {
     render(<UserMessage content="hello" renderContent={renderContent} />)
-    expect(screen.getByTitle('Copy').className).toContain('p-0.5')
+    const cls = footer().className
+    expect(cls).toContain('[&_button]:h-7')
+    expect(cls).toContain('[&_button]:w-7')
+    expect(cls).toContain('[&_button:hover]:bg-bg-hover')
+    expect(cls).toContain('gap-y-1')
+    expect(cls).not.toMatch(/(^|\s)gap-2(\s|$)/)
   })
 
   // The pin toggle is a stateful control: assistive tech needs its on/off

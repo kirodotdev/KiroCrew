@@ -3681,6 +3681,7 @@ async def handle_message(
                 blocks_reads=_slack_blocks_reads,
                 model_window=_model_window,
                 runtime_source="slack",
+                context_provider=client,
             )
         else:
             full_message = text

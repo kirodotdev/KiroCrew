@@ -8,6 +8,7 @@ import os
 import stat
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import quote
 
 import pytest
 from aiohttp import web
@@ -266,6 +267,97 @@ class TestFileReadPathKind:
             resp = await client.get(f"/api/file-read?path={key}")
             assert resp.status == 400
             assert "X-Path-Kind" not in resp.headers
+
+
+class TestFileReadReservedCharacterPaths:
+    """A path holding URL-reserved but filesystem-legal characters must serve.
+
+    The client percent-encodes the path into the query string, so the server
+    receives the characters literally and FILE_READ_SCHEMA's syntax gate is what
+    decides. A punctuation allowlist there answers 400 "invalid input" before
+    any disk access for a whole notes folder named by the "Name (alias).md"
+    convention, and the client cannot work around it: encodeURIComponent leaves
+    "(" and ")" literal by design. /api/file-diff, which has no such gate,
+    serves the same files.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Ada Lovelace (ada).md",
+            "Q1 2026 (draft) #2.md",
+            "is it done?.md",
+            "a & b, c'd.md",
+            "50% done [final]+1.md",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_read_serves_reserved_characters(self, name, mock_sel, home_patch):
+        folder = home_patch / "One on one (2026)"
+        folder.mkdir()
+        f = folder / name
+        f.write_text("note body", encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/file-read?path=" + quote(str(f), safe=""))
+            assert resp.status == 200
+            assert "note body" in await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_write_serves_reserved_characters(self, mock_sel, home_patch):
+        folder = home_patch / "AI Projects" / "(AI) Fluency Workshop"
+        folder.mkdir(parents=True)
+        f = folder / "agenda (v2) #1.md"
+        f.write_text("before", encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/file-write", json={"path": str(f), "content": "after"})
+            assert resp.status == 200
+        assert f.read_text(encoding="utf-8") == "after"
+
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            # NUL: realpath raises ValueError on it.
+            "/tmp/a%00b",
+            # The same NUL wearing characters this gate now admits, so widening
+            # the body class cannot be what carries it to the filesystem.
+            "/tmp/(a%00b)",
+            # An ESC wearing characters this gate now admits. Sanitization hides
+            # it from the schema pattern, so only the path seam can refuse it.
+            "/tmp/(a%1B%5B2Jb)",
+            # CR and LF, which forge a line in the record below.
+            "/tmp/a%0Db",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_control_or_unusable_path_is_400_not_an_uncaught_500(
+        self, encoded, mock_sel, home_patch
+    ):
+        """A path the OS path layer cannot carry must be refused, not crash.
+
+        The schema gate matches the SANITIZED copy of the value, which has had
+        its control characters and surrogates stripped, while the raw string is
+        what reaches the filesystem. So a NUL-bearing path passed the gate as
+        its stripped spelling and reached an unguarded realpath, which raised
+        outside the handler's try and propagated as HTTP 500.
+
+        Only NUL is exercised here. The other unrepresentable shape -- a lone
+        surrogate -- cannot be delivered through this transport, because URL
+        decoding never yields one; it is covered against the seam itself in
+        test_hooks_coverage.py.
+        """
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/file-read?path=" + encoded)
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_read_still_refuses_a_newline_in_the_path(self, mock_sel, home_patch):
+        # The gate's remaining refusal: a CR/LF splits the log line the path is
+        # written into. It is not relaxed along with the punctuation.
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(
+                "/api/file-read?path=" + quote(str(home_patch / "a\nb.md"), safe="")
+            )
+            assert resp.status == 400
 
 
 class TestFileWrite:

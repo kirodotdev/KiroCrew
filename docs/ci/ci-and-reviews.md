@@ -294,8 +294,9 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `backend-test-windows-fail-closed` | windows-latest, single `-n0` run of `test/test_windows_fail_closed_optin.py` BY NODE ID with the pass count grepped, so a silent skip cannot go green. It is the only lane that boots a real gateway and drives one ACP prompt turn on Windows, against real filesystem state instead of a `sys.platform` mock: the pair of assertions [PR #8117](https://github.com/kirodotdev/KiroCrew/pull/8117) broke and no test could see |
 | `backend-test-macos` | macos-15 (pinned label, not `macos-latest`), 3 shards, `--no-cov`, 180s per-test timeout. The full suite, same shape as the Windows line. It shipped scoped to a 51-file glob while the darwin gap list was burned down; that list is `test/macos-expected-failures.txt` now and the glob is gone, so a POSIX-but-not-Linux regression outside those 51 files can no longer land unseen. 3 shards rather than Windows' 4 because macOS bills at 10x Linux per minute |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
+| `backend-test-crew-container` | "Backend Tests (crew container)". The only lane that runs the crew container image's suite (`aws_control/crew/runtime/container_tests/`, 327 tests). It is separate from the shards because it installs the image's own runtime pins (`container/requirements.txt`: fastapi, uvicorn, httpx, boto3), which that file's header forbids becoming dependencies of the application, and the shards' environment IS the application's, so there the suite's conftest collects nothing. Sets `CREW_CONTAINER_TESTS_REQUIRED=1`, which turns every reason that conftest would decline to collect into a hard error and checks the collection against the tree |
 | `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block). **CodeBuild-hosted runner** (pilot, below) except for forks |
-| `frontend-lint` | `tsc -b`, `eslint` under a hard-zero warning ceiling, `jscpd`, and `npm run i18n:check` |
+| `frontend-lint` | `tsc -p tsconfig.app.json`, `eslint` under a hard-zero warning ceiling, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
 | `frontend-test` | `vitest run --coverage`. **CodeBuild-hosted runner, `instance-size:large`** (pilot, below) except for forks |
 | `frontend-coverage-merge` | Merges the frontend coverage shards so the gate reads one report. **CodeBuild-hosted runner** (pilot, below) except for forks |
@@ -550,6 +551,18 @@ Details worth knowing:
   namespace, the job fails instead of letting the suite silently skip and the gate
   go green having asserted nothing. This is what gives the `hooks.py`
   sensitive-path keystone real CI coverage.
+- **`backend-test-crew-container` cannot go green by skipping.** Installing the
+  image's runtime dependencies in a dedicated lane fixes one instance of the
+  problem; the mechanism that caused it, a conftest that answers a missing
+  dependency with `collect_ignore_glob`, so 226 tests read as present while
+  executing zero times, survives any dependency rename or extras split. So the lane
+  that installs them also sets `CREW_CONTAINER_TESTS_REQUIRED=1`, and under that
+  variable the suite refuses to skip: a missing dependency or a non-POSIX host is a
+  collection error, every `test_*.py` that defines a test function must contribute at
+  least one collected item, and the total must clear a floor read off a real
+  collection. The variable can only ever turn a skip into a failure, never the
+  reverse, so setting it can hide nothing. This is the same shape as
+  `backend-test-sandbox`'s `unshare` probe, moved inside the instrument.
 - **`coverage-gate` is fail-closed, and the split made that load-bearing.** It runs
   `if: always()` and its first step converts any non-success upstream result into an
   explicit failure, because GitHub treats a **skipped** required check as satisfied.
@@ -625,6 +638,12 @@ PR-time proof only, no publishing.
 
 - **`build-wheel`** builds the frontend, stages it into the package, builds the
   wheel, then `pip install dist/*.whl` and `kirocrew --version` as a smoke test.
+  Bare `--version` is a pre-dispatch fast-path (see
+  `docs/system-specs/modules/cli.md`), so it proves the console script exists
+  and exits 0 — not that `kiro_crew.cli`'s import chain resolves. An
+  `import kiro_crew.cli` probe is what carries that meaning; the wheel lane
+  does not run one, so an undeclared runtime dependency reaches gateway boot
+  before any pip-install lane fails.
 - **`build-desktop`** builds the Electron app unsigned on macos-15 and
   ubuntu-22.04 via `make desktop`, and uploads the artifacts.
 
@@ -632,7 +651,8 @@ PR-time proof only, no publishing.
 `build-desktop.yml` in the release lane both build the real `kirocrew-backend`
 tree via `packaging/build-desktop.sh` — which provisions a
 python-build-standalone interpreter and pip-installs the project into it — and
-then only upload the artifact. The wheel lane at least runs `kirocrew --version`.
+then only upload the artifact. The wheel lane at least runs `kirocrew --version`,
+which since the `--version` fast-path lands before dispatch proves startup only.
 So a packaging change that breaks the packaged app (a layout change, a launcher
 rename, a dependency that fails to install into the bundled interpreter) passes
 every gate: the tests that cover packaged-app behavior monkeypatch `sys.frozen`
@@ -790,10 +810,80 @@ fix**, which is where the root-cause lens earns the most. Only a change that shi
 no capability at all (docs, tests, screenshots, generated files) skips, so the
 2x-rate-card Fable 5 spend goes to diffs that can actually produce a finding.
 
-It is advisory in `pr-readiness.yml` (UX-style, not Design-style): a `BLOCK` here is
-a judgment about whether a feature should exist, and a model does not get to wedge a
-merge on that until the lane's calibration is proven. Promoting it to a readiness
-blocker later is a one-line change in the aggregator.
+A `BLOCK` here fails the lane's own check and `pr-readiness.yml` scores that failure as
+a readiness blocker, exactly as it does for Design Review and UX Review. Every other
+outcome -- `PASS`, `CONCERNS`, an errored or verdict-less run -- exits 0.
+
+Two of its `BLOCK` triggers are read off the evidence rather than judged, so the
+"prefer `CONCERNS`" tie-breaker does not reach them:
+
+- **Product shape needs a recorded decision (lens 9).** An item that changes a
+  default, changes what a first-class loop, monitor, agent, skill or command does by
+  default, or removes or replaces an existing user-facing capability, must trace to a
+  decision the repository already recorded: an RFC under `docs/request-for-change/`
+  that the **base** commit carries with one of exactly four statuses -- `accepted`,
+  `in-progress`, `partial`, `implemented`, the directory README's vocabulary for
+  "design agreed"; `draft`, `superseded` and any undefined value are not a decision,
+  so the set is closed and nothing fails open -- and a `partial` RFC main deliberately
+  diverged from does not cover the diverged shape; or a maintainer's
+  `/ai-review override first-principles <head>`
+  on that head. The override is consumed by the same-repo lane only: the fork lane
+  re-rolls instead, which cannot clear a trigger read off the base RFC list, so on a
+  fork PR the remedies are merging the RFC first or a maintainer pushing the branch to
+  this repository. The workflow writes the RFC status list from the base sha in the same
+  step that extracts the contract, so a PR cannot record its own decision by flipping
+  `status:` or shipping the RFC beside the change -- both read as `draft`. That base sha
+  is the one the triggering event recorded, and a bare re-run reuses it: once the RFC has
+  merged, the author pushes a commit (or rebases) to have the lane read a base that
+  carries it -- a re-run alone cannot clear (c). Missing
+  both: `BLOCK`, punchline `product-shape change without accepted RFC`. This is not
+  the lane asking for a document (which it may not do); it reports that a required
+  record is absent and names the two ways it gets made. This is also the First
+  Principles lane's *cannot evaluate*: the recorded decision is the one piece of
+  evidence this lane requires and cannot produce itself (consumer counts it greps for
+  under lens 5; a decision it may not make), so its absence on a product-shape item is
+  the verdict the lane cannot reach, and it is never `CONCERNS`. A shape an accepted
+  RFC already licenses is not relitigated by asking for its grounds. An ordinary fix
+  with thin provenance stays where it was: an `inherited` item, `CONCERNS`.
+
+A third trigger is read off the diff too: **a deleted pin is a prior decision, and
+silence about it is the same case as mislabelling it.** When the diff deletes or
+rewrites a test, an assertion or a comment that pinned the *opposite* behaviour and
+stated why, and the PR shows no evidence the pin was wrong -- no git history, no pin
+message, no linked issue -- its framing is contradicted by the diff whether the
+description calls the pin "a gap" or never mentions it at all. Symmetry or
+consistency with a sibling is not that evidence. Before this clause, only the
+mislabelled form reached `BLOCK`; a pin deleted without a word slipped to the
+advisory tier as `undeclared` (#10119 deleted a comment reading "This deliberately
+supersedes the earlier ... pill spec" plus its pin tests, said nothing, and drew
+`CONCERNS`).
+
+**Each finding is stated once.** The lane's output is the verdict header, one bold
+punchline that opens with the problem, a `### Not justified as shipped` list, the
+collapsed inventory, and -- on `BLOCK` only -- `### Blockers`. Every item that is not
+`justified` gets exactly one entry in that list, carrying a `Subtraction:` line where
+one exists and its own `Clears when:` line last (the prepare-pr extractor reads from
+`Clears when:` to the end of the item as the clearance); there is no `### Watch` and
+no `### Subtractions`. Those two sections used to restate the same items a second and
+third time (on #10119: three items, three sections, ~600 words against a 180-word
+cap), which is what buried the finding under the text around it. The prepare-pr
+extractor already reads `Not justified as shipped` as an item-bearing section, so
+the local loop's per-item dispositions are unchanged; the check-run summary and the
+`::warning` annotation publish that section in place of `Watch`.
+
+Two mechanical guards back the contract in all six whole-design lanes (both First
+Principles, Design and UX workflows). The captured model text is **trimmed to its
+verdict header** before it is posted, so process narration a model writes above the
+header ("All facts verified against the base. Composing the final review.") never
+reaches the PR; a body with no header is left whole so the existing
+"returned no verdict header" path still sees it. And the prose **outside the collapsed
+`<details>` inventory is counted**: past twice the lane's cap (180 words for First
+Principles, 150 for Design and UX) the job emits a `::warning` naming the count. It
+is a warning, not a gate -- the verdict and the comment do not move -- because the
+cap is a readability contract, not a correctness one. The Design and UX punchlines
+follow the same problem-first rule as First Principles: for `CONCERNS`/`BLOCK` the
+sentence opens with the problem, never `<what is sound>, but <problem>`; for `PASS`
+it names the one thing a human should still verify, or `Nothing to check.`
 
 **Where it overlaps Design Review, this lane owns the question.** Design Review's own
 rubric asks whether a change fixes a root cause and whether a simpler alternative
@@ -904,6 +994,78 @@ no-output review must not look clean. A BLOCKING-labelled finding without the
 `[BLOCK-MERGE]` marker is only a non-gating **advisory warning**, since a coherence
 check on that pairing mis-fires whenever the model quotes prior text.
 
+The Opus discovery pass has its own marker, `[OPUS-DISCOVERY] <sha>`, and the
+`Capture discovery candidates` step fails closed when it is absent, before
+validation runs. That branch keeps its existing `::error::` line and `exit 1`, and
+in addition prints one `::notice::discovery-capture-diagnostics` line. The line
+carries fixed keys only: the execution file's shape (`absent`, `empty`, `array`,
+`object`, `jsonl`, `other`, `unparseable`), the captured byte count, how many
+transcript messages carry a `result`, the number of `compact_boundary` system
+messages, the number of permission denials, that same number split by the
+denied tool (`denied_read`, `denied_grep`, `denied_glob`, `denied_bash`, each an
+exact `tool_name` match, and `denied_other` for every other name, a missing or
+non-string name, or a malformed entry; the five sum to `permission_denials` and
+no recorded name is ever echoed), whether the full marker appears in at least
+one assistant `text` block of the transcript (`marker_in_assistant`), and four
+measurements of the text the extraction itself produced before
+redaction: its character count, and whether the full marker, a short-SHA marker
+or the literal `<HEAD_SHA>` placeholder appears in it. That text is the shell
+variable the marker grep was fed, so on a JSONL transcript it is every record's
+`.result` concatenated and a non-string result is the JSON `jq -r` rendered,
+exactly as the candidate file sees them. It reaches jq over stdin, never as a
+process argument. Each value is a count, a boolean or one word from a closed
+set, validated by shape before it is echoed; a file jq cannot parse yields
+`unparseable` and `unknown` transcript counts, never jq's error text. Counts
+that come from `wc` are stripped of the padding BSD `wc` (macOS) adds before
+they are echoed, so every token on the line is one `key=value` pair on every
+platform. A `true` full-marker value on this branch means the capture, not the
+model, lost the marker (the redactor rewrote it). A `true` `marker_in_assistant`
+with a `false` full-marker value means a scanned assistant text block contains
+it but the extracted result does not. It does not establish message order or
+prove review completeness. `false` says only that no scanned `text` block
+carried it. In both cases the
+gate still fails and nothing lifts a marker out of an earlier message. A
+`compact_boundaries` of `0` means no `compact_boundary` message was observed in
+the file; it is not proof of anything the transcript does not record. The
+success path still prints the redacted candidate file as a tuning signal, as
+before; the failing branch prints no transcript or candidate content, and neither
+path uploads the execution file.
+`test_ai_review_workflows.py::TestOpusDiscoveryCaptureExecutes` runs the real
+step against fixtures that plant sentinel strings in the tool arguments, denied
+tool names, tool results and the model's text, and asserts none reach stdout or
+stderr; one case runs the step with a `wc` shim that pads like BSD `wc` and
+asserts the line still parses one token per key. The same block runs verbatim in
+`fork-opus-review.yml` as trusted workflow text; it never executes a helper from
+the fork's tree.
+
+What the first diagnostics line said. On
+[PR #10586](https://github.com/kirodotdev/KiroCrew/pull/10586) the same-repo
+discovery pass lost its marker at two heads
+([run 34787154779](https://github.com/kirodotdev/KiroCrew/actions/runs/34787154779),
+[run 34791198099](https://github.com/kirodotdev/KiroCrew/actions/runs/34791198099)).
+Observed on the second: `exec_file=array captured_bytes=294 result_messages=1
+extracted_chars=293 marker_in_extracted=false short_sha_marker_only=false
+placeholder_marker=false compact_boundaries=0 permission_denials=4`, with a
+result message reporting 19 turns and `is_error: false`. The extraction selected
+the one result message the transcript had; that message did not contain the
+marker; the redactor did not rewrite one. The capture is not where the marker
+went. What the 293 characters said, and which four tool calls were denied, is
+not observable from that run, by design; the per-tool denial counts exist so
+the next occurrence answers the second question. The two marker-less passes
+were also the two with the largest prefetched diffs on that PR (996,100 and
+1,093,568 bytes against 466,134 to 778,441 bytes for the passes that produced
+the marker) and the fewest turns (19 against 26 to 62). That is a correlation
+across two heads, not a mechanism: the diagnostics do not measure what the
+model read or how much context it used, and this page does not claim the diff
+exceeded the model's context. The prompt
+(`.github/review-prompts/opus-discovery.md`, read from the base commit, so a PR
+cannot change the prompt that reviews it) defines two output shapes, a
+candidate list or `No candidates.`, each ending in the marker and each described
+as the product of inspecting every hunk; a pass that stops short of that has no
+conforming shape. A short free-text final message is one hypothesis consistent
+with these numbers, and it is unconfirmed. No reading of the diagnostics line
+changes the verdict.
+
 A lane's summary comment is **one slot shared by every run on the PR**, and it
 is upserted in place. The comments API has no `If-Match`, so a write to that
 slot is last-writer-wins, and it exposes no edit history, so the loss is
@@ -1004,14 +1166,36 @@ Two lanes stay outside that function, and both exclusions are deliberate:
 
 ### Advisory means advisory, with one exception
 
-Design Review and UX Review are non-blocking as a rule: their suggestions must be
+Design Review and UX Review are advisory except on `BLOCK`: their suggestions must be
 proportionate ("never recommend extra layers, abstractions or future-proofing the
 problem does not require"), and their tie-breaker is to choose `CONCERNS` over
-`BLOCK` when torn, reaching for `BLOCK` only when the **design** is wrong and never
-merely because the change is large. The one exception: a genuine `BLOCK` verdict
-does fail that workflow's own check, so it is visible; every other outcome exits 0.
-Because `pr-readiness.yml` scores both as advisory, a red Design or UX check never
-independently blocks readiness.
+`BLOCK` when torn, reaching for `BLOCK` only when the **design** or the **experience**
+is wrong and never merely because the change is large. A genuine `BLOCK` verdict
+fails that workflow's own check and `pr-readiness.yml` scores that failure as a
+readiness blocker; every other outcome exits 0.
+
+One class is exempt from the tie-breaker in both lanes and in First Principles:
+**a verdict the lane cannot reach because required evidence is missing is a
+`BLOCK`, never a `CONCERNS`.** A UI diff with no screenshot of the controls it adds
+(UX lens 12), a persistent-element state change with no recording (UX lens 13), a
+reshaped user-visible surface the Design reviewer has never seen rendered -- each is
+`cannot evaluate: missing <X>`. Filed as `CONCERNS`, an unevaluated change reads as
+"looked and found little" and passes readiness green; PR #5185 shipped 44
+`website/src/` files that way, with the UX lane itself recording that the blind read
+never ran. Absence of evidence is read off the screenshot list, the recording list
+and the description, not judged, so it is a fact and the lanes report it as one.
+The Design trigger accepts the same evidence the UX lane admits: a
+`github.com/user-attachments` asset in the description or an image committed at
+HEAD -- and it reads presence the same way. Both Design lanes run a "Collect
+rendered evidence" step that sources the shared allowlisted fetch script, downloads
+and types every attachment the description offers, lists the committed images the
+revision adds or changes (same-repo only; the fork head is never checked out), and
+writes one evidence file the prompt is told to read; the description's text is not
+the predicate, so a fabricated or dead URL does not count as evidence. A transport
+failure is listed as "presence unconfirmed" and caps the Design verdict at `CONCERNS`
+rather than failing the lane, because the UX lane fails its run on the same failure
+and readiness already holds. An image hosted off a commit outside the PR, or one the
+description says shows another PR, is not evidence of this revision.
 
 **Design Review owns the long-term / one-way-door lens** as its gate 8, "LONG-TERM
 REVERSIBILITY", in both the same-repo and fork variants. An unsafe one-way door is
@@ -1073,8 +1257,30 @@ Three rules follow from the split, all read off evidence rather than judged:
 - **Coverage.** Every user-visible control the diff adds or changes must appear in a
   screenshot the PR carries -- an attachment linked from its body, or a committed
   image. One that does not is an *evidence gap*, listed under
-  `### Evidence gaps`, and the verdict cannot be `PASS`. A diff that adds or changes
-  no user-visible control has no gaps and needs no screenshot.
+  `### Evidence gaps`, and the verdict is `BLOCK` -- `cannot evaluate: missing <the
+  control>` -- because a lane that has not seen a control cannot judge it and a
+  verdict it cannot reach must not read as advisory. The same holds for a lens-13
+  state change with no recording, and for a blind read not performed because the PR
+  supplied no admissible image. A blind read that was *unavailable* -- images admitted
+  and pass 1 itself failed -- is the lane's own failure, not the author's gap: it caps
+  at `CONCERNS` and a re-run of the workflow is the remedy. When *any* attachment
+  download from the description fails for a transport reason (5xx, 403/408/429, no
+  answer; a definite 404 is the author's URL), the same-repo evidence step **fails the
+  run** instead of asking the prompt to cap the verdict or to exempt the controls that
+  attachment would have shown: a lane that could not see everything the author
+  supplied must not read as advisory, so the check is red, readiness holds, and a
+  re-run is the remedy -- exactly as a hard model-step error is handled. A download
+  that fails the same way on the re-run is the attachment URL itself, which the
+  author fixes. The fork
+  lane holds the same way: its evidence step fails on the same condition and its
+  Finalize step completes the check-run as `failure` (an errored fork run would
+  otherwise resolve `neutral`, which readiness scores as pass), so a fork UI change
+  the lane could not evaluate does not merge on the strength of a throttled asset
+  host either; a maintainer re-runs the lane. An image
+  the evidence step did not admit (not a `user-attachments` asset, not committed at
+  HEAD -- e.g. a raw URL pinned to a commit outside the PR) does not close a gap. A
+  diff that adds or changes no user-visible control has no gaps and needs no
+  screenshot.
 - **Primary controls.** A control on the change's main path that the blind reader
   misread (named a different thing or outcome than the diff implements), could not
   identify, or would not dare to click is a `BLOCK`, quoting the reader's words. A
@@ -1103,7 +1309,10 @@ the runner (the job's egress allowlist names the two hosts a download touches,
 its 302 points at), so the reviewer
 opens the same images a same-repo review would. An image a fork PR *commits* is not
 on disk -- the fork head is never checked out -- so a control shown only there is an
-evidence gap, which caps that PR at `CONCERNS` (advisory). A maintainer who wants
+evidence gap, which is a `BLOCK` (`cannot evaluate`) the author closes by attaching
+the image to the description. A control the attachments *do* show but no blind
+reader has read caps the fork PR at `CONCERNS`: that is the lane's limitation, not
+the author's gap, so it does not block. A maintainer who wants
 the blind read pushes the branch to this repository. A fork contributor without push
 access cannot run `gh --attach`; dragging the file into the PR description in the web
 UI yields the same `user-attachments` URL.
@@ -1300,15 +1509,27 @@ commit status plus one `readiness:` label**.
 - **Additionally required on a same-repo PR:** CodeQL, Opus 4.8 Review, GPT 5.6
   Review, Security Scope Review, and completion of Design Review, UX Review and
   First Principles Review.
-- **UX Review and First Principles Review are completion-required but advisory:**
-  once complete they score as `"(advisory)"` whatever their conclusion, so neither
-  their opinion nor an infrastructure failure becomes an independent blocker.
-  Completion is still required so the verdict is not premature.
-- **Design Review is completion-required AND blocks on a genuine `BLOCK`:** the
-  aggregator scores its `failure` conclusion as a readiness blocker. That is safe
-  because the lane fails its own check *only* on a `BLOCK` verdict — an errored,
-  throttled or verdict-less run exits 0 — so a `failure` here can only mean a
-  design judged wrong, never infrastructure noise.
+- **Design Review, UX Review and First Principles Review are completion-required
+  AND block on a genuine `BLOCK`:** the aggregator scores each lane's `failure`
+  conclusion as a readiness blocker. Each lane's status step fails the check on a
+  `BLOCK` verdict and exits 0 on `PASS`, `CONCERNS` or a verdict-less run; the
+  same-repo lanes additionally go red when the model step itself errors (no
+  `continue-on-error`, so a review that did not run is an honest red that a re-run
+  clears, never a verdict), while the fork lanes resolve such a run to `neutral` --
+  with one deliberate exception: the fork UX lane completes as `failure` when an
+  attachment download failed for a transport reason, because a change the lane could
+  not evaluate must not read as advisory.
+  So a `failure` means a design judged wrong, an experience judged broken, a surface
+  judged unjustified, a change the lane could not evaluate on the evidence supplied,
+  or -- same-repo only -- a review that errored before producing a verdict.
+  Where this was decided: the aggregator has scored these three lanes' `failure` as a
+  readiness blocker since it began reading them (`pr-readiness.yml`, the Design / UX /
+  First Principles branch of the check-run reader), which is what turned them from
+  advisory into gates; the evidence-gap and product-shape rules in the prompts are
+  the verdict-side counterpart of that promotion (issue #10476), so that a lane which
+  could not evaluate a change reaches the verdict the aggregator already enforces.
+  The rollback for those rules is one revert of that change; the aggregator's scoring
+  is unaffected by it.
 - **Security Scope Review is required and fails closed:** the aggregator scores
   its `failure` as a plain blocker, because that conclusion covers both a
   script-confirmed newly-refused operation and a run that measured nothing — an
@@ -1769,13 +1990,15 @@ repair delegation follows [Agent repair routing](#agent-repair-routing), not a
 replacement of that profile. Dispositions retain the prior judged SHA, finding
 identity and evidence; they never carry a human override onto a new head.
 
-`prepare-pr/scripts/pr_status.py` treats the aggregate status as authoritative
-when present, including over stale failed or pending duplicate checks in
-GitHub's rollup. Older PRs without the aggregate retain the fail-closed legacy
-rollup behavior. Only the commit-status `context` named `PR Readiness` is
-trusted as the aggregate; a same-named CheckRun cannot mask another failure.
-Unresolved review threads are reported for visibility but are advisory rather
-than an automatic readiness failure.
+`prepare-pr/scripts/pr_status.py` folds the aggregate status in as one signal,
+never an override of the rows: its FAILURE blocks and its PENDING waits, but its
+green does not clear an observed failing or pending duplicate check in GitHub's
+rollup, because the aggregate's `context` is a forgeable display string a status
+publisher on the pull request can set. Older PRs without the aggregate retain the
+fail-closed legacy rollup behavior. Only the commit-status `context` named
+`PR Readiness` is read as the aggregate; a same-named CheckRun cannot mask
+another failure. Unresolved review threads are reported for visibility but are
+advisory rather than an automatic readiness failure.
 
 ## Over-engineering resistance
 

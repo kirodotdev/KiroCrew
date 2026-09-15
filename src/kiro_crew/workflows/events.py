@@ -18,7 +18,7 @@ This module holds no LLM/agent logic and has no side effects on import.
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Optional
 
 from . import EVENT_TYPES, WorkflowEvent
 
@@ -59,16 +59,32 @@ class EventStream:
 
     The runner owns one ``EventStream`` per ``run_id``; each ``emit_*`` returns the
     built ``WorkflowEvent`` (already validated) and assigns the next ``seq``. The
-    ``ts`` for each event is supplied by the caller (the runner derives it from the
-    deterministic run clock, not ``time`` — keeps the stream resume-stable).
+    ``ts`` for each event comes from an optional injected HOST ``clock`` when set,
+    else from the ``ts`` the caller passes. The two are deliberately distinct: the
+    runner injects a real wall-clock ``clock`` so the journal records WHEN each
+    event happened, while the script-visible ``ctx.now`` (which the caller passes
+    as ``ts``) stays a single fixed run-start stamp — keeping the script
+    deterministic / resume-stable and giving it no new time capability.
     """
 
-    def __init__(self, run_id: str, *, starting_seq: int = 0) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        *,
+        starting_seq: int = 0,
+        clock: Optional[Callable[[], str]] = None,
+    ) -> None:
         self.run_id = run_id
         self._seq = starting_seq
+        # Optional HOST per-event clock. When ``None`` each event keeps the
+        # caller-supplied ``ts``; when set (the runner path) every event is
+        # stamped from it, so the fixed script-visible ``ctx.now`` never becomes
+        # an event timestamp.
+        self._clock = clock
 
     def _emit(self, ts: str, type_: str, data: dict[str, Any]) -> WorkflowEvent:
-        event = WorkflowEvent(run_id=self.run_id, seq=self._seq, ts=ts, type=type_, data=data)
+        stamp = self._clock() if self._clock is not None else ts
+        event = WorkflowEvent(run_id=self.run_id, seq=self._seq, ts=stamp, type=type_, data=data)
         validate_event(event)
         self._seq += 1
         return event

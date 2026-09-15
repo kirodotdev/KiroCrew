@@ -80,7 +80,7 @@ export interface CrewFabricItem {
    * the crew recorded none. Kept distinct from `title` so a view can show either
    * without one masquerading as the other. */
   next: string
-  /** Null when the item has no PR (a plain rect rather than a chamfered chip). */
+  /** Null when the item has no PR (no PR pill is drawn). */
   pr_number: number | null
   phase: CrewPhase
   timeline: CrewFabricTimelineEntry[]

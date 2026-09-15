@@ -311,7 +311,7 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
                   status === 'approval' ? 'bg-warn'
                     : status === 'question' ? 'bg-info'
                       : status === 'running' ? 'bg-accent animate-pulse'
-                        : isUnread ? 'bg-accent'
+                        : isUnread ? 'bg-ok'
                           : 'bg-transparent'
                 }`}
               />

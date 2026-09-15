@@ -169,24 +169,19 @@ def materialize_queued_diff(
 
     apply_proc = subprocess.run(
         ["git", "-C", str(clone), "apply", "--index", "-"],
-        input=diff_text,
+        # Binary stdin preserves patch newlines on Windows; surrogateescape
+        # restores any non-UTF-8 bytes exactly as captured.
+        input=diff_text.encode("utf-8", errors="surrogateescape"),
         capture_output=True,
         timeout=_GIT_TIMEOUT_S,
-        # The queued diff is a byte-exact payload; surrogateescape re-encodes
-        # any non-UTF-8 byte back exactly as captured.
-        text=True,
-        encoding="utf-8",
-        errors="surrogateescape",
     )
     if apply_proc.returncode != 0:
         # Leave the tree clean so a retry or the draft-PR path still works.
         _git(clone, "reset", "--hard", base_ref_local)
+        stderr = (apply_proc.stderr or b"").decode("utf-8", errors="replace")
         return {
             "ok": False,
-            "error": (
-                f"the queued diff did not apply: "
-                f"{redact_via_context(apply_proc.stderr or '')[:160]}"
-            ),
+            "error": f"the queued diff did not apply: {redact_via_context(stderr)[:160]}",
         }
     return {"ok": True, "base": base_ref_local}
 

@@ -13,8 +13,9 @@ atomic (temp file + ``os.replace``) so a crash mid-write can't corrupt a run fil
 
 The store is a thin, side-effect-only persistence layer: the registry owns the
 truth in memory and calls ``save``/``delete`` on changes; ``load_all`` rehydrates
-on startup. All methods are best-effort — a storage failure must never break a run
-(the registry stays authoritative in memory).
+on startup. Live checkpoint failures leave execution authoritative in memory and
+are surfaced by the registry. Inventory or protected-binding recovery failures
+propagate: an incomplete authorized inventory must not look like an empty one.
 """
 
 from __future__ import annotations
@@ -23,11 +24,15 @@ import hashlib
 import json
 import logging
 import os
+import stat
 from pathlib import Path
 from typing import Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
+from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.workflow_memory import private_payload_path, read_binding
 
 # Optional dependency (gate F1): the workflows engine must stay importable without
 # the full app/config stack. Imported at module top via try/except so the
@@ -44,6 +49,10 @@ WORKFLOW_LIBRARY_DIR_NAME = "workflow_library"
 
 # Default subdirectory under the resolved workflows dir.
 _RUNS_SUBDIR = "runs"
+
+
+class WorkflowInventoryError(OSError):
+    """Recovery cannot establish the complete authorized run inventory."""
 
 
 def default_workflows_dir() -> Path:
@@ -100,8 +109,8 @@ class WorkflowRunStore:
         try:
             self._runs_dir.mkdir(parents=True, exist_ok=True)
             return True
-        except Exception:  # noqa: BLE001
-            logger.debug("workflow store: cannot create %s", self._runs_dir, exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("workflow store: directory unavailable (%s)", type(exc).__name__)
             return False
 
     def _path_for(self, run_id: str) -> Path:
@@ -116,22 +125,32 @@ class WorkflowRunStore:
         if safe != run_id:
             digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:12]
             safe = f"{safe}-{digest}" if safe else digest
+        binding = read_binding(run_id)
+        if binding is not None and binding["memory_store"]:
+            return private_payload_path(run_id)
         return self._runs_dir / f"{safe}.json"
 
     def save(self, run_id: str, store_json: dict) -> None:
-        """Persist one run's full JSON form (atomic write). Best-effort."""
-        if not run_id or not self._ensure_dir():
+        """Persist one run atomically; report failures to the registry's health view."""
+        if not run_id:
             return
+        read_binding(run_id, required=bool(store_json.get("execution_binding_version")))
+        path = self._path_for(run_id)
+        if path.parent == self._runs_dir:
+            if not self._ensure_dir():
+                raise OSError("Workflow run directory unavailable")
+        else:
+            platform_compat.make_owner_only_dir(path.parent)
+            platform_compat.restrict_dir_to_owner(path.parent)
         try:
             redacted = _redact(store_json)
             redacted["source_is_original"] = bool(store_json.get("source_is_original")) and (
                 redacted.get("source") == store_json.get("source")
             )
             payload = json.dumps(redacted, default=str)
-        except Exception:  # noqa: BLE001
-            logger.debug("workflow store: serialize failed for %s", run_id, exc_info=True)
-            return
-        path = self._path_for(run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("workflow store: serialization failed (%s)", type(exc).__name__)
+            raise OSError("Workflow snapshot serialization failed") from None
         tmp = path.with_suffix(".json.tmp")
         try:
             tmp.write_text(payload, encoding="utf-8")
@@ -149,12 +168,13 @@ class WorkflowRunStore:
                 os.chmod(path, 0o600)  # lockdown-ok: unbounded SMB round-trip on the loop
             except OSError:
                 pass
-        except Exception:  # noqa: BLE001 - persistence must never break a run
-            logger.debug("workflow store: write failed for %s", run_id, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - registry reports the durability failure
+            logger.debug("workflow store: write failed (%s)", type(exc).__name__)
             try:
                 tmp.unlink(missing_ok=True)
             except OSError:
                 pass
+            raise OSError("Workflow checkpoint write failed") from None
 
     def delete(self, run_id: str) -> None:
         """Remove a run's file (e.g. when evicted from the in-memory registry)."""
@@ -166,18 +186,110 @@ class WorkflowRunStore:
     def load_all(self) -> list[dict]:
         """Return every persisted run's JSON, oldest file first (by mtime).
 
-        Bad/corrupt files are skipped (never raise). The registry decides how to
-        rehydrate (e.g. demote a 'running' run to failed-interrupted).
+        Bad/corrupt files are skipped individually. Inventory access failures
+        propagate so startup cannot mistake an unreadable store for an empty
+        one. The registry decides how to rehydrate interrupted runs.
         """
-        if not self._runs_dir.is_dir():
-            return []
+        roots = [self._runs_dir]
+        try:
+            roots.append(private_payload_path("discovery").parent)
+        except Exception as exc:
+            logger.debug(
+                "workflow store: private discovery root unavailable (%s)", type(exc).__name__
+            )
+            raise OSError(
+                "Workflow run inventory unavailable; repair storage and restart"
+            ) from None
         out: list[tuple[float, dict]] = []
-        for f in self._runs_dir.glob("*.json"):
+        for root in roots:
             try:
-                obj = json.loads(f.read_text(encoding="utf-8"))
-                if isinstance(obj, dict) and obj.get("run_id"):
-                    out.append((f.stat().st_mtime, obj))
-            except Exception:  # noqa: BLE001 - skip corrupt files
-                logger.debug("workflow store: skip unreadable %s", f, exc_info=True)
+                try:
+                    root_info = root.stat()
+                except FileNotFoundError:
+                    # Windows may report a missing path beneath a plain file.
+                    # Only a missing tree under an existing directory is empty.
+                    for ancestor in root.parents:
+                        try:
+                            ancestor_info = ancestor.stat()
+                        except FileNotFoundError:
+                            continue
+                        if not stat.S_ISDIR(ancestor_info.st_mode):
+                            raise NotADirectoryError(
+                                "Workflow inventory ancestor is not a directory"
+                            )
+                        break
+                    else:
+                        raise OSError("Workflow inventory has no accessible ancestor")
+                    continue  # A first boot has no persisted directory yet.
+                if not stat.S_ISDIR(root_info.st_mode):
+                    raise NotADirectoryError("Workflow run inventory is not a directory")
+                resolved_root = root.resolve()
+                files = list(root.glob("*.json"))
+            except Exception as exc:
+                logger.debug("workflow store: discovery root unavailable (%s)", type(exc).__name__)
+                # Fail startup without exposing a private path or exception payload.
+                raise OSError(
+                    "Workflow run inventory unavailable; repair storage and restart"
+                ) from None
+            for f in files:
+                try:
+                    # Resolve the trusted root once, not each candidate: legitimate
+                    # data-home aliases are allowed, redirects after this point are not.
+                    # Validate and read the same inode, including its mtime. Workflow
+                    # payloads exceed the small identity-record reader's size cap.
+                    fd = platform_compat.open_file_no_reparse(f, nonblocking=True)
+                    try:
+                        info = os.fstat(fd)
+                        opened = fd_real_path(fd)
+                        if (
+                            not stat.S_ISREG(info.st_mode)
+                            or info.st_nlink != 1
+                            or (
+                                platform_compat.IS_POSIX
+                                and info.st_uid != platform_compat.local_user_id()
+                            )
+                            or opened is None
+                            or Path(opened) != resolved_root / f.name
+                        ):
+                            continue
+                        with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as stream:
+                            obj = json.load(stream)
+                    finally:
+                        os.close(fd)
+                    if not isinstance(obj, dict) or not isinstance(obj.get("run_id"), str):
+                        continue
+                    run_id = obj["run_id"]
+                    try:
+                        binding = read_binding(
+                            run_id,
+                            required=root != self._runs_dir
+                            or bool(obj.get("execution_binding_version")),
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "workflow store: protected binding unavailable (%s)",
+                            type(exc).__name__,
+                        )
+                        # Do not hide a bound run behind an empty list,
+                        # or reconstruct authority from its editable payload.
+                        raise WorkflowInventoryError(
+                            "Workflow run inventory unavailable; repair storage and restart"
+                        ) from None
+                    private = binding is not None and bool(binding["memory_store"])
+                    if private != (root != self._runs_dir):
+                        continue
+                    if private and f != private_payload_path(run_id):
+                        continue
+                    out.append((info.st_mtime, obj))
+                except WorkflowInventoryError:
+                    raise
+                except Exception as exc:  # malformed data grants no restored execution authority
+                    logger.debug(
+                        "workflow store: skip unreadable record %s (%s)",
+                        hashlib.sha256(f.name.encode("utf-8", errors="surrogatepass")).hexdigest()[
+                            :12
+                        ],
+                        type(exc).__name__,
+                    )
         out.sort(key=lambda t: t[0])
         return [obj for _, obj in out]

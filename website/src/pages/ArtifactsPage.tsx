@@ -1329,9 +1329,18 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     () =>
       (providersData?.providers || []).filter(
         (p) =>
-          p.discovery_model.list_mine ||
-          p.discovery_model.list_shared_with_me ||
-          p.discovery_model.list_public,
+          // `available: false` means the provider's tooling is not installed on
+          // this machine, so every browse request it could make fails. The
+          // publish picker still lists such a provider — publishing installs the
+          // tooling on first use, so hiding the destination there would make it
+          // undiscoverable — but browsing has no equivalent: there is nothing to
+          // list and no action in this section that would install anything, so
+          // its only possible rendering is an error card. Omitted by older
+          // gateways, hence the explicit `!== false` rather than a truthy test.
+          p.available !== false &&
+          (p.discovery_model.list_mine ||
+            p.discovery_model.list_shared_with_me ||
+            p.discovery_model.list_public),
       ),
     [providersData],
   )

@@ -1559,6 +1559,35 @@ class TestMemoryGetContextQueryWiring:
         msg, _ = builder.build_message("q", True, "s1")
         assert "JSONL-SENTINEL" in msg
 
+    def test_withheld_only_vector_store_still_yields_jsonl_lessons(self, tmp_path):
+        from kiro_crew.learn import Lesson
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        vector_store = VectorMemoryStore(db_path=tmp_path / "vectors.db", embedding_dim=4)
+        vector_store.init()
+        try:
+            memory._vector_store = vector_store
+            vector_store.set_semantic(
+                "lesson.legacyvolatile",
+                {
+                    "rule": "The current model identity is gpt-5.6-sol.",
+                    "category": "preference",
+                    "negative": None,
+                },
+                1.0,
+                "user_explicit",
+            )
+            builder.lessons.save(Lesson(ts="t", rule="JSONL-SENTINEL", category="tool"))
+
+            msg, _ = builder.build_message("q", True, "s1")
+
+            assert "JSONL-SENTINEL" in msg
+            assert "gpt-5.6-sol" not in msg
+        finally:
+            vector_store.close()
+
     def test_episodic_injected_exactly_once(self, tmp_path):
         from types import SimpleNamespace
 
@@ -1592,6 +1621,165 @@ class TestMemoryGetContextQueryWiring:
         )
         builder.build_message("find my tokyo notes", True, "s2")
         assert seen == ["find my tokyo notes"]
+
+
+class TestDurableModelVersionLessonContext:
+    RULE = "the Python 3.12 wheel needs claude-opus-4.8 pinned in role_models"
+    NEGATIVE = "assume gpt-5.6-sol supports the streaming flag"
+    MODEL_TOOLING_RULES = (
+        ("Always use the tokenizer shipped with gpt-5.6-sol", "tool"),
+        ("Prefer the retry wrapper when calling opus-4.8 endpoints", "preference"),
+        ("Never use the streaming flag with gpt-5.6-sol", "tool"),
+        ("Always use the gpt-5-compatible tokenizer", "tool"),
+        ("Always use the gpt-5 compatible tokenizer", "tool"),
+        ("Never use gpt-5.6-sol endpoints without the retry wrapper", "tool"),
+    )
+    BACKEND_PROCESS_RULES = (
+        ("Never run as the backend service account", "tool"),
+        ("The service is running as the backend worker", "preference"),
+        ("The service is running as the active backend service account", "tool"),
+        ("The service is running as the current backend worker", "preference"),
+        ("Restart the backend after config changes", "tool"),
+        ("Run the worker as the backend user, never as root", "preference"),
+    )
+    TOOLING_RULES = MODEL_TOOLING_RULES + BACKEND_PROCESS_RULES
+
+    def _builder(self, tmp_path):
+        return ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+
+    def test_jsonl_context_renders_durable_model_version_references(self, tmp_path):
+        from types import SimpleNamespace
+
+        from kiro_crew.learn import Lesson
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        memory._vector_store = SimpleNamespace(
+            get_episodic_context=lambda query_text, cap: "",
+            get_semantic_context=lambda query_text, cap: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None: "",
+            has_any_lesson=lambda: False,
+        )
+        assert builder.lessons.save(Lesson(ts="t", rule=self.RULE, category="tool")) == "inserted"
+        assert (
+            builder.lessons.save(
+                Lesson(
+                    ts="t",
+                    rule="check streaming compatibility before release",
+                    category="preference",
+                    negative=self.NEGATIVE,
+                )
+            )
+            == "inserted"
+        )
+        for rule, category in self.TOOLING_RULES:
+            assert builder.lessons.save(Lesson(ts="t", rule=rule, category=category)) == "inserted"
+
+        message, _ = builder.build_message("check wheel compatibility", True, "s-version-jsonl")
+
+        assert self.RULE in message
+        assert self.NEGATIVE in message
+        for rule, _category in self.TOOLING_RULES:
+            assert rule in message
+
+    def test_vector_context_renders_durable_model_version_references(self, tmp_path):
+        from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        vector_store = VectorMemoryStore(db_path=tmp_path / "vectors.db", embedding_dim=4)
+        vector_store.init()
+        try:
+            memory._vector_store = vector_store
+            first = vector_store.write_lesson(self.RULE, "tool")
+            second = vector_store.write_lesson(
+                "check streaming compatibility before release",
+                "preference",
+                negative=self.NEGATIVE,
+            )
+
+            assert first.outcome is LessonWriteOutcome.INSERTED
+            assert second.outcome is LessonWriteOutcome.INSERTED
+            assert vector_store.has_any_lesson() is True
+            rendered = vector_store.get_lessons_context("wheel compatibility")
+            assert self.RULE in rendered
+            assert self.NEGATIVE in rendered
+
+            message, _ = builder.build_message(
+                "check wheel compatibility",
+                True,
+                "s-version-vector",
+            )
+            assert self.RULE in message
+            assert self.NEGATIVE in message
+        finally:
+            vector_store.close()
+
+    @pytest.mark.parametrize("rule,category", TOOLING_RULES)
+    def test_vector_context_renders_model_qualified_tooling(
+        self, tmp_path, rule: str, category: str
+    ) -> None:
+        from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        vector_store = VectorMemoryStore(db_path=tmp_path / "tooling.db", embedding_dim=4)
+        vector_store.init()
+        try:
+            memory._vector_store = vector_store
+            result = vector_store.write_lesson(rule, category)
+
+            assert result.outcome is LessonWriteOutcome.INSERTED
+            assert vector_store.has_any_lesson() is True
+            assert rule in vector_store.get_lessons_context(rule)
+
+            message, _ = builder.build_message(rule, True, "s-version-tooling")
+            assert rule in message
+        finally:
+            vector_store.close()
+
+    def test_key_confirmed_legacy_negative_pin_yields_jsonl_fallback(self, tmp_path):
+        from kiro_crew.learn import Lesson
+        from kiro_crew.vector_memory import (
+            _LESSON_NEGATIVE_SEP,
+            VectorMemoryStore,
+            _lesson_key,
+        )
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        vector_store = VectorMemoryStore(db_path=tmp_path / "legacy-vectors.db", embedding_dim=4)
+        vector_store.init()
+        rule = "automatic selection is safest"
+        try:
+            memory._vector_store = vector_store
+            vector_store.set_semantic(
+                _lesson_key(rule),
+                f"{rule}{_LESSON_NEGATIVE_SEP}Select gpt-5.6-sol for reviews",
+                1.0,
+                "user_explicit",
+            )
+            assert vector_store.has_any_lesson() is False
+            assert vector_store.get_lessons_context() == ""
+            assert (
+                builder.lessons.save(Lesson(ts="t", rule="JSONL-SENTINEL", category="tool"))
+                == "inserted"
+            )
+
+            message, _ = builder.build_message(
+                "check fallback",
+                True,
+                "s-legacy-negative-fallback",
+            )
+
+            assert "JSONL-SENTINEL" in message
+            assert "gpt-5.6-sol" not in message
+        finally:
+            vector_store.close()
 
 
 class TestKeepVisibleMarkerRule:

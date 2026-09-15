@@ -24,6 +24,7 @@ import { ChevronDown, Lock } from 'lucide-react'
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
 import AgentSkillsEditor from '../AgentSkillsEditor'
+import { Btn } from '../ui'
 import ErrorNotice from '../ErrorNotice'
 import SimpleSelect from '../SimpleSelect'
 import InfoTip from '../InfoTip'
@@ -160,8 +161,11 @@ function Chips({ items, tone }: { items: string[]; tone?: 'ok' | 'aim' | 'danger
 }
 
 export default function AgentTemplateDetail({
-  template, models, crew, onForked, options, onSelect, onRebound, provenance, fieldLabel, onSaveChain,
+  template, models, crew, onForked, options, onSelect, onRebound, provenance, fieldLabel, onSaveChain, readOnly = false, onCapabilities, actionsDisabled = false,
 }: {
+  actionsDisabled?: boolean
+  readOnly?: boolean
+  onCapabilities?: () => void
   /** The crew's current binding (the copy's name when customized). */
   template: string
   models: string[]
@@ -449,6 +453,7 @@ export default function AgentTemplateDetail({
         </span>
         <SimpleSelect
             options={opts}
+            disabled={readOnly}
             optionBadges={opts.map(o => {
               const p = provenance?.[o]
               const label = templateSourceBadge(p)
@@ -521,6 +526,7 @@ export default function AgentTemplateDetail({
               <button
                 type="button"
                 onClick={resetToOrigin}
+                disabled={actionsDisabled}
                 className="mt-2 cursor-pointer border-0 bg-transparent p-0 text-[11.5px] text-muted hover:text-text"
               >
                 {i18nT('components.agentTemplateDetail.reset_my_changes')}
@@ -550,6 +556,7 @@ export default function AgentTemplateDetail({
             <button
               type="button"
               onClick={() => setPublishOpen(true)}
+              disabled={actionsDisabled}
               className="cursor-pointer border-0 bg-transparent p-0 text-[11.5px] text-accent"
             >
               {i18nT('components.agentTemplateDetail.save_as_new_template')}
@@ -559,16 +566,21 @@ export default function AgentTemplateDetail({
       </div>
 
       <div className="pt-2.5">
+        {readOnly && <div className="mb-3 text-[13px] text-muted">
+          {onCapabilities && <Btn onClick={onCapabilities}>{i18nT('crewCapabilities.openEditor')}</Btn>}
+        </div>}
         {/* One mental model in one sentence: where the definition comes from
             and how far an edit reaches. The file name is bookkeeping — behind
             the info tip, not in the reading line. */}
         <Hint>
-          {isOwnCopy
+          {readOnly
+            ? i18nT('crewCapabilities.templateLocked')
+            : isOwnCopy
             ? i18nT('components.agentTemplateDetail.based_on_hint', { name: origin })
             : template
               ? i18nT('components.agentTemplateDetail.edits_make_own_copy')
               : i18nT('pages.kiroCrewAgentsPage.the_agent_definition_it_boots_from_tools_mcp_ser')}
-          {listed?.filename && (
+          {!readOnly && listed?.filename && (
             <span className="ml-1 inline-flex translate-y-px align-middle">
               <InfoTip
                 text={i18nT('components.agentTemplateDetail.config_file_info', { filename: listed.filename })}
@@ -607,6 +619,7 @@ export default function AgentTemplateDetail({
                     : ['', ...models]
                 }
                 value={detail.model || ''}
+                disabled={readOnly}
                 onChange={m =>
                   patchModel.mutate(m, {
                     onError: () => setActionError(i18nT('components.agentTemplateDetail.save_failed')),
@@ -620,7 +633,9 @@ export default function AgentTemplateDetail({
             <Hint>{i18nT('components.agentTemplateDetail.model_hint')}</Hint>
 
             {/* No Label here: AgentSkillsEditor renders its own "Skills" heading. */}
-            {detail.skills === undefined ? (
+            {readOnly ? (
+              <><Label text={i18nT('pages.agentsPage.skills')} /><Chips items={Array.isArray(detail.skills) ? detail.skills : []} /></>
+            ) : detail.skills === undefined ? (
               <>
                 <Label text={i18nT('pages.agentsPage.skills')} />
                 {/* askAgent: a read failure with no draft to lose — same

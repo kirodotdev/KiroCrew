@@ -539,6 +539,14 @@ The engine owns source identity. `_sources()` resolves and normalizes the regist
 | `POST /api/onboarding/import/apply` | apply | `{sources: [{id, categories: [...]}], conflict_strategy?}` — `conflict_strategy` is one of `skip`/`rename`/`overwrite`; absent = `skip`, unrecognized = 400 |
 | `POST /api/onboarding/import/state` | onboarding bookkeeping | `{completed: bool}` |
 
+Each endpoint is owner-only: the handlers call `require_owner_dashboard_request`
+after authentication. With no `owner_id` configured the gate accepts the signed
+local bootstrap subjects (`local-app`, `local-startup`), which is the identity
+the onboarding flow runs as; once an owner exists, a stale pre-owner session
+gets the 401 re-auth answer and every other non-owner subject gets a 403
+`owner_only` denial. `test_agent_config_owner_gate_invariant.py` walks the two
+mutating routes as part of its gated-route invariant.
+
 Concurrency: apply holds a module-level import lock. Config-writing categories
 run under the config lock; `mcp_servers` runs in a separate phase **outside**
 the config lock (the MCP handlers take the MCP file lock before the config lock,

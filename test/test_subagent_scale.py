@@ -180,6 +180,57 @@ class TestBatchIdentity:
         mgr._queue.clear()
         assert mgr.batch_members_pending("") is False
 
+    def test_wave_has_live_nested_spawns_detects_member_descendants(self):
+        """A wave member that spawned nested work is DONE (its own turn ended),
+        so batch_members_pending is False and the wave-close digest fires — but
+        a child the member spawned is still running. The nested child mints its
+        OWN batch_id and its parent_session_key is the member's session key
+        (``subagent:<member.id>``), so it counts against neither this wave's
+        total nor batch_members_pending. This is the state where the digest
+        must not claim completion, and this method reports True for it.
+
+        The scope is narrow on purpose: an unrelated sibling wave under the SAME
+        grandparent is NOT a child of this wave's members, so this method
+        reports False for it — a sibling wave cannot hold this digest hostage.
+        """
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        # Wave "wv": both direct members finished.
+        m0 = SubagentInfo(id="m0", task="t", batch_id="wv", batch_total=2,
+                          parent_session_key="dashboard:main")
+        m0.done = True
+        m1 = SubagentInfo(id="m1", task="t", batch_id="wv", batch_total=2,
+                          parent_session_key="dashboard:main")
+        m1.done = True
+        # A nested child spawned BY m1 — its own batch, parent is m1's session.
+        nested = SubagentInfo(id="n1", task="nested", batch_id="nestwave",
+                              batch_total=2, parent_session_key="subagent:m1")
+        # An unrelated sibling wave under the SAME grandparent (dashboard:main),
+        # NOT a child of any wv member.
+        sibling = SubagentInfo(id="s1", task="sib", batch_id="sibwave",
+                               batch_total=2, parent_session_key="dashboard:main")
+        mgr._agents = {"m0": m0, "m1": m1, "n1": nested, "s1": sibling}
+
+        # Direct members all done -> the wave would close by the count.
+        assert mgr.batch_members_pending("wv") is False
+        # But a member's nested spawn is still live -> digest cannot claim done.
+        assert mgr.wave_has_live_nested_spawns("wv") is True
+        # The unrelated sibling wave must NOT be attributed to wv (no hostage).
+        assert mgr.wave_has_live_nested_spawns("sibwave") is False
+
+        # A queued (not-yet-registered) nested spawn of a member also counts.
+        mgr._agents = {"m0": m0, "m1": m1}
+        assert mgr.wave_has_live_nested_spawns("wv") is False
+        mgr._queue.append({"task": "queued nested", "batch_id": "nestwave2",
+                           "parent_session_key": "subagent:m0"})
+        assert mgr.wave_has_live_nested_spawns("wv") is True
+        mgr._queue.clear()
+
+        # When the nested child finishes, the method goes False.
+        nested.done = True
+        mgr._agents = {"m0": m0, "m1": m1, "n1": nested}
+        assert mgr.wave_has_live_nested_spawns("wv") is False
+        assert mgr.wave_has_live_nested_spawns("") is False
+
     def test_pending_while_submissions_in_flight(self):
         """A fast-failing first member must NOT finalize the wave while
         sibling POSTs are still in flight (Arbiter item 2): the pending
@@ -789,6 +840,10 @@ class TestWaveDigest:
                 mock_sm.return_value = mock_sm_inst
                 orch._init_subagents()
                 orch.subagent_mgr = mock_sm_inst
+                # Default: no nested spawns outstanding, so the wave-close
+                # digest takes its normal "run is complete" wording. Tests that
+                # exercise the nested-work path override this explicitly.
+                mock_sm_inst.wave_has_live_nested_spawns = MagicMock(return_value=False)
                 return mock_sm_inst, mock_sm.call_args.kwargs["on_done"]
 
     def _member(self, i: int, total: int, *, error: str = "") -> SubagentInfo:
@@ -992,6 +1047,101 @@ class TestWaveDigest:
         # The raw credential-shaped value must not appear verbatim in the
         # broadcast digest text.
         assert secret not in body
+
+    @pytest.mark.asyncio
+    async def test_wave_close_digest_does_not_claim_completion_with_live_nested_spawn(self):
+        """Pins the wave-close digest wording when a wave's direct members all
+        report done (so ``batch_members_pending`` is False and the digest
+        fires) while a member's nested spawn is still running.
+
+        The digest must not assert "This run is complete" / "All results
+        delivered" — that nested spawn has its own uncounted ``batch_id``, so
+        the wave cannot substantiate a whole-run completion. It reports the
+        true direct-member tally and states that the nested work reports
+        separately.
+        """
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 2
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+            injected.append(text)
+
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered"):
+            # Both direct members complete; the count says the wave is done...
+            mgr.batch_members_pending = MagicMock(return_value=False)
+            # ...but a member's nested spawn is still running.
+            mgr.wave_has_live_nested_spawns = MagicMock(return_value=True)
+            await on_done(self._member(0, total))
+            await asyncio.sleep(0)
+            await on_done(self._member(1, total))
+            await asyncio.sleep(0)
+            await _settle(lambda: len(injected) >= 1)
+
+        body = "\n".join(injected)
+        # The digest fired (final chunk delivered)...
+        assert body, "wave-close digest was never injected"
+        # ...but it must NOT overclaim completion of the whole run.
+        assert "This run is complete" not in body
+        assert "All results delivered" not in body
+        # It must still report the true direct-member tally and flag the
+        # outstanding nested work.
+        assert "2 sub-agents finished" in body
+        assert "nested work" in body
+        # wave_has_live_nested_spawns was consulted for THIS wave's batch id.
+        mgr.wave_has_live_nested_spawns.assert_called_with("bigwave")
+
+    @pytest.mark.asyncio
+    async def test_wave_close_digest_claims_completion_when_no_nested_spawn(self):
+        """The honest fix must NOT degrade the common case: with no outstanding
+        nested work the wave-close digest keeps its normal "run is complete /
+        all results delivered" wording."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 2
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+            injected.append(text)
+
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered"):
+            mgr.batch_members_pending = MagicMock(return_value=False)
+            mgr.wave_has_live_nested_spawns = MagicMock(return_value=False)
+            await on_done(self._member(0, total))
+            await asyncio.sleep(0)
+            await on_done(self._member(1, total))
+            await asyncio.sleep(0)
+            await _settle(lambda: len(injected) >= 1)
+
+        body = "\n".join(injected)
+        assert "wave finished" in body
+        assert "This run is complete" in body
+        assert "All results delivered" in body
 
     @pytest.mark.asyncio
     async def test_digest_chunks_inject_in_fifo_order_despite_delayed_dispatch_hop(self):

@@ -51,7 +51,7 @@ export const KIROCREW_CONFIG_FIXTURE = {
     default_agent: 'kirocrew', provider: 'acp', model: 'auto',
     approval_mode: 'interactive', sandbox: 'auto',
     subagent_max_turns: 100, max_subagents: 3, subagent_auto_max: 16,
-    conductor_skill: false, tool_search: true,
+    tool_search: true,
     max_channels: 8, max_channel_agents: 4,
   },
   session: { timeout_secs: 1800, pool_size: 2, pool_agent: 'kirocrew', pool_ttl_secs: 600 },

@@ -428,7 +428,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       return commentCount > 0 && !isMobile ? 'comments' : 'none'
     })
   }, [slug, commentCount, isMobile])
-  const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; line?: number; column?: number; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
+  // Anchors are trimmed for matching; clipboard text stays exactly as selected.
+  const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; copyText?: string; line?: number; column?: number; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
   // Bidirectional anchor↔comment linking: flash a sidebar row when
   // its in-iframe highlight is clicked; scroll the iframe highlight when a
   // sidebar comment is clicked. Nonce forces a re-trigger on repeat clicks.
@@ -961,7 +962,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     preRange.setStart(root, 0)
     preRange.setEnd(range.startContainer, range.startOffset)
     const startOffset = preRange.toString().length + (raw.length - raw.trimStart().length)
-    setPopover({ x: rect.left, y: rect.bottom, anchor, line: coords?.line, column: coords?.column, startOffset, endOffset: startOffset + anchor.length })
+    setPopover({ x: rect.left, y: rect.bottom, anchor, copyText: raw, line: coords?.line, column: coords?.column, startOffset, endOffset: startOffset + anchor.length })
   }, [commentable, isMarkdown, sourceContent])
 
   const invalidateComments = useCallback(() => {
@@ -1418,17 +1419,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     const attempt = ++copyAttemptRef.current
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
     setCopyStatus('idle')
+    // `copyToClipboard` resolves a boolean and never rejects: `true` only once
+    // the text actually reached the clipboard. Gate the confirmation on it so a
+    // `false` shows the failure glyph instead of a tick over an unchanged
+    // clipboard. (A `.catch` here would be unreachable dead code.)
     copyToClipboard(artifact?.content ?? '')
-      .then(() => {
+      .then((ok) => {
         if (attempt !== copyAttemptRef.current) return
-        setCopyStatus('copied')
-        copiedTimerRef.current = setTimeout(() => {
-          if (attempt === copyAttemptRef.current) setCopyStatus('idle')
-        }, 1500)
-      })
-      .catch(() => {
-        if (attempt !== copyAttemptRef.current) return
-        setCopyStatus('failed')
+        setCopyStatus(ok ? 'copied' : 'failed')
         copiedTimerRef.current = setTimeout(() => {
           if (attempt === copyAttemptRef.current) setCopyStatus('idle')
         }, 1500)
@@ -2048,6 +2046,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     y={popover.y}
                     onSubmit={addComment}
                     onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
+                    copyText={popover.copyText ?? popover.anchor}
                   />
                 )}
               </>
@@ -2083,6 +2082,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                     onSubmit={addComment}
                     onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
                     containerRef={bodyRef}
+                    copyText={popover.copyText ?? popover.anchor}
                   />
                 )}
               </div>

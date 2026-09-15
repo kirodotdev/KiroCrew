@@ -124,6 +124,7 @@ class TestApiSpawnHandler:
         state = SimpleNamespace(subagents=mgr, conversation_log=MagicMock())
         request = MagicMock()
         request.app = {"state": state}
+        request.headers = {}
 
         async def _json() -> dict:
             return body

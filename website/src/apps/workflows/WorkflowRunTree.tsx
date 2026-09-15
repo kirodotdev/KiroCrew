@@ -17,10 +17,11 @@
  * All LLM-derived strings are sanitized via sanitizeLlmOutput. Pure event-fold
  * logic lives in ./runModel and is unit-tested.
  */
-import { memo, useMemo, useState } from 'react'
+import { memo, useId, useMemo, useState } from 'react'
 import { CheckCircle2, XCircle, Loader2, ChevronRight, Workflow as WorkflowIcon } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
+import { redactSecrets, type ErrorReport } from '../../utils/errorReport'
 import { groupByPhase, latestBudget, type WfEvent } from './runModel'
 
 import { i18nT } from '../../i18n/t'
@@ -32,8 +33,10 @@ export interface WorkflowRunTreeProps {
   status?: 'running' | 'paused' | 'finished' | 'failed' | 'cancelled'
   /** Final result blob (only meaningful when status === 'finished'). */
   result?: unknown
-  /** Failure message (only meaningful when status === 'failed'). */
+  /** Execution failure or live checkpoint-storage problem. */
   error?: string | null
+  /** Backend classification; absent on legacy snapshots and execution errors. */
+  errorCode?: string | null
   /** Cap on rendered narrator log lines (most recent shown). Default 6. */
   maxLogs?: number
 }
@@ -73,9 +76,24 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
   status,
   result,
   error,
+  errorCode,
   maxLogs = 6,
 }: WorkflowRunTreeProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const noticeId = useId()
+  const checkpointMessage = i18nT('apps.workflows.workflowRunTree.checkpoint_save_failed')
+  const checkpointReport = useMemo<ErrorReport | undefined>(() => {
+    if (status === 'failed' || !error || errorCode !== 'workflow_checkpoint_failed') return undefined
+    return {
+      id: noticeId,
+      at: Date.now(),
+      source: 'system',
+      code: 'workflow_checkpoint_failed',
+      message: checkpointMessage,
+      detail: redactSecrets(sanitizeLlmOutput(error)),
+      route: window.location.pathname,
+    }
+  }, [status, error, errorCode, noticeId, checkpointMessage])
   const phases = useMemo(() => groupByPhase(events), [events])
   const budget = useMemo(() => latestBudget(events), [events])
   const logLines = useMemo(
@@ -182,6 +200,23 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
           is a status tree with nothing editable, and the chat composer draft beneath
           it is persisted per slot, so the hand-off loses nothing (same decision as the
           collapsed row and progress bar that feed this tree). */}
+      {checkpointReport && (
+        <>
+          <ErrorNotice
+            message={checkpointMessage}
+            report={checkpointReport}
+            askAgent
+            testId="workflow-run-tree-error"
+          />
+          <details className="text-[13px] text-muted" data-testid="workflow-checkpoint-diagnostic">
+            <summary className="cursor-pointer">{i18nT('memoryV2.view_details')}</summary>
+            <pre className="mt-2 whitespace-pre-wrap break-words max-h-40 overflow-auto">{checkpointReport.detail}</pre>
+          </details>
+        </>
+      )}
+      {status !== 'failed' && error && !checkpointReport && (
+        <ErrorNotice message={sanitizeLlmOutput(error).slice(0, 200)} askAgent testId="workflow-run-tree-error" />
+      )}
       {status === 'failed' && (
         <ErrorNotice
           message={i18nT('apps.workflows.workflowRunTree.failed_with_error', {

@@ -60,6 +60,26 @@ The `learn_add` MCP tool (backed by `POST /api/lessons`) is subject to session-s
 3. Otherwise the slot name (portion after the `:` prefix, or the whole key) must satisfy at least one of:
    - Present in `state._slots` (live in-memory slot), **OR**
    - Key is in `state._restricted_keys`, **OR**
+   - A dedicated subagent (`subagent:`) or headless workflow (`wf:`,
+     `wf-pool:`, `wf-unpooled:`, `wf-worker:`, `wf-author:`) has its full key
+     registered in the real `SessionManager`. The prefix alone grants nothing.
+     Shared subagents instead
+     require an active `SubagentManager` record whose exact handle queue is still
+     registered on its live ACP runtime. No prefix, saved run, parent PID or
+     retained transcript substitutes for that live ownership. Teardown ends this
+     recognition; retry/continuation must have a live allocation again.
+     A live child also checks its admitted memory mode, captured before queueing
+     or approval and stored in the protected run identity. Active subagents use
+     their gateway-owned snapshot; recovery reads the protected record off-loop.
+     Workflow workers use their protected run binding. The gate does not follow
+     an editable parent field or consult a replacement parent slot. Unknown or
+     damaged mode authority refuses with `restricted_session`; incognito blocks
+     writes and temporary also blocks recall. These checks only restrict an
+     independently recognized child; a retained record never grants liveness.
+     Dashboard/archive callers retain their persisted-mode checks even when
+     their provider remains registered.
+     This existence check does not replace restricted-mode checks or private
+     process/session proof and store authorization, **OR**
    - Key is in a **messaging-channel namespace** — recognised by `messaging.link.is_channel_session_key()` (any of `slack:`/`discord:`/`telegram:`/`webex:`/`wecom:`/… per `CHANNEL_SESSION_NAMESPACES`), or it is a bare Slack `thread_ts` matching `validation.SLACK_THREAD_TS_RE` (`^\d{10,}\.\d{6,}$`), **OR**
    - The corresponding JSONL file exists under `~/.kiro/crew/sessions/{slot_name}.jsonl`, `~/.kiro/crew/sessions/dashboard_{slot_name}.jsonl`, `~/.kiro/crew/sessions/cron_{slot_name}.jsonl`, or `~/.kiro/crew/sessions/dashboard_cron-{slot_name}.jsonl` — resolved by `_session_has_persisted_history()` in `handlers/_shared.py`. The two `cron` forms exist because `history._safe_key` folds `:` to `_`: a cron session keyed off `cron:{id}` persists as `cron_{id}.jsonl`, and its linked dashboard slot keyed off `dashboard:cron-{id}` persists as `dashboard_cron-{id}.jsonl`, so an idle-evicted cron session's `learn_add` is recognised rather than rejected as forged.
 
@@ -67,7 +87,7 @@ The `learn_add` MCP tool (backed by `POST /api/lessons`) is subject to session-s
 
 A Slack thread keys its session off the **bare** `thread_ts` (e.g. `1781215864.487849`), set in `slack/handler.py` and frozen into the MCP subprocess's `KIROCREW_SESSION_KEY` env var; the `slack:<chan>:<ts>` form is only a `send_message` delivery target, never the session key. Recognising the bare-`thread_ts` shape is required because the session JSONL is written *after* the LLM turn completes, so the first `learn_add` in a fresh Slack thread would otherwise race the flush and fail with `unknown session` until the transcript lands on disk (then succeed minutes later). Dashboard keys are always prefixed (`dashboard:*`, `chat-N-*`), never a bare `digits.digits`, so the regex cannot widen authorization for dashboard or forged keys.
 
-The same first-turn flush race applies to **every** messaging channel, not just Slack: a Telegram/Discord/Webex/WeCom session key is namespaced `{channel}:{conversation_id}` (e.g. `telegram:kirocrew:forum:-100…:18:gen3`) and, post-#232, the transport publishes `session_pid` so the gateway resolves it into `X-Session-Key`. Recognising the whole channel-namespace family via `is_channel_session_key` (not just `slack:`) is therefore the load-bearing acceptance for channel sessions. The `_session_has_persisted_history` fallback alone cannot rescue them: `slot_name = sk.split(":", 1)[-1]` keeps the inner colons (`kirocrew:forum:-100…:18:gen3`) and drops the channel prefix, while the on-disk file is `dashboard_<safe_key>.jsonl` with `:` folded to `_` — so no probed name ever matches. Before this generalization, only `slack:` was accepted, so `learn_add` (and the other `POST /api/lessons` writers) failed with `unknown session` from every non-Slack channel even though the session was fully identified (regression #1268). The `dashboard:`/`cron:`/`hook:`/`subagent:`/`channel:` namespaces are deliberately **not** in `CHANNEL_SESSION_NAMESPACES`, so they are unaffected and still resolve through the slot / persisted-JSONL paths.
+The same first-turn flush race applies to **every** messaging channel, not just Slack: a Telegram/Discord/Webex/WeCom session key is namespaced `{channel}:{conversation_id}` (e.g. `telegram:kirocrew:forum:-100…:18:gen3`) and, post-#232, the transport publishes `session_pid` so the gateway resolves it into `X-Session-Key`. Recognising the whole channel-namespace family via `is_channel_session_key` (not just `slack:`) is therefore the load-bearing acceptance for channel sessions. The `_session_has_persisted_history` fallback alone cannot rescue them: `slot_name = sk.split(":", 1)[-1]` keeps the inner colons (`kirocrew:forum:-100…:18:gen3`) and drops the channel prefix, while the on-disk file is `dashboard_<safe_key>.jsonl` with `:` folded to `_` — so no probed name ever matches. Before this generalization, only `slack:` was accepted, so `learn_add` (and the other `POST /api/lessons` writers) failed with `unknown session` from every non-Slack channel even though the session was fully identified (regression #1268). The `dashboard:`/`cron:`/`hook:`/`subagent:`/`channel:` namespaces are deliberately **not** in `CHANNEL_SESSION_NAMESPACES`, so they resolve through live ownership, slot or persisted-JSONL paths rather than namespace acceptance.
 
 The JSONL-existence check exists because MCP subprocesses retain their original `KIROCREW_SESSION_KEY` env var for the life of the process, but the gateway's idle-sweep loop evicts in-memory slots after ~60 minutes of inactivity (see `session.py`). Without this fallback, reopened dashboard tabs would deterministically fail `learn_add` once the slot is swept, even though the user is actively engaged.
 
@@ -82,6 +102,7 @@ Every `learn_add` session-scope permission decision — both allows and the deny
 | `sk == "dashboard:ui"` | allowed | `dashboard_ui` |
 | `slot_name in state._slots` | allowed | `live_slot` |
 | `sk in state._restricted_keys` | allowed | `restricted_key` |
+| Headless full key in `SessionManager` or an active shared child's exact live runtime handle | allowed | `live_session` |
 | `is_channel_session_key(sk)` (slack/telegram/discord/webex/wecom/…) or `SLACK_THREAD_TS_RE` match (bare `thread_ts`) | allowed | `channel_namespace` |
 | JSONL exists under `~/.kiro/crew/sessions/` | allowed | `jsonl_fallback_recovery` |
 | None of the above | denied | `unknown_session` |
@@ -136,6 +157,10 @@ Scheduled job execution with three schedule types: `every` (interval, min 60s), 
 Interval descriptions preserve the exact duration, using whole hours, whole minutes, or seconds (`5400s` displays as `every 90m`).
 
 The editor and week grid prefer `every_secs`; their fallback schedule parsers accept `s`, `m`, and `h` suffixes when the numeric interval is unavailable.
+
+The Schedule table defaults to Next Run ascending, ordering upcoming jobs by timestamp before jobs without a next run.
+
+The cron editor sends empty channel and approval overrides on edit to clear stored values; creation omits unset overrides.
 
 - Persistence: `~/.kiro/crew/crons.json` with atomic writes and cross-process file locking
 - Lock contract: mutators (`add_job`/`update_job`/`remove_job`/`enable_job`) acquire the store lock via a bounded non-blocking spin (`_file_lock`); the loop-resident scheduling paths (timer tick, `run_job`) never take the store lock or `_sync()` on the event loop — they **offload** the locked `_sync()`+drain+snapshot to a worker thread via `asyncio.to_thread` (`_tick_scan_locked` for `_on_timer`, `_synced_snapshot` for `run_job`) and run only the mutation-free due-scan / `_executing` claim on the loop; the reaper sweep snapshots the atomically-swapped in-memory job list **cache-only** (no lock, no `_sync`). The hot read paths (`list_jobs`/`get_job`) run on the event loop from many callers (per-connection status push, Slack, apps SDK, MCP) and are **cache-only**: they perform **no filesystem I/O at all** — no lock-file open, no `read_bytes()`, no digest hash, no `_sync`/`_load` — and simply return `list(self._jobs)` (never torn; CPython swaps the list reference atomically). This closes the `no-blocking-call-on-event-loop` hazard: a large `crons.json` can no longer freeze the loop with a synchronous read+hash on every status push **or every timer tick**. Cross-process freshness for these reads is maintained **off-loop**: the in-memory snapshot is `_sync()`-refreshed under the store lock by the timer tick (`_on_timer`, every ≤`_TIMER_POLL_SECS`, in its worker-thread transaction) and by every mutator, so an external write is reflected within one poll interval. A freshly-constructed `CronService` performs one synchronous `_load()` at construction so loop-less callers (MCP/CLI/apps-SDK processes, tests) read on-disk state immediately. That inline load is a whole-file `read_bytes()`+blake2b hash, so an **event-loop** context must NOT use the plain constructor: the gateway builds its service *inside* its running async startup coroutine, where a synchronous construction-time load would block the sole loop (chat/WS/timers/heartbeat). Loop contexts therefore construct via the async factory **`await CronService.create(...)`**, which passes `_defer_initial_load=True` (the constructor does no store I/O) and runs the initial `_load()` in a worker thread via `asyncio.to_thread`; `start()` likewise offloads its `_load()` to a worker thread. `_running` is `False` during both, so neither arms a timer off-loop. Callers that need a **guaranteed cross-process-fresh** read on the loop use the async variants `list_jobs_async()`/`get_job_async()`, which offload the locked `_sync()`+read/hash/parse+snapshot to a worker thread via `asyncio.to_thread` (degrading to the in-memory snapshot under lock contention rather than raising, and draining any deferred timer arm on the loop after the offload). The user-facing `GET /api/crons` handler uses `list_jobs_async()`. **Exhaustive on-loop-`_sync` audit** (enumerated in the `_sync` docstring and enforced by `TestReadPathsLocked` + `TestConstructionLoadOffLoop`): every `_sync()` caller, raw `read_bytes()` site, and initialization/`start()` load is either in a worker thread (`asyncio.to_thread`) or a loop-less CLI/MCP/apps-SDK process — none runs on the gateway event loop. **Write-path (`_save`) invariant**: every `_save()` call site and every structural `self._jobs` mutation holds `_file_lock` and is reached from the loop ONLY via `asyncio.to_thread` — no bare on-loop `_save()` remains. This includes the reaper timeout (`_force_reap`) and user-cancel (`cancel`) terminal paths, which previously mutated the in-memory job and called an unlocked `_save()` directly on the loop: a lost-update race that re-serialized a stale job list and could silently drop a job a concurrent `add_job_async`/`update_job_async` worker had just persisted. Both now offload the locked helper `_merge_terminal_state_locked` (mirroring `_merge_job_result`), which `_sync()`s first so the concurrent write is reloaded and the terminal fields are applied to the disk copy inside one lock transaction. The full writer→lock→loop-entry table lives in the `_save` docstring and is enforced by `TestTerminalStateMergeLocked` (lost-update + off-loop-ticking regressions).
@@ -1809,7 +1834,7 @@ identity and selected knowledge copying.
 **Agents**: GET `/api/agents` (Kiro Crew agent roster ordered **most-used-first** — config agents plus, scoped to the requesting session's project directory via `X-Session-Key`, that project's `.kiro/agents` discoveries, each row tagged `scope: "global" | "project"`; a name in both scopes lists once as the alias, since dispatch resolves aliases first; ordering reorders by `ConversationLog.agent_usage()` (turn count, then recency), falling back gracefully to config-insertion order on any failure so the dropdown never breaks or drops agents), GET `/api/agents/installed` (list all kiro-cli agents from `~/.kiro/agents/` — deliberately global-only, because every consumer is an agent CRUD/editor surface whose "Set as default" persists the selected name into `cfg.agents`, where a project-only name would not resolve; project-scope discovery instead reaches the dispatch surfaces — per-turn resolution, spawn validation, and Slack — with `scope` on each entry reporting which scope won there; `package` field extracted from filename), GET/DELETE `/api/agents/detail/{name}` (full agent config JSON; DELETE removes the config file, protected for kirocrew/kirocrew-lite; DELETE and PATCH are owner-only — see Agent Config)
 **Capability Integration** (edition-supplied operations-based `CapabilityManager` seam — the edition owns its CLI grammar, output parsing, and error translation; on a vanilla OSS install `CapabilityManager.available()` is `False` so every endpoint returns HTTP 503 `"capability manager not available"`; every POST here is owner-only — see Agent Config): GET `/api/capability/mcp` (list installed MCP servers), POST `/api/capability/mcp/install` (install an MCP server, pushes `refresh("agents")`), POST `/api/capability/mcp/uninstall` (pushes `refresh("agents")`), GET `/api/capability/mcp/registry` (browse available MCP servers — the manager returns already-parsed entries, which the core passes through as `{"servers": [...]}`), GET `/api/capability/skills` (list installed skill packages), POST `/api/capability/skills/install` (install by `package` only — **no `version_set`**; the manager owns version/source resolution; regenerates agent config, pushes `refresh("agents")`; the manager returns human-friendly errors), POST `/api/capability/skills/uninstall` (pushes `refresh("agents")`), GET `/api/capability/agents` (list installed agent packages), POST `/api/capability/agents/install` + POST `/api/capability/agents/uninstall` (by `package` only, same no-`version_set` rule as skills; both rebuild the agent config off the event loop, clear the `list_agents()` cache — it keys on a stat-only per-file `(name, mtime-ns)` signature, so a rename invalidates but a same-tick in-place mutation would not bump it — and push `refresh("agents")`), GET `/api/capability/plugins` (installed client-plugin packages **plus** `out_of_sync`, the drift set of packages installed as agents but missing their plugin counterpart; both reads are `asyncio.gather`ed so the endpoint stays inside ONE `CAPABILITY_READ_TIMEOUT` — it is polled), POST `/api/capability/plugins/sync` (reconcile that drift). Package names are allowlisted (`_is_valid_capability_package`: length cap, `..` rejection, charset) before crossing into the edition manager, manager messages are `_redact_external`-scrubbed + length-bounded on BOTH success and failure paths, and each mutation emits an explicit SEL line naming the package (the audit middleware logs only the request path). The routes were renamed from the former `/api/aim/*` to neutral `/api/capability/*` vocab so no Amazon-internal name fossilizes in the fork's public API.
 **No cross-provider bridge.** There are no `/api/cc/*` routes: Kiro Crew drives one provider surface, and provider-specific MCP config is handled uniformly through the `extra_mcp_scopes()` seam (see `platform-context.md`) — the core manages the Kiro global only, and a companion re-adds its own provider scope for apply, uninstall AND discovery. On `/api/mcp/apply` the omitted-field default differs by scope family: the core `kiroGlobal` key is `omit → delete` (the bundled SPA always sends it) while every seam `f"{id}Global"` key is `omit → preserve` (defaults to current on-disk presence), so an OSS apply that omits a companion scope never deletes that provider's server; see the `extra_mcp_scopes()` contract note in `platform-context.md`.
-**Session sidebar ordering**: pinned sessions form a manually ordered section ahead of the automatically sorted remainder. The browser persists that order in `mc-pinned-session-order`, removes stale or duplicate keys, and appends newly pinned sessions in the selected sort's natural order. A pinned row dropped on a pinned peer in the same rendered container changes only that manual order; folder, root, status-column, and chat-reference drops retain their existing meanings. Focused pinned rows also move within their rendered container with Alt+ArrowUp or Alt+ArrowDown. A quiet double-line divider appears only when a container has both pinned and unpinned rows, and explicit search results remain relevance-ranked without the divider.
+**Session sidebar ordering**: pinned sessions form a manually ordered section ahead of the automatically sorted remainder. The browser persists that order in `mc-pinned-session-order`, removes stale or duplicate keys, and appends newly pinned sessions in the selected sort's natural order. A pinned row dropped on a pinned peer in the same rendered container changes only that manual order; folder, root, status-column, and chat-reference drops retain their existing meanings. Focused pinned rows also move within their rendered container with Alt+ArrowUp or Alt+ArrowDown. A quiet double-line divider appears only when a container has both pinned and unpinned rows, and explicit search results remain relevance-ranked without the divider. Session-row layout projection is limited to the first 48 rendered paint positions (roughly two viewports) at every list size; later rows remain interactive but membership changes snap instead of joining Framer measurement and springs. **Session lane scroll memory** (`useLaneScrollMemory`): collapsing the sessions sidebar or closing the mobile drawer unmounts `ChatSidebar`, so the flat and tree lanes each remember the session row at their top edge plus its offset (in memory only, per lane kind) and scroll that row back into place on the next mount, correcting over a few frames while `content-visibility: auto` placeholder rows resolve; any wheel, touch, pointer or key input on the lane ends the correction, a closed anchor row falls back to the recorded pixel offset, board columns are not covered, and a page reload starts at the top.
 
 **Sessions**: GET `/api/sessions` (paginated list; opt-in `exclude_open=1` drops every session a live slot already holds open — resolved through `slot_history_key`/`slot_transcript_key` so channel tabs whose transcript is their `linked_session_key` are recognised, and applied BEFORE `total`/`has_more` so one page's arithmetic matches what it returned. The sidebar's Older-sessions pane is the only caller: it renders the complement of the tab list above it, while the full inventory stays the default for memory consolidation and the command palette's recents. The same predicate protects a session from DELETE `/api/sessions`), GET `/api/sessions/{key}` (detail), DELETE `/api/sessions/{key}` (permanent delete), GET `/api/sessions/usage` (kiro credit usage, cached 10 min; the background refresh tries the real CodeWhisperer RTS `GetUsageLimits` API first — the true used/limit/overage — posting to a hardcoded regional host keyed off the whoami profile ARN (`codewhisperer.us-east-1.amazonaws.com` by default, `q.eu-central-1.amazonaws.com` for `eu-central-1`; any other/missing region falls back to us-east-1); reading bearer tokens from `kiro-cli`'s own SQLite auth store under keys `kirocli:odic:token` (OIDC/Builder ID), `codewhisperer:odic:token` (legacy), `kirocli:social:token` (GitHub/Google social login), and `kirocli:external-idp:token` (Identity Center/org SSO), then falls back to scraping `kiro-cli chat --no-interactive --agent kirocrew-lite /usage` stdout when the API path is unavailable and `dashboard.usage_text_scrape_enabled` is true), POST `/api/sessions/summarize` (one-line LLM summaries for a list of session keys — bounded to 8, generated on an ephemeral background session with the cheap Haiku model, best-effort; backs the `list_sessions` MCP tool's opt-in `summarize=true`), GET `/api/sessions/memory` (per-session and per-task memory footprint; returns `{sessions, tasks, totals, history}` — each session row carries: `key`, `title`, `slot_key`, `untitled`, `agent`, `channel` (the grouping dimension, resolved by `telemetry_channel_of(key)` from `kiro_crew.messaging.link` — bounded cardinality, same taxonomy as telemetry metrics), `pid`, `owns_runtime`, `rss_mb`, `procs`, `mcp`, `cpu_cores`, `prompts`, `uptime_s`, `credits` (cumulative kiro credits consumed over the spend window — `SPEND_WINDOW_DAYS` in `dashboard/handlers/usage.py`, which the Telemetry spend tab's `cost_breakdown` shares so the two surfaces cannot report different totals for one session; `null` when no measured turn exists in the window, which is semantically distinct from zero; the join is by session key, and because a slot bound to a channel or cron conversation runs its turns under `linked_session_key` while its usage rows are still filed under the dashboard `slot.key`, the lookup falls back to `DashboardState.spend_slot_by_session()` — without that reverse index those sessions report `null` despite having spent), `turns` (count of completed turns in the same window — `null` same semantics as `credits`); `totals` carries `rss_mb`, `host_mb`, `host_pct`, `runtimes`, `rss_is_upper_bound`; `history` is a ring of `{t, mb}` snapshots; `tasks` is the subagent task list from `SubagentManager.task_memory_rows()`)
 **Logs**: GET `/api/logs` (SSE), GET/POST `/api/logs/level` (runtime log level control)
@@ -1830,38 +1855,12 @@ identity and selected knowledge copying.
 
 ### Frontend (React SPA)
 
-Workspace and terminal toggle buttons stay at the workspace top-right edge,
-below the app top bar, while either panel opens, closes, or changes dock
-position. The rightmost chat or panel header reserves their space; the controls
-and their stateful pane icons keep their render identity across transitions.
-Only the header owning that edge reserves space for the rendered control count;
-disabling terminals removes their button and reservation.
-When the workspace is open, its fullscreen control lives in the panel's own
-action group beside the ⋯ menu, never among the fixed toggles: right-docked, in
-fullscreen, and on mobile it is a button in the slot the close X vacates while
-the fixed toggles sit beside it; bottom-docked the X keeps that slot and
-fullscreen is an item in the ⋯ menu. Fullscreen fills the window
-with the entire SidePanel using its existing host and mounted children. Tabs,
-editor drafts and PTYs remain alive; exiting restores the saved dock and size.
-Escape exits fullscreen after nested menus, dialogs and editor controls have
-handled the key. A focused terminal keeps Escape: xterm forwards it to the
-PTY for the running program, and fullscreen exits from a terminal through the
-panel's exit control instead. Covered chrome is inert until exit. Native caption controls
-retain their clearance. Dashboard file menus omit file-only fullscreen;
-standalone file previews retain it. The terminal control exits workspace
-fullscreen before toggling the terminal or focusing its separate window.
-Hidden background tabs do not claim Escape. Annotation composers portaled to
-the document body carry their workspace owner ID, so they retain Escape even
-when focus returns to the panel before the draft is resolved.
-The terminal toggle preserves the chosen dock position and creates a
-terminal only when its panel has no tabs; the terminal strip + opens another
-terminal directly. Workspace tab defaults and both docking menus are unchanged.
-Chat, workspace and terminal headers share 44px rows, 28px action buttons and
-16px action icons so all three use the same vertical alignment. Both panels
-use an X for their local hide control, including when docked below the chat;
-hiding preserves their tabs and running terminals. Workspace and terminal
-frames use square corners and share centered pill tabs; tab icons sit in
-fixed-size flex containers rather than inline text baselines.
+In split view the geometric top-left pane stands in for the single-chat title
+row at the surface's top-left: on desktop it clears the shell's sessions-sidebar
+toggle while the sidebar is collapsed, on mobile it renders that toggle inline,
+so the sessions list stays reachable from a split. Every split pane except the
+focused one is dimmed by a background-coloured overlay at `--pane-dim-opacity`,
+which fades as focus moves; a pane outside split view is never dimmed.
 
 `KiroPrerequisiteGate` wraps the main dashboard route (the independent
 `/worlds-popout` route is not gated). `DashboardBootstrap` mounts the proactive
@@ -2739,10 +2738,14 @@ operator may confirm application in the dashboard, while the agent can inspect
 only from a later user/wake turn. `monitor_inspect` alone is a direct read: it
 requires a
 strict authenticated session key and reports unavailable rather than using
-ancestor fallback. Inspect, structured stop, its directive consumer, and the
-strict-internal session read all use the narrower structured binding resolver,
-so a Webex key that remains valid for finite legacy loops cannot reach a
-structured record. Internal read failures carry the MCP failure marker and are
+ancestor fallback. `monitor_inspect` and `monitor_stop` resolve the general
+nudge binding, so both reach whichever shape the session's loop holds and a
+Webex key valid for finite legacy loops reaches them too. Inspect returns the
+structured record when one exists and the legacy presence/cadence reading under
+`autonudge_loop` otherwise; stop routes by the resolved loop's shape. Only
+`monitor_watch`, `monitor_update`, and the strict-internal structured create/update
+path keep the narrower structured resolver, since structured wake delivery is
+unavailable on Webex. Internal read failures carry the MCP failure marker and are
 audited as failed rather than completed. Changing target/objective clears comparison, decision, and
 wake baselines and increments the durable configuration generation; a probe result is
 discarded if the captured generation no longer matches. Target/objective edits
@@ -2757,9 +2760,13 @@ credentials for the newly selected subject.
 Budget updates remain sparse through REST/directive authorization and merge with
 the current budget record only while holding the service lock, so independent
 concurrent edits cannot replace one another with values from stale snapshots.
-Terminal records are read-only. `monitor_stop` records `user_stop`; legacy
-`autonudge_stop` delegates to that durable outcome only when the record is
-structured. An optional stop reason is credential-redacted, bounded, and
+Terminal records are read-only. A stop routes by the resolved loop's shape, and
+`monitor_stop` and `autonudge_stop` share one resolve-and-route implementation so
+the two never diverge. A structured record is retained with a `user_stop`
+outcome for later inspection; a legacy timer loop is removed (a research-owned
+slot is deactivated with a tombstone reason) and leaves nothing behind, so a
+stop of a legacy loop cannot be inspected afterward and `monitor_inspect` then
+reports it as not armed. An optional stop reason is credential-redacted, bounded, and
 retained separately as `user_stop_reason`; it never replaces the stable
 machine-readable `stopped_reason`. When the directive is consumed by an in-flight structured action,
 the record becomes inactive and terminal immediately but retains that wake's
@@ -3067,7 +3074,7 @@ Config does not expose the retired per-agent enforcement-scope selector.
 ### Build & Development
 
 - **Dev mode**: `./dev-fullstack.sh` starts the live-source backend plus a Vite dev server on port 3000 that proxies the API to it
-- **Production build**: `npm run build` in `website/` runs `tsc -b && vite build` into `website/dist`, which is then staged into `src/kiro_crew/static/dist/`. `setup.py` only COPIES an already-built dist into the wheel; it never runs the build.
+- **Production build**: `npm run build` in `website/` runs `tsc -p tsconfig.app.json && vite build` into `website/dist`, which is then staged into `src/kiro_crew/static/dist/`. `setup.py` only COPIES an already-built dist into the wheel; it never runs the build.
 - **Static serving**: `server.py` serves `/assets` from `dist/assets/` (Vite hashed bundles), `/static` from the static dir (theme images, logo)
 - **Runtime dist resolution**: at gateway start `frontend.ensure_dev_dist_symlink()` reconciles `src/kiro_crew/static/dist` for a source-tree run — a populated real dir is a no-op, an existing directory link is validated (dangling or index-less targets are replaced), otherwise `website/dist` (or a legacy sibling `KiroCrewWebsite/dist`) is linked. The link is created through `platform_compat.symlink_or_junction`: a symlink on POSIX, a **directory junction** on Windows, since a Windows symlink requires `SeCreateSymbolicLinkPrivilege` that an ordinary account does not hold. Link detection/removal likewise route through `platform_compat.is_link_or_junction` / `unlink_link_or_junction` — `is_symlink()` reports `False` for a junction, and `shutil.rmtree` refuses one.
 - **Missing-bundle behavior**: if `static/dist/index.html` is absent, `handlers.py` (`index()`) serves a static "not found" guidance page (restart/rebuild hint). The legacy `static/dashboard.html` server-rendered fallback was removed (stored-XSS follow-up); the React SPA is the only shell.

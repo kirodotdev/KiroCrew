@@ -18,6 +18,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import SessionGridView from '../components/SessionGridView'
+import PaneDim from '../components/PaneDim'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { emitSlotFocused } from '../hooks/useWebSocket'
@@ -41,7 +42,7 @@ vi.mock('../components/ChatPane', () => ({
     onRemove,
     onSplitRight,
     onSplitDown,
-    hostsPanelControls,
+    leading,
   }: {
     slotKey: string
     focused?: boolean
@@ -49,9 +50,11 @@ vi.mock('../components/ChatPane', () => ({
     onRemove?: () => void
     onSplitRight?: () => void
     onSplitDown?: () => void
-    hostsPanelControls?: boolean
+    leading?: { inset?: boolean; control?: React.ReactNode }
   }) => (
-    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-hosts-panel-controls={hostsPanelControls ? 'yes' : 'no'}>
+    <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
+      {leading?.control}
+      {focused !== undefined && <PaneDim dimmed={!focused} />}
       <button type="button" aria-label={`focus ${slotKey}`} onClick={onFocus} />
       <button type="button" aria-label={`remove ${slotKey}`} onClick={onRemove} />
       <button type="button" aria-label={`right ${slotKey}`} onClick={onSplitRight} />
@@ -98,11 +101,11 @@ function seedApi(slots: Slot[] = []) {
   return m
 }
 
-function renderGrid(seedSlot?: string | null) {
+function renderGrid(seedSlot?: string | null, leading?: { inset?: boolean; control?: React.ReactNode }) {
   const onClose = vi.fn()
   const onCollapse = vi.fn()
   const utils = renderWithProviders(
-    <SessionGridView onClose={onClose} onCollapse={onCollapse} seedSlot={seedSlot} />,
+    <SessionGridView onClose={onClose} onCollapse={onCollapse} seedSlot={seedSlot} leading={leading} />,
   )
   return { ...utils, onClose, onCollapse }
 }
@@ -154,21 +157,10 @@ describe('SessionGridView — entry seeding', () => {
     expect(pane.getAttribute('data-focused')).toBe('no')
   })
 
-  it('reserves the App panel toggles in the top-right picker header', async () => {
-    renderGrid('a')
-
-    await screen.findByTestId('pane-a')
-    const pickerHeader = onlyPicker().firstElementChild
-    // The reservation belongs on the actions group so it stacks on the header's
-    // own trailing inset; on the header itself it would replace that inset.
-    expect(pickerHeader?.getAttribute('data-panel-controls-host')).toBeNull()
-    const controls = pickerHeader?.querySelector('[data-pane-controls]')
-    expect(controls?.getAttribute('data-panel-controls-host')).toBe('chat')
-    expect(controls?.className).not.toMatch(/\bmr-/)
-    expect(screen.getByTestId('pane-a').getAttribute('data-hosts-panel-controls')).toBe('no')
-  })
-
-  it('finds the geometric top-right pane through nested row and column splits', async () => {
+  // The single-chat title row (which normally carries the sessions-sidebar
+  // toggle, or clears the shell's stationary one) is not rendered in split
+  // view, so exactly one pane — the geometric top-left — stands in for it.
+  it('hands the leading control to the geometric top-left pane only', async () => {
     seedStore('a', {
       type: 'split',
       id: 'root-row',
@@ -186,21 +178,55 @@ describe('SessionGridView — entry seeding', () => {
       ],
     })
     seedApi([{ key: 'a' }, { key: 'b' }, { key: 'c' }])
-    renderGrid('a')
+    renderGrid('a', { control: <button type="button" aria-label="toggle sessions" /> })
 
-    expect((await screen.findByTestId('pane-b')).getAttribute('data-hosts-panel-controls')).toBe('yes')
-    expect(screen.getByTestId('pane-a').getAttribute('data-hosts-panel-controls')).toBe('no')
-    expect(screen.getByTestId('pane-c').getAttribute('data-hosts-panel-controls')).toBe('no')
+    expect((await screen.findByTestId('pane-a')).getAttribute('data-leading')).toBe('control')
+    expect(screen.getByTestId('pane-b').getAttribute('data-leading')).toBe('none')
+    expect(screen.getByTestId('pane-c').getAttribute('data-leading')).toBe('none')
+    // The control is mounted once, inside that pane.
+    expect(screen.getAllByRole('button', { name: 'toggle sessions' })).toHaveLength(1)
+    expect(within(screen.getByTestId('pane-a')).getByRole('button', { name: 'toggle sessions' })).toBeInTheDocument()
   })
 
-  it('renders the empty pane without card chrome', () => {
-    renderGrid('a')
+  it('reserves the shell toggle column on the top-left picker and nowhere else', async () => {
+    // [a | picker] on entry: the session pane owns top-left, the picker top-right.
+    renderGrid('a', { inset: true })
+    await screen.findByTestId('pane-a')
+    expect(screen.getByTestId('pane-a').getAttribute('data-leading')).toBe('inset')
+    const pickerHeader = onlyPicker().firstElementChild as HTMLElement
+    expect(pickerHeader.querySelector('[data-pane-leading-divider]')).toBeNull()
+    expect(pickerHeader.className).not.toContain('pl-[44px]')
+  })
 
-    const picker = onlyPicker()
-    expect(picker.className.split(/\s+/)).not.toContain('border')
-    expect(picker.className).not.toContain('border-dashed')
-    expect(picker.className).not.toContain('rounded-lg')
-    expect(picker.className).not.toContain('m-1')
+  it('a top-left picker reserves the shell toggle column with the divider', async () => {
+    seedStore('a', { type: 'split', id: 'root', dir: 'col', sizes: [0.5, 0.5], children: [leaf('l-p'), leaf('l-a', 'a')] })
+    seedApi([{ key: 'a' }])
+    renderGrid('a', { inset: true })
+    await screen.findByTestId('pane-a')
+    expect(screen.getByTestId('pane-a').getAttribute('data-leading')).toBe('none')
+    const pickerHeader = onlyPicker().firstElementChild as HTMLElement
+    expect(pickerHeader.className).toContain('pl-[44px]')
+    expect(pickerHeader.querySelector('[data-pane-leading-divider]')).not.toBeNull()
+  })
+
+  // Ghostty-style focus cue: every pane that is not the focused one carries
+  // a background-coloured overlay at --pane-dim-opacity; the focused pane's
+  // overlay is at 0. Clicking a dim pane claims focus and the cue moves.
+  it('dims every pane except the focused one, and follows focus', async () => {
+    seedStore('a', { type: 'split', id: 'root', dir: 'col', sizes: [0.5, 0.5], children: [leaf('l-a', 'a'), leaf('l-b', 'b')] })
+    seedApi([{ key: 'a' }, { key: 'b' }])
+    renderGrid('a')
+    await screen.findByTestId('pane-b')
+    const dimOf = (id: string) => screen.getByTestId(`pane-${id}`).querySelector('[data-pane-dim]') as HTMLElement
+    expect(dimOf('a').dataset.paneDim).toBe('off')
+    expect(dimOf('a').style.opacity).toBe('0')
+    expect(dimOf('b').dataset.paneDim).toBe('on')
+    expect(dimOf('b').style.opacity).toBe('var(--pane-dim-opacity)')
+    expect(dimOf('b').className).toContain('pointer-events-none')
+
+    fireEvent.click(screen.getByRole('button', { name: 'focus b' }))
+    await waitFor(() => expect(dimOf('b').dataset.paneDim).toBe('off'))
+    expect(dimOf('a').dataset.paneDim).toBe('on')
   })
 
   it('leaves split mode when there is no session to seed from', async () => {

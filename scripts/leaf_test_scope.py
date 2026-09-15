@@ -3,13 +3,14 @@
 
 Why this reduction is sound when the general one is not
 ------------------------------------------------------
-`run_scoped_tests.py` deliberately refuses to narrow WITHIN a surface, and its
-docstring says why: answering "which tests reach this changed module?" needs a
-real import graph, and six review rounds proved a text scan cannot enumerate the
-ways a test can reach a module.
-
-This script does NOT retry that. It answers two questions that are decidable
-without an import graph, and it escalates to the full suite on anything else:
+Answering "which tests reach this changed module?" soundly needs a real import
+graph; six review rounds proved a text scan cannot enumerate the ways a test can
+reach a module. `run_scoped_tests.py` uses that scan anyway, but only as a
+BEST-EFFORT local selection with CI's full run behind it -- it never claims a
+skipped test is safe to skip. This script's verdict is different in kind: CI acts
+on it to skip the full matrix, so it must be SOUND, and it does not retry the
+scan. It answers two questions that are decidable without an import graph, and
+it escalates to the full suite on anything else:
 
     1. Does any OTHER file depend on the test files this diff touched?
     2. Can this diff change the SET of test files, rather than only their contents?
@@ -77,6 +78,14 @@ Usage
 
 Exit codes: 0 eligible / run green, 1 tests failed, 2 usage or environment error,
 3 NOT eligible -- the caller must run the full suite.
+
+Who the caller is
+-----------------
+The caller that acts on exit 3 is CI (`ci.yml` decides the matrix from
+`--targets`), and CI running the full suite is exactly right: that is where the
+full suite belongs. The LOCAL gate does not consume this script's verdict at all --
+`scripts/local-gate.py` and `run_scoped_tests.py` run the change-related set and
+leave the full suite to CI regardless of whether a diff is leaf-only.
 """
 
 from __future__ import annotations
@@ -98,6 +107,8 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from run_scoped_tests import (  # noqa: E402  (path set immediately above)
     SelectionUntrustworthy,
     has_broad_impact,
+    pytest_parallel_args,
+    pytest_worker_env,
     resolve_base,
     validated_targets,
 )
@@ -403,6 +414,10 @@ def pytest_argv(targets: list[str]) -> list[str]:
         "-m",
         "pytest",
         "-q",
+        # The budgeted `-n auto`, capped through the env `run()` passes: `--run`
+        # is a local convenience on a shared box. CI consumes `--targets` and
+        # drives its own pytest, so this does not change the CI lane.
+        *pytest_parallel_args(),
         "--no-cov",
         "--",
         *validated_targets(targets, REPO_ROOT),
@@ -415,7 +430,7 @@ def run(changed: list[str], gates: list[str], repeat: int) -> int:
         argv = pytest_argv(gates)
         print(f"leaf_test_scope: corpus gates ({len(gates)} file(s), once)", flush=True)
         rc = subprocess.run(
-            argv, cwd=str(REPO_ROOT), check=False
+            argv, cwd=str(REPO_ROOT), env=pytest_worker_env(), check=False
         ).returncode  # noqa: E501  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         if rc != 0:
             print(f"leaf_test_scope: FAILED in the corpus gates (rc={rc}).", file=sys.stderr)
@@ -425,7 +440,7 @@ def run(changed: list[str], gates: list[str], repeat: int) -> int:
     for attempt in range(1, repeat + 1):
         print(f"leaf_test_scope: changed files, pass {attempt}/{repeat}", flush=True)
         rc = subprocess.run(
-            argv, cwd=str(REPO_ROOT), check=False
+            argv, cwd=str(REPO_ROOT), env=pytest_worker_env(), check=False
         ).returncode  # noqa: E501  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         if rc != 0:
             print(

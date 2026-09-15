@@ -43,6 +43,7 @@ from kiro_crew.embeddings import make_sync_embed_fn
 from kiro_crew.frontmatter import ONBOARDING_IMPORT, parse_block_scalar_header, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
+from kiro_crew.lesson_validation import contains_volatile_lesson_fact
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.platform.context import current_context, safe_context_call
 from kiro_crew.security import (
@@ -2073,11 +2074,16 @@ def _column0_activation_declared(text: str) -> bool:
             return True
         if key != "always":
             continue
-        # Strip whitespace AFTER removing the quotes as well as before. The loader
-        # unquotes with ``str.strip("\"'")`` and its consumers then compare
-        # ``.strip().lower() == "true"``, so ``always: " true "`` activates a skill --
-        # while stripping only on the outside leaves ``" true "`` -> `` true ``, which
-        # matches no truthy word here and let that spelling through the screen.
+        # Strip whitespace AFTER removing the quotes as well as before: the
+        # loader's consumers compare ``.strip().lower() == "true"``, so
+        # ``always: " true "`` activates a skill -- while stripping only on the
+        # outside leaves ``" true "`` -> `` true ``, which matches no truthy
+        # word here and let that spelling through the screen. This run-strip is
+        # deliberately WIDER than the loader's unquote (one matched wrapping
+        # level; see ``frontmatter.FrontmatterDialect.strip_quotes``): every
+        # spelling the loader reads as truthy is run-strip truthy too, so the
+        # divergence only ever detects MORE spellings as activating -- the
+        # fail-closed direction this gate must err on.
         value = raw.strip().strip("\"'").strip().casefold()
         if value in {"1", "true", "yes"} or parse_block_scalar_header(value) is not None:
             return True
@@ -4257,6 +4263,8 @@ def _write_instruction(
     rule = str(item.payload.get("rule", "")).strip()
     if not rule:
         return _WriteOutcome("rejected")
+    if contains_volatile_lesson_fact(rule):
+        return _WriteOutcome("rejected")
 
     # ContextBuilder reads lesson.* from the VECTOR store when it holds any, and
     # then never reads lessons.jsonl (context.py: `if memory.vector_store and
@@ -4308,14 +4316,14 @@ def _write_instruction(
         # so an import can never delete a lesson the user taught the agent.
         if len(existing_lessons) >= _MAX_LESSONS_TOTAL:
             return _WriteOutcome("rejected")
-    lesson_store.save(
+    outcome = lesson_store.save(
         Lesson(
             ts=datetime.now(timezone.utc).isoformat(),
             rule=rule,
             category="preference",
         )
     )
-    return _WriteOutcome("imported")
+    return _WriteOutcome("rejected" if outcome == "refused" else "imported")
 
 
 def _write_memory(

@@ -2185,16 +2185,18 @@ class TestUnresolvedSessionsAreNamespaced:
         finally:
             set_current_caller(None)
 
-    def test_the_key_survives_an_HTTP_header(self):
-        """The key is sent as ``X-Session-Key``, so the separator must be encodable.
+    def test_the_key_is_never_a_header_claim(self):
+        """The placeholder goes in the BODY only; ``X-Session-Key`` is a claim it is not.
 
-        ``_session_key_header_error`` is the shim's own pre-flight; a key it rejects
-        never reaches the gateway at all.
+        ``_declares_identity`` is the shim's own routing: a strictly-resolved key is
+        declared and kernel-verified, the placeholder (with or without the nonce
+        half) is not declared at all. See ``TestUnresolvedKeysAreNeverDeclared``.
         """
         set_current_tenant_nonce("cafebabe")
-        assert (
-            mcp_computer._session_key_header_error(mcp_computer._unresolved_session_key()) is None
-        )
+        assert not mcp_computer._declares_identity(mcp_computer._unresolved_session_key())
+        set_current_tenant_nonce("")
+        assert not mcp_computer._declares_identity(mcp_computer._unresolved_session_key())
+        assert mcp_computer._declares_identity("dashboard:main")
 
     def test_it_is_read_at_CALL_time_not_captured_at_import(self, monkeypatch):
         """A ``fork``ed child must not inherit the parent's string.
@@ -2434,3 +2436,130 @@ class TestTheInvokeCallIsNeverProxied:
 
         assert proxy_hits == [], f"the secret proxied despite no_proxy=localhost: {proxy_hits}"
         assert [h["secret"] for h in gateway_hits] == [self.CANARY]
+
+
+class TestUnresolvedKeysAreNeverDeclared:
+    """The ``unresolved:`` placeholder rides in the body, never in ``X-Session-Key``.
+
+    The header is an identity CLAIM. On the AF_UNIX leg ``token_auth._verify_unix_peer``
+    kernel-resolves the peer pid's ``session_pid_<pid>`` ancestry and denies
+    ``403 peer_session_mismatch`` when the recovered key differs from the declared one.
+    A placeholder names no session, so it can never match, and declaring it makes every
+    dashboard-launched Computer Use call on macOS fail with a bare ``Error: Forbidden``
+    while ``kirocrew computer apps`` (which never takes that leg) works. The
+    empty-header arm of that gate is "nothing session-scoped is claimed, nothing to
+    verify", which is the truth of an unnamed shim.
+
+    Asserted at the WIRE, on a real listener, so a refactor that rebuilds the header
+    dict cannot pass by accident.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_nonce(self):
+        set_current_tenant_nonce("")
+        yield
+        set_current_tenant_nonce("")
+
+    @staticmethod
+    def _serve(sink: list[dict]):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self):  # noqa: N802 - stdlib naming
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                sink.append(
+                    {
+                        "has_session_header": "X-Session-Key" in self.headers,
+                        "session_header": self.headers.get("X-Session-Key"),
+                        "body": json.loads(raw),
+                    }
+                )
+                payload = b'{"text": "ok"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, fmt, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, server.server_address[1]
+
+    def _invoke_through(self, monkeypatch, session_key: str) -> dict:
+        hits: list[dict] = []
+        server, port = self._serve(hits)
+        try:
+            monkeypatch.setattr(
+                mcp_computer, "_resolve_api_target", lambda: (f"http://127.0.0.1:{port}", "")
+            )
+            monkeypatch.setattr(mcp_computer, "_internal_secret", lambda: "not-a-secret")
+            decoded = mcp_computer._invoke(session_key, TOOL_LIST_APPS, {})
+        finally:
+            server.shutdown()
+        assert decoded == {"text": "ok"}
+        assert len(hits) == 1
+        return hits[0]
+
+    def test_an_unresolved_key_sends_no_header_and_keeps_the_body_namespace(self, monkeypatch):
+        key = mcp_computer._unresolved_session_key()
+        hit = self._invoke_through(monkeypatch, key)
+        assert hit["has_session_header"] is False, hit
+        # The body placeholder still scopes ``SnapshotIndex`` and the audit line.
+        assert hit["body"]["session_key"] == key
+        assert key.startswith(mcp_computer.UNRESOLVED_SESSION_PREFIX)
+
+    def test_a_pooled_unresolved_key_with_a_nonce_sends_no_header_either(self, monkeypatch):
+        set_current_tenant_nonce("cafebabe")
+        key = mcp_computer._unresolved_session_key()
+        assert mcp_computer.UNRESOLVED_TENANT_SEPARATOR in key
+        hit = self._invoke_through(monkeypatch, key)
+        assert hit["has_session_header"] is False, hit
+        assert hit["body"]["session_key"] == key
+
+    def test_a_strictly_resolved_key_is_still_declared(self, monkeypatch):
+        """The gate still has a claim to kernel-verify when there is a real one."""
+        hit = self._invoke_through(monkeypatch, "dashboard:main")
+        assert hit["session_header"] == "dashboard:main"
+        assert hit["body"]["session_key"] == "dashboard:main"
+
+    def test_the_call_path_routes_an_unresolved_identity_without_a_header(
+        self, keystone: Path, monkeypatch
+    ):
+        """End to end from ``_call_tool_inner``: strict resolver empty -> no header."""
+        _enable(keystone)
+        seen: list[tuple[str, dict]] = []
+
+        def fake_invoke(session_key, name, args):
+            seen.append((session_key, {"declared": mcp_computer._declares_identity(session_key)}))
+            return {"text": "ok"}
+
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
+        monkeypatch.setattr(mcp_computer, "_invoke", fake_invoke)
+        assert mcp_computer._call_tool_inner(TOOL_LIST_APPS, {}) == "ok"
+        assert seen and seen[0][0].startswith(mcp_computer.UNRESOLVED_SESSION_PREFIX)
+        assert seen[0][1]["declared"] is False
+
+    def test_the_header_preflight_still_guards_a_resolved_key(self, keystone: Path, monkeypatch):
+        """A resolved key that cannot be a header is still refused before the wire."""
+        _enable(keystone)
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:tab\u2014x")
+        monkeypatch.setattr(
+            mcp_computer, "_invoke", lambda *a, **k: pytest.fail("must not reach the wire")
+        )
+        result = mcp_computer._call_tool_inner(TOOL_LIST_APPS, {})
+        assert result.startswith(ERROR_PREFIX)
+        assert "invalid in HTTP headers" in result
+
+    def test_the_header_is_gated_by_the_prefix_not_by_a_caller_flag(self):
+        """Source-level guard: ``_invoke`` must consult ``_declares_identity`` itself.
+
+        A flag threaded from the caller is the shape that lets a future call site
+        put the placeholder back in the header by forgetting to pass it.
+        """
+        src = inspect.getsource(mcp_computer._invoke)
+        assert "_declares_identity(session_key)" in src
+        assert '"X-Session-Key": session_key' not in src

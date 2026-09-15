@@ -147,7 +147,10 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
       text: 'second prompt',
       images: ['/tmp/shot.png'],
       push: 0,
-      bannerH: 70,
+      // The SETTLED resting height reported by the card (60 in `wire`), not the
+      // live card rect (70). The push geometry is resting-height-derived so the
+      // hover peek cannot feed its own push — see the peek test below.
+      bannerH: 60,
     })
   })
 
@@ -248,6 +251,111 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
     const g = mountGeometry(2)
     wire(h, g, [single(0, 'user', 'a'), single(1, 'assistant', 'b')])
     expect(() => act(() => { h.result.current.jumpToPinnedPromptInPlace(7) })).not.toThrow()
+    expect(frames).toHaveLength(0)
+  })
+})
+
+/**
+ * The pinned card grows past its resting size in two states — the hover peek and
+ * the expansion — and `PinnedPrompt`'s `peek` is gated on `pushUp <= 0`. So if
+ * the push geometry reads the LIVE card rect, the card's own growth decides
+ * whether it is allowed to grow: peek grows the card, the taller card lengthens
+ * `pinPushTravel`, the longer travel makes `push` positive, a positive push
+ * closes the peek, the card shrinks, `push` returns to 0, and the peek reopens
+ * under the still-resting pointer. Users saw the card flip between its one-line
+ * and three-line heights for as long as the pointer stayed on it, and blink the
+ * transcript row it hides. With macOS "Reduce motion" ON the height morph is
+ * skipped, so each traversal costs one frame instead of 150ms and the throb
+ * became a violent flicker.
+ */
+describe('usePinnedPrompt push geometry is resting-height-derived', () => {
+  it('ignores a card grown by the peek, so the peek cannot close itself', () => {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    // The incoming prompt sits 80px below the fold: clear of the RESTING travel
+    // (ROW_PAD_Y + 60 = 64) and inside the PEEKED one (ROW_PAD_Y + 105 = 109).
+    // That band is where the oscillation lived.
+    setRect(g.rows[4], 180, 40)
+    // Card currently showing three lines because the pointer is resting on it.
+    setRect(g.card, 104, 105)
+    wire(h, g)
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, push: 0, bannerH: 60 })
+  })
+
+  it('still pushes the banner out on the incoming prompt, using the resting height', () => {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    // 40px below the fold: inside the resting travel of 64, so the card is
+    // genuinely being pushed out and the push must be the remaining 24px.
+    setRect(g.rows[4], 140, 40)
+    wire(h, g)
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, push: 24, bannerH: 60 })
+  })
+})
+
+/**
+ * Reduced motion must remove the eased TRAVEL of the jump, not its convergence.
+ * The landing is re-derived every frame because rows mount, images load and the
+ * banner swaps DURING the jump — and the swap is caused by our own scroll write,
+ * so it is only observable on the frame after it. Landing after a single frame
+ * reads the geometry that was true BEFORE those shifts, which is the stale
+ * landing (banner clipped or dropped) this self-driven glide replaced.
+ */
+describe('usePinnedPrompt in-place jump under reduced motion', () => {
+  /** A row whose viewport rect tracks the scroller, the way a real one does. */
+  function trackScroll(el: HTMLElement, contentTop: number, height: number, g: { scrollTop: number }) {
+    Object.defineProperty(el, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => rect(contentTop - g.scrollTop, height),
+    })
+  }
+
+  function reduceMotion() {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true, configurable: true,
+      value: vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+    })
+  }
+
+  it('lands instantly, then keeps re-deriving until the landing stops moving', () => {
+    reduceMotion()
+    const h = renderPin()
+    const g = mountGeometry(5)
+    trackScroll(g.rows[2], 300, 40, g)
+    wire(h, g)
+    act(() => { h.result.current.jumpToPinnedPromptInPlace(2) })
+
+    // Frame 1: no eased ramp — straight to the goal. chrome = fold 100 +
+    // pinPushTravel(70) 74 + 24 slack = 198, so 200 + 100 - 198 = 102.
+    flushFrame(0)
+    expect(g.scrollTop).toBe(102)
+    // ...and the loop is STILL armed. This is the fix: a single frame cannot see
+    // the banner swap its own write causes.
+    expect(frames).toHaveLength(1)
+
+    // The banner that pins mid-jump is taller than the one we reserved for.
+    setRect(g.card, 104, 120)
+    // chrome = 100 + (4 + 120) + 24 = 248, row top = 300 - 102 = 198.
+    flushFrame(16)
+    expect(g.scrollTop).toBe(52)
+
+    // Nothing moves any more, so the loop stops on its own.
+    flushFrame(32)
+    expect(g.scrollTop).toBe(52)
+    expect(frames).toHaveLength(0)
+  })
+
+  it('stops after GLIDE_MS when the landing never settles', () => {
+    reduceMotion()
+    const h = renderPin()
+    const g = mountGeometry(5)
+    // Row rect does NOT track the scroller, so the derived goal keeps moving —
+    // the animated-widget case. The wall-clock bound must still end the loop.
+    wire(h, g)
+    act(() => { h.result.current.jumpToPinnedPromptInPlace(2) })
+    flushFrame(0)
+    expect(frames).toHaveLength(1)
+    flushFrame(460)
     expect(frames).toHaveLength(0)
   })
 })

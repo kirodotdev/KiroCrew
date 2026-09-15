@@ -129,12 +129,17 @@ RUN set -eux; \
 # this back to COPY. The mount is read-only (BuildKit default); pip only
 # reads the wheel. .dockerignore's allowlist means the mounted dist/ contains
 # exactly the staged *.whl, so the one-wheel guard keeps its meaning.
+# Bare `--version` is a pre-dispatch fast-path that answers before
+# `kiro_crew.cli` is imported, so it cannot prove the import chain resolves.
+# The `import kiro_crew.cli` probe is what catches a runtime import the wheel
+# metadata does not declare.
 RUN --mount=type=bind,source=dist,target=/tmp/wheels \
     set -eux; \
     WHEEL_COUNT=$(ls /tmp/wheels/*.whl | wc -l); \
     [ "${WHEEL_COUNT}" -eq 1 ] || { echo "expected exactly one wheel, found ${WHEEL_COUNT}" >&2; exit 1; }; \
     pip install --no-cache-dir /tmp/wheels/*.whl; \
-    kirocrew --version
+    kirocrew --version; \
+    python -c 'import kiro_crew.cli'
 
 # Re-stamp the provenance the wheel already carries: this image installs the
 # wheel artifact, which is stamped "wheel", so without this every container

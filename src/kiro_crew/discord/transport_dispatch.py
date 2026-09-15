@@ -862,6 +862,7 @@ class DiscordDispatcher:
                 memory_store=_memory_store,
                 resumed=resumed,
                 runtime_source="discord",
+                context_provider=provider,
             )
 
             # PreToolUse security gate (channel-neutral, off ctx_builder.hooks).

@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+from kiro_crew.agent_discovery import AmbiguousAgentSpecError, spec_by_declared_name
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import is_sensitive_path
@@ -547,8 +548,47 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     Takes the directory explicitly rather than resolving it here so this module
     stays free of :mod:`kiro_crew.agent`, which imports the config loader and
     would form an import cycle.
+
+    A spec that DECLARES ``name == agent_id`` wins, found through
+    :func:`kiro_crew.agent_discovery.spec_by_declared_name`, and
+    ``<agent_id>.json`` is read only when no spec declares the id. That is the
+    order :func:`kiro_crew.agent.agent_spec_path` and the documented resolution
+    convention use, and it is what keeps a misnamed ``<agent_id>.json`` that
+    declares some other agent from being projected under this id, with that
+    other agent's tools and prompt, while the spec that does declare the id
+    sits beside it unread. Two specs declaring *agent_id* are refused, as
+    :func:`kiro_crew.agent.agent_spec_path` refuses them: which is live is
+    undefined, and picking either would project an agent the operator did not
+    name.
+
+    The scan's parsed spec is returned as is: it was read under the hardened
+    reader's guards, labelled ``kas_agent_projection`` so a denial is
+    attributed to the projection, and reopening the file it came from would
+    read it a second time with none of them. The fallback read of
+    ``<agent_id>.json`` is the module's own, unchanged; a spec declaring no
+    name at all, or a name other than its stem, reaches the projection only
+    through it.
+
+    The scan and the fallback read raise :class:`KasAgentTranslationError` on
+    an ``OSError`` for the same reason: every caller of this module handles the
+    translation error, not an ``OSError``. On 3.12 ``Path.glob`` propagates one
+    from the ``is_dir`` probe it runs on the directory itself (3.13 and 3.14
+    run no such probe), and ``Path.read_text`` propagates a permission error
+    on every supported version, so an unsearchable agents dir reaches this
+    function as an ``OSError`` and the conversion is what makes the failure
+    uniform.
     """
     path = agents_dir / f"{agent_id}.json"
+    try:
+        declared = spec_by_declared_name(
+            agents_dir, agent_id, operation="kas_agent_projection", source="unknown"
+        )
+    except AmbiguousAgentSpecError as exc:
+        raise KasAgentTranslationError(str(exc)) from exc
+    except OSError as exc:
+        raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
+    if declared is not None:
+        return declared
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -563,6 +603,7 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
 def build_kas_custom_agents(
     agents_dir: Path,
     agent_id: str,
+    spec: dict[str, Any],
     *,
     stub_server_names: frozenset[str] = frozenset(),
     member_dispatch: bool = False,
@@ -581,8 +622,17 @@ def build_kas_custom_agents(
     *stub_server_names* is forwarded to :func:`_project_mcp_servers`; the caller
     holds the gateway overlay this session will inject from, so it is the only
     layer that can answer which names are stubbed.
+
+    *spec* is REQUIRED and positional, and this function performs no read of its
+    own. Its answer becomes the session's whole tool surface, so it has to be
+    built from the spec the caller verified under the freshness gate -- reading the
+    file here would be a SECOND read, milliseconds later, and a revocation landing
+    in between would be projected as though it had been checked. A defaulted
+    parameter that fell back to :func:`load_agent_spec` would restore exactly that
+    hole for any caller that forgot to pass one, which is why there is no default.
+    *agents_dir* stays for :func:`resolve_prompt`, which anchors a ``file://``
+    prompt URI and reads a different artifact than the spec.
     """
-    spec = load_agent_spec(agents_dir, agent_id)
     prompt = resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
     return [
         to_client_custom_agent(

@@ -124,6 +124,16 @@ def _canonical_json(value: dict[str, str]) -> bytes:
     ).encode("ascii")
 
 
+# Shared with the feature-videos publisher (``scripts/feature-videos/_manifest.py``),
+# which loads this file by path and signs a different document with the same key,
+# canonical form, runners and KMS flow. Public names, so the sharing is a stated
+# contract rather than a reach into module internals.
+canonical_json = _canonical_json
+public_key_der = _public_key_der
+run_openssl = _run_openssl
+MAX_SIGNATURE_BYTES = _MAX_SIGNATURE_BYTES
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -359,19 +369,16 @@ def _verify_command(args: argparse.Namespace) -> None:
     print(f"verified: {args.manifest} signed by {expected_key_id}")
 
 
-def _kms_sign_command(args: argparse.Namespace) -> None:
-    payload_any = _load_json(args.payload)
-    payload = _validate_signed_payload(payload_any)
-    canonical = _canonical_json(payload)
-    if args.payload.read_bytes() != canonical:
-        raise ManifestError("CLI manifest payload is not canonical JSON")
+def kms_sign_digest(key_arn: str, pinned_der: bytes, digest: bytes) -> bytes:
+    """Sign a SHA-256 *digest* with the KMS key at *key_arn*, pinned to *pinned_der*.
 
-    pinned_der = _public_key_der(args.public_key)
-    expected_key_id = f"sha256:{hashlib.sha256(pinned_der).hexdigest()}"
-    if payload["key_id"] != expected_key_id:
-        raise ManifestError("CLI manifest payload does not name the committed public key")
-
-    public_response = _run_aws_json(["kms", "get-public-key", "--key-id", args.key_arn])
+    The KMS key's public half must byte-match the committed one before anything
+    is signed: a mistyped ARN would otherwise sign with some other key and
+    produce an envelope every consumer refuses. Shared by the CLI manifest
+    signer and the feature-videos publisher (``scripts/feature-videos``), which
+    sign different documents with the same key and the same checks.
+    """
+    public_response = _run_aws_json(["kms", "get-public-key", "--key-id", key_arn])
     if public_response.get("KeyUsage") != "SIGN_VERIFY":
         raise ManifestError("CLI manifest KMS key must have SIGN_VERIFY usage")
     if public_response.get("KeySpec") not in {"RSA_3072", "RSA_4096"}:
@@ -389,13 +396,12 @@ def _kms_sign_command(args: argparse.Namespace) -> None:
     if not hmac.compare_digest(kms_der, pinned_der):
         raise ManifestError("configured KMS key does not match the committed public key")
 
-    digest = hashlib.sha256(canonical).digest()
     sign_response = _run_aws_json(
         [
             "kms",
             "sign",
             "--key-id",
-            args.key_arn,
+            key_arn,
             "--message",
             base64.b64encode(digest).decode("ascii"),
             "--message-type",
@@ -410,9 +416,24 @@ def _kms_sign_command(args: argparse.Namespace) -> None:
     if not isinstance(encoded_signature, str):
         raise ManifestError("AWS KMS did not return a signature")
     try:
-        signature = base64.b64decode(encoded_signature, validate=True)
+        return base64.b64decode(encoded_signature, validate=True)
     except ValueError as exc:
         raise ManifestError("AWS KMS returned an invalid signature") from exc
+
+
+def _kms_sign_command(args: argparse.Namespace) -> None:
+    payload_any = _load_json(args.payload)
+    payload = _validate_signed_payload(payload_any)
+    canonical = _canonical_json(payload)
+    if args.payload.read_bytes() != canonical:
+        raise ManifestError("CLI manifest payload is not canonical JSON")
+
+    pinned_der = _public_key_der(args.public_key)
+    expected_key_id = f"sha256:{hashlib.sha256(pinned_der).hexdigest()}"
+    if payload["key_id"] != expected_key_id:
+        raise ManifestError("CLI manifest payload does not name the committed public key")
+
+    signature = kms_sign_digest(args.key_arn, pinned_der, hashlib.sha256(canonical).digest())
 
     with tempfile.TemporaryDirectory(prefix="kirocrew-cli-manifest-") as temporary:
         signature_path = Path(temporary) / "signature.bin"

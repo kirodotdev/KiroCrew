@@ -45,10 +45,35 @@ _PLUGIN = textwrap.dedent("""
     import os
     import pathlib
     import signal
+    import time
+    from types import SimpleNamespace
 
+    from _pytest import timing
+    import conftest
     import pytest
 
     _FIRED = []
+    _CLOCK = 1000.0
+
+
+    def advance(seconds):
+        global _CLOCK
+        _CLOCK += seconds
+
+
+    @pytest.hookimpl(tryfirst=True, wrapper=True)
+    def pytest_runtest_protocol(item, nextitem):
+        # Registered after the root plugin, so this brackets its tryfirst wrapper
+        # too. Change clock inputs only: real CallInfo, reports, teardown and xdist
+        # still run. A module-local proxy leaves stdlib time and timeout timers real.
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(timing, "perf_counter", lambda: _CLOCK)
+            patch.setattr(
+                conftest, "time",
+                SimpleNamespace(perf_counter=lambda: _CLOCK, time=time.time),
+            )
+            return (yield)
+
 
 
     _SITE = os.environ["ESCAPE_SITE"]
@@ -79,7 +104,10 @@ _PLUGIN = textwrap.dedent("""
         # Record worker-side reports so the outer test can assert that no protocol
         # phase was reported twice. The controller also loads this plugin.
         if os.environ.get("PYTEST_XDIST_WORKER"):
-            entry = {"nodeid": report.nodeid, "when": report.when, "outcome": report.outcome}
+            entry = {
+                "nodeid": report.nodeid, "when": report.when,
+                "outcome": report.outcome, "duration": report.duration,
+            }
             if report.when == "teardown":
                 entry["timer_armed"] = (
                     signal.getitimer(signal.ITIMER_REAL)[0] > 0
@@ -100,6 +128,7 @@ _PLUGIN = textwrap.dedent("""
     """)
 
 _TESTS = textwrap.dedent("""
+    import time
     import pytest
 
     # One worker for the whole module: the bystander must run AFTER the victim
@@ -109,12 +138,22 @@ _TESTS = textwrap.dedent("""
 
 
     @pytest.fixture
-    def tracked():
+    def tracked(request):
+        from escape_plugin import advance
+
+        # First-item setup cost need not match the following bystander's cost.
+        if request.node.name == "test_victim":
+            advance(2.0)
         yield "value"
+        advance(0.5)
 
 
     @pytest.mark.timeout(120)
     def test_victim(tracked):
+        from escape_plugin import advance
+
+        time.sleep(3.0)
+        advance(3.0)
         assert tracked == "value"
 
 
@@ -232,11 +271,21 @@ def test_escaped_failed_is_reported_against_its_test_not_as_internalerror(tmp_pa
     victim_nodeid = "test_escape.py::test_victim@escape_guard"
     bystander_nodeid = "test_escape.py::test_bystander@escape_guard"
     skipped_nodeid = "test_escape.py::test_skipped_bystander@escape_guard"
-    # Integration checks cover duration keys and signs. Exact accounting is
-    # checked below with injected clocks, independently of machine load.
     for nodeid in (victim_nodeid, bystander_nodeid, skipped_nodeid):
         assert nodeid in durations, (escape_site, durations)
         assert durations[nodeid] >= 0.0, (escape_site, durations)
+    victim_duration = durations[victim_nodeid]
+    bystander_duration = durations[bystander_nodeid]
+    # The fixture owns the clock inputs: victim setup=2, call=3, teardown=0.5;
+    # bystander setup/call=0, teardown=0.5. No expected value comes from a report
+    # or the guard's accumulator. Exact phase budgets catch both recharging setup
+    # on a synthesized call and recharging the call on a replacement teardown.
+    assert victim_duration == 5.5, (escape_site, durations)
+    assert bystander_duration == 0.5, (escape_site, durations)
+    victim_phase_durations = [
+        report["duration"] for report in reports if "::test_victim" in report["nodeid"]
+    ]
+    assert victim_phase_durations == [2.0, 3.0, 0.5], (escape_site, reports)
 
     collect_proc = _run_inner_pytest(
         tmp_path,
@@ -257,11 +306,11 @@ def test_escaped_failed_is_reported_against_its_test_not_as_internalerror(tmp_pa
 
 # ── Deterministic unit tests of the real pytest_runtest_protocol accounting ──
 #
-# The subprocess test above exercises the guard through a real xdist+split session but
-# cannot pin the duration arithmetic without a wall clock. These tests drive the SAME
-# guard code -- the root conftest's ``pytest_runtest_protocol`` generator -- directly,
-# with an injected clock and injected ``CallInfo`` values, so the branch taken and the
-# exact duration charged to the synthesized report are pinned with zero timing.
+# The subprocess test above exercises the guard through a real xdist+split session
+# with fixture-owned phase budgets. These additional tests drive the SAME guard
+# code -- the root conftest's ``pytest_runtest_protocol`` generator -- directly,
+# with an injected clock and injected ``CallInfo`` values, so individual branches
+# and exact duration attribution are also checked independently.
 
 
 def _load_root_conftest():

@@ -30,7 +30,8 @@ class SettingsConflictError extends Error {
 }
 const DEFAULTS = {
   triage_labels: [] as string[], unlabeled_is_untriaged: true,
-  good_first_issue_labels: [] as string[], notify_on_new_issue: false, revision: 0,
+  good_first_issue_labels: [] as string[], notify_on_new_issue: false,
+  workspace_path: '', revision: 0,
 }
 vi.mock('../apps/issue-radar/api', () => ({
   issueRadarApi: api,
@@ -40,6 +41,20 @@ vi.mock('../apps/issue-radar/api', () => ({
 
 const ctx = { value: {} as Record<string, unknown> }
 vi.mock('../apps/issue-radar/context', () => ({ useIssueRadar: () => ctx.value }))
+
+// Stub the shared dashboard ProjectPicker: the real one portals to <body>,
+// calls the dashboard API (recent-projects / browse-dirs) and computes an anchor
+// rect — none of which this suite is testing. The stub renders a button that
+// fires `onSelect` with a fixed path when open, so the wiring (Browse opens it,
+// a selection saves through `update`) is what gets exercised. The real picker
+// has its own coverage in ProjectPicker.test.tsx.
+const PICKED_PATH = '/Users/me/code/zzq-org/zzq-pkg'
+vi.mock('../components/ProjectPicker', () => ({
+  default: ({ open, onSelect }: { open: boolean; onSelect: (p: string) => void }) =>
+    open
+      ? <button type="button" data-testid="pp-pick" onClick={() => onSelect(PICKED_PATH)}>pick</button>
+      : null,
+}))
 
 const RepoSettings = (await import('../apps/issue-radar/views/settings/RepoSettings')).default
 
@@ -250,6 +265,52 @@ describe('RepoSettings — members roster', () => {
     })
     renderPage()
     expect(await screen.findByText(/No members found for this repo/)).toBeInTheDocument()
+  })
+})
+
+describe('RepoSettings — workspace path', () => {
+  // Typing a path autosaves it as `workspace_path`; the Investigate action reads
+  // this to open its chat session in the repo's real working copy.
+  it('saves the workspace path the user types', async () => {
+    renderPage()
+    const input = await screen.findByPlaceholderText('/Users/you/code/owner/repo')
+    await waitFor(() => expect(input).toHaveProperty('disabled', false))
+
+    // paste, not type: onChange autosaves, so a per-character type() would queue
+    // one write per keystroke and only the last would carry the whole path.
+    await userEvent.click(input)
+    await userEvent.paste('/Users/me/code/zzq-org/zzq-pkg')
+
+    await waitFor(() => expect(api.putSettings).toHaveBeenCalled())
+    const last = api.putSettings.mock.calls.at(-1)![1] as { workspace_path: string }
+    expect(last.workspace_path).toBe('/Users/me/code/zzq-org/zzq-pkg')
+  })
+
+  it('shows the configured path back in the readout', async () => {
+    api.getSettings.mockResolvedValue({
+      owner: REF.owner, repo: REF.repo,
+      settings: { ...DEFAULTS, workspace_path: '/srv/checkouts/zzq-pkg', revision: 2 },
+    })
+    renderPage()
+    expect(await screen.findByText(/New Investigate sessions will run in/)).toBeInTheDocument()
+    expect(screen.getByText('/srv/checkouts/zzq-pkg')).toBeInTheDocument()
+  })
+
+  // Browse opens the shared ProjectPicker (stubbed here); a selection saves the
+  // chosen folder as workspace_path through the same autosave path as typing.
+  it('saves the folder chosen through the Browse picker', async () => {
+    renderPage()
+    const browse = await screen.findByRole('button', { name: /Browse/ })
+    await waitFor(() => expect(browse).toHaveProperty('disabled', false))
+
+    // Picker is closed until Browse is clicked.
+    expect(screen.queryByTestId('pp-pick')).not.toBeInTheDocument()
+    await userEvent.click(browse)
+    await userEvent.click(await screen.findByTestId('pp-pick'))
+
+    await waitFor(() => expect(api.putSettings).toHaveBeenCalled())
+    const last = api.putSettings.mock.calls.at(-1)![1] as { workspace_path: string }
+    expect(last.workspace_path).toBe(PICKED_PATH)
   })
 })
 

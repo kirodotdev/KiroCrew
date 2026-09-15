@@ -29,6 +29,17 @@ from kiro_crew.skills import SkillsLoader
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    home = tmp_path / "host-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("KIRO_HOME", str(home / ".kiro"))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    # The host floor pins these hooks separately from the lazy KIRO_HOME path.
+    # Keep template readers on the same test-owned root as template writers.
+    agents = home / ".kiro" / "agents"
+    monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents)
+    monkeypatch.setattr("kiro_crew.agent_discovery._KIRO_AGENTS_DIR", agents)
     cfg = KiroCrewConfig.load()
     cfg.agents["writer"] = KiroCrewAgentConfig(
         kiro_agent="writer-template", description="A careful bilingual writer"
@@ -48,6 +59,11 @@ def env(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
+    for template in ("critic-runtime", "task-template"):
+        (project / ".kiro" / "agents" / f"{template}.json").write_text(
+            json.dumps({"name": template, "prompt": "Execution task instructions."}),
+            encoding="utf-8",
+        )
     for path, body in {
         "AGENTS.md": "Project rules: run the review checks.",
         "SOUL.md": "Project Soul: write with empathy.",
@@ -618,3 +634,125 @@ def test_unmanaged_prompt_outside_root_is_not_exempted_by_name(env, tmp_path, te
         env.builder.build_message(
             "Continue", False, memory_store=env.store, project=str(env.project)
         )
+
+
+def test_managed_source_resolves_each_declared_root_once_per_call(tmp_path, monkeypatch):
+    from collections import Counter
+
+    from kiro_crew import member_essential_context as mec
+    from kiro_crew.config.loader import WorkspaceConfig
+
+    cfg = KiroCrewConfig.load()
+    cfg.workspaces["second"] = WorkspaceConfig(dir=str(tmp_path / "second"))
+    cfg.save()
+    original = mec._comparable_root
+    calls = []
+
+    def resolve(root):
+        calls.append(root)
+        return original(root)
+
+    monkeypatch.setattr(mec, "_comparable_root", resolve)
+    mec._refuse_managed_source(mec.config_dir() / "workspace" / "document.txt")
+    first = Counter(calls)
+    assert len(first) >= 4
+    assert set(first.values()) == {1}, first
+    calls.clear()
+    mec._refuse_managed_source(mec.config_dir() / "workspace" / "document.txt")
+    assert Counter(calls) == first, "Every new call must revalidate all roots"
+
+
+@pytest.mark.parametrize("root_index", [0, 1, 2])
+@pytest.mark.parametrize(
+    "leaf",
+    [
+        "members",
+        "member-rules",
+        "member-memory-bindings",
+        "backups",
+        "trust",
+        "memory_stores",
+        "lessons",
+    ],
+)
+def test_managed_source_keeps_every_admin_root_protected(tmp_path, monkeypatch, root_index, leaf):
+    from kiro_crew import member_essential_context as mec
+
+    home = tmp_path / "host"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    roots = [mec.config_dir(), home / ".kiro/crew", home / ".kirocrew"]
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        mec._refuse_managed_source(roots[root_index] / leaf / "record.txt")
+
+
+def test_managed_source_rechecks_workspace_configuration_between_calls(tmp_path):
+    from kiro_crew import member_essential_context as mec
+    from kiro_crew.config.loader import WorkspaceConfig
+
+    candidate = mec.config_dir() / "custom-project" / "guide.txt"
+    cfg = KiroCrewConfig.load()
+    cfg.workspaces["custom"] = WorkspaceConfig(dir=str(candidate.parent))
+    cfg.save()
+    mec._refuse_managed_source(candidate)
+    del cfg.workspaces["custom"]
+    cfg.save()
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        mec._refuse_managed_source(candidate)
+
+
+@pytest.mark.parametrize("placement", ["ancestor", "equal", "protected-child"])
+def test_workspace_overlap_does_not_admit_admin_state(tmp_path, placement):
+    from kiro_crew import member_essential_context as mec
+    from kiro_crew.config.loader import WorkspaceConfig
+
+    admin = mec.config_dir()
+    workspace = {
+        "ancestor": admin.parent,
+        "equal": admin,
+        "protected-child": admin / "member-rules",
+    }[placement]
+    cfg = KiroCrewConfig.load()
+    cfg.workspaces["overlap"] = WorkspaceConfig(dir=str(workspace))
+    cfg.save()
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        mec._refuse_managed_source(admin / "member-rules" / "rule.txt")
+
+
+@requires_symlinks
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows rejects linked ancestors at the existing path gate"
+)
+def test_managed_source_rechecks_admin_symlink_target_between_calls(tmp_path, monkeypatch):
+    from kiro_crew import member_essential_context as mec
+
+    home = tmp_path / "host"
+    (home / ".kiro").mkdir(parents=True)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    alias = home / ".kiro" / "crew"
+    alias.symlink_to(first, target_is_directory=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        mec._refuse_managed_source(first / "members" / "record.txt")
+    mec._refuse_managed_source(second / "members" / "record.txt")
+    alias.unlink()
+    alias.symlink_to(second, target_is_directory=True)
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        mec._refuse_managed_source(second / "members" / "record.txt")
+
+
+def test_managed_source_never_resolves_unvalidated_candidate(tmp_path, monkeypatch):
+    from kiro_crew import member_essential_context as mec
+
+    candidate = Path("//untrusted-candidate/guide.txt")
+    original = os.path.realpath
+
+    def resolve(path, *args, **kwargs):
+        assert "untrusted-candidate" not in str(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", resolve)
+    mec._refuse_managed_source(candidate)

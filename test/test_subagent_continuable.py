@@ -168,6 +168,9 @@ class TestKeepThreading:
 
     @pytest.mark.asyncio
     async def test_conversation_key_overrides_session_key(self) -> None:
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        create_agent_folder("origrun1", memory_mode="persistent")
         sessions = _mock_sessions(resumed=True)
         manager = _manager(sessions)
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
@@ -318,6 +321,9 @@ class TestContinueConversation:
 
     @pytest.mark.asyncio
     async def test_continue_dispatches_new_run_on_same_key(self) -> None:
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        create_agent_folder("origrun1", memory_mode="persistent")
         sessions = _mock_sessions(resumed=True)
         manager = _manager(sessions)
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch.object(
@@ -336,6 +342,9 @@ class TestContinueConversation:
     async def test_continuation_fails_closed_when_not_resumed(self) -> None:
         """session/load falling back to a fresh session must NOT execute the
         follow-up context-free — the run fails with a typed resume_failed."""
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        create_agent_folder("origrun9", memory_mode="persistent")
         sessions = _mock_sessions(resumed=False)
         provider = sessions.get_or_create.return_value[0]
         provider.session_id = "sid-resume-fresh"
@@ -1672,3 +1681,101 @@ class TestPersistenceGuards:
             pruned = sp.prune_stale_tombstones(max_age_days=0, delivered_ttl_secs=0)
         assert pruned >= 1
         cleanup.assert_called_once()
+
+
+class TestContinuationMemoryMode:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("original", ["persistent", "incognito", "temporary"])
+    @pytest.mark.parametrize("requested", ["persistent", "incognito", "temporary"])
+    async def test_fresh_manager_restores_and_tightens_original_mode(self, original, requested):
+        from kiro_crew.messaging.privacy_mode import strictest
+        from kiro_crew.subagent_persistence import create_agent_folder, read_run_memory_mode
+
+        conv_id = f"mode-{original}-{requested}"
+        create_agent_folder(conv_id, task="original", memory_mode=original)
+        manager = _manager(_mock_sessions(resumed=True))
+        manager._memory_mode_for_session = lambda key: requested
+        info = manager.continue_conversation(conv_id, "follow up")
+        assert info is not None and not info.error
+        assert not info._memory_mode_ready
+        await asyncio.wait_for(manager._tasks[info.id], timeout=5)
+        expected = strictest((original, requested)) or "persistent"
+        assert not info.error, info.error
+        assert info.memory_mode == expected and info._memory_mode_ready
+        assert read_run_memory_mode(conv_id) == expected
+        assert read_run_memory_mode(info.id) == expected
+        assert manager._ctx_builder.build_message.call_args.kwargs["blocks_reads"] == (
+            expected == "temporary"
+        )
+
+        restarted = _manager(_mock_sessions(resumed=True))
+        resumed = restarted.continue_conversation(conv_id, "another turn")
+        assert resumed is not None and not resumed.error
+        await asyncio.wait_for(restarted._tasks[resumed.id], timeout=5)
+        assert not resumed.error, resumed.error
+        assert resumed.memory_mode == expected
+
+    @pytest.mark.asyncio
+    async def test_missing_original_policy_never_allocates_provider(self):
+        from kiro_crew.subagent_persistence import _run_memory_identity_path, create_agent_folder
+
+        create_agent_folder("missing-resume-policy", memory_mode="incognito")
+        record = _run_memory_identity_path("missing-resume-policy")
+        import json
+
+        payload = json.loads(record.read_text(encoding="utf-8"))
+        del payload["memory_mode"]
+        record.write_text(json.dumps(payload), encoding="utf-8")
+        sessions = _mock_sessions(resumed=True)
+        manager = _manager(sessions)
+        info = manager.continue_conversation("missing-resume-policy", "must not run")
+        assert info is not None
+        await asyncio.wait_for(manager._tasks[info.id], timeout=5)
+        assert "memory_unavailable" in info.error
+        assert str(record) not in info.error
+        assert "caused by" not in info.error
+        assert not info._memory_mode_ready
+        sessions.get_or_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_resume_drains_mode_publication_before_returning(monkeypatch):
+    from kiro_crew import subagent_persistence as persistence
+
+    persistence.create_agent_folder("cancel-mode-original", memory_mode="incognito")
+    persistence.create_agent_folder("cancel-mode-current", memory_mode="temporary")
+    entered, release = threading.Event(), threading.Event()
+    real = persistence.tighten_run_memory_mode
+
+    def held(agent_id, mode):
+        entered.set()
+        assert release.wait(5), "test did not release mode writer"
+        return real(agent_id, mode)
+
+    monkeypatch.setattr(persistence, "tighten_run_memory_mode", held)
+    sessions = _mock_sessions(resumed=True)
+    manager = _manager(sessions)
+    info = SubagentInfo(
+        id="cancel-mode-current",
+        task="test",
+        conversation_key="subagent:cancel-mode-original",
+        memory_mode="temporary",
+    )
+    info._memory_mode_ready = False
+    task = asyncio.create_task(manager._run_inner(info, info.conversation_key))
+    try:
+        assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 3), timeout=4)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done(), "cancellation escaped while the protected writer was active"
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert persistence.read_run_memory_mode("cancel-mode-original") == "temporary"
+        assert persistence.read_run_memory_mode("cancel-mode-current") == "temporary"
+        sessions.get_or_create.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)

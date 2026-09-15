@@ -59,7 +59,6 @@ from kiro_crew.history import (
     latest_transcript_ts,
     mint_row_mid,
     monotonic_transcript_ts,
-    transcript_sort_key,
 )
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
@@ -3443,7 +3442,6 @@ class _ChatSlot:
 
     __slots__ = (
         "_buffers",
-        "_decision_dismissed_ts",
         "_projection",
         "_queue_repository",
         "_source_links_cache",
@@ -4355,15 +4353,6 @@ class _ChatSlot:
         # "the agent is done and asked you something", and which entries a user
         # message may retire.
         self._question_pending: dict[str, dict] = {}
-        # Dismiss tombstone for the projection's buried-decision scan
-        # (slot_projection.py): the ``ts`` of the one options-bearing assistant
-        # row whose ``pending_decision`` the user explicitly waved away. The
-        # projection re-derives from the transcript on every push, so dismissal
-        # cannot be a state delete — there is no state to delete — it has to name
-        # the message it silences. A LATER options turn has a different ts and
-        # surfaces normally. In-memory like ``_question_pending``: after a
-        # restart the card may reappear, which errs on the side of re-asking.
-        self._decision_dismissed_ts: str = ""
 
     def bump_tags_revision(self) -> str:
         """Rotate and return the revision for the current tag list.
@@ -5278,7 +5267,10 @@ class DashboardState:
         # Secretary subsystem removed; kept as permanent None for apps/routes.py
         # builtin-service restart lookup (getattr-based, no-op when None).
         self._secretary_restart: Any = None  # restart callback (always None — service removed)
-        self.workflow_service: Any = None  # lazy-init in server.py (WorkflowService, M6)
+        self.workflow_service: Any = None  # published only after complete recovery
+        self.workflow_startup_status = "pending"
+        self.workflow_startup_stopping = False
+        self.workflow_startup_task: asyncio.Task[None] | None = None
         self.context_builder = context_builder
         self.conversation_log = conversation_log
         self.consolidator = consolidator
@@ -5614,6 +5606,20 @@ class DashboardState:
         from kiro_crew.dashboard.file_index import FileIndexRegistry
 
         self.file_indexes = FileIndexRegistry()
+        # Runtime services share the gateway's policy, never a model-supplied mode.
+        from kiro_crew.dashboard.handlers._shared import (
+            require_live_session_memory_mode,
+            resolve_session_memory_mode,
+        )
+
+        if self.subagents is not None:
+            self.subagents._memory_mode_for_session = lambda key: require_live_session_memory_mode(
+                self, key
+            )
+        if self.context_builder is not None:
+            self.context_builder.memory_mode_for_session = lambda key: resolve_session_memory_mode(
+                self, key
+            )
 
     def register_channel_transport(self, transport: "MessagingTransport") -> None:
         """Register a live channel transport for cross-surface mirror delivery.
@@ -6487,46 +6493,6 @@ class DashboardState:
         """Tell owner clients that question cards are no longer actionable."""
         _questions_for(self).broadcast_retired(self, slot_key, card_ids)
 
-    def dismiss_pending_decision(self, slot_key: str, ts: str) -> bool:
-        """Silence one buried [OPTIONS:] decision without answering it.
-
-        ``ts`` names the options-bearing assistant row (the ``pending_decision``
-        payload carries it), not the slot: the decision can be superseded by a
-        newer options turn before the dismissal lands, and a slot-wide clear
-        would silence THAT one unseen. The projection re-derives on every push,
-        so this only records the tombstone and pushes; there is no record to
-        delete. The tombstone is monotonic under ``transcript_sort_key``
-        ordering (transcripts can mix naive and offset-aware rows): a dismiss
-        naming an OLDER ts than the recorded one is a delayed request about a
-        superseded decision and is refused rather than letting it un-silence
-        the newer dismissal. Returns False for an unknown slot, a blank ts, or
-        a stale ts so the route can 404 instead of acknowledging a no-op.
-        """
-        slot = self._slots.get(slot_key)
-        if slot is None or not ts:
-            return False
-        current = getattr(slot, "_decision_dismissed_ts", "") or ""
-        if current:
-            # Out-of-order dismiss: a delayed request naming a superseded
-            # decision must not overwrite the tombstone of the newer one that
-            # was dismissed after it. Ordered by transcript_sort_key, not
-            # string compare -- transcripts can mix naive rows (older builds)
-            # with offset-aware ones, and on a non-UTC host string order is
-            # not row order for that pair (see history.transcript_sort_key).
-            # Only refuse when BOTH sides parse (bucket 0): an unparseable
-            # value carries no order, and refusing against one would let a
-            # single bad ts brick every later dismissal. Either way the named
-            # decision is already superseded -- 404 tells the client its
-            # card was stale, which is already that caller's
-            # take-the-card-away exit.
-            key_new = transcript_sort_key(ts)
-            key_cur = transcript_sort_key(current)
-            if key_new[0] == 0 and key_cur[0] == 0 and key_new < key_cur:
-                return False
-        slot._decision_dismissed_ts = ts
-        _questions_for(self).push_slots(self)
-        return True
-
     def _push_slots(self) -> None:
         """Push question status without failing the question lifecycle."""
         _questions_for(self).push_slots(self)
@@ -7018,17 +6984,29 @@ class DashboardState:
         """Push a chat message to all SSE clients via the global stream."""
         role = msg.get("role", "")
         content = msg.get("content", "")
-        # Mirror the display-time redaction gate _prepare_messages applies on
-        # the HTTP history path, so a row's *content* leaves the backend in one
-        # byte form regardless of which consumer receives it. Scope: content
-        # only — `cls` / `meta` and the live `chat_chunk` stream are
-        # deliberately not covered (see the direct_meta comment below). Gate is
-        # `!= "user"` for the same reason as there: every non-user role can
-        # carry model/tool output, and user-authored content stays raw (the
-        # user typed it and is the only one who sees it back).
-        if role != "user" and isinstance(content, str) and content:
-            content, _ = redact_exfiltration_urls(content)
-            content, _ = redact_credentials(content)
+        # This site and _prepare_messages (the HTTP history path) share ONE
+        # helper — chat_utils.redact_display_content — so a row's *content*
+        # leaves the backend in one byte form regardless of which consumer
+        # receives it, including structured (list/dict) legacy content, which
+        # is redacted recursively rather than skipped. Scope: content only —
+        # `cls` / `meta` and the live `chat_chunk` stream are deliberately not
+        # covered (see the direct_meta comment below). Gate is `!= "user"` for
+        # the same reason as there: every non-user role can carry model/tool
+        # output, and user-authored content stays raw (the user typed it and
+        # is the only one who sees it back).
+        # Deferred import: chat_utils imports from this module at module
+        # level, so the reverse import must stay function-level.
+        from kiro_crew.dashboard.chat_utils import (
+            redact_display_content,
+            serialize_wire_content,
+        )
+
+        if role != "user" and content:
+            content = redact_display_content(content)
+        else:
+            # The wire-string invariant covers EVERY row: a structured user
+            # row or a falsy container serializes to text without redaction.
+            content = serialize_wire_content(content)
         payload: dict[str, Any] = {
             "_type": "chat_message",
             "slot": slot_key,

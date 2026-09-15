@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from functools import cached_property
 from typing import Literal, Protocol, runtime_checkable
 
 # Event kinds — re-exported from the single source of truth
@@ -30,6 +31,7 @@ from kiro_crew.acp.types import (  # noqa: F401
 from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.platform_compat import SpawnedProcessGroup
+from kiro_crew.essential_delivery import EssentialDelivery
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -78,6 +80,31 @@ class SessionMcpReport(Protocol):
 class LLMProvider(ABC):
     """Abstract LLM backend."""
 
+    @cached_property
+    def essential_delivery(self) -> EssentialDelivery:
+        """Private prompt receipts belong to this provider, never the builder."""
+        return EssentialDelivery()
+
+    @property
+    def context_incarnation(self) -> object:
+        """Identity of the native conversation retaining injected instructions."""
+        return (id(self), self.session_id)
+
+    @property
+    def context_provider_type(self) -> str:
+        """Actual provider label used by context assembly, not global config."""
+        return "acp"
+
+    @property
+    def native_steering(self) -> bool:
+        """Whether the serving harness owns conditional steering selection."""
+        return False
+
+    @property
+    def native_context_documents(self) -> dict[str, str]:
+        """Exact documents supplied at native startup, empty without evidence."""
+        return {}
+
     @abstractmethod
     async def start(self) -> None:
         """Initialize the provider (spawn process, create client, etc.)."""
@@ -117,6 +144,15 @@ class LLMProvider(ABC):
         size it has not measured yet, which is byte-identical to a brand-new
         session. Callers that act on a threshold need the two apart. Default
         False for providers that never compact unobserved.
+        """
+        return False
+
+    @property
+    def defer_replay_sid_promotion(self) -> bool:
+        """Whether replay settlement must precede publishing a fresh native SID.
+
+        The safe default is False: adapters added later publish their own session
+        identity normally unless they explicitly adopt the deferred-SID contract.
         """
         return False
 
@@ -255,6 +291,16 @@ class LLMProvider(ABC):
         equality across spawns must be impossible, which is why the ACP session
         id (reused by resume on a new process) can never serve here.
         """
+        return ""
+
+    @property
+    def member_capabilities_supported(self) -> bool:
+        """Whether a dedicated startup can load a complete member agent spec."""
+        return False
+
+    @property
+    def loaded_capability_template(self) -> str:
+        """Confirmed active full-spec template; empty means no loading evidence."""
         return ""
 
     @property

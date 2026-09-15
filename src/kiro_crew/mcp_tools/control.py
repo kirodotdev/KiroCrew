@@ -353,16 +353,20 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "monitor_inspect",
             "description": (
-                "Inspect the structured monitor bound to your authenticated current session. "
-                "Takes no session key or monitor id."
+                "Inspect the monitor bound to your authenticated current session. "
+                "Reports a structured monitor's full record, or a legacy timer "
+                "loop's presence and cadence reading, whichever the session "
+                "holds. Takes no session key or monitor id."
             ),
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
             "name": "monitor_stop",
             "description": (
-                "Durably stop the structured monitor on your current session while retaining "
-                "its terminal outcome for inspection."
+                "Durably stop the monitor on your current session. A structured "
+                "monitor is retained with its terminal outcome for inspection; a "
+                "legacy timer loop is stopped and leaves no record behind, so a "
+                "later monitor_inspect reports it as not armed."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1361,7 +1365,14 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
 
 
 def monitor_inspect(name: str, args: dict[str, Any]) -> str:
-    """Read only the monitor bound to a verified strict session identity."""
+    """Read the monitor bound to a verified strict session identity.
+
+    Reports whichever shape the session's loop holds: a structured monitor's
+    full record, or a legacy timer loop's presence and cadence reading. The
+    session-monitor endpoint returns the legacy reading under ``autonudge_loop``,
+    so a widened gate here lets a caller verify a timer loop is armed and firing
+    rather than being told inspection is unavailable for its session type.
+    """
     validate_tool_args(args, MONITOR_INSPECT_SCHEMA)
     sk, strict_err = mcp_core.require_strict_session_key(
         "Monitor inspection unavailable without an authenticated strict session binding. "
@@ -1369,7 +1380,10 @@ def monitor_inspect(name: str, args: dict[str, Any]) -> str:
     )
     if not sk:
         return _monitor_context_refusal("monitor_inspect", sk, strict_err)
-    if mcp_core._structured_monitor_binding_key(sk) is None:
+    # The GENERAL binding, so a legacy timer loop resolves here too (this also
+    # admits a Webex session, which hosts a legacy loop but no structured
+    # monitor). The endpoint distinguishes the shapes.
+    if mcp_core._autonudge_binding_key(sk) is None:
         return _monitor_context_refusal(
             "monitor_inspect",
             sk,
@@ -1461,7 +1475,7 @@ def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def monitor_stop(name: str, args: dict[str, Any]) -> str:
-    """Emit a durable structured-stop directive without caller identity."""
+    """Emit a durable stop directive for this session's monitor, without caller identity."""
     args = validate_tool_args(args, MONITOR_STOP_SCHEMA)
     sk, strict_err = mcp_core.require_strict_session_key(
         "monitor_stop requires an authenticated strict session binding. "
@@ -1469,17 +1483,22 @@ def monitor_stop(name: str, args: dict[str, Any]) -> str:
     )
     if not sk:
         return _monitor_context_refusal("monitor_stop", sk, strict_err)
-    if mcp_core._structured_monitor_binding_key(sk) is None:
+    # The GENERAL binding, so a legacy timer loop resolves here too (and a Webex
+    # session, which hosts a legacy loop but no structured monitor). A stop that
+    # answered only for a structured monitor is a silent no-op on the loop shape
+    # most sessions run: the caller believes the loop ended while it keeps
+    # firing. The applier routes by the resolved loop's shape.
+    if mcp_core._autonudge_binding_key(sk) is None:
         return _monitor_context_refusal(
             "monitor_stop",
             sk,
-            "monitor_stop only works from within a dashboard, Slack, or "
-            f"Discord session (current session_key={sk!r}).",
+            "monitor_stop only works from within a dashboard, Slack, Discord, "
+            f"or Webex session (current session_key={sk!r}).",
         )
     return _emit_directive(
         "monitor_stop",
         {"reason": str(args.get("reason") or "").strip()},
-        "Structured monitor stop requested for this session.",
+        "Monitor stop requested for this session.",
     )
 
 

@@ -313,6 +313,70 @@ CORE_CTX_SURFACE = frozenset(
 )
 
 
+def _budget_ctx_attributes(tree: ast.Module, source: str) -> list[ast.Attribute]:
+    """Find context attributes without treating a helper's own ``ctx`` as the run."""
+    entry = next(
+        (
+            n
+            for n in tree.body
+            if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == ENTRYPOINT
+        ),
+        None,
+    )
+    if entry is None:
+        return []
+    params = entry.args.posonlyargs + entry.args.args
+    if not params:
+        return []
+    ctx_name = params[0].arg
+    attributes: list[ast.Attribute] = []
+    scopes: dict[tuple[str, int], symtable.SymbolTable] = {}
+
+    def _collect_scopes(table: symtable.SymbolTable) -> None:
+        scopes[(table.get_name(), table.get_lineno())] = table
+        for child in table.get_children():
+            _collect_scopes(child)
+
+    try:
+        _collect_scopes(symtable.symtable(source, "<workflow>", "exec"))
+    except (SyntaxError, ValueError):
+        return []  # Invalid scope declarations cannot execute.
+
+    def _shadows(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> bool:
+        if not isinstance(node, ast.Lambda):
+            # Python decides local bindings for the whole function, including
+            # exception/loop targets, but excludes global/nonlocal declarations.
+            table = scopes.get((node.name, node.lineno))
+            if table is not None and ctx_name in table.get_identifiers():
+                symbol = table.lookup(ctx_name)
+                # This budget-only authoring aid follows lexical context bindings.
+                # Globals are ambiguous; the runtime property protects real ctx.
+                return symbol.is_local() or symbol.is_global()
+        args = node.args
+        params = list(args.args) + list(args.posonlyargs) + list(args.kwonlyargs)
+        if args.vararg is not None:
+            params.append(args.vararg)
+        if args.kwarg is not None:
+            params.append(args.kwarg)
+        return any(a.arg == ctx_name for a in params)
+
+    def _walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                if _shadows(child):
+                    continue  # ctx is rebound inside — not the workflow context
+            if (
+                isinstance(child, ast.Attribute)
+                and isinstance(child.value, ast.Name)
+                and child.value.id == ctx_name
+            ):
+                attributes.append(child)
+            _walk(child)
+
+    _walk(entry)
+    return attributes
+
+
 def check_ctx_surface(source: str, available: "frozenset[str] | set[str]") -> list[str]:
     """Return an error per reference to an unavailable attribute on the WORKFLOW
     CONTEXT parameter — SCOPE-AWARE: a shadowed ``ctx`` name is not the context.
@@ -653,12 +717,17 @@ class _DslContractVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _check_dsl_contract(tree: ast.Module, errors: list[str]) -> None:
-    """Static half of the DSL-contract gate: awaiting sync ctx methods, and
-    dereferencing nullable awaited ctx results without a None-guard."""
+def _check_dsl_contract(tree: ast.Module, source: str, errors: list[str]) -> None:
+    """Reject invalid ctx calls, nullable dereferences, and budget rebinding."""
     visitor = _DslContractVisitor()
     visitor.visit(tree)
     errors.extend(visitor.errors)
+    for node in _budget_ctx_attributes(tree, source):
+        if node.attr == "budget" and isinstance(node.ctx, (ast.Store, ast.Del)):
+            errors.append(
+                f"line {node.lineno}: ctx.budget is read-only; set budget_total when "
+                "starting the workflow, or keep script-local limits in a local variable"
+            )
 
 
 def _extract_meta(tree: ast.Module, errors: list[str]) -> dict[str, Any] | None:
@@ -738,10 +807,8 @@ def validate(source: str, *, max_bytes: int = MAX_SCRIPT_BYTES) -> ValidationRes
         # (e.g. an exception type or stdlib name the model used but the sandbox omits),
         # so authoring catches+regenerates before launch instead of failing mid-run.
         _check_undefined_names(source, errors)
-        # DSL-contract half: reject awaiting sync ctx methods and unguarded None-deref
-        # of awaited nullable ctx results — two authoring-bug classes that cause
-        # runtime crashes (``can't await NoneType``; ``'NoneType' has no attribute``).
-        _check_dsl_contract(tree, errors)
+        # Contract errors feed authoring retries before a malformed script can run.
+        _check_dsl_contract(tree, source, errors)
     except RecursionError:
         # Every walk above recurses with the tree's depth; a script deep enough
         # to exhaust the stack is refused, not surfaced as a server error.

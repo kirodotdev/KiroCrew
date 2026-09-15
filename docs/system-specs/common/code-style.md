@@ -109,8 +109,11 @@ committing:
 python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py
 COMMENT_HISTORY_BASE_REF=origin/main python3 scripts/check_comment_history.py && isort src/kiro_crew test
 flake8 src/kiro_crew test && mypy src/kiro_crew
-python -m pytest
+python3 scripts/local-gate.py
 ```
+
+The last line runs the tests related to your diff, not the full suite -- that is
+CI's job (`local-gate.py --full` exists for a human who wants it locally).
 
 `black --check` cannot be run bare: 1,420 files under `src/` and `test/` predate
 any enforcement, so a repo-wide run reformats ~95,800 lines. Those files are

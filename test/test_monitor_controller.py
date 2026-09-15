@@ -16,7 +16,10 @@ from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.controller import MonitorController, format_monitor_wake
 from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResult
 from kiro_crew.monitoring.models import (
+    DEFAULT_MONITOR_REALERT_SECS,
     MONITOR_STOP_COMPLETION_UNAVAILABLE,
+    MonitorActionCompletion,
+    MonitorActionDisposition,
     MonitorBudgets,
     MonitorCreationSurface,
     MonitorDecision,
@@ -1919,5 +1922,131 @@ async def test_a_tick_whose_provider_omits_the_subject_does_log(tmp_path, caplog
             await controller.tick(loop, now=120.0)
 
         assert "no usable result" in caplog.text
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_actionable_state_re_asserts_once_per_period(tmp_path):
+    """Re-assertion works through the real writers, once per re-alert period.
+
+    The dedup guard, the wake writer and the completion writer are the real
+    ones, so this drives the composed path the isolated decision tests cannot:
+    apply_monitor_probe records the wake fingerprint, record_monitor_turn_completion
+    clears wake_in_flight while leaving that fingerprint set, and a later probe of
+    the SAME unresolved actionable state re-asserts once its period has passed and
+    stays suppressed before it. Both directions, because a test that only proves
+    the late wake cannot tell re-assertion from a wake on every probe.
+    """
+    service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    try:
+        loop = await service.add_monitor(
+            slot_key="chat-1",
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(max_runtime_secs=10_000_000),
+            now=0.0,
+        )
+        assert loop.monitor is not None
+        gen = loop.monitor.config_generation
+        red = _result(MonitorObservationStatus.ACTIONABLE, fingerprint="red-1")
+
+        async def _probe_and_complete(now: float) -> MonitorDecision:
+            verdict = await service.apply_monitor_probe(
+                loop.id, red, now=now, config_generation=gen
+            )
+            if verdict.decision is MonitorDecision.WAKE_ACTIONABLE:
+                await service.record_monitor_turn_completion(
+                    MonitorActionCompletion(
+                        monitor_id=loop.id,
+                        fingerprint="red-1",
+                        disposition=MonitorActionDisposition.SUCCESS,
+                        completed_ts=now,
+                    )
+                )
+            return verdict.decision
+
+        # First sighting wakes at once, and the turn completes.
+        assert await _probe_and_complete(0.0) is MonitorDecision.WAKE_ACTIONABLE
+
+        # Same unresolved state, well inside the period: suppressed.
+        assert (
+            await _probe_and_complete(DEFAULT_MONITOR_REALERT_SECS * 0.5)
+            is MonitorDecision.NO_CHANGE
+        )
+
+        # A second probe still inside the period: still suppressed, so the late
+        # wake below cannot be a wake on every probe.
+        assert (
+            await _probe_and_complete(DEFAULT_MONITOR_REALERT_SECS * 0.75)
+            is MonitorDecision.NO_CHANGE
+        )
+
+        # Past the period: re-asserted exactly once.
+        assert (
+            await _probe_and_complete(DEFAULT_MONITOR_REALERT_SECS * 1.1)
+            is MonitorDecision.WAKE_ACTIONABLE
+        )
+
+        # Immediately after that re-assertion, inside the new period: suppressed
+        # again, which proves the wake restamped the period rather than leaving it
+        # open to fire on the next probe.
+        assert (
+            await _probe_and_complete(DEFAULT_MONITOR_REALERT_SECS * 1.2)
+            is MonitorDecision.NO_CHANGE
+        )
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_retarget_clears_the_coalescing_window(tmp_path):
+    """Changing the target resets every per-subject field, the window included.
+
+    A retarget is a new subject, so a window opened on the old subject describes
+    nothing on the new one. The reset block clears the window fingerprint, its
+    open time and the re-alert map alongside the other per-subject state, so a
+    re-assert decision on the new subject reads none of the old subject's alert
+    times.
+    """
+    service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    try:
+        loop = await service.add_monitor(
+            slot_key="chat-1",
+            kind="github_pull_request",
+            target="https://github.com/acme/widgets/pull/7",
+            objective="review_ready",
+            cadence_secs=60,
+            budgets=MonitorBudgets(max_runtime_secs=10_000_000),
+            now=0.0,
+        )
+        assert loop.monitor is not None
+        # Wake on the old subject so the window and re-alert map carry state.
+        await service.apply_monitor_probe(
+            loop.id,
+            _result(MonitorObservationStatus.ACTIONABLE, fingerprint="red-old"),
+            now=10.0,
+            config_generation=loop.monitor.config_generation,
+        )
+        assert loop.monitor.coalesce_fingerprint == "red-old"
+        assert loop.monitor.coalesce_alerted != {}
+
+        await service.record_monitor_turn_completion(
+            MonitorActionCompletion(
+                monitor_id=loop.id,
+                fingerprint="red-old",
+                disposition=MonitorActionDisposition.SUCCESS,
+                completed_ts=10.0,
+            )
+        )
+        updated = await service.update_monitor(
+            loop.id, target="https://github.com/acme/widgets/pull/9"
+        )
+        assert updated is not None and updated.monitor is not None
+        assert updated.monitor.coalesce_fingerprint == ""
+        assert updated.monitor.coalesce_opened_at == 0.0
+        assert updated.monitor.coalesce_alerted == {}
     finally:
         service.stop()

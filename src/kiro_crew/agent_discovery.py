@@ -298,6 +298,88 @@ def _read_agent_spec(
     return data
 
 
+class AmbiguousAgentSpecError(ValueError):
+    """More than one spec in one directory declares the same ``name``.
+
+    Which of them is live is undefined, so a resolver that picked one would
+    hand the caller an agent the operator did not name, with that agent's tools
+    and prompt. Every declared-name resolver refuses instead; the message names
+    each file so the operator can remove or rename one.
+    """
+
+
+def spec_by_declared_name(
+    agents_dir: Path,
+    agent_id: str,
+    *,
+    operation: str,
+    source: str,
+) -> dict[str, Any] | None:
+    """Return the parsed spec in *agents_dir* whose declared ``name`` is *agent_id*.
+
+    A spec's filename and its declared ``name`` are allowed to differ: a package
+    manager that installs several agents namespaces them on disk as
+    ``<package>-<name>.json`` while the declared ``name`` stays bare, and the
+    config, the CLI and :func:`kiro_crew.agent.agent_spec_path` all address such
+    an agent by the bare name. Two surfaces resolve through this scan when they
+    find no ``<agent_id>.json``: the KAS projection that starts a session
+    (:func:`kiro_crew.acp.kas_agents.load_agent_spec`) and the tool-policy read
+    that session's managed MCP servers then make, so those two agree on which
+    file an id means. Other surfaces still carry their own inline
+    ``data.get("name") == agent`` scans; routing them here is tracked, not done.
+
+    Reads go through :func:`_read_agent_spec`, the one hardened reader, so a
+    scan of a user-writable directory applies the same guards as the listing
+    path: size cap, AppleDouble sidecars, a symlink whose resolved target is
+    sensitive, non-UTF-8 bytes, JSON that is not an object. *operation* and
+    *source* label its SEL denial trail exactly as that reader documents, so a
+    denial is attributed to the surface that asked rather than to a listing.
+
+    The parsed spec is returned rather than its path, and the caller uses it
+    as it stands. Handing back a path to reopen would put a second read outside
+    the guards: between the reader resolving a symlink and the reopen, the link
+    can be repointed at a sensitive file, which would then be read with no
+    denial and no SEL audit entry.
+
+    Raises :class:`AmbiguousAgentSpecError` when two specs declare *agent_id*,
+    the refusal :func:`kiro_crew.agent.agent_spec_path` makes on the same
+    ambiguity. Propagates ``OSError`` from the directory walk itself; the
+    per-file reads never raise.
+
+    Only the first matching spec is held; a later match keeps its path and its
+    parse is dropped at once. The reader caps each file, so the parsed-spec
+    memory this scan holds at its peak is one capped parse, not one per
+    same-name file; the paths themselves, one per candidate, are what the
+    refusal message needs and are all the scan keeps of the rest.
+
+    This is a fresh walk rather than a filter over :func:`parsed_agent_specs`,
+    and the difference is the labels, not the loop. That cache serves catalog
+    readers of one directory, so its SEL labels are first-reader-wins for the
+    life of a snapshot; a denial met here would then be attributed to whichever
+    listing warmed the cache instead of to the projection or the policy read
+    that asked, which is the attribution the call-site ratchet exists to keep.
+    The cache also hands out its own rows to be treated as read-only, where
+    this returns a parse the caller owns.
+    """
+    match: dict[str, Any] | None = None
+    match_paths: list[Path] = []
+    for path in sorted(agents_dir.glob("*.json")):
+        spec = _read_agent_spec(path, operation=operation, source=source)
+        if isinstance(spec, dict) and spec.get("name") == agent_id:
+            if match is None:
+                match = spec
+            match_paths.append(path)
+    if len(match_paths) > 1:
+        # Paths are repr'd: a filename in this user-writable, tool-shared
+        # directory is untrusted input, and this message reaches a terminal.
+        raise AmbiguousAgentSpecError(
+            f"{len(match_paths)} specs declare the name {agent_id!r}: "
+            f"{', '.join(repr(str(path)) for path in match_paths)}. Which one is live is "
+            f"undefined -- remove or rename one."
+        )
+    return match
+
+
 def _warn_on_systematic_scan_failure(directory: Path, candidates: int, parsed: int) -> None:
     """Emit ONE warning when a scan rejected every candidate spec it saw.
 

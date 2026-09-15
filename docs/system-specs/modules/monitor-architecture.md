@@ -32,7 +32,7 @@ this spec states the target and that one states the present.
 | Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`; `probes/__init__.py` still has its separate dispatch branch |
 | Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural; the `irq.Probe` path remains separate |
 | Observation | `partial` | the `Observation` type and the `Severity` vocabulary live in `irq.py`; `PrWatchProbe` in `probes/gh_pr.py` emits the keys; `monitoring/` reduces a subject to one fingerprint |
-| Decision | `partial` | `decide_monitor` returns a `MonitorVerdict` carrying its entries and remains pure, but is edge-triggered and has no coalescing; `irq.py` already level-triggers with a re-alert window and a coalescing floor |
+| Decision | `partial` | `decide_monitor` is IO-free but state-mutating: it coalesces successive changes to one subject over time through a window on `MonitorState` (a floor and a head-change reset) and derives its dedup comparison so an unresolved change re-asserts on a re-alert interval. It writes the window fields on the staged state and READS the alert map; the caller stamps the alert map on a wake and persists the same staged state, so decide-and-persist is a required pairing. `irq.py` keeps its own multi-signal coalescing for the cron path |
 | Persistence | `partial` | versioned in `monitoring/`; unversioned in `irq.py`, which also holds decision logic |
 | Driver | `implemented` | in-session timer in `autonudge.py`; out-of-session script cron in `babysit/scripts/pr_watch.py` |
 | Delivery | `implemented` | session directive keyed by the call's input digest, shared by both arming paths |
@@ -51,12 +51,14 @@ remains the seven-value effect selector, but `decide_monitor` returns a
 that wrapper. The entries tuple is provider-neutral and plural, so adding more
 evidence no longer requires changing the return type.
 
-The live decision still places exactly one `MonitorObservation` in that tuple,
-reduces the subject to one fingerprint, and lets `format_monitor_wake` compose
-operator text from `MonitorState.last_observation` and `wake_instructions`. The
-return-type prerequisite is therefore complete; per-condition entries,
-coalescing, and delivery from those entries remain target work in layers 3, 4,
-and 7.
+The live decision places exactly one `MonitorObservation` in that tuple, reduces
+the subject to one fingerprint, and lets `format_monitor_wake` compose operator
+text from `MonitorState.last_observation` and `wake_instructions`. The
+return-type prerequisite is complete; the engine coalesces successive changes to
+that one subject over time and re-asserts an unresolved change on a re-alert
+interval, both through a window on `MonitorState`. Per-condition entries and the
+multi-signal fold across simultaneous conditions remain target work in layers 3
+and 4, since one fingerprint per subject has no second condition to fold.
 
 ### A probe boundary not typed to one implementation
 
@@ -254,15 +256,16 @@ fail safe:
 4. **Coalescing window**.
 5. **Floor**.
 
-The engine is **level-triggered**, not edge-triggered, and one of the two already
-is. `irq.py` level-triggers on the live cron path today: per-key `alerted`
-timestamps in its loaded state, `_dedupe_key` distinguishing epoch-scoped from
-sticky entries, a re-alert window defaulting to six hours through
-`DEFAULT_REALERT_SECS`, a coalescing window through `coalesce_secs`, and
-`Severity.NMI` documented as bypassing the delay but not the mask. So
-re-assertion-after-a-window is **not** a behaviour the system lacks; it is a
-behaviour `monitoring/decision.py` lacks, and consolidation is where it stops
-being available on only one path.
+The engine is **level-triggered**, not edge-triggered, on both paths. `irq.py`
+level-triggers on the live cron path: per-key `alerted` timestamps in its loaded
+state, `_dedupe_key` distinguishing epoch-scoped from sticky entries, a re-alert
+window defaulting to six hours through `DEFAULT_REALERT_SECS`, a coalescing
+window through `coalesce_secs`, and `Severity.NMI` documented as bypassing the
+delay but not the mask. `monitoring/decision.py` now level-triggers too: it
+re-asserts an unresolved actionable change once its re-alert interval has elapsed
+and coalesces a burst of successive changes to one subject, through a window on
+`MonitorState`. So re-assertion-after-a-window is available on both paths rather
+than only the cron one.
 
 Each key carries its own alert timestamp, and a key that is still true re-asserts
 once its window has elapsed. Edge triggering loses any condition that stayed true
@@ -335,7 +338,7 @@ Required contents:
 |---|---|
 | `version` | every bump ships a migration; an unrecognized version is quarantined, never guessed at |
 | `revision` | what `resets_on: REVISION` is measured against |
-| `alerted` | per-key alert timestamps -- the level-triggered state |
+| `alerted` | per-key alert timestamps -- the level-triggered state. Records that a wake was DECIDED, not that one was delivered: the persistence-only shadow path stamps a wake it deliberately refuses to deliver, so this is not delivery history and a report must not read it as such. The structured engine's `MonitorState.coalesce_alerted` mirrors it |
 | `coalescing` | the open window: when it opened, which keys joined |
 | `errors` | per-kind counts, so a retryable class stays bounded |
 | `budgets_spent` | turns, tokens and provider errors already charged |
@@ -501,7 +504,7 @@ of a subject, and a substrate whose subject is optional has no subject.
 
 | Pattern | Why it fails |
 |---|---|
-| One fingerprint per subject | cannot say what changed, cannot coalesce siblings, cannot re-assert a condition |
+| One fingerprint per subject | cannot say which of several simultaneous conditions changed, and cannot coalesce sibling conditions into one wake; it does carry temporal coalescing and re-assertion of the single fingerprint over time |
 | Per-subject probe signature | cannot be batched later without changing every caller |
 | Subject knowledge in the decision layer | every new kind then needs a branch there, and the layer stops being testable in isolation |
 | Subject state in the state document | the document is a snapshot of delivery bookkeeping; a reader looking for subject state finds timestamps |

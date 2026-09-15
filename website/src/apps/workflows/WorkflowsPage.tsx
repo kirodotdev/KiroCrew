@@ -57,6 +57,7 @@ interface RunResponse {
   ok: boolean
   result: unknown
   error: string | null
+  error_code?: string | null
   events: WfEvent[]
 }
 
@@ -247,6 +248,7 @@ export default function WorkflowsPage() {
               status={run ? (run.ok ? 'finished' : 'failed') : 'running'}
               result={run?.result}
               error={run?.error}
+              errorCode={run?.error_code}
             />
           )}
         </div>

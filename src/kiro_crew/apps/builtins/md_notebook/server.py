@@ -15,6 +15,7 @@ Two kinds of vault: one this app cloned into ``<home>/vaults/``, and one
 the git CLI. The attached case is why saves are guarded against concurrent
 external edits and why the note listing is re-scanned rather than trusted.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -807,9 +808,9 @@ def _reject_unportable_component(part: str, field: str) -> None:
     """Refuse one path component Win32 cannot represent. Raises ``ApiError`` 400.
 
     Applied on EVERY platform for a name the caller is about to CREATE (a move
-    destination), so an unportable name never enters a vault that is meant to
-    travel; and on Windows for every name, where such a path is not merely unwise
-    but silently wrong. Reading and re-saving an oddly-named note that already
+    destination, a new-note folder, or a saved path's new components), so an
+    unportable name never enters a vault that is meant to travel; and on Windows
+    for every name, where such a path is not merely unwise but silently wrong. Reading and re-saving an oddly-named note that already
     exists on a POSIX host stays allowed — that is the only way a user can rename
     it to something portable.
     """
@@ -834,6 +835,29 @@ def _reject_unportable_component(part: str, field: str) -> None:
             400,
             code="path_not_a_note",
         )
+
+
+def _reject_unportable_new_components(root: Path, rel: str) -> None:
+    """Refuse a save that would CREATE a path component Win32 cannot hold.
+
+    A save mkdirs missing parents and may create the note itself, so every
+    component that does not exist yet is a NEW name entering the vault and is
+    held to the portability rule on every platform — the same rationale as
+    ``require_note_path``'s ``for_new``. Components that already exist are left
+    alone: re-saving an oddly-named note a POSIX vault already contains stays
+    allowed, which is the only way a user can rename it to something portable.
+
+    Runs one synchronous ``exists`` stat per component, so call it off the
+    event loop.
+    """
+    current = root
+    missing = False
+    for part in PurePosixPath(rel.replace("\\", "/")).parts:
+        if not missing:
+            current = current / part
+            missing = not current.exists()
+        if missing:
+            _reject_unportable_component(part, "path")
 
 
 def require_note_path(rel: Any, field: str = "path", *, for_new: bool = False) -> str:
@@ -876,11 +900,17 @@ def require_note_path(rel: Any, field: str = "path", *, for_new: bool = False) -
     return rel
 
 
-def require_folder_path(folder: Any) -> Optional[str]:
+def require_folder_path(folder: Any, *, for_new: bool = False) -> Optional[str]:
     """Validate an optional caller-supplied FOLDER (the new-note target).
 
     Same undotted rule as `require_note_path`, without the `.md` requirement: a
     folder is not a note. Without it a new note could be created inside `.git`.
+
+    ``for_new`` marks a folder the caller is about to CREATE (``api_note_new``
+    mkdirs it). Such a name is additionally held to what Win32 can represent,
+    on every platform — the same rationale as ``require_note_path``: a vault
+    travels, and a folder named ``CON`` written on a POSIX host makes every
+    Windows clone un-checkoutable (core.protectNTFS).
     """
     if folder is None or folder == "":
         return None
@@ -893,9 +923,11 @@ def require_folder_path(folder: Any) -> Optional[str]:
             400,
             code="path_not_a_note",
         )
-    if platform_compat.IS_WINDOWS:
-        # The folder itself is not created here, so this is not a new-name gate —
-        # it stops a note being written into a folder Win32 cannot address.
+    if for_new or platform_compat.IS_WINDOWS:
+        # With ``for_new`` the folder IS about to be created, so the
+        # portability rule applies on every platform; without it the folder is
+        # merely resolved, and the check still stops a note being written into
+        # a folder Win32 cannot address when running ON Windows.
         for part in parts:
             _reject_unportable_component(part, "folder")
     return folder
@@ -1678,9 +1710,7 @@ async def api_note_read(request: web.Request) -> web.Response:
     )
 
 
-async def _assert_note_is_fresh(
-    abs_path: Path, rel: str, base_mtime: object
-) -> None:
+async def _assert_note_is_fresh(abs_path: Path, rel: str, base_mtime: object) -> None:
     """Raise 409 ESTALE if the note changed on disk since the client read it.
 
     Split out of the save handler so the retry below can re-run it. It must be
@@ -1736,9 +1766,7 @@ async def _observed_note_mtime(abs_path: Path) -> Optional[float]:
         return None
 
 
-async def _assert_note_unchanged(
-    abs_path: Path, rel: str, observed: Optional[float]
-) -> None:
+async def _assert_note_unchanged(abs_path: Path, rel: str, observed: Optional[float]) -> None:
     """Raise 409 ESTALE if the note moved off *observed* since it was sampled.
 
     The tokenless counterpart to `_assert_note_is_fresh`. A save with no
@@ -1814,9 +1842,7 @@ async def _publish_note_once(abs_path: Path, tmp: Path, attempt: int) -> bool:
         return False
 
 
-async def _save_note_contents(
-    abs_path: Path, rel: str, content: str, base_mtime: object
-) -> None:
+async def _save_note_contents(abs_path: Path, rel: str, content: str, base_mtime: object) -> None:
     """Publish *content*, retrying a contended rename without losing a write.
 
     The rename can fail on Windows with `PermissionError` while another handle is
@@ -1966,6 +1992,10 @@ async def api_note_save(request: web.Request) -> web.Response:
     # islink() misses, so check both to keep the guard from being POSIX-only.
     if await asyncio.to_thread(platform_compat.is_link_or_junction, abs_path):
         raise ApiError("cannot save through a symlink", 400, code="note_is_symlink")
+    root = await vault_path(vault)
+    # Components this save would CREATE are held to the portability rule on
+    # every platform; existing ones stay saveable (the rename escape hatch).
+    await asyncio.to_thread(_reject_unportable_new_components, root, rel)
     base_mtime = body.get("baseMtime")
     await _save_note_contents(abs_path, rel, content, base_mtime)
     mark_self_write(abs_path)
@@ -1974,7 +2004,6 @@ async def api_note_save(request: web.Request) -> web.Response:
         notes_mod.SearchDoc(path=rel, title=notes_mod.note_basename(rel), content=content)
     )
     # Backlinks are a whole-vault relation, so recompute them from disk.
-    root = await vault_path(vault)
     contents = {}
     for p in await list_note_files(root):
         text = await read_note_text(root / p)
@@ -2055,7 +2084,7 @@ async def api_note_new(request: web.Request) -> web.Response:
     vault = await require_vault(request)
     require_writable(vault)
     body = await json_body(request)
-    folder = require_folder_path(body.get("folder"))
+    folder = require_folder_path(body.get("folder"), for_new=True)
     directory = await vault_path(vault, folder or None)
 
     def _create_unique() -> tuple[str, str]:
@@ -2424,7 +2453,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     raise SystemExit(main())

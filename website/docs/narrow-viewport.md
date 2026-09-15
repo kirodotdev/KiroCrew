@@ -88,6 +88,18 @@ undersized target still conforms if a 24px circle centred on it does not interse
 neighbour's. So under 24x24 *and* crowded is a conformance failure; under 44x44 alone is a
 convention miss. Reporting every sub-44 control as a violation over-reports by roughly 3x.
 
+**In a row of adjacent icon actions, width carries the margin; height may be 32.** The two
+axes face different misses. Sideways, a finger that lands off-centre hits the *next*
+action, so the glyph pitch (cell width, cells flush) is the safety distance. Vertically the
+row has no neighbour — message text above, whitespace below — and touch browsers already
+snap a near-miss onto the only tappable element nearby, so extra height buys nothing and
+every completed turn pays for it. The message footers (`ICON_ACTION_ROW_CLS` in
+`touchActions.ts`) are 36 wide x 32 high on touch for that reason, the same shape ChatGPT's
+response-actions row uses (40 x 32); 32 clears the 24px floor. Width is also what keeps a
+row on one line: six actions plus an en-US timestamp fit 390px at 36, and wrapped at 40.
+The rule is for rows of icon-only actions; a lone button, or one carrying a text label, keeps
+`HOVER_NONE_ACTION_BTN_CLS` / `HOVER_NONE_ACTIONS_ROW_CLS` and their 40px square.
+
 **`overflow: hidden` on ANY ancestor kills `position: sticky` — use `overflow: clip`.**
 Same family: a `transform` on an ancestor re-anchors `position: fixed` children, and
 `align-self: start` is the most common silent sticky failure in flex and grid. A sticky

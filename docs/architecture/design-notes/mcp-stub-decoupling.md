@@ -83,6 +83,16 @@ the same server compute the **same digest** and land on the same entry.
 An unconditional stub therefore needs a way to acquire a backend **without**
 digest reuse.
 
+The same rule is why the per-session identity a stub carries is not a key field
+either. Each ACP session's injected stub entries carry a token in their `env`
+(`claim.mint_stub_session_token`), the stub returns it on `register`, and gatewayd
+keys claim-push by `(pid, token)` so one session's claim cannot re-point another
+session's stub on the same shared runtime, and refuses a token no claim has named
+rather than falling back to the shared process tree. It travels as a **sibling** of
+`poolable`: both describe the connection, neither says which backends are
+interchangeable. A claim carrying no token keeps the PID-wide behaviour, so a stub
+from a hand-written config or an overlay predating the token is unaffected.
+
 ## Where the stub comes from
 
 Two paths emit stubs, and both are now unconditional for stdio servers:

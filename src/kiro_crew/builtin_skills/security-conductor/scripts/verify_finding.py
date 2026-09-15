@@ -398,6 +398,13 @@ def poc_argv(poc: str, report_path: Path | None = None) -> tuple[list[str], str]
         argv = shlex.split(body)
     except ValueError:
         return None
+    # ``python3`` is the documented canonical interpreter token in finding PoCs.
+    # On Windows it can resolve to the Microsoft Store app-execution alias even
+    # while this verifier is already running under a real Python. Resolve that
+    # exact token to the active interpreter; do not broaden this to ``python``,
+    # versioned names, paths, or any other program supplied by the finding.
+    if sys.platform == "win32" and argv and argv[0] == "python3":
+        argv[0] = sys.executable
     return (argv, kind) if argv else None
 
 

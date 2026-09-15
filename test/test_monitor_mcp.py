@@ -97,7 +97,14 @@ def test_monitor_watch_rejects_native_subagent_binding(gateway_posts):
     assert gateway_posts == []
 
 
-def test_monitor_watch_rejects_webex_while_finite_legacy_loop_remains_available(gateway_posts):
+def test_monitor_watch_rejects_webex_while_legacy_stop_and_start_work(gateway_posts):
+    """A Webex session hosts a legacy timer loop but no structured monitor.
+
+    So the structured arm (``monitor_watch``) is refused, while the legacy arm
+    (``monitor_start``) and the now-general stop (``monitor_stop``) both emit
+    their directive. ``monitor_stop`` binding through the general key is what
+    lets a Webex session stop the loop it is allowed to arm.
+    """
     audit = MagicMock()
     with (
         patch(
@@ -123,21 +130,24 @@ def test_monitor_watch_rejects_webex_while_finite_legacy_loop_remains_available(
                 "max_runtime_secs": 14_400,
             },
         )
-        inspect = control.monitor_inspect("monitor_inspect", {})
-        stop = control.monitor_stop("monitor_stop", {"reason": "done"})
+        stop = mcp_core._call_tool("monitor_stop", {"reason": "done"})
 
     assert structured.startswith("Error:")
     assert session_directive.decode(structured, "monitor_watch") is None
-    assert inspect.startswith("Error:")
-    assert stop.startswith("Error:")
-    assert session_directive.decode(stop, "monitor_stop") is None
     legacy_args = session_directive.decode(legacy, "monitor_start")
     assert legacy_args is not None
     assert legacy_args["max_cycles"] == 24
     assert legacy_args["max_runtime_secs"] == 14_400
-    # Only the accepted legacy loop publishes; the three refusals park nothing.
+    # The stop emits a directive on Webex: the owning session applies it to
+    # whatever shape its loop holds.
+    assert not stop.startswith("Error:")
+    stop_args = session_directive.decode(stop, "monitor_stop")
+    assert stop_args == {"reason": "done"}
+    # The refused structured arm parks nothing; the legacy arm and the stop both
+    # publish.
     assert [(p, b["tool"]) for p, b in gateway_posts] == [
-        ("/api/session-directive", "monitor_start")
+        ("/api/session-directive", "monitor_start"),
+        ("/api/session-directive", "monitor_stop"),
     ]
 
 
@@ -335,3 +345,32 @@ def test_monitor_inspect_reports_no_loop_distinctly_from_armed():
     payload = json.loads(result)
     assert payload["monitor"] is None
     assert payload["autonudge_loop"] is None
+
+
+def test_monitor_inspect_admits_a_webex_session():
+    """The widened gate lets a Webex session inspect its legacy loop.
+
+    Webex hosts a legacy timer loop but no structured monitor, so the old
+    structured-only gate refused it outright. The general binding admits it and
+    the endpoint returns the legacy reading.
+    """
+    getter = MagicMock(
+        return_value={
+            "enabled": True,
+            "monitor": None,
+            "autonudge_loop": {"id": "lp-3", "active": True, "idle_secs": 300},
+        }
+    )
+    with (
+        patch(
+            "kiro_crew.mcp_core._resolve_session_key_strict",
+            return_value="webex:kirocrew:direct:operator@example.com",
+        ),
+        patch("kiro_crew.mcp_core._get", getter),
+    ):
+        result = control.monitor_inspect("monitor_inspect", {})
+
+    assert not result.startswith("Error:")
+    payload = json.loads(result)
+    assert payload["autonudge_loop"] == {"id": "lp-3", "active": True, "idle_secs": 300}
+    getter.assert_called_once()
