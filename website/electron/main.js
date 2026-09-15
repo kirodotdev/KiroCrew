@@ -32,6 +32,8 @@ const { isLocalGatewayEnabled } = require("./local-gateway");
 const { seedRenamedStore } = require("./store-rename");
 const { resolveHome, secretCandidates } = require("./home-dir");
 const { identityFamily } = require("./instance-guard");
+const { integrateLinuxDesktop } = require("./linux-desktop-integration");
+const { resolveLinuxInstall } = require("./auto-update");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
@@ -530,6 +532,32 @@ app.whenReady().then(async () => {
   ipcRegistrar.registerShell();
   windows.createTray();
   const mainWindow = windows.createMainWindow();
+
+  // Linux AppImage desktop integration. It creates the first launcher and then
+  // reconciles only files whose hashes still match bytes Kiro Crew wrote.
+  // Scheduled with setImmediate AFTER the main window is created, so synchronous
+  // filesystem work runs on a later tick and cannot delay window creation; it
+  // no-ops on every non-AppImage platform.
+  setImmediate(() => {
+    try {
+      integrateLinuxDesktop({
+        fs, path, os, env: process.env,
+        installKind: resolveLinuxInstall({
+          env: process.env,
+          resourcesPath: process.resourcesPath,
+        }).kind,
+        version: app.getVersion(),
+        stateDir: app.getPath("userData"),
+        uid: typeof process.geteuid === "function" ? process.geteuid() : null,
+        run: (cmd, args) => { try { if (typeof cmd === "string" && cmd.startsWith("/")) require("child_process").execFile(cmd, args, () => {}); } catch { /* best-effort */ } },
+        spawnSync: require("child_process").spawnSync,
+        resourcesPath: process.resourcesPath,
+        log: (m) => { try { glog(`desktop-integration: ${m}`); } catch { /* ignore */ } },
+      });
+    } catch (e) {
+      try { glog(`desktop-integration: skipped: ${e && e.message}`); } catch { /* ignore */ }
+    }
+  });
 
   // The global accelerator needs an existing main window. The updater needs
   // that same window for notifications, but MUST be fully registered before
