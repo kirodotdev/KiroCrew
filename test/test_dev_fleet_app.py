@@ -28,6 +28,7 @@ from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
 from kiro_crew.apps.builtins.dev_fleet import http_api as http_api_mod
 from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import npm_preflight
+from kiro_crew.apps.builtins.dev_fleet import release_channel_pin as release_channel_pin_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
@@ -3175,6 +3176,41 @@ async def test_sync_refuses_a_configured_non_kirocrew_repo():
         res = await mod._sync_start_locked()
     assert res["ok"] is False
     assert "not a Kiro Crew checkout" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_the_refresher_populates_the_mirror_the_channel_resolves_from():
+    """The refresher's fetch must carry the release-tag refspec, not just ``--tags``.
+
+    This is the cycle that keeps the rows honest between mutations, so if it wrote
+    only ``refs/tags/`` the mirror would be refreshed exclusively inside Create --
+    and a channel that resolves against a stale mirror looks exactly like a repo that
+    has published nothing new. Asserted against the module's own constant rather than
+    a literal, because a second spelling is precisely what would drift.
+    """
+    run = AsyncMock(return_value=(0, "", ""))
+    with patch.object(repository_mod, "MAIN_REPO", "/repo/KiroCrew"), \
+         patch.object(repository_mod, "_REPO_INVALID_MSG", None), \
+         patch.object(runtime_mod, "_run_cmd", new=run), \
+         patch.object(mod.fleet_state, "_fleet_refresh", new=AsyncMock()), \
+         patch.object(mod.asyncio, "sleep", side_effect=RuntimeError("one cycle only")):
+        with pytest.raises(RuntimeError):
+            await mod._status_refresher()
+    fetches = [c.args[0] for c in run.await_args_list if "fetch" in c.args[0]]
+    assert fetches, "the refresher must fetch"
+    mirror = [argv for argv in fetches if release_channel_pin_mod._TAG_REFSPEC in argv]
+    assert mirror, "the refresher must write the mirror it resolves against"
+    # The refresher writes the mirror on every cycle, so it must prune on every cycle
+    # too: a forged mirror ref that survived here would be honored by the row's own
+    # resolution even though no mutation ran.
+    assert "--prune" in mirror[0]
+    # Pruning is scoped to the destinations actually named, so the pruning invocation
+    # must not name the operator's tag namespace in either spelling.
+    assert "--tags" not in mirror[0]
+    for argv in fetches:
+        assert "--prune-tags" not in argv
+    # The operator's own namespace is still refreshed, in its own invocation.
+    assert any("--tags" in argv for argv in fetches)
 
 
 @pytest.mark.asyncio

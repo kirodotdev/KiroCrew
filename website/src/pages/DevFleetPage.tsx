@@ -754,7 +754,41 @@ interface Worktree {
   pod_resources?: PodResources | null
 }
 interface UndoTarget { name: string; path: string }
-interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; manual_restart?: string; fleet_totals?: FleetTotals }
+// One published release channel and where its detached worktree sits.
+// `worktree` is non-null ONLY for a tree the backend is willing to drive as a
+// lane pin (it exists AND is detached), so this field — not the row's name — is
+// what decides whether a row gets lane controls. `name_taken_by_branch` is the
+// third state: the reserved name is occupied by somebody's branch checkout, so
+// Create cannot run and the UI has to say why.
+interface ReleaseChannel {
+  // The channel's name, for the sentences that name it on screen. Display data:
+  // no request carries it back, because there is exactly one channel and the
+  // endpoints take no argument.
+  lane: string
+  // The basename this channel's worktree has or would have, supplied by the
+  // backend so the naming rule lives on ONE side of the boundary. Re-deriving it
+  // here would let a change to WORKTREE_NAME desync this label from the real path.
+  name: string
+  worktree?: string | null
+  ref?: string | null
+  // The release THIS ROW is on: on an adopted row the one its tree actually
+  // holds, on a placeholder the one Create would check out. `tip_version` is
+  // always the channel's resolved tip, so a behind row names both without either
+  // being ambiguous — and `null` version on an adopted row is a real state (the
+  // tree is detached at no release tag), not a missing value to fill from the tip.
+  version?: string | null
+  tip_version?: string | null
+  // A benign, documented state kept apart from `error`: this checkout has fetched
+  // no release tag yet. It renders as ordinary information and leaves Create
+  // enabled, because Create fetches first and a fetch is what resolves it. `error`
+  // stays reserved for a genuine git failure, which reaches the shared ErrorNotice.
+  unpublished?: boolean
+  error?: string | null
+  at_tip?: boolean | null
+  behind?: number | null
+  name_taken_by_branch?: boolean
+}
+interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; manual_restart?: string; fleet_totals?: FleetTotals; release_channel?: ReleaseChannel | null }
 // `lastIsCause` distinguishes the two things `last` can hold. A gateway-composed
 // diagnosis is decision-critical prose ending in the action to take, so it must
 // not render in the muted 11.5px monospace the raw log tail uses.
@@ -965,6 +999,11 @@ export default function DevFleetPage() {
   }, [refetchFleetFresh, queryClient])
 
   const [busy, setBusy] = useState<Record<string, boolean>>({})
+  // Release-channel mutations get their OWN map keyed by lane, rather than a
+  // prefixed key in `busy`. The create path has no worktree yet, so there is no
+  // name to key on — and a synthetic prefixed name would collide with the row
+  // namespace `busy` uses for every other action.
+  const [rcBusy, setRcBusy] = useState(false)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [detail, setDetail] = useState<Record<string, any>>({})
@@ -1522,6 +1561,36 @@ export default function DevFleetPage() {
     finally { setFlag(name + ':rebase', false) }
   }
 
+  // Release-channel worktree. ONE busy flag, not a map keyed by channel: there is
+  // one channel, and its create path has no worktree yet, so a name-keyed flag
+  // would leave the ghost row's button live through the whole `git worktree add`.
+  async function createReleaseChannel() {
+    // No confirm step. Create is reversible by Remove, and the dialog's body was
+    // the Create button's own tooltip repeated back — so it asked the operator to
+    // read the same sentence twice and click again to do what they just clicked.
+    // Nothing here MOVES an existing tree, so there is no destructive step for a
+    // confirm to guard.
+    setRcBusy(true)
+    try {
+      const r = await api.post<{ ok?: boolean; lane?: string; version?: string | null; ref?: string | null; error?: string }>('/release-channel/create', {})
+      // The next step is named by the CONTROL's own label, not as prose, so the words
+      // in the message are the words on the button and cannot drift from it. The clause
+      // that used to live in this string said "from the row menu", and Provision is a
+      // standalone row button in no menu -- so it sent the operator somewhere the
+      // control is not. Prefixed with "next:" because a bare control name after a dash
+      // reads as a noun rather than an instruction. A fresh worktree always needs
+      // provisioning, so this half is unconditional.
+      if (r?.ok) notify(`${i18nT('pages.devFleetPage.release_channel_created', { lane: r.lane || '', ref: r.version || r.ref || '?' })} — ${i18nT('pages.devFleetPage.next_step')}: ${i18nT('pages.devFleetPage.provision')}`, { type: 'success' })
+      // The backend string is a CAUSE, not a message: git/resolver text alone
+      // tells the operator what failed internally but not what did not happen.
+      // Framed the same way `restart_failed` and `make_live_failed` are in this
+      // file, so the toast reads as an outcome with a reason.
+      else notify(r?.error ? `${i18nT('pages.devFleetPage.release_channel_create_failed')}: ${r.error}` : i18nT('pages.devFleetPage.release_channel_create_failed'), { type: 'error' })
+      invalidateFleet()
+    } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
+    finally { setRcBusy(false) }
+  }
+
   async function pruneShipped() {
     setFlag('__prune', true)
     try {
@@ -1835,9 +1904,59 @@ export default function DevFleetPage() {
     if (s === 'CLOSED') return 3
     return 2 // unknown state — rank with the PR-less rows
   }
+  const releaseChannel = fleet?.release_channel || null
+  // A channel that will not resolve says so ON ITS ROW, and that is the only place
+  // it says it. There is deliberately no page-level notice: this arrives on the
+  // 12s fleet poll rather than from a button, so an error-level toast fired on
+  // every checkout that has no `v*` tags at all — a shallow clone, a fork before
+  // its first release — for a feature that operator never opened. Gating the
+  // toast to adopted rows fixed the false alarm but left two renderers for one
+  // fact, and each round found a new way they diverged. One surface: the
+  // placeholder shows `rc.error` and disables Create on it, and an adopted row
+  // carries it on the badge tooltip below.
+  // Adopted only. A row is a channel pin because the BACKEND says its tree is
+  // detached at a resolved ref, never because its name looks like one — so a
+  // user's own `release-channel-stable` branch checkout keeps ordinary controls.
+  const channelWorktree = releaseChannel?.worktree || null
+  const channelFor = (w: Worktree) =>
+    !w.is_main && channelWorktree && w.name === channelWorktree ? releaseChannel : undefined
+  // Set when the reserved basename is occupied by a BRANCH checkout, so the
+  // explanation lands on the row that actually exists: one directory is one row,
+  // and rendering a second placeholder for it printed the same name twice.
+  const channelNameTakenBy =
+    releaseChannel && !releaseChannel.worktree && releaseChannel.name_taken_by_branch
+      ? releaseChannel.name
+      : null
+  const channelNameTakenFor = (name: string) =>
+    channelNameTakenBy === name ? releaseChannel : undefined
+  // The third state the backend can emit: the reserved directory EXISTS and is a
+  // registered worktree (so it renders as an ordinary SELECTABLE row), but its git
+  // state could not be read — `worktree` is null, `name_taken_by_branch` is false,
+  // and only `error` is set. It is neither an adopted pin nor a branch checkout, so
+  // neither channelFor nor channelNameTakenFor fires; and because the row IS in
+  // `selectable`, channelNamePresent is true and the placeholder path is suppressed
+  // too. Without this badge the error string has no surface in the default view.
+  const channelUnreadableBy =
+    releaseChannel && !releaseChannel.worktree && !releaseChannel.name_taken_by_branch && releaseChannel.error
+      ? releaseChannel.name
+      : null
+  const channelUnreadableFor = (name: string) =>
+    channelUnreadableBy === name ? releaseChannel : undefined
+  // ONE derivation for every channel resolver error, so a single ErrorNotice is the
+  // sole surface for both cases: an ADOPTED row whose resolve() failed, and the
+  // reserved directory whose HEAD could not be read. A tooltip is neither
+  // keyboard-reachable nor an agent hand-off, so no error may live in a Badge title.
+  const channelErrorFor = (w: Worktree): ReleaseChannel | undefined => {
+    const adopted = channelFor(w)
+    if (adopted?.error) return adopted
+    return channelUnreadableFor(w.name) ?? undefined
+  }
+
   const mainRows = wts.filter((w) => w.is_main)
   const legacyAll = wts.filter((w) => !w.is_main && w.legacy)
-  const others = wts.filter((w) => !w.is_main && matchesRow(w) && (showLegacy || !w.legacy))
+  const selectable = wts.filter((w) => !w.is_main && matchesRow(w) && (showLegacy || !w.legacy))
+  const channelRows = selectable.filter((w) => w.name === channelWorktree)
+  const others = selectable.filter((w) => w.name !== channelWorktree)
   others.sort((a, b) => sortBy === 'name'
     ? compareText(a.name, b.name)
     : sortBy === 'recent'
@@ -1845,7 +1964,12 @@ export default function DevFleetPage() {
       : sortBy === 'behind'
         ? ((b.behind || 0) - (a.behind || 0)) || compareText(a.name, b.name)
         : (statusRank(a) - statusRank(b)) || (prRank(a) - prRank(b)) || compareText(a.name, b.name))
-  const visible = [...mainRows, ...others]
+  // The channel row holds a FIXED position under `main` instead of joining the
+  // sort. Every sort key on offer describes feature-branch progress — recency,
+  // commits behind main, PR state — and a release worktree scores badly on all of
+  // them by design, so under `recent` it would sink below every active branch and
+  // under `behind` it would top the list for a distance that is not a backlog.
+  const pinnedRows = [...mainRows, ...channelRows]
 
   const reviewState = (w: Worktree) => {
     if (!w.pr) return null
@@ -1950,7 +2074,14 @@ export default function DevFleetPage() {
     out.push(<MenuBtn key="menu" items={[
       podsAvailable && w.has_dist && !w.running ? { label: i18nT('pages.devFleetPage.spin_up_pod'), icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
       podsAvailable && w.running ? { label: i18nT('pages.devFleetPage.restart_pod'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
-      { label: i18nT('pages.devFleetPage.rebase_onto_main'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
+      // Rebase is SUPPRESSED on a release worktree rather than replaced. Rebasing
+      // a detached release checkout onto main is not a coherent request -- it would
+      // replay a shipped tag's history onto unreleased code, and the backend
+      // refuses it anyway (no branch to rebase). Moving the pin to a newer release
+      // is Remove followed by Create, which the row already offers.
+      channelFor(w)
+        ? null
+        : { label: i18nT('pages.devFleetPage.rebase_onto_main'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => rebaseWorktree(w.name), disabled: !!busy[w.name + ':rebase'] },
       // Staging a cutover writes only the live-target pointer, so it needs no
       // pod support and no drivable service — gating it on podsAvailable would
       // hide it on exactly the hosts it exists to serve.
@@ -2106,6 +2237,15 @@ export default function DevFleetPage() {
     )
   }
 
+  // Desktop-only surface, declared at the layout root per AUTOSDE
+  // narrow-viewport-required (its exemption requires the intent be stated here,
+  // not left implied). This grid is the fixed 640px, 7-column contract that this
+  // header and every worktree row -- ordinary rows and the release-channel
+  // placeholder alike -- share, and the columns are read across all rows as one
+  // aligned diagnostic table. It is a dense operator diagnostic grid meant for a
+  // desktop, so it ships no narrow branch: a lone responsive row would misalign
+  // from this header and its sibling rows, and the design carries one ordinary
+  // fleet row per channel rather than a header strip that could reflow.
   const columnHeader = (
     <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '2px 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--muted)', minWidth: 640 } as CSSProperties}>
       <span /><span>{i18nT('pages.devFleetPage.pod_2')}</span><span>{i18nT('pages.devFleetPage.worktree')}</span><span>{i18nT('pages.devFleetPage.pr_2')}</span><span title={i18nT('pages.devFleetPage.commits_behind_main')}>{i18nT('pages.devFleetPage.behind')}</span><span title={i18nT('pages.devFleetPage.last_commit_activity')}>{i18nT('pages.devFleetPage.updated')}</span><span style={{ textAlign: 'right' }}>{i18nT('pages.devFleetPage.actions')}</span>
@@ -2119,6 +2259,7 @@ export default function DevFleetPage() {
     const isMainWithStepper = w.is_main && syncRun
     const pr = prov[w.name]
     const provActive = !w.is_main && !!pr
+    const channelErr = channelErrorFor(w)
     return (
       <div key={w.name}>
         <div style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30, minWidth: 640 } as CSSProperties}>
@@ -2140,6 +2281,64 @@ export default function DevFleetPage() {
             {w.is_main ? (fleet?.base_branch && w.branch && w.branch !== fleet.base_branch
               ? <Badge variant="warn" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.the_primary_checkout_is_on_branch_not_base', { branch: w.branch, base: fleet.base_branch })}>{i18nT('pages.devFleetPage.parked_on_branch', { branch: w.branch })}</Badge>
               : <span style={mut}>{i18nT('pages.devFleetPage.main')}</span>) : null}
+            {/* Release-channel pin. The lane is already in the row NAME
+                (`release-channel-stable`), so the badge carries only what the
+                name cannot: which release the tree is actually sitting on. `ok`
+                when it is at the lane tip, `warn` when a newer release has
+                shipped.
+
+                `version` is the tree's OWN release, never the lane tip: a badge
+                fed the resolved version would flip to each new release as it
+                ships while the tree stayed put, so the row would name a build it
+                does not contain. When the tree is detached at no release tag at
+                all the badge falls back to the lane name and the tooltip says so,
+                rather than borrowing the tip's version to look complete. */}
+            {channelFor(w) ? (
+              <Badge
+                variant={channelFor(w)!.at_tip ? 'ok' : 'warn'}
+                className="text-[10px] px-1.5 py-0"
+                title={
+                  channelFor(w)!.at_tip
+                    ? i18nT('pages.devFleetPage.release_channel_pinned_at', { lane: channelFor(w)!.lane, ref: channelFor(w)!.ref || '?' })
+                    // The behind cases state the fact and name no control.
+                    // Closing the gap is Remove followed by Create
+                    // -- two controls on two surfaces (Remove in the row's detail
+                    // panel, Create on the placeholder that appears afterwards).
+                    // Naming one of them here would misdirect the operator the way
+                    // "from the row menu" once did, and there is no single label
+                    // that is the answer.
+                    // A resolver error is NOT handled here: it routes to the row's
+                    // ErrorNotice below, the sole error surface, never a Badge title.
+                    : channelFor(w)!.version
+                      ? i18nT('pages.devFleetPage.release_channel_on_older_release', { lane: channelFor(w)!.lane, version: channelFor(w)!.version as string, tip: channelFor(w)!.tip_version || channelFor(w)!.ref || '?' })
+                      : i18nT('pages.devFleetPage.release_channel_on_no_release', { lane: channelFor(w)!.lane, tip: channelFor(w)!.tip_version || channelFor(w)!.ref || '?' })
+                }
+              >
+                {channelFor(w)!.version || channelFor(w)!.lane}
+              </Badge>
+            ) : null}
+            {/* This checkout holds a lane's reserved name but is on a branch, so
+                it is NOT a lane pin and gets none of the lane controls. Said on
+                the row rather than as a second placeholder row, so one directory
+                stays one row — and said at all, because otherwise the lane simply
+                has no row and no explanation for why it cannot be created. */}
+            {/* Both facts, because neither works alone. The policy on its own ("Name
+                reserved for release channels") does not say why THIS row is exempt
+                from it, and the situation on its own does not distinguish the row --
+                every feature worktree is on a branch. The reserved name is the half
+                only this row has, so the badge carries both and the tooltip carries
+                the full sentence with the name. */}
+            {!w.is_main && channelNameTakenFor(w.name) ? (
+              <Badge variant="warn" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.release_channel_name_taken_by_branch', { name: w.name })}>
+                {i18nT('pages.devFleetPage.reserved_name_on_a_branch')}
+              </Badge>
+            ) : null}
+            {/* The reserved directory exists as an ordinary worktree row but its
+                git state could not be read, so it is neither an adopted pin nor a
+                branch and the placeholder path is suppressed. The error string it
+                carries reaches the shared ErrorNotice below this row (via
+                channelErrorFor) — never a Badge title, which is not
+                keyboard-reachable and carries no agent hand-off. */}
             {w.is_live ? <Badge variant="aim" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.the_live_gateway_on_this_port_runs_from_this_che')}>{i18nT('pages.devFleetPage.live')}</Badge> : null}
             {/* A staged cutover outlives the toast that announced it: without a
                 persistent marker an operator who dismissed or missed the toast
@@ -2156,14 +2355,48 @@ export default function DevFleetPage() {
           </div>
           {isMainWithStepper ? renderSyncStepper() : provActive ? renderProvStepper(w) : (
             <>
-              {rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>{"\u2014"}</span>}
-              <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? i18nT('pages.devFleetPage.commits_behind_main_2', { count: w.behind ?? 0 }) : i18nT('pages.devFleetPage.up_to_date_with_main')}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>
+              {/* A release worktree is detached at a tag, so it has no branch and
+                  can never have a PR. Rendered as an explicit "n/a" rather than
+                  the PR-less em dash, which on every other row means "no PR yet"
+                  \u2014 a state that invites waiting for one. */}
+              {channelFor(w)
+                ? <span style={{ ...mut, opacity: 0.5 }} title={i18nT('pages.devFleetPage.release_channel_has_no_pr')}>{i18nT('pages.devFleetPage.not_applicable_short')}</span>
+                : rs && prUrl ? <a href={prUrl} target="_blank" rel="noopener noreferrer" title={w.pr?.title || rs.word} style={{ textDecoration: 'none' }}><Badge variant={rs.variant}>{rs.word}</Badge></a> : <span style={{ ...mut, opacity: 0.5 }}>{"\u2014"}</span>}
+              {/* BEHIND changes denominator on a channel row: distance from the
+                  LANE TIP, not from main. The behind-main figure on a release
+                  worktree is large by construction (a shipped tag is behind main
+                  by every commit merged since) and says nothing the operator can
+                  act on, whereas distance from the tip is what tells the operator
+                  a newer release exists.
+
+                  The denominator is NAMED in the cell (`↓3 tip`), not left to a
+                  hover. Two rows reading `↓12` in one column meant two different
+                  things, and a scanner comparing them had no way to see that
+                  without stopping to hover each one — so the number invited a
+                  wrong read of the lane's health on every visit. */}
+              {channelFor(w)
+                ? <span style={{ ...mut, opacity: (channelFor(w)!.behind ?? 0) > 0 ? 1 : 0.5 }} title={(channelFor(w)!.behind ?? 0) > 0 ? i18nT('pages.devFleetPage.commits_behind_channel_tip', { count: channelFor(w)!.behind ?? 0 }) : i18nT('pages.devFleetPage.at_the_channel_tip')}>{(channelFor(w)!.behind ?? 0) > 0 ? '\u2193' + channelFor(w)!.behind + '\u2009' + i18nT('pages.devFleetPage.behind_suffix_tip') : '\u2014'}</span>
+                : <span style={{ ...mut, opacity: (w.behind ?? 0) > 0 ? 1 : 0.5 }} title={(w.behind ?? 0) > 0 ? i18nT('pages.devFleetPage.commits_behind_main_2', { count: w.behind ?? 0 }) : i18nT('pages.devFleetPage.up_to_date_with_main')}>{(w.behind ?? 0) > 0 ? '\u2193' + w.behind : '\u2014'}</span>}
               <span style={{ ...mut, opacity: 0.85 }}>{relTime(w.last_updated_at).replace(' ago', '')}</span>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0, flexWrap: 'wrap' } as CSSProperties}>{rowButtons(w)}</div>
             </>
           )}
         </div>
         {renderRebaseFailure(w)}
+        {/* The sole error surface for a channel row: an ADOPTED row whose resolve()
+            failed, OR the reserved directory whose HEAD could not be read
+            (channelErrorFor folds both). A Badge title is not keyboard-reachable and
+            carries no agent hand-off, so every channel error routes here, matching
+            the placeholder row's ErrorNotice. */}
+        {channelErr ? (
+          <div style={{ margin: '2px 0 8px 32px' }}>
+            <ErrorNotice
+              message={i18nT('pages.devFleetPage.release_channel_unresolved', { lane: channelErr.lane, error: channelErr.error as string })}
+              askAgent
+              testId={`release-channel-error-${channelErr.lane}`}
+            />
+          </div>
+        ) : null}
         {w.is_main && syncRun && syncLogOpen ? (
           <pre style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all', minWidth: 640 } as CSSProperties}>{filterStepMarkers(syncRun.lines || []).join('\n') || '(no output yet)'}</pre>
         ) : null}
@@ -2182,6 +2415,123 @@ export default function DevFleetPage() {
       </div>
     )
   }
+
+  // A lane with no worktree yet, rendered as a dimmed row carrying only Create.
+  // This placeholder is the ONLY place the feature is discoverable — there is no
+  // header control — so it is listed even though nothing exists on disk. Kept out
+  // of `worktrees` on the backend for the same reason it is a distinct renderer
+  // here: it has no path, and every real row's affordance assumes one.
+  function renderChannelPlaceholder(rc: ReleaseChannel) {
+    const name = rc.name
+    // Two states this row tells apart, and they read differently on purpose.
+    // `error` is a GENUINE resolver failure — git could not be read — so it goes
+    // through the shared ErrorNotice, the same surface every other error on this
+    // page uses, and it blocks Create. `unpublished` is the benign documented
+    // state: this checkout has fetched no release tag, which is ordinary
+    // information, not an incident. The backend nulls `error` for that state, so a
+    // benign row leaves `blocked` empty and Create enabled — and Create fetches
+    // first, so it is the action that resolves the state.
+    const blocked = rc.error || null
+    const unpublished = !blocked && !!rc.unpublished
+    // Framed for the ErrorNotice and the disabled-button tooltip. Only a genuine
+    // failure produces it, so a benign checkout never renders as an incident.
+    const blockedText = blocked
+      ? i18nT('pages.devFleetPage.release_channel_unresolved', { lane: rc.lane, error: blocked })
+      : null
+    // The cell's own status line. A genuine failure shows a SHORT plain label and
+    // hands the full text to the ErrorNotice below, so the cell can ellipsise
+    // without ever cutting the sentence a user needs mid-clause; the benign and
+    // resolved states read as plain informational text.
+    const statusText = blocked
+      ? i18nT('pages.devFleetPage.release_channel_unresolved_short', { lane: rc.lane })
+      : unpublished
+        ? i18nT('pages.devFleetPage.release_channel_unpublished', { lane: rc.lane })
+        : i18nT('pages.devFleetPage.no_worktree_yet')
+    return (
+      <div key={'rc-' + rc.lane}>
+      <div data-testid={'release-channel-placeholder-' + rc.lane} style={{ display: 'grid', gridTemplateColumns: '16px 84px minmax(0,1fr) 64px 48px 44px 212px', gap: 8, alignItems: 'center', padding: '5px 0', borderTop: '1px solid var(--border)', minHeight: 30, minWidth: 640 } as CSSProperties}>
+        <span style={{ width: 15 }} />
+        {/* The row reads as a muted placeholder by dimming its cells directly, NOT
+            the grid container: an opacity < 1 on the container composites the whole
+            subtree as one group, and a descendant cannot exceed its ancestor's
+            opacity, so a container opacity dims the Create button with it. The
+            muting lives on these sibling cells -- the pod-column dash, the worktree
+            cell (name, version pill, status), and the already-dimmed n/a columns
+            below -- so the actions cell holding Create sits outside any dimmed
+            subtree at full contrast. Keep every opacity on a CELL; none on an
+            ancestor of Create. */}
+        <span style={{ fontSize: 12.5, color: 'var(--muted)', opacity: 0.62 }}>{"—"}</span>
+        <div style={{ minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 6, whiteSpace: 'nowrap', overflow: 'hidden', opacity: 0.62 } as CSSProperties}>
+          <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+          {/* Dashed border, not a filled pill: this names a ref that has been
+              RESOLVED but not checked out anywhere, so it must not read like the
+              solid version badge an adopted row carries. */}
+          {/* The pill carries its own tooltip. Only the Create button explained
+              what this version means, so a user hovering the version itself —
+              the thing they are trying to understand — got nothing. */}
+          <span
+            title={i18nT('pages.devFleetPage.release_channel_would_create_at', { lane: rc.lane, version: rc.version || rc.ref || '?' })}
+            style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, border: '1px dashed var(--border)', color: 'var(--muted)', fontFamily: 'ui-monospace, monospace' }}
+          >
+            {rc.version || rc.ref || rc.lane}
+          </span>
+          {/* Never the bare backend string, and never the error path: `rc.error`
+              is git/resolver mechanism, so it belongs in the framed ErrorNotice
+              below with the agent hand-off. This cell carries only a short plain
+              status — a benign "no release yet", or a one-clause "could not be
+              resolved" whose full text is in the notice — so ellipsising it can
+              never cut the sentence a user is reading. Always muted: the danger
+              styling lives on the ErrorNotice, not here. */}
+          <span
+            title={blockedText || undefined}
+            style={{ fontSize: 11.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}
+          >
+            {statusText}
+          </span>
+        </div>
+        <span style={{ fontSize: 12.5, color: 'var(--muted)', opacity: 0.5 }} title={i18nT('pages.devFleetPage.release_channel_has_no_pr')}>{i18nT('pages.devFleetPage.not_applicable_short')}</span>
+        <span style={{ fontSize: 12.5, color: 'var(--muted)', opacity: 0.5 }}>{"—"}</span>
+        <span style={{ fontSize: 12.5, color: 'var(--muted)', opacity: 0.5 }}>{"—"}</span>
+        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', minWidth: 0 } as CSSProperties}>
+          {/* No explanatory tooltip: the version pill beside it already says what
+              Create checks out, and the success toast names provisioning as the next
+              step. A second copy on the button restated the pill's first clause. The
+              blocked case still needs a title, because a disabled button cannot
+              explain itself any other way. */}
+          <Btn onClick={() => createReleaseChannel()} disabled={rcBusy || !!rc.error} title={blockedText || undefined}>
+            {rcBusy ? i18nT('pages.devFleetPage.creating') : i18nT('pages.devFleetPage.create_worktree')}
+          </Btn>
+        </div>
+      </div>
+      {/* A resolver failure is the one error class on this page that reached the
+          user only as tooltip and cell text -- every other one goes through
+          ErrorNotice with the agent hand-off. Row-scoped and BELOW the grid, not
+          page-level: the page-level surface would fire on every mount for a
+          checkout with no release tags at all (a shallow clone, a fork before its
+          first release), which is a normal state and not an incident. Here it sits
+          on the row that cannot resolve, where it is the answer to a question the
+          operator is already asking. */}
+      {blockedText ? (
+        <div style={{ padding: '2px 0 8px 30px', minWidth: 640 } as CSSProperties}>
+          <ErrorNotice message={blockedText} askAgent testId={'release-channel-error-' + rc.lane} />
+        </div>
+      ) : null}
+      </div>
+    )
+  }
+  // Suppressed whenever a real directory already carries the reserved basename,
+  // whatever the backend made of it. `worktree` and `name_taken_by_branch` are both
+  // CLASSIFICATIONS, and a third state exists: an unreadable HEAD resolves to
+  // `detached: null`, which is neither -- so the placeholder rendered beside the very
+  // directory it was describing and one directory became two rows. Testing the fleet
+  // for the NAME is the check that holds for every classification, including ones
+  // added later, because the name is the thing that can only belong to one row.
+  const channelNamePresent =
+    !!releaseChannel && selectable.some((w) => !w.is_main && w.name === releaseChannel.name)
+  const channelPlaceholders =
+    releaseChannel && !releaseChannel.worktree && !releaseChannel.name_taken_by_branch && !channelNamePresent
+      ? [renderChannelPlaceholder(releaseChannel)]
+      : []
 
   const legacyToggle = legacyAll.length > 0 ? (
     <Btn onClick={() => setShowLegacy((v) => !v)} style={{ display: 'block', width: '100%', textAlign: 'left', marginTop: 4, fontSize: 11.5, color: 'var(--muted)', background: 'transparent', border: '1px dashed var(--border)', minWidth: 640 }} title={i18nT('pages.devFleetPage.worktrees_created_under_a_previous_repository_na')}>
@@ -2208,7 +2558,10 @@ export default function DevFleetPage() {
     ? <ErrorNotice title={i18nT('pages.devFleetPage.discovery_error')} message={error} askAgent testId="fleet-discovery-error" />
     : <ErrorNotice title={i18nT('pages.devFleetPage.backend_unavailable')} message={error} askAgent testId="fleet-backend-error" />
   else if (!wts.length) body = <EmptyState icon={<Server size={28} className="lucide-inline" />} title={i18nT('pages.devFleetPage.no_worktrees_found')} subtitle={i18nT('pages.devFleetPage.nothing_under_the_worktrees_root_yet')} />
-  else body = <div>{columnHeader}{visible.map(renderRow)}{legacyToggle}</div>
+  // Order: main, adopted channel rows, un-created channel placeholders, then the
+  // sorted feature worktrees. The placeholders sit WITH the channel rows rather
+  // than at the end so every lane reads as one group.
+  else body = <div>{columnHeader}{pinnedRows.map(renderRow)}{channelPlaceholders}{others.map(renderRow)}{legacyToggle}</div>
 
   const confirmDialog = (
     <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{confirmReq?.cancelLabel || i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || i18nT('pages.devFleetPage.confirm')}</Btn></>}>

@@ -7,6 +7,7 @@ import functools
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -15,7 +16,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew import dep_sync, frontend, hooks, platform_compat
-from kiro_crew.apps.builtins.dev_fleet import fleet_state, live, npm_preflight, repository, runtime
+from kiro_crew.apps.builtins.dev_fleet import (
+    fleet_state,
+    live,
+    npm_preflight,
+    release_channel_pin,
+    repository,
+    runtime,
+)
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import sandboxed_spawn_argv, shielded_prepare_off_loop
@@ -2284,7 +2292,30 @@ async def _prunable(path: str, branch: str | None) -> dict:
             return {**base, "ok": False, "code": "closed_new_commits", "unmerged_commits": unmerged}
         return {**base, "ok": True, "code": "closed", "unmerged_commits": unmerged}
     if own == 0 and not dirty:
-        if age_h and age_h > 48:
+        # `empty` reads "no commits of its own, clean, older than 48h" as
+        # ABANDONMENT, and that inference only holds for a tree on a BRANCH. A
+        # detached tree has no branch and therefore no PR, and every commit it
+        # holds is reachable from the base branch, so `own` is 0 by construction
+        # rather than by neglect -- for a release-channel pin that is the steady
+        # state, and it is what the operator asked Dev Fleet to keep.
+        #
+        # Withheld on `branch is None` rather than on the pin's basename. The
+        # name is one level above the cause, and matching it got both halves
+        # wrong: a tree the operator detached by hand at a release tag -- the
+        # workflow this feature automates -- was still preselected, while a
+        # BRANCH checkout that merely borrowed the reserved name vanished from
+        # Prune merged despite being an ordinary feature tree. Keying on the
+        # shape covers every deliberately detached tree and lets a branch fall
+        # through to the ordinary merged/closed/active logic, where it belongs.
+        #
+        # Accepted cost, stated rather than left to be discovered: this withholds
+        # `empty` from EVERY detached tree, so a hand-detached experiment nobody
+        # returns to never reaches the verdict on age alone and accumulates
+        # until it is removed by hand. Telling that tree from the pin needs an
+        # abandonment policy for detached trees -- release-tag awareness here, or a
+        # preview line counting what was withheld -- which is a prune-subsystem
+        # question rather than a row-rendering one.
+        if branch is not None and age_h and age_h > 48:
             return {**base, "ok": True, "code": "empty"}
         return {**base, "ok": False, "code": "fresh"}
     return {**base, "ok": False, "code": "active"}
@@ -2544,11 +2575,30 @@ async def _status_refresher() -> None:
         return
     while True:
         try:
-            remote = await repository._upstream_remote()
-            await runtime._run_cmd(
-                ["git", "-C", repo, "fetch", remote, repository.BASE_BRANCH, "--quiet"],
-                timeout=90,
-            )
+            # The channel's mirror refspec, pruned, so a newly published release
+            # becomes visible BETWEEN mutations and a forged or retracted mirror ref
+            # does not survive a cycle. Without the fetch, the
+            # mirror is refreshed only inside Create, so `at_tip` reads true against a
+            # stale mirror and the version badge and `behind` count describe a tip that
+            # has already moved.
+            #
+            # Delegated to `release_channel_pin.fetch_refs` rather than spelled here:
+            # this refresh and the one before a mutation must populate the same mirror
+            # under the same rules, and a second spelling that drifted would leave the
+            # channel resolving against a mirror nothing updates -- indistinguishable
+            # from a repo that has published nothing new. It also inherits the
+            # pruning that keeps the mirror a statement about what the remote
+            # advertised, the refusal of `--prune-tags`, and the split that stops a
+            # diverged local tag failing the whole refresh.
+            #
+            # Unconditional. Gating it on a lane existing meant a `git worktree
+            # list` every cycle plus a fail-open branch, to avoid a cost nothing
+            # measured: tags are small refs and only the first fetch transfers
+            # them, so an install with no lane pays approximately nothing.
+            #
+            # The error is dropped, not checked: a row that cannot refresh states its
+            # own staleness, and the refresher's job is the next cycle.
+            await release_channel_pin.fetch_refs(repo, timeout=90)
             await fleet_state._fleet_refresh()
         except Exception:
             runtime.logger.exception("dev-fleet status refresher failed")
@@ -2677,6 +2727,297 @@ async def _auto_prune_reaper() -> None:
         await asyncio.sleep(interval)
 
 
+# --- release-channel worktrees ---
+# The one mutation that materializes a lane's detached checkout. Resolution itself is a
+# pure read and lives in ``release_channel_pin``; this is here because it takes
+# the same ``.git`` admin lock every other worktree writer in this module takes,
+# and a second module reaching for that lock is how a lock-order inversion gets
+# introduced.
+#
+# Lock order, unchanged from the removal path:
+#   _wt_lock(name)  →  _GIT_MUTATION_LOCK
+
+
+async def _release_channel_create() -> dict:
+    """Materialize the release-channel worktree, detached at the channel tip.
+
+    Detached on purpose. A branch would invite a ``git pull`` that drifts the
+    tree off the release it is supposed to BE, and the fleet's behind-main count
+    on a branch-bearing row would start measuring against a ref the operator
+    never chose. Detached says what the tree is: a fixed point, which moves only
+    by being removed and created again at a newer release.
+    """
+    try:
+        repo = repository._repo()
+    except repository.RepoUnavailable as exc:
+        return {"ok": False, "error": str(exc)}
+    name = release_channel_pin.WORKTREE_NAME
+    existing, _err = await repository._find_worktree(name)
+    if existing is not None:
+        # Names the two controls that exist. This is the one collision an operator
+        # is guaranteed to hit -- the placeholder's Create is gone once the row is
+        # adopted, so anything reaching here is a stale tab or a second client --
+        # and the pin does not move in place, so "move it to the tip" would send
+        # them looking for a control that was never shipped.
+        return {
+            "ok": False,
+            "error": f"{name} already exists — remove it first, then create it again",
+        }
+    path = release_channel_pin.worktree_path(repo)
+    lock = _wt_lock(name)
+    if lock.locked():
+        return {"ok": False, "error": f"another {name} operation is already running"}
+    async with lock:
+        # Refuse rather than adopt. A directory already at the target path is not
+        # ours; ``git worktree add`` fails on a non-empty path anyway, and
+        # refusing here names the path instead of surfacing git's message about a
+        # directory the operator did not know was involved.
+        if await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), Path(path).exists
+        ):
+            return {"ok": False, "error": f"refusing: {path} already exists on disk"}
+        fetch_err = await release_channel_pin.fetch_refs(repo)
+        if fetch_err:
+            return {"ok": False, "error": f"cannot refresh release refs: {fetch_err}"}
+        resolved = await release_channel_pin.resolve(repo=repo)
+        if not resolved.get("ok"):
+            return resolved
+        # The oid above came from the mirror, which the fetch's `--prune` only cleans of
+        # refs absent when that subprocess EXITED -- so a ref planted afterwards is
+        # unpruned, outranks every real release if its version is high enough, and its
+        # oid is what would be checked out and later run by the lane's pod. Ask the
+        # remote what it actually publishes and refuse anything else. This closes the
+        # class rather than the instance: no timing wins, because a locally planted ref
+        # is not in the advertised set at any moment.
+        #
+        # Fails CLOSED on a failed query, and treats an unadvertised tag as a refusal
+        # rather than falling back to the real oid -- a silent correction would
+        # materialize the right tree and hide that the mirror had been written to.
+        advertised, adv_err = await release_channel_pin.advertised_release_commits(repo)
+        if adv_err:
+            return {"ok": False, "error": f"cannot confirm the release with the remote: {adv_err}"}
+        tag = str(resolved["ref"]).rsplit("/", 1)[-1]
+        published = (advertised or {}).get(tag)
+        if published != resolved["oid"]:
+            return {
+                "ok": False,
+                "error": (
+                    f"refusing: {tag} in this checkout does not match what the remote "
+                    f"publishes — the release ref store has been written to locally"
+                ),
+            }
+        staging = _lane_staging_path(path)
+        # Every exit from here to the adoption below has to leave the staging tree
+        # cleaned up, and a RETURN is not the only exit. `_run_uninterruptible`
+        # shields each git child but re-raises `CancelledError` once it returns, so
+        # an ordinary backend shutdown unwinds this frame between a successful
+        # `worktree add` and the `worktree move` that adopts it -- and the `rc != 0`
+        # cleanups below are reached only by a returning failure, never by an
+        # unwind. `BaseException` rather than `Exception` because cancellation is
+        # the case this exists for. Best-effort and then re-raise: the cleanup's own
+        # awaits can be cancelled in turn, so this narrows the window rather than
+        # closing it. What is left when it loses is bounded -- a
+        # `<lane>.staging.<pid>.<rand>` directory, which `git worktree prune`
+        # reclaims and which cannot block a retry, because the create guard tests
+        # the LANE path and every call stages under a fresh name.
+        try:
+            async with _GIT_MUTATION_LOCK:
+                # Refuse a checkout whose own config declares a content filter:
+                # `worktree add` runs that driver while writing the tag's files.
+                # The driver cannot come from the release -- see
+                # `repo_supplied_filter` for why config is the only source -- so
+                # this guards against a declaration planted in this checkout, and
+                # it refuses rather than neutralizing because the
+                # `filter.<name>.*` key space is unbounded. Fail-closed: an
+                # unreadable scope refuses too, which is why the message names
+                # what was found instead of asserting a driver exists.
+                #
+                # Probed HERE, holding the mutation lock with no network call
+                # between it and the checkout below, rather than before the fetch.
+                # Config is local and stays writable by any process sharing the
+                # filesystem, so probing earlier left the two `ls-remote`/fetch
+                # round-trips as a window in which a driver could be planted after
+                # a clean probe. Measured against git 2.54: no flag disables
+                # repo-configured filters for a checkout -- `-c filter.<n>.smudge=`
+                # needs the attacker-chosen name, `--no-checkout` only defers to a
+                # populate that re-runs the filter, and `git archive` runs it too
+                # -- so ordering is the available remedy and the sub-millisecond
+                # gap between two local spawns is the irreducible residual, not a
+                # closed hole. Strict tier below is the second layer for it.
+                offending = await release_channel_pin.repo_supplied_filter(repo)
+                if offending:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"refusing: this checkout's git config carries {offending}, "
+                            f"which git would run while checking out the release — "
+                            f"create {name} by hand"
+                        ),
+                    }
+                # "strict" tier, because this MATERIALIZES repo-controlled
+                # content. `_GIT_ENV_NEUTRALIZERS` disarms hooks, fsmonitor, the
+                # credential helper and sshCommand; a content filter is a
+                # different shape -- `.gitattributes` names one and config defines
+                # what it runs, so the key space cannot be enumerated with `-c` --
+                # and the guard just above refuses those outright instead.
+                #
+                # Strict remains the second layer behind that refusal: it injects
+                # no trusted credential helpers and masks every credential home,
+                # so a driver reaching execution anyway faces no host credential
+                # to read.
+                #
+                # Drained: a cancellation landing mid-`worktree add` would otherwise
+                # unwind this frame -- releasing _GIT_MUTATION_LOCK -- while git is
+                # still registering the admin record and writing the tree.
+                #
+                # Built at `staging`, not at `path`, so the destructive cleanup below
+                # can only ever target a directory THIS call named. See
+                # `_lane_staging_path` for why that matters.
+                rc, _out, err = await runtime._run_uninterruptible(
+                    runtime._run_cmd(
+                        [
+                            "git",
+                            "-C",
+                            repo,
+                            "worktree",
+                            "add",
+                            "--detach",
+                            staging,
+                            resolved["oid"],
+                        ],
+                        timeout=300,
+                        mode="strict",
+                    )
+                )
+            if rc != 0:
+                # `worktree add` can fail AFTER registering the worktree and
+                # creating the directory, and the path-exists guard above then
+                # refuses every retry -- so the operator is left with a lane that
+                # can neither be created nor removed, recoverable only by hand.
+                #
+                # The cleanup targets `staging`, which carries this process's pid
+                # and a random suffix, so it is ours by construction rather than by
+                # inference. `remove --force` is best-effort (the add may have
+                # failed before creating anything) and `prune` clears an admin
+                # record left without a directory; neither is allowed to mask the
+                # real error.
+                await _discard_failed_lane_creation(repo, staging)
+                return {
+                    "ok": False,
+                    "error": f"git worktree add failed: {runtime._redact((err or '').strip())[:200]}",
+                }
+            # Adopt the staged tree under the lane's real name. `worktree move`
+            # refuses a destination that already exists, which is what makes this
+            # the step that decides the race rather than the guard above: a second
+            # writer that reached `path` first wins, and we discard our own staging
+            # tree instead of deleting theirs.
+            async with _GIT_MUTATION_LOCK:
+                mrc, _mout, merr = await runtime._run_uninterruptible(
+                    runtime._run_cmd(
+                        ["git", "-C", repo, "worktree", "move", staging, path],
+                        timeout=120,
+                        mode="strict",
+                    )
+                )
+            if mrc != 0:
+                await _discard_failed_lane_creation(repo, staging)
+                if await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), Path(path).exists
+                ):
+                    return {
+                        "ok": False,
+                        "error": f"refusing: {path} already exists on disk",
+                    }
+                return {
+                    "ok": False,
+                    "error": f"git worktree move failed: {runtime._redact((merr or '').strip())[:200]}",
+                }
+        except BaseException:
+            await _discard_failed_lane_creation(repo, staging)
+            raise
+    return {
+        "ok": True,
+        "lane": release_channel_pin.CHANNEL,
+        "ref": resolved["ref"],
+        "version": resolved["version"],
+    }
+
+
+def _lane_staging_path(path: str) -> str:
+    """A sibling path only THIS call can name, for building a lane before adopting it.
+
+    Creating the lane directly at its final path made the failure cleanup unsafe,
+    and the reason is worth keeping: the cleanup inferred ownership from the
+    earlier ``Path(path).exists()`` guard -- "it was not there before we ran, so
+    whatever is there now is ours". That inference needs a single writer, and the
+    locks these operations hold (:data:`_GIT_MUTATION_LOCK`, ``_wt_lock``) are
+    per-event-loop, so they serialize one process and not two. A second gateway
+    sharing the repo could create the path between our guard and our ``worktree
+    add``; ours then failed and the cleanup deleted THEIR populated worktree, with
+    no reflog to recover untracked files from.
+
+    Staging removes the inference instead of adding a lock. The pid and a random
+    suffix make the directory ours by construction, so ``remove --force`` can
+    never name a path another writer owns, and ``git worktree move`` -- which
+    refuses an existing destination -- becomes the single step that decides the
+    race. The loser discards its own staging tree and reports the collision.
+
+    Deliberately a sibling rather than a temp dir: ``worktree move`` across
+    filesystems is not guaranteed, and the lane's parent is where it must land.
+
+    **Why this is not** ``dashboard/handlers/worktree.py``'s mechanism. That creator
+    solves TWO races -- a branch-ref race (``_claim_branch`` writes
+    ``refs/heads/<branch>`` with an empty old-value so git's ref lock picks the
+    winner) and a directory race (atomic ``os.mkdir`` as proof-of-creation, with
+    ``_cleanup_partial`` deleting only what it proved it made). This path creates a
+    DETACHED worktree at a resolved oid, so there is no branch to claim and the
+    ref-race half has no analog here; and its destination is a module constant, not
+    caller-supplied, so there is no repo allow-list to enforce. What is left is the
+    directory race alone, and staging decides it by construction rather than by
+    inferring ownership from an ``mkdir`` that raced.
+    On content filters the two agree: the dashboard creator refuses a repo declaring
+    ``filter.<name>.process``/``.smudge``/``.clean``, and so does this path, through
+    :func:`release_channel_pin.repo_supplied_filter`. The git env neutralizers apply
+    on top rather than instead: every spawn here goes through
+    :func:`runtime._run_cmd`, which applies ``_GIT_ENV_NEUTRALIZERS`` (hooks,
+    fsmonitor, credential helper, ``sshCommand``) to all of them -- the same effect
+    the dashboard creator gets from its ``-c`` overrides. A content filter is the one
+    class that dict cannot disarm, because the key space is unbounded, which is why
+    it is refused outright and why the checkout also takes the sandboxed tier.
+    """
+    return f"{path}.staging.{os.getpid()}.{secrets.token_hex(4)}"
+
+
+async def _discard_failed_lane_creation(repo: str, path: str) -> None:
+    """Remove the residue of a ``worktree add`` that failed part-way.
+
+    Only ever called on a STAGING path, which carries the creating process's pid
+    and a random suffix, so the directory is this call's by construction. That is
+    the whole reason a `remove --force` is allowed here: the previous shape aimed
+    it at the lane's real path and inferred ownership from an earlier existence
+    check, which a second process on the same repo could invalidate. See
+    :func:`_lane_staging_path`.
+
+    Best-effort by construction -- the caller is about to return git's real error,
+    and a cleanup failure must not replace it, so every outcome here is swallowed
+    and logged.
+    """
+    try:
+        async with _GIT_MUTATION_LOCK:
+            await runtime._run_uninterruptible(
+                runtime._run_cmd(
+                    ["git", "-C", repo, "worktree", "remove", "--force", path],
+                    timeout=60,
+                    mode="strict",
+                )
+            )
+            await runtime._run_uninterruptible(
+                runtime._run_cmd(["git", "-C", repo, "worktree", "prune"], timeout=60)
+            )
+    except Exception:  # pragma: no cover - defensive; the real error is the caller's
+        runtime.logger.warning("release-channel: cleanup after failed create raised", exc_info=True)
+
+
 __all__ = (
     "_AUTO_PRUNE_DEFAULT_INTERVAL_S",
     "_AUTO_PRUNE_MIN_INTERVAL_S",
@@ -2714,6 +3055,7 @@ __all__ = (
     "_rebase_locked",
     "_reclaim_pod_locked",
     "_refresher_task",
+    "_release_channel_create",
     "_status_refresher",
     "_sync",
     "_sync_base_ref",

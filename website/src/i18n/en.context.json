@@ -291,6 +291,7 @@
     "pages.chatSidebar.stale_collapse_paused": "Short status suffix on the same submenu row while the collapse is temporarily inert (list searched/filtered or non-date sort). 'Paused' as in temporarily suspended.",
     "pages.chatSidebar.stale_collapse_row": "Per-folder expander row that hides OPEN sessions untouched past a threshold, in place. Must stay distinguishable from TWO neighbors in this same sidebar: 'older_sessions' (the bottom pane listing CLOSED archived sessions) and the Clean Up dialog's inactive/archive wording ('no_inactive_sessions_to_archive'). Do not reuse either register - a mechanical test pins this per locale.",
     "pages.contextBreakdown.row_all": "Row label on the Context Breakdown table's final summary row, which totals every turn of the session — the collective sense of \"all\", not \"everything\" or \"any\".",
+    "pages.devFleetPage.behind_suffix_tip": "The word \"tip\" as in a branch tip \u2014 the newest release the channel has published. Rendered as a suffix after a count, e.g. \"3 behind tip\", naming what the row is counting behind. Not a hint or an advice tip.",
     "pages.devFleetPage.mb": "The unit \"MB\" = megabytes, rendered after a numeric size.",
     "pages.devFleetPage.pod": "A Kiro Crew dev \"pod\" — an isolated development environment. Product terminology; see the do-not-translate glossary before translating.",
     "pages.devFleetPage.pod_2": "A Kiro Crew dev \"pod\" — an isolated development environment. Product terminology; see the do-not-translate glossary before translating.",
@@ -405,6 +406,7 @@
     "apps.meetings.broadcastBar.pausingPlaceholder": "Compose-bar placeholder while the pause request is still in flight; must not claim the meeting is already paused.",
     "apps.meetings.broadcastBar.resumingPlaceholder": "Compose-bar placeholder while the resume request is in flight; must not instruct the user to click Resume again.",
     "apps.meetings.transcript.emptyHintPaused": "Empty-transcript hint while the meeting is paused; reassures nothing was discarded without promising live speech.",
-    "apps.meetings.meeting.endingReview": "Transitional badge and compose placeholder while the End-and-review request is in flight; explains why controls are disabled."
+    "apps.meetings.meeting.endingReview": "Transitional badge and compose placeholder while the End-and-review request is in flight; explains why controls are disabled.",
+    "pages.devFleetPage.not_applicable_short": "Dev Fleet's PR column on a release-channel worktree row. Short for \"not applicable\": such a worktree is detached at a release tag, so it has no branch and can never have a pull request. Distinct from the em dash used on other rows, which means \"no PR yet\". Must stay short — it sits in a 58px-wide grid column."
   }
 }

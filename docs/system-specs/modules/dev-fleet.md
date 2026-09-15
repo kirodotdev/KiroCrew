@@ -36,10 +36,16 @@ behind that facade is split by state and lifecycle ownership:
   access, and dirty-state inspection.
 - `live.py` owns live-target discovery, gateway restart backends, the Make Live lock and
   committed-cutover latch, and rollback.
+- `release_channel_pin.py` owns release-channel naming, release-tag classification, and
+  tip resolution. Read-only by construction, so the fleet snapshot can resolve the tip
+  with no risk of moving a worktree; the create mutation lives in `worktree_ops.py`
+  because they take the same `.git` admin lock every other worktree writer takes. Its
+  fetch is additive, and it resolves from a private tag mirror rather than `refs/tags/` —
+  see Release-channel worktrees for both.
 - `fleet_state.py` owns PR/context/resource caches, fleet projections and tombstones, and
   provision reattachment state.
-- `worktree_ops.py` owns pod actions, worktree remove/sync/rebase/prune orchestration, and
-  the background task handles.
+- `worktree_ops.py` owns pod actions, worktree remove/sync/rebase/prune orchestration,
+  release-channel create, and the background task handles.
 - `http_api.py` owns proxy HMAC verification, request/audit adapters, and response-shape
   translation.
 
@@ -171,6 +177,7 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/pod/provision` | `{name}` | Start async venv+dist build (returns `{run_id}`) |
 | `/apps/dev-fleet/api/pod/provision/dismiss` | `{name, run_id}` | Forget a terminal provision failure when the run id still matches |
 | `/apps/dev-fleet/api/rebase` | `{name}` | Rebase worktree onto origin/main |
+| `/apps/dev-fleet/api/release-channel/create` | — | Materialize the release channel's detached worktree at the channel tip (see Release-channel worktrees) |
 | `/apps/dev-fleet/api/restart-gateway` | — | Restart the live gateway through its service-manager backend; returns the pre-restart `start_id` for the restart handshake |
 | `/apps/dev-fleet/api/make-live` | `{path, dry_run?}` | Repoint the live gateway at another worktree (see Make Live); a real cutover returns `start_id` for the restart handshake |
 
@@ -260,6 +267,10 @@ dialogs in the frontend.
 - Ambiguous worktree names (multiple checkouts with same basename) return HTTP 400
 - `force` must be a boolean when provided
 - Main worktree removal is always refused regardless of force flag
+- The release-channel mutation validates nothing, because it reads nothing: the
+  endpoint takes no argument, so there is no value to reject, sanitize, or smuggle into
+  a git ref or a directory name. The ref comes from resolving the one channel and the
+  directory from `WORKTREE_NAME`, both module constants.
 
 ## Prune Rules
 
@@ -271,6 +282,14 @@ A worktree is eligible for automatic pruning if:
 
 Worktrees NOT pruned: dirty, active (own commits > 0), fresh (< 48h), or merged-with-
 new-commits (unmerged follow-up work after the PR landed).
+
+**A DETACHED worktree is never an `empty` candidate, and that applies fleet-wide.** Rule
+2 reads "no commits of its own, clean, older than 48h", and a detached tree satisfies all
+three by construction: it has no branch, therefore no PR, and every commit it holds is
+already published. The guard keys on `branch is None` rather than on the release-channel
+basename, so it exempts *any* deliberately detached checkout — a tree the operator
+detached by hand at a release tag is the same object with the same reason not to delete
+it. A branch checkout that merely holds the reserved name still prunes normally.
 
 ### Parallel execution & per-item progress (issue #435)
 
@@ -1025,6 +1044,430 @@ booted after something re-created the symlink (a `git clean` re-running
 dashboard still 404s while Vite rewrites it; pairing Pull+Build with Restart
 Gateway is what closes it. A process that booted against a staged real
 directory is unaffected.
+
+## Release-channel worktrees
+
+One detached worktree for the published release channel, so a shipped build can be
+run and clicked through next to unreleased work. `release_channel_pin.CHANNEL` is the
+literal `"stable"`, re-declared here rather than indexed out of
+`update_layout.RELEASE_CHANNELS` — a single constant does not need a tuple, and
+importing one to take `[0]` of it would imply an ordering that tuple does not
+promise. What keeps the two from drifting is a TEST, which asserts the name is still
+a channel the update stack knows; the tuple is imported there and nowhere else.
+
+`nightly` could not be it, because it is not resolvable from git at all.
+`nightly.yml` builds from `main` HEAD on a schedule and tags nothing, so the newest
+ref a nightly row could name is `<remote>/main` — which is main *now*, not the commit
+the last nightly published, and is where the primary checkout already sits after
+Sync. A row promising "what nightly shipped" while showing neither duplicates `main`
+and misleads about which build it is.
+
+`insider` is out by product decision, and its tags do resolve — ranking them is what
+has no answer. Ordering `-insider.N` against `-rc.N` needs a precedence between two
+prerelease spellings that nothing in this repo states, so a prerelease "tip" would
+rest on a rule this feature invented rather than on a fact.
+
+**The surface is singular, and that is a decision rather than an omission.** There is
+no channel parameter, no channel key in the request, no map from channel to
+resolved tip, and no list in the payload — each of those would be a shape with one
+possible value, and one that no caller could vary. The endpoint therefore takes no
+argument at all, which is also what retires the validation an earlier shape needed: a
+value that cannot be sent cannot be rejected, sanitized, or smuggled into a git ref or
+a directory name. Admitting a second channel is a change to this module's shape, made
+when the precedence rule for prerelease tags exists to justify it — not a parameter
+carried in advance of it.
+
+That change is a payload break, and naming it is what keeps it a step rather than a
+surprise: `release_channel` is a single object, so a second channel turns it into a
+collection — a plural key or a nested map, a row renderer that loops, a channel
+argument back on the route, and `CHANNEL` as a tuple rather than a string. It is
+listed as a cost, not specified here; the shape is a future change tracked separately,
+and writing its surface out in advance would be documentation for a feature that does
+not exist.
+
+Because no request names a target, the SEL audit target for the mutation is
+declared by the route as `static_target=WORKTREE_NAME` — the worktree it acts on.
+A body scan would produce the empty string here, and an audit record naming nothing
+is the defect that shape was written to avoid; a route declaring a static target also
+never reads the body, so a client cannot influence what its own mutation is recorded
+against.
+
+### Why a worktree and not a pin on the primary checkout
+
+Sync fast-forwards the primary checkout (`git merge --ff-only`) and refuses to run
+unless HEAD is literally `BASE_BRANCH`. A stable tag is normally *behind* main, so
+pinning that checkout could only work by detaching its HEAD — which the sync guard
+rejects, and which silently repoints every `origin/main` comparison on the row — or by
+resetting `main` backwards, which destroys work. The channel therefore gets its own
+detached worktree: additive, non-destructive, and an ordinary fleet row that pods and
+Make Live already drive.
+
+### Not coupled to the update channel
+
+Nothing here reads or writes `$KIROCREW_HOME/channel`. That file says which channel
+the user's real install *follows for updates*; a pin here says which git ref a
+worktree *sits on*. Coupling them would mean materializing a stable worktree changed
+what the live install downloads next. Only vocabulary is borrowed.
+
+### Naming
+
+`release-channel-stable`, a sibling of the primary checkout. The basename is the
+fleet row label (`Path(path).name`, verbatim) and the pod identity
+(`kirocrew-pod@release-channel-stable.service`), and it satisfies the pod name rule
+`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$`. It deliberately omits the `kirocrew-wt-` prefix
+every feature worktree carries: the difference is what separates the two groups
+visually with no extra chrome. Nothing filters on that prefix — discovery is plain
+`git worktree list`, and the derived `<reponame>-wt-` prefix is only used to pick
+PR-lookup fallbacks for pre-rename repo names.
+
+### Resolution
+
+| Channel | Resolves to |
+|---------|-------------|
+| `stable` | newest tag matching `v<major>.<minor>.<patch>` |
+
+Resolution is to a TAG, which is why this channel is the one admitted: an untagged
+channel has no ref naming a specific published build, and the asymmetry that would
+force is removed by the channel choice rather than special-cased in the resolver.
+
+`is_release_tag` treats only a bare `vX.Y.Z` as a release tag, and its shape check IS
+the classification: every such string is stable by definition, so there is no suffix
+left for a classifier to read. A prerelease tag is rejected at the shape check rather
+than classified and then discarded, and there is no second regex for the prerelease
+spellings — a pattern whose every match is thrown away cannot change an outcome.
+
+**Ordered by semver, descending, and creation date is not that order.** A stable tag
+is exactly `vX.Y.Z`, so its order is total and unambiguous. A backport cut after a
+newer line (`v0.4.2` tagged after `v0.5.0`) is the newest tag by date and an older
+release by version, and a re-pushed tag carries today's date for last year's release;
+either would pin the row to a release stable users are not on. Parts are compared
+numerically, so `v0.10.0` beats `v0.9.0`. The key comes from `apps.version.parse_version`,
+the repo's one version parser, rather than a second parse spelled out here — and every
+tag reaching the sort already matched the release-tag shape, so it always parses.
+
+A prerelease feed would need a different order, and that is the reason no prerelease
+channel is admitted rather than a reason for the resolver to branch.
+
+The order is total under ties, so a repeat resolve returns the same tag rather
+than flickering as git's date ordering shifts under a re-fetch.
+
+The resolver never re-classifies a tag it already selected. `is_release_tag(tag)`
+decided from the tag's shape and `version` is that same `tag[1:]`, so a second check
+could only ever agree — a `lane_check` field claiming the resolver verified its own
+answer is a tautology, and a test that "proves" it fires has to stub both sides to
+manufacture a disagreement. One decision, made once, where the tag is picked.
+
+**The channel resolves from a private tag mirror, never from `refs/tags/`.** Every fetch
+for this channel carries `+refs/tags/v*:refs/dev-fleet/release-tags/v*`, and resolution
+reads only that namespace. `refs/tags/` cannot be the source of truth because the operator
+writes to it too: a locally cut release candidate, a bisect marker, a `v99.0.0` tagged to
+test an upgrade path. Each matches the stable tag shape, sorts newest, and under a plain
+`git tag --list` became the channel tip — so the row badged an unpublished commit as a
+shipped release and Create checked it out. Nothing distinguishes a local tag from a fetched
+one after the fact, so the separation has to happen where the ref is written; a mirror the
+operator has no reason to write to makes "published" a property of WHERE the ref is rather
+than a claim about how it got there. The same mirror answers the row's own version probe,
+because `git tag --points-at HEAD` would let a local tag rename the row for the same reason.
+
+`--tags` is kept beside the refspec rather than replaced by it. The two do different jobs:
+the refspec populates the mirror the channel resolves from, while `--tags` keeps
+`refs/tags/` current for the operator's ordinary git — the reported `ref` is a real
+`refs/tags/vX.Y.Z` they can check out, and `refs/dev-fleet/release-tags/v1.2.3` is not a
+thing anyone types. Because the channel reads only the mirror, keeping `refs/tags/` fresh
+cannot put a local tag back in the running.
+
+An **empty mirror is a state, not an error**. A checkout that has not fetched yet genuinely
+does not know what is published, so it reads as "no release found" and the next refresher
+cycle fills it; `None` from the listing is reserved for git itself failing, which is a red
+row. Conflating them would either put an error on an ordinary cold start or, worse, invite a
+fallback to `refs/tags/` on exactly the path where the mirror is least trustworthy.
+
+Create fetches **before** resolving, so it acts on the channel's real tip. The background
+refresher fetches the same two things on **every cycle**, and that is load-bearing rather
+than tidy: without it the mirror is refreshed only *inside* a mutation, so `at_tip` reads
+true against a stale mirror and the version badge and the `behind` count both describe a tip
+that has already moved. With no in-place advance, the row's report IS the whole product of
+resolution — an operator decides whether to remove and re-create from what it says — so a
+stale one is the only failure mode left. Both fetches use the refspec constant rather than
+spelling it out, because a second spelling that drifted would fail silently: the channel
+would resolve against a mirror nothing updates, which is indistinguishable from a repo that
+has published nothing new. Resolving before fetching would pin a months-old release and call
+it the tip.
+
+The refresher fetches on every cycle, for every install. Gating it on whether the worktree
+existing cost a `git worktree list` each cycle plus a fail-open branch, to avoid a cost
+nothing measured: tags are small refs and only the first fetch transfers them, so an
+operator without one pays approximately nothing. The gate was doing more work than the
+work it saved.
+
+**The mirror is PRUNED, and that is what makes it a fact rather than a habit.** The fetch
+that writes the mirror carries `--prune`, so a mirror ref the remote does not advertise is
+deleted. Without it, "the operator has no reason to write here" is a statement about habit
+and not a boundary: a ref namespace is writable by anything with access to the repo — an
+agent with git is exactly that — so one `git update-ref
+refs/dev-fleet/release-tags/v999.0.0 <any-commit>` outranks every real release by semver and
+survives every additive fetch. That costs two things, and Create's integrity is not one of
+them (the provenance check below owns that). First the **fleet rows**: the display path
+resolves out of this same mirror and has no provenance backstop, so the forged ref is badged
+as the stable release. Second Create's **availability**: the forgery is picked by every
+resolve and refused by every provenance check, so Create stays refused until someone
+hand-runs `git update-ref -d`. Pruning means a forged entry cannot outlive the fetch that
+precedes every mutation.
+
+`--prune` is **not** `--prune-tags`, and conflating them is what left that open. Pruning is
+scoped to the **destinations of the refspecs actually given**, which `git-fetch(1)` states
+outright: a tag fetched only via `--tags` is not subject to pruning, while the destination of
+an explicit refspec is. The refresh runs as **two fetches** so that scoping is structural
+rather than argued. The pruning fetch names the mirror refspec and the base branch and no
+tags at all, so it deletes a forged mirror ref **and** a tag the remote retracted, while
+`refs/tags/` is not among its destinations for a **local-only tag the operator authored** to
+be reachable by, and a stale remote-tracking branch is left alone. `--prune-tags` is the flag
+that contributes an implicit `+refs/tags/*:refs/tags/*` and destroys the operator's own tags;
+it stays refused, and a test asserts its absence. This follows from the documented scoping
+rule rather than from one measured version, since `--prune-tags` is the opt-in shorthand git
+**2.17 added**, so no older git prunes `refs/tags/` more eagerly than this does.
+
+**Only the mirror fetch decides, because a benign local state can fail the other one.** The
+second fetch is the courtesy `--tags` update that keeps `refs/tags/` current for the
+operator's own git — the reported `ref` is a real `refs/tags/vX.Y.Z` they can check out.
+It is unforced, so a local tag that diverged from the remote's tag of the same name makes git
+report `! [rejected] vX.Y.Z -> vX.Y.Z (would clobber existing tag)` and exit non-zero. While
+both jobs shared one invocation that status was the status of the whole refresh, which refused
+Create outright for any operator who had ever cut a release-shaped tag of their own — even
+though the forced mirror refspec, the only thing the channel resolves against, had succeeded.
+The courtesy fetch is therefore best-effort and its exit status is deliberately ignored.
+
+**Pruning bounds persistence, not timing, so the checkout does not trust the mirror.**
+`--prune` deletes only refs the remote does not advertise *at fetch time*; it cannot touch a
+ref written after that subprocess exits. A ref planted between the fetch and the read that
+resolves the tip is therefore unpruned by any fetch that has already run, outranks every real
+release if its version is high enough, and its oid is what would be checked out and later run
+by the lane's pod. The per-worktree and mutation locks do not close that window — they are
+per-event-loop, and a writer using `git update-ref` never takes them.
+
+So Create does not accept the mirror's answer on its own: it asks the configured upstream what
+it publishes (`git ls-remote --tags <remote> 'refs/tags/v*'`) and refuses unless the resolved
+oid is the one advertised for that tag. That makes "published" a **verified fact about that
+remote** instead of an inference from where a local ref sits, which closes the ref-planting
+class rather than the instance — no timing wins, because a locally planted ref is in the
+advertised set at no moment. The scope of that guarantee is worth stating exactly: the remote
+is the one named in the repository's own git config and git reads its URL from that config, so
+this defends against a writer who can plant a **ref**, not against one who can rewrite
+`remote.<name>.url`. The latter already redirects every fetch the app performs — including the
+sync that rebases a worktree onto `<remote>/main` — so pinning a URL would have to be
+operator-owned state shared by all of those call sites, which is app-wide hardening and not
+this feature's to add. Two details are load-bearing, both measured against real git: the query
+uses the
+`refs/tags/v*` **glob**, because for an exact pattern git omits the `^{}` peel line and an
+annotated tag — how a release is normally cut — carries its commit only there; and an
+unadvertised tag is **not** a git error (exit 0, no output), so absence is read from the
+result rather than from the exit code. A failed query refuses, and an unadvertised tag
+refuses rather than silently falling back to the real oid, because a silent correction would
+materialize the right tree and hide that the ref store had been written to.
+
+The background refresher shares the window but not the consequence: it resolves for the row
+badge only and checks nothing out, so the worst case there is a mislabeled row that the next
+fetch prunes. Create re-fetches independently, so a forged badge cannot carry into a
+checkout.
+
+So **retraction is handled here, not deferred**: the channel stops resolving a yanked
+release on the next fetch. `refs/tags/` stays additive, so the operator can still see and
+check out such a tag locally after upstream drops it — only the *channel* stops treating it
+as published. This closes issue #10477.
+
+### The name guard
+
+`release-channel-*` is a reserved basename, so a checkout is adopted as a channel pin
+only when it is **detached** — never on the strength of its name. A user's own branch
+checkout under that name keeps ordinary controls (including its behind-*main* count),
+the fleet reports `name_taken_by_branch`, and the row is never adopted as a channel pin
+rather than having its HEAD moved out from under their branch. The frontend states this
+on that row rather than rendering a second placeholder for the same directory.
+
+### Fleet payload
+
+`release_channel` is its own top-level key, ONE row whether or not the worktree
+exists: `{lane, name, worktree, ref, version, tip_version, error, at_tip,
+behind, name_taken_by_branch}`. Every field has a reader: `name` is what labels the
+not-yet-created row (published so the prefix rule lives on the backend only, never
+rebuilt in the frontend), `ref` / `version` are what the badge renders, and `lane`
+names the channel for the sentences that name it on screen — display data, which is
+why no request carries it back. The resolved commit id and the worktree's own HEAD
+*sha* are deliberately absent — a field carried "for diagnostics" that no surface
+shows is a contract nobody keeps. It is *not* an extra `worktrees` row —
+with no worktree there is no path, and every consumer of a `worktrees` entry (disk
+measurement, pod matching, prune candidacy) assumes one. A channel that fails to
+resolve is still published, carrying its `error`, because "never cut a stable release"
+and "git could not be read" want different words on screen. `null` is reserved for a
+different thing: nothing can be said at all (no checkout, or the resolve itself
+raised). Resolution never raises past that: it rides the cached fleet snapshot, and a
+failed resolve must not blank the fleet view.
+
+`version` is the release **this row is on**, which is not the same thing on both row
+kinds: on a placeholder it is the release Create would check out (the channel tip), and
+on an adopted row it is the release the tree actually holds, read from `for-each-ref
+--points-at HEAD` over the private mirror namespace and filtered to release tags.
+`tip_version` is always the
+channel tip, so a behind row can name both. Publishing the resolved version as an adopted
+row's `version` made the badge rename itself to every new release as it shipped while
+the checkout stayed put — the row claimed a build it did not contain, with `↓N` as the
+only hint. `version` is `null` when the tree is detached at no release tag at all
+(adoption is by SHAPE, not by being at a release), and that is a state the row states
+rather than papering over with the tip.
+
+That `error` is shown ON THE ROW and nowhere else — there is deliberately no page-level
+notice. It arrives on the 12s fleet poll rather than from a button, so an error-level
+toast fired on every mount for any checkout with no `v*` tags at all (a shallow or
+`--no-tags` clone, a fork before its first release), where the channel row carries an error,
+for a feature that operator never opened. Gating the toast to adopted rows removed the
+false alarm but left two renderers for one fact, and each review round found a new way
+they diverged. One surface instead: a placeholder renders the error and disables Create
+on it, and an adopted row — which has no placeholder, because `worktree` comes from the
+detached SHAPE while `error` comes from RESOLUTION — carries it on its badge tooltip.
+
+`worktree` is non-null only for an adopted tree, and `behind` / `at_tip` measure
+distance from the **channel tip**, not from `BASE_BRANCH` — the behind-main figure on a
+release worktree is large by construction and names no action, whereas distance from
+the tip is what tells the operator a newer release exists. The frontend reuses the BEHIND
+column
+with that denominator and renders PR as *inapplicable* rather than as the no-PR dash.
+
+### Create is explicit, and the pin never moves on its own
+
+A pinned worktree never moves. There is no in-place "advance": moving the pin to a newer
+release is Remove followed by Create, which the fleet already offers. That is a decision
+rather than an omission -- an in-place checkout of a tree that already exists has to
+reason about everything already in it (a branch someone put it on, a dirty file, a commit
+stranded on a detached HEAD, build artifacts belonging to the previous release), and every
+one of those is a guard whose failure mode is silent. Remove + Create has none of them,
+because it destroys the state they would protect. What it costs is a re-provision, the
+pod's port and the live-target pointer, on a control used about once per stable release;
+that is the cheaper side of the trade.
+
+Create refuses a checkout whose own git config declares a content filter, and runs at the
+**`strict` git tier** behind that refusal. `worktree add` MATERIALIZES repo-controlled
+content, and checking a tag out runs whatever `filter.<name>.process`/`.smudge`/`.clean`
+driver applies to the files it writes -- an arbitrary command. The `<name>` is chosen by
+whoever wrote the config, so the key space is unbounded and the git env neutralizers
+(hooks, fsmonitor, credential helper, `sshCommand`), which close a fixed set of keys,
+cannot cover it. Refusal is therefore the primary control; `strict` is the second layer,
+injecting no trusted credential helper and masking every credential home, so a driver that
+reaches execution anyway faces no host credential to read.
+
+A driver is only ever defined in a config FILE. `.gitattributes` can name a filter for a
+path but cannot say what it runs, and a fetch carries refs and objects but never config --
+so the release being checked out cannot introduce one, and a tag naming a filter with no
+driver defined is inert. What the probe refuses is a declaration already present in this
+checkout's own `.git/config`, or `config.worktree` where `extensions.worktreeConfig` makes
+that scope live. Both are read with `--includes`: for a specific-scope query git defaults
+include-following OFF, so a driver reached through `include.path` resolves at checkout time
+while staying invisible to a probe without the flag. Global and system config are
+deliberately NOT read -- `git lfs install` writes `filter.lfs.*` there, so probing them
+would refuse every create on a host with git-lfs installed while proving nothing about the
+repository. The probe fails CLOSED: a scope that will not answer is not a clean scope, and
+it runs before the fetch so a create that is going to be refused does no network work.
+
+It is also **drained across cancellation** (`_run_uninterruptible`, the same treatment the
+destructive removal path gets), and takes `_GIT_MUTATION_LOCK` inside its per-worktree
+lock, which is the order the section header declares. A plain `await` unwinds on a shutdown
+or timeout cancel and releases the lock while git is still writing, which for `add`
+strands a half-registered worktree. The reads (fetch, `rev-parse`, `status`) are
+deliberately not drained; they write nothing, so holding the lock through a cancellation
+for them would delay shutdown for no protection.
+
+A `worktree add` that fails **after** registering leaves a directory that trips Create's
+own path-exists refusal, so every retry is rejected and the worktree can neither be
+created nor removed without manual `git worktree` surgery. Create therefore removes and
+prunes its own residue on failure -- and to make that removal safe it builds at a
+**staging path** (`<worktree path>.staging.<pid>.<rand>`) and adopts it with `git worktree
+move` once the add succeeds.
+
+The staging step is what makes the cleanup provably safe rather than safe by inference.
+Aiming the removal at the worktree's own path required a single writer: the path-exists
+refusal proves only that *this* process saw nothing there, and the locks this operation
+holds are per-event-loop, so a second gateway sharing the repo can create that path
+between the refusal and the add. The loser's cleanup would then delete the winner's
+populated worktree, and untracked files are in no reflog. A staging path carries the
+creating process's pid, so `remove --force` can only ever name a directory this call made,
+and `move` -- which refuses an existing destination -- becomes the single step that decides
+the race. The loser discards its own staging tree and reports the collision. The cleanup is
+best-effort and never replaces the error it is cleaning up after; git's own message is what
+the operator needs.
+
+**Why this is not the dashboard's worktree creator.** `dashboard/handlers/worktree.py`
+already creates worktrees safely, and it is a different problem rather than a duplicate
+one. That creator solves TWO races: a branch-ref race (`_claim_branch` writes
+`refs/heads/<branch>` with an empty old-value, so git's own ref lock picks the winner) and
+a directory race (an atomic `os.mkdir` as proof-of-creation, with `_cleanup_partial`
+deleting only what it proved it made). Create here checks out a DETACHED worktree at a
+resolved oid, so there is no branch to claim and the ref-race half has no analog; and its
+destination is a module constant rather than caller-supplied, so there is no repo
+allow-list to enforce. What remains is the directory race alone, which staging decides by
+construction instead of by inferring ownership from an `mkdir` that raced.
+
+On content filters the two paths agree. The dashboard creator refuses a repo declaring
+`filter.<name>.process`/`.smudge`/`.clean`, and Create refuses on the same condition,
+reading the same two repository-supplied scopes with the same mandatory `--includes` and the
+same fail-closed rule -- `release_channel_pin.repo_supplied_filter`, mirroring
+`dashboard/handlers/worktree.py::_checkout_filter`. The probe is MIRRORED rather than
+imported: an app importing a dashboard handler inverts the layering the component DAG
+enforces, and two sibling apps already carry their own copy for that reason
+(`md_notebook/git_ops.py::repo_supplied_driver` is the same probe for a path that also
+merges, so it matches `merge.<name>.driver` as well; this path checks out and never merges,
+so it matches filter keys alone). The git env neutralizers are applied on top rather than
+bypassed: every git child here goes through `runtime._run_cmd`, which applies
+`_GIT_ENV_NEUTRALIZERS` -- hooks, fsmonitor, credential helper, `sshCommand` -- to all of
+them, the same effect the dashboard creator gets from its `-c` overrides.
+
+**A return is not the only way out, so the cleanup also runs on the unwind.** Each git
+child is wrapped in `_run_uninterruptible`, which shields it and then re-raises
+`CancelledError` once it returns -- so an ordinary backend shutdown unwinds the frame
+between a successful `worktree add` and the `move` that adopts it, and the `rc != 0`
+cleanups are reached only by a returning failure. A `BaseException` handler discards the
+staging tree and re-raises, because swallowing the cancellation would make a shutdown look
+like a completed Create. It narrows the window rather than closing it: the handler's own
+awaits can be cancelled in turn. What survives that is bounded and deliberately so -- a
+`<worktree path>.staging.<pid>.<rand>` directory, which `git worktree prune` reclaims, and
+which cannot block a retry, because the create guard tests the LANE path and every call
+stages under a fresh name.
+
+**A channel that will not resolve gets an `ErrorNotice` with the agent hand-off, scoped to
+its row.** Every other error class on the page already does, and a resolver failure reached
+the user only through the version badge's tooltip and the placeholder's cell text --
+neither keyboard-reachable, neither offering the hand-off. It is row-scoped and sits BELOW
+the grid rather than at page level, because the page-level surface would fire on every
+mount for a checkout with no release tags at all (a shallow clone, or a fork before its
+first release), which is a normal state and not an incident. The compact framed sentence
+stays in the row, so the grid still reads at a glance.
+
+**The behind count states a fact and names no control.** A row whose channel has published
+a newer release shows how far behind it is, because that is what tells the operator a
+newer build exists. It does not name the action that closes the gap: that is Remove
+followed by Create, two controls on two surfaces (Remove in the row's detail panel, Create
+on the placeholder that appears afterwards), and naming one of them would misdirect.
+
+### Prune never offers the channel worktree
+
+`_prunable` withholds the `empty` verdict from any **branchless** tree. `empty` reads
+"no commits of its own, clean, older than 48h" as ABANDONMENT, and that inference only
+holds for a tree on a branch: a detached tree has no branch and therefore no PR, and
+holds no commits the base branch lacks — a release tag is an ancestor of main — so `own`
+is 0 by construction rather than by neglect. Past 48h `empty` is a candidate the prune
+preview **preselects**, so a channel pin was preselected for deletion in its steady state.
+
+The condition is on the SHAPE, not on the `release-channel-*` name. Matching the name
+got both halves wrong. A tree the operator detached by hand at a release tag — the
+workflow this feature automates — carries no reserved name, so it stayed preselected while
+the guard claimed pins were safe. And a BRANCH checkout that merely borrowed the
+reserved name vanished from Prune merged entirely, becoming permanently unprunable
+despite being an ordinary feature tree. Keying on `branch is None` covers every
+deliberately detached tree and lets a branch fall through to the ordinary
+merged/closed/active logic. There is no `release_channel` verdict code and no reason
+string for one; a withheld tree reports `fresh`.
+
+The check lives in `_prunable` and not in the caller because `_worktree_prune` re-asks
+for a fresh verdict before removing, so one condition covers both the preview and the
+execution.
 
 ## Make Live
 

@@ -1022,7 +1022,8 @@
         "highlight_7": "Pods run on Linux (systemd --user) and macOS (launchd) — but the macOS pod has no enforced memory/CPU ceiling; Make Live is still Linux-only; the fleet view, PR status, sync, rebase and prune work on any platform",
         "page_label": "Dev Fleet",
         "use_case_1": "Operate Kiro Crew feature worktrees and isolated preview pods while keeping the live gateway untouched.",
-        "configuration_1": "Point the app at a Kiro Crew checkout; PR actions need authenticated gh, while pods need systemd --user on Linux or launchd on macOS and must be provisioned first."
+        "configuration_1": "Point the app at a Kiro Crew checkout; PR actions need authenticated gh, while pods need systemd --user on Linux or launchd on macOS and must be provisioned first.",
+        "highlight_8": "A worktree pinned to the newest stable release, so you can pod a shipped build beside your branch; it never changes which channel your own install updates from"
       }
     },
     "fileExplorer": {
@@ -6569,7 +6570,7 @@
       "closed_has_unmerged_commits": "closed PR — has commits not on main",
       "closed_pr_not_on_main_hint": "Closed, unmerged PR — content is not on main, so removing one deletes it permanently. Review before selecting.",
       "commits": "Commits:",
-      "commits_behind_main": "Commits behind main",
+      "commits_behind_main": "Commits behind — main for branches, channel tip for release rows",
       "current_step": "current step",
       "design_docs": "Design docs:",
       "dev_fleet": "Dev Fleet",
