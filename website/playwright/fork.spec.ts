@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { composer } from './helpers/composer'
 
 /**
  * E2E test for the "Fork session" feature.
@@ -40,7 +41,7 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     const { key } = await created.json() as { key: string }
     expect(key).toBeTruthy()
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
+    await expect(composer(page)).toBeVisible({ timeout: 10000 })
     // Let paint settle so the recording isn't black for the first frames.
     if (process.env.PLAYWRIGHT_VIDEO === '1') await page.waitForTimeout(500)
   })
@@ -48,7 +49,7 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
   test('fork button appears on assistant message and creates new tab', async ({ page }) => {
     test.setTimeout(120000)
     // Send a message that should elicit a short assistant reply.
-    const messageInput = page.getByPlaceholder(/message/i)
+    const messageInput = composer(page)
     await messageInput.fill('reply with a single word: ready')
     await page.keyboard.press('Enter')
 
@@ -125,7 +126,7 @@ test.describe('Forking from long timestamped sessions', () => {
         await dismissUpdate.click()
         await expect(dismissUpdate).toBeHidden()
       }
-      await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10_000 })
+      await expect(composer(page)).toBeVisible({ timeout: 10_000 })
 
       const target = page.locator('[data-role="assistant"]').last()
       await expect(target).toBeVisible({ timeout: 10_000 })

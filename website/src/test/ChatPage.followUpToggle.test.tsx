@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { composerValue, setComposerValue } from './helpers'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -134,9 +135,11 @@ async function renderPage(content = ASSISTANT_WITH_OPTIONS, mode = '', settleChi
     )
   })
   await waitFor(() => expect(screen.getByRole('button', { name: settleChip })).toBeTruthy())
+  // The composer is lazy-loaded; wait for its editable root + handle to attach.
+  await waitFor(() => expect(document.querySelector('[data-composer-input]')).not.toBeNull())
+  await act(async () => {})
 }
 
-const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
 /** Exact-name match: the send-now segment is a sibling button named "Send now: <option>". */
 const chip = (option: string) => screen.getByRole('button', { name: option })
 
@@ -159,7 +162,7 @@ describe('ChatPage follow-up option toggle', () => {
     await renderPage()
     vi.useFakeTimers()
     await act(async () => { clickOption('Deploy') })
-    expect(composer().value).toBe('Deploy')
+    expect(composerValue()).toBe('Deploy')
   })
 
   it('toggles off when the second click lands before React commits the first', async () => {
@@ -171,7 +174,7 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Deploy')
       clickOption('Deploy')
     })
-    expect(composer().value).toBe('')
+    expect(composerValue()).toBe('')
   })
 
   it('does not commit between those two clicks (control for the case above)', async () => {
@@ -182,22 +185,22 @@ describe('ChatPage follow-up option toggle', () => {
     let betweenClicks = 'unobserved'
     await act(async () => {
       clickOption('Deploy')
-      betweenClicks = composer().value
+      betweenClicks = composerValue()
       clickOption('Deploy')
     })
     // The single-click case proves a committed first click reads "Deploy", so an
     // empty value here can only mean no commit had landed when click two ran.
     expect(betweenClicks).toBe('')
-    expect(composer().value).toBe('')
+    expect(composerValue()).toBe('')
   })
 
   it('still toggles off when a render does land between the clicks', async () => {
     await renderPage()
     vi.useFakeTimers()
     await act(async () => { clickOption('Deploy') })
-    expect(composer().value).toBe('Deploy')
+    expect(composerValue()).toBe('Deploy')
     await act(async () => { clickOption('Deploy') })
-    expect(composer().value).toBe('')
+    expect(composerValue()).toBe('')
   })
 
   it('accumulates distinct options clicked in one uncommitted window', async () => {
@@ -208,7 +211,7 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Roll back')
       clickOption('Retry')
     })
-    expect(composer().value).toBe('Deploy, Roll back, Retry')
+    expect(composerValue()).toBe('Deploy, Roll back, Retry')
   })
 
   it('removes a middle option without corrupting its neighbours', async () => {
@@ -222,33 +225,33 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Retry')
     })
     await act(async () => { clickOption('Roll back') })
-    expect(composer().value).toBe('Deploy, Retry')
+    expect(composerValue()).toBe('Deploy, Retry')
   })
 
   it('unselecting removes the appended option, not a matching substring in the draft', async () => {
     // Regression: `indexOf(', ' + option)` matched the ", Go" inside
     // "Please, Google" before the option the handler appended at the end.
     await renderPage('Ready to proceed.\n\n[OPTIONS: Go | Stay]', '', 'Go')
-    fireEvent.change(composer(), { target: { value: 'Please, Google' } })
+    await setComposerValue('Please, Google')
     vi.useFakeTimers()
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('Please, Google, Go')
+    expect(composerValue()).toBe('Please, Google, Go')
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('Please, Google')
+    expect(composerValue()).toBe('Please, Google')
   })
 
   it('leaves earlier draft text alone when the user already deleted the appended option', async () => {
     await renderPage('Ready to proceed.\n\n[OPTIONS: Go | Stay]', '', 'Go')
-    fireEvent.change(composer(), { target: { value: 'Discuss, Go home' } })
+    await setComposerValue('Discuss, Go home')
     vi.useFakeTimers()
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('Discuss, Go home, Go')
+    expect(composerValue()).toBe('Discuss, Go home, Go')
 
     // The chip remains selected, but the user removes its generated tail by hand.
     // Unselecting must not fall back to the earlier ", Go" inside their draft.
-    fireEvent.change(composer(), { target: { value: 'Discuss, Go home' } })
+    await setComposerValue('Discuss, Go home')
     await act(async () => { clickOption('Go') })
-    expect(composer().value).toBe('Discuss, Go home')
+    expect(composerValue()).toBe('Discuss, Go home')
   })
 
   it('re-adds the option on a third click', async () => {
@@ -259,7 +262,7 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Deploy')
       clickOption('Deploy')
     })
-    expect(composer().value).toBe('Deploy')
+    expect(composerValue()).toBe('Deploy')
   })
 
   it('does not quick-send a second option while a selection is already open', async () => {
@@ -273,7 +276,7 @@ describe('ChatPage follow-up option toggle', () => {
       clickOption('Roll back')
     })
     expect(api.sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('Deploy, Roll back')
+    expect(composerValue()).toBe('Deploy, Roll back')
   })
 })
 
@@ -291,7 +294,7 @@ describe('ChatPage plan follow-ups (issue #5893 parity)', () => {
     await act(async () => { clickOption('Go') })
     expect(api.planAction).toHaveBeenCalledTimes(1)
     expect(api.planAction).toHaveBeenCalledWith('chat-plan-dispatch', 'Go')
-    expect(composer().value).toBe('')
+    expect(composerValue()).toBe('')
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
@@ -305,7 +308,7 @@ describe('ChatPage plan follow-ups (issue #5893 parity)', () => {
     await renderPage(ASSISTANT_PLAN_SHAPED_CUSTOM, 'orchestrator', 'Approve it', 'chat-plan-allowlist')
     vi.useFakeTimers()
     await act(async () => { clickOption('Approve it') })
-    expect(composer().value).toBe('Approve it')
+    expect(composerValue()).toBe('Approve it')
     expect(api.planAction).not.toHaveBeenCalled()
   })
 
@@ -315,7 +318,7 @@ describe('ChatPage plan follow-ups (issue #5893 parity)', () => {
     await waitFor(() => expect(api.planAction).toHaveBeenCalledTimes(1))
     expect(api.planAction).toHaveBeenCalledWith('chat-plan-dbl', 'Go')
     expect(api.sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue()).toBe('')
   })
 
   it('Send now on a plan chip dispatches the plan action, never sendChat (issue #6240)', async () => {
@@ -324,6 +327,6 @@ describe('ChatPage plan follow-ups (issue #5893 parity)', () => {
     await waitFor(() => expect(api.planAction).toHaveBeenCalledTimes(1))
     expect(api.planAction).toHaveBeenCalledWith('chat-plan-sendnow', 'Go All')
     expect(api.sendChat).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue()).toBe('')
   })
 })

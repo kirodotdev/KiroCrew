@@ -624,8 +624,12 @@ interface ChatInputProps {
   pasteBlocks?: PasteBlock[]
   /** Replace the current list of paste blocks (add/remove). */
   onPasteBlocksChange?: (next: PasteBlock[]) => void
-  /** Opt into the first Lexical composer migration slice. Defaults off so the
-   *  established textarea path remains the production fallback until parity is complete. */
+  /** Render the Lexical composer (inline paste pills). Every product surface
+   *  passes this; the default stays off so a bare <ChatInput> — and the textarea
+   *  path that remains the lazy-load FAILURE fallback — keep their contract.
+   *  `test/chatInputHosts.lexicalComposer.test.ts` holds that line: every
+   *  product mount must name the prop, so a new host cannot fall back to the
+   *  textarea by omission. */
   lexicalComposer?: boolean
   /** Optional knowledge chip rendered above the input */
   knowledgeChip?: React.ReactNode
@@ -1860,10 +1864,11 @@ function ChatInput({
   /**
    * Typing intent is an implicit expand.
    *
-   * Every programmatic route to the composer resolves through the textarea
-   * (`queryComposer` finds `textarea[data-composer-input]`; the `/` shortcut and
-   * the autoFocusKey effect call `inputRef.current?.focus()`), and a collapsed
-   * composer has no textarea -- so without this, `/`, quote-to-compose, a widget
+   * Every programmatic route to the composer resolves through the editable
+   * element (`queryComposer` finds `[data-composer-input]` — the textarea or the
+   * Lexical root; the `/` shortcut and the autoFocusKey effect call the
+   * composer control's `focus()`), and a collapsed composer has no editable
+   * element -- so without this, `/`, quote-to-compose, a widget
    * send and post-create focus all silently do nothing, and a pre-fill lands in a
    * draft the user cannot see. Review named this correctly against the ghost
    * precedent this collapse otherwise inherits: the ghost is transient and the app

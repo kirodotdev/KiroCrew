@@ -1460,6 +1460,7 @@ export default function ChatPane({
           voice={composerVoiceOptions}
         >
         <ChatInput
+          lexicalComposer
           value={input}
           onChange={setInput}
           onSend={doSend}

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
+import { composer, expectComposerText } from './helpers/composer'
 
 // Retain successful recordings only for this focused memory spec, not the
 // whole browser suite or its token-exchanging authentication setup project.
@@ -352,7 +353,7 @@ test('an empty private memory opens its exact member conversation and reuses the
   const memberHeader = page.getByTestId('member-thread-header')
   await expect(memberHeader.getByText(owner.name, { exact: true })).toBeVisible()
   await expect(memberHeader.getByRole('button', { name: 'Edit member', exact: true })).toBeAttached()
-  await expect(page.getByPlaceholder(/message/i)).toBeVisible()
+  await expect(composer(page)).toBeVisible()
 
   const panelToggle = page.getByTestId('member-panel-toggle')
   if (await panelToggle.isVisible()) await panelToggle.click()
@@ -377,7 +378,7 @@ test('an empty private memory opens its exact member conversation and reuses the
   expect(reloadedResponse.ok(), await reloadedResponse.text()).toBeTruthy()
   expect(await reloadedResponse.json()).toEqual(binding)
   await expect(memberHeader.getByText(owner.name, { exact: true })).toBeVisible()
-  await expect(page.getByPlaceholder(/message/i)).toBeVisible()
+  await expect(composer(page)).toBeVisible()
   expect(await rows(request, owner.store)).toEqual([])
 })
 
@@ -420,12 +421,12 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
     slotKey = slot.key
     expect(slotKey).not.toBe('')
     await page.goto(`/chat?sid=${encodeURIComponent(slotKey)}`)
-    const input = page.getByPlaceholder(/message/i)
+    const input = composer(page)
     await expect(input).toBeVisible()
     const prompt = 'Explain the next step for this project.'
     await input.fill(prompt)
     await page.getByRole('button', { name: 'Send', exact: true }).click()
-    await expect(input).toHaveValue('')
+    await expectComposerText(input, '')
     const messages = page.getByLabel('Chat messages', { exact: true })
     await expect(messages.getByText(prompt, { exact: true })).toBeVisible()
     await expect(messages.getByText('pong from the fake ACP backend', { exact: true })).toBeVisible({ timeout: 15000 })
@@ -505,7 +506,7 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
     expect(fresh.slot_key).not.toBe(slotKey)
     await expect(page).toHaveURL(url => url.pathname === '/members' && url.searchParams.get('member') === name)
     await expect(page.getByTestId('member-thread-header').getByText(name, { exact: true })).toBeVisible()
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible()
+    await expect(composer(page)).toBeVisible()
     await expect.poll(readOwner).toMatchObject({
       slot_key: fresh.slot_key, memory_store: store, memory_version: 2, memory_owner: name,
     })

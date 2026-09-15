@@ -61,6 +61,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
+import { composerValue, setComposerValue, getComposer, awaitComposer } from './helpers'
 
 function makeStore(activeSlot: string, slots: { key: string; project?: string }[]) {
   return configureStore({
@@ -100,20 +101,20 @@ async function renderPage(store: ReturnType<typeof makeStore>) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await awaitComposer()
   return result
 }
 
-/** Type an @-token, wait for the picker's folder row, click it. Returns the textarea. */
+/** Type an @-token, wait for the picker's folder row, click it. Returns the composer root. */
 async function stageFolder() {
-  const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-  fireEvent.change(ta, { target: { value: '@wid' } })
+  const el = getComposer()
+  await setComposerValue('@wid')
   // 200ms debounce before the search fires; findByText waits it out.
   const row = await screen.findByText('widgets/', undefined, { timeout: 3000 })
   fireEvent.mouseDown(row)
   // Chip render is the staging signal (remove control carries the aria-label).
   await screen.findByLabelText('Remove folder')
-  return ta
+  return el
 }
 
 beforeEach(() => {
@@ -138,8 +139,8 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     // reappears with its one-click remove (the restore-path divergence fix).
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
     await screen.findByLabelText('Remove folder')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/widgets/')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/widgets/')
   })
 
   it('removing the folder chip also strips its @-token from the composer', async () => {
@@ -147,13 +148,13 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     await renderPage(store)
 
     const ta = await stageFolder()
-    expect(ta.value).toContain('@src/widgets/')
+    expect(composerValue(ta)).toContain('@src/widgets/')
 
     fireEvent.click(screen.getByLabelText('Remove folder'))
 
     await waitFor(() => expect(screen.queryByLabelText('Remove folder')).not.toBeInTheDocument())
     // The remove control's promise: the agent no longer receives the folder.
-    expect(ta.value).not.toContain('@src/widgets/')
+    expect(composerValue(ta)).not.toContain('@src/widgets/')
   })
 
   it('token strip is exact: a longer sibling token survives the remove', async () => {
@@ -164,15 +165,15 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     // User keeps typing after the pick, including a hand-typed longer token
     // that shares the staged token as a prefix. Both are folder references
     // now (chips derive from tokens), so two chips render.
-    fireEvent.change(ta, { target: { value: ta.value + 'and @src/widgets/sub/ please' } })
+    await setComposerValue(composerValue(ta) + 'and @src/widgets/sub/ please', ta)
     await waitFor(() => expect(screen.getAllByLabelText('Remove folder')).toHaveLength(2))
 
     // Remove the SHORTER one; the boundary-checked strip must not eat the
     // longer sibling that contains it as a prefix.
     fireEvent.click(screen.getAllByLabelText('Remove folder')[0])
 
-    await waitFor(() => expect(ta.value).not.toMatch(/(^|\s)@src\/widgets\/(\s|$)/))
-    expect(ta.value).toContain('@src/widgets/sub/')
+    await waitFor(() => expect(composerValue(ta)).not.toMatch(/(^|\s)@src\/widgets\/(\s|$)/))
+    expect(composerValue(ta)).toContain('@src/widgets/sub/')
     expect(screen.getAllByLabelText('Remove folder')).toHaveLength(1)
   })
 
@@ -181,11 +182,11 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     await renderPage(store)
 
     const ta = await stageFolder()
-    expect(ta.value).toContain('@src/widgets/')
+    expect(composerValue(ta)).toContain('@src/widgets/')
 
     // The composer token is the only payload the agent receives, so a chip
     // whose token was deleted by hand must not keep claiming the folder.
-    fireEvent.change(ta, { target: { value: 'no folder here anymore' } })
+    await setComposerValue('no folder here anymore', ta)
 
     await waitFor(() => expect(screen.queryByLabelText('Remove folder')).not.toBeInTheDocument())
   })
@@ -200,11 +201,11 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     // the chip set from the text: the picked chip dies with its token, and
     // the typed token — which WILL serialize on send exactly like a picked
     // one — gets a chip with a working remove control.
-    fireEvent.change(ta, { target: { value: 'look at @src/widgets/sub/ instead' } })
+    await setComposerValue('look at @src/widgets/sub/ instead', ta)
 
     await waitFor(() => expect(screen.getAllByLabelText('Remove folder')).toHaveLength(1))
     fireEvent.click(screen.getByLabelText('Remove folder'))
-    await waitFor(() => expect(ta.value).not.toContain('@src/widgets/sub/'))
+    await waitFor(() => expect(composerValue(ta)).not.toContain('@src/widgets/sub/'))
   })
 })
 
@@ -214,7 +215,7 @@ describe('ChatPage folder serialization on send', { timeout: 15_000 }, () => {
     await renderPage(store)
 
     const ta = await stageFolder()
-    fireEvent.change(ta, { target: { value: ta.value + 'summarize it' } })
+    await setComposerValue(composerValue(ta) + 'summarize it', ta)
 
     await act(async () => { fireEvent.keyDown(ta, { key: 'Enter' }) })
 
@@ -235,30 +236,30 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: '@mai' } })
+    const ta = getComposer()
+    await setComposerValue('@mai', ta)
     const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(row)
 
     // The pick inserted the token and staged the file chip.
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     const removeBtn = await screen.findByLabelText('Remove')
 
     // Removing the chip strips the token too — the same contract folder
     // chips have, so "remove" cannot mean different things per chip kind.
     fireEvent.click(removeBtn)
-    await waitFor(() => expect(ta.value).not.toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).not.toContain('@src/main.ts'))
   })
 
   it('token strip survives a remount: the restored draft has no pick-time ref', async () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     const first = await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: '@mai' } })
+    const ta = getComposer()
+    await setComposerValue('@mai', ta)
     const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(row)
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     // Reload: text + file drafts restore from storage, but the in-memory
@@ -267,11 +268,11 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     first.unmount()
     const store2 = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store2)
-    const ta2 = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    await waitFor(() => expect(ta2.value).toContain('@src/main.ts'))
+    const ta2 = getComposer()
+    await waitFor(() => expect(composerValue(ta2)).toContain('@src/main.ts'))
     const removeBtn2 = await screen.findByLabelText('Remove')
 
     fireEvent.click(removeBtn2)
-    await waitFor(() => expect(ta2.value).not.toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta2)).not.toContain('@src/main.ts'))
   })
 })

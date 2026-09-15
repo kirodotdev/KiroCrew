@@ -76,9 +76,9 @@ describe('LexicalComposerInput', () => {
   it('hydrates canonical markers as true inline non-editable chips', () => {
     render(<ControlledHost initial={`before ${formatToken(block)} after`} initialBlocks={[block]} />)
     const chip = screen.getByTestId('paste-token-1')
-    expect(chip).toHaveTextContent('Paste #1 · 4 lines')
+    expect(chip).toHaveTextContent(/4 lines/) // first-line snippet + count
     expect(chip).not.toHaveTextContent('[ Paste')
-    expect(chip).toHaveAttribute('contenteditable', 'false')
+    expect(chip.closest('[contenteditable="false"]')).not.toBeNull()
     expect(screen.getByRole('textbox')).toHaveAttribute('data-lexical-composer')
   })
 
@@ -106,16 +106,14 @@ describe('LexicalComposerInput', () => {
   })
 
   it('anchors the preview to the real Lexical node element', async () => {
-    vi.useFakeTimers()
     render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} />)
     const chip = screen.getByTestId('paste-token-1')
-    const host = chip.parentElement as HTMLElement
     const rect = { left: 42, top: 18, right: 142, bottom: 38, width: 100, height: 20, x: 42, y: 18, toJSON: () => ({}) }
-    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect as DOMRect)
-    fireEvent.mouseEnter(chip)
-    await vi.advanceTimersByTimeAsync(300)
-    const preview = screen.getByTestId('lexical-paste-preview-1')
-    expect(preview).toHaveStyle({ left: '42px', top: '42px' })
+    vi.spyOn(chip, 'getBoundingClientRect').mockReturnValue(rect as DOMRect)
+    fireEvent.click(chip)
+    // Anchored to the chip: same left; no room above (top 18) so it opens BELOW.
+    const preview = await screen.findByTestId('paste-preview-editor')
+    expect(preview).toHaveStyle({ left: '42px', top: '44px' })
   })
 
   it('applies parent-driven controlled value and sidecar updates', async () => {
@@ -144,23 +142,30 @@ describe('LexicalComposerInput', () => {
     expect(await screen.findByTestId('paste-token-1')).toBeInTheDocument()
   })
 
-  it('copies and cuts selected paste chips as expanded text', async () => {
+  it('copies and cuts a selection spanning a paste chip as expanded text', async () => {
     const user = userEvent.setup()
     render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} />)
     const chip = screen.getByTestId('paste-token-1')
+    // Clicking a pill opens its editable preview; Escape closes it and parks
+    // the caret right after the pill. Select-all then spans the pill.
     await user.click(chip)
+    await user.keyboard('{Escape}')
+    const editor = screen.getByRole('textbox')
+    await user.keyboard('{Control>}a{/Control}')
     const clipboard = { setData: vi.fn() }
-    fireEvent.copy(screen.getByRole('textbox'), { clipboardData: clipboard })
+    fireEvent.copy(editor, { clipboardData: clipboard })
     expect(clipboard.setData).toHaveBeenCalledWith('text/plain', block.content)
-    fireEvent.cut(screen.getByRole('textbox'), { clipboardData: clipboard })
+    fireEvent.cut(editor, { clipboardData: clipboard })
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(''))
     expect(screen.getByTestId('blocks')).toHaveTextContent('[]')
   })
 
-  it('deletes a selected paste chip atomically', async () => {
+  it('deletes a paste chip atomically with one Backspace', async () => {
     const user = userEvent.setup()
     render(<ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} />)
+    // Click opens the preview; Escape closes it with the caret right after the pill.
     await user.click(screen.getByTestId('paste-token-1'))
+    await user.keyboard('{Escape}')
     await user.keyboard('{Backspace}')
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('xy'))
     expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
@@ -356,23 +361,23 @@ describe('LexicalComposerInput', () => {
     expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
   })
 
-  it.each(['Enter', ' '])('opens a selected token preview on %s activation', async key => {
+  it.each(['Enter', ' '])('opens the editable preview from a focused chip on %s and never sends', async key => {
     const editorRef = createRef<LexicalEditor>()
     const onSend = vi.fn()
     render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} editorRef={editorRef} onSend={onSend} />)
     const chip = screen.getByTestId('paste-token-1')
     chip.focus()
     fireEvent.keyDown(chip, { key })
-    expect(await screen.findByTestId('lexical-paste-preview-1')).toBeInTheDocument()
-    expect(chip).toHaveAttribute('aria-expanded', 'true')
-    expect(chip.getAttribute('aria-label')).toContain(chip.getAttribute('title') || '')
-    expect(chip.getAttribute('aria-label')).toContain('Paste #1 · 4 lines')
-    // The chip's action is a PREVIEW toggle, not the transcript chip's inline
-    // expand/collapse — the accessible name must say what it actually does.
-    expect(chip.getAttribute('title')).toBe('Hide paste preview')
+    const preview = await screen.findByTestId('paste-preview-editor')
+    expect(preview).toHaveAttribute('role', 'dialog')
+    expect((screen.getByTestId('paste-preview-editor-textarea') as HTMLTextAreaElement).value).toBe(block.content)
+    // The accessible name leads with the snippet (what a voice-control user
+    // sees), then says what the chip is.
+    expect(chip.getAttribute('aria-label')).toBe('alpha · Pasted text · 4 lines')
     // Chip activation must stay the chip's: the same keystroke must never
     // reach the editor's send-on-Enter handler and submit the draft.
     expect(onSend).not.toHaveBeenCalled()
+    // Backspace on the focused chip removes it.
     fireEvent.keyDown(chip, { key: 'Backspace' })
     await waitFor(() => expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument())
   })
@@ -407,6 +412,33 @@ describe('LexicalComposerInput', () => {
     })
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('draft'))
     await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
+  })
+
+  it('closes an open preview when the host swaps in another session whose draft has the same paste seq', async () => {
+    // Session A and session B both hold a `Paste #1`; the block ids differ.
+    // Switching sessions while A's preview is open replaces the controlled
+    // value + blocks underneath the popover. It must close rather than rebind
+    // to B's block — otherwise a Save would write A's edit into B's paste.
+    const other: PasteBlock = { id: 'paste-B', seq: 1, lines: 2, content: 'from B\nnot A' }
+    const onBlocksChange = vi.fn()
+    const props = {
+      onChange: vi.fn(),
+      onBlocksChange,
+      onSend: vi.fn(),
+      ariaLabel: 'Message input',
+      placeholder: 'Write a message',
+    }
+    const { rerender } = render(<LexicalComposerInput value={formatToken(block)} blocks={[block]} {...props} />)
+    fireEvent.click(screen.getByTestId('paste-token-1'))
+    const textarea = (await screen.findByTestId('paste-preview-editor-textarea')) as HTMLTextAreaElement
+    expect(textarea.value).toBe(block.content)
+
+    rerender(<LexicalComposerInput value={formatToken(other)} blocks={[other]} {...props} />)
+
+    await waitFor(() => expect(screen.queryByTestId('paste-preview-editor')).toBeNull())
+    // B's pill is on screen with B's content untouched — nothing from A landed on it.
+    expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+    expect(onBlocksChange).not.toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ id: 'paste-B', content: block.content })]))
   })
 
 })
