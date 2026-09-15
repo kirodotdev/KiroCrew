@@ -209,17 +209,26 @@ def gap_summary(skipped: int) -> str:
     return f"{skipped} earlier turn{'' if skipped == 1 else 's'}"
 
 
-def session_deep_link(dashboard_url: str, slot_key: str) -> str:
+def session_deep_link(dashboard_url: str, slot_key: str, *, tunnel_url: str = "") -> str:
     """A browser link to *slot_key*'s dashboard tab, or ``""``.
 
     ``/chat?sid=<key>`` is the shape the SPA reads (``?slot=`` is a legacy
     alias). Returns ``""`` when no usable origin is configured -- the caller
     omits the link rather than emitting a broken one. ``dashboard_origin``
     already yields ``""`` for an empty, malformed, or non-HTTP URL.
+
+    *tunnel_url*, when non-empty, is used as the origin instead of
+    *dashboard_url*: the caller opted into ``slack.use_tunnel_url`` and a tunnel
+    is live, so the link must point off-host to be reachable from a phone. It is
+    used as-is (only a trailing slash trimmed) rather than re-parsed, because it
+    is process-internal state set by the tunnel manager and is consumed the same
+    way by ``send_dashboard_link``. An empty *tunnel_url* falls back to the
+    configured dashboard origin, so an install with no tunnel -- the default --
+    still builds a same-origin link.
     """
     if not slot_key:
         return ""
-    origin = dashboard_origin(dashboard_url or "")
+    origin = tunnel_url.rstrip("/") if tunnel_url else dashboard_origin(dashboard_url or "")
     if not origin:
         return ""
     return f"{origin}/chat?sid={quote(slot_key, safe='')}"

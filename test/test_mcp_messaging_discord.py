@@ -284,7 +284,11 @@ def test_every_slack_only_field_is_covered_by_the_refusal() -> None:
     ``_SLACK_ONLY_FIELDS`` or this fails, which is the point.
     """
     properties = set(_descriptor()["inputSchema"]["properties"])
-    core = {"text", "title", "session", "channel_type", "target_id"}
+    # Not Slack-protocol options: text/title/session are universal, channel_type
+    # and target_id are the OTHER destination mechanism, and include_session_link
+    # is a cross-surface opt-in that DEGRADES to a no-op off Slack (never refused
+    # -- the message must still deliver), so it must not join _SLACK_ONLY_FIELDS.
+    core = {"text", "title", "session", "channel_type", "target_id", "include_session_link"}
     assert set(_SLACK_ONLY_FIELDS) == properties - core
 
 
