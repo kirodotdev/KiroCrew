@@ -114,7 +114,7 @@ def _consented(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 def _stub_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """``GET /api/config/stt`` probes the host; none of it is under test here."""
     monkeypatch.setattr(core, "_stt_prereq_commands", lambda provider: {})
-    monkeypatch.setattr(core, "is_available", lambda stt: False)
+    monkeypatch.setattr(core, "availability_detail", lambda stt: core.stt.Availability(False))
 
 
 # ── the name rule ────────────────────────────────────────────────────────

@@ -32,7 +32,7 @@ def _stub_probes(monkeypatch):
     # The GET-building tail probes the system (subprocess) — stub it out so the
     # test is fast and deterministic and doesn't depend on the host.
     monkeypatch.setattr(core, "_stt_prereq_commands", lambda provider: {})
-    monkeypatch.setattr(core, "is_available", lambda stt: False)
+    monkeypatch.setattr(core, "availability_detail", lambda stt: core.stt.Availability(False))
 
 
 @pytest.mark.asyncio

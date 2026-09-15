@@ -472,7 +472,7 @@ def test_stt_put_keeps_a_write_that_landed_after_its_snapshot(tmp_path: Path, mo
     monkeypatch.setattr(core, "config_path", lambda: cfg)
     # The GET tail probes the host (ffmpeg, optional extras); not the subject here.
     monkeypatch.setattr(core, "_stt_prereq_commands", lambda provider: {})
-    monkeypatch.setattr(core, "is_available", lambda stt: False)
+    monkeypatch.setattr(core, "availability_detail", lambda stt: core.stt.Availability(False))
     injected = _intercept_first_locked_write(monkeypatch, cfg)
 
     req = MagicMock(spec=web.Request)
