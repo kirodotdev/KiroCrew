@@ -1998,9 +1998,10 @@ def _load_list_cache(owner: str, repo: str, root: Path | None, state: str) -> tu
     if not path.is_file():
         return None, path
     try:
-        return json.loads(path.read_text(encoding="utf-8")), path
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None, path
+    return (data if isinstance(data, dict) else None), path
 
 
 def apply_label_change_to_caches(
@@ -2017,7 +2018,7 @@ def apply_label_change_to_caches(
     if dpath.is_file():
         try:
             d = json.loads(dpath.read_text(encoding="utf-8"))
-            if isinstance(d.get("detail"), dict):
+            if isinstance(d, dict) and isinstance(d.get("detail"), dict):
                 d["detail"]["labels"] = label_objs
                 atomic_write(dpath, json.dumps(d, indent=2))
         except json.JSONDecodeError:
@@ -2052,7 +2053,7 @@ def apply_state_change_to_caches(
     if dpath.is_file():
         try:
             d = json.loads(dpath.read_text(encoding="utf-8"))
-            if isinstance(d.get("detail"), dict):
+            if isinstance(d, dict) and isinstance(d.get("detail"), dict):
                 d["detail"]["state"] = state
                 d["detail"]["state_reason"] = state_reason
                 atomic_write(dpath, json.dumps(d, indent=2))
@@ -2085,7 +2086,7 @@ def apply_assignees_change_to_caches(
     if dpath.is_file():
         try:
             d = json.loads(dpath.read_text(encoding="utf-8"))
-            if isinstance(d.get("detail"), dict):
+            if isinstance(d, dict) and isinstance(d.get("detail"), dict):
                 d["detail"]["assignees"] = logins
                 atomic_write(dpath, json.dumps(d, indent=2))
         except json.JSONDecodeError:

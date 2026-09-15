@@ -80,6 +80,17 @@ class TestApplyLabelChangeToCaches(unittest.TestCase):
     def test_no_caches_present_is_noop(self):
         store.apply_label_change_to_caches("o", "r", 7, [{"name": "x", "color": "1", "description": ""}], root=self.tmp)
 
+    def test_non_object_detail_cache_does_not_abort_the_list_patch(self):
+        store.write_issue_detail_cache("o", "r", 7, {"number": 7}, [], root=self.tmp)
+        store.issue_detail_cache_path("o", "r", 7, self.tmp).write_text("[]", encoding="utf-8")
+        store.write_issues_cache("o", "r", [{"number": 7, "labels": ["old"]}], root=self.tmp)
+
+        store.apply_label_change_to_caches("o", "r", 7, [{"name": "new"}], root=self.tmp)
+
+        cached = store.read_issues_cache("o", "r", self.tmp)
+        assert cached is not None
+        self.assertEqual(cached[0]["labels"], ["new"])
+
 
 class TestApplyStateChangeToCaches(unittest.TestCase):
     def setUp(self):
@@ -107,6 +118,15 @@ class TestApplyStateChangeToCaches(unittest.TestCase):
         store.write_issues_cache("o", "r", [{"number": 7}], root=self.tmp, state="closed")
         store.apply_state_change_to_caches("o", "r", 7, "open", None, root=self.tmp)
         self.assertEqual(store.read_issues_cache("o", "r", self.tmp, state="closed"), [])
+
+    def test_non_object_detail_cache_does_not_abort_the_list_patch(self):
+        store.write_issue_detail_cache("o", "r", 7, {"number": 7}, [], root=self.tmp)
+        store.issue_detail_cache_path("o", "r", 7, self.tmp).write_text("[]", encoding="utf-8")
+        store.write_issues_cache("o", "r", [{"number": 7}], root=self.tmp, state="open")
+
+        store.apply_state_change_to_caches("o", "r", 7, "closed", "completed", root=self.tmp)
+
+        self.assertEqual(store.read_issues_cache("o", "r", self.tmp, state="open"), [])
 
 
 class TestApplyAssigneesChangeToCaches(unittest.TestCase):
@@ -180,6 +200,33 @@ class TestApplyAssigneesChangeToCaches(unittest.TestCase):
 
     def test_no_caches_present_is_noop(self):
         store.apply_assignees_change_to_caches("o", "r", 7, ["alice"], root=self.tmp)
+
+    def test_non_object_detail_cache_does_not_abort_the_list_patch(self):
+        store.write_issue_detail_cache("o", "r", 7, {"number": 7}, [], root=self.tmp)
+        store.issue_detail_cache_path("o", "r", 7, self.tmp).write_text("[]", encoding="utf-8")
+        store.write_issues_cache("o", "r", [{"number": 7, "assignees": []}], root=self.tmp)
+
+        store.apply_assignees_change_to_caches("o", "r", 7, ["alice"], root=self.tmp)
+
+        cached = store.read_issues_cache("o", "r", self.tmp)
+        assert cached is not None
+        self.assertEqual(cached[0]["assignees"], ["alice"])
+
+
+class TestLoadListCache(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_non_object_root_is_unusable(self):
+        store.write_issues_cache("o", "r", [{"number": 7}], root=self.tmp)
+        path = store.issues_cache_path("o", "r", self.tmp)
+        path.write_text('[{"number": 7}]', encoding="utf-8")
+
+        data, loaded_path = store._load_list_cache("o", "r", self.tmp, "open")
+
+        self.assertIsNone(data)
+        self.assertEqual(loaded_path, path)
 
 
 class TestGhWritePrimitives(unittest.TestCase):
