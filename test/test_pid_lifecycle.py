@@ -3329,6 +3329,71 @@ class TestBrowserDaemonOrphanSweep:
             mock_sys.platform = "linux"
             assert find_orphan_mcp_candidates(active_pids=set()) == []
 
+    @pytest.mark.parametrize(
+        ("start_tokens", "cmdlines", "expected_killed"),
+        [
+            pytest.param(
+                ("daemon-token", "daemon-token"),
+                (_DAEMON_CMDLINE, _DAEMON_CMDLINE),
+                1,
+                id="stable-identity",
+            ),
+            pytest.param(
+                (None, None),
+                (_DAEMON_CMDLINE, _DAEMON_CMDLINE),
+                0,
+                id="identity-unavailable",
+            ),
+            pytest.param(
+                ("daemon-token", "replacement-token"),
+                (_DAEMON_CMDLINE, _DAEMON_CMDLINE),
+                0,
+                id="pid-recycled",
+            ),
+            pytest.param(
+                ("daemon-token", "daemon-token"),
+                (_DAEMON_CMDLINE, b"/usr/bin/sleep\x0030"),
+                0,
+                id="cmdline-changed",
+            ),
+        ],
+    )
+    @_POSIX_ONLY
+    def test_kill_revalidates_browser_daemon_identity(
+        self,
+        start_tokens: tuple[str | None, str | None],
+        cmdlines: tuple[bytes, bytes],
+        expected_killed: int,
+    ) -> None:
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        with (
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch("os.getpgrp", return_value=1000),
+            patch("os.getpid", return_value=1),
+            patch.object(Path, "read_bytes", side_effect=cmdlines),
+            patch("kiro_crew.session_pid._pid_start_token", side_effect=start_tokens),
+            patch("kiro_crew.session_pid._is_sweepable_orphan_mcp", return_value=False),
+            patch("kiro_crew.session_pid._is_sweepable_orphan_gatewayd", return_value=False),
+            patch("kiro_crew.session_pid._is_sweepable_orphan_work", return_value=False),
+            patch(
+                "kiro_crew.session_pid._is_sweepable_orphan_browser_daemon",
+                return_value=True,
+            ),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=900.0),
+            patch(
+                "kiro_crew.session_pid._kill_orphan_browser_daemon",
+                return_value=1,
+            ) as mock_kill,
+        ):
+            mock_sys.platform = "linux"
+            assert kill_orphan_mcps([806]) == expected_killed
+
+        if expected_killed:
+            mock_kill.assert_called_once_with(806, _DAEMON_CMDLINE)
+        else:
+            mock_kill.assert_not_called()
+
 
 class TestBrowserSessionOwnerAlive:
     """The ownership probe reads only exec-time environ, never on-disk state."""
@@ -3363,7 +3428,11 @@ class TestBrowserSessionOwnerAlive:
     def test_unreadable_peer_fails_closed_to_alive(self) -> None:
         from kiro_crew import session_pid as sp
 
-        def _boom(pid: int, key: str) -> bytes | None:
+        def _boom(
+            pid: int,
+            key: str,
+            proc_root: Path | None = None,
+        ) -> bytes | None:
             raise PermissionError("inconclusive")
 
         with (
@@ -3382,6 +3451,234 @@ class TestBrowserSessionOwnerAlive:
         with patch.object(sp, "sys") as mock_sys:
             mock_sys.platform = "darwin"
             assert sp._browser_session_owner_alive(900, b"kc-1a2b3c4d") is True
+
+
+class TestBrowserSessionOwnerFakeProc:
+    """The full daemon predicate decides from a fixture-owned proc tree."""
+
+    _SESSION = b"kc-1a2b3c4d"
+    _DAEMON_ENV = b"PLAYWRIGHT_CLI_SESSION=kc-1a2b3c4d\x00" b"KIROCREW_SPAWNED=1\x00"
+
+    @staticmethod
+    def _process(
+        proc_root: Path,
+        pid: int,
+        *,
+        sid: int,
+        cmdline: bytes,
+        environ: bytes | None,
+        cgroup: str = "0::/pod.slice\n",
+    ) -> None:
+        process = proc_root / str(pid)
+        process.mkdir()
+        (process / "stat").write_text(
+            f"{pid} (fixture) S 1 {pid} {sid} 0 0 0 0\n",
+            encoding="utf-8",
+        )
+        (process / "cmdline").write_bytes(cmdline)
+        comm = cmdline.split(b"\x00", 1)[0].rsplit(b"/", 1)[-1].decode()
+        (process / "comm").write_text(comm + "\n", encoding="utf-8")
+        # The plausible-owner cases deliberately sit outside the daemon's
+        # cgroup: name plausibility must keep them before cgroup filtering.
+        if comm == "kiro-cli":
+            cgroup = "0::/agent.slice\n"
+        (process / "cgroup").write_text(cgroup, encoding="utf-8")
+        if environ is None:
+            # read_bytes() raises OSError on every platform without depending
+            # on permission-bit enforcement or the test runner's uid.
+            (process / "environ").mkdir()
+        else:
+            (process / "environ").write_bytes(environ)
+
+    @staticmethod
+    def _linux_fixture(
+        monkeypatch: pytest.MonkeyPatch,
+        sp: object,
+        proc_root: Path,
+    ) -> None:
+        monkeypatch.setattr(sp, "sys", Mock(platform="linux"))
+        monkeypatch.setattr(platform_compat, "sys", Mock(platform="linux"))
+        monkeypatch.setattr(
+            sp.os,
+            "getuid",
+            lambda: proc_root.stat().st_uid,
+            raising=False,
+        )
+
+    def _daemon(self, proc_root: Path) -> None:
+        self._process(
+            proc_root,
+            900,
+            sid=900,
+            cmdline=_DAEMON_CMDLINE,
+            environ=self._DAEMON_ENV,
+        )
+
+    def test_unreadable_sd_pam_stub_does_not_veto_sweep(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from kiro_crew import session_pid as sp
+
+        proc_root = tmp_path / "proc"
+        proc_root.mkdir()
+        self._daemon(proc_root)
+        self._process(
+            proc_root,
+            901,
+            sid=1,
+            cmdline=b"(sd-pam)\x00",
+            environ=None,
+            cgroup="0::/user.slice\n",
+        )
+        self._linux_fixture(monkeypatch, sp, proc_root)
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.session_pid"):
+            assert sp._is_sweepable_orphan_browser_daemon(
+                900, _DAEMON_CMDLINE, 900.0, proc_root=proc_root
+            )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "decision=ignore" in message and "reason=different_cgroup_unreadable" in message
+            for message in messages
+        )
+        assert any(
+            "decision=sweep" in message and "reason=no_owner_outside_daemon_tree" in message
+            for message in messages
+        )
+
+    @pytest.mark.parametrize(
+        ("proc_file", "invalid_content"),
+        [
+            ("comm", b"(sd-pam)\xff\n"),
+            ("cgroup", b"0::/user.slice/\xff\n"),
+        ],
+    )
+    def test_non_utf8_proc_metadata_still_reaches_sweep_verdict(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        proc_file: str,
+        invalid_content: bytes,
+    ) -> None:
+        from kiro_crew import session_pid as sp
+
+        proc_root = tmp_path / "proc"
+        proc_root.mkdir()
+        self._daemon(proc_root)
+        self._process(
+            proc_root,
+            901,
+            sid=1,
+            cmdline=b"(sd-pam)\x00",
+            environ=None,
+            cgroup="0::/user.slice\n",
+        )
+        (proc_root / "901" / proc_file).write_bytes(invalid_content)
+        self._linux_fixture(monkeypatch, sp, proc_root)
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.session_pid"):
+            assert sp._is_sweepable_orphan_browser_daemon(
+                900, _DAEMON_CMDLINE, 900.0, proc_root=proc_root
+            )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "decision=sweep" in message and "reason=no_owner_outside_daemon_tree" in message
+            for message in messages
+        )
+
+    @pytest.mark.parametrize("owner_name", ["kiro-cli", "opencode"])
+    def test_unreadable_plausible_owner_keeps_daemon(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        owner_name: str,
+    ) -> None:
+        from kiro_crew import session_pid as sp
+
+        proc_root = tmp_path / "proc"
+        proc_root.mkdir()
+        self._daemon(proc_root)
+        self._process(
+            proc_root,
+            901,
+            sid=1,
+            cmdline=f"/usr/bin/{owner_name}\x00chat\x00".encode(),
+            environ=None,
+            cgroup="0::/agent.slice\n",
+        )
+        self._linux_fixture(monkeypatch, sp, proc_root)
+
+        assert not sp._is_sweepable_orphan_browser_daemon(
+            900, _DAEMON_CMDLINE, 900.0, proc_root=proc_root
+        )
+
+    def test_live_matching_owner_keeps_daemon(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew import session_pid as sp
+
+        proc_root = tmp_path / "proc"
+        proc_root.mkdir()
+        self._daemon(proc_root)
+        self._process(
+            proc_root,
+            901,
+            sid=1,
+            cmdline=b"/usr/bin/kiro-cli\x00chat\x00",
+            environ=b"PLAYWRIGHT_CLI_SESSION=kc-1a2b3c4d\x00",
+        )
+        self._linux_fixture(monkeypatch, sp, proc_root)
+
+        assert not sp._is_sweepable_orphan_browser_daemon(
+            900, _DAEMON_CMDLINE, 900.0, proc_root=proc_root
+        )
+
+    def test_no_owner_is_sweepable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew import session_pid as sp
+
+        proc_root = tmp_path / "proc"
+        proc_root.mkdir()
+        self._daemon(proc_root)
+        self._linux_fixture(monkeypatch, sp, proc_root)
+
+        assert sp._is_sweepable_orphan_browser_daemon(
+            900, _DAEMON_CMDLINE, 900.0, proc_root=proc_root
+        )
+
+    def test_daemons_detached_tree_is_not_an_owner(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew import session_pid as sp
+
+        proc_root = tmp_path / "proc"
+        proc_root.mkdir()
+        self._daemon(proc_root)
+        self._process(
+            proc_root,
+            902,
+            sid=900,
+            cmdline=b"/usr/bin/chromium\x00",
+            environ=b"PLAYWRIGHT_CLI_SESSION=kc-1a2b3c4d\x00",
+        )
+        self._linux_fixture(monkeypatch, sp, proc_root)
+
+        assert sp._is_sweepable_orphan_browser_daemon(
+            900, _DAEMON_CMDLINE, 900.0, proc_root=proc_root
+        )
 
 
 class TestAcquiringAPidLockDoesNotTruncateTheLockFile:

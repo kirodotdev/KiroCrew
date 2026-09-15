@@ -1360,27 +1360,63 @@ def _browser_daemon_session_arg(cmdline: bytes) -> bytes | None:
     return None
 
 
-def _env_value(pid: int, key: str) -> bytes | None:
+def _env_value(pid: int, key: str, proc_root: Path | None = None) -> bytes | None:
     """Exec-time environment value for *key* in *pid*, or ``None`` if unset.
 
     Deliberately PROPAGATES ``OSError`` instead of swallowing it like
     :func:`_env_has_kirocrew_marker`: the callers here need to tell "read
     said the key is absent" apart from "the read failed", because those two
     outcomes must fail closed in OPPOSITE directions -- an absent owner
-    permits a kill, an unreadable one must forbid it. Linux-only; returns
-    ``None`` elsewhere so every caller fails closed off Linux.
+    permits a kill, an unreadable one normally forbids it. Linux-only; returns
+    ``None`` elsewhere so every caller fails closed off Linux. *proc_root* is a
+    fixture seam for tests and never changes the production ``/proc`` root.
     """
     if sys.platform != "linux":
         return None
+    root = proc_root if proc_root is not None else Path("/proc")
     prefix = key.encode() + b"="
-    environ = Path(f"/proc/{pid}/environ").read_bytes()
+    environ = (root / str(pid) / "environ").read_bytes()
     for item in environ.split(b"\x00"):
         if item.startswith(prefix):
             return item[len(prefix) :]
     return None
 
 
-def _browser_session_owner_alive(pid: int, session: bytes) -> bool:
+_BROWSER_PLAUSIBLE_OWNER_NAMES = frozenset(
+    {
+        "bash",
+        "claude",
+        "codex",
+        "dash",
+        "fish",
+        "java",
+        "kas",
+        "kiro-cli",
+        "kirocrew",
+        "launcher",
+        "node",
+        "opencode",
+        "playwright-cli",
+        "sh",
+        "zsh",
+    }
+)
+_BROWSER_PLAUSIBLE_OWNER_PREFIXES = ("chrome", "chromium", "kiro-", "playwright", "python")
+
+
+def _browser_process_name_is_plausible(name: str) -> bool:
+    """Whether an unreadable process could own generated browser tooling."""
+    return name in _BROWSER_PLAUSIBLE_OWNER_NAMES or name.startswith(
+        _BROWSER_PLAUSIBLE_OWNER_PREFIXES
+    )
+
+
+def _browser_session_owner_alive(
+    pid: int,
+    session: bytes,
+    *,
+    proc_root: Path | None = None,
+) -> bool:
     """True while any live process OUTSIDE *pid*'s own tree holds *session*.
 
     This is the ownership proof, and it is drawn entirely from the kernel.
@@ -1394,15 +1430,18 @@ def _browser_session_owner_alive(pid: int, session: bytes) -> bool:
     it is its own session leader and every Chromium child inherits that SID --
     those inherit the variable too and must not be mistaken for owners.
 
-    FAIL-CLOSED to "alive": an unreadable ``/proc`` listing or an inconclusive
-    per-process read (EACCES, EIO) returns ``True``, so the sweep never kills
-    on a failed probe. A process that VANISHES mid-scan is simply not an
-    owner, which is the one error that is safe to skip.
+    FAIL-CLOSED to "alive" for an unreadable ``/proc`` listing, process stat,
+    process name, or plausible owner's environ. A positively named non-owner in
+    a stable different cgroup from the daemon cannot be part of the spawn tree
+    that inherited its generated browser session, so its unreadable environ
+    does not veto the scan. A plausible process, same cgroup, unreadable cgroup,
+    or changing cgroup keeps the daemon. A process that vanishes is safe to skip.
     """
     if sys.platform != "linux":
         return True
+    root = proc_root if proc_root is not None else Path("/proc")
     try:
-        entries = [e for e in Path("/proc").iterdir() if e.name.isdigit()]
+        entries = [entry for entry in root.iterdir() if entry.name.isdigit()]
     except OSError:
         return True
     my_uid = os.getuid()
@@ -1420,19 +1459,83 @@ def _browser_session_owner_alive(pid: int, session: bytes) -> bool:
             continue
         except OSError:
             return True
-        if _linux_pid_sid(other) == pid:
+        if _linux_pid_sid(other, proc_root) == pid:
             continue  # the daemon's own detached tree, not an owner
         try:
-            if _env_value(other, _BROWSER_SESSION_ENV) == session:
+            owner_session = _env_value(other, _BROWSER_SESSION_ENV, proc_root)
+            if owner_session == session:
+                logger.debug(
+                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                    "decision=keep reason=matching_session",
+                    pid,
+                    other,
+                )
                 return True
         except _PID_VANISHED_ERRORS:
             continue
         except OSError:
+            process_name = platform_compat.linux_process_name(other, proc_root=root)
+            if process_name is None:
+                logger.debug(
+                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                    "decision=keep reason=process_name_unreadable",
+                    pid,
+                    other,
+                )
+                return True
+            if _browser_process_name_is_plausible(process_name):
+                logger.debug(
+                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                    "decision=keep reason=plausible_owner_unreadable",
+                    pid,
+                    other,
+                )
+                return True
+            cgroups_match = platform_compat.process_cgroups_match(
+                other,
+                pid,
+                proc_root=root,
+            )
+            if cgroups_match is False:
+                logger.debug(
+                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                    "decision=ignore reason=different_cgroup_unreadable",
+                    pid,
+                    other,
+                )
+                continue
+            reason = (
+                "same_cgroup_unreadable" if cgroups_match is True else "cgroup_identity_unreadable"
+            )
+            logger.debug(
+                "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                "decision=keep reason=%s",
+                pid,
+                other,
+                reason,
+            )
             return True
     return False
 
 
-def _is_sweepable_orphan_browser_daemon(pid: int, cmdline: bytes, age_seconds: float) -> bool:
+def _browser_sweep_decision(pid: int, *, sweep: bool, reason: str) -> bool:
+    """Log and return one structured browser-daemon sweep verdict."""
+    logger.debug(
+        "browser_daemon_sweep pid=%s decision=%s reason=%s",
+        pid,
+        "sweep" if sweep else "keep",
+        reason,
+    )
+    return sweep
+
+
+def _is_sweepable_orphan_browser_daemon(
+    pid: int,
+    cmdline: bytes,
+    age_seconds: float,
+    *,
+    proc_root: Path | None = None,
+) -> bool:
     """Fifth positive-identity path: a browser daemon whose owner is gone.
 
     Positive identity is the conjunction of:
@@ -1453,26 +1556,46 @@ def _is_sweepable_orphan_browser_daemon(pid: int, cmdline: bytes, age_seconds: f
 
     Every signal is a kernel fact (argv, exec-time environ, SID, process
     liveness). Nothing here reads agent-writable filesystem state, which is
-    what would make a reaper unsafe.
+    what would make a reaper unsafe. *proc_root* exists only for fixture-owned
+    process-table tests.
     """
-    if age_seconds < _ORPHAN_WORK_MIN_AGE_SECONDS:
-        return False
     if not cmdline:
-        return False  # kernel thread / zombie — nothing meaningful to kill
+        return False  # kernel thread / zombie -- nothing meaningful to kill
     normalized = cmdline.replace(b"\x00", b" ")
     if any(marker in normalized for marker in _GATEWAY_MARKERS):
         return False
     session = _browser_daemon_session_arg(cmdline)
     if session is None:
         return False
+    if age_seconds < _ORPHAN_WORK_MIN_AGE_SECONDS:
+        return _browser_sweep_decision(pid, sweep=False, reason="below_age_floor")
     try:
-        if _env_value(pid, _BROWSER_SESSION_ENV) != session:
-            return False
+        daemon_session = _env_value(pid, _BROWSER_SESSION_ENV, proc_root)
+        if daemon_session != session:
+            return _browser_sweep_decision(
+                pid,
+                sweep=False,
+                reason="session_environment_mismatch",
+            )
     except OSError:
-        return False  # inconclusive — fail closed
-    if not _env_has_kirocrew_marker(pid):
-        return False
-    return not _browser_session_owner_alive(pid, session)
+        return _browser_sweep_decision(
+            pid,
+            sweep=False,
+            reason="daemon_environment_unreadable",
+        )
+    if not _env_has_kirocrew_marker(pid, proc_root):
+        return _browser_sweep_decision(pid, sweep=False, reason="spawn_marker_absent")
+    if _browser_session_owner_alive(pid, session, proc_root=proc_root):
+        return _browser_sweep_decision(
+            pid,
+            sweep=False,
+            reason="owner_alive_or_inconclusive",
+        )
+    return _browser_sweep_decision(
+        pid,
+        sweep=True,
+        reason="no_owner_outside_daemon_tree",
+    )
 
 
 def _accepted_subreaper_pids() -> set[int]:
@@ -1606,7 +1729,7 @@ def _is_marked_mcp_launcher(cmdline: bytes) -> bool:
     return any(marker in normalized for marker in _MARKED_MCP_LAUNCHER_MARKERS)
 
 
-def _env_has_kirocrew_marker(pid: int) -> bool:
+def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
     """True if *pid*'s environment carries the ``KIROCREW_SPAWNED`` marker.
 
     Reads ``/proc/<pid>/environ`` (exec-time environment, same-UID readable).
@@ -1614,12 +1737,14 @@ def _env_has_kirocrew_marker(pid: int) -> bool:
     platform, where there is no reliable same-UID environ read — returns
     ``False`` so the marked-launcher sweep path never kills without positive
     identity. macOS/Windows keep the pre-existing cmdline-marker-only behavior.
+    *proc_root* is a test seam for fixture-owned process tables.
     """
     if sys.platform != "linux":
         return False
+    root = proc_root if proc_root is not None else Path("/proc")
     needle = f"{KIROCREW_SPAWNED_ENV}={KIROCREW_SPAWNED_VALUE}".encode()
     try:
-        environ = Path(f"/proc/{pid}/environ").read_bytes()
+        environ = (root / str(pid) / "environ").read_bytes()
     except OSError:
         return False
     return needle in environ.split(b"\x00")
@@ -2117,17 +2242,19 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
     return candidates
 
 
-def _linux_pid_sid(pid: int) -> int:
+def _linux_pid_sid(pid: int, proc_root: Path | None = None) -> int:
     """Session id (SID) from /proc/pid/stat (field 6, index 3 after state).
 
     The SID of an agent-spawned work process points at the kiro-cli session
     leader that (transitively) spawned it — kiro-cli is started with
     ``start_new_session=True``, so every descendant inherits its SID even
     after the direct parent dies and the process reparents to init. Returns
-    -1 when unreadable (caller must fail closed).
+    -1 when unreadable (caller must fail closed). *proc_root* is a test seam
+    for fixture-owned process tables.
     """
+    root = proc_root if proc_root is not None else Path("/proc")
     try:
-        stat_data = Path(f"/proc/{pid}/stat").read_text()
+        stat_data = (root / str(pid) / "stat").read_text()
         close_paren = stat_data.rfind(")")
         fields = stat_data[close_paren + 2 :].split()
         return int(fields[3])  # field 6 (session) = index 3 after state
@@ -2349,7 +2476,25 @@ def kill_orphan_mcps(pids: list[int]) -> int:
             # phase cannot inherit the verdict.
             daemon_age = _linux_pid_age(pid, time.time()) if sys.platform == "linux" else 0.0
             if _is_sweepable_orphan_browser_daemon(pid, cmdline, daemon_age):
-                killed += _kill_orphan_browser_daemon(pid, cmdline)
+                live_token = _pid_start_token(pid)
+                if root_token is None or live_token is None or live_token != root_token:
+                    logger.debug(
+                        "Orphan browser sweep: skipping pid=%d — identity changed "
+                        "or unavailable before TERM (pre=%r post=%r)",
+                        pid,
+                        root_token,
+                        live_token,
+                    )
+                    continue
+                live_cmdline = _pid_cmdline(pid)
+                if not live_cmdline or live_cmdline != cmdline:
+                    logger.debug(
+                        "Orphan browser sweep: skipping pid=%d — cmdline changed "
+                        "or became unreadable before TERM",
+                        pid,
+                    )
+                    continue
+                killed += _kill_orphan_browser_daemon(pid, live_cmdline)
         except (
             ProcessLookupError,
             PermissionError,

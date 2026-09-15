@@ -4,7 +4,10 @@ A *harness* is the agent process Kiro Crew drives over ACP. Kiro Crew has one
 first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
 (`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), and whatever a
-bring-your-own (BYO) adapter registers next.
+bring-your-own (BYO) adapter registers next. Adding a harness requires
+reviewing `session_pid.py::_BROWSER_PLAUSIBLE_OWNER_NAMES` as a separate
+touchpoint, because an unreadable environment on a recognizable harness process
+must keep its browser daemon alive.
 
 Kiro, Claude Code, KAS and Codex are selectable on a plain public build; Claude Code in
 particular is a shipped harness and not a dormant seam: `acp/client.py` owns the
