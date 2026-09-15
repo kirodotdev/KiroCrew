@@ -31,6 +31,32 @@ and refusal of redirected roots. Results remain readable and Gateway writers
 remain functional. This protects app authorization integrity without a separate
 grant, duplicate execution record or cross-member read restriction.
 
+Two crew-webview leaves carry their own dispositions. `crew-panels/` holds the
+per-crew published panel record and is HIDDEN from agent processes, precreated
+before the sandbox spawns for the same reason `memory_stores/` is: a directory
+that appears later cannot become visible in an older namespace. `panel-templates/`
+holds the human-authored template and is exposed READ-ONLY, and is additionally
+listed in `security._WRITE_PROTECTED_HOME_PATHS` rather than on the read-plus-write
+floor, so the operator who authored a template can still read it back through the
+agent file tools and the dashboard viewer while no agent can rewrite it. The
+asymmetry is the point: the separation between the operator's template and the
+crew's published data is what the containment story rests on, so the write is the
+threat and the read is not.
+
+Both are also in `sandbox._CREW_NO_ALIAS_LEAVES`, which REFUSES the spawn when the
+leaf is reachable under a second name — a symlink, or a regular file carrying an
+extra hardlink. Every other protected leaf only warns and continues, because a
+user who symlinks a config file into a dotfiles repository is doing something
+ordinary and refusing would turn a normal setup into a spawn failure over a
+pre-existing hole. Neither of these is a config file and nothing has a reason to
+link either one, so the weaker outcome is not worth its cost here: `crew-panels/`
+is bind-masked, so an alias attaches the mask to the target while the link name
+stays writable, letting a sandboxed process drop its own directory and forge
+records the gateway reads back as authoritative past both the ownership check and
+the redactors; and replacing `panel-templates/` is authoring markup that renders
+in the panel rather than changing a setting. A warning was what made this silent —
+the log said the path was sealed while the writes went elsewhere.
+
 Memory V2 separates members' learning and work context; it does not promise
 confidentiality between agents running as the same host operator. One stable
 `member_id` owns one stable `store_id`, whose managed path contains one SQLite

@@ -922,7 +922,7 @@ def test_the_unassignable_set_is_derived_from_the_registry(monkeypatch):
     assertion. A worker has no use for another session's crew log -- its own channel
     to its conductor is the work ledger."""
     assert agent._worker_unassignable_servers() == frozenset(
-        {"kirocrew-dashboard", "kirocrew-crew-log"}
+        {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-panel"}
     )
     monkeypatch.setitem(
         agent._MANAGED_MCP_SERVERS,

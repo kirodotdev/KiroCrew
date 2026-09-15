@@ -768,6 +768,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``identity_stores`` and opens it directly, not through this gate.
     AUTH_SQLITE_DB,
     *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
+    # Published crew webview RECORDS (agent_panel.py). Fenced because the record
+    # is an OWNERSHIP claim the store reads back to refuse a colliding write, and
+    # because it is the REDACTED copy of untrusted text: a direct write would
+    # forge another crew's panel past both the ownership check and the redactors
+    # in one step, and the drawer would render the result. The sandbox masks the
+    # same leaf (sandbox._CREW_HIDDEN_LEAVES) so a runtime-constructed path inside
+    # a sandboxed command cannot reach around this gate either.
+    "crew-panels",
     # Managed memory uses bound tools. This directory guard keeps ordinary raw
     # file operations away from DB/WAL/SHM and manual context publication files;
     # glob-based project guidance skips it. It is a best-effort path guard, not
@@ -1161,6 +1169,32 @@ _WRITE_PROTECTED_HOME_PATHS += [
 # the crew secrets.
 _KIRO_AGENTS_DIR = ".kiro/agents"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # Operator-authored panel templates (agent_panel.py). WRITE-protected rather
+    # than read+write sensitive, and the asymmetry is the whole point: a crew's
+    # webview is a human-authored TEMPLATE filled with crew-published DATA, and
+    # that split is the containment story -- layout is reviewed, only data is
+    # untrusted, so data can be escaped at one boundary. What must be refused is
+    # an agent AUTHORING markup here: its auto-approved file tools could otherwise
+    # drop a .html in and collapse the split, handing a hostile issue body a path
+    # into a rendered document.
+    #
+    # The read must stay alive, which is why this entry is not on the floor above.
+    # The file holds no secret: it is human-authored, versioned, reviewed content,
+    # and it is the profile the write-only tier exists for -- routinely read, and
+    # an input to a security decision. Fencing the READ would take the override
+    # away from the operator who wrote it, since the same gate string reaches
+    # ``fs_read``, the dashboard file viewer and knowledge indexing. Its sandbox
+    # disposition already says the same thing from the other side: the launcher
+    # seals the leaf READ-ONLY (``sandbox._CREW_READONLY_LEAVES``) rather than
+    # masking it, so the two halves now agree.
+    #
+    # ``agent_panel.py`` loads the override directly and does not route through
+    # this gate, so template rendering is unaffected; only the agent's own
+    # file-edit tool is refused.
+    f"{prefix}/panel-templates"
+    for prefix in _CREW_HOME_PREFIXES
+]
 
 #: Longest command ``is_sensitive_bash_command`` will scan. Longer input is
 #: REFUSED, not skipped and not scanned: both detectors the gate runs are linear

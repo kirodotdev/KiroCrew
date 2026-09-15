@@ -42,6 +42,11 @@ vi.mock('../../api/client', () => ({
     // the model list and the create call itself.
     models: vi.fn(() => Promise.resolve({ models: [] })),
     createCron: vi.fn(() => Promise.resolve({ ok: true })),
+    // The Crew summary tab's webview section. Stubbed as "nothing published", which is the
+    // state every case here is about: without it the reader rejects and the
+    // section raises a red alert, so a silent fallback (a remembered crew that
+    // was renamed away) would read as an error on a page that is behaving.
+    memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
   },
 }))
 

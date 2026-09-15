@@ -622,3 +622,33 @@ class TestOptionalMcpServersAreNotImportedByTheCli:
             "default-disabled server costs gateway boot nothing"
         )
         assert got["computer"] is False
+
+
+# ── Gateway boot: the panel subsystem stays off the boot chain ──────────────
+
+
+class TestPanelSubsystemIsNotLoadedAtBoot:
+    """``dashboard/handlers/members.py`` is imported while the gateway boots, and
+    the panel subsystem is optional: a host that never assigns a panel would pay
+    for loading it before the socket is bound. Its one consumer imports it inside
+    the function, so the module must stay out of ``sys.modules``."""
+
+    def test_handlers_import_does_not_load_agent_panel(self) -> None:
+        result = _probe(
+            "import json, sys\n"
+            "import kiro_crew.dashboard.handlers  # noqa: F401\n"
+            "print(json.dumps({\n"
+            "    'panel': 'kiro_crew.agent_panel' in sys.modules,\n"
+            "    'members': 'kiro_crew.dashboard.handlers.members' in sys.modules,\n"
+            "}))\n"
+        )
+        # Pin the assumption the guard rests on: the boot chain really does pull
+        # the members handlers in. If that stops holding, this pin goes green for
+        # the wrong reason, so it must fail instead.
+        assert result["members"] is True, (
+            "the members handlers are no longer on the boot import chain; "
+            "move this pin to whatever imports agent_panel now"
+        )
+        assert result["panel"] is False, (
+            "importing the dashboard handlers must not load kiro_crew.agent_panel"
+        )
