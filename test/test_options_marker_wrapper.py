@@ -151,6 +151,64 @@ class TestStreamingSplitAgrees:
         assert visible == "body\n  "
         assert suffix == "`[OPTIONS: A | "
 
+    def test_a_complete_indented_wrapped_marker_is_detached_whole(self):
+        """``^`` matches only at a line start, so anchoring on the WRAPPER is too late.
+
+        Both pattern alternatives then fail -- the lead group cannot match mid-line and
+        the head is not at the wrapper -- so the marker stays in the visible half where
+        a length rotation splits it and posts raw protocol text.
+        """
+        visible, suffix = split_trailing_protocol_suffix("body\n  *[OPTIONS: A | B]*")
+        assert visible == "body\n"
+        assert suffix == "  *[OPTIONS: A | B]*"
+
+    def test_a_complete_indented_wrapped_run_of_three_is_detached_whole(self):
+        visible, suffix = split_trailing_protocol_suffix("body\n   **[OPTIONS: A | B]**")
+        assert visible == "body\n"
+        assert suffix == "   **[OPTIONS: A | B]**"
+
+    def test_a_run_of_indented_wrapped_markers_stays_together(self):
+        visible, suffix = split_trailing_protocol_suffix(
+            "body\n  *[OPTIONS: A | B]*\n  *[OPTIONS: C | D]*"
+        )
+        assert visible == "body\n"
+        assert suffix == "  *[OPTIONS: A | B]*\n  *[OPTIONS: C | D]*"
+
+    def test_the_complete_and_unfinished_paths_differ_on_the_indent(self):
+        """Declared, not accidental, and both predate this change.
+
+        The completed grammar's own match begins at the line start so the indent
+        travels with the marker, while the streaming cut anchors on the wrapper and
+        leaves the indent visible. Pinned so a later unification is deliberate.
+        """
+        _, complete = split_trailing_protocol_suffix("body\n  *[OPTIONS: A | B]*")
+        _, unfinished = split_trailing_protocol_suffix("body\n  *[OPTIONS: A | ")
+        assert complete.startswith("  *")
+        assert unfinished.startswith("*")
+
+    def test_positive_control_a_mid_line_wrapper_is_still_prose(self):
+        # Not line-leading, so ``lwrap`` stays unset and the marker is detached
+        # without it -- the wrapper run belongs to the prose it opened.
+        visible, suffix = split_trailing_protocol_suffix("pick  **[OPTIONS: A | B]")
+        assert visible == "pick  **"
+        assert suffix == "[OPTIONS: A | B]"
+
+    def test_positive_control_a_mid_line_trailing_wrapper_run_is_not_detachable(self):
+        """Pre-existing and unchanged; base agrees byte for byte.
+
+        With ``lwrap`` unset the conditional closer matches empty, so the trailing run
+        defeats the end anchor and nothing is detached.
+        """
+        text = "pick  **[OPTIONS: A | B]**"
+        visible, suffix = split_trailing_protocol_suffix(text)
+        assert visible == text
+        assert suffix == ""
+
+    def test_positive_control_a_complete_unindented_wrapper_is_unchanged(self):
+        visible, suffix = split_trailing_protocol_suffix("body\n*[OPTIONS: A | B]*")
+        assert visible == "body\n"
+        assert suffix == "*[OPTIONS: A | B]*"
+
     def test_mid_line_wrapper_stays_in_the_visible_half(self):
         visible, suffix = split_trailing_protocol_suffix("pick **[OPTIONS: A")
         assert visible == "pick **"
