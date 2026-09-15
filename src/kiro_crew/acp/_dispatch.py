@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -832,8 +833,121 @@ def reject_option_id(params: dict) -> str | None:
 
 
 def is_shell_kind(kind: str | None) -> bool:
-    """True when an ACP tool_kind denotes a shell/exec command."""
+    """True when an ACP tool_kind denotes a shell/exec command.
+
+    Kind-only view. A frame's ``kind`` is not sufficient on its own to call a
+    tool call a shell command -- codex-acp reports MCP tool calls with the same
+    ``execute`` kind as its shell tool -- so callers holding the whole update
+    must use :func:`classify_tool_call`, which consults the adapter-authored
+    MCP markers first. This helper remains for callers that only have a kind
+    (the pill-title rule's fallback).
+    """
     return kind == _ACP_SHELL_KIND
+
+
+#: codex-acp marks the ``tool_call`` frame of an MCP call with this ``_meta``
+#: key (``createMcpToolCallUpdate``). The adapter writes ``_meta``; the model
+#: authors only ``rawInput.arguments`` and, for a shell tool, ``command``.
+_CODEX_MCP_TOOL_CALL_MARKER = "is_mcp_tool_call"
+
+
+@dataclass(frozen=True)
+class ToolCallIdentity:
+    """What one ``tool_call``/``tool_call_update`` frame says about its tool.
+
+    ``kind_resolved`` is whether the frame carried a usable ``kind`` at all: a
+    refinement that omits ``kind`` must not clobber a classification cached from
+    the initial frame. ``is_shell`` is the provider-neutral shell signal.
+    ``mcp_server_name``/``tool_name`` are the adapter-resolved identity, empty
+    when the frame names none; ``identity_trusted`` is True only when BOTH came
+    from an adapter-authored source, mirroring ``AcpEvent.mcp_identity_trusted``.
+    """
+
+    kind_resolved: bool
+    is_shell: bool
+    mcp_server_name: str
+    tool_name: str
+    identity_trusted: bool
+
+
+def _str_field(mapping: object, key: str) -> str:
+    if not isinstance(mapping, dict):
+        return ""
+    value = mapping.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def classify_tool_call(update: dict[str, Any]) -> ToolCallIdentity:
+    """Classify a tool-call frame by its transport, not by its ``kind`` alone.
+
+    Adapters disagree on what ``kind`` an MCP-served tool call carries:
+    kiro-cli reports the tool's own kind and names the server in
+    ``_meta.kiro.mcpServerName``; goose names it in
+    ``_meta.goose.toolCall.extensionName`` and sends its builtin shell with no
+    ``kind`` at all; codex-acp reuses its shell builder, so an MCP
+    call arrives as ``kind="execute"`` with ``rawInput={server, tool,
+    arguments}`` and a ``_meta.is_mcp_tool_call`` marker; claude-agent-acp and
+    opencode send ``kind="other"`` with no identity. Reading ``kind`` alone
+    therefore calls a codex MCP call a shell command, and because its params
+    carry no ``command`` the deny-by-default gate in ``HookManager.on_tool_call``
+    refuses every such call ("shell command could not be verified").
+
+    The two markers carry different weight against the kind. kiro-cli chooses
+    the kind per tool, so its ``execute`` means a shell tool even when the
+    frame also names a server: the identity is carried but never waives the
+    shell verdict (``AcpEvent.child_mcp_identity_trusted`` pins that). codex-acp
+    does not choose: every MCP call goes through its shell builder, so on a
+    frame carrying ``_meta.is_mcp_tool_call`` the ``execute`` kind says nothing
+    about the tool and the marker decides -- a codex shell call never carries
+    it. Both markers live under ``_meta``, which the adapter writes and the
+    model cannot reach, and the codex ``server``/``tool`` pair is the adapter's
+    own resolution of what runs (``createMcpRawInput``), never model text --
+    the same pair ``client._identified_mcp_call`` already relies on. A codex
+    marker with an UNREADABLE pair is a malformed frame: it is not shell
+    (there are no command bytes to verify) but it resolves NOTHING --
+    ``kind_resolved`` is False so the shell cache stays unwritten, the later
+    permission event reads an absent classification (``shell_classified``
+    False, ``child_low_fidelity`` True) and every fidelity-gated auto-approve
+    stays closed. Minting a resolved non-shell verdict there would re-open the
+    title-keyed grant paths with no verified identity behind them. A frame
+    with no marker and no ``execute`` kind is neither shell nor MCP.
+    """
+    kind = update.get("kind")
+    kind_resolved = isinstance(kind, str) and bool(kind)
+    shell_by_kind = is_shell_kind(kind if isinstance(kind, str) else None)
+    meta = update.get("_meta")
+    meta = meta if isinstance(meta, dict) else {}
+
+    # Harness ``_meta`` identity channels (kiro-cli's ``_meta.kiro``, goose's
+    # ``_meta.goose.toolCall``; see _MCP_IDENTITY_META_CHANNELS). A server is set
+    # ONLY for MCP-served calls, a tool name for every tool (built-ins included).
+    # The kind is the harness's own verdict on the tool, so it stands.
+    meta_server, meta_tool, meta_shell = _meta_identity_full(update)
+    if meta_shell:
+        # The harness named its OWN shell (goose: developer/shell) and sends no
+        # ``kind`` on that branch. Harness-authored, so it RESOLVES the call:
+        # it is a command, and no MCP server served it.
+        return ToolCallIdentity(True, True, "", meta_tool, False)
+    if meta_server:
+        return ToolCallIdentity(
+            kind_resolved, shell_by_kind, meta_server, meta_tool, bool(meta_tool)
+        )
+
+    # codex-acp: adapter marker plus the adapter-resolved (server, tool) pair.
+    if meta.get(_CODEX_MCP_TOOL_CALL_MARKER) is True:
+        raw = update.get("rawInput")
+        server = _str_field(raw, "server")
+        tool = _str_field(raw, "tool")
+        if server and tool:
+            return ToolCallIdentity(kind_resolved, False, server, tool, True)
+        # Marker without a readable pair: malformed. Resolve nothing, so the
+        # shell cache is left unwritten and the permission path fails closed
+        # to low fidelity instead of a minted non-shell verdict.
+        return ToolCallIdentity(False, False, "", "", False)
+
+    # No MCP marker: the kind decides. The harness's built-in tool name (no
+    # server) is still carried so hooks can match a host-known built-in.
+    return ToolCallIdentity(kind_resolved, shell_by_kind, "", meta_tool, False)
 
 
 # Legacy kiro permission options omit the spec-mandated `kind` field. Only
@@ -1283,25 +1397,25 @@ def _build_tool_call_event(
     # False would let the later permission event read it as a RESOLVED non-shell
     # classification (shell_classified) and skip the low-fidelity downgrade
     # without any classification having actually happened.
-    # Two independent channels answer "is this a command?", and a harness sends one or
-    # the other: an ACP ``kind`` of execute, or its own ``_meta`` naming its builtin
-    # shell. Either counts as RESOLVED, because both are harness-authored -- so a frame
-    # carrying only the meta channel is classified rather than left unknown, and the
-    # permission event that inherits it is not downgraded for a missing ``kind``.
-    _meta_shell = meta_builtin_shell(update)
-    _kind_resolved = (
-        isinstance(update.get("kind"), str) and bool(update.get("kind"))
-    ) or _meta_shell
-    is_shell = is_shell_kind(kind) or _meta_shell
-    if tool_call_id and shell_cache is not None and _kind_resolved:
+    #
+    # The classification reads the WHOLE frame (kind + adapter-authored MCP
+    # markers + the harness's own ``_meta`` shell channel), not the kind alone:
+    # codex-acp reports MCP calls as kind="execute", and caching that as shell
+    # sends every codex MCP call into the deny-by-default shell gate with no
+    # command to verify; goose sends its builtin shell with no ``kind`` at all,
+    # and only its ``_meta`` pair says "this is a command".
+    identity = classify_tool_call(update)
+    is_shell = identity.is_shell
+    if tool_call_id and shell_cache is not None and identity.kind_resolved:
         shell_cache[_ck] = is_shell
-    # Capture the TRUSTED MCP server identity (_meta.kiro.mcpServerName) so the
-    # later permission_request — the dashboard's gate path, which carries no
-    # _meta — can inherit it via mcp_server_name_cache. This is what lets the
-    # app-own-server auto-approve (hooks.on_tool_call) fire on the permission
-    # path: without the cache, the permission event's mcp_server_name is always
-    # "" and the branch never matches.
-    _mcp_server_name = _kiro_mcp_server_name(update)
+    # Capture the TRUSTED MCP server identity (_meta.kiro.mcpServerName, or the
+    # codex marker's adapter-resolved server) so the later permission_request —
+    # the dashboard's gate path, which carries no _meta — can inherit it via
+    # mcp_server_name_cache. This is what lets the app-own-server auto-approve
+    # (hooks.on_tool_call) fire on the permission path: without the cache, the
+    # permission event's mcp_server_name is always "" and the branch never
+    # matches.
+    _mcp_server_name = identity.mcp_server_name
     if tool_call_id and mcp_server_name_cache is not None:
         mcp_server_name_cache[_ck] = _mcp_server_name
     # Round-trip clock for kirocrew.tool.call.duration. Placed after the trusted
@@ -1314,10 +1428,10 @@ def _build_tool_call_event(
     note_tool_call_started(
         tool_call_id, kind=kind, mcp_server_name=_mcp_server_name, scope=cache_scope
     )
-    # Same lifecycle for the trusted tool name (_meta.kiro.toolName) so the
-    # permission event can reconstruct the canonical mcp__<server>__<tool> for
-    # per-tool governance in the app-own-server auto-approve.
-    _tool_name = _kiro_tool_name(update)
+    # Same lifecycle for the trusted tool name so the permission event can
+    # reconstruct the canonical mcp__<server>__<tool> for per-tool governance in
+    # the app-own-server auto-approve.
+    _tool_name = identity.tool_name
     if tool_call_id and tool_name_cache is not None:
         tool_name_cache[_ck] = _tool_name
     # Initial tool input string from raw params.
@@ -1389,14 +1503,14 @@ def _build_tool_call_event(
         tool_call_id=tool_call_id,
         raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
         is_shell=is_shell,
-        # Trusted identity from _meta.kiro (NOT the LLM-authored title).
+        # Trusted identity from the adapter-authored markers (NOT the
+        # LLM-authored title) -- see classify_tool_call for the sources.
         tool_name=_tool_name,
         mcp_server_name=_mcp_server_name,
-        # The pair above comes exclusively from the _kiro_* extractors over the
-        # frame's _meta.kiro (non-model-authored) — the trusted tool_call path.
-        # Earned only when an identity pair was actually extracted: a frame
-        # with no _meta.kiro populates nothing, so it asserts no provenance.
-        mcp_identity_trusted=bool(_mcp_server_name and _tool_name),
+        # Earned only when an identity pair was actually extracted from such a
+        # source: a frame with no marker populates nothing and asserts no
+        # provenance.
+        mcp_identity_trusted=identity.identity_trusted,
         diff_old_text=_diff_old_text,
         diff_path=_diff_path,
     )
@@ -2133,12 +2247,13 @@ def _build_tool_refinement_event(
     # True cached by the initial tool_call. Mirrors AcpClient exactly. Resolved
     # BEFORE the title so the label rule sees the real classification rather
     # than a missing kind.
+    _identity = classify_tool_call(update)
     if shell_cache is not None:
-        if isinstance(kind, str) and kind:
-            shell_cache[_rk] = is_shell_kind(kind)
+        if _identity.kind_resolved:
+            shell_cache[_rk] = _identity.is_shell
         is_shell = shell_cache.get(_rk, False)
     else:
-        is_shell = is_shell_kind(kind) if isinstance(kind, str) and kind else False
+        is_shell = _identity.is_shell if _identity.kind_resolved else False
     # A refinement carrying a title but no rawInput still overwrites the pill,
     # so the command has to be recoverable from the params the initial
     # tool_call cached — otherwise a backend that sends a generic title on both
@@ -2388,6 +2503,8 @@ __all__ = [
     # Re-exported from the vocabulary module for the ~1 ACP-layer consumer, the way the
     # backend ids at the top of this module already are.
     "ACP_BACKENDS_META_IDENTITY",
+    "classify_tool_call",
+    "ToolCallIdentity",
     "redact_text",
     "METHOD_SET_MODE",
     "METHOD_SET_MODEL",

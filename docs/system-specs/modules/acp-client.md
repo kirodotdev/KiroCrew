@@ -133,9 +133,16 @@ MCP-identified call) and app-own-server grant, reported as
 `ToolHookResult.identity_grant`, and the TrustDropdown's `approval_command`
 key — so the user's narrow allowance covers the child's call to that tool
 without a session-wide trust grant (`security.md` § Child-fidelity split).
-A miss keeps reading as an absent classification, and a frame reporting
-`kind: "execute"` caches `True` whatever its `_meta` says — the transport
-identity never waives a shell check.
+A miss keeps reading as an absent classification. Classification reads the
+whole frame through `_dispatch.classify_tool_call`, not the `kind` alone: a
+kiro-cli frame reporting `kind: "execute"` caches `True` whatever its
+`_meta.kiro` says — that identity never waives a shell check — while a
+codex-acp frame carrying the adapter-authored `_meta.is_mcp_tool_call` marker
+is an MCP call the adapter happened to build with its shell builder, so it
+caches `False` and takes its trusted identity from the adapter-resolved
+`rawInput.server`/`rawInput.tool` pair. A marker with an unreadable pair
+resolves nothing (the shell cache stays unwritten), so the permission event
+stays low-fidelity rather than earning a minted non-shell verdict.
 
 For a CHILD event, the identity lane only helps a consumer the handle actually
 delivers to: the session handle fail-closes every low-fidelity child permission

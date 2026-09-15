@@ -50,10 +50,9 @@ from kiro_crew import sel as sel_module
 from kiro_crew.acp import seed_provenance
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
-    _kiro_mcp_server_name,
-    _kiro_tool_name,
     agent_version_from_init,
     build_permission_event,
+    classify_tool_call,
     derive_edit_diff,
     error_is_refusal_terminal,
     extract_tool_purpose,
@@ -61,7 +60,6 @@ from kiro_crew.acp._dispatch import (
     log_unrenderable_content,
     make_unified_diff,
     meta_builtin_server_names,
-    meta_builtin_shell,
     parse_claude_compaction_notice,
     parse_prompt_token_usage,
     parse_refusal,
@@ -2222,14 +2220,16 @@ _WAIT_RESPONSE_MAX_TIMEOUT = 600.0  # 10 min absolute ceiling
 # worker thread may leak, which is survivable) after this timeout.
 _SEL_AUDIT_TIMEOUT_SECONDS = 5.0
 # Canonical ACP tool-kind value for shell/exec tools. kiro-cli and
-# claude-agent-acp both report shell commands with kind="execute". This is the
-# ONE place the ACP shell literal lives — _is_shell_kind() maps it to the
-# provider-agnostic AcpEvent.is_shell flag the dashboard validates against.
+# claude-agent-acp both report shell commands with kind="execute", and so does
+# codex-acp -- for its MCP tool calls too. _is_shell_kind() is therefore only
+# the kind-half of the rule; the tool_call paths classify the WHOLE frame with
+# _dispatch.classify_tool_call, which consults the adapter-authored MCP markers
+# before the kind.
 _ACP_SHELL_KIND = "execute"
 
 
 def _is_shell_kind(kind: str | None) -> bool:
-    """True when an ACP tool_kind denotes a shell/exec command."""
+    """True when an ACP tool_kind denotes a shell/exec command (kind-only view)."""
     return kind == _ACP_SHELL_KIND
 
 
@@ -11117,10 +11117,14 @@ class AcpClient:
             # status is stamped in _extract_tool_call_update below. Both of this
             # class's message loops reach this method, so instrumenting it covers
             # them without a second call site in each.
+            # One classification for the caches, the event and the metric:
+            # kind + adapter-authored MCP markers, never the kind alone (see
+            # _dispatch.classify_tool_call).
+            identity = classify_tool_call(update)
             note_tool_call_started(
                 tool_call_id,
                 kind=kind,
-                mcp_server_name=_kiro_mcp_server_name(update),
+                mcp_server_name=identity.mcp_server_name,
                 # getattr: a real client always carries _session_id, but this
                 # extractor is also driven directly with lightweight test
                 # doubles (test_acp_tool_identity), and telemetry must not be
@@ -11197,22 +11201,15 @@ class AcpClient:
             # Capture the canonical shell signal from the raw kind BEFORE
             # redaction so the later permission_request event (which carries no
             # kind) can inherit it via the toolCallId cache below.
-            # Either harness-authored channel resolves it: an ACP ``kind`` of execute,
-            # or the harness's own ``_meta`` naming its builtin shell. Reading only the
-            # first left a harness that sends the second classified as a non-shell tool,
-            # so its command never reached the command-deny tier at all.
-            _meta_shell = meta_builtin_shell(update)
-            # Asked of the FRAME, not of the local ``kind``: that one is defaulted to the
-            # string "unknown" for display, which is truthy, so reading it would call
-            # every kind-less frame resolved and defeat the refusal below.
-            _wire_kind = update.get("kind")
-            _kind_resolved = isinstance(_wire_kind, str) and bool(_wire_kind)
-            is_shell = _is_shell_kind(kind) or _meta_shell
+            is_shell = identity.is_shell
             if tool_call_id:
-                self._tool_call_is_shell[tool_call_id] = is_shell
+                if identity.kind_resolved:
+                    self._tool_call_is_shell[tool_call_id] = is_shell
                 # An MCP identity is a classification too -- it says "served by a
-                # server", which is not a host command. Unclassified means none of the
-                # three said anything.
+                # server", which is not a host command. Unclassified means neither
+                # the kind, the harness's own shell channel nor an MCP marker said
+                # anything (classify_tool_call folds all three; a malformed codex
+                # marker resolves nothing and lands here as unclassified).
                 #
                 # Written through the same compatibility shape as the redaction map
                 # below: an instance allocated with ``__new__`` (embedders do this) has
@@ -11221,14 +11218,14 @@ class AcpClient:
                 _unclassified = getattr(self, "_tool_call_unclassified", None)
                 if _unclassified is not None:
                     _unclassified[tool_call_id] = not (
-                        _kind_resolved or _meta_shell or bool(_kiro_mcp_server_name(update))
+                        identity.kind_resolved or bool(identity.mcp_server_name)
                     )
                 # Same lifecycle as is_shell: cache the trusted MCP server
                 # identity so the later permission event can inherit it.
-                self._tool_call_mcp_server[tool_call_id] = _kiro_mcp_server_name(update)
+                self._tool_call_mcp_server[tool_call_id] = identity.mcp_server_name
                 # Cache the trusted tool name too, so the permission event can
                 # rebuild mcp__<server>__<tool> for per-tool governance.
-                self._tool_call_tool_name[tool_call_id] = _kiro_tool_name(update)
+                self._tool_call_tool_name[tool_call_id] = identity.tool_name
             title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
             if title:
                 title, _ = redact_exfiltration_urls(title)
@@ -11253,16 +11250,13 @@ class AcpClient:
                 tool_call_id=tool_call_id,
                 raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
                 is_shell=is_shell,
-                tool_name=_kiro_tool_name(update),
-                mcp_server_name=_kiro_mcp_server_name(update),
-                # The pair above comes exclusively from the _kiro_* extractors
-                # over the frame's _meta.kiro (non-model-authored) — the
-                # trusted tool_call path. Earned only when an identity pair was
-                # actually extracted: a frame with no _meta.kiro populates
-                # nothing, so it asserts no provenance.
-                mcp_identity_trusted=bool(
-                    _kiro_mcp_server_name(update) and _kiro_tool_name(update)
-                ),
+                # Trusted identity from the adapter-authored markers (NOT the
+                # LLM-authored title). Earned only when an identity pair was
+                # actually extracted from such a source: a frame with no marker
+                # populates nothing and asserts no provenance.
+                tool_name=identity.tool_name,
+                mcp_server_name=identity.mcp_server_name,
+                mcp_identity_trusted=identity.identity_trusted,
             )
         return None
 
@@ -11443,8 +11437,9 @@ class AcpClient:
         # Cache off the RAW kind, not the redacted kind_str. Resolved BEFORE the
         # title so the label rule sees the real classification rather than a
         # missing kind.
-        if isinstance(kind, str) and kind:
-            self._tool_call_is_shell[tool_use_id] = _is_shell_kind(kind)
+        _identity = classify_tool_call(update)
+        if _identity.kind_resolved:
+            self._tool_call_is_shell[tool_use_id] = _identity.is_shell
         is_shell = self._tool_call_is_shell.get(tool_use_id, False)
         # Prefer rawInput.description over the SDK-supplied title (e.g.
         # Bash's "List KiroCrew ACP module files" rather than `ls /workplace/...`).

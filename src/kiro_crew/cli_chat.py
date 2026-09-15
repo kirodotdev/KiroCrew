@@ -503,6 +503,24 @@ def _unverifiable_shell(event: LLMEvent) -> bool:
         # Trusted signal: the gate's own deny-by-default backstop covers an
         # unrecoverable command from here.
         return False
+    # One narrow escape: a trusted MCP transport identity. When the preceding
+    # ``tool_call``'s cache write recovered a non-empty server/tool pair from an
+    # adapter-authored source (``mcp_identity_trusted`` is set only by that
+    # cache-hit path, never from the permission payload), the call is proven
+    # MCP-served -- and an MCP-served tool is not a host shell command, so there
+    # are no command bytes for this gate to verify. It has to sit ABOVE the
+    # payload-``kind`` check below, not only inside the unclassified branch: an
+    # adapter may label its MCP approvals ``kind="execute"`` (codex-acp does),
+    # and the classified-non-shell call would otherwise be refused on that
+    # label alone. A backend that omits ``kind`` on its MCP frames is covered
+    # the same way. The ORDER of the two returns is the invariant, not any
+    # exclusivity of the flags: a kiro-cli frame with ``kind="execute"`` AND a
+    # server name classifies as shell with a trusted identity, so it must hit
+    # the ``is_shell`` return above first, where the shell gate's own
+    # deny-by-default backstop governs. Moving this escape above that return
+    # would let such a frame skip the command-bytes check.
+    if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
+        return False
     # No classification happened AT ALL: the preceding ``tool_call`` carried no
     # resolvable ``kind``, so nothing was cached and ``is_shell`` is the miss
     # default rather than a resolved "not a shell tool". Reading the payload's own
@@ -511,19 +529,6 @@ def _unverifiable_shell(event: LLMEvent) -> bool:
     # behind it. An absent classification is not a negative one -- the same
     # distinction ``child_low_fidelity`` already draws on this flag.
     if not event.shell_classified:
-        # One narrow escape: a trusted MCP transport identity. When the
-        # preceding ``tool_call``'s cache write recovered a non-empty
-        # ``_meta.kiro`` server/tool pair (``mcp_identity_trusted`` is set only
-        # by that cache-hit path, never from the permission payload), the call
-        # is proven MCP-served -- and an MCP-served tool is not a host shell
-        # command, so there are no command bytes for this gate to verify. A
-        # backend that omits ``kind`` on its MCP frames would otherwise have
-        # every such tool auto-denied here. This waives nothing shell-shaped:
-        # a frame whose ``kind`` resolved to execute cached ``is_shell`` True
-        # and took the trusted-signal branch above, where the shell gate's own
-        # deny-by-default backstop governs.
-        if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
-            return False
         return True
     # Normalised before the shared check so a cosmetic variant still denies --
     # widening a fail-closed test is safe in a way widening an allow is not.

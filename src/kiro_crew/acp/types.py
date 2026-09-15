@@ -766,7 +766,13 @@ class AcpEvent:
         (``sub_session_id``), no RESOLVED shell classification to the contrary
         (``not is_shell`` — a frame whose ``kind`` resolved to execute cached
         True, and its deny gates need the command bytes this event lacks; the
-        transport identity must never waive that), the canonical
+        kiro-cli transport identity must never waive that. The one exception
+        is not a waiver but a different classification: codex-acp emits its
+        MCP calls through its shell builder, so a frame carrying the
+        adapter-authored ``_meta.is_mcp_tool_call`` marker is classified as
+        MCP by ``_dispatch.classify_tool_call`` and never caches shell in the
+        first place — its ``server``/``tool`` pair is what the adapter
+        resolved, not model text), the canonical
         ``mcp_server_name`` + ``tool_name`` pair recovered from the tool_call
         cache (empty on a miss, and populated only for genuinely MCP-served
         tools — a host shell/builtin can never carry a server name), and the
