@@ -7484,6 +7484,7 @@
       "mark_as_read": "Als gelesen markieren",
       "mark_as_unread": "Als ungelesen markieren",
       "move_to_folder": "In Ordner verschieben…",
+      "offline_reason": "Gateway offline — die ausgegrauten Aktionen brauchen eine Verbindung",
       "open_in_new_tab": "In einem Sitzungs-Tab öffnen",
       "pin": "Anpinnen",
       "pop_out_to_window": "In ein Fenster auskoppeln",
@@ -15114,9 +15115,17 @@
       "saving": "Wird gespeichert..."
     },
     "offline": {
+      "change_folder_settings": "das Ändern von Ordnereinstellungen",
+      "create_folders": "das Erstellen von Ordnern",
+      "create_sessions": "das Erstellen von Sitzungen",
+      "delete_folders": "das Löschen von Ordnern",
       "disabled_gateway_offline": "{{label}} deaktiviert — Gateway offline",
       "gateway_offline_reconnect": "Gateway offline — für {{action}} neu verbinden",
-      "submit_comments": "Kommentare einreichen"
+      "hide_folders": "das Ausblenden von Ordnern",
+      "rename_folders": "das Umbenennen von Ordnern",
+      "resume_sessions": "das Fortsetzen von Sitzungen",
+      "submit_comments": "Kommentare einreichen",
+      "switch_sessions": "das Wechseln von Sitzungen"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Dein Browser hat das Pop-out-Fenster blockiert. Erlaube Pop-ups für diese Seite und versuche es erneut."

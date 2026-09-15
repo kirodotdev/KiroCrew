@@ -7706,6 +7706,7 @@
       "mark_as_read": "Отметить как прочитанное",
       "mark_as_unread": "Отметить как непрочитанное",
       "move_to_folder": "Переместить в папку…",
+      "offline_reason": "Шлюз не в сети — неактивным действиям нужно подключение",
       "open_in_new_tab": "Открыть во вкладке сессии",
       "pin": "Закрепить",
       "pop_out_to_window": "Открыть в отдельном окне",
@@ -15509,9 +15510,17 @@
       "saving": "Сохранение..."
     },
     "offline": {
+      "change_folder_settings": "изменять настройки папки",
+      "create_folders": "создавать папки",
+      "create_sessions": "создавать сеансы",
+      "delete_folders": "удалять папки",
       "disabled_gateway_offline": "{{label}}: недоступно — шлюз не в сети",
       "gateway_offline_reconnect": "Шлюз не в сети — подключись снова, чтобы {{action}}",
-      "submit_comments": "отправить комментарии"
+      "hide_folders": "скрывать папки",
+      "rename_folders": "переименовывать папки",
+      "resume_sessions": "возобновлять сеансы",
+      "submit_comments": "отправить комментарии",
+      "switch_sessions": "переключать сеансы"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Браузер заблокировал отдельное окно. Разреши всплывающие окна для этого сайта и попробуй снова."

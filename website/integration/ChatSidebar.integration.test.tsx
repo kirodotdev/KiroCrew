@@ -6,7 +6,8 @@ vi.mock('@radix-ui/react-dropdown-menu', () => import('./__mocks__/@radix-ui/rea
 vi.mock('@radix-ui/react-context-menu', () => import('./__mocks__/@radix-ui/react-context-menu'))
 
 import ChatSidebar from '../src/pages/ChatSidebar'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders, createTestStore } from './helpers'
+import { sseConnected } from '../src/store/dashboardSlice'
 import { server } from './mocks/server'
 import { http, HttpResponse } from 'msw'
 import { __resetAuthRecoveryStateForTests } from '../src/api/client'
@@ -28,6 +29,14 @@ const defaultProps = {
   historyHasMore: false,
   defaultAgent: 'kirocrew',
   installedAgents: [{ name: 'kirocrew', source: 'builtin' }, { name: 'oncall', source: 'aim' }],
+}
+
+// A case asserting a write REACHES the server must declare a live gateway:
+// createTestStore() defaults to disconnected (#10462) and these writes are gated.
+function renderConnected(ui: Parameters<typeof renderWithProviders>[0]) {
+  const store = createTestStore()
+  store.dispatch(sseConnected())
+  return renderWithProviders(ui, { store })
 }
 
 describe('ChatSidebar Folder Grouping', () => {
@@ -267,7 +276,10 @@ describe('ChatSidebar Folder Grouping', () => {
       }),
     )
     const slotsWithFolder = [{ ...baseSlots[0], folder_id: 'f1' }, baseSlots[1], baseSlots[2]]
-    renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithFolder} />)
+    // Deleting a folder is a gateway write, so this case must say it is online.
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithFolder} />, { store })
     await waitFor(() => expect(screen.getByText('Delete Me')).toBeInTheDocument())
     expect(screen.getByText('Pipeline debug')).toBeInTheDocument()
 
@@ -315,7 +327,7 @@ describe('ChatSidebar Folder Grouping', () => {
         return HttpResponse.json(folders.find(f => f.id === params.id))
       }),
     )
-    renderWithProviders(<ChatSidebar {...defaultProps} />)
+    renderConnected(<ChatSidebar {...defaultProps} />)
     await waitFor(() => expect(screen.getByText('Old Name')).toBeInTheDocument())
 
     await user.dblClick(screen.getByText('Old Name'))
@@ -347,7 +359,7 @@ describe('ChatSidebar Folder Grouping', () => {
         return HttpResponse.json(folders.find(f => f.id === params.id))
       }),
     )
-    renderWithProviders(<ChatSidebar {...defaultProps} />)
+    renderConnected(<ChatSidebar {...defaultProps} />)
     await waitFor(() => expect(screen.getByText('Old Name')).toBeInTheDocument())
 
     fireEvent.click(screen.getByTestId('folder-menu-f1'))
@@ -471,7 +483,7 @@ describe('ChatSidebar confirmCloseSession', () => {
     server.use(
       http.delete('/api/chat/slots/:key', ({ params }) => { deleteSpy(params.key); return HttpResponse.json({ ok: true }) }),
     )
-    renderWithProviders(<ChatSidebar {...defaultProps} />)
+    renderConnected(<ChatSidebar {...defaultProps} />)
     await waitFor(() => expect(screen.getByText('Pipeline debug')).toBeInTheDocument())
 
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
@@ -488,7 +500,7 @@ describe('ChatSidebar confirmCloseSession', () => {
     server.use(
       http.delete('/api/chat/slots/:key', ({ params }) => { deleteSpy(params.key); return HttpResponse.json({ ok: true }) }),
     )
-    renderWithProviders(<ChatSidebar {...defaultProps} />)
+    renderConnected(<ChatSidebar {...defaultProps} />)
     await waitFor(() => expect(screen.getByText('Pipeline debug')).toBeInTheDocument())
 
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
@@ -500,7 +512,7 @@ describe('ChatSidebar confirmCloseSession', () => {
 
   it('shows confirm dialog when confirmCloseSession is true', async () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ confirmCloseSession: true }))
-    renderWithProviders(<ChatSidebar {...defaultProps} />)
+    renderConnected(<ChatSidebar {...defaultProps} />)
     await waitFor(() => expect(screen.getByText('Pipeline debug')).toBeInTheDocument())
 
     const closeBtn = screen.getByText('Pipeline debug').closest('[draggable]')!.querySelector('[aria-label="Close session"]')!
@@ -715,7 +727,7 @@ describe('ChatSidebar Cleanup', () => {
         return HttpResponse.json({ ok: true, key: `${params.slot}-fork` })
       }),
     )
-    const { store } = renderWithProviders(<ChatSidebar {...defaultProps} />)
+    const { store } = renderConnected(<ChatSidebar {...defaultProps} />)
     await screen.findByText('Pipeline debug')
     const dupBtn = screen.getAllByLabelText('Duplicate')[0]
     fireEvent.click(dupBtn)
@@ -728,7 +740,7 @@ describe('ChatSidebar Cleanup', () => {
     server.use(
       http.post('/api/chat/slots/:slot/fork', () => HttpResponse.json({ error: 'boom' }, { status: 500 })),
     )
-    renderWithProviders(<ChatSidebar {...defaultProps} />)
+    renderConnected(<ChatSidebar {...defaultProps} />)
     await screen.findByText('Pipeline debug')
     const dupBtn = screen.getAllByLabelText('Duplicate')[0]
     fireEvent.click(dupBtn)
