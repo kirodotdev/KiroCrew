@@ -1505,6 +1505,20 @@ class TestMalformedSelectionCannotPoisonTheQueue:
     """
 
     def _submit(self, payload):
+        """Run the real `_h_submit` against a hand-rolled handler.
+
+        Every caller takes `isolated_queue`, including the ones that expect a
+        refusal. A payload the guard lets through reaches the draft transaction
+        for real, and `QUEUE_DIR`/`HANDLED_DIR` are frozen at import off
+        `$KIROCREW_HOME` (server.py), so the accepted case writes
+        `queue/<id>.json` — and, via the unscoped counter, `config.json` — into
+        whatever data home the session resolved: outside `tmp_path`, outside the
+        run's temp root, so none of conftest's residue guards can see it, and
+        permanent when the operator exported `KIROCREW_HOME` themselves. The
+        refused cases write nothing today; they take the fixture so a regression
+        of the guard fails as a test rather than as a file in someone's queue.
+        """
+
         sent: list[tuple[int, dict]] = []
 
         class _H(server.Handler):
@@ -1520,14 +1534,14 @@ class TestMalformedSelectionCannotPoisonTheQueue:
         server.Handler._h_submit(_H())
         return sent[0] if sent else (None, None)
 
-    def test_a_string_element_is_refused(self):
+    def test_a_string_element_is_refused(self, isolated_queue):
         code, body = self._submit(
             {"type": "visual_edit_request", "selection": {"elements": ["x"]}, "comment": "c"}
         )
         assert code == 400
         assert body.get("code") == "selection_malformed"
 
-    def test_a_mixed_list_is_refused(self):
+    def test_a_mixed_list_is_refused(self, isolated_queue):
         """One bad element poisons the whole request, so all-or-nothing."""
         code, body = self._submit(
             {
@@ -1539,7 +1553,7 @@ class TestMalformedSelectionCannotPoisonTheQueue:
         assert code == 400
         assert body.get("code") == "selection_malformed"
 
-    def test_non_list_and_empty_elements_are_refused(self):
+    def test_non_list_and_empty_elements_are_refused(self, isolated_queue):
         for bad in ({"elements": "div"}, {"elements": {}}, {"elements": []}, {}):
             code, body = self._submit(
                 {"type": "visual_edit_request", "selection": bad, "comment": "c"}
@@ -1578,7 +1592,7 @@ class TestMalformedSelectionCannotPoisonTheQueue:
     # `tag` raised `TypeError: unsupported operand type(s) for +=: 'int' and
     # 'str'`. Same persistent-500 outage, one layer deeper.
 
-    def test_a_non_string_tag_is_refused(self):
+    def test_a_non_string_tag_is_refused(self, isolated_queue):
         code, body = self._submit(
             {
                 "type": "visual_edit_request",
@@ -1589,7 +1603,7 @@ class TestMalformedSelectionCannotPoisonTheQueue:
         assert code == 400
         assert body.get("code") == "selection_malformed"
 
-    def test_a_non_string_id_or_classes_is_refused(self):
+    def test_a_non_string_id_or_classes_is_refused(self, isolated_queue):
         bad_elements = [
             {"tag": "div", "id": 7},
             {"tag": "div", "classes": "card"},
@@ -1607,7 +1621,7 @@ class TestMalformedSelectionCannotPoisonTheQueue:
             assert code == 400, el
             assert body.get("code") == "selection_malformed", el
 
-    def test_well_formed_selections_are_still_accepted(self):
+    def test_well_formed_selections_are_still_accepted(self, isolated_queue):
         """The guard must not reject the shapes the preview legitimately sends.
 
         `id` and `classes` are both optional, and an empty `classes` list is

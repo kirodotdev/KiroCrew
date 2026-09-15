@@ -509,12 +509,29 @@ def test_noop_recorder_when_otel_missing(monkeypatch):
         recorder.up_down_counter("test.updown", -1)
     finally:
         monkeypatch.undo()
-        # Restore modules
-        sys.modules.update(saved)
-        # Remove our injected module
+        # Drop the degraded copy we injected BEFORE restoring, never after.
+        # ``saved`` holds the ORIGINAL module object, and that object is what
+        # every module-level ``from kiro_crew.metrics.provider import
+        # get_recorder`` (context.py, session.py, skills.py, heartbeat.py,
+        # metrics/turns.py, dashboard/chat_runner.py, ...) is already bound to.
+        # Popping after the update therefore discards the original and the
+        # re-import installs a THIRD object, so the provider's module globals
+        # (``_recorder``, ``_initialized``, ``_build_generation``,
+        # ``_built_consent``, ``_config_sub``, the build-serializing ``_lock``)
+        # exist twice for the rest of the worker: a later test's
+        # ``monkeypatch.setattr(provider_mod, ...)`` patches the copy resolved
+        # by name while its bare ``get_recorder()`` runs out of the other one
+        # (test/metrics/test_provider.py's degrade-to-no-op and reader-reaping
+        # tests are exactly that shape), and ``reset_for_testing()`` can no
+        # longer clear the copy the import-time consumers emit through.
         sys.modules.pop("kiro_crew.metrics.provider", None)
-        # Re-import cleanly
-        importlib.import_module("kiro_crew.metrics.provider")
+        sys.modules.update(saved)
+        # Only re-import when there was nothing to put back — i.e. provider had
+        # not been imported before this test. Without the guard that branch
+        # would leave our ``_OTEL_AVAILABLE = False`` copy installed, which is
+        # strictly worse than a second clean one.
+        if "kiro_crew.metrics.provider" not in sys.modules:
+            importlib.import_module("kiro_crew.metrics.provider")
 
 
 # --- setup.cfg decoding: this gate must run on a non-UTF-8 locale host ---

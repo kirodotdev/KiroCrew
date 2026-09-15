@@ -2299,8 +2299,21 @@ def test_an_older_close_does_not_block_an_open_slot_restore(tmp_path, monkeypatc
     state2 = _make_state(tmp_path / "sessions")
     from kiro_crew.dashboard import channel_slots
 
-    channel_slots.note_slot_closed(state2, "chat-1-reopened")  # then reopened
-    time.sleep(0.01)
+    # The close must land STRICTLY before the driver's own ``started =
+    # time.time()``, and a real sleep does not guarantee that: on Windows under
+    # CPython <= 3.12 (what CI pins) ``time.sleep`` waits on a high-resolution
+    # timer while ``time.time`` still steps in ~15.6 ms system-clock ticks, so a
+    # 10 ms sleep can leave both readings EQUAL — and ``slot_closed_since`` is
+    # inclusive (``when >= instant``), so the tombstone would block the reopen
+    # and this negative control would accuse the guard of the very defect it
+    # exists to disprove. Stamp an explicitly older instant instead, making
+    # eligibility arithmetic on every platform. 60 s is far inside
+    # ``_CLOSE_TOMBSTONE_TTL_SECS`` (3600 s), so the tombstone still EXISTS when
+    # the guard consults it and the assertion cannot pass vacuously.
+    closed_at = time.time() - 60.0
+    with monkeypatch.context() as mp:
+        mp.setattr(time, "time", lambda: closed_at)
+        channel_slots.note_slot_closed(state2, "chat-1-reopened")  # then reopened
 
     assert asyncio.run(restore_open_slots_async(state2)) == 1
     assert "chat-1-reopened" in state2._slots

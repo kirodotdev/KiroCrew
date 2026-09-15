@@ -1,7 +1,8 @@
 """Acquisition and integrity, with no network reached in any test.
 
-Every test either points ``ensure`` at a file this module wrote itself, or calls
-it with ``allow_download=False`` so the download branch is unreachable. The URLs
+Every test either points ``ensure`` at a file this module wrote itself, calls it
+with ``allow_download=False`` so the download branch is unreachable, or — for the
+single test that must be let past the scheme guard — stubs ``urlopen``. The URLs
 in the fabricated specs are ``.invalid`` hosts (RFC 2606) so a regression that
 starts fetching fails loudly instead of silently going online.
 
@@ -17,6 +18,7 @@ because dropping it breaks nothing on the first run.
 from __future__ import annotations
 
 import hashlib
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -330,13 +332,26 @@ def test_non_https_urls_are_refused_before_any_request(
     assert not (cache / "evil.json.sha256").exists()
 
 
-def test_the_scheme_check_is_case_insensitive_on_the_allowed_scheme(cache: Path) -> None:
+def test_the_scheme_check_is_case_insensitive_on_the_allowed_scheme(
+    cache: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An uppercase HTTPS:// must not be rejected as if it were another scheme.
 
-    Asserted via the error message rather than by letting a request happen: the
-    URL is unreachable, so reaching the network layer at all is proof the guard
-    let it through, and the failure that follows is a URLError, not the scheme
-    refusal.
+    This is the one test in the module whose URL is *allowed* past the guard, so
+    it is the one that would otherwise go online: ``allow_download`` defaults to
+    True, the redirected cache is empty, and ``_download`` accepts ``HTTPS://``
+    by design. ``urlopen`` is therefore stubbed to raise, exactly as
+    ``test_bench_download_fd`` does — resolving ``example.invalid`` for real is a
+    DNS round trip that no ``urlopen`` timeout bounds, and it makes the assertion
+    depend on the host being offline for that name: a wildcard resolver or an
+    ``HTTPS_PROXY`` that answers 200 would complete the fetch and fail this test
+    with DID NOT RAISE.
+
+    Asserted positively on ``network error fetching``, which only the URLError
+    handler downstream of the scheme check produces, so a green here means the
+    uppercase spelling reached the request — the old negative form
+    (``"only https://" not in ...``) would also have passed on any *other*
+    refusal raised before it.
     """
     spec = DatasetSpec(
         key="upper",
@@ -348,6 +363,13 @@ def test_the_scheme_check_is_case_insensitive_on_the_allowed_scheme(cache: Path)
         sha256=None,
         measures_retrieval=True,
     )
+
+    def _no_network(*_a: object, **_k: object):
+        raise urllib.error.URLError("stubbed: no test in this suite reaches the network")
+
+    monkeypatch.setattr("urllib.request.urlopen", _no_network)
+
     with pytest.raises(CorpusFetchError) as exc:
         datasets.ensure(spec)
+    assert "network error fetching" in str(exc.value)
     assert "only https://" not in str(exc.value)

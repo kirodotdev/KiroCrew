@@ -718,6 +718,51 @@ which testpath asked for the workers.
   a named capability difference; use the list when the gap is a real one to be fixed
   later, with a `# TODO` reason line above the entry. `test/macos-collect-ignore.txt`
   exists for the blunt case only — a file that cannot be *collected* on darwin.
+- **When you fabricate a child environment, `HOME` and `PATH` are a PAIR.** Substituting
+  one while inheriting the other is the defect, in either direction. An inherited `PATH`
+  on a developer host routinely leads with a version-manager shim directory (mise, asdf,
+  pyenv, volta, nodenv), and a shim resolves its tool set from `HOME` — so with a
+  substituted `HOME` the bare name `python3` or `node` reaches the MANAGER, which finds
+  no tool state and **spins forever instead of exec'ing an interpreter**. Nine such
+  processes were measured reparented to init at 1464% CPU between them for six days;
+  another site turned it into a permanently blocked xdist worker. Either pin the real
+  interpreter's own directory first on `PATH` (`test_security_conductor_scripts.runnable_python`
+  is the shape) or resolve the tool to its real executable before building the env. Do
+  NOT drop the `HOME` substitution to fix it — that is usually a blast-radius bound
+  somebody chose on purpose.
+
+- **A spawn that can outlive the test gets a process-GROUP reap, not `kill()`.** A child
+  is routinely a wrapper that forks, so killing the direct pid reaps the wrapper and
+  leaves the real work running; a bounded `wait()` that ends in a bare `pass` then
+  reports success. Start the child in its own session/group and reap the group:
+  `start_new_session=True` + `os.killpg` on POSIX, `CREATE_NEW_PROCESS_GROUP` +
+  `taskkill /T /F` on Windows. `test/installer_test_helpers.run_bounded` is the
+  cross-platform reference and `verify_finding.reap` the stdlib-only one. Reap on EVERY
+  exit path, not only the timeout.
+
+- **A walker rooted at the REPO ROOT must prune `.worktrees/`.** It is gitignored and
+  holds other branches' entire checkouts, so a corpus or ratchet gate that descends it
+  audits code that is not on this branch and reports offenders nobody on this branch can
+  fix. CI has no `.worktrees/`, so CI stays green and only the developer running the
+  repo's own documented worktree workflow sees the red. Prefer `git ls-files`, which
+  never had the problem; if you must walk the filesystem, prune `.worktrees` alongside
+  `node_modules`, `.venv`, `build`, `dist` and `.git`.
+
+- **A capability `skipif` must observe the tool's VERSION, not merely its presence.**
+  `shutil.which("node") is not None` is not "node works here": `import.meta.dirname` is
+  undefined before Node 20.11, so two tests ran and failed on a host whose `PATH` led
+  with Node 18 while the repo declares `engines.node >= 22`. Gate on the floor the code
+  under test actually needs, and probe it the way the tests will experience it.
+
+- **If you stub the only thing that releases a resource, the fixture owes the release.**
+  A permit, an in-flight claim, a lock: when the green-path test replaces the runner
+  whose `finally` gives it back, the resource is gone for the life of the worker. The
+  victim is whichever later test asserts on capacity — it passes for the wrong reason,
+  or waits for a permit that will never come and takes the worker with it. Restore to
+  what the test INHERITED, not to a pristine value, so one leak is not re-reported
+  against every test after it. In production code, treat everything between acquiring a
+  resource and entering the `try` that releases it as a leak window.
+
 - Tests SHOULD be fast (< 1s each)
 - Async tests MUST use `@pytest.mark.asyncio` — and ONLY async tests. The mark on a
   plain `def` is accepted silently by pytest-asyncio strict mode and the test then
@@ -1251,6 +1296,157 @@ added a fourth; each was a real defect:
   resolves the base once, builds the child from it, and strips the prefix from both
   sides; the three ledger guards go through it. Ninety repeated runs pass.
 
+### What the fourth five-run pass found (Linux, 106k tests per run)
+
+Five full backend runs plus five frontend runs on a 32-core Linux host, from inside a
+Kiro Crew agent session, with an in-process audit hook attributing every write, spawn,
+connect and kill to a test and a per-test census of duration, RSS, threads and
+descriptors. **Zero flaky tests across 5 × 106,199** — every failure was identical in
+all five runs. That is the headline, and it changes where the value of a pass like this
+comes from: the flakes are gone, so what is left is (a) tests that fail on a developer's
+host and cannot fail on CI, (b) side effects that outlive the run, and (c) cost. All
+three below.
+
+The first finding was visible before a single test ran, and it is the shape worth
+carrying forward:
+
+- **A version-manager shim plus a repointed `HOME` is an immortal spinning process.**
+  Nine `python3` processes were found reparented to init, spinning at **1464% CPU
+  between them (14.6 cores) for six days**, left by four separate earlier runs of
+  `test_security_conductor_scripts.py`. Each had a deleted
+  `pytest-of-*/garbage-*/scratch-checkout` cwd, so nothing on the machine could name
+  what it belonged to. Killing them moved the host's load average from 21 to 9.6 — i.e.
+  the "slow machine" a developer blames the suite for was the suite's own leftovers.
+
+  The mechanism is the interaction of two individually-correct decisions in
+  `verify_finding.child_env`: PATH is inherited (a proof needs an interpreter) while
+  HOME is repointed at a throwaway worktree (the blast-radius bound). On any host whose
+  PATH leads with a shim directory — mise, asdf, pyenv, volta, nodenv — the bare name
+  `python3` IS the manager, and a manager that cannot find its tool state under the
+  substituted HOME never execs an interpreter at all. It spins. Reproduced in 20
+  seconds:
+
+  ```bash
+  env -i PATH=~/.local/share/mise/shims:/usr/bin:/bin HOME=<empty dir> \
+      python3 -c "raise SystemExit(3)"     # hangs; SIGKILLed at a 20s external timeout
+  ```
+
+  Two fixes, and both are needed. **The reap must take the process GROUP** — a proof is
+  routinely a wrapper that forks, so `Popen.kill()` reaps the wrapper and leaves the
+  spinning half; `run_poc` now starts the child in its own session and `reap` uses one
+  `killpg` (POSIX) or `taskkill /T` (Windows), which is what
+  `test/installer_test_helpers.run_bounded` already did one layer up. **And a test that
+  lets a proof actually RUN pins the interpreter's own directory first on PATH**
+  (`runnable_python`). It cannot be fixed by spelling `sys.executable` in the proof
+  itself: the verifier refuses a proof whose argv names an absolute path outside the
+  worktree, and that refusal is correct and stays.
+
+  The same class was then found a second time, independently, at
+  `test_symbols_manifest_contract.py`: its helpers build a 4-key child env with
+  `dirname(which("node"))` on PATH and `HOME=tmp_path`, so on a node-from-a-manager
+  host `bash` blocks forever inside `$(node -e ...)`. There it is worse than an orphan —
+  pytest-timeout's SIGALRM fires *before* `subprocess.run`'s own deadline, `Popen.__exit__`
+  then calls `wait()` on a bash that never returns, and **the xdist worker blocks
+  forever: a lost run** (class 6), not eleven timing-out tests. **When a test fabricates
+  a child environment, HOME and PATH are a PAIR.** Substituting one while inheriting the
+  other is the defect, whichever way round.
+
+- **A capability probe must observe the tool's VERSION, not just its presence.**
+  `requires_shell_and_node` gated on `shutil.which("node") is None`. `scripts/emit-symbols-manifest.mjs`
+  uses `import.meta.dirname`, **undefined before Node 20.11**, so `path.resolve(undefined, "..")`
+  raises `ERR_INVALID_ARG_TYPE` and two tests failed in all five runs on a host whose
+  PATH led with Node 18 — while the repo declares `.node-version` = 24 and
+  `engines.node >= 22`. This is the rule already stated for config ("a `skipif` helper
+  must observe what the tests will observe") extended to a version floor. Same shape as
+  the per-user-install resolvers below: presence is not capability.
+
+- **A repo-root walker must prune `.worktrees/`, which is another BRANCH'S checkout.**
+  `.worktrees/` is gitignored and is where this repo's own documented worktree workflow
+  puts sibling checkouts. Two filesystem walkers rooted at the repo root did not prune
+  it, so they audited code that is not on this branch and reported offenders nobody on
+  this branch can fix — one failure quoted **this very file's docstring, from another
+  branch**. Three tests failed in all five runs. `_shell_scripts()` one function below
+  the worst offender never had the problem because it asks `git ls-files` instead of
+  walking, and says so. CI has no `.worktrees/`, so CI is green and only the developer
+  sees it. Prefer `git ls-files`; if you must walk, prune `.worktrees` with
+  `node_modules`, `.venv`, `build`, `dist` and `.git`.
+
+- **A permit released only in a patched-away runner's `finally` is leaked forever.**
+  `api_hooks_agent` acquires `_hook_semaphore` and claims a key in
+  `_hook_inflight_sessions`; both are returned only by `_run_hook_agent`'s `finally`,
+  which the green-path tests replace with a no-op. Every run of
+  `test_webhooks_event_loop.py` therefore dropped the worker's permits 6 → 5 for good
+  and stranded `hook:x`. The victim is whichever later test asserts on capacity: a 429
+  `capacity_reached` test passes for the wrong reason, and `test_webhooks_api.py`'s
+  gather-all-permits test **hangs to the 120s timeout and takes the worker with it**.
+  When you stub the only thing that releases a resource, the fixture owes the release —
+  restored to what the test INHERITED, not to a pristine value.
+
+  Auditing that also turned up the production half: `_run_hook_agent` loaded its saved
+  context *before* the `try` whose `finally` releases both, so a corrupt `hooks.json` or
+  a cancellation during that await wedged the live gateway at 429/409 until restart.
+  **Everything between acquiring a resource and the `try` that releases it is a leak
+  window.**
+
+- **A production timeout the test never asserts on is paid in full, ~11 times over.**
+  Eleven `test_slack_gateway.py::TestAutoApplyUpdate*` tests measured **30.02–30.16s
+  each, identically in all five runs**: `_auto_apply_update` awaits
+  `_drain_update_callback_work(timeout=30.0)`, nothing in those tests makes the drain
+  condition true, and it polls at 10ms to the deadline. That is **~330s of pure sleeping
+  per run**, and the verdict after waiting is the same one the tests already assert. The
+  fix is doc pattern 3 with one twist worth copying: the literal became a named class
+  constant so the tests about the *sequence* can shorten it to 0, while the value itself
+  stays pinned by the one test that is ABOUT it (which asserts `drain:30.0`). The whole
+  file went from ~350s to 22s.
+
+- **The memory model went stale under the suite, and the per-worker reservation with
+  it.** Remeasured: the collection floor is **1,499 MiB for 106,491 items**, against the
+  ~747 MiB / ~57,000 the budget's own comment justified `_GIB_PER_WORKER = 2` with. Per-test
+  VmRSS sampling across 60 worker-runs at `-n 12` read **min 1,879 / median 2,042 / max
+  2,771 MiB** — the median already at the 2,048 MiB reservation and the max 35% past it,
+  *at the parallelism where the footprint is smallest*. The max is not noise: the same
+  worker slot hit 2,771 MiB in all five runs, because the `tree_scan_*` groups land
+  together and one alone retains ~1.3 GiB of parsed source. `_GIB_PER_WORKER` is
+  therefore 3. **Re-derive both halves of that model whenever the suite grows by half
+  again**; the cheap way is `--collect-only -n0`, which still reproduces a worker's
+  collection peak.
+
+Two instrument lessons, because both misled this pass before they were caught:
+
+- **A duration measured with `time.monotonic()` is meaningless for a test that fakes the
+  clock.** The census reported 185,075s for one test and 10,800s for four others against
+  a 960s run — they advance a fake clock and the sampler read it. Cross-check any
+  per-test timing against pytest's own `--durations`.
+- **An env-delta census in a plain `pytest_runtest_teardown` hook reports the FLOOR's own
+  undo as a leak.** Fixture finalizers had already run, so `KIROCREW_HOME` and the git
+  identity pins read as "removed" on ~30 tests that leak nothing. The rootdir conftest's
+  teardown hook is `tryfirst` for exactly this reason; a census hook must be too.
+
+Two things that look like findings and are not, recorded so the next pass does not
+re-litigate them: `socket.connect` to `198.51.100.1` / `2001:db8::1` is the RFC 5737 /
+RFC 3849 local-IP-discovery trick that replaced round one's `8.8.8.8` — no packet leaves
+the host; and `os.kill(pid, 0)` against pids the worker never spawned is
+`platform_compat.pid_exists`, which is POSIX-only by construction and uses
+`OpenProcess` on Windows.
+
+**One finding is left OPEN on purpose, and the reason generalises.**
+`test_playwright_cli_installer.py::test_an_interrupted_rebootstrap_restores_the_previous_node`
+sleeps 2.5s over a 60 MB incompressible tarball hoping to catch `tar` mid-unpack, and it
+never enters that window — so it costs ~1.5s of CPU and ~300 MB of temp I/O a run while
+both its assertions are satisfied by a prefix nothing modified. It is a *vacuous* test,
+i.e. flake class "coverage that only looks like coverage" wearing a cost problem's
+clothes. A rewrite that names the promotion window with an `mv` stub was written, proven
+non-vacuous by mutation (deleting the installer's restore-on-interrupt fails it by name),
+and then **reverted**: it passes at `-n0` and fails under the full suite, where the
+interrupt does not land in the window. Two lessons, both worth more than the fix would
+have been:
+
+- **A test that passes alone is not verified.** Only the full run distinguished these.
+- **Making a vacuous test real can expose what the vacuity was hiding.** Reaching further
+  into the installer than the original ever did also reached an install step whose `npm`
+  that test had never needed to stub. When you fix a test that never reached its subject,
+  re-check every stub the newly-reached path requires.
+
 ### What the host lends the suite, and must not
 
 The same pass found ~140 tests that pass on the CI runners and fail on an ordinary
@@ -1541,32 +1737,55 @@ Linux child-process tests verify these mechanics, not native Windows performance
 
 ### Running on a machine with little RAM
 
-**A worker costs between 0.8 and 2.2 GiB depending on how many there are, and
+**A worker costs between 1.8 and 2.8 GiB depending on how many there are, and
 `-n auto` would ask for one per core.** Almost all of the fixed part is *collection*:
-every xdist worker independently collects every testpath — nearly 57,000 items —
-which costs ~750 MiB of peak RSS before it runs a single test, 99% of it private, so
-there is no page sharing to exploit. From there a worker grows another ~25 MiB per
-1,000 tests it runs, and that growth does not saturate.
+every xdist worker independently collects every testpath — 106,491 items — which costs
+~1,499 MiB of peak RSS before it runs a single test, 99% of it private, so there is no
+page sharing to exploit. From there a worker grows another ~60 MiB per 1,000 tests it
+runs, and that growth does not saturate.
+
+Both numbers were remeasured in the fourth five-run pass and both had roughly DOUBLED
+under the previous figures (~57,000 items / ~750 MiB / ~25 MiB per 1,000). **Re-derive
+them whenever the suite grows by half again**, rather than trusting this table: the
+cheap way is a `--collect-only -n0` run, which reproduces a worker's collection peak to
+within about a megabyte.
 
 **Those two facts together mean per-worker cost rises as parallelism falls**, because
-fewer workers each run more tests. Projected peak is `750 + (57,000 / N) × 0.0255` MiB:
+fewer workers each run more tests. Projected peak is `1,499 + (106,491 / N) × 0.060` MiB:
 
-| workers | tests each | projected peak |
-|---|---|---|
-| 32 | 1,780 | ~790 MiB |
-| 8 | 7,100 | ~930 MiB |
-| 2 | 28,500 | ~1.5 GiB |
-| 1 | 56,900 | ~2.2 GiB |
+| workers | tests each | projected peak | measured |
+|---|---|---|---|
+| 32 | 3,330 | ~1.7 GiB | — |
+| 12 | 8,875 | ~2.0 GiB | 1.8 / **2.0** / 2.8 GiB (min/median/max, 60 worker-runs) |
+| 8 | 13,300 | ~2.3 GiB | — |
+| 2 | 53,250 | ~4.6 GiB | — |
+| 1 | 106,491 | ~7.7 GiB | — |
 
-That is why the reservation is 2 GiB per worker and why a measurement taken on a wide
-run makes it look twice as generous as it is: a real `-n 8` worker peaks at
-0.9–1.2 GiB, but sizing the divisor on that number would grant 6 workers on an 8 GiB
-laptop, whose ~9,500 tests each would then want ~6 GiB between them. **Do not lower
+The `-n 12` projection lands within 11 MiB of the measured median, which is what makes
+the formula worth quoting at all. The rows below it are EXTRAPOLATIONS no measurement
+covers, and they are the rows where the budget actually binds — treat them as a floor on
+the answer, not the answer. The measured **max** matters as much as the median and is not
+noise: the same worker slot peaked at 2,771 MiB in all five runs, because the
+`tree_scan_*` xdist groups land together and one of them alone retains ~1.3 GiB of parsed
+source.
+
+That is why the reservation is 3 GiB per worker and why a measurement taken on a wide
+run makes it look more generous than it is: it is ~1.1× the measured worst-case peak at
+`-n 12`, and the worker count where the budget binds is far lower than that. Sizing the
+divisor on a wide-run number would grant 4 workers on an 8 GiB laptop, whose ~26,600
+tests each would then want ~12 GiB between them and swap the machine — which is the
+incident this budget exists to prevent, reintroduced by "optimizing" it. **Do not lower
 the divisor on the strength of a high-parallelism measurement.**
 
-Where that ~750 MiB goes, measured by ablation on one worker (a `--collect-only -n0`
-run reproduces a real worker's peak to within about a megabyte, which is the cheap way
-to re-measure it — 66 seconds instead of a five-minute `-n 32` run):
+Where the floor goes, measured by ablation on one worker (a `--collect-only -n0` run
+reproduces a real worker's peak to within about a megabyte, which is the cheap way to
+re-measure the TOTAL — it read 1,499 MiB in 195 seconds on the pass that last checked):
+
+**The per-layer split below is the earlier ~747 MiB ablation and has NOT been
+re-derived since the floor doubled.** Only the total has. Two of the three layers scale
+with the item and module counts, so the shares are still the right places to look —
+pytest's item tree at ~6 KiB per item alone projects to ~625 MiB at 106,491 items — but
+do not quote a layer's absolute number as current. Re-ablate before optimizing one.
 
 - **~77 MiB is spent before collection starts** — interpreter, pytest, its
   auto-loaded plugins, and the two conftests. The rootdir conftest alone is ~35 MiB;
@@ -1592,7 +1811,7 @@ you and clamps `-n auto`, printing one line saying so:
 
 ```
 xdist worker budget: 1 of 10 workers (3.0 GiB free, 16 GiB installed). Each worker
-needs about 2 GiB, mostly to collect the suite. A run this narrow is slow, not
+needs about 3 GiB, mostly to collect the suite. A run this narrow is slow, not
 stuck -- free some memory, run a subset (pytest test/test_thing.py), or pass an
 explicit -n <N> to bypass this budget.
 ```
@@ -2064,7 +2283,7 @@ shape; `docs/ci/e2e-gate.md` documents the job that runs it.
 
 ## Keeping the suite fast
 
-The suite is ~89.5k tests. At that count a per-test cost is multiplied by 89,500, so
+The suite is ~106k tests. At that count a per-test cost is multiplied by 106,000, so
 setup overhead, not any single slow test, is what dominates. Profile before optimizing:
 
 ```bash
@@ -2082,7 +2301,7 @@ hour earlier is not a baseline.
 ### The three highest-leverage patterns
 
 1. **Audit what the autouse fixtures cost, before anything else.** Every one of them is
-   paid ~89.5k times, so a few milliseconds there outweighs any single slow test. Two
+   paid ~106k times, so a few milliseconds there outweighs any single slow test. Two
    things to look for: a fixture requesting a fixture it never uses (one unused
    `tmp_path` allocated a directory for every test in the suite), and repeated
    `tmp_path_factory.mktemp` calls, which pick a numbered suffix by scanning the whole

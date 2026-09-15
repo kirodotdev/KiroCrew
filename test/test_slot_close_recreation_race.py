@@ -97,9 +97,10 @@ class _Req:
     ``can_read_body`` first, then ``content_length``/``content``/``charset`` on the
     capped path -- not just ``json()``. ``api_chat_slots_cleanup`` moved onto that
     helper, and a double missing ``can_read_body`` does not merely fail: the
-    handler raises before it reaches the save the race tests park on, so the
-    ``entered`` event never fires and every interleaved test HANGS to its timeout
-    instead of reporting a one-line attribute error.
+    handler raises before it reaches the seam the race tests park on, so the
+    ``entered`` event never fires and every interleaved test reports the park
+    rather than the attribute error underneath it. ``_reached`` is what keeps that
+    shape a named failure instead of a run-length timeout.
     """
 
     def __init__(self, state, slot: str = NAME, body: dict | None = None) -> None:
@@ -171,6 +172,51 @@ def _arm_running_turn(slot, entered: asyncio.Event, release: asyncio.Event):
 
     slot.task = asyncio.create_task(_turn())
     return slot.task
+
+
+async def _reached(
+    entered: asyncio.Event,
+    close: asyncio.Task[object],
+    *,
+    seam: str = "save_slot_off_loop",
+) -> None:
+    """Wait for the close to reach its interleave seam, BOUNDED so a miss names itself.
+
+    Every interleaving test below opens the recreate's window by parking on an
+    event only the close's own progress can set — the monkeypatched
+    ``save_slot_off_loop``, or the cancelled turn ``_arm_running_turn`` armed. The
+    whole premise is that the close REACHES that seam, and a close that returns,
+    raises or blocks short of it never sets the event: a teardown that stops
+    cancelling the live turn (``slot.running`` read through a renamed field, say)
+    leaves every ``_arm_running_turn`` case unarmed, and a preamble that raises or
+    answers 404 before the pop — the ``can_read_body`` shape ``_Req`` documents —
+    leaves every ``_persist`` case unentered.
+
+    Unbounded, such a regression does not FAIL these tests, it PARKS them until the
+    repo-wide ``--timeout``: on Linux and macOS a Timeout traceback and minutes of
+    shard time per test instead of the one line below, and on Windows — no SIGALRM,
+    so pytest-timeout kills the xdist worker, and CI runs
+    ``--max-worker-restart=0`` — an aborted run whose unreached results do not
+    exist at all (testing-conventions flake class 6). 5.0s is orders of magnitude
+    more than the single loop hop this needs and far under that ceiling, so the
+    deadline stays on the await whose property is under test and the failure is
+    attributed to this test rather than to the run.
+
+    Only the TEST side is bounded. The ``release.wait()`` calls inside the
+    ``_persist`` stubs and ``_arm_running_turn`` run on the ``close`` task, which
+    pytest tears down with the loop; bounding those would change what the close
+    parks on, which is the interleave itself. The pending ``close`` is cancelled on
+    the timeout path so the named assertion is not followed by a task destroyed at
+    loop teardown and blamed on whichever test runs next.
+    """
+    try:
+        await asyncio.wait_for(entered.wait(), 5.0)
+    except asyncio.TimeoutError:
+        close.cancel()
+        raise AssertionError(
+            f"the close never reached {seam}: it returned or blocked short of the "
+            "interleave window, so the recreate could never be minted inside it"
+        ) from None
 
 
 # --------------------------------------------------------------------------- #
@@ -297,7 +343,7 @@ async def test_delete_recreate_during_save_preserves_replacement(tmp_path, monke
     state.sessions.remove = _remove  # type: ignore[assignment]
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()  # close is parked inside the persist
+    await _reached(entered, close)  # close is parked inside the persist
     # The concurrent same-key recreate mints a fresh slot object under NAME.
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
@@ -346,7 +392,7 @@ async def test_delete_recreate_during_task_cancel_hits_first_guard(tmp_path, mon
     state.sessions.remove = _remove  # type: ignore[assignment]
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()  # close is parked in the shielded task-cancel wait
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     # The concurrent same-key recreate mints a fresh slot while the close is
     # still short of the pre-save guard.
     replacement = state.get_or_create_slot(NAME)
@@ -407,7 +453,7 @@ async def test_delete_first_guard_keeps_the_app_dismissal_and_says_so(
 
     caplog.set_level(logging.WARNING, logger=handlers.__name__)
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -476,7 +522,7 @@ async def test_delete_failure_arm_does_not_clobber_replacement(tmp_path, monkeyp
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close)
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -546,7 +592,7 @@ async def test_delete_failure_arm_skips_both_compensations_when_restore_skipped(
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close)
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -673,7 +719,7 @@ async def test_cleanup_recreate_during_save_preserves_replacement(tmp_path, monk
     state.sessions.remove = _remove  # type: ignore[assignment]
 
     close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
-    await entered.wait()  # parked inside the archive save for NAME
+    await _reached(entered, close)  # parked inside the archive save for NAME
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -721,7 +767,7 @@ async def test_cleanup_recreate_during_task_cancel_hits_first_guard(tmp_path, mo
     state.sessions.remove = _remove  # type: ignore[assignment]
 
     close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
-    await entered.wait()  # parked in the shielded task-cancel wait for NAME
+    await _reached(entered, close, seam="the shielded task-cancel wait for NAME")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -760,7 +806,7 @@ async def test_cleanup_failure_arm_does_not_clobber_replacement(tmp_path, monkey
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close)
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -882,7 +928,7 @@ async def test_delete_first_guard_hands_the_marker_to_the_replacement(
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -924,7 +970,7 @@ async def test_delete_first_guard_keeps_the_marker_for_a_restricted_replacement(
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME, memory_mode="incognito")
     assert replacement is not original and replacement.is_restricted
     release.set()
@@ -954,7 +1000,7 @@ async def test_delete_failure_arm_hands_the_marker_to_the_replacement(
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close)
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -1010,7 +1056,7 @@ async def test_cleanup_first_guard_hands_the_marker_to_the_replacement(
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -1043,7 +1089,7 @@ async def test_cleanup_failure_arm_hands_the_marker_to_the_replacement(
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close)
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -1122,7 +1168,7 @@ async def test_delete_handover_persists_the_tail_and_keeps_the_replacement(tmp_p
     assert original.running, "the turn must be live so the cancel-wait actually blocks"
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -1177,7 +1223,7 @@ async def test_delete_handover_writes_a_linked_slot_own_transcript(tmp_path) -> 
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME, linked_session_key=linked)
     assert replacement is not original
     release.set()
@@ -1222,7 +1268,7 @@ async def test_delete_handover_write_failure_fails_the_close_and_names_the_rows(
     caplog.set_level(logging.ERROR, logger=handlers.__name__)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     release.set()
     resp = await close
@@ -1261,7 +1307,7 @@ async def test_cleanup_handover_write_failure_is_reported_failed(tmp_path, monke
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     release.set()
     resp = await close
@@ -1302,7 +1348,7 @@ async def test_delete_failure_arm_handover_persists_the_tail(tmp_path, monkeypat
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close)
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -1343,7 +1389,7 @@ async def test_cleanup_handover_persists_the_tail_and_the_held_notes(tmp_path) -
     assert original.running, "the turn must be live so the cancel-wait actually blocks"
 
     close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -1434,7 +1480,7 @@ async def test_delete_handover_keeps_the_replacement_published_metadata(tmp_path
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     await _publish_metadata(
@@ -1499,7 +1545,7 @@ async def test_delete_handover_keeps_the_original_metadata_when_nobody_replaced_
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     assert not replacement.folder_id, "the replacement must be blank for this case"
@@ -1559,7 +1605,7 @@ async def test_delete_handover_persists_the_original_uncommitted_metadata(tmp_pa
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     assert not replacement._titled, "the replacement must have published nothing for this case"
@@ -1605,7 +1651,7 @@ async def test_delete_handover_prefers_the_replacement_line_over_its_own_pending
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     await _publish_metadata(
@@ -1655,7 +1701,7 @@ async def test_delete_handover_keeps_the_replacement_authorization_attribution(
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     replacement._created_by = "member-bob"
@@ -1752,7 +1798,7 @@ async def test_handover_rows_only_write_still_creates_a_first_metadata_line(tmp_
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()
@@ -1783,7 +1829,7 @@ async def test_delete_handover_rows_only_keeps_both_windows(tmp_path) -> None:
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     replacement.append("user", "REPLACEMENT-5")
@@ -1830,7 +1876,7 @@ async def test_cleanup_handover_keeps_the_replacement_published_metadata(tmp_pat
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     await _publish_metadata(
@@ -1883,7 +1929,7 @@ async def test_delete_failure_arm_handover_keeps_the_replacement_metadata(
     monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close)
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     await _publish_metadata(
@@ -1945,7 +1991,7 @@ async def test_delete_handover_keeps_a_dismissal_the_replacement_committed(tmp_p
     _arm_running_turn(original, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     await _publish_metadata(
@@ -2006,7 +2052,7 @@ async def test_delete_handover_erases_a_stale_closed_flag_on_its_own_line(tmp_pa
     _arm_running_turn(slot, entered, release)
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     # The replacement publishes NOTHING, so the line the drain meets is still the
     # original's — the branch where the full ownership claim applies.
     replacement = state.get_or_create_slot(NAME)
@@ -2069,7 +2115,7 @@ async def test_delete_divergent_transcript_still_archives_the_original(tmp_path)
     assert original.running, "the turn must be live so the cancel-wait actually blocks"
 
     close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     assert not replacement.linked_session_key, "the replacement must be unbound for this case"
@@ -2110,7 +2156,7 @@ async def test_cleanup_divergent_transcript_still_archives_the_original(tmp_path
     assert original.running, "the turn must be live so the cancel-wait actually blocks"
 
     close = asyncio.create_task(handlers.api_chat_slots_cleanup(_Req(state, NAME)))
-    await entered.wait()
+    await _reached(entered, close, seam="the shielded task-cancel wait")
     replacement = state.get_or_create_slot(NAME)
     assert replacement is not original
     release.set()

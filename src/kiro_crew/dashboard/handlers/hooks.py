@@ -1291,22 +1291,40 @@ async def _run_hook_agent(
     the agent calls ``register_hook`` to persist context_summary, and this
     handler injects it into the next fresh session.
     """
-    # Load persisted context from hooks.json (written by register_hook MCP tool)
+    # Pure, cannot raise, so it may sit outside the try below.
     hook_id = session_key.removeprefix(_HOOK_SESSION_PREFIX)
-    saved_context = await asyncio.to_thread(_load_hook_context, hook_id)
-    if saved_context:
-        message = (
-            f"=== Restored Context (from prior session) ===\n"
-            f"{saved_context}\n"
-            f"=== End Restored Context ===\n\n"
-            f"{message}"
-        )
 
     started_at = time.time()
     result_text = ""
     outcome = "completed"
     detail = ""
     try:
+        # Loading the persisted context (written by the register_hook MCP tool)
+        # is INSIDE the try because the caller's permit and the in-flight claim
+        # are released only by this function's finally, so anything that escapes
+        # a try entered any later gives back neither. Six of those wedge the
+        # endpoint at 429 `capacity_reached` permanently and one wedges that
+        # session key at 409 `session_busy` until the gateway restarts, which
+        # contradicts the invariants stated above at the semaphore and at
+        # `_hook_inflight_sessions`.
+        #
+        # Two distinct escapes, and they leave by different doors. A read error
+        # is NOT one of them -- `_read_json_file` answers `None` for an absent or
+        # corrupt store -- but `resolve_context` parses what that store holds, so
+        # malformed stored data raises, and that lands in the `except Exception`
+        # leg and is recorded as an `error` run instead of vanishing. Cancellation
+        # while this await is pending does not: `CancelledError` is a
+        # `BaseException` and passes straight through that leg. The `finally` is
+        # what covers it, and only from inside the try.
+        saved_context = await asyncio.to_thread(_load_hook_context, hook_id)
+        if saved_context:
+            message = (
+                f"=== Restored Context (from prior session) ===\n"
+                f"{saved_context}\n"
+                f"=== End Restored Context ===\n\n"
+                f"{message}"
+            )
+
         result_text = await asyncio.wait_for(
             _run_hook_inner(state, session_key, message, agent), timeout=timeout_secs
         )

@@ -332,6 +332,20 @@ class TestWorkflowRunIntegration:
         assert WorkflowService(sessions=sessions, store=workflow_store).list_runs() == []
         assert list(tmp_path.glob("plan_*")) == []
 
+    #: Ceiling for this test's three cross-thread handshakes.
+    #:
+    #: Generous on purpose, and only ever reached when the property is broken: the
+    #: waits are handshakes, not measurements, so the number never decides a passing
+    #: run's outcome. The previous 2s budget did decide one -- MEASURED as
+    #: ``assert False`` on a Windows CI shard that had just run 12,444 tests, where
+    #: reaching the first ``atomic_write`` (schedule the task, decompose, persist)
+    #: simply took longer than two seconds. Windows also rounds ``Event.wait`` up to
+    #: ~15.6ms and a loaded runner starves threads, which is flake class 2 in
+    #: testing-conventions: poll for the condition with a generous deadline, never
+    #: extend a fixed sleep. Kept well under the 120s ``--timeout`` so a genuinely
+    #: stuck handshake still fails as this assertion rather than as a dead worker.
+    _HANDSHAKE_WAIT_SECS = 30.0
+
     @pytest.mark.asyncio
     async def test_cancelled_plan_drains_persist_before_rollback(
         self, tmp_path: Path, monkeypatch
@@ -361,7 +375,7 @@ class TestWorkflowRunIntegration:
                 first_write = False
                 lifecycle.append("persist_started")
                 persist_started.set()
-                assert allow_persist.wait(timeout=5)
+                assert allow_persist.wait(timeout=self._HANDSHAKE_WAIT_SECS)
                 lifecycle.append("persist_finished")
                 persist_finished.set()
             original_atomic_write(path, content, fsync=fsync)
@@ -376,7 +390,7 @@ class TestWorkflowRunIntegration:
         runner._workflow_delete_link = observe_delete  # type: ignore[method-assign]
 
         planning = asyncio.create_task(runner.plan("implement the feature"))
-        assert await asyncio.to_thread(persist_started.wait, 2)
+        assert await asyncio.to_thread(persist_started.wait, self._HANDSHAKE_WAIT_SECS)
         planning.cancel()
 
         async def release_after_rollback_gets_one_turn() -> None:
@@ -387,7 +401,7 @@ class TestWorkflowRunIntegration:
         with pytest.raises(asyncio.CancelledError):
             await planning
         await release
-        assert await asyncio.to_thread(persist_finished.wait, 2)
+        assert await asyncio.to_thread(persist_finished.wait, self._HANDSHAKE_WAIT_SECS)
 
         assert lifecycle.index("persist_finished") < lifecycle.index("workflow_deleted")
         assert runner._runs == {}

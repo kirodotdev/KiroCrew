@@ -72,9 +72,22 @@ _SLEEP_SCRIPT = "import time; time.sleep(60)"
 # A portable child that ignores SIGTERM so the group kill must escalate to
 # SIGKILL to stop it. SIGTERM-ignore + SIGKILL escalation is POSIX signal
 # semantics, so tests using this are guarded with skipif(not IS_POSIX).
+#
+# The self-exit deadline is load-bearing, not decoration: this child is spawned
+# ``start_new_session``, so it leads its own group and a sweep of the pytest
+# worker's group never reaches it, and it is SIGTERM-immune by construction, so
+# the usual polite shutdown cannot end it either. Its ONLY reaper is the
+# escalation under test — so if that escalation regresses (precisely what these
+# tests exist to catch), or the worker is SIGKILLed by ``--timeout``/
+# ``--max-worker-restart`` before the reap, where no ``finally`` would run, an
+# unbounded ``while True`` loop would leave an immortal process pegged to the
+# host until a reboot or a manual hunt. Bounding it matches the three sibling
+# SIG_IGN children in this suite and does not soften any assertion: SIGTERM is
+# ``SIG_IGN``, so it is never delivered to Python and cannot cut the sleep short
+# via EINTR — the child is still alive and still immune across the grace period,
+# and SIGKILL still lands at the same instant.
 _SIGTERM_IGNORE_SCRIPT = (
-    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-    "\nwhile True: time.sleep(0.2)"
+    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)"
 )
 
 

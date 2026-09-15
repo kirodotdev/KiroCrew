@@ -412,7 +412,13 @@ async def test_actionable_probe_claims_once_before_concurrent_dispatch(tmp_path)
         dispatch=dispatch,
     )
     first = asyncio.create_task(controller.tick(loop, now=120.0))
-    await entered.wait()
+    # `entered` is set only inside the dispatch stub, so any regression that makes
+    # tick() return before the transport handoff -- a budget stop, a non-actionable
+    # verdict, a dispatch-not-authorized verdict, or an exception swallowed into the
+    # task -- leaves nobody to set it. Unbounded, that parks the whole run on an
+    # Event instead of failing this test: pytest-timeout's thread method kills the
+    # xdist worker and every test it had not reached goes silently uncollected.
+    await asyncio.wait_for(entered.wait(), timeout=5)
     assert loop.monitor is not None and loop.monitor.wake_in_flight
 
     await controller.tick(loop, now=121.0)
@@ -489,7 +495,11 @@ async def test_terminal_transition_queued_during_claim_persistence_prevents_disp
 
     monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _block_claim_write)
     tick = asyncio.create_task(controller.tick(loop, now=120.0))
-    await write_entered.wait()
+    # Same shape as the claim/dispatch test above: `write_entered` is set only by the
+    # monkeypatched snapshot write, so a tick that stops before persisting the claim,
+    # or a rename of `_write_monitor_snapshot_locked` that leaves this setattr
+    # intercepting nothing, would hang the run rather than fail the test.
+    await asyncio.wait_for(write_entered.wait(), timeout=5)
     terminal = asyncio.create_task(getattr(service, terminal_transition)(loop.id, now=121.0))
     await asyncio.sleep(0)
     release_write.set()

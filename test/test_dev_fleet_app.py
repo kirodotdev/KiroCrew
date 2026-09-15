@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -1046,6 +1047,58 @@ def _start_run_stub(rid: str) -> AsyncMock:
         return rid
 
     return AsyncMock(side_effect=_run)
+
+
+#: Temp-directory prefixes the dev-fleet sync stages and ``_start_run``'s finally owns.
+_STAGED_SYNC_PREFIXES = (
+    "kirocrew-sync-runner-",
+    "kirocrew-npm-preflight-",
+    "kirocrew-dep-sync-",
+)
+
+
+@pytest.fixture(autouse=True)
+def _sweep_staged_sync_tempdirs():
+    """Backstop for sync snapshots left by a test that stubbed ``_start_run`` itself.
+
+    ``_sync_start_locked`` stages three kinds of snapshot into the temp root -- the
+    runner source plus its steps JSON, the npm preflight, and the dependency-only
+    ``dep_sync`` copy -- and registers each one in the ``cleanup_paths`` list that
+    ``runtime._start_run``'s ``finally`` unlinks. Stubbing ``_start_run`` stubs out
+    the ONLY cleanup.
+
+    Two mechanisms cover that, and this is the second. :func:`_start_run_stub` is
+    the exact one and is preferred: it honours ``cleanup_paths``, so it removes
+    precisely what the sync registered. It is only usable where the test does not
+    need the staged files AFTER the call, and several tests here read the steps JSON
+    out of the staged directory, so they must keep it alive across the stubbed run.
+    Those reach the leak through their own inline ``AsyncMock``, and a per-test call
+    they must each remember is how this came back: MEASURED with
+    ``KIROCREW_TMP_PER_TEST=1``, eleven directories outlived one run of this file,
+    named after six tests.
+
+    Sweeping is sound HERE in a way a general temp sweep is not (see the residue
+    rules in testing-conventions): it runs after the test has finished reading, it is
+    confined to THIS run's own redirected temp base, it matches only prefixes this app
+    owns, and it removes only entries absent before the test -- so a concurrent run's
+    directory, which lives under its own base, can never be a candidate.
+    """
+    base = Path(tempfile.gettempdir())
+
+    def staged() -> set[Path]:
+        try:
+            return {
+                p
+                for p in base.iterdir()
+                if p.is_dir() and p.name.startswith(_STAGED_SYNC_PREFIXES)
+            }
+        except OSError:
+            return set()
+
+    before = staged()
+    yield
+    for path in staged() - before:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _cleanup_sync_tempdirs(mock_start):

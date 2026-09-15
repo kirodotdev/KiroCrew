@@ -424,11 +424,11 @@ class TestLinearity:
         # The marker's OWN closer followed by a 100k-tab run: a legitimate match
         # (the tabs are the trailing ``[ \t]*``), and the scan is single-pass.
         text = "[OPTIONS: A ]" + "\t" * 100_000
-        start = time.monotonic()
+        start = time.perf_counter()
         match = OPTIONS_RE_LINE.search(text)
         assert match is not None
         assert match.group("labels") == " A "
-        assert time.monotonic() - start < 5.0
+        assert time.perf_counter() - start < 5.0
 
     def test_a_long_FAILING_continuation_scan_is_linear(self):
         # The adversarial direction: the closer is INSIDE the body, so it enters the
@@ -436,24 +436,24 @@ class TestLinearity:
         # FAILS on ``x``. The body cannot cross the closer either, so the whole match
         # fails -- after the longest scan the lookahead can be made to do.
         text = "[OPTIONS: A ]" + "\t" * 100_000 + "x]"
-        start = time.monotonic()
+        start = time.perf_counter()
         assert OPTIONS_RE_LINE.search(text) is None
-        assert time.monotonic() - start < 5.0
+        assert time.perf_counter() - start < 5.0
 
     def test_many_failing_closers_are_linear(self):
         # 5,000 closers, each entering the lookahead and each failing it.
         text = "[OPTIONS: " + "] x " * 5_000
-        start = time.monotonic()
+        start = time.perf_counter()
         OPTIONS_RE_LINE.search(text)
-        assert time.monotonic() - start < 5.0
+        assert time.perf_counter() - start < 5.0
 
     def test_many_continuing_closers_then_a_long_tail_are_linear(self):
         # The other direction: 30,000 closers that all SUCCEED in the lookahead,
         # followed by a 30,000-tab tail that fails the end anchor.
         text = "[OPTIONS: " + "] | " * 30_000 + "\t" * 30_000
-        start = time.monotonic()
+        start = time.perf_counter()
         OPTIONS_RE_LINE.search(text)
-        assert time.monotonic() - start < 5.0
+        assert time.perf_counter() - start < 5.0
 
     def test_a_run_of_any_opener_costs_the_same_as_a_run_of_ascii_openers(self):
         # A repeated-token degeneration after a head: 20,000 copies of one opener
@@ -465,14 +465,31 @@ class TestLinearity:
         # be in the hundreds rather than near one.
         def cost(opener: str) -> float:
             text = "[OPTIONS: A | B " + opener * 20_000
-            start = time.monotonic()
+            start = time.perf_counter()
             OPTIONS_RE_LINE.search(text)
             OPTIONS_RE_TRAILER.search(text)
-            return time.monotonic() - start
+            return time.perf_counter() - start
 
-        ascii_cost = max(cost("["), 1e-3)
+        # `perf_counter`, and a baseline taken as the BEST of several runs, because
+        # this is the one assertion here that divides two measurements. On Windows
+        # `time.monotonic()` is GetTickCount64 with ~15.6ms granularity, so the
+        # ASCII baseline reads 0.0, the floor below becomes the whole budget, and
+        # the bound collapses to 8ms -- which ordinary scheduling noise exceeds on
+        # a loaded shard while the linearity property is perfectly intact
+        # (MEASURED: this failed a Windows CI shard that had just run 12,525 tests).
+        # `perf_counter` is sub-microsecond on every platform, and the best-of
+        # keeps one descheduled sample from shrinking the denominator.
+        #
+        # The bound stays a measured ratio rather than becoming a step count: a
+        # compiled `re` pattern exposes no invocation surface to count, which is
+        # the "no observable structure" case testing-conventions reserves a ratio
+        # for. It is widened to 40x on that section's own reasoning -- a real
+        # regression here is the interior admitting the lookalikes, which makes
+        # this quadratic and the ratio "in the hundreds" as the comment above
+        # says, so a wide bound still catches it while runner noise cannot.
+        ascii_cost = max(min(cost("[") for _ in range(3)), 1e-6)
         for opener in ("\u3010", "\uff3b", "\u3014"):
-            assert cost(opener) < 8 * ascii_cost, opener
+            assert cost(opener) < 40 * ascii_cost, opener
 
     def test_the_two_bracket_alternatives_cannot_blow_up_together(self):
         # THE shape that would be exponential if the matched-pair and
@@ -482,7 +499,7 @@ class TestLinearity:
         # They are disjoint by what follows the closer, so there is only one.
         for block in ("[x] ", "[x] | ", "[a[b] ", "[a] ]a ", "[x", "[] "):
             text = "[OPTIONS: " + block * 20_000 + "z"
-            start = time.monotonic()
+            start = time.perf_counter()
             OPTIONS_RE_LINE.search(text)
             OPTIONS_RE_TRAILER.search(text)
-            assert time.monotonic() - start < 5.0, block
+            assert time.perf_counter() - start < 5.0, block

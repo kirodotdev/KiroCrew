@@ -287,9 +287,15 @@ class TestKnowledgeStore:
         migration runs on EVERY store open, so an uncaught one would abort every
         construction rather than skipping the row.
         """
-        deep = '{"sync_status": "active"}'
-        for _ in range(60000):
-            deep = '{"a": ' + deep + '}'
+        # Built by multiplication, not by wrapping in a loop: the accumulator
+        # would sit on the RIGHT of the concat, so CPython cannot append in
+        # place and every iteration recopies the whole string -- ~25 GB of
+        # transient memcpy, 10 s of CPU on a loaded worker, to produce the same
+        # 420 KB blob this builds in 0.3 ms. Same idiom as
+        # test_cron_count_from_disk.py's `"[" * depth + "]" * depth`. The depth
+        # is load-bearing, not padding: python3.12 decodes ~10,000 levels
+        # before RecursionError, so a small number would assert nothing.
+        deep = '{"a": ' * 60000 + '{"sync_status": "active"}' + '}' * 60000
         with pytest.raises(RecursionError):
             json.loads(deep)
 

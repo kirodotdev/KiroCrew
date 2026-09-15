@@ -932,12 +932,28 @@ class TestExpandPromptMention:
         assert any("Loaded prompt" in m[1] for m in slot.messages)
 
     def test_list_error_returns_original(self, monkeypatch):
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._find_prompt",
-            lambda n, project_dir=None: (_ for _ in ()).throw(PermissionError),
-        )
+        """A resolver that RAISES degrades to the original text, not a 500.
+
+        The patch target is ``chat_runner``'s own global rather than the
+        handlers package the name came from: chat_runner does ``from
+        kiro_crew.dashboard.handlers import _find_prompt`` (chat_runner.py:120),
+        so rebinding the package attribute leaves the call at chat_runner.py:3730
+        resolving the REAL resolver — which finds no prompt named "x" under the
+        autouse-isolated HOME and returns ``not_found`` from the ``if not match``
+        arm instead, making this test a silent duplicate of ``test_no_match``.
+        ``raised`` is what keeps that regression visible: without it, a patch
+        that misses still passes every assertion below.
+        """
+        raised: list[str] = []
+
+        def _raise_on_list(n, project_dir=None):
+            raised.append(n)
+            raise PermissionError
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._find_prompt", _raise_on_list)
         msg, status = _expand_prompt_mention("@x", _State(), _Slot())
         assert (msg, status) == ("@x", "not_found")
+        assert raised == ["x"], "patched resolver never ran — the except arm was not exercised"
 
     def test_sensitive_path_blocked(self, tmp_path, block_sensitive_reads):
         _user_prompt(tmp_path, "evil", "# Evil")

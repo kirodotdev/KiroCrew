@@ -3154,6 +3154,17 @@ class TestAutoApplyUpdateGitPath:
                 "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
                 return_value=None,
             ),
+            # The pre-restart drain, shortened to nothing. Nothing in these tests
+            # makes its condition true, so it polled at 10ms all the way to its
+            # 30s deadline and then deferred the restart -- the same verdict these
+            # tests already assert, reached thirty seconds later. Eleven tests
+            # across the three TestAutoApplyUpdate* classes paid it in full:
+            # ~330s of pure sleeping per full suite run, measured identically in
+            # five runs. The branch still executes and the deferral still happens;
+            # only the waiting goes. The 30.0 itself stays pinned by
+            # test_restart_fences_then_closes_and_final_drains, which is the test
+            # that is ABOUT it.
+            patch.object(gw.GatewayOrchestrator, "_UPDATE_DRAIN_TIMEOUT_SECS", 0.0),
         ):
             yield
 
@@ -4068,6 +4079,17 @@ class TestAutoApplyUpdateVenvPath:
                 "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
                 return_value=None,
             ),
+            # The pre-restart drain, shortened to nothing. Nothing in these tests
+            # makes its condition true, so it polled at 10ms all the way to its
+            # 30s deadline and then deferred the restart -- the same verdict these
+            # tests already assert, reached thirty seconds later. Eleven tests
+            # across the three TestAutoApplyUpdate* classes paid it in full:
+            # ~330s of pure sleeping per full suite run, measured identically in
+            # five runs. The branch still executes and the deferral still happens;
+            # only the waiting goes. The 30.0 itself stays pinned by
+            # test_restart_fences_then_closes_and_final_drains, which is the test
+            # that is ABOUT it.
+            patch.object(gw.GatewayOrchestrator, "_UPDATE_DRAIN_TIMEOUT_SECS", 0.0),
         ):
             yield
 
@@ -4905,6 +4927,17 @@ class TestAutoApplyUpdateResetPath:
                 "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
                 return_value=None,
             ),
+            # The pre-restart drain, shortened to nothing. Nothing in these tests
+            # makes its condition true, so it polled at 10ms all the way to its
+            # 30s deadline and then deferred the restart -- the same verdict these
+            # tests already assert, reached thirty seconds later. Eleven tests
+            # across the three TestAutoApplyUpdate* classes paid it in full:
+            # ~330s of pure sleeping per full suite run, measured identically in
+            # five runs. The branch still executes and the deferral still happens;
+            # only the waiting goes. The 30.0 itself stays pinned by
+            # test_restart_fences_then_closes_and_final_drains, which is the test
+            # that is ABOUT it.
+            patch.object(gw.GatewayOrchestrator, "_UPDATE_DRAIN_TIMEOUT_SECS", 0.0),
         ):
             yield
 
