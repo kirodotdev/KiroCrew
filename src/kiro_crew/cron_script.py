@@ -971,6 +971,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Whole-file ceiling for a captured stderr. Crash stderr is small in practice;
+# captures at or under this bound are redacted whole, then tail-sliced (see
+# _stderr_tail); beyond it the tail is withheld behind a fixed marker rather
+# than partially redacted, because no window can prove a secret does not
+# straddle its start. The bound also caps the redaction input itself: the
+# redaction passes scan the whole capture, so an unbounded ceiling would let
+# a pathological multi-megabyte capture turn error reporting into a CPU sink
+# on every disconnect. 64 KiB keeps real crash output fully served while the
+# scan stays a fixed, small cost.
+_STDERR_FULL_REDACT_MAX = 64 * 1024
+
 
 class SkipError(Exception):
     """Abort this tick silently. Cron fires again next interval."""
@@ -1253,12 +1264,15 @@ class McpToolClient:
                 return json.loads(line)
 
     def _stderr_tail(self, limit: int = 1024) -> str:
-        """Return the last `limit` bytes of the subprocess's captured stderr.
+        """Return the last `limit` characters of the subprocess's captured stderr.
 
-        Credentials and exfiltration URLs are redacted before the tail is
-        surfaced in an error so a failing spawn (e.g. an auth dump or an
-        attacker-controlled MCP server) can't leak secrets or beacon URLs
-        into logs, Slack, or the dashboard.
+        Credentials and exfiltration URLs are redacted BEFORE the tail is cut,
+        so a secret straddling the cut cannot survive as an unredacted
+        fragment: the whole capture (at or under ``_STDERR_FULL_REDACT_MAX``)
+        is redacted in one pass, then only the tail is kept. Beyond the
+        ceiling the tail is withheld behind a fixed marker instead: a
+        pathological log is not worth serving even a redacted slice of, and
+        no window can prove a secret does not straddle its start.
         """
         path = getattr(self, "_stderr_file", None)
         if path is None:
@@ -1267,8 +1281,20 @@ class McpToolClient:
             with open(path.name, errors="replace") as fh:
                 fh.seek(0, os.SEEK_END)
                 size = fh.tell()
-                fh.seek(max(0, size - limit))
-                return redact(fh.read().strip())
+                if size > _STDERR_FULL_REDACT_MAX:
+                    return "[stderr omitted: too large to redact in full]"
+                fh.seek(0)
+                text = fh.read(_STDERR_FULL_REDACT_MAX + 1)
+                if len(text) > _STDERR_FULL_REDACT_MAX:
+                    # The file grew past the ceiling between the size check
+                    # and the read; withhold rather than serve a slice no
+                    # redaction pass has fully covered.
+                    return "[stderr omitted: too large to redact in full]"
+                # Redact the whole capture, THEN take the tail — this is
+                # ``redact_and_truncate``'s ordering: scrub first so that
+                # no credential fragment survives the slice boundary, then
+                # keep only the last ``limit`` characters.
+                return redact(text.strip())[-limit:]
         except Exception as exc:
             # Defensive — _stderr_tail runs inside error reporting itself, so we
             # never raise here. We DO log the exception type at debug so that a
