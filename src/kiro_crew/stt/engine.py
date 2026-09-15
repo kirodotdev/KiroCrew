@@ -433,7 +433,14 @@ class WhisperEngine:
         if not probed.ok:
             return probed
 
-        model = models.resolve(model_name)
+        # Off the loop for the same reason as `probe` above: resolving the CUSTOM
+        # selection reads and validates `config.json` (see `models.resolve`), which is
+        # a synchronous stat + read on the gateway's single event loop, and this runs
+        # on the websocket handler's task. Offloaded unconditionally rather than only
+        # for the custom name -- the executor hop is microseconds beside the model
+        # load this precedes, and duplicating `resolve`'s own dispatch at every async
+        # call site is how one of them ends up keeping the blocking read.
+        model = await asyncio.to_thread(models.resolve, model_name)
         # The key is built from the path the model WOULD have, so residency can be
         # decided before the store is asked for it. That ordering is what makes the
         # store's digest check affordable: `ensure` verifies the file against its pin

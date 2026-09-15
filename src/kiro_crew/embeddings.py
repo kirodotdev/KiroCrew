@@ -44,7 +44,6 @@ import sys
 import threading
 import time
 import types
-import urllib.parse
 from collections import OrderedDict
 from contextlib import AbstractContextManager
 from contextvars import ContextVar
@@ -2417,28 +2416,6 @@ def _resolve_model_url() -> str:
             "the override and using the CDN default",
         )
     return _DEFAULT_MODEL_URL
-
-
-def redact_model_url(url: str) -> str:
-    """Return *url* safe for logs/terminal: strip userinfo, query, fragment.
-
-    A private-mirror override may carry credentials in userinfo or a signed
-    query string (e.g. presigned URLs). Only scheme + host + path are ever
-    logged or printed; the full URL is used exclusively for the request.
-
-    Deliberately NOT :func:`asset_downloader.redact_url`, which drops the path
-    too: ``kirocrew doctor`` prints this to tell the operator WHICH model file
-    resolved, and the model url's path is the operator's own override or the
-    shipped default — never a value a remote party chose.
-    """
-    try:
-        parts = urllib.parse.urlsplit(url)
-        host = parts.hostname or ""
-        if parts.port:
-            host = f"{host}:{parts.port}"
-        return urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
-    except Exception:
-        return "<unparseable-url>"
 
 
 class ModelDownloadManager:
