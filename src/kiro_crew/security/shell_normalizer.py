@@ -2870,9 +2870,21 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
         # (``$( )``, backticks) and PROCESS substitution (``<( )``, ``>( )``) alike, since
         # bash runs the inner command in all of them.  Walking them here means the
         # ordinary argv checks see ``cat <(kirocrew token)`` as the inner invocation.
+        #
+        # The bodies are read from the FOLDED source -- the same quote-aware fold
+        # ``_self_tokens`` applied to build ``tokens`` -- not from the raw text.
+        # ``_substitution_bodies`` recognises its openers byte-literally, and the
+        # shell removes a ``\`` + newline while READING, before it lexes an opener,
+        # so ``cat <\`` + newline + ``(bash -c '<name> <verb>')`` is a process
+        # substitution to bash while the raw scan sees no ``<(`` at all and the body
+        # was never walked: measured ALLOWED for all three parenthesised openers
+        # while bash ran the mint. Folding the raw text here (rather than at the
+        # walk's seed) reshapes nothing outside a substitution the tokenizer already
+        # reads folded, and the fold preserves single-quoted and ANSI-C spans, so a
+        # continuation that bash keeps literal stays literal in the body too.
         joined_here: set[str] = set()
         nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
-        for payload in list(nested) + _substitution_bodies(source):
+        for payload in list(nested) + _substitution_bodies(_fold_line_continuations(source)):
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.
