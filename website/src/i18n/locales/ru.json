@@ -7706,6 +7706,7 @@
       "mark_as_read": "Отметить как прочитанное",
       "mark_as_unread": "Отметить как непрочитанное",
       "move_to_folder": "Переместить в папку…",
+      "offline_reason": "Шлюз не в сети — неактивным действиям нужно подключение",
       "open_in_new_tab": "Открыть во вкладке сессии",
       "pin": "Закрепить",
       "pop_out_to_window": "Открыть в отдельном окне",
@@ -15519,8 +15520,12 @@
       "saving": "Сохранение..."
     },
     "offline": {
+      "delete_artifacts": "удаление артефактов",
+      "delete_folders": "удалять папки",
       "disabled_gateway_offline": "{{label}}: недоступно — шлюз не в сети",
       "gateway_offline_reconnect": "Шлюз не в сети — подключись снова, чтобы {{action}}",
+      "rename_folders": "переименовывать папки",
+      "star_artifacts": "отметку артефактов",
       "submit_comments": "отправить комментарии"
     },
     "popoutController": {

@@ -7373,6 +7373,7 @@
       "mark_as_read": "읽음으로 표시",
       "mark_as_unread": "읽지 않음으로 표시",
       "move_to_folder": "폴더로 이동…",
+      "offline_reason": "게이트웨이가 오프라인입니다 — 흐리게 표시된 작업에는 연결이 필요합니다",
       "open_in_new_tab": "세션 탭에서 열기",
       "pin": "고정",
       "pop_out_to_window": "별도 창으로 분리",
@@ -14927,8 +14928,12 @@
       "saving": "저장 중…"
     },
     "offline": {
+      "delete_artifacts": "아티팩트 삭제",
+      "delete_folders": "폴더를 삭제",
       "disabled_gateway_offline": "{{label}}이(가) 비활성화되었습니다 — 게이트웨이가 오프라인입니다",
       "gateway_offline_reconnect": "게이트웨이가 오프라인입니다 — {{action}}하려면 다시 연결하세요",
+      "rename_folders": "폴더 이름을 변경",
+      "star_artifacts": "아티팩트 즐겨찾기 표시",
       "submit_comments": "댓글 제출"
     },
     "popoutController": {

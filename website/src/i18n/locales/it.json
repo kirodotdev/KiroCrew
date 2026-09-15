@@ -7595,6 +7595,7 @@
       "mark_as_read": "Segna come letto",
       "mark_as_unread": "Segna come non letto",
       "move_to_folder": "Sposta nella cartella…",
+      "offline_reason": "Gateway offline — le azioni attenuate richiedono una connessione",
       "open_in_new_tab": "Apri in una scheda di sessione",
       "pin": "Fissa",
       "pop_out_to_window": "Apri in una finestra",
@@ -15321,8 +15322,12 @@
       "saving": "Salvataggio in corso..."
     },
     "offline": {
+      "delete_artifacts": "eliminare gli artefatti",
+      "delete_folders": "eliminare cartelle",
       "disabled_gateway_offline": "{{label}} disattivato — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — riconnettiti per {{action}}",
+      "rename_folders": "rinominare le cartelle",
+      "star_artifacts": "contrassegnare gli artefatti",
       "submit_comments": "inviare i commenti"
     },
     "popoutController": {

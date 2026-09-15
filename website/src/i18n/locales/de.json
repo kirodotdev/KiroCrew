@@ -7484,6 +7484,7 @@
       "mark_as_read": "Als gelesen markieren",
       "mark_as_unread": "Als ungelesen markieren",
       "move_to_folder": "In Ordner verschieben…",
+      "offline_reason": "Gateway offline — die ausgegrauten Aktionen brauchen eine Verbindung",
       "open_in_new_tab": "In einem Sitzungs-Tab öffnen",
       "pin": "Anpinnen",
       "pop_out_to_window": "In ein Fenster auskoppeln",
@@ -15124,8 +15125,12 @@
       "saving": "Wird gespeichert..."
     },
     "offline": {
+      "delete_artifacts": "das Löschen von Artefakten",
+      "delete_folders": "das Löschen von Ordnern",
       "disabled_gateway_offline": "{{label}} deaktiviert — Gateway offline",
       "gateway_offline_reconnect": "Gateway offline — für {{action}} neu verbinden",
+      "rename_folders": "das Umbenennen von Ordnern",
+      "star_artifacts": "das Markieren von Artefakten",
       "submit_comments": "Kommentare einreichen"
     },
     "popoutController": {
