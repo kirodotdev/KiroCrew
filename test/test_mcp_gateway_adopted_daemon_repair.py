@@ -354,6 +354,74 @@ class TestOscillationCap:
         )
 
     @pytest.mark.asyncio
+    async def test_the_settled_verdict_is_announced_once_not_every_recheck(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Settling is a decision, not a condition, so it is logged as one.
+
+        The watchdog's drift re-check re-enters ``_repair_or_adopt`` every
+        ``_DRIFT_RECHECK_INTERVAL_SECS`` for as long as the refusing incumbent
+        holds the socket, and the verdict past the cap never changes. Logging
+        it at ERROR each time turned one upgrade skew into a permanent
+        ~288-line/day log storm in the field (a pre-fingerprint survivor from
+        a replaced install held the socket and rejected every stand-down).
+        The first settle is ERROR; every repeat is DEBUG.
+        """
+        manager = _manager(tmp_path, {})
+        monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._REFUSED))
+        manager._stand_downs_issued = mgr._MAX_STAND_DOWN_REQUESTS
+
+        with caplog.at_level(logging.DEBUG, logger=mgr.logger.name):
+            for _ in range(4):
+                assert await manager._repair_or_adopt([], stale_code=True) == mgr._ADOPT
+        settles = [r for r in caplog.records if "already issued" in r.getMessage()]
+        assert len(settles) == 4, "every re-check still records the verdict"
+        assert [r.levelno for r in settles] == [
+            logging.ERROR,
+            logging.DEBUG,
+            logging.DEBUG,
+            logging.DEBUG,
+        ], "ERROR once, DEBUG thereafter"
+
+    @pytest.mark.asyncio
+    async def test_the_settled_verdict_names_its_grounds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The cap message must say WHY the incumbent is unfit, whichever ground.
+
+        The pre-fix message interpolated only the missing stems, so a
+        stale-code-only settle rendered as "still cannot resolve , but" --
+        an empty list where the reason belongs, about an incumbent that in
+        fact resolved every stem. The message now composes the same grounds
+        the stand-down request itself was built from.
+        """
+        manager = _manager(tmp_path, {})
+        monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._REFUSED))
+        manager._stand_downs_issued = mgr._MAX_STAND_DOWN_REQUESTS
+
+        with caplog.at_level(logging.ERROR, logger=mgr.logger.name):
+            assert await manager._repair_or_adopt([], stale_code=True) == mgr._ADOPT
+        message = next(r.getMessage() for r in caplog.records if "already issued" in r.getMessage())
+        assert "still runs different code than this gateway" in message
+        assert "cannot resolve ," not in message
+        assert "kirocrew restart" in message, "stale-code settle names the remedy"
+
+        caplog.clear()
+        fresh = _manager(tmp_path, {})
+        monkeypatch.setattr(fresh, "_request_stand_down", AsyncMock(return_value=mgr._REFUSED))
+        fresh._stand_downs_issued = mgr._MAX_STAND_DOWN_REQUESTS
+        with caplog.at_level(logging.ERROR, logger=mgr.logger.name):
+            assert await fresh._repair_or_adopt(["CORE"]) == mgr._ADOPT
+        message = next(r.getMessage() for r in caplog.records if "already issued" in r.getMessage())
+        assert "still cannot resolve CORE" in message
+        assert "per-session exec" in message, "drift settle names the degradation"
+
+    def test_the_settle_flag_is_total_without_init(self) -> None:
+        """Built via ``__new__``, as several call sites and tests do."""
+        bare = mgr.GatewayManager.__new__(mgr.GatewayManager)
+        assert bare._cap_settle_logged is False
+
+    @pytest.mark.asyncio
     async def test_the_counter_advances_on_every_real_request(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
