@@ -919,10 +919,10 @@ def describe(shift: ShiftStatus) -> dict[str, Any]:
         # `primary` — the two other write-only-until-now knobs — and adding a route for
         # three integers would buy nothing.
         "sweep": sweep_windows(),
-        # The two FENCED rotation identities, so Settings can render and edit them.
+        # The FENCED rotation identities, so Settings can render and edit them.
         #
-        # They have to be reported here rather than through `GET /providers`: both live on the
-        # keystone floor rather than in `config_fields` (they are inputs to the off-shift
+        # They have to be reported here rather than through `GET /providers`: all of them live
+        # on the keystone floor rather than in `config_fields` (they are inputs to the off-shift
         # refusal, and provider config is agent-writable), so the provider catalog does not
         # carry them and the generic field renderer cannot see them. Reporting the VALUE is
         # fine — an identity
@@ -931,6 +931,7 @@ def describe(shift: ShiftStatus) -> dict[str, Any]:
         "identities": {
             "schedule_github_login": str(policy_store.get(policy_store.SCHEDULE_LOGIN_KEY) or ""),
             "pagerduty_user_id": str(policy_store.get(policy_store.PAGERDUTY_USER_KEY) or ""),
+            "incidentio_user_id": str(policy_store.get(policy_store.INCIDENTIO_USER_KEY) or ""),
         },
     }
 

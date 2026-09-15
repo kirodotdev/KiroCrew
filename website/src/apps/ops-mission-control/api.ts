@@ -571,6 +571,8 @@ export interface RotationIdentities {
   schedule_github_login: string
   /** This operator's PagerDuty user id, matched against the `oncalls` response. */
   pagerduty_user_id: string
+  /** This operator's incident.io user id, matched against the effective schedule. */
+  incidentio_user_id: string
 }
 
 export interface RotationInfo {
@@ -1069,6 +1071,23 @@ export interface BoardState {
  */
 export const WEBHOOK_QUEUE_LIMIT = 200
 
+/**
+ * A non-2xx backend response. `code` is the machine-readable refusal code the
+ * error contract requires on every error body (`policy_store_unwritable`, ...),
+ * so a caller can swap the raw reason for task vocabulary without string-matching
+ * on `message` — which for an `OSError`-backed 503 is `str(exc)` and not
+ * something an operator should have to parse.
+ */
+export class OpsApiError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+  ) {
+    super(message)
+    this.name = 'OpsApiError'
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(`${API}${path}`, {
     ...init,
@@ -1078,13 +1097,15 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     // Surface the backend's reason — a 403 here is usually the autonomy gate
     // explaining that no rule grants this action, which the user needs to read.
     let detail = `HTTP ${resp.status}`
+    let code: string | undefined
     try {
-      const body = (await resp.json()) as { error?: string }
+      const body = (await resp.json()) as { error?: string; code?: string }
       if (body?.error) detail = body.error
+      if (typeof body?.code === 'string') code = body.code
     } catch {
       /* non-JSON error body — keep the status text */
     }
-    throw new Error(detail)
+    throw new OpsApiError(detail, code)
   }
   return (await resp.json()) as T
 }
