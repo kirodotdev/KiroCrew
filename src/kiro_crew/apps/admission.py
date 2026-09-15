@@ -201,13 +201,21 @@ def app_admission_denied(
     name: str,
     manifest: "AppManifest | None" = None,
     action: str = "install",
+    *,
+    policy: "AppAdmissionPolicy | None" = None,
 ) -> Optional[str]:
     """Decide whether *name* may be admitted. Returns a denial reason or None.
 
     Runs BEFORE the app's files are copied / its onInstall script runs, so a
     banned / non-allowlisted / unsigned app never lands on disk or executes.
+
+    *policy* lets a caller that reads the policy for its OWN decision as well
+    (the store hire: ``require_signature`` decides whether a card must pin
+    its files) hand in the one snapshot both decisions are made from, so the
+    two can never disagree about which policy was in force.
     """
-    policy = load_app_admission_policy()
+    if policy is None:
+        policy = load_app_admission_policy()
     norm = _normalize_name(name)
 
     # 1) Kill-switch always wins, in any mode.

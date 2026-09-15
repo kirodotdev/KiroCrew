@@ -12,6 +12,7 @@ between apps.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 from urllib.parse import urlparse, urlunparse
 
-from kiro_crew import platform_compat
+from kiro_crew import agent_state, platform_compat
 from kiro_crew.apps import deps_boot as _deps_boot_module
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.execution import (
@@ -833,6 +834,36 @@ def _placeholder_values(app_name: str) -> dict[str, str]:
     }
 
 
+def _render_shipped_text(app_name: str, template: str, label: str) -> str | None:
+    """Substitute *app_name*'s trusted placeholder values into *template* (an
+    agent file's text). ``None`` when a placeholder cannot be resolved or the
+    result is not JSON -- logged under *label*, the file's name. Pure: the
+    file-based :func:`_render_shipped_agent` and the hire's render-from-verified-
+    bytes both go through here, so they cannot substitute differently."""
+    values = _placeholder_values(app_name)
+    rendered = template
+    for placeholder, value in values.items():
+        # `json.dumps` minus the surrounding quotes: the placeholders sit INSIDE JSON
+        # string literals, so a Windows path's backslashes have to be escaped or the
+        # result is invalid JSON (or, worse, a path with a mangled separator).
+        rendered = rendered.replace(placeholder, json.dumps(value)[1:-1])
+    leftover = _TEMPLATE_PLACEHOLDER_RE.search(rendered)
+    if leftover:
+        logger.warning(
+            "App %s: agent %s has an unresolved placeholder %s — not registered",
+            app_name,
+            label,
+            leftover.group(0),
+        )
+        return None
+    try:
+        json.loads(rendered)
+    except ValueError:
+        logger.warning("App %s: rendered agent %s is not valid JSON", app_name, label)
+        return None
+    return rendered
+
+
 def _render_shipped_agent(
     app_name: str, agent_path: Path, io_failures: list[str] | None = None
 ) -> Path | None:
@@ -871,26 +902,8 @@ def _render_shipped_agent(
     if not _TEMPLATE_PLACEHOLDER_RE.search(template):
         return agent_path
 
-    values = _placeholder_values(app_name)
-    rendered = template
-    for placeholder, value in values.items():
-        # `json.dumps` minus the surrounding quotes: the placeholders sit INSIDE JSON
-        # string literals, so a Windows path's backslashes have to be escaped or the
-        # result is invalid JSON (or, worse, a path with a mangled separator).
-        rendered = rendered.replace(placeholder, json.dumps(value)[1:-1])
-    leftover = _TEMPLATE_PLACEHOLDER_RE.search(rendered)
-    if leftover:
-        logger.warning(
-            "App %s: agent %s has an unresolved placeholder %s — not registered",
-            app_name,
-            agent_path.name,
-            leftover.group(0),
-        )
-        return None
-    try:
-        json.loads(rendered)
-    except ValueError:
-        logger.warning("App %s: rendered agent %s is not valid JSON", app_name, agent_path.name)
+    rendered = _render_shipped_text(app_name, template, agent_path.name)
+    if rendered is None:
         return None
 
     target_dir = _kiro_agents_dir().parent / _RENDERED_AGENTS_DIRNAME / app_name
@@ -904,6 +917,176 @@ def _render_shipped_agent(
             io_failures.append(str(agent_path))
         return None
     return target
+
+
+def render_app_agent_spec(
+    app_name: str,
+    app_root: Path,
+    agent_path_str: str,
+    *,
+    policy: dict[str, Any] | None = None,
+    own_servers: dict[str, Any] | None = None,
+    agents_dir: Path | None = None,
+    keep_user_edits: bool = True,
+    shipped_text: str | None = None,
+    io_failures: list[str] | None = None,
+) -> tuple[str, dict[str, Any], str] | None:
+    """Render ONE of *app_name*'s shipped agents the way registration materializes it.
+
+    Returns ``(declared agent name, the merged spec, the materialized file name)``,
+    or ``None`` when the agent is skipped (a path escaping the app root, a missing
+    or unreadable file, an unresolvable placeholder, an unsafe name -- each logged
+    as registration logs it). The pipeline is registration's, in registration's
+    order: placeholders rendered by the gateway, the app's own MCP servers and the
+    host's managed refs merged, the per-app MCP policy and prompt applied, the
+    user's edits to the on-disk file preserved (*keep_user_edits*; a hire that must
+    compare the file on disk with the app's shipped definition passes ``False``),
+    ungoverned ``autoApprove`` stripped last. Writes nothing itself. *shipped_text*,
+    when given, is the agent file's text as the caller VERIFIED it: rendered in
+    place of a read of the path, so a file swapped after the caller's check is
+    not what gets rendered (the path is still checked for containment and used
+    for the stem).
+    """
+    if policy is None:
+        policy = _agent_mcp_policy(app_name)
+    if own_servers is None:
+        own_servers = _own_mcp_servers(app_name)
+    if agents_dir is None:
+        agents_dir = _kiro_agents_dir()
+    agent_path = app_root / agent_path_str
+    # Path containment check — reject paths that escape the app root
+    if not agent_path.resolve().is_relative_to(app_root.resolve()):
+        logger.warning("App %s: agent path escapes app root: %s", app_name, agent_path)
+        return None
+    if shipped_text is not None:
+        rendered_text = (
+            _render_shipped_text(app_name, shipped_text, agent_path.name)
+            if _TEMPLATE_PLACEHOLDER_RE.search(shipped_text)
+            else shipped_text
+        )
+        if rendered_text is None:
+            return None
+        try:
+            agent_data = json.loads(rendered_text)
+        except json.JSONDecodeError as exc:
+            logger.warning("App %s: unreadable agent %s: %s", app_name, agent_path, exc)
+            return None
+    else:
+        if not agent_path.is_file():
+            logger.warning("App %s: agent file not found: %s", app_name, agent_path)
+            return None
+        # A shipped TEMPLATE is rendered BY THE GATEWAY, from values it computes
+        # itself, into a file under the data home. `None` means a placeholder could
+        # not be resolved, so nothing is registered for this agent rather than
+        # registering a config that names a literal `{ENGINE_ROOT}`.
+        resolved = _render_shipped_agent(app_name, agent_path, io_failures=io_failures)
+        if resolved is None:
+            return None
+        agent_path = resolved
+
+        # Read agent JSON to get the agent name
+        try:
+            agent_data = json.loads(agent_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("App %s: unreadable agent %s: %s", app_name, agent_path, exc)
+            if isinstance(exc, OSError) and io_failures is not None:
+                io_failures.append(str(agent_path))  # transient; a malformed spec is not
+            return None
+    if not isinstance(agent_data, dict):
+        # Valid JSON that is not an object (a list, a scalar, null) parses
+        # fine, but every `.get` below would raise. Same disposition as the
+        # unreadable case: skip this agent rather than register a config
+        # the spec never described.
+        logger.warning("App %s: agent spec %s is not a JSON object; skipping", app_name, agent_path)
+        return None
+    agent_name = agent_data.get("name", agent_path.stem)
+
+    # The agent name is app-controlled (read from the agent JSON) and is
+    # about to become a filesystem path component. Reject any path separator
+    # or parent-dir token BEFORE constructing link_path: on Windows a name
+    # like "..\\..\\crew\\config" would otherwise traverse out of the agents
+    # dir (backslash is a separator there) and atomic_write would overwrite
+    # an arbitrary JSON file such as ~/.kiro/crew/config.json.
+    if (
+        not isinstance(agent_name, str)
+        or "/" in agent_name
+        or "\\" in agent_name
+        or "\x00" in agent_name
+        or agent_name in ("", ".", "..")
+    ):
+        logger.warning("App %s: refusing agent with unsafe name %r", app_name, agent_name)
+        return None
+
+    # Namespaced link name: app-name--agent-name.json
+    link_name = _safe_link_name(_namespace(app_name, agent_name)) + ".json"
+    link_path = agents_dir / link_name
+
+    # Snapshot the user's own edits BEFORE the write — after it there is
+    # nothing left to read (see _preserve_user_agent_edits).
+    prior_on_disk = _read_agent_config(link_path) if keep_user_edits else None
+
+    # The app's own servers are always granted -- they are declared by
+    # the manifest, not chosen by the user, and the agent's `tools`
+    # already references them.
+    if own_servers:
+        agent_data["mcpServers"] = {
+            **own_servers,
+            **(agent_data.get("mcpServers") or {}),
+        }
+    # An app agent may also reference the host's managed servers
+    # (@kirocrew-cron / @kirocrew-core) in `tools`. Those specs live in
+    # the HOST agent's config, not the global mcp.json, so without this
+    # merge the reference dangles and the tool silently never mounts.
+    _materialize_managed_refs(agent_data)
+    merged = _apply_agent_mcp_policy(agent_data, agent_name, policy)
+    merged = _apply_agent_prompt(merged, agent_name, policy, app_name, app_root)
+    merged = _preserve_user_agent_edits(link_name, prior_on_disk, merged)
+    # LAST governance pass, on the map that is about to be written. By this
+    # point `autoApprove` could have come from the app's own manifest, the
+    # per-agent MCP policy, a materialized managed ref, or a preserved
+    # on-disk entry — filtering each of those separately is how earlier
+    # rounds kept leaving one open. The host agent's writer does the same
+    # thing at the same position (see agent.install_agent).
+    _servers = merged.get("mcpServers")
+    if isinstance(_servers, dict):
+        merged["mcpServers"] = _strip_ungoverned_auto_approve(_servers)
+    return agent_name, merged, link_name
+
+
+def shared_template_digest(data: bytes) -> str:
+    """The recorded-fingerprint form: ``sha256:<hex>`` over the file's bytes."""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _previous_template_bytes(path: Path) -> bytes | None:
+    """The bytes a shared template holds before ``_register_agents`` rewrites
+    it, for the rollback in :func:`_restore_template_bytes`; ``None`` when
+    there is no file (a legacy symlink is read through -- its content is
+    what the last-good config was)."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _restore_template_bytes(path: Path, previous: bytes | None) -> None:
+    """Put a shared template's previous bytes back after its fingerprint could
+    not be recorded (see ``_register_agents``): tmp + replace, so the file is
+    never partial; ``None`` (there was no file) removes what the failed pass
+    created. A rollback that itself fails is logged -- file and record now
+    disagree and KAS refuses the template until the next registration -- and
+    swallowed, so the caller sees the record failure that caused it."""
+    try:
+        if previous is None:
+            path.unlink(missing_ok=True)
+            return
+        atomic_write(path, previous)
+    except Exception:  # noqa: BLE001 - reported, never masks the record failure
+        logger.warning(
+            "Shared template %s: fingerprint record failed AND the previous bytes "
+            "could not be restored; KAS will refuse it until the next registration",
+            path.name,
+        )
 
 
 def _register_agents(
@@ -949,67 +1132,51 @@ def _register_agents(
         policy = _agent_mcp_policy(app_name)
         own_servers = _own_mcp_servers(app_name)
 
-        for agent_path_str in manifest.agents:
-            agent_path = app_root / agent_path_str
-            # Path containment check — reject paths that escape the app root
-            if not agent_path.resolve().is_relative_to(app_root.resolve()):
-                logger.warning("App %s: agent path escapes app root: %s", app_name, agent_path)
-                continue
-            if not agent_path.is_file():
-                logger.warning("App %s: agent file not found: %s", app_name, agent_path)
-                continue
-            # A shipped TEMPLATE is rendered BY THE GATEWAY, from values it computes
-            # itself, into a file under the data home. `None` means a placeholder could
-            # not be resolved, so nothing is registered for this agent rather than
-            # registering a config that names a literal `{ENGINE_ROOT}`.
-            resolved = _render_shipped_agent(app_name, agent_path, io_failures=io_failures)
-            if resolved is None:
-                continue
-            agent_path = resolved
-
-            # Read agent JSON to get the agent name
+        def _materialize_one(agent_path_str: str) -> None:
+            # Caller holds ``agents_spec_lock``: the on-disk read the render
+            # preserves user edits from, the write and the fingerprint record
+            # are ONE critical section against every other template-spec
+            # writer (the agent editor's ``_atomic_json_write`` records its own
+            # digest under the same lock). Interleaved, an edit landing between
+            # this write and this record would leave the edited bytes on disk
+            # under the bridge's digest -- and the KAS projection would refuse a
+            # valid file.
             try:
-                agent_data = json.loads(agent_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("App %s: unreadable agent %s: %s", app_name, agent_path, exc)
-                if isinstance(exc, OSError) and io_failures is not None:
-                    io_failures.append(str(agent_path))  # transient; a malformed spec is not
-                continue
-            if not isinstance(agent_data, dict):
-                # Valid JSON that is not an object (a list, a scalar, null) parses
-                # fine, but every `.get` below would raise. Same disposition as the
-                # unreadable case: skip this agent rather than register a config
-                # the spec never described.
-                logger.warning(
-                    "App %s: agent spec %s is not a JSON object; skipping", app_name, agent_path
+                rendered = render_app_agent_spec(
+                    app_name,
+                    app_root,
+                    agent_path_str,
+                    policy=policy,
+                    own_servers=own_servers,
+                    agents_dir=agents_dir,
+                    io_failures=io_failures,
                 )
-                continue
-            agent_name = agent_data.get("name", agent_path.stem)
-
-            # The agent name is app-controlled (read from the agent JSON) and is
-            # about to become a filesystem path component. Reject any path separator
-            # or parent-dir token BEFORE constructing link_path: on Windows a name
-            # like "..\\..\\crew\\config" would otherwise traverse out of the agents
-            # dir (backslash is a separator there) and atomic_write would overwrite
-            # an arbitrary JSON file such as ~/.kiro/crew/config.json.
-            if (
-                not isinstance(agent_name, str)
-                or "/" in agent_name
-                or "\\" in agent_name
-                or "\x00" in agent_name
-                or agent_name in ("", ".", "..")
-            ):
-                logger.warning("App %s: refusing agent with unsafe name %r", app_name, agent_name)
-                continue
-
-            # Namespaced link name: app-name--agent-name.json
-            link_name = _safe_link_name(_namespace(app_name, agent_name)) + ".json"
+            except OSError as exc:
+                logger.warning(
+                    "App %s: could not render agent %s: %s", app_name, agent_path_str, exc
+                )
+                if io_failures is not None:
+                    io_failures.append(str(app_root / agent_path_str))
+                return
+            if rendered is None:
+                return
+            agent_name, merged, link_name = rendered
             link_path = agents_dir / link_name
-
-            # Snapshot the user's own edits BEFORE the unlink below — after it there
-            # is nothing left to read (see _preserve_user_agent_edits).
-            prior_on_disk = _read_agent_config(link_path)
-
+            agent_path = app_root / agent_path_str
+            # The map is FINAL — every source of servers has been merged — so this
+            # is the one point a dangling `@` grant is decidable. Warn, never
+            # reject: kiro-cli just skips the ref, so the agent works minus the
+            # tool, and the warning is the only signal that exists.
+            dangling = _unresolvable_tool_refs(merged)
+            if dangling:
+                logger.warning(
+                    "App %s: agent %r grants MCP tool ref(s) not found in this "
+                    "agent's merged mcpServers or the global mcp.json; kiro-cli "
+                    "will silently never mount them: %s",
+                    app_name,
+                    agent_name,
+                    ", ".join(dangling),
+                )
             # Drop a legacy SYMLINK from an older Kiro Crew (which pointed at a file
             # inside the app) so the write below lands a real file at this path.
             #
@@ -1023,46 +1190,36 @@ def _register_agents(
             # DISAPPEAR. Leaving the old entry in place means a failed write leaves the
             # last-good config untouched.
             try:
-                # The app's own servers are always granted -- they are declared by
-                # the manifest, not chosen by the user, and the agent's `tools`
-                # already references them.
-                if own_servers:
-                    agent_data["mcpServers"] = {
-                        **own_servers,
-                        **(agent_data.get("mcpServers") or {}),
-                    }
-                # An app agent may also reference the host's managed servers
-                # (@kirocrew-cron / @kirocrew-core) in `tools`. Those specs live in
-                # the HOST agent's config, not the global mcp.json, so without this
-                # merge the reference dangles and the tool silently never mounts.
-                _materialize_managed_refs(agent_data)
-                merged = _apply_agent_mcp_policy(agent_data, agent_name, policy)
-                merged = _apply_agent_prompt(merged, agent_name, policy, app_name, app_root)
-                merged = _preserve_user_agent_edits(link_name, prior_on_disk, merged)
-                # LAST governance pass, on the map that is about to be written. By this
-                # point `autoApprove` could have come from the app's own manifest, the
-                # per-agent MCP policy, a materialized managed ref, or a preserved
-                # on-disk entry — filtering each of those separately is how earlier
-                # rounds kept leaving one open. The host agent's writer does the same
-                # thing at the same position (see agent.install_agent).
-                _servers = merged.get("mcpServers")
-                if isinstance(_servers, dict):
-                    merged["mcpServers"] = _strip_ungoverned_auto_approve(_servers)
-                # The map above is FINAL — every source of servers has been merged —
-                # so this is the one point a dangling `@` grant is decidable. Warn,
-                # never reject: kiro-cli just skips the ref, so the agent works
-                # minus the tool, and the warning is the only signal that exists.
-                dangling = _unresolvable_tool_refs(merged)
-                if dangling:
-                    logger.warning(
-                        "App %s: agent %r grants MCP tool ref(s) not found in this "
-                        "agent's merged mcpServers or the global mcp.json; kiro-cli "
-                        "will silently never mount them: %s",
-                        app_name,
-                        agent_name,
-                        ", ".join(dangling),
+                # Written as BYTES so the digest below is over exactly what
+                # lands on disk: a text-mode write translates ``\n`` to the
+                # platform's line ending (``\r\n`` on Windows), and the KAS
+                # projection hashes the file's raw bytes -- a digest over the
+                # untranslated text would refuse every app agent there.
+                payload = (json.dumps(merged, indent=2) + "\n").encode("utf-8")
+                # File and record move as ONE transaction (the same contract
+                # as agent._atomic_json_write): the previous bytes are kept
+                # BEFORE the replace, so a record that cannot follow the new
+                # bytes puts them back -- otherwise the new content would sit
+                # under the OLD digest and the KAS projection would refuse the
+                # template (or, worse, the record would vouch for bytes it
+                # never saw). ``None`` means there was no file: a rollback
+                # removes what this pass created.
+                previous = _previous_template_bytes(link_path)
+                atomic_write(link_path, payload)
+                # The shared template's fingerprint: this write is what the
+                # file is SUPPOSED to hold, so the KAS projection can refuse a
+                # file that does not match it (see kas_agents.load_agent_spec).
+                # Recorded after the file lands and keyed by the stem the
+                # projection reads under; a failure here is a failure to
+                # register (the file would run unfingerprinted otherwise), and
+                # the file is put back to what the record still vouches for.
+                try:
+                    agent_state.set_shared_template_digest(
+                        link_path.stem, shared_template_digest(payload)
                     )
-                atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
+                except BaseException:
+                    _restore_template_bytes(link_path, previous)
+                    raise
                 registered.append(_namespace(app_name, agent_name))
                 # The DECLARED name only — kiro-cli enumerates agents by their
                 # `name` field, so the namespaced filename stem is not a name it
@@ -1073,6 +1230,13 @@ def _register_agents(
                 logger.warning("Failed to write agent %s: %s", link_name, exc)
                 if io_failures is not None:
                     io_failures.append(link_name)
+
+        # Deferred: ``agent`` imports this module at load time (layering).
+        from kiro_crew.agent import agents_spec_lock  # noqa: PLC0415
+
+        for agent_path_str in manifest.agents:
+            with agents_spec_lock(agents_dir):
+                _materialize_one(agent_path_str)
 
         if dispatchable:
             # Publish the names just written BEFORE scheduling the rescan, and do it
@@ -1108,7 +1272,11 @@ def _deregister_agents(app_name: str) -> int:
                 entry.unlink()
                 removed += 1
             except OSError:
-                pass
+                continue
+            try:
+                agent_state.clear_shared_template_digest(entry.stem)
+            except Exception:  # noqa: BLE001 - the file is gone; a stale record is inert
+                logger.debug("could not clear the fingerprint of %s", entry.name, exc_info=True)
     if removed:
         logger.info("Deregistered %d agent(s) for app %s", removed, app_name)
         # Drop the removed names from the resolver's snapshot. Without this a
@@ -3054,7 +3222,16 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
                     entry.unlink()
                     logger.info("Pruned stale app agent %s (absent from manifest)", entry.name)
                 except OSError:
-                    pass
+                    continue
+                # The fingerprint goes with the file, as on deregistration: a
+                # digest left behind would refuse a later legitimate file that
+                # re-occupies this stem outside materialization (fail-closed,
+                # but a refusal the user cannot explain), and the stem is free
+                # for the manifest to declare again with different bytes.
+                try:
+                    agent_state.clear_shared_template_digest(entry.stem)
+                except Exception:  # noqa: BLE001 - the file is gone; a stale record is inert
+                    logger.debug("could not clear the fingerprint of %s", entry.name, exc_info=True)
 
     # MCP servers: keep only servers the current manifest still declares.
     current_servers = {f"{app_name}:{srv}" for srv in (manifest.mcpServers or {})}

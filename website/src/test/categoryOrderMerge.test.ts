@@ -34,6 +34,7 @@ describe('mergeCategoryOrder', () => {
       'productivity': 'Productivity',
       'agents-automation': 'Agents & Automation',
       'research-writing': 'Research & Writing',
+      'templates': 'Templates',
       'other': 'Other',
     })
   })

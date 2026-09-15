@@ -897,10 +897,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent_discovery.py": [
         ("forward:operation", "forward:source"),
         ("forward:operation", "forward:source"),
-        # ``spec_by_declared_name`` scans specs it did not name for whichever
-        # surface resolves an agent id and finds no ``<agent_id>.json``; it
-        # forwards so each such surface attributes its own denials.
-        ("forward:operation", "forward:source"),
+        # (The declared-name scan reads through ``_read_agent_spec_bytes``,
+        # the bytes-returning form of this reader -- its own inventory below.)
         ("list_agents", "unknown"),
         ("list_agents", "unknown"),
         ("resolve_project_agent_name", "unknown"),
@@ -1072,16 +1070,37 @@ _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # servers make. It reads specs it did not name in a user-writable directory, so
 # every caller names the surface whose resolution the denial belongs to.
 _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
+    # (The spec-only form is itself a caller of the with-source form below;
+    # the KAS projection moved to that form to verify the match's bytes.)
     "kiro_crew/dashboard/handlers/sessions.py": [("session_tool_policy", "dashboard")],
+}
+
+# The with-source form: the spec plus the path it came from and the bytes the
+# guarded read parsed, for a caller that verifies the match against a recorded
+# fingerprint (the KAS projection) without reopening anything.
+_EXPECTED_DECLARED_NAME_WITH_SOURCE_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
+    "kiro_crew/agent_discovery.py": [("forward:operation", "forward:source")],
+}
+
+# The bytes-returning form of the one reader: ``_read_agent_spec`` itself
+# forwards to it, and the declared-name scan reads through it (so the bytes it
+# hands back are the bytes it parsed).
+_EXPECTED_READ_BYTES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/agent_discovery.py": [
+        ("forward:operation", "forward:source"),
+        ("forward:operation", "forward:source"),
+    ],
 }
 
 
 _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
     "_read_agent_spec": _EXPECTED_CALL_SITE_LABELS,
+    "_read_agent_spec_bytes": _EXPECTED_READ_BYTES_CALL_SITE_LABELS,
     "parsed_agent_specs": _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS,
     "project_agent_names": _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS,
     "spec_by_declared_name": _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS,
+    "spec_by_declared_name_with_source": _EXPECTED_DECLARED_NAME_WITH_SOURCE_CALL_SITE_LABELS,
     "warm_project_agent_names": _EXPECTED_WARM_CALL_SITE_LABELS,
 }
 

@@ -5547,7 +5547,8 @@
         "oncall_ops": "온콜 · 운영",
         "other": "기타",
         "productivity": "생산성",
-        "research_writing": "리서치 · 작성"
+        "research_writing": "리서치 · 작성",
+        "templates": "크루메이트 템플릿"
       },
       "categoryRail": {
         "add_source": "소스 추가",
@@ -14721,7 +14722,10 @@
       "filter_source_package_description": "기능 패키지로 설치된 크루",
       "member_count_filtered": "멤버 {{count}}명 중 {{shown}}명",
       "setup_in_crew_manager": "비공개 메모리 설정",
-      "own_copy_of": "{{template}} — 사용자 지정 복사본"
+      "own_copy_of": "{{template}} — 사용자 지정 복사본",
+      "provenance_apps_error": "설치된 앱을 읽을 수 없어 템플릿의 앱을 ID로 표시합니다. 잃은 것은 없습니다. 새로 고쳐 다시 시도하십시오.",
+      "provenance_store": "{{app}}에서 채용 — ‘{{agent}}’ (v{{version}})",
+      "provenance_store_unversioned": "{{app}}에서 채용 — ‘{{agent}}’"
     }
   },
   "privacyDisclosure": {

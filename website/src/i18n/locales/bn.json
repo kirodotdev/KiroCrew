@@ -5655,7 +5655,8 @@
         "oncall_ops": "অন-কল ও অপস",
         "other": "অন্যান্য",
         "productivity": "উৎপাদনশীলতা",
-        "research_writing": "রিসার্চ ও লেখালেখি"
+        "research_writing": "রিসার্চ ও লেখালেখি",
+        "templates": "ক্রু সাথী টেমপ্লেট"
       },
       "categoryRail": {
         "add_source": "সোর্স যোগ করুন",
@@ -14919,7 +14920,10 @@
       "filter_source_package_description": "ক্ষমতা প্যাকেজ দ্বারা ইনস্টল করা ক্রু",
       "member_count_filtered": "{{count}} জনের মধ্যে {{shown}} জন সদস্য",
       "setup_in_crew_manager": "ব্যক্তিগত মেমোরি সেট আপ করুন",
-      "own_copy_of": "{{template}} — কাস্টমাইজ করা কপি"
+      "own_copy_of": "{{template}} — কাস্টমাইজ করা কপি",
+      "provenance_apps_error": "ইনস্টল করা অ্যাপ পড়া যায়নি, তাই টেমপ্লেটের অ্যাপ তার আইডি দিয়ে দেখানো হচ্ছে। কিছুই হারায়নি; আবার চেষ্টা করতে রিলোড করুন।",
+      "provenance_store": "{{app}} থেকে নিয়োগ — “{{agent}}” (v{{version}})",
+      "provenance_store_unversioned": "{{app}} থেকে নিয়োগ — “{{agent}}”"
     }
   },
   "privacyDisclosure": {

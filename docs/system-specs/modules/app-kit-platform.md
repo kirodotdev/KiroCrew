@@ -397,7 +397,106 @@ symlink first, so reading afterwards would find nothing). An unreadable prior fi
 means "nothing to preserve", never "abort the refresh".
 
 Writer: `apps/bridges.py::_register_agents`, `_preserve_user_agent_edits`,
-`_read_agent_config`.
+`_read_agent_config`. The per-agent rendering is `render_app_agent_spec` (containment,
+placeholder rendering, own servers, managed refs, MCP policy, prompt, preserved
+edits, the `autoApprove` strip -- in that order, writing nothing): registration
+writes what it returns, and the store hire renders the same agent with
+`keep_user_edits=False` to check that the materialized file it is about to copy is
+exactly this rendering of the pinned shipped definition (`crew-mode.md` "Hire").
+Registration also records the **fingerprint** of the bytes it wrote
+(`agent_state.set_shared_template_digest`, `sha256:<hex>`, keyed by the file stem)
+and deregistration forgets it; the KAS projection refuses to inject a materialized
+file whose bytes no longer match the record, since the file lives in the
+agent-writable agents directory and a definition rewritten outside the gateway must
+not run as the publisher's (`crew-mode.md` "Hire", *Shared template files are
+read-only to members*). The gateway's own rewrites of the file
+(`agent._atomic_json_write`) re-record it, so the field-wise refresh above and the
+editor's edits keep the file injectable.
+
+### 3.1 An app can offer its agents as crew templates (`crew.templates`)
+
+A **crew template** is a store listing, not a runtime concept: one of the app's
+shipped agents plus a job card. The manifest's `crew` section declares them:
+
+```json
+"crew": {"templates": [{"agent": "agents/triage.json", "role": "Oncall Triage Engineer",
+                        "triggers": "incident, prod outage",
+                        "initial_briefing": "briefings/triage.md",
+                        "duty": "Triages every page, correlates it with deploys.",
+                        "description": "Owns a paging queue end to end: ...",
+                        "category": "ops",
+                        "tags": ["Incident triage", "Deploy correlation", "Rollback plans"],
+                        "starter_prompts": ["What paged overnight?",
+                                            {"text": "Draft a rollback plan.",
+                                             "attachment": "incident-4471.md"}],
+                        "avatar": {"kind": "ghost", "traits": {"eyes": "visor", "tile": "#de2121"}},
+                        "digests": {"agent": "sha256:<hex>", "initial_briefing": "sha256:<hex>"}}]}
+```
+
+Typed (`apps/manifest.py::CrewConfig`, `CrewTemplate`) rather than left to `extra`,
+for the same reason `contributes` is: `role` and `triggers` become a hired member's
+wrapper fields and `initial_briefing` becomes the member's own briefing -- text that
+reaches the member's prompt -- so they are CHECKED on every parse. `validate()`
+requires `agent` to be one of the manifest's `agents` paths (a template whose agent
+names no shipped file fails install, not the first hire), `role` non-empty and at
+most 80 characters, `triggers` at most 2000, `initial_briefing` a `.md` path inside
+the app root, at most 8 templates and no duplicate agent -- and, with the root known, no two files under `agents` that register under one **effective name** (declared `name`, else the stem: the bridge materializes each as `<app>--<name>`, so two such files overwrite each other and a hire would copy whichever registered last; `_duplicate_effective_agent_names`, compared case-folded because the materialized files are one file on a case-insensitive filesystem); a non-object `crew`, a
+non-array `templates` or non-object entries fail validation instead of coercing to
+"offers nothing" and vanishing from `to_dict`. The rest of the card is what the
+**hire gallery** (the Crew Members page's one hire entry point, `crew-mode.md`
+"Hire") renders, and is bounded the same way because it becomes rendered text or a
+face on the member: `duty` (the one-line summary on the card face, at most 160),
+`description` (the detail layer's prose, at most 500), `category` (one of
+`CREW_CATEGORIES` -- `engineering`, `ops`, `research`, `release`, `product`,
+`writing`, `other`; case-folded; unset or unknown files under `other` via
+`CrewTemplate.scenario`, and a declared unknown value fails validation), `tags` (at
+most 6, each non-empty and at most 32; the face shows three), `starter_prompts` (at
+most 3; a bare string or `{text, attachment?}`, text at most 300, `attachment` a
+short file NAME with no path), `avatar` (a **ghost only** -- `{"kind": "ghost",
+"traits": {...}}` -- checked by the crew record's own validator
+`config.sections._safe_avatar`, since a picture or a pack is host state no manifest
+can ship; the hire copies `CrewTemplate.member_avatar`, the normalized form, onto
+the member row). A card is one agent, hired one member at a time.
+`digests` pins the CONTENT the card points at -- `sha256:<64 hex>` over the bytes of
+the `agent` file and of the `initial_briefing` (only those two keys; a briefing digest
+needs a briefing) -- and is part of the card `signing_payload` covers, so it is what
+extends a signed manifest's signature to the files: the manifest signature alone
+authenticates the posting, not the agent definition or the briefing it points at,
+which are the text that becomes the member's own definition and prompt. The hire
+verifies them (`crew-mode.md` "Hire"). A
+field present with the wrong shape (a string `tags`, a number `starter_prompts`, a string
+`avatar`) fails validation as `<field> has the wrong shape` rather than reading as
+absent. The section is part of
+`signing_payload()` when non-empty (a manifest signed before templates existed keeps
+its bytes), so the job card is authenticated by the publisher's signature like a
+cron's command. The registry forwards it under `manifest.crew` (`registry.py`
+`_merge_manifest`) and installed apps carry it in `manifest`, so the store files an
+app whose ONLY offering is templates -- cards, and none of the surfaces a user
+browses a tool category for (a UI, crons, skills, MCP servers) -- under
+**Crewmate templates** (category id `Templates`; label `components.appstore.categories.templates`, named by what it offers so it does not collide with the drawer's *Agent template* row -- and rendered through `categoryLabel(id)` wherever a category is shown to a reader: the Discover rail's items, the list heading over a picked category and the featured card's subtitle, which used to print the raw id; `categories.ts::categoryFor(tags, manifest)` via `isTemplateOnlyApp`,
+before any tag matcher; there is no tag spelling, the manifest is the mechanism),
+while a tool app that also ships a card keeps the category its tags earn, because
+categories are exclusive and a browser of On-call & Ops must still find the ops tool
+that happens to offer a role. The Crew Members hire gallery lists each card of every
+ENABLED installed app beside the built-in and local agent files (`crewTemplatesOf`
+reads the cards defensively from the installed listing). The shipped spec and the initial
+briefing are read through `pinned_fs.read_file_pinned` at hire: the app's tree is
+the app's to change after install, and a by-name read there would follow a planted
+link into a prompt-visible briefing.
+
+Hiring from a template is `POST /api/members` with
+`source: {kind: "store", app, agent}` -- see `crew-mode.md`, "Hire". The member is
+created against the app's materialized copy (`<app>--<agent>`, section 3) and then
+receives its OWN copy of it, exactly as a local hire does; the card's `role` and
+`triggers` are defaults the caller's own values override (a key the caller sent,
+even as an empty string, is the caller's value); `initial_briefing` is copied once
+into `members/<slug>/briefing.md` and never touched again. Only an enabled app can
+be hired from (its agents are materialized only while enabled); admission runs
+again at hire time against the manifest as it is then (409
+`app_admission_denied`; builtins exempt, as on enable), and the `crew` section is
+validated again against the app tree as it is then -- an app that rewrites a card
+path after install to point outside its root is refused (409 `template_invalid`),
+not read.
 
 ## 4. A generated prompt is pinned through the app's policy
 

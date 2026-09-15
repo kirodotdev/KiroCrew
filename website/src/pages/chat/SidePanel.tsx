@@ -1057,8 +1057,14 @@ export default function SidePanel({
             background) is what lets a body survive a chat switch: its key never
             changes, so React never remounts the iframe or the app's `AppHost`. */}
         {/* Panel-level and above the bodies, so a failed app list is reported even though
-            the pruning it causes has already moved focus off every contributed tab. */}
-        <AppPanelTabsErrorNotice />
+            the pruning it causes has already moved focus off every contributed tab.
+            Withheld while the host's LEADING tab is the one shown (the Crew page's
+            crewmate summary): that body reads the same apps list for its Source row
+            and reports the failure there, in its own words, under the row it
+            affects -- a second, raw notice overlaying its identity row read as two
+            problems (and as text printed over text). Contributed tabs are not on
+            that page, so nothing the notice exists for is silenced there. */}
+        {!(leadingTab && activeId === leadingTab.id) && <AppPanelTabsErrorNotice />}
         {allAppTabs.map(t => {
           // Key and visibility BOTH carry the slot. A tool-call id is only unique
           // within a session -- `chat.mcpApps` keys by session + tool-call id for

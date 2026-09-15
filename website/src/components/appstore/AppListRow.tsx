@@ -48,8 +48,8 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
             </BadgeCheck>
           )}
         </div>
-        <div className="flex items-center gap-1.5 text-[12px] text-muted min-w-0" title={`${app.author} · ${categoryLabel(categoryFor(app.tags))} · ${sourceLabel(app)}${typeof app.stargazersCount === 'number' ? ` · ${i18nT('components.appstore.appListRow.github_stars')}: ${fmtCompact(app.stargazersCount)}` : ''}`}>
-          <span className="truncate min-w-0">{app.author} · {categoryLabel(categoryFor(app.tags))} · {sourceLabel(app)}</span>
+        <div className="flex items-center gap-1.5 text-[12px] text-muted min-w-0" title={`${app.author} · ${categoryLabel(categoryFor(app.tags, app.manifest))} · ${sourceLabel(app)}${typeof app.stargazersCount === 'number' ? ` · ${i18nT('components.appstore.appListRow.github_stars')}: ${fmtCompact(app.stargazersCount)}` : ''}`}>
+          <span className="truncate min-w-0">{app.author} · {categoryLabel(categoryFor(app.tags, app.manifest))} · {sourceLabel(app)}</span>
           {/* Publisher-baked GitHub star count — only git-type third-party rows
               carry the field (built-ins never do), so presence is the gate.
               Kept OUTSIDE the truncating span with shrink-0: on a narrow card

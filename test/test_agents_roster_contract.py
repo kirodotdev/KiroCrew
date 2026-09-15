@@ -79,6 +79,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         "telegram_account",
         "starred",
         "legacy_key",
+        # Template provenance renders on the Crew Members drawer (GET /api/members).
+        "template",
+        "template_version",
     }
 )
 

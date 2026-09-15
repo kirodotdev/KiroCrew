@@ -30,6 +30,10 @@ describe('contributed panel tab body', () => {
     // means every contributed tab is pruned from the strip, `activeId` moves elsewhere,
     // and the body's wrapper goes to `display:none`. Panel level survives that.
     expect(src).toContain('<AppPanelTabsErrorNotice />')
+    // ...except while the host's leading tab (the Crew page's crewmate summary) is
+    // shown: that body reports the same failure under its Source row, and two
+    // notices for one failure read as two problems.
+    expect(src).toContain('{!(leadingTab && activeId === leadingTab.id) && <AppPanelTabsErrorNotice />}')
     expect(src).toMatch(/<ErrorNotice message=\{errMessage\(error\)\} askAgent \/>/)
     // Above the bodies, which are `absolute inset-0` and would paint over a
     // normal-flow sibling; anchored to the top edge so it does not blanket the body.

@@ -57,6 +57,14 @@ _MIRRORED_FROM = "mirrored_from"
 _MIRRORED_STAT = "mirrored_stat"
 _FORKED_FROM = "forked_from"
 _PRIVATE_TO = "private_to"
+#: The bytes a SHARED template file last held when a trusted writer put
+#: them there (``sha256:<hex>``). Recorded by the app bridge when it
+#: materializes ``<app>--<agent>.json`` and refreshed by every trusted
+#: rewrite of that file (``agent._atomic_json_write``); read by the KAS
+#: projection, which refuses to inject a file whose content does not
+#: match. Absent for a file no bridge materialized (a hand-written spec,
+#: a private copy), which is then not fingerprinted.
+_SHARED_SHA256 = "shared_sha256"
 
 # Guards in-process read-modify-write races (e.g. dashboard PATCH vs gateway
 # refresh). ``atomic_write`` makes each WRITE atomic, but two processes can
@@ -499,6 +507,47 @@ def set_fork_info(name: str, forked_from: str, private_to: str) -> None:
         entry[_FORKED_FROM] = str(forked_from)
         entry[_PRIVATE_TO] = str(private_to)
         data[name] = entry
+        _write(data)
+
+
+def get_shared_template_digest(name: str) -> str | None:
+    """The ``sha256:<hex>`` a trusted writer last recorded for shared
+    template *name*, or None when the file is not a fingerprinted one.
+
+    Strict on an unreadable sidecar: the caller is a spawn-time gate, and
+    "cannot verify" must not degrade to "not fingerprinted".
+    """
+    with _lock:
+        entry = _entry(_read(strict=True), name)
+    digest = entry.get(_SHARED_SHA256)
+    return digest if isinstance(digest, str) and digest.startswith("sha256:") else None
+
+
+def set_shared_template_digest(name: str, digest: str) -> None:
+    """Record the fingerprint of the bytes a trusted writer just put in
+    shared template *name*'s file (``sha256:<hex>``)."""
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry[_SHARED_SHA256] = str(digest)
+        data[name] = entry
+        _write(data)
+
+
+def clear_shared_template_digest(name: str) -> None:
+    """Forget *name*'s fingerprint (the materialized file was removed)."""
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict) or _SHARED_SHA256 not in entry:
+            return
+        entry.pop(_SHARED_SHA256, None)
+        if entry:
+            data[name] = entry
+        else:
+            data.pop(name, None)
         _write(data)
 
 

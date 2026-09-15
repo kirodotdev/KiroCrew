@@ -5835,7 +5835,8 @@
         "oncall_ops": "Дежурства и эксплуатация",
         "other": "Другое",
         "productivity": "Продуктивность",
-        "research_writing": "Исследования и тексты"
+        "research_writing": "Исследования и тексты",
+        "templates": "Шаблоны напарников"
       },
       "categoryRail": {
         "add_source": "Добавить источник",
@@ -15313,7 +15314,10 @@
       "filter_source_package_description": "Команды, установленные пакетами возможностей",
       "member_count_filtered": "{{shown}} из {{count}} участников",
       "setup_in_crew_manager": "Настроить личную память",
-      "own_copy_of": "{{template}} — настроенная копия"
+      "own_copy_of": "{{template}} — настроенная копия",
+      "provenance_apps_error": "Не удалось прочитать установленные приложения; приложение шаблона показано по идентификатору. Ничего не потеряно; перезагрузите страницу, чтобы повторить.",
+      "provenance_store": "Нанят из {{app}} — «{{agent}}» (v{{version}})",
+      "provenance_store_unversioned": "Нанят из {{app}} — «{{agent}}»"
     }
   },
   "privacyDisclosure": {

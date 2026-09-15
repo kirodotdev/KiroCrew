@@ -5745,7 +5745,8 @@
         "oncall_ops": "Guardias y operaciones",
         "other": "Otros",
         "productivity": "Productividad",
-        "research_writing": "Investigación y escritura"
+        "research_writing": "Investigación y escritura",
+        "templates": "Plantillas de compañeros"
       },
       "categoryRail": {
         "add_source": "Añadir origen",
@@ -15116,7 +15117,10 @@
       "filter_source_package_description": "Crews instalados por paquetes de capacidades",
       "member_count_filtered": "{{shown}} de {{count}} miembros",
       "setup_in_crew_manager": "Configurar la memoria privada",
-      "own_copy_of": "{{template}} — copia personalizada"
+      "own_copy_of": "{{template}} — copia personalizada",
+      "provenance_apps_error": "No se pudieron leer las apps instaladas; la app de la plantilla se muestra por su id. No se ha perdido nada; recarga para reintentar.",
+      "provenance_store": "Contratado desde {{app}}: «{{agent}}» (v{{version}})",
+      "provenance_store_unversioned": "Contratado desde {{app}}: «{{agent}}»"
     }
   },
   "privacyDisclosure": {

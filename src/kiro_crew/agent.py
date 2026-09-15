@@ -201,17 +201,44 @@ def _atomic_json_write(path: Path, data: dict) -> None:
 
     Uses mkstemp for a unique temp file per call so concurrent writers
     to the same path don't clobber each other's temp files.
+
+    A SHARED TEMPLATE -- an agent file the app bridge materialized and
+    fingerprinted (``agent_state.get_shared_template_digest``) -- has its
+    fingerprint re-recorded here, after the bytes land: every trusted
+    rewrite of such a file (the editor's PATCH, a model reset, the spec
+    migration) funnels through this writer, and the KAS projection refuses
+    a file whose content the record does not vouch for. A file nobody
+    fingerprinted (a hand-written spec, a crew's private copy, a non-agent
+    JSON) is left alone. File and record move as ONE transaction: the
+    record is checked (strictly -- an unreadable sidecar refuses the write
+    before a byte lands) and the previous bytes are kept first; when the
+    record cannot be written after the replace, the previous bytes are put
+    back so what is on disk still matches the digest the record holds, and
+    the failure is raised -- the caller's edit did not happen, and the
+    template stays spawnable. Only a rollback that itself fails leaves the
+    two apart, and that is logged as such.
     """
+    text = json.dumps(data, indent=2) + "\n"
+    fingerprinted = _is_fingerprinted_shared_template(path)
+    previous: bytes | None = None
+    if fingerprinted:
+        try:
+            previous = path.read_bytes()
+        except FileNotFoundError:
+            previous = None
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # ``newline=""``: the bytes on disk are exactly ``text.encode("utf-8")``
+        # on every platform, which is what the fingerprint below is taken
+        # over (a translated ``\r\n`` would never match the KAS projection's
+        # hash of the raw file).
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             try:
                 mode = stat.S_IMODE(path.stat().st_mode)
             except FileNotFoundError:
                 mode = 0o644
             platform_compat.fchmod_safe(f.fileno(), mode)
-            json.dump(data, f, indent=2)
-            f.write("\n")
+            f.write(text)
         replace_with_retry(tmp_name, path)
     except BaseException:
         try:
@@ -219,7 +246,64 @@ def _atomic_json_write(path: Path, data: dict) -> None:
         except OSError:
             pass
         raise
+    if fingerprinted:
+        try:
+            agent_state.set_shared_template_digest(
+                path.stem, "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+            )
+        except BaseException:
+            _restore_previous_bytes(path, previous, mode)
+            raise
     _notify_if_config_write(path)
+
+
+def _is_fingerprinted_shared_template(path: Path) -> bool:
+    """Whether *path* is a shared template the record fingerprints: a ``.json``
+    directly in the agents directory with a recorded digest. Strict on the
+    record (an unreadable sidecar raises rather than reading as "not
+    fingerprinted", so a rewrite never lands with a record that cannot be
+    made to follow it). See :func:`_atomic_json_write`."""
+    if path.suffix != ".json":
+        return False
+    try:
+        in_agents_dir = os.path.normpath(str(path.parent)) == os.path.normpath(
+            str(kiro_agents_dir_path())
+        )
+    except Exception:  # noqa: BLE001 - an unresolvable agents dir is not this file's
+        return False
+    if not in_agents_dir:
+        return False
+    return agent_state.get_shared_template_digest(path.stem) is not None
+
+
+def _restore_previous_bytes(path: Path, previous: bytes | None, mode: int) -> None:
+    """Put a fingerprinted template's previous bytes back after its record
+    could not be updated (see :func:`_atomic_json_write`): tmp + replace, so
+    the file is never partial; ``None`` (there was no file) removes it. A
+    rollback that fails is logged -- file and record now disagree and KAS
+    refuses the template until the next trusted rewrite -- and swallowed, so
+    the caller sees the failure that caused it."""
+    try:
+        if previous is None:
+            path.unlink(missing_ok=True)
+            return
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                platform_compat.fchmod_safe(f.fileno(), mode)
+                f.write(previous)
+            replace_with_retry(tmp_name, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
+    except Exception:  # noqa: BLE001 - reported, never masks the record failure
+        logger.error(
+            "agent %s: fingerprint record failed and the previous bytes could not be "
+            "restored; the file and its record disagree until the next trusted rewrite",
+            path.stem,
+            exc_info=True,
+        )
 
 
 def _notify_if_config_write(path: Path) -> None:

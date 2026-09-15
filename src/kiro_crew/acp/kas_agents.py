@@ -49,13 +49,15 @@ auto-approve input Crew's governance ceiling has filtered.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import agent_state
 from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
-from kiro_crew.agent_discovery import AmbiguousAgentSpecError, spec_by_declared_name
+from kiro_crew.agent_discovery import AmbiguousAgentSpecError, spec_by_declared_name_with_source
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import is_sensitive_path
@@ -577,27 +579,147 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     on every supported version, so an unsearchable agents dir reaches this
     function as an ``OSError`` and the conversion is what makes the failure
     uniform.
+
+    A SHARED TEMPLATE -- a file the app bridge materialized as
+    ``<app>--<agent>.json`` -- carries a recorded fingerprint
+    (``agent_state.get_shared_template_digest``: the bytes its last trusted
+    writer put there). The bytes read HERE must match it, or the spec is
+    refused: the file lives in the agent-writable agents directory, and a
+    definition rewritten by something other than the gateway (a member's
+    tool with the sandbox off, a hand edit that bypassed the editor) must not
+    be what the next session runs as the publisher's. Fail CLOSED and say so
+    (log + security event); the repair is a re-materialization (re-enable the
+    app, or restart the gateway), which records the fingerprint afresh. A
+    file with no record -- a hand-written spec, a crew's private copy -- is
+    not fingerprinted and loads as before. An unreadable record is a refusal
+    too, for the ids the record can fingerprint (the bridge's ``<app>--<agent>``
+    shape): "cannot verify" is not "not fingerprinted"; for every other id the
+    record holds nothing, so the failure is logged and the spec loads as the
+    plain file it is (``_recorded_fingerprint``).
+
+    The two meet at the record: an id WITH a recorded fingerprint is read from
+    ``<agent_id>.json`` alone -- the record vouches for those bytes at that
+    name, and a spec elsewhere that merely declares the id would be exactly
+    the substitution the fingerprint exists to refuse -- so the declared-name
+    scan runs only for ids the record does not know. And a spec the scan DOES
+    find is checked against the fingerprint recorded for the FILE it came
+    from: an app's agent is materialized as ``<app>--<agent>.json`` and
+    dispatched by its declared bare name, so the normal path to it is this
+    scan, and the record is keyed by the stem -- the bytes the scan parsed
+    must match ``<app>--<agent>``'s record or the spec is refused, exactly as
+    a direct read of that file would be.
     """
     path = agents_dir / f"{agent_id}.json"
+    recorded = _recorded_fingerprint(agent_id, path)
+    if recorded is None:
+        try:
+            found = spec_by_declared_name_with_source(
+                agents_dir, agent_id, operation="kas_agent_projection", source="unknown"
+            )
+        except AmbiguousAgentSpecError as exc:
+            raise KasAgentTranslationError(str(exc)) from exc
+        except OSError as exc:
+            raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
+        if found is not None:
+            declared, declared_path, declared_bytes = found
+            # The record for the file's own stem, checked against the bytes the
+            # scan parsed -- never a reopen.
+            recorded_for_file = _recorded_fingerprint(declared_path.stem, declared_path)
+            _require_recorded_fingerprint(
+                declared_path.stem, declared_path, declared_bytes, recorded_for_file
+            )
+            return declared
     try:
-        declared = spec_by_declared_name(
-            agents_dir, agent_id, operation="kas_agent_projection", source="unknown"
-        )
-    except AmbiguousAgentSpecError as exc:
-        raise KasAgentTranslationError(str(exc)) from exc
+        data = path.read_bytes()
     except OSError as exc:
         raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
-    if declared is not None:
-        return declared
+    _require_recorded_fingerprint(agent_id, path, data, recorded)
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
+        raw = json.loads(data.decode("utf-8"))
     except ValueError as exc:
         raise KasAgentTranslationError(f"agent spec {path} is not valid JSON: {exc}") from exc
     if not isinstance(raw, dict):
         raise KasAgentTranslationError(f"agent spec {path} is not an object")
     return raw
+
+
+#: The bridge materializes an app's agent as ``<app>--<agent>.json`` and records
+#: its fingerprint under that stem (``bridges._namespace``); the trusted
+#: rewrite funnel re-records only a file that already has a record. So the
+#: record's key space is the namespaced shape, and it is the ONLY shape an
+#: unreadable record can be withholding a fingerprint for.
+_NAMESPACED = "--"
+
+
+def _recorded_fingerprint(agent_id: str, path: Path) -> str | None:
+    """The fingerprint the record holds for *agent_id*, ``None`` for an id it
+    does not fingerprint -- read ONCE per projection, so the scan decision and
+    the byte check cannot disagree.
+
+    An unreadable record refuses a bridge-materialized id
+    (``KasAgentTranslationError``): "cannot verify" must not degrade to "not
+    fingerprinted" for a file the record may vouch for, or the caller would fall
+    back to a scan the record cannot check. For every other id -- a hand-written
+    spec, a crew's private copy, a package's file -- the record never holds a
+    fingerprint, so an unreadable sidecar withholds nothing about the file and
+    is logged rather than turned into a session that will not start: a corrupt
+    sidecar (disk trouble, not tampering -- agents cannot write it) must not
+    take the whole harness down with the app templates it actually protects.
+    """
+    try:
+        return agent_state.get_shared_template_digest(agent_id)
+    except Exception as exc:  # noqa: BLE001 - an unreadable record cannot vouch
+        if _NAMESPACED in agent_id:
+            raise KasAgentTranslationError(
+                f"agent spec {path} could not be checked against its recorded fingerprint: {exc}"
+            ) from exc
+        logger.warning(
+            "agent-state sidecar unreadable while projecting %r (%s); the id is outside the "
+            "fingerprinted shape, so it loads unverified as a plain spec",
+            agent_id,
+            exc,
+        )
+        return None
+
+
+def _require_recorded_fingerprint(
+    agent_id: str, path: Path, data: bytes, recorded: str | None
+) -> None:
+    """Refuse *data* when *agent_id* is a fingerprinted shared template and the
+    bytes do not match *recorded* (the fingerprint :func:`_recorded_fingerprint`
+    read for this projection). See :func:`load_agent_spec`."""
+    if recorded is None:
+        return
+    actual = "sha256:" + hashlib.sha256(data).hexdigest()
+    if actual == recorded:
+        return
+    logger.error(
+        "refusing to inject shared template %r on KAS: its content no longer matches "
+        "the fingerprint recorded when the gateway materialized it (%s on disk, %s "
+        "recorded); re-enable the app or restart the gateway to re-materialize it",
+        agent_id,
+        actual,
+        recorded,
+    )
+    # Recorded like the auto-approve withhold above: this is the one
+    # projection-time refusal whose input is a file the gateway did not just
+    # write, so the audit trail is the only durable trace. Never let the audit
+    # change the outcome -- the refusal is the safe direction.
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="shared_template_fingerprint_mismatch",
+            outcome="refused",
+            source="kas_agent_projection",
+            resources=(f"agent {agent_id}: on disk {actual}, recorded {recorded}; not injected"),
+        )
+    except Exception:  # noqa: BLE001 - audit must not break the refusal
+        logger.debug("SEL audit unavailable for KAS fingerprint refusal", exc_info=True)
+    raise KasAgentTranslationError(
+        f"shared template {agent_id!r} does not match its recorded fingerprint; the file "
+        "was changed outside the gateway. Re-enable the app (or restart the gateway) to "
+        "re-materialize it"
+    )
 
 
 def build_kas_custom_agents(

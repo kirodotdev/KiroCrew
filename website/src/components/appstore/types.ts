@@ -59,6 +59,10 @@ export type RegistryApp = {
   installedVersion?: string
   enabled?: boolean
   updateAvailable?: boolean
+  /** Runtime manifest fields the registry forwards (`registry.py` `_merge_manifest`),
+   *  read the same way as an installed app's `app.manifest.*`. `crew` is the
+   *  templates the app offers for hire, checked by `crewTemplatesOf`. */
+  manifest?: { crew?: unknown; platform?: { requiresDesktopApp?: boolean } }
   origin?: string     // "builtin" | "registry" | "local" | "external"
   resources?: string  // "gateway" | "app"
   lifecycle?: string  // "gateway" | "app" | "locked"
@@ -127,6 +131,9 @@ export type InstalledApp = {
       commands?: unknown
       panelTabs?: unknown
     }
+    /** The templates this app offers for hire. Left `unknown`: `crewTemplatesOf`
+     *  in `categories.ts` is the one reader that decides what a card IS. */
+    crew?: unknown
     permissions?: { api?: string[]; events?: string[]; mcpTools?: string[]; storage?: boolean; cron?: boolean; network?: boolean }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string

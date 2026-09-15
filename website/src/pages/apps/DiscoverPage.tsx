@@ -28,7 +28,7 @@ import CategoryRail from '../../components/appstore/CategoryRail'
 import AppListRow from '../../components/appstore/AppListRow'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
 import SourcesPopover from '../../components/appstore/SourcesPopover'
-import { categoryFor, type Category } from '../../components/appstore/categories'
+import { categoryFor, categoryLabel, type Category } from '../../components/appstore/categories'
 import type { RegistryApp } from '../../components/appstore/types'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
@@ -277,14 +277,14 @@ function DiscoverPageBody() {
   const filteredBrowse = useMemo(() => {
     const q = query.trim().toLowerCase()
     const list = browseApps.filter(a => {
-      if (category !== 'all' && categoryFor(a.tags) !== category) return false
+      if (category !== 'all' && categoryFor(a.tags, a.manifest) !== category) return false
       if (!q) return true
       return a.displayName.toLowerCase().includes(q)
         || a.description.toLowerCase().includes(q)
         || (a.tags || []).some(t => t.toLowerCase().includes(q))
     })
     return list.sort((a, b) => sort === 'category'
-      ? compareText(categoryFor(a.tags), categoryFor(b.tags)) || compareText(a.displayName, b.displayName)
+      ? compareText(categoryFor(a.tags, a.manifest), categoryFor(b.tags, b.manifest)) || compareText(a.displayName, b.displayName)
       : compareText(a.displayName, b.displayName))
   }, [browseApps, category, query, sort])
 
@@ -589,7 +589,7 @@ function DiscoverPageBody() {
 
             <div className="flex items-baseline justify-between mt-2 mb-3">
               <h3 className="text-[17px] font-semibold text-text-strong">
-                {category === 'all' ? i18nT('pages.appsPage.all_apps') : category}
+                {category === 'all' ? i18nT('pages.appsPage.all_apps') : categoryLabel(category)}
               </h3>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-[224px_minmax(0,1fr)] gap-6 items-start">

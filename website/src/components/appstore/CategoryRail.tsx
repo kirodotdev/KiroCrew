@@ -9,7 +9,7 @@
  *    action that opens the Sources popover.
  */
 import { BadgeCheck, Database, Plus } from 'lucide-react'
-import type { Category } from './categories'
+import { categoryLabel, type Category } from './categories'
 
 import { i18nT } from '../../i18n/t'
 export type SourceRow = { name: string; label: string; count: number; builtin: boolean }
@@ -44,7 +44,9 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
       <div>
         <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.categories')}</div>
         {item(i18nT('components.appstore.categoryRail.all_apps'), total, 'all')}
-        {categories.map(({ category, count }) => item(category, count, category))}
+        {/* The LABEL, not the id: ids are stable English keys (`Templates`), the
+            label is what the catalog says for them (`Crewmate templates`). */}
+        {categories.map(({ category, count }) => item(categoryLabel(category), count, category))}
       </div>
       <div>
         <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.sources')}</div>

@@ -961,6 +961,22 @@ export default function MembersPage() {
     enabled: summaryVisible,
   })
   const defaultAgentQ = useQuery({ ...defaultAgentQuery, enabled: summaryVisible })
+  // The drawer's Source row names a template's app by its DISPLAY name, the
+  // way the hire form's picker did ("Oncall pack", not "oncall-pack"), so one
+  // app is not two words across the two surfaces. Read only while a member
+  // hired from a template is open. The raw id is the fallback when the app is
+  // gone (provenance must still say something); a FAILED read is said under the
+  // row through ErrorNotice, never passed off as the app having no display name.
+  const appsForProvenance = useQuery({
+    queryKey: ['apps'],
+    queryFn: () => api.listApps(),
+    enabled: !!active?.template,
+  })
+  const templateAppLabel = useCallback((template: string) => {
+    const appName = template.split('/')[0]
+    const app = appsForProvenance.data?.find((a) => a.name === appName)
+    return app?.manifest?.displayName || appName
+  }, [appsForProvenance.data])
   const wakeSources = [cronsQuery, hooksQuery, defaultAgentQ]
   const wakeFailed = wakeSources.some((q) => q.data === undefined && q.isError)
   const wakeLoaded = wakeFailed || wakeSources.every((q) => q.data !== undefined)
@@ -2535,13 +2551,40 @@ export default function MembersPage() {
                 {/* The row's normalized `source` (kirocrew | builtin | package),
                     in the filter menu's own words so the drawer and the filter
                     never name one origin two ways. */}
-                {active.source === 'builtin'
-                  ? t('pages.membersPage.filter_source_builtin')
-                  : active.source === 'kirocrew'
-                    ? t('pages.membersPage.provenance_local')
-                    : t('pages.membersPage.filter_source_package')}
+                {/* "Hired from <App> — “<agent>”": the row opens with the VERB,
+                    not with "Template", because the Agent template row two lines
+                    down already says "template" for the crewmate's own file --
+                    two meanings of one word in adjacent rows read as a
+                    contradiction. The agent id is quoted (it reads as prose
+                    otherwise, beside members also named triage), and the version
+                    parenthetical is dropped rather than printed as "(v?)" when
+                    the row records none. */}
+                {active.template
+                  ? t(
+                      active.template_version
+                        ? 'pages.membersPage.provenance_store'
+                        : 'pages.membersPage.provenance_store_unversioned',
+                      {
+                        app: templateAppLabel(active.template),
+                        agent: active.template.slice(active.template.indexOf('/') + 1),
+                        version: active.template_version,
+                      },
+                    )
+                  : active.source === 'builtin'
+                    ? t('pages.membersPage.filter_source_builtin')
+                    : active.source === 'kirocrew'
+                      ? t('pages.membersPage.provenance_local')
+                      : t('pages.membersPage.filter_source_package')}
               </dd>
             </div>
+            {active.template && appsForProvenance.isError && (
+              <ErrorNotice
+                message={t('pages.membersPage.provenance_apps_error')}
+                variant="inline"
+                askAgent
+                testId="member-config-provenance-error"
+              />
+            )}
             <div className="flex gap-2">
               <dt className="w-24 shrink-0 text-muted">
                 {t('pages.membersPage.agent_template')}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { categoryFor, categoryCounts } from '../components/appstore/categories'
+import { categoryFor, categoryCounts, crewTemplatesOf } from '../components/appstore/categories'
 import { gradientFor } from '../components/appstore/gradient'
 import {
   sourceLabel,
@@ -35,6 +35,29 @@ describe('categoryFor', () => {
     expect(categoryFor(['pixel-art'])).toBe('Other')
     expect(categoryFor([])).toBe('Other')
     expect(categoryFor(undefined)).toBe('Other')
+  })
+
+  it('files an app whose ONLY offering is crew templates under Templates, whatever its tags', () => {
+    const crew = { templates: [{ agent: 'agents/triage.json', role: 'Oncall Triage Engineer' }] }
+    expect(categoryFor(['oncall', 'github'], { crew, agents: ['agents/triage.json'] })).toBe('Templates')
+    // There is no tag spelling: the manifest is the mechanism.
+    expect(categoryFor(['crew-template'])).toBe('Other')
+    // A tool app that also ships a card keeps the category its tags earn.
+    expect(categoryFor(['oncall'], { crew, ui: { entry: 'ui/dist/index.js' } })).toBe('On-call & Ops')
+    expect(categoryFor(['oncall'], { crew, crons: [{ name: 'c' }] })).toBe('On-call & Ops')
+    expect(categoryFor(['oncall'], { crew, skills: ['skills/x'] })).toBe('On-call & Ops')
+    expect(categoryFor(['oncall'], { crew, mcpServers: { m: {} } })).toBe('On-call & Ops')
+    // A manifest whose `crew` is malformed offers nothing: tags decide.
+    expect(categoryFor(['oncall'], { crew: 'nope' })).toBe('On-call & Ops')
+    expect(categoryFor(['oncall'], { crew: { templates: [{ agent: '', role: 'x' }, 3] } })).toBe('On-call & Ops')
+    expect(crewTemplatesOf({ crew })).toEqual(crew.templates)
+    expect(crewTemplatesOf({ crew: { templates: 'nope' } })).toEqual([])
+    expect(crewTemplatesOf(undefined)).toEqual([])
+    // The rail counts a template app where the filter files it.
+    expect(categoryCounts([{ tags: ['oncall'], manifest: { crew } }, { tags: ['oncall'] }])).toEqual([
+      { category: 'On-call & Ops', count: 1 },
+      { category: 'Templates', count: 1 },
+    ])
   })
 })
 

@@ -4970,6 +4970,10 @@ class KiroCrewConfig:
                         # parsed value back -- a collapsed copy would stop
                         # matching the overlay's key and re-create the phantom.
                         legacy_key=_verbatim_text(entry.get("legacy_key", "")),
+                        template=_member_identity.collapse_display_name(entry.get("template", "")),
+                        template_version=_member_identity.collapse_display_name(
+                            entry.get("template_version", "")
+                        ),
                         # Hand-editable config: a quoted "true" or a stray int
                         # must not become a truthy star, so only a real bool
                         # is honoured and anything else reads as un-starred.

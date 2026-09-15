@@ -42,7 +42,7 @@ import stat as _stat
 from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Callable
 
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
@@ -780,6 +780,24 @@ def read_file_pinned(
     max_bytes: int = 64 * 1024,
     refusal: type[Exception] = OSError,
 ) -> str:
+    """:func:`read_bytes_pinned`, decoded as UTF-8 with replacement.
+
+    The text form for notes and briefings; a caller that must see the file's
+    exact bytes (a content digest) reads them through :func:`read_bytes_pinned`
+    instead, since replacement is lossy.
+    """
+    return read_bytes_pinned(target, what=what, max_bytes=max_bytes, refusal=refusal).decode(
+        "utf-8", errors="replace"
+    )
+
+
+def read_bytes_pinned(
+    target: Path | str,
+    *,
+    what: str,
+    max_bytes: int = 64 * 1024,
+    refusal: type[Exception] = OSError,
+) -> bytes:
     """Read *target* without ever following a planted link. The READ counterpart
     to :func:`write_file_pinned`, with the identical chokepoint discipline.
 
@@ -798,6 +816,13 @@ def read_file_pinned(
     * The target is ``lstat``-ed THROUGH that descriptor and refused when it is a
       symlink or not a regular file. That check is portable, so it holds where
       ``O_NOFOLLOW`` does not.
+    * The target is refused when it has more than one link (``st_nlink != 1``),
+      checked on the OPENED descriptor: a hard link is the one planted name a
+      symlink check cannot see -- ``ln <credential> <briefing>`` puts the
+      credential's very inode at the briefing's name, regular file and all --
+      and a read through it would copy the credential into whatever the label
+      publishes (a member's briefing, a note). The same rule the pinned copy
+      applies to its sources.
 
     Windows degrades exactly as the write does: the ``lstat`` refusal of a
     non-regular target is KEPT (the leg that stops a PLANTED name from being
@@ -826,7 +851,9 @@ def read_file_pinned(
         if not _stat.S_ISREG(st.st_mode):
             raise refusal(f"refusing to read {what}: {target} is not a regular file")
         with open(target, "rb") as handle:
-            return handle.read(max_bytes).decode("utf-8", errors="replace")
+            if os.fstat(handle.fileno()).st_nlink != 1:
+                raise refusal(f"refusing to read {what}: {target} has more than one link")
+            return handle.read(max_bytes)
     dir_fd = pin_parent(parent, what=what, refusal=refusal)
     try:
         st = stat_at(dir_fd, name)
@@ -836,11 +863,95 @@ def read_file_pinned(
             raise refusal(f"refusing to read {what}: {target} is not a regular file")
         fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
         try:
-            return os.read(fd, max_bytes).decode("utf-8", errors="replace")
+            # On the descriptor, not the pre-open stat: the link count is what
+            # the inode says NOW, and a hard link swapped in between the stat
+            # and the open would otherwise be read.
+            if os.fstat(fd).st_nlink != 1:
+                raise refusal(f"refusing to read {what}: {target} has more than one link")
+            # Read to the bound or EOF: one ``os.read`` may return short, and a
+            # digest over a short read would refuse an intact file.
+            chunks: list[bytes] = []
+            remaining = max_bytes
+            while remaining > 0:
+                chunk = os.read(fd, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks)
         finally:
             os.close(fd)
     finally:
         os.close(dir_fd)
+
+
+def read_bytes_at(
+    root_fd: int,
+    relative: str | PurePath,
+    *,
+    what: str,
+    max_bytes: int = 64 * 1024,
+    refusal: type[Exception] = OSError,
+) -> bytes:
+    """Read *relative* under an already-pinned directory descriptor, never by path.
+
+    The companion of :func:`read_bytes_pinned` for a tree the caller has ALREADY
+    anchored (``open_dir_pinned`` on an app root): every component of *relative*
+    is opened with ``openat`` relative to the previous one and ``O_NOFOLLOW``, so
+    a directory swapped for a link AFTER the caller validated the tree (``agents``
+    -> ``~/.docker``) fails at that component instead of being followed. This is
+    the difference from :func:`read_bytes_pinned`, which re-resolves the parent
+    by path at read time and would pin whatever the swapped component points at
+    now. The final component must be a regular file with one link, checked on the
+    opened descriptor. *relative* must be a plain relative path: absolute, empty
+    and ``..`` components are refused before anything is opened. POSIX only
+    (``supports_pinned_walk``); the caller keeps the path flow elsewhere.
+    """
+    parts = PurePosixPath(str(relative)).parts
+    if (
+        not parts
+        or PurePosixPath(str(relative)).is_absolute()
+        or any(p in ("..", "") for p in parts)
+    ):
+        raise refusal(f"refusing to read {what}: {str(relative)!r} is not a plain relative path")
+    cur = root_fd
+    opened: list[int] = []
+    try:
+        for component in parts[:-1]:
+            try:
+                nxt = os.open(component, dir_flags(), dir_fd=cur)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise refusal(
+                        f"refusing to read {what}: the directory {component!r} on the way to "
+                        "it is a symbolic link or not a directory"
+                    ) from exc
+                raise
+            opened.append(nxt)
+            cur = nxt
+        name = parts[-1]
+        st = stat_at(cur, name)
+        if st is None:
+            raise FileNotFoundError(f"{what} is not there: {str(relative)}")
+        if not _stat.S_ISREG(st.st_mode):
+            raise refusal(f"refusing to read {what}: {str(relative)} is not a regular file")
+        fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=cur)
+        try:
+            if os.fstat(fd).st_nlink != 1:
+                raise refusal(f"refusing to read {what}: {str(relative)} has more than one link")
+            chunks: list[bytes] = []
+            remaining = max_bytes
+            while remaining > 0:
+                chunk = os.read(fd, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks)
+        finally:
+            os.close(fd)
+    finally:
+        close_all(opened)
 
 
 def lstat_by_name(target: Path | str) -> os.stat_result | None:

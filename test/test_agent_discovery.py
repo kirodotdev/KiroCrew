@@ -1070,9 +1070,9 @@ class TestSpecByDeclaredName:
         handed_out: list[weakref.ref] = []
         retained_mid_scan: list[str] = []
 
-        def _reader(path: Path, *, operation: str, source: str) -> dict:
+        def _reader(path: Path, *, operation: str, source: str) -> tuple[dict, bytes]:
             # Reads 0..n-2 are done; read n-2's parse is still the loop's own
-            # ``spec`` local until this call returns, so it is exempt. Read 0 is
+            # ``read`` local until this call returns, so it is exempt. Read 0 is
             # the match the scan may return, so it is exempt. Everything else
             # must be gone.
             gc.collect()
@@ -1082,9 +1082,10 @@ class TestSpecByDeclaredName:
                     retained_mid_scan.append(spec["origin"])
             spec = _Spec(name="kirocrew", origin=path.name)
             handed_out.append(weakref.ref(spec))
-            return spec
+            return spec, b"{}"
 
-        monkeypatch.setattr(agent_discovery, "_read_agent_spec", _reader)
+        # The scan reads through the bytes-returning form of the one reader.
+        monkeypatch.setattr(agent_discovery, "_read_agent_spec_bytes", _reader)
 
         with pytest.raises(AmbiguousAgentSpecError) as exc:
             spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")

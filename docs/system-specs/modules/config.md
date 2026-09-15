@@ -1661,7 +1661,7 @@ happens to notice — which is the bug class this closes.
 
 | Write path | Where |
 |---|---|
-| `update_config_locked` | `config/loader.py` — the required path for new mutations; skips the kick when the mutate returns `None` (no write) |
+| `update_config_locked` | `config/loader.py` — the required path for new mutations; skips the kick when the mutate returns `None` (no write). `after_write=` runs a callback with the written document INSIDE the same lock hold after the rename landed (skipped on `None`), for side state a row's provenance points at (a member's pristine template copy, its seeded briefing) that must be published only once the commit is durable and before any other writer can take the lock |
 | `KiroCrewConfig.save()` | `config/loader.py` |
 | `_persist_config_migration` | `config/loader.py` — a boot migration is a config write like any other |
 | `refresh_config_meta_stamp` | `config/loader.py` — kicks only when the stamp actually moved (no rewrite, no mtime churn) |

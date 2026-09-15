@@ -235,6 +235,26 @@ def _read_agent_spec(
 ) -> dict[str, Any] | None:
     """Parse an agent config file, or ``None`` when it is not usable.
 
+    The parse half of :func:`_read_agent_spec_bytes`; see there for the guards.
+    """
+    read = _read_agent_spec_bytes(path, operation=operation, source=source)
+    return read[0] if read is not None else None
+
+
+def _read_agent_spec_bytes(
+    path: Path,
+    *,
+    operation: str = "list_agents",
+    source: str = "list_agents",
+) -> tuple[dict[str, Any], bytes] | None:
+    """Parse an agent config file, returning the spec WITH the bytes it was
+    parsed from, or ``None`` when it is not usable.
+
+    The bytes are for a caller that must check them against a recorded
+    fingerprint (:func:`kiro_crew.acp.kas_agents.load_agent_spec`): they are
+    the bytes this one guarded read saw, so the check and the parse cannot
+    disagree, and no path is reopened to obtain them.
+
     The one reader for both scopes, so every guard applies uniformly: AppleDouble
     sidecars, a symlink whose RESOLVED target is sensitive (``evil.json`` ->
     ``~/.aws/credentials``), non-UTF-8 bytes, JSON that is not an object, and
@@ -295,7 +315,7 @@ def _read_agent_spec(
     if not isinstance(data, dict):
         logger.debug("Skipping non-object agent config: %s", path)
         return None
-    return data
+    return data, raw
 
 
 class AmbiguousAgentSpecError(ValueError):
@@ -316,6 +336,29 @@ def spec_by_declared_name(
     source: str,
 ) -> dict[str, Any] | None:
     """Return the parsed spec in *agents_dir* whose declared ``name`` is *agent_id*.
+
+    The spec-only form of :func:`spec_by_declared_name_with_source`; see there.
+    """
+    found = spec_by_declared_name_with_source(
+        agents_dir, agent_id, operation=operation, source=source
+    )
+    return found[0] if found is not None else None
+
+
+def spec_by_declared_name_with_source(
+    agents_dir: Path,
+    agent_id: str,
+    *,
+    operation: str,
+    source: str,
+) -> tuple[dict[str, Any], Path, bytes] | None:
+    """Return the parsed spec in *agents_dir* whose declared ``name`` is
+    *agent_id*, with the path it was read from and the bytes it was parsed from.
+
+    The path is for its NAME -- the stem a fingerprint may be recorded under --
+    and the bytes are the ones the guarded read saw, so a caller can verify the
+    match against that record without reopening anything (see the reopen
+    caveat below). Nothing here reads the path a second time.
 
     A spec's filename and its declared ``name`` are allowed to differ: a package
     manager that installs several agents namespaces them on disk as
@@ -361,13 +404,13 @@ def spec_by_declared_name(
     The cache also hands out its own rows to be treated as read-only, where
     this returns a parse the caller owns.
     """
-    match: dict[str, Any] | None = None
+    match: tuple[dict[str, Any], Path, bytes] | None = None
     match_paths: list[Path] = []
     for path in sorted(agents_dir.glob("*.json")):
-        spec = _read_agent_spec(path, operation=operation, source=source)
-        if isinstance(spec, dict) and spec.get("name") == agent_id:
+        read = _read_agent_spec_bytes(path, operation=operation, source=source)
+        if read is not None and read[0].get("name") == agent_id:
             if match is None:
-                match = spec
+                match = (read[0], path, read[1])
             match_paths.append(path)
     if len(match_paths) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared

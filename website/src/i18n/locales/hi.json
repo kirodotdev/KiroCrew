@@ -5655,7 +5655,8 @@
         "oncall_ops": "ऑन-कॉल और ऑप्स",
         "other": "अन्य",
         "productivity": "उत्पादकता",
-        "research_writing": "शोध और लेखन"
+        "research_writing": "शोध और लेखन",
+        "templates": "क्रू साथी टेम्पलेट"
       },
       "categoryRail": {
         "add_source": "स्रोत जोड़ें",
@@ -14919,7 +14920,10 @@
       "filter_source_package_description": "क्षमता पैकेजों द्वारा इंस्टॉल किए गए क्रू",
       "member_count_filtered": "{{count}} में से {{shown}} सदस्य",
       "setup_in_crew_manager": "निजी मेमोरी सेट अप करें",
-      "own_copy_of": "{{template}} — अनुकूलित कॉपी"
+      "own_copy_of": "{{template}} — अनुकूलित कॉपी",
+      "provenance_apps_error": "इंस्टॉल किए गए ऐप पढ़े नहीं जा सके, इसलिए टेम्प्लेट का ऐप उसकी आईडी से दिखाया गया है। कुछ खोया नहीं है; फिर से कोशिश करने के लिए रीलोड करो।",
+      "provenance_store": "{{app}} से भर्ती — “{{agent}}” (v{{version}})",
+      "provenance_store_unversioned": "{{app}} से भर्ती — “{{agent}}”"
     }
   },
   "privacyDisclosure": {

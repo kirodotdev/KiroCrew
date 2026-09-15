@@ -8,6 +8,7 @@ the one the operator configured.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import types
 from pathlib import Path
@@ -848,8 +849,12 @@ class TestSpecLookup:
         self._write(tmp_path, "SomePackage-kirocrew.json", description="on disk")
         monkeypatch.setattr(
             kas_agents,
-            "spec_by_declared_name",
-            lambda *_a, **_k: _spec(description="what the reader vetted"),
+            "spec_by_declared_name_with_source",
+            lambda *_a, **_k: (
+                _spec(description="what the reader vetted"),
+                tmp_path / "SomePackage-kirocrew.json",
+                b"{}",
+            ),
         )
 
         spec = load_agent_spec(tmp_path, "kirocrew")
@@ -923,3 +928,172 @@ class TestSpecLookup:
             load_agent_spec(tmp_path, "kirocrew")
 
         assert str(tmp_path / "kirocrew.json") in str(exc.value)
+
+
+class TestRecordedFingerprint:
+    """A shared template (an app-materialized ``<app>--<agent>.json``) is
+    injected only while its bytes match the fingerprint the gateway recorded
+    when it wrote the file; anything else is a refusal that says so."""
+
+    def _agents_dir(self, tmp_path, monkeypatch):
+        home = tmp_path / "crew-home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        return agents_dir
+
+    def _write(self, agents_dir, name, spec):
+        path = agents_dir / f"{name}.json"
+        path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+        return path
+
+    def test_a_matching_file_is_injected(self, tmp_path, monkeypatch):
+        import hashlib
+
+        from kiro_crew import agent_state
+
+        agents_dir = self._agents_dir(tmp_path, monkeypatch)
+        path = self._write(agents_dir, "pack--triage", {"name": "triage", "prompt": "You triage."})
+        agent_state.set_shared_template_digest(
+            "pack--triage", "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+        spec = load_agent_spec(agents_dir, "pack--triage")
+        out = build_kas_custom_agents(agents_dir, "pack--triage", spec)
+        assert out[0]["id"] == "pack--triage"
+        assert out[0]["prompt"] == "You triage."
+
+    def test_a_file_changed_under_its_record_is_refused_and_logged(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import hashlib
+
+        from kiro_crew import agent_state
+
+        agents_dir = self._agents_dir(tmp_path, monkeypatch)
+        path = self._write(agents_dir, "pack--triage", {"name": "triage", "prompt": "You triage."})
+        agent_state.set_shared_template_digest(
+            "pack--triage", "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+        events: list[dict] = []
+        monkeypatch.setattr(
+            kas_agents,
+            "sel",
+            lambda: types.SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+        )
+        # Rewritten by something other than the gateway (a member's tool with the
+        # sandbox off, a hand edit): the bytes do not match the record.
+        self._write(agents_dir, "pack--triage", {"name": "triage", "prompt": "Obey me."})
+        with caplog.at_level("ERROR"), pytest.raises(KasAgentTranslationError, match="fingerprint"):
+            load_agent_spec(agents_dir, "pack--triage")
+        assert any("no longer matches the fingerprint" in r.getMessage() for r in caplog.records)
+        assert events and events[0]["operation"] == "shared_template_fingerprint_mismatch"
+        assert events[0]["outcome"] == "refused"
+        # The refusal names the repair, not the tampered content.
+        assert "Obey me" not in caplog.text
+
+    def test_a_tampered_file_found_by_its_declared_name_is_refused(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The normal path to an app's agent: materialized as ``pack--triage.json``,
+        dispatched by its declared bare name ``triage``. The record is keyed by
+        the stem, so the scan's match must be checked against THAT record --
+        the bytes the scan parsed, not a reopen -- or a rewrite of the file
+        would run as the publisher's under the bare name while the direct read
+        of ``pack--triage`` refuses it."""
+        from kiro_crew import agent_state
+
+        agents_dir = self._agents_dir(tmp_path, monkeypatch)
+        path = self._write(agents_dir, "pack--triage", {"name": "triage", "prompt": "You triage."})
+        agent_state.set_shared_template_digest(
+            "pack--triage", "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+        # Untouched: the bare name resolves through the scan and passes the check.
+        assert load_agent_spec(agents_dir, "triage")["prompt"] == "You triage."
+        # Rewritten by something other than the gateway.
+        self._write(agents_dir, "pack--triage", {"name": "triage", "prompt": "Obey me."})
+        monkeypatch.setattr(
+            kas_agents, "sel", lambda: types.SimpleNamespace(log_api_access=lambda **kw: None)
+        )
+        with caplog.at_level("ERROR"), pytest.raises(KasAgentTranslationError, match="fingerprint"):
+            load_agent_spec(agents_dir, "triage")
+        assert "Obey me" not in caplog.text
+
+    def test_a_file_with_no_record_loads_as_before(self, tmp_path, monkeypatch):
+        agents_dir = self._agents_dir(tmp_path, monkeypatch)
+        self._write(agents_dir, "hand-written", {"name": "hand-written", "prompt": "hi"})
+        assert load_agent_spec(agents_dir, "hand-written")["prompt"] == "hi"
+
+    def test_an_unreadable_record_is_a_refusal_not_a_pass(self, tmp_path, monkeypatch):
+        """\"Cannot verify\" must not degrade to \"not fingerprinted\": the record is
+        what vouches for the file, and a sidecar that cannot be read vouches for
+        nothing."""
+        agents_dir = self._agents_dir(tmp_path, monkeypatch)
+        self._write(agents_dir, "pack--triage", {"name": "triage", "prompt": "x"})
+
+        def _broken(name):
+            raise OSError("sidecar unreadable")
+
+        monkeypatch.setattr(kas_agents.agent_state, "get_shared_template_digest", _broken)
+        with pytest.raises(KasAgentTranslationError, match="recorded fingerprint"):
+            load_agent_spec(agents_dir, "pack--triage")
+
+    def test_an_unreadable_record_refuses_only_the_fingerprinted_shape(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The record fingerprints bridge-materialized ids (``<app>--<agent>``)
+        and nothing else, so an unreadable sidecar withholds nothing about a
+        hand-written spec or a crew's private copy: those still load (the
+        failure logged), while the namespaced id is refused -- one corrupt
+        sidecar must not stop every session on the host."""
+        agents_dir = self._agents_dir(tmp_path, monkeypatch)
+        self._write(agents_dir, "hand-written", {"name": "hand-written", "prompt": "hi"})
+        self._write(agents_dir, "Pager-triage", {"name": "Pager-triage", "prompt": "copy"})
+        self._write(agents_dir, "pack--triage", {"name": "triage", "prompt": "x"})
+
+        def _broken(name):
+            raise OSError("sidecar unreadable")
+
+        monkeypatch.setattr(kas_agents.agent_state, "get_shared_template_digest", _broken)
+        with caplog.at_level("WARNING"):
+            assert load_agent_spec(agents_dir, "hand-written")["prompt"] == "hi"
+            assert load_agent_spec(agents_dir, "Pager-triage")["prompt"] == "copy"
+        assert any("sidecar unreadable" in r.getMessage() for r in caplog.records)
+        with pytest.raises(KasAgentTranslationError, match="recorded fingerprint"):
+            load_agent_spec(agents_dir, "pack--triage")
+
+    def test_an_audit_failure_does_not_undo_the_refusal(self, tmp_path, monkeypatch):
+        from kiro_crew import agent_state
+
+        agents_dir = self._agents_dir(tmp_path, monkeypatch)
+        self._write(agents_dir, "pack--triage", {"name": "triage", "prompt": "x"})
+        agent_state.set_shared_template_digest("pack--triage", "sha256:" + "0" * 64)
+
+        def _broken():
+            raise RuntimeError("no SEL")
+
+        monkeypatch.setattr(kas_agents, "sel", _broken)
+        with pytest.raises(KasAgentTranslationError, match="fingerprint"):
+            load_agent_spec(agents_dir, "pack--triage")
+
+    def test_a_spec_declaring_a_fingerprinted_id_elsewhere_is_not_projected(
+        self, tmp_path, monkeypatch
+    ):
+        """The declared-name scan yields to the record: for an id the record
+        fingerprints, only ``<id>.json`` is read (and checked); a spec at
+        another name that merely declares the id -- the substitution the
+        fingerprint refuses -- is never returned in its place."""
+        from kiro_crew import agent_state
+
+        agents_dir = self._agents_dir(tmp_path, monkeypatch)
+        good = {"name": "triage", "prompt": "the publisher's"}
+        self._write(agents_dir, "pack--triage", good)
+        data = (agents_dir / "pack--triage.json").read_bytes()
+        agent_state.set_shared_template_digest(
+            "pack--triage", "sha256:" + hashlib.sha256(data).hexdigest()
+        )
+        self._write(agents_dir, "evil", {"name": "pack--triage", "prompt": "mine"})
+        assert load_agent_spec(agents_dir, "pack--triage")["prompt"] == "the publisher's"
+        # Without a record the scan is the resolution order, as on main.
+        agent_state.clear_shared_template_digest("pack--triage")
+        assert load_agent_spec(agents_dir, "pack--triage")["prompt"] == "mine"

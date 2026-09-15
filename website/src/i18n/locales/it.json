@@ -5745,7 +5745,8 @@
         "oncall_ops": "Reperibilità e Ops",
         "other": "Altro",
         "productivity": "Produttività",
-        "research_writing": "Ricerca e scrittura"
+        "research_writing": "Ricerca e scrittura",
+        "templates": "Modelli di compagni di crew"
       },
       "categoryRail": {
         "add_source": "Aggiungi origine",
@@ -15115,7 +15116,10 @@
       "filter_source_package_description": "Crew installati da pacchetti di capacità",
       "member_count_filtered": "{{shown}} membri su {{count}}",
       "setup_in_crew_manager": "Configura la memoria privata",
-      "own_copy_of": "{{template}} — copia personalizzata"
+      "own_copy_of": "{{template}} — copia personalizzata",
+      "provenance_apps_error": "Impossibile leggere le app installate; l'app del modello è mostrata con il suo id. Nulla è andato perso; ricarica per riprovare.",
+      "provenance_store": "Assunto da {{app}}: «{{agent}}» (v{{version}})",
+      "provenance_store_unversioned": "Assunto da {{app}}: «{{agent}}»"
     }
   },
   "privacyDisclosure": {

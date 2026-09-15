@@ -2417,6 +2417,9 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
         "setup",
         "ui",
         "openCommand",
+        # The templates an app offers for hire (its `crew` section): the store
+        # files such an app under Templates and the hire form lists its cards.
+        "crew",
     ):
         if key in manifest:
             manifest_fields[key] = manifest[key]

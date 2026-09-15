@@ -5565,7 +5565,8 @@
         "oncall_ops": "值班与运维",
         "other": "其他",
         "productivity": "效率",
-        "research_writing": "研究与写作"
+        "research_writing": "研究与写作",
+        "templates": "队友模板"
       },
       "categoryRail": {
         "add_source": "添加来源",
@@ -14721,7 +14722,10 @@
       "filter_source_package_description": "由能力安装包安装的成员",
       "member_count_filtered": "显示 {{shown}} / {{count}} 位成员",
       "setup_in_crew_manager": "设置私有记忆",
-      "own_copy_of": "{{template}}——自定义副本"
+      "own_copy_of": "{{template}}——自定义副本",
+      "provenance_apps_error": "无法读取已安装的应用，模板所属应用以其 ID 显示。没有任何丢失；重新加载即可重试。",
+      "provenance_store": "从 {{app}} 招募 — “{{agent}}”（v{{version}}）",
+      "provenance_store_unversioned": "从 {{app}} 招募 — “{{agent}}”"
     }
   },
   "privacyDisclosure": {

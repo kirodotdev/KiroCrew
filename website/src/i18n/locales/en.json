@@ -7114,7 +7114,10 @@
       "filter_source_builtin_description": "Crewmates that ship with {{productName}}",
       "filter_source_package_description": "Crewmates installed by capability packages",
       "member_count_filtered": "{{shown}} of {{count}} crewmates",
-      "own_copy_of": "{{template}} — customized copy"
+      "own_copy_of": "{{template}} — customized copy",
+      "provenance_apps_error": "The installed apps could not be read, so the template's app is shown by its id. Nothing is lost; reload to retry.",
+      "provenance_store": "Hired from {{app}} — “{{agent}}” (v{{version}})",
+      "provenance_store_unversioned": "Hired from {{app}} — “{{agent}}”"
     },
     "migrationPage": {
       "app_migration": "App Migration",

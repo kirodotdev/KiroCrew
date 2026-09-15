@@ -135,7 +135,6 @@ src/kiro_crew/apps/dependency_ledger.py
 src/kiro_crew/apps/dev_mode.py
 src/kiro_crew/apps/execution.py
 src/kiro_crew/apps/manager.py
-src/kiro_crew/apps/manifest.py
 src/kiro_crew/apps/module_loader.py
 src/kiro_crew/apps/permissions.py
 src/kiro_crew/apps/registry.py

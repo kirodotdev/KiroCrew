@@ -2586,6 +2586,7 @@ def _write_private_copy(
     bound: set[str],
     operation: str,
     doc: dict,
+    source_spec: dict | None = None,
 ) -> tuple[str, Path]:
     """Create crew *crew*'s private copy of template *source_name*; return its name and path.
 
@@ -2620,9 +2621,17 @@ def _write_private_copy(
     """
     if source_path is None:
         raise FileNotFoundError(source_name)
-    fresh_source = _read_agent_spec(source_path, operation=operation, source="dashboard")
-    if fresh_source is None:
-        raise FileNotFoundError(source_path)
+    if source_spec is not None:
+        # The caller's VERIFIED snapshot of the source (a store hire checked
+        # these bytes against the card's digests and the bridge's rendering):
+        # copied as given, so a source swapped between that check and this
+        # write is not what lands in the member's file.
+        fresh_source: dict = dict(source_spec)
+    else:
+        read_source = _read_agent_spec(source_path, operation=operation, source="dashboard")
+        if read_source is None:
+            raise FileNotFoundError(source_path)
+        fresh_source = read_source
     base = re.sub(r"[^A-Za-z0-9_.-]+", "-", crew)[:48].strip("-.") or "agent"
     managed_stems = {Path(f).stem.lower() for f in OWNED_KIRO_AGENT_FILES}
     copy_name, suffix = base, 2
@@ -4684,6 +4693,7 @@ async def _create_crew(
     body: dict,
     *,
     copy_source: str | None = None,
+    copy_spec: dict | None = None,
     admit: Callable[[Collection[str], str], web.Response | None] | None = None,
     enroll: Callable[[str, str], None] | None = None,
 ) -> web.Response:
@@ -4711,7 +4721,9 @@ async def _create_crew(
     shared template after the hire completed, which is the exact hazard the
     hire's copy exists to remove. A copy whose row then fails to persist is
     unwound (file and lineage). The answer carries ``kiro_agent`` -- the copy's
-    name -- beside the id.
+    name -- beside the id. *copy_spec*, when given with *copy_source*, is the
+    caller's verified snapshot of the source's content: the copy is made from
+    it rather than from a re-read of the source file.
 
     *admit*, when given, takes the member ids the document holds and the
     minted id and runs TWICE: inside the config-lock hold against the loaded
@@ -5053,6 +5065,7 @@ async def _create_crew(
                                 bound=bound,
                                 operation="member.hire",
                                 doc=cfg_data,
+                                source_spec=copy_spec,
                             )
                         )
                     return None

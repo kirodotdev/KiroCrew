@@ -1667,7 +1667,8 @@
         "oncall_ops": "On-call & Ops",
         "other": "Other",
         "productivity": "Productivity",
-        "research_writing": "Research & Writing"
+        "research_writing": "Research & Writing",
+        "templates": "Crewmate templates"
       },
       "trustAppModal": {
         "title": "Trust “{{app}}” to run its own code?",

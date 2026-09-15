@@ -151,6 +151,9 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "display_name",
     "role",
     "legacy_key",
+    # Template provenance: app and agent names from a manifest, plus its version.
+    "template",
+    "template_version",
 )
 
 

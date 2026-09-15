@@ -3425,6 +3425,25 @@ class KiroCrewAgentConfig:
             "hand-made member.",
         ),
     )
+    template: str = field(
+        default="",
+        metadata=_meta(
+            "Template",
+            "The store template this member was hired from, as '<app>/<agent>' "
+            "(the installed app's name and the agent's declared name). Written "
+            "by the hire, cleared by detach. Empty for a hand-made member or one "
+            "hired from a local agent file. With template_version, what a later "
+            "role update compares the installed app against.",
+        ),
+    )
+    template_version: str = field(
+        default="",
+        metadata=_meta(
+            "Template Version",
+            "The app version the member's template was copied at. Advances when a "
+            "role update is applied; cleared by detach.",
+        ),
+    )
     legacy_key: str = field(
         default="",
         metadata=_meta(

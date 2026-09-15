@@ -18,6 +18,7 @@ export const CATEGORY_ORDER = [
   'Productivity',
   'Agents & Automation',
   'Research & Writing',
+  'Templates',
   'Other',
 ] as const
 
@@ -44,6 +45,7 @@ export const CATEGORY_LABEL_KEY: Record<Category, string> = {
   'Agents & Automation': 'components.appstore.categories.agents_automation',
   'Research & Writing': 'components.appstore.categories.research_writing',
   'Designer Tools': 'components.appstore.categories.designer_tools',
+  'Templates': 'components.appstore.categories.templates',
   'Other': 'components.appstore.categories.other',
 }
 
@@ -90,7 +92,14 @@ const MATCHERS: [Category, Set<string>][] = [
  * untrusted: a non-array value, or non-string members, must not throw — this
  * runs during Discover's render, where a TypeError takes down the storefront.
  */
-export function categoryFor(tags?: unknown): Category {
+export function categoryFor(tags?: unknown, manifest?: unknown): Category {
+  // A crew template is a job posting, not a tool. An app whose ONLY offering is
+  // templates (agents plus their cards, nothing a user opens or runs) files here
+  // whatever its tags say; a tool app that also offers a card keeps the category
+  // its tags earn, because categories are exclusive and a browser of On-call & Ops
+  // must still find the ops tool that happens to ship a role. `Templates` has no
+  // tag spelling: the manifest is the mechanism.
+  if (isTemplateOnlyApp(manifest)) return 'Templates'
   const list = Array.isArray(tags) ? tags : []
   const set = new Set(
     list.filter((t): t is string => typeof t === 'string').map(t => t.toLowerCase()),
@@ -99,6 +108,71 @@ export function categoryFor(tags?: unknown): Category {
     for (const tag of set) if (matches.has(tag)) return category
   }
   return 'Other'
+}
+
+/** A starter prompt on a job card: the detail layer's "Try asking" and the new
+ *  member's DM empty state. `attachment` is an example file NAME only. */
+export type CrewStarterPrompt = { text: string; attachment?: string }
+
+/** The scenario chips the hire gallery files cards under (server-side
+ *  `CREW_CATEGORIES`; an unknown or missing category is `other`). */
+export type CrewTemplateCategory =
+  | 'engineering' | 'ops' | 'research' | 'release' | 'product' | 'writing' | 'other'
+
+/** One job posting an app's manifest `crew` section offers. Beyond the two
+ *  required strings, everything is what the hire gallery renders: the
+ *  one-line `duty` on the card face, the full `description` in the detail
+ *  layer, up to three `tags` shown, a `category` chip, `starter_prompts`,
+ *  a ghost `avatar` (`{kind: 'ghost', traits}`, the crew record's own shape)
+ *  copied onto the member at hire. */
+export type CrewTemplateCard = {
+  /** The manifest `agents` path the card is for. */
+  agent: string
+  role: string
+  description?: string
+  triggers?: string
+  initial_briefing?: string
+  duty?: string
+  category?: string
+  tags?: string[]
+  starter_prompts?: CrewStarterPrompt[]
+  avatar?: { kind: 'ghost'; traits?: Record<string, unknown> }
+}
+
+/**
+ * The templates an app offers for hire, read defensively from its manifest.
+ *
+ * The manifest is third-party data: a non-array `templates`, or entries that are
+ * not objects or lack the two required strings, read as "no templates" rather
+ * than throwing inside a render.
+ */
+export function crewTemplatesOf(manifest?: unknown): CrewTemplateCard[] {
+  const crew = (manifest as { crew?: unknown } | undefined)?.crew
+  const raw = (crew as { templates?: unknown } | undefined)?.templates
+  if (!Array.isArray(raw)) return []
+  return raw.filter((t): t is CrewTemplateCard =>
+    !!t && typeof t === 'object'
+    && typeof (t as CrewTemplateCard).agent === 'string' && (t as CrewTemplateCard).agent !== ''
+    && typeof (t as CrewTemplateCard).role === 'string' && (t as CrewTemplateCard).role !== '',
+  )
+}
+
+export function offersTemplates(manifest?: unknown): boolean {
+  return crewTemplatesOf(manifest).length > 0
+}
+
+/**
+ * Whether templates are all the app offers: it has cards, and none of the
+ * surfaces a user would browse a TOOL category for -- a UI, crons, skills, MCP
+ * servers. Read defensively from the same untrusted manifest.
+ */
+export function isTemplateOnlyApp(manifest?: unknown): boolean {
+  if (!offersTemplates(manifest)) return false
+  const m = (manifest ?? {}) as Record<string, unknown>
+  const ui = m.ui as { entry?: unknown; pages?: unknown } | undefined
+  const nonEmpty = (v: unknown) => Array.isArray(v) ? v.length > 0 : !!v && typeof v === 'object' && Object.keys(v as object).length > 0
+  if (ui && (ui.entry || nonEmpty(ui.pages))) return false
+  return !nonEmpty(m.crons) && !nonEmpty(m.skills) && !nonEmpty(m.mcpServers)
 }
 
 /**
@@ -126,7 +200,8 @@ export const PUBLISHED_CATEGORY_ID: Record<string, Category> = {
   'productivity': CATEGORY_ORDER[3],
   'agents-automation': CATEGORY_ORDER[4],
   'research-writing': CATEGORY_ORDER[5],
-  'other': CATEGORY_ORDER[6],
+  'templates': CATEGORY_ORDER[6],
+  'other': CATEGORY_ORDER[7],
 }
 
 /**
@@ -180,12 +255,14 @@ export function mergeCategoryOrder(publishedIds: readonly string[]): Category[] 
 
 /** Count apps per category, omitting empty categories, in canonical order. */
 export function categoryCounts(
-  apps: { tags?: unknown }[],
+  apps: { tags?: unknown; manifest?: unknown }[],
   order: readonly Category[] = CATEGORY_ORDER,
 ): { category: Category; count: number }[] {
   const counts = new Map<Category, number>()
   for (const app of apps) {
-    const c = categoryFor(app.tags)
+    // Same derivation the rail filter and the rows use, manifest included, so a
+    // template app is COUNTED under the rail entry it is filtered into.
+    const c = categoryFor(app.tags, app.manifest)
     counts.set(c, (counts.get(c) || 0) + 1)
   }
   return order

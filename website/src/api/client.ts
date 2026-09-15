@@ -2331,6 +2331,11 @@ export interface MemberRosterRow {
    *  is bound to a shared template directly. Lets the drawer say
    *  "reviewer — customized copy" instead of presenting the copy's stem as a template. */
   template_origin?: string
+  /** Store provenance: the template (`<app>/<agent>`) and the app version the
+   *  member was hired at; '' for a hand-made or locally adopted member. The
+   *  drawer's Source row reads "Template <app>/<agent> (v<version>)". */
+  template?: string
+  template_version?: string
   /** Stable path-safe slug deriving the member dir and the slot key. */
   slug: string
   /** The pinned DM thread's slot key ('' until first open / unbound). */

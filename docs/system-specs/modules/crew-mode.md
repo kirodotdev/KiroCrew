@@ -356,38 +356,159 @@ installed agent file (`~/.kiro/agents/<agent>.json`):
  "workspace": "default", "triggers": "", "session_color": ""}
 ```
 
-`source.kind` must be a string in `_HIRE_SOURCE_KINDS` (an unhashable value is a
-400 `unsupported_source_kind`, never a `TypeError`); `source.agent` must be in the
-template-name grammar (`invalid_source_agent`) -- the source is a FILE the installed
-listing offers, dots included (`reviewer.v2`), and the row is bound to the copy,
-whose stem the copy writer mints from the member id, so the binding stays inside the
-agent-name grammar; the optional text fields (`workspace`, `description`, `triggers`,
-`session_color`) must be strings when present (400 `invalid_<field>`, before anything is
-written -- the create core stores them as given, and a list there is a member that
-persists and then raises when its thread opens or `route_crew` reads it). A display name whose minted id would
-share another member's SLUG is 409 `slug_collision` before anything is written
-(`_slug_collision_refusal`, the create's `admit` hook: it runs INSIDE the config-lock
-hold against the snapshot the row is published from, with the id the create minted,
-and AGAIN inside `persist_member_config`'s cross-process locked mutation against the
-document's `agents` map as it is on disk at the write (`MemberAdmissionRefused`
-carries the hook's own code back; nothing is written) -- the in-process lock does not
-hold a second gateway or the CLI, and two processes' pre-lock checks could both pass
-for `Triage` and `triage` and then serialize into two rows on one slug): the slug keys `members/<slug>/`, the rules file and the
-DM binding, and it is lossy (`Foo` and `foo` share one), so two members on it would
-inherit each other's briefing and be refused their thread and rules as a collision
--- the hire is where that is still sayable. The route composes the create
-core, owner-gated once at the top, and is **atomic** -- the member either exists
-with its own copy of the source or does not exist -- and **at no moment is a row
-bound to the SHARED source readable**: the copy is made inside the create's
-config-lock hold, before the row exists, and the row is published already bound to
-it. The other order (publish, then fork and rebind) left a source-bound row on disk
-between the two; a concurrent thread open in that gap resolves the source binding
-and runs a session that keeps using the shared template after the hire completed,
-which is the exact hazard the copy exists to remove. The whole thing runs as ONE
-transaction under `chat_utils.drained` (the coroutine twin of `drained_to_thread`):
-a cancellation of the request mid-way -- a gateway shutdown, a client that closed
-the connection -- is absorbed until the transaction reaches its own end and
-re-raised afterwards, so a copy is never left without its row:
+`source.kind` must be a string in `_HIRE_SOURCE_KINDS` -- `local` or `store` (an
+unhashable value is a 400 `unsupported_source_kind`, never a `TypeError`);
+`source.agent` must be in the template-name grammar (`invalid_source_agent`) -- the
+source is a FILE the installed listing offers, dots included (`reviewer.v2`), and the
+row is bound to the copy, whose stem the copy writer mints from the member id, so the
+binding stays inside the agent-name grammar; the optional text fields (`workspace`,
+`description`, `triggers`, `session_color`) must be strings when present (400
+`invalid_<field>`, before anything is written -- the create core stores them as given,
+and a list there is a member that persists and then raises when its thread opens or
+`route_crew` reads it).
+A display name whose minted id would share another member's SLUG is 409
+`slug_collision` before anything is written (`_slug_collision_refusal`, the create's
+`admit` hook: it runs INSIDE the config-lock hold against the snapshot the row is
+published from, with the id the create minted, and AGAIN inside
+`persist_member_config`'s cross-process locked mutation against the document's
+`agents` map as it is on disk at the write (`MemberAdmissionRefused` carries the
+hook's own code back; nothing is written) -- the in-process lock does not hold a
+second gateway or the CLI, and two processes' pre-lock checks could both pass for
+`Triage` and `triage` and then serialize into two rows on one slug): the slug keys
+`members/<slug>/`, the rules file and the DM binding, and it is lossy (`Foo` and
+`foo` share one), so two members on it would inherit each other's briefing and be
+refused their thread and rules as a collision -- the hire is where that is still
+sayable.
+Source kind **`store`** hires from a template an installed app offers in its
+manifest's `crew.templates` (`app-kit-platform.md` 3.1): `source: {kind: "store",
+app, agent}` where `agent` is the manifest `agents` path the card names. The whole
+store hire runs under the app's lifecycle lock (`apps.manager.app_lifecycle_lock`,
+the one install/update/uninstall take): an update of the app between resolving the
+listing and copying its materialized agent would copy the new bytes while recording
+the old version and spec as the member's pristine BASE. Inside it,
+`member_templates.resolve_store_template` resolves the listing BEFORE anything is
+written: the app must be installed (404 `app_not_installed`) and enabled (409
+`app_disabled` -- only an enabled app has its agents materialized), the app must
+pass **admission again** against the manifest on disk now (409
+`app_admission_denied`: install, update and enable each ran it, but the card's
+role, triggers and briefing become prompt-adjacent text on the member and the
+manifest they come from is the app's to rewrite after enable -- a signed manifest
+edited afterwards no longer carries a valid signature; shipped builtins are exempt
+exactly as enable exempts them, decided by the IMMUTABLE package tree
+(`bridges.shipped_builtin_app_root`, the same provenance the resource registration
+reads), never by `installed.json`'s `origin` -- that file is the app's own to
+rewrite, so a forged `origin: builtin` buys no exemption, and a builtin's manifest
+and card files are read from its package root, not the data-home copy (pinned:
+`test_admission_is_re_run_against_the_manifest_on_disk_at_hire`); the policy is read ONCE per hire and that snapshot decides both the deny and whether the card must pin its files (`require_signature`), so a policy edited between two reads cannot admit the hire under one policy and verify its content under another -- pinned: `test_the_admission_policy_is_read_once_per_hire`), the manifest
+must carry a card for that agent (404 `template_not_offered`), the `crew` section
+must still validate against the tree as it is NOW -- the same checks install ran,
+against the same root, plus canonical containment of the card's `agent` and
+`initial_briefing` paths (409 `template_invalid`; the manifest install validated is
+not the manifest on disk after the app rewrote it), the card's **content digests**
+must hold (`_verify_card_content`: a declared `digests.agent` / `digests.initial_briefing`
+is checked against the bytes on disk NOW through `pinned_fs.read_bytes_pinned` -- a
+mismatch is 409 `template_tampered`, nothing written -- and a fleet whose admission
+policy `require_signature`s refuses a card that does not pin EVERY file it points at
+(the agent, and the briefing when one is named), 409 `template_unverified`: the
+signature covers the card, and only the card's digests carry it to the agent file and
+the briefing, so for that fleet a signed posting with an unpinned file is not the
+verification it asks for; an open fleet hires an undigested card as before), the
+shipped spec must read (409 `template_spec_unreadable`), the materialized
+`<app>--<agent name>` file must exist (409 `template_not_materialized`) and, for a
+pinned card or a signature fleet, must be EXACTLY the bridge's rendering of the
+verified shipped definition now (`_verify_materialized_matches` against
+`bridges.render_app_agent_spec(keep_user_edits=False)` -- own servers, managed refs,
+the per-app MCP policy and prompt, compared as parsed JSON; 409 `template_tampered`
+otherwise): the digests speak for the shipped bytes, but the hire COPIES the
+materialized file, which lives in the agent-writable agents directory, so a hand
+edit to a pinned app's shared template or an agent's rewrite of it is refused
+rather than copied as the publisher's (customize the member's own copy instead).
+For that same pinned card or signature fleet a **file-backed system prompt**
+(`prompt: file://...`, the bridge's per-app prompt seam) is authenticated like the
+agent file and the briefing (`_authenticate_runtime_prompt`): one that resolves into
+the app's mutable data dir or outside its packaged root is 409
+`template_prompt_unverified` (the render matches on both sides there while the
+shipped digest says nothing about the instructions the member would run); one inside
+the root is not authenticated by containment either (the tree is the app's to rewrite
+after signing), so a signature fleet refuses a card that pins no `digests.prompt` for
+it (409 `template_unverified`), a declared `digests.prompt` is checked against the
+file's bytes read through the pinned root descriptor (409 `template_tampered`), and
+the VERIFIED text is INLINED into the dict the hire copies and the pristine copy
+records -- from the hire on the member's instructions are its own bytes, and a later
+rewrite of the app's prompt file reaches nothing the member runs (pinned:
+`test_a_pinned_hire_refuses_a_prompt_the_app_renders_at_runtime`). An open fleet
+hires an undigested in-root prompt as before, URI and all.
+**Shared template files are read-only to members** and carry a **recorded
+fingerprint**: the materialized `<app>--<agent>` file (a builtin app's included)
+sits in the kiro agents tree, which the agent file-edit gate refuses to write and
+the OS sandbox seals read-only as a directory (`sandbox._resolved_kiro_agents_targets`),
+so a member's tools cannot rewrite the definition its siblings are still hired
+from; and when the bridge materializes the file it records `sha256:<hex>` of the
+bytes it wrote in the agent-state sidecar (`agent_state.set_shared_template_digest`,
+itself sealed) -- the on-disk read the render preserves user edits from, the write
+and the record held as ONE critical section under `agents_spec_lock`, the lock every
+other template-spec writer takes, so an editor rewrite cannot land between the
+bridge's write and its record and leave the edited bytes under the bridge's digest
+(pinned: `test_the_write_and_its_record_happen_under_the_template_spec_lock`) --,
+every trusted rewrite of that file re-records it
+(`agent._atomic_json_write`, the funnel the editor's PATCH, a model reset and the
+spec migration all use -- file and record as ONE transaction: the record is read
+strictly before a byte lands (an unreadable sidecar refuses the write), and when the
+record cannot be written after the replace the previous bytes are put back, so what
+is on disk still matches the recorded digest and the template stays spawnable while
+the caller sees its edit fail; only a rollback that itself fails leaves the two apart,
+and that is logged -- pinned: `test_a_rewrite_whose_record_cannot_follow_is_rolled_back`),
+deregistration forgets it, and the KAS projection
+(`acp/kas_agents.load_agent_spec`) refuses to inject a fingerprinted file whose
+bytes no longer match -- log + security event `shared_template_fingerprint_mismatch`,
+fail closed with the repair named (re-enable the app or restart the gateway to
+re-materialize), and an unreadable record is a refusal too -- for the ids the record
+can fingerprint, the bridge's `<app>--<agent>` shape (`_recorded_fingerprint`, read once
+per projection): "cannot verify" is not "not fingerprinted" there, while for every
+other id the record holds nothing, so a corrupt sidecar is logged and the spec loads as
+the plain file it is rather than stopping every session on the host; a file no bridge
+materialized (a hand-written spec, a member's own copy) has no record and loads as
+before. The declared-name scan is checked the same way: an app's agent is
+materialized as `<app>--<agent>.json` and DISPATCHED by its declared bare name, so
+the normal path to it is the scan, and the spec the scan finds is verified against
+the fingerprint recorded for the FILE it came from -- the bytes the guarded read
+parsed (`agent_discovery.spec_by_declared_name_with_source`), never a reopen --
+so a rewrite refused under `pack--triage` is refused under `triage` too (pinned:
+`test_a_tampered_file_found_by_its_declared_name_is_refused`). The boot reconcile's
+prune of an agent the manifest no longer declares clears its fingerprint with the
+file, as deregistration does, so a stem freed by the manifest is not refused when
+it is legitimately re-occupied (pinned: `test_stale_app_agent_and_server_are_pruned`).
+Pinned in `test/test_app_bridges.py::TestSharedTemplateFingerprint`,
+`test/test_kas_agents.py::TestRecordedFingerprint` and the store hire's
+`test_shared_template_files_are_read_only_to_member_agents`.
+Every app-tree read is anchored to ONE descriptor of the app root, pinned right after validation (`pinned_fs.open_dir_pinned`; `read_bytes_at` walks the card's relative paths component by component with `O_NOFOLLOW` from it): validation resolved the tree by path, and a by-path read afterwards re-resolves it, so an `agents` directory swapped for a link to a credential directory between the two would be pinned AS the parent and its files hired -- and copied into the pristine copy -- as the template's (pinned: `test_a_tree_swapped_between_validation_and_the_read_is_not_followed`). There is NO by-path fallback: a platform that cannot open relative to a directory descriptor with `O_NOFOLLOW` (Windows; `pinned_fs.supports_pinned_walk()` false) has no read that closes that window, so `resolve_store_template` REFUSES the hire there -- 409 `template_read_unpinned`, nothing minted, copied or enrolled, and the gallery lists the card as unhireable with that code -- the same fail-closed rule the member briefing applies (`members.member_briefing_supported`; pinned: `test_without_a_pinned_walk_the_store_hire_fails_closed`). Everything works from ONE snapshot: `_verify_card_content` returns the verified bytes
+and the shipped spec and the briefing are parsed from them (never a second read of
+the path); the render check starts from those same bytes (`render_app_agent_spec(
+shipped_text=)`, a pure `_render_shipped_text` shared with registration); the
+materialized file is read once into `StoreTemplate.materialized_spec` and the create
+copies THAT dict (`_create_crew(copy_spec=)` → `_write_private_copy(source_spec=)`)
+rather than re-reading the source -- a file swapped between the checks and the copy is
+not what gets hired. The shipped spec and the initial briefing
+are read through `pinned_fs.read_file_pinned` (ancestors pinned, a non-regular
+final component refused): the app's tree is the app's to change after install, and
+a by-name read there is a disclosure primitive pointed at whatever the name
+resolves to. The materialized name becomes the `agent` the local steps below run
+against, and the card's `role` and `triggers` fill the create body where the caller
+sent NO such key (the card is the default; the caller's word wins, and an explicit
+empty string is a word -- "no triggers" -- not an absence). The route
+composes the create core, owner-gated once at the top, and is **atomic** -- the
+member either exists with its own copy of the source or does not exist -- and **at
+no moment is a row bound to the SHARED source readable**: the copy is made inside
+the create's config-lock hold, before the row exists, and the row is published
+already bound to it. The other order (publish, then fork and rebind) left a
+source-bound row on disk between the two; a concurrent thread open in that gap
+resolves the source binding and runs a session that keeps using the shared template
+after the hire completed, which is the exact hazard the copy exists to remove.
+Steps 2 onward run as ONE transaction under `chat_utils.drained` (the coroutine
+twin of `drained_to_thread`): a cancellation of the request mid-way -- a gateway
+shutdown, a client that closed the connection -- is absorbed until the transaction
+reaches its own end (success or roll-back) and re-raised afterwards, so a copy is
+never left without its row and a linked member never without its link:
 
 | Step | Core | On failure |
 |---|---|---|
@@ -395,10 +516,83 @@ re-raised afterwards, so a copy is never left without its row:
 | 2. copy-on-hire | inside `_create_crew(copy_source=…)`, after the id is minted, the slug admitted and the source has passed the foreign-private-copy check, under the config FILE lock (`update_config_locked` with a read-only mutate, the cross-process one the fork and publish paths hold for the same reason: a writer in another process cannot bind the destination between the bindings read and the file's first byte) and, inside it, the spec lock: `_write_private_copy` (the one writer of a private copy, shared with the editor's first-edit fork) copies the source into a member-owned file whose stem derives from the member id, re-reading the source in-lock, reserving every current binding and the boot-rebuilt stems, suffixing past collisions and reserved basenames, and records lineage in the `agent_state` sidecar in the same hold | 404 `template_not_found` (the source vanished between 1 and 2), 409 `ambiguous_template_name`, 500 `bookkeeping_failed` / `fork_failed`; nothing published |
 | 3. publish the wrapper row | the rest of `_create_crew` (the body of `POST /api/agents`: private memory provisioned, the row persisted) with `kiro_agent` = the copy. The publication's `admit` hook (`_admit_doc`, every create -- plain and hire) re-runs the LINEAGE check inside `persist_member_config`'s cross-process locked mutation, against the sidecar and the document as they are at the write: the pre-lock check holds only the in-process lock, so a hire in another gateway can copy a template to exactly the name a plain create validated as "missing, tolerated" and record its member as the owner in between, and a row published anyway would bind a second member to one private definition; a foreign owner is 409 `foreign_private_copy`, an unreadable sidecar 409 `lineage_unverifiable`, and a row another process already bound to the private copy this member is about to bind is 409 `foreign_private_copy` as well (the sidecar names one owner; a row is the other half of the same fact). Pinned: `test_a_copy_recorded_between_the_lineage_check_and_the_write_is_refused`, `test_a_row_another_process_bound_to_the_copy_refuses_the_hire`. Then, outside the lock, the fork governance refresh (`_refresh_forked_templates`) re-runs exactly as the fork endpoint runs it after its rebind, so a pass that interleaved between the copy's lineage record and the row's persist -- and recorded the copy as an uncorroborated fork -- cannot leave the new member blocked at the spawn gate | its own 4xx/409, verbatim -- and the copy is **unwound** (`_unwind_private_copy`: file and lineage, unless a row already took the name -- reference check and unlink one critical section under the config lock, so a binder in another process cannot land between them), so a retry does not find a stranded file claiming the id |
 
+A store hire has a **step 4**, inside the same atom and under the config lock the
+create just released -- and the CROSS-PROCESS config file lock is held across the
+guarded row update AND both file publications (`update_config_locked(after_write=)`:
+the files are written after the row's rename landed, inside the same hold), so
+every locked writer in any process (a delete, a rebind, a same-id recreate by a
+second gateway) waits and the row the guard checked is the row the files are
+published for -- the files are slug-keyed and the slug is lossy, so published
+outside the hold a replacement member would receive this hire's base and briefing
+as its own; a rename that fails writes neither file and the hire rolls back:
+`_link_member_to_template`
+records `template` (`<app>/<agent name>`) and `template_version` (the app's
+manifest version) on the row in a locked read-modify-write that requires the row
+to still carry this hire's generation and copy, writes the **pristine copy**
+`members/<slug>/template.json` (`member_templates.write_pristine_copy`: the agent
+definition as MATERIALIZED -- the same dict the hire copied into the member's file,
+never the raw shipped spec, so BASE and copy are one and the same at the hire even
+when an unsigned app's shipped file was rewritten without its materialized file
+being re-rendered, and a later merge does not read the bridge's plumbing as the
+member's customization -- plus the card's `role`/`triggers` at that version -- the
+BASE a later role update three-way merges against; published through
+`pinned_fs.write_file_pinned`, since the member directory is agent-writable and a
+by-name replace there is a truncation primitive pointed at whatever a planted link
+resolves to), and writes `members/<slug>/briefing.md` from the card's
+`initial_briefing` (`seed_briefing`: the member did not exist until this locked
+publication and no row held its slug -- the slug admission refuses a collision -- so
+nothing at that name is the member's lived state: the member directory is
+agent-writable and the slug a deterministic derivation of the display name, and a
+file or link planted there ahead of the hire would otherwise become the new member's
+`[CURRENT ASSIGNMENT]`; a pre-existing regular file or link is removed by its literal
+name relative to the pinned directory (a link as a link, its target untouched),
+recorded in the security event log (`member_briefing_preexisting_replaced`), and
+the template's briefing is created in its place through an exclusive
+`O_CREAT|O_EXCL|O_NOFOLLOW` create -- never a follow, never a truncation of a
+target; any other kind of entry, or a name taken again after the removal, fails the
+hire closed; every byte is written and a write that fails midway removes the file;
+a platform where briefings are not read gets none; from the hire on the file is the
+member's lived state and no template operation touches it -- pinned:
+`test_a_briefing_planted_before_the_hire_is_replaced_not_adopted`,
+`test_a_store_hire_replaces_a_briefing_planted_at_its_slug`), and LAST -- in the
+same hold, after both files landed -- **enrolls** the member (`enroll(id,
+generation)` -> `agent_state.set_crewmate_record`). A store hire's row is therefore
+NOT a crewmate between the create and the end of step 4: no enrollment record, so
+`GET /api/members` does not list it and the member routes (thread, rules) answer
+404 for it -- nobody can open the thread of a row this step may still roll back.
+A failure anywhere in the step first removes the files the step had written so
+far -- the pristine copy and the seeded briefing, through the pinned member
+directory (`remove_step_four_files`), still inside the hold while the row is
+provably this hire's -- since left behind, the next member to take the slug (a
+local hire of the same name) would inherit the failed hire's base and briefing as
+its own; then the caller rolls the hire back (`_roll_back_hire`: the delete
+route's own mutation through `_delete_crew_record` -- row removed, a private V2
+store archived under the retirement marker, cached handles released -- but ONLY
+while the row is still the one this hire made, bound to its copy and carrying the
+private store name the create minted -- checked on the parsed config under the
+in-process lock and AGAIN inside the delete's cross-process locked read-modify-write
+(`_delete_crew_record(expect=)`, against the document on disk at the write), since a
+writer in another process is not held by the in-process lock and a row it replaced
+in the gap is not this hire's to delete; then the copy itself through
+`_remove_private_copy`, inside one cross-process locked read-only mutation of the
+config -- the "no row is bound to the copy" check reads the document under that lock
+and the unlink happens in the same hold, so a same-id recreate in another process
+(which publishes under the same lock) is either seen or waits, and its agent file is
+never deleted under it -- only while the sidecar still names this member as the
+copy's owner) and answers 500 `template_link_failed` with
+`rolled_back: true`; a roll-back that is refused or fails answers 500
+`hire_incomplete` naming the member `id`. A roll-back also REFUSES a row that is
+enrolled with this hire's generation: enrollment is step 4's last act, so an
+enrolled row is a completed hire -- a crewmate someone may already be talking to
+-- and no roll-back removes a crewmate (pinned:
+`test_a_failed_template_link_rolls_the_hire_back` observes the un-enrolled row at
+the start of step 4; `test_a_failed_enrollment_takes_step_fours_files_with_the_row`;
+`test_a_roll_back_never_removes_an_enrolled_crewmate`).
+
 The create body is this package's own contract (pinned by its tests); the hire
-reads it strictly -- a missing `name` or `kiro_agent` is a 500 `hire_incomplete`,
-never a guessed default. The answer carries `kiro_agent` (the copy's name) beside
-the id for exactly this reader.
+reads it strictly -- a missing `name`, `kiro_agent`, `memory_store` or
+`display_name` is a 500 `hire_incomplete`, never a guessed default. The answer
+carries `kiro_agent` (the copy's name) beside the id for exactly this reader.
 Why a server verb rather than the two client-reachable calls: a client that dies
 between create and fork leaves a member bound to the SHARED source it was told
 it owns -- the exact hazard copy-on-hire removes -- and only the server can roll
@@ -408,7 +602,9 @@ its own copy and row; a second hire whose display name mints a taken id is a 409
 
 Success: `{"ok": true, "id"}` -- the minted id (what `/members?member=` resolves);
 the copy the member is bound to and what the caller sent (label, role, source) are
-read back from the roster row, not echoed. The `GET /api/members` row carries
+read back from the roster row, not echoed. The `GET /api/members` row carries `template` and
+`template_version` (store provenance, `""` for a hand-made or locally adopted
+member; the drawer's Source row reads `Template <app>/<agent> (v<version>)`) and
 `template_origin` -- the template a member's own
 copy was made from (`forked_from` where the sidecar's `private_to` is this
 member), `""` when bound to a shared template directly -- so the drawer reads
@@ -432,23 +628,40 @@ named -- every name is a person's, so the row carries none and the thread header
 shows no hint about it; a typed name that collides is 409 `agent_exists` -- the
 create never suffixes a name. A later inline rename (`PUT /api/agents/{id}` with
 `display_name`) changes the label only -- the id, the binding, the private store
-and the enrollment record stay. The UI's hire entry point in this step is the Crew
-page's **Add a Crewmate** (the empty roster's call to action and the header `+`):
-it opens the crew form in the roster's words ("Add a Crewmate", "What this
+and the enrollment record stay. The UI's hire entry points in this step: the Crew
+page's **Add a Crewmate** (the empty roster's call to action and the header `+`)
+opens the crew form in the roster's words ("Add a Crewmate", "What this
 crewmate uses", **Hire crewmate**), and that form -- template picked, name typed,
 Hire pressed -- posts to `POST /api/members` (`KiroCrewAgentsPage` `createMut`,
 `fromMembers`), never the plain create, so the roster it returns to lists what was
-just added; the **hire gallery** under the Crew page (step 6, `/members/hire`) takes
-the entry over, where selecting a card opens the name entry and only a confirmed
-name hires. The crew manager's own button and sheet are **Add an agent** -- its
-page's vocabulary, never "Add a Crewmate", which would promise a teammate that
-never reaches the roster -- and stay a plain create (bind to a shared template)
-that enrolls nobody (pinned: `CrewRoster.test.tsx`, a create via
-`?new=1&from=members` calls `hireMember` with the picked template and the typed
-name and never `createKirocrewAgent`; the crew manager's own button still
-creates). Pinned in
-`test/test_member_hire.py` (the gate: two named members from one file coexist,
-both enrolled, `default` off the roster; a hire without a name -- with or without
+just added; and the **hire gallery** under the Crew page (Your Crewmates) (step 6,
+`/members/hire`) -- it lists every enabled installed app's cards
+(`crew.templates`, with the card's duty, tags, category, starter prompts and ghost
+face) beside the built-in and local agent files; selecting a card opens the name
+entry, and only a confirmed name hires (a store card's hire sends `source: {kind:
+"store", app, agent}` with the typed `display_name`). The crew manager's own
+button and sheet are **Add an agent** -- its page's vocabulary, never "Add a
+Crewmate", which would promise a teammate that never reaches the roster -- and
+stay a plain create (bind to a shared template) that enrolls nobody
+(pinned: `CrewRoster.test.tsx`, a create via `?new=1&from=members` calls
+`hireMember` with the picked template and the typed name and never
+`createKirocrewAgent`; the crew manager's own button still creates).
+The drawer's Source row for a store-hired member reads `Hired from Oncall pack --
+"triage" (v1.2.0)` -- it opens with the verb, not with "Template", because the
+Agent template row beneath it already says "template" for the crewmate's own file
+-- the app by its display name, from the installed-apps listing read only while a
+template-hired member is open; the app id is the fallback when the app is gone,
+and a FAILED read is said under the row (`ErrorNotice` with the agent hand-off;
+the row still shows the id) rather than passed off as the app having no display
+name -- and ONLY there while the crewmate summary is the side panel's shown tab:
+the panel-level app-list notice (`SidePanel` `AppPanelTabsErrorNotice`, raw
+message, overlaying the identity row) is withheld for the host's leading tab, so
+one failure is said once (pinned: `panelTabSessionIdentity.test.ts`). Pinned in
+`test/test_member_hire.py` (the gates: two named members from one file coexist,
+both enrolled, `default` off the roster; one store template hired twice under two
+names coexist, each with the card's defaults, provenance, pristine copy and
+seeded briefing; the card's ghost face is the member's face and the hire body
+cannot pass one; a hire without a name -- with or without
 a role -- is 400 and writes nothing; a blank name is refused the same way; a
 rename keeps id, binding, store and record; a typed collision is still 409; no
 moment exists where a row is bound to the shared source -- the copy exists
@@ -462,9 +675,18 @@ reserved and written under the config file lock; a dotted template the listing
 offers can be hired; a source that vanishes between resolve and copy is 404 with
 nothing written; a row that fails to persist unwinds the copy; a cancelled hire
 finishes its transaction; the source must not be another member's private copy;
-unhashable kinds and non-string text fields are 400; lineage on the roster) and
-`test/test_agents_roster_contract.py` (`crewmate` is the one handler-added bool on
-the crew manager's roster).
+an unhireable listing -- uninstalled, disabled, admission-denied, no card,
+unmaterialized, unreadable spec, a card path rewritten to leave the app root after
+install -- is refused before anything is written; an explicit empty role or
+triggers is kept, not replaced by the card's; a link planted at the member
+directory fails the hire with nothing written through it; a briefing seed that
+fails midway leaves no file behind; a failed template link rolls the hire back,
+copy included, and a failed roll-back names the member; unhashable kinds and
+non-string text fields are 400; lineage on the roster),
+`test/test_agents_roster_contract.py` (`template` and `template_version` withheld
+from the crew manager's roster; `crewmate` is the one handler-added bool) and
+`MembersPage.identity.test.tsx` (the Source row by display name; the id with no
+notice when the app is gone; an `ErrorNotice` when the apps read fails).
 
 ## Crewmate enrollment (explicit membership)
 
@@ -517,11 +739,15 @@ Crew page and a restart never write the record; the fire (step 5) removes it.
   agent hand-off offered only while nothing on the page is unsaved) -- a failed
   read is not "not a crewmate". Sessions, crons and dispatch bindings
   are untouched by membership.
-- **When it is written.** Inside the hire's publication
+- **When it is written.** A file hire: inside the create's publication
   (`_create_crew(enroll=)`): after the private copy and the store are
   provisioned, `set_crewmate_record(id, generation=<the row's store>,
   template=<source>, hired_at=<UTC>)`, then the row persists; a row that fails to
-  land clears the record it just wrote, so the two never disagree.
+  land clears the record it just wrote, so the two never disagree. A STORE hire:
+  as the last act of step 4 (`_link_member_to_template(enroll=)`), after the
+  template link, the pristine copy and the briefing landed -- until then the row
+  is a session agent, not a crewmate, so a step-4 failure rolls back a row nobody
+  could have opened.
 - **When it moves or goes.** The generation is the row's store, so a
   LEGITIMATE store change through `PUT /api/agents/{id}` -- private memory
   provisioned for an enrolled member on the shared store, a rebind -- moves the
