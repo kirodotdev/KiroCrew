@@ -445,10 +445,11 @@ jobs:
               list the workflow wrote (RENDERED EVIDENCE above) names no image
               or recording downloaded from its description (a
               github.com/user-attachments asset the workflow fetched and typed;
-              a URL that did not download is not evidence) and none committed
-              at HEAD that THIS checkout can render (on a fork pull request the head is
-              never checked out, so a committed image is not evidence here --
-              the same rule the fork UX lane applies; the attachment is). An
+              a URL that did not download is not evidence) or committed
+              at HEAD (an image this PR adds or changes under temp-screenshots/
+              or .github/screenshots/, which the workflow materializes for this
+              revision -- the same-repo lane off its checkout, the fork lane at
+              the head SHA over the API). An
               image hosted off a commit outside this PR, or one the description
               itself says shows another PR's state, is not evidence of this
               revision. You cannot judge the shape of a surface you have not

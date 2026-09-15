@@ -97,13 +97,14 @@ kirocrew-data.tar.gz
 # (`*.log` is already ignored above.)
 .pr-body.md
 .r*-logs/
-# PR review evidence (screenshots, GIFs, recordings) is uploaded as a GitHub
-# attachment with `gh pr create|edit --attach`, never committed; non-media
-# evidence goes in a PR comment -- text (JSON provenance, perf baselines) as a
-# fenced block, a document (PDF, docx, zip) dragged in via the web UI. The
-# capture scripts under website/scripts/ and website/capture/ still write here
-# locally.
-temp-screenshots/
+# PR review evidence (screenshots, GIFs, recordings). A contributor with write
+# access uploads it as a GitHub attachment with `gh pr create|edit --attach`,
+# never committed. A fork contributor cannot `--attach`, so they commit it
+# under `temp-screenshots/<topic>/` and the review lanes fetch it at the PR
+# head -- so temp-screenshots/ is NOT ignored. Non-media evidence goes in a PR
+# comment: text (JSON provenance, perf baselines) as a fenced block, a document
+# (PDF, docx, zip) dragged in via the web UI. The capture scripts under
+# website/scripts/ and website/capture/ still write here locally.
 .github/screenshots/
 # Staged blind-review artifacts (prepare-pr review lanes point subagents at
 # .review-<n>.diff files) and the autofix work-dir heartbeat — scratch, never

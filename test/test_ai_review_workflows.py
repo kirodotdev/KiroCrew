@@ -2094,7 +2094,7 @@ class TestUxScopeGateSurvivesAWideDiff:
 UX_BLIND_STEP = "Blind read of the screenshots (Fable 5)"
 UX_REVIEW_STEP = "UX review (Fable 5)"
 UX_EVIDENCE_STEP = "Collect blind-read evidence"
-FORK_ATTACHMENT_STEP = "Fetch attachment evidence from the PR description"
+FORK_ATTACHMENT_STEP = "Fetch evidence (attachments + committed screenshots)"
 UX_CAPTURE_STEP = "Capture the blind-read report"
 # The step each lane fetches PR-description attachments in. The same-repo copy
 # also reads committed images off its checkout; the fork copy has no checkout.
@@ -3421,10 +3421,15 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         # not left to per-URL warnings: that is how a moved asset host shows up.
         assert 'if [ "$fetched" -gt 0 ] && [ "$skipped" -eq "$fetched" ]; then' in script
         assert "::error::Every one of the $fetched attachment download(s) was skipped" in script
-        curl = [ln for ln in code if re.search(r"\bcurl\b", ln)]
-        assert len(curl) == 1, curl
+        # Exactly ONE curl exists: the attachment fetch (ends in "$url"). The
+        # committed-blob path fetches over `gh api .../git/blobs/<sha>` with the
+        # raw media type, NOT curl, so no second curl call is added.
+        curls = [ln for ln in code if re.search(r"\bcurl\b", ln)]
+        assert len(curls) == 1, curls
+        curl0 = curls[0]
+        assert '"$url"' in curl0, curl0
         for forbidden in ("-H ", "--header", "Authorization", "GH_TOKEN", "GITHUB_TOKEN"):
-            assert forbidden not in curl[0], curl[0]
+            assert forbidden not in curl0, curl0
         for flag in (
             "-sSfL",
             "--proto '=https'",
@@ -3434,7 +3439,12 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
             "-w '%{http_code}'",
             '-o "$tmp" "$url"',
         ):
-            assert flag in curl[0], curl[0]
+            assert flag in curl0, curl0
+        # The committed-blob fetch uses the git blobs API with the raw media
+        # type on api.github.com -- verified by the executed committed-evidence
+        # tests -- and passes no fork-controlled string as a URL.
+        assert 'gh api "repos/$HEAD_REPO/git/blobs/$blob_sha"' in script
+        assert "application/vnd.github.raw" in script
         # Failure is logged and skipped, never fatal; the type is the bytes'.
         # A definite 4xx is the author's URL, not transport, so it never
         # counts as a fetch failure.
@@ -3472,12 +3482,543 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         )
         assert "the attachment URL in the PR description, or the repository path" in system
         fork_prompt = _flat(_step("fork-ux-review.yml", UX_REVIEW_STEP)["with"]["prompt"])
-        assert "the normal evidence is an image or video attached to the PR description" in (
+        assert "The normal one is an image or video attached to the PR description" in (
             fork_prompt
         )
-        assert "The workflow downloads each one for you" in fork_prompt
+        assert "evidence comes from two sources, both fetched for you" in fork_prompt
         assert "A committed image still counts" in fork_prompt
-        assert "at least one screenshot the PR supplies" in fork_prompt
+
+
+class TestForkLaneFetchesCommittedScreenshots:
+    """A fork contributor cannot ``gh --attach`` (that needs write access), so
+    the process now lets them COMMIT review screenshots under
+    ``temp-screenshots/`` and the fork lanes fetch each one at the PR head.
+
+    The fork head is never checked out, so the shared evidence script resolves
+    a committed image over trusted, SHA-pinned APIs without ever interpolating
+    a fork filename into a request: it derives the changed set from the compare
+    endpoint pinned to (BASE_SHA...HEAD_SHA) -- NOT the live pulls/files
+    endpoint, which reflects the newest head -- as one base64 record per file,
+    validates each decoded path against a strict allowlist, resolves it through
+    the git TREES API pinned to the head commit (blob + regular file mode only
+    -- a symlink/gitlink is refused by mode), checks the tree entry's size, and
+    fetches the bytes by blob SHA over the git BLOBS API with the raw media
+    type. These cases execute the ACTUAL script with the fork switch
+    (``HEAD_REPO`` + ``HEAD_SHA`` + ``BASE_SHA``) on and stub every hop, pinning
+    the security properties the GPT lane blocked on -- a filename cannot split
+    into two records, a fork path is never interpolated (``#``/``..``/space
+    rejected), a symlink/gitlink cannot pass unrelated bytes as evidence, and
+    the changed set is pinned to the event's SHAs (the live pulls/files endpoint
+    is never called) -- plus a truncated tree and a >=300-file compare failing
+    closed, the happy path via the blobs API, and attachment numbering continuing.
+    """
+
+    PNG = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\x0dIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89"
+    )
+    HEAD = "1234567890abcdef1234567890abcdef12345678"
+    BASE = "fedcba0987654321fedcba0987654321fedcba09"
+
+    def _stubs(
+        self,
+        tmp_path: Path,
+        files: list[dict[str, str]],
+        tree_entries: list[dict],
+        blobs: dict[str, bytes | str],
+        truncated: bool = False,
+        compare_file_count: int | None = None,
+    ) -> Path:
+        """Write a BASH_ENV file defining gh and curl function stubs.
+
+        ``gh`` answers: the PR body, the SHA-pinned compare (base...head) that
+        supplies the changed set as its ``.files``, the git trees listing pinned
+        to HEAD_SHA, and a git blob fetch by sha with the raw accept header. The
+        LIVE ``pulls/<n>/files`` endpoint FAILS loudly here -- the
+        committed-evidence path must never touch it, so a call proves a
+        regression. ``curl`` still serves the description's user-attachment
+        bytes by URL. ``file`` / ``jq`` / ``base64`` are the host's own.
+
+        ``compare_file_count`` overrides the ``.files | length`` the compare
+        reports (to exercise the >= 300 fail-closed) without materializing that
+        many entries.
+        """
+        import base64 as _b64
+        import json as _json
+
+        stub = tmp_path / "stubs.sh"
+        # The compare response is what the committed-evidence path reads.
+        compare_files = list(files)
+        if compare_file_count is not None and compare_file_count > len(compare_files):
+            # Pad with unrelated entries so `.files | length` hits the cap; the
+            # allowlist/prefix filter would ignore them even if reached.
+            compare_files = compare_files + [
+                {"filename": f"src/pad-{i}.ts", "status": "modified"}
+                for i in range(compare_file_count - len(compare_files))
+            ]
+        compare_json = _json.dumps({"files": compare_files})
+        tree_json = _json.dumps({"truncated": truncated, "tree": tree_entries})
+
+        # Blobs are keyed by sha; bytes go to a file the stub cats, text is
+        # emitted inline. The stub matches `git/blobs/<sha>` in the argv.
+        blob_dir = tmp_path / "blobs"
+        blob_dir.mkdir(exist_ok=True)
+        blob_arms = ""
+        for sha, payload in blobs.items():
+            if sha.startswith("http"):
+                continue  # attachment URLs are served by curl, not the blobs API
+            if isinstance(payload, bytes):
+                bp = blob_dir / sha
+                bp.write_bytes(payload)
+                blob_arms += (
+                    f"    'api repos/head/repo/git/blobs/{sha} "
+                    "-H Accept: application/vnd.github.raw')\n"
+                    f'      cat "{bp.as_posix()}" ;;\n'
+                )
+            else:
+                b64 = _b64.b64encode(payload.encode()).decode()
+                blob_arms += (
+                    f"    'api repos/head/repo/git/blobs/{sha} "
+                    "-H Accept: application/vnd.github.raw')\n"
+                    f"      printf '%s' '{b64}' | base64 -d ;;\n"
+                )
+
+        # The description's attachment fetch still runs; give it a curl map.
+        curl_table = tmp_path / "curl-map.tsv"
+        fixture_dir = tmp_path / "fixtures"
+        fixture_dir.mkdir(exist_ok=True)
+        table = []
+        for index, (url, payload) in enumerate(
+            (k, v) for k, v in blobs.items() if k.startswith("http")
+        ):
+            if isinstance(payload, bytes):
+                p = fixture_dir / f"fixture-{index}"
+                p.write_bytes(payload)
+                table.append(f"{url}\t{p.as_posix()}")
+        curl_table.write_text(
+            "".join(line + "\n" for line in table), encoding="utf-8", newline="\n"
+        )
+
+        gh = (
+            "gh() {\n"
+            '  args="$*"\n'
+            '  case "$args" in\n'
+            "    'api repos/example/repo/pulls/7 '*'--jq'*'.body'*)\n"
+            '      printf \'%s\' "$GH_STUB_BODY" ;;\n'
+            "    'api repos/example/repo/compare/" + self.BASE + "..." + self.HEAD + "')\n"
+            f"      printf '%s' '{compare_json}' ;;\n"
+            "    'api repos/example/repo/pulls/7/files'*)\n"
+            '      echo "gh stub: the committed-evidence path must NOT call the live '
+            'pulls/files endpoint" >&2; return 3 ;;\n'
+            "    'api repos/head/repo/git/trees/" + self.HEAD + "?recursive=1')\n"
+            f"      printf '%s' '{tree_json}' ;;\n"
+            + blob_arms
+            + "    'api repos/head/repo/git/blobs/'*)\n"
+            '      echo "gh stub: 404" >&2; return 1 ;;\n'
+            '    *) echo "gh stub: unexpected: $args" >&2; return 1 ;;\n'
+            "  esac\n"
+            "}\n"
+        )
+        curl = (
+            "curl() {\n"
+            '  out=""; prev=""\n'
+            '  for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done\n'
+            '  url="$prev"\n'
+            "  fixture=\"$(awk -F '\\t' -v u=\"$url\" '$1 == u { print $2; exit }' \"$CURL_STUB_MAP\")\"\n"
+            '  case "$fixture" in\n'
+            '    "") echo 000; return 6 ;;\n'
+            '    *) cp "$fixture" "$out"; echo 200 ;;\n'
+            "  esac\n"
+            "}\n"
+        )
+        stub.write_text(gh + curl, encoding="utf-8", newline="\n")
+        return stub
+
+    def _run(
+        self,
+        tmp_path: Path,
+        files: list[dict[str, str]],
+        tree_entries: list[dict],
+        blobs: dict[str, bytes | str],
+        truncated: bool = False,
+        body: str = "",
+        compare_file_count: int | None = None,
+    ):
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the evidence script runs only under Bash")
+        for tool in ("file", "jq", "base64"):
+            if shutil.which(tool) is None:
+                pytest.skip(f"the committed-evidence block needs {tool}")
+        probe = tmp_path / "probe.png"
+        probe.write_bytes(self.PNG)
+        typed = subprocess.run(
+            ["file", "--mime-type", "-b", str(probe)],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+        if typed != "image/png":
+            pytest.skip(f"this host's file(1) types the PNG fixture as {typed}")
+        stub = self._stubs(
+            tmp_path, files, tree_entries, blobs, truncated, compare_file_count
+        )
+        dest = tmp_path / "attach"
+        fetch = tmp_path / "fetch"
+        shots = tmp_path / "shots.txt"
+        shot_map = tmp_path / "shot-map.txt"
+        clips = tmp_path / "clips.txt"
+        gout = tmp_path / "gh-output"
+        gout.touch()
+        for f in (shots, shot_map, clips):
+            f.write_text("", encoding="utf-8")
+        env = {
+            k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "GH_", "GITHUB_"))
+        }
+        env.update(
+            {
+                "BASH_ENV": stub.as_posix(),
+                "GH_STUB_BODY": body,
+                "CURL_STUB_MAP": str(tmp_path / "curl-map.tsv"),
+                "REPO": "example/repo",
+                "PR": "7",
+                "HEAD_REPO": "head/repo",
+                "HEAD_SHA": self.HEAD,
+                "BASE_SHA": self.BASE,
+                "GH_TOKEN": "t",
+                "FETCH_DIR": str(fetch),
+                "DEST_DIR": str(dest),
+                "NAME_STEM": "attachment",
+                "SHOTS": str(shots),
+                "SHOT_MAP": str(shot_map),
+                "CLIPS": str(clips),
+                "MAX_SHOTS": "40",
+                "MAX_CLIPS": "4",
+                "GITHUB_OUTPUT": str(gout),
+                "LC_ALL": "C",
+            }
+        )
+        script = _attachment_script()
+        out = subprocess.run(
+            [bash, "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env=env,
+        )
+        assert out.returncode == 0, out.stdout + out.stderr
+        return (
+            shots.read_text(encoding="utf-8"),
+            shot_map.read_text(encoding="utf-8"),
+            clips.read_text(encoding="utf-8"),
+            out.stdout,
+            dest,
+        )
+
+    @staticmethod
+    def _blob(path: str, mode: str = "100644", size: int = 24, sha: str | None = None) -> dict:
+        return {
+            "path": path,
+            "type": "blob",
+            "mode": mode,
+            "size": size,
+            "sha": sha or ("a" * 40),
+        }
+
+    def test_an_added_committed_png_is_kept_with_a_repository_path_origin(
+        self, tmp_path: Path
+    ) -> None:
+        path = "temp-screenshots/feat/after.png"
+        sha = "b" * 40
+        shots, shot_map, _clips, _stdout, dest = self._run(
+            tmp_path,
+            files=[{"filename": path, "status": "added"}],
+            tree_entries=[self._blob(path, size=len(self.PNG), sha=sha)],
+            blobs={sha: self.PNG},
+        )
+        # Kept under the opaque continuing name, never the author's path.
+        assert shots.splitlines() == [f"{dest.as_posix()}/attachment-01.png"]
+        assert (dest / "attachment-01.png").read_bytes() == self.PNG
+        assert "after.png" not in shots
+        short = self.HEAD[:7]
+        assert shot_map.splitlines() == [
+            f"attachment-01.png\trepository path {path} @ {short}"
+        ]
+
+    def test_a_newline_in_a_filename_cannot_inject_a_sibling_record(
+        self, tmp_path: Path
+    ) -> None:
+        # The files API is read as one base64 record per file, so a filename
+        # carrying an embedded newline stays ONE record -- and the jq
+        # control-char gate drops it before it is ever decoded in the shell.
+        # The smuggled UNCHANGED sibling path is never fetched.
+        injected = "temp-screenshots/feat/new.png\ntemp-screenshots/prior.png"
+        prior = "temp-screenshots/prior.png"
+        prior_sha = "c" * 40
+        shots, shot_map, _clips, _stdout, _dest = self._run(
+            tmp_path,
+            files=[{"filename": injected, "status": "added"}],
+            # The prior file exists in the tree, so the ONLY thing stopping it
+            # is that the injected record is dropped before it can resolve to it.
+            tree_entries=[self._blob(prior, sha=prior_sha)],
+            blobs={prior_sha: self.PNG},
+        )
+        assert shots == ""
+        assert shot_map == ""
+        assert "prior.png" not in shots and "prior.png" not in shot_map
+
+    @pytest.mark.parametrize(
+        "suffix,label",
+        [("\n", "trailing newline"), ("\r", "embedded carriage return")],
+    )
+    def test_a_control_char_filename_is_dropped_in_jq_before_the_shell_normalizes_it(
+        self, tmp_path: Path, suffix: str, label: str
+    ) -> None:
+        # A shell `$(...)` STRIPS a trailing newline, so a changed
+        # `state.png\n` would arrive shell-side as a clean `state.png`, pass the
+        # allowlist, and the exact tree lookup would select the UNCHANGED
+        # sibling `state.png` -- stale bytes as this revision's evidence. The
+        # control-char gate therefore lives in the jq filter, which sees the raw
+        # JSON string before any shell normalization: the crafted record is
+        # dropped and the clean sibling (present in the tree, NOT changed) is
+        # never fetched.
+        clean = "temp-screenshots/feat/state.png"
+        crafted = clean + suffix  # the newline/CR is INSIDE the JSON string
+        clean_sha = "c" * 40
+        shots, shot_map, _clips, _stdout, _dest = self._run(
+            tmp_path,
+            files=[{"filename": crafted, "status": "modified"}],
+            # The clean sibling exists in the tree but is NOT in the changed
+            # files list, so admitting it would be stale-evidence injection.
+            tree_entries=[self._blob(clean, sha=clean_sha)],
+            blobs={clean_sha: self.PNG},
+        )
+        assert shots == "", label
+        assert shot_map == "", label
+        assert "state.png" not in shots and "state.png" not in shot_map, label
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "temp-screenshots/feat/../../secret.png",  # traversal
+            "temp-screenshots/feat/a#b.png",  # fragment char
+            "temp-screenshots/feat/a b.png",  # space
+            "temp-screenshots/feat/.hidden.png",  # leading dot segment
+        ],
+    )
+    def test_a_path_with_a_forbidden_char_is_skipped(self, tmp_path: Path, bad: str) -> None:
+        shots, shot_map, _clips, stdout, _dest = self._run(
+            tmp_path,
+            files=[{"filename": bad, "status": "added"}],
+            tree_entries=[self._blob(bad)],
+            blobs={"a" * 40: self.PNG},
+        )
+        assert shots == ""
+        assert shot_map == ""
+        assert "not on the committed-evidence allowlist" in stdout
+
+    def test_a_symlink_mode_tree_entry_is_refused(self, tmp_path: Path) -> None:
+        # 120000 is the git symlink mode. An added symlink to an in-repo image
+        # comes back as a tree entry, but the mode -- not a contents-API
+        # `type=file` -- is what decides, so it is refused before any fetch.
+        path = "temp-screenshots/feat/link.png"
+        shots, shot_map, _clips, stdout, _dest = self._run(
+            tmp_path,
+            files=[{"filename": path, "status": "added"}],
+            tree_entries=[self._blob(path, mode="120000")],
+            blobs={"a" * 40: self.PNG},
+        )
+        assert shots == ""
+        assert shot_map == ""
+        assert "not a regular file blob" in stdout and "120000" in stdout
+
+    def test_a_gitlink_mode_tree_entry_is_refused(self, tmp_path: Path) -> None:
+        # 160000 is a submodule gitlink; it is not a blob and is refused.
+        path = "temp-screenshots/feat/sub.png"
+        shots, shot_map, _clips, stdout, _dest = self._run(
+            tmp_path,
+            files=[{"filename": path, "status": "added"}],
+            tree_entries=[{"path": path, "type": "commit", "mode": "160000", "sha": "a" * 40}],
+            blobs={},
+        )
+        assert shots == ""
+        assert shot_map == ""
+        assert "not a regular file blob" in stdout
+
+    def test_a_truncated_tree_skips_committed_evidence(self, tmp_path: Path) -> None:
+        # A truncated tree cannot be trusted to contain the entry we look up,
+        # so committed evidence is skipped entirely with an explanatory line.
+        path = "temp-screenshots/feat/after.png"
+        shots, shot_map, _clips, stdout, _dest = self._run(
+            tmp_path,
+            files=[{"filename": path, "status": "added"}],
+            tree_entries=[self._blob(path)],
+            blobs={"a" * 40: self.PNG},
+            truncated=True,
+        )
+        assert shots == ""
+        assert shot_map == ""
+        assert "truncated" in stdout and "skipping committed evidence" in stdout
+
+    def test_the_changed_set_is_pinned_to_the_event_shas_not_the_live_head(
+        self, tmp_path: Path
+    ) -> None:
+        # The live pulls/files endpoint reflects the NEWEST head, so a push
+        # landing after the event could list a newer revision's `new.png` while
+        # the tree lookup stays pinned to HEAD_SHA -- and an UNCHANGED `prior.png`
+        # in the pinned tree would then be admitted. The changed set comes from
+        # the compare pinned to (BASE...HEAD): here the compare lists ONLY
+        # new.png. prior.png exists in the tree but is NOT in the compare, so it
+        # is never fetched -- and the stub FAILS the run if the live pulls/files
+        # endpoint is called at all, proving it is not on this path.
+        newp = "temp-screenshots/feat/new.png"
+        prior = "temp-screenshots/feat/prior.png"
+        new_sha = "b" * 40
+        prior_sha = "c" * 40
+        shots, shot_map, _clips, _stdout, dest = self._run(
+            tmp_path,
+            # The compare (pinned) lists only new.png.
+            files=[{"filename": newp, "status": "added"}],
+            # Both exist in the pinned tree; only the changed one may be fetched.
+            tree_entries=[
+                self._blob(newp, size=len(self.PNG), sha=new_sha),
+                self._blob(prior, size=len(self.PNG), sha=prior_sha),
+            ],
+            blobs={new_sha: self.PNG, prior_sha: self.PNG},
+        )
+        # new.png is kept; prior.png is never fetched. If the script had called
+        # the live pulls/files endpoint the stub would have failed the run.
+        assert shots.splitlines() == [f"{dest.as_posix()}/attachment-01.png"]
+        assert "prior.png" not in shot_map
+
+    def test_a_300_file_compare_skips_committed_evidence(self, tmp_path: Path) -> None:
+        # The compare API caps `.files` at 300; at the cap the list may be
+        # partial and a needed path could be silently absent, so committed
+        # evidence is skipped entirely with a printed reason (fail closed).
+        path = "temp-screenshots/feat/after.png"
+        sha = "e" * 40
+        shots, shot_map, _clips, stdout, _dest = self._run(
+            tmp_path,
+            files=[{"filename": path, "status": "added"}],
+            tree_entries=[self._blob(path, size=len(self.PNG), sha=sha)],
+            blobs={sha: self.PNG},
+            compare_file_count=300,
+        )
+        assert shots == ""
+        assert shot_map == ""
+        assert "300" in stdout and "skipping committed evidence" in stdout
+
+    def test_a_committed_non_image_is_skipped_by_its_bytes(self, tmp_path: Path) -> None:
+        # A path that passes the allowlist but whose BYTES are not an image
+        # (a text blob renamed .png) is typed by file(1) and skipped.
+        path = "temp-screenshots/feat/notes.png"
+        sha = "d" * 40
+        shots, shot_map, _clips, stdout, _dest = self._run(
+            tmp_path,
+            files=[{"filename": path, "status": "added"}],
+            tree_entries=[self._blob(path, sha=sha)],
+            blobs={sha: "this is plain text, not an image at all\n"},
+        )
+        assert shots == ""
+        assert shot_map == ""
+        assert "SKIPPED (mime" in stdout
+
+    def test_a_file_outside_the_screenshot_prefixes_is_ignored(self, tmp_path: Path) -> None:
+        # A png the PR adds under website/ is code-adjacent, not review
+        # evidence: it fails the allowlist prefix and is never fetched.
+        outside = "website/src/assets/logo.png"
+        shots, shot_map, _clips, _stdout, _dest = self._run(
+            tmp_path,
+            files=[{"filename": outside, "status": "added"}],
+            tree_entries=[self._blob(outside)],
+            blobs={},
+        )
+        assert shots == ""
+        assert shot_map == ""
+
+    def test_the_happy_path_fetches_via_the_blobs_api_with_the_raw_accept_header(
+        self, tmp_path: Path
+    ) -> None:
+        # The gh stub only answers the blob call when the raw accept header is
+        # present, so a green fetch proves the request shape (blobs API +
+        # application/vnd.github.raw) the design mandates.
+        path = "temp-screenshots/feat/after.png"
+        sha = "e" * 40
+        shots, _shot_map, _clips, _stdout, dest = self._run(
+            tmp_path,
+            files=[{"filename": path, "status": "added"}],
+            tree_entries=[self._blob(path, size=len(self.PNG), sha=sha)],
+            blobs={sha: self.PNG},
+        )
+        assert shots.splitlines() == [f"{dest.as_posix()}/attachment-01.png"]
+
+    def test_the_attachment_path_still_works_and_committed_numbering_continues(
+        self, tmp_path: Path
+    ) -> None:
+        # One attachment in the body (attachment-01) and one committed image
+        # (attachment-02): the committed block continues the numbering the
+        # attachment block left off, and both land in the same list.
+        att = "https://github.com/user-attachments/assets/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        path = "temp-screenshots/feat/after.png"
+        sha = "f" * 40
+        shots, shot_map, _clips, _stdout, dest = self._run(
+            tmp_path,
+            files=[{"filename": path, "status": "added"}],
+            tree_entries=[self._blob(path, size=len(self.PNG), sha=sha)],
+            blobs={att: self.PNG, sha: self.PNG},
+            body=f"![before]({att})\n",
+        )
+        names = shots.splitlines()
+        assert names == [
+            f"{dest.as_posix()}/attachment-01.png",
+            f"{dest.as_posix()}/attachment-02.png",
+        ]
+        rows = shot_map.splitlines()
+        assert rows[0] == f"attachment-01.png\t{att}"
+        short = self.HEAD[:7]
+        assert rows[1] == f"attachment-02.png\trepository path {path} @ {short}"
+
+
+
+class TestForkLanesReviewOnlyDefaultBranchPRs:
+    """The fork UX/Design lanes pin evidence AND the review diff to the base
+    SHA their resolver reads live from the PR (workflow_run carries no
+    pull_request base). A PR retargeted after Fast Gate would move that base,
+    so an old-head screenshot could be classified as added against a base the
+    PR was never opened into. The resolver therefore reads base.sha and base.ref
+    in ONE response and fails CLOSED unless the PR targets the repository's
+    default branch.
+    """
+
+    LANES = ("fork-ux-review.yml", "fork-design-review.yml")
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_resolver_reads_sha_and_ref_together_and_gates_on_default_branch(
+        self, lane: str
+    ) -> None:
+        workflow = _workflow(lane)
+        step = _step_script(workflow, "Resolve and validate PR (authoritative from GitHub)")
+        # base.sha and base.ref come from ONE response so they cannot disagree.
+        assert "[.base.sha, .base.ref] | @tsv" in step
+        assert "base_sha=\"$(printf '%s' \"$base_tsv\" | cut -f1)\"" in step
+        assert "base_ref=\"$(printf '%s' \"$base_tsv\" | cut -f2)\"" in step
+        # The default branch is a trusted event fact, read into an env var.
+        assert "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}" in workflow
+        # Fail CLOSED off the default branch, and on an unknown default branch.
+        assert 'if [ "$base_ref" != "$DEFAULT_BRANCH" ]; then' in step
+        assert (
+            "::error::PR #$pr targets $base_ref, not $DEFAULT_BRANCH; "
+            "the fork lanes review only PRs into the default branch" in step
+        )
+        assert "the repository default branch is unknown; failing closed" in step
+        # The old single-field read must be gone.
+        assert "--jq '.base.sha'" not in step
+
 
 
 # The lanes whose missing head marker degrades to a NON-BLOCKING UNKNOWN.

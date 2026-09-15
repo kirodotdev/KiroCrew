@@ -63,6 +63,12 @@
          ![alt](./evidence/after.png)
          ![](./evidence/demo.mp4)   <- alone in its paragraph renders as a player
        Limits: 10 MB per image/GIF, 100 MB per video.
+     - No write access (a fork PR)? `--attach` refuses. Commit the media under
+       temp-screenshots/<topic>/ instead and reference it so it renders for a
+       human -- e.g.
+       ![alt](https://github.com/<fork-owner>/KiroCrew/raw/<branch>/temp-screenshots/<topic>/after.png)
+       -- the review lanes ignore the URL and fetch the committed file at the PR
+       head, so the image you commit is the evidence they judge.
      - Non-media evidence is neither attached with --attach nor committed.
        Text (a provenance JSON, a perf baseline, an assertion dump) goes in
        a fenced code block in a PR comment (65,536 characters max). A

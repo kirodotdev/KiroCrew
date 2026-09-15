@@ -1238,8 +1238,10 @@ The Design trigger accepts the same evidence the UX lane admits: a
 `github.com/user-attachments` asset in the description or an image committed at
 HEAD -- and it reads presence the same way. Both Design lanes run a "Collect
 rendered evidence" step that sources the shared allowlisted fetch script, downloads
-and types every attachment the description offers, lists the committed images the
-revision adds or changes (same-repo only; the fork head is never checked out), and
+and types every attachment the description offers, and fetches every image the
+revision adds or changes under `temp-screenshots/` or `.github/screenshots/` (the
+same-repo lane off its checkout; the fork lane at the head SHA over the API, since
+the fork head is never checked out), and
 writes one evidence file the prompt is told to read; the description's text is not
 the predicate, so a fabricated or dead URL does not count as evidence. A transport
 failure is listed as "presence unconfirmed" and caps the Design verdict at `CONCERNS`
@@ -1264,13 +1266,14 @@ and fork PRs identically with no cross-workflow head-passing.
 ### `UX Review` early-skips cheaply
 
 It runs only when the diff touches `website/`, `temp-screenshots/**` or
-`.github/screenshots/**` (the last two are gitignored, so in practice `website/` is the
-trigger). A backend, CI or docs PR skips it with no model call and no comment churn,
-and the check passes. Review evidence is uploaded as a GitHub attachment, not
-committed: the author writes local paths in the PR body and runs
+`.github/screenshots/**`. A backend, CI or docs PR skips it with no model call and no comment churn,
+and the check passes. Review evidence with write access is uploaded as a GitHub
+attachment, not committed: the author writes local paths in the PR body and runs
 `gh pr create|edit --attach <path>`, which rewrites each into a permanent
 `https://github.com/user-attachments/assets/...` URL (dragging the file into the
-description in the web UI yields the same URL). The lane reads the body from the API when
+description in the web UI yields the same URL). A fork contributor cannot `--attach`,
+so they commit the media under `temp-screenshots/<topic>/` (that path is no longer
+gitignored) and the lanes fetch it at the PR head. The lane reads the body from the API when
 it runs (`.github/scripts/pr-attachment-evidence.sh`, one script both UX lanes source;
 the fork lane takes it from its trusted base checkout), not from the event payload -- an `edited` event starts no review, so evidence
 attached after a push is read on a re-run of the workflow or on the next push -- downloads
@@ -1357,15 +1360,20 @@ description from the API and downloads the allowlisted `user-attachments` URLs o
 the runner (the job's egress allowlist names the two hosts a download touches,
 `github.com` and the `github-production-user-asset-6210df.s3.amazonaws.com` bucket
 its 302 points at), so the reviewer
-opens the same images a same-repo review would. An image a fork PR *commits* is not
-on disk -- the fork head is never checked out -- so a control shown only there is an
-evidence gap, which is a `BLOCK` (`cannot evaluate`) the author closes by attaching
-the image to the description. A control the attachments *do* show but no blind
-reader has read caps the fork PR at `CONCERNS`: that is the lane's limitation, not
-the author's gap, so it does not block. A maintainer who wants
-the blind read pushes the branch to this repository. A fork contributor without push
-access cannot run `gh --attach`; dragging the file into the PR description in the web
-UI yields the same `user-attachments` URL.
+opens the same images a same-repo review would. An image a fork PR *commits* under
+`temp-screenshots/` or `.github/screenshots/` is fetched too: the fork head is never
+checked out, so the lane lists the PR's added/modified files over the files API,
+validates each path against a strict allowlist (no `..`, `#`, `?`, spaces, control
+characters or leading dots), resolves it through the git trees API pinned to the head
+commit as a real blob with a regular file mode (a symlink or gitlink is refused by
+mode), and fetches the bytes by blob SHA over the git blobs API's raw media type on
+`api.github.com`. Both sources land in the same opaque-named image list, so a
+committed image the PR adds closes an evidence gap exactly as an attachment does. An
+image the description merely *links* but the workflow did not fetch (a raw URL pinned
+to a commit outside this PR, say) is not evidence. A control the evidence *does* show
+but no blind reader has read caps the fork PR at `CONCERNS`: that is the lane's
+limitation, not the author's gap, so it does not block. A maintainer who wants
+the blind read pushes the branch to this repository.
 
 The PR identity (number, repository, shas, data-file paths) is passed to both passes
 in `--append-system-prompt`, not in `prompt:`. GitHub rejects a workflow file
