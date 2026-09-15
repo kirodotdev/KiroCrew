@@ -1411,6 +1411,47 @@ class TestArtifactRoutes:
         assert _get_slug(cid) == "slug-new"
 
     @pytest.mark.asyncio
+    async def test_to_artifact_runs_the_store_writes_off_the_event_loop(self, _isolate: Path):
+        # The artifact store's write path stages through pinned directory
+        # syscalls and an atomic rename; on slow storage that would stall the
+        # whole gateway if it ran on the loop. Both the regenerate (update) and
+        # the fresh-create paths must run in a worker thread, like this
+        # handler's own DB writes do.
+        import threading
+
+        threads: list[str] = []
+
+        def _create(**_kw):
+            threads.append(threading.current_thread().name)
+            return _FakeArtifact("slug-new")
+
+        def _update(*_a, **_kw):
+            threads.append(threading.current_thread().name)
+            return _FakeArtifact("slug-old")
+
+        cid = _campaign()
+        (h._campaign_dir(cid) / "FINDINGS.md").write_text("findings")
+        store = MagicMock()
+        store.create.side_effect = _create
+        store.update.side_effect = _update
+        construct_threads: list[str] = []
+
+        def _construct(*_a, **_kw):
+            # Construction is filesystem work too (root, content-token key),
+            # so it belongs on the worker thread with the writes.
+            construct_threads.append(threading.current_thread().name)
+            return store
+
+        with mock.patch.object(h, "ArtifactStore", side_effect=_construct):
+            first = await h._handle_to_artifact(_mk("POST", "a", app=_app(), match={"id": cid}))
+            assert first.status == 201
+            second = await h._handle_to_artifact(_mk("POST", "a", app=_app(), match={"id": cid}))
+            assert second.status == 200  # regenerated the existing artifact
+        assert store.create.called and store.update.called
+        assert threads and all(t != "MainThread" for t in threads), threads
+        assert construct_threads and all(t != "MainThread" for t in construct_threads)
+
+    @pytest.mark.asyncio
     async def test_to_artifact_prefers_the_llm_authored_html(self, _isolate: Path):
         cid = _campaign()
         (h._campaign_dir(cid) / "FINDINGS.md").write_text("findings")

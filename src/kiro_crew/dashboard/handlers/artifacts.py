@@ -48,6 +48,7 @@ from kiro_crew.artifacts import (
     USER_SELECTABLE_KINDS,
     ArtifactAlreadyExistsError,
     ArtifactComment,
+    ArtifactConflictError,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactStillPublishedError,
@@ -110,6 +111,10 @@ _MAX_BODY_BYTES = MAX_CONTENT_BYTES + 8 * 1024 * 1024  # 25 MiB content + 8 MiB 
 # module doesn't carry those tools, so the constraint lives here at the sole
 # HTTP boundary that accepts a provider name.
 _ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+#: A wire content token: the hex HMAC-SHA256 the store mints (see
+#: ``ArtifactStore._token_for_digest``). Checked before the token reaches the
+#: store's constant-time compare.
+_TOKEN_SHAPE = re.compile(r"[0-9a-f]{64}")
 
 # Upper bound (seconds) on any single awaited remote-publish-provider network
 # call. Without it a slow/hung provider would block the awaiting request (and
@@ -1472,30 +1477,36 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # authorizes later reads is recorded with it. source_path is validated here
     # rather than stored as a raw string: an unvalidated project file outside
     # $HOME yields a pointer the store then refuses to read.
+    # Off the event loop, like every other store call in this handler: create()
+    # ends in the store's pinned staging (a component-by-component O_NOFOLLOW
+    # walk plus create + rename), and on slow storage those syscalls would
+    # stall every concurrent request and the heartbeat.
     try:
-        art = get_default_store().create(
-            name=body.get("name", ""),
-            content=(
-                promoted_content if promoted_content is not None else body.get("content", "")
-            ),
-            slug=body.get("slug"),
-            kind=body.get("kind"),
-            # Honor an explicitly-supplied source (MCP tool / import path); for
-            # UI saves that omit it, derive the ACTUAL session origin
-            # (dashboard/slack/cli/cron/subagent/...) rather than "manual".
-            source=(body.get("source") or _artifact_source_for_request(request)),
-            description=body.get("description", ""),
-            tags=body.get("tags") or [],
-            source_path=link_source_path,
-            source_root=link_source_root,
-            source_copy_only=link_copy_only,
-            folder_id=folder_id,
-            # Originating chat session for the Source column. Only a real slot
-            # key that passes the permitted grammar is stored (validated to
-            # prevent attribution spoofing / metadata poisoning); anything else
-            # collapses to "".
-            session_key=_clean_origin_session_key(body.get("origin_session_key")),
-            webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
+        art = await _run_off_loop(
+            lambda: get_default_store().create(
+                name=body.get("name", ""),
+                content=(
+                    promoted_content if promoted_content is not None else body.get("content", "")
+                ),
+                slug=body.get("slug"),
+                kind=body.get("kind"),
+                # Honor an explicitly-supplied source (MCP tool / import path); for
+                # UI saves that omit it, derive the ACTUAL session origin
+                # (dashboard/slack/cli/cron/subagent/...) rather than "manual".
+                source=(body.get("source") or _artifact_source_for_request(request)),
+                description=body.get("description", ""),
+                tags=body.get("tags") or [],
+                source_path=link_source_path,
+                source_root=link_source_root,
+                source_copy_only=link_copy_only,
+                folder_id=folder_id,
+                # Originating chat session for the Source column. Only a real slot
+                # key that passes the permitted grammar is stored (validated to
+                # prevent attribution spoofing / metadata poisoning); anything else
+                # collapses to "".
+                session_key=_clean_origin_session_key(body.get("origin_session_key")),
+                webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
+            )
         )
     except ArtifactValidationError as exc:
         _audit(
@@ -1734,6 +1745,26 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             from_version = int(raw_from_version) if raw_from_version is not None else None
         except (TypeError, ValueError):
             from_version = None
+        # Optional optimistic-concurrency token. The opaque ``content_token``
+        # a prior read handed the caller; the store 409s the write unless live
+        # content still mints to it. Shape-check here so a malformed token is a
+        # 400 (caller bug) rather than a guaranteed-mismatch 409 (which would
+        # read as a phantom concurrent edit) -- and never reaches the
+        # constant-time compare, which rejects non-ASCII input by raising.
+        raw_expected = body.get("expected_token")
+        if raw_expected is not None and (
+            not isinstance(raw_expected, str) or not _TOKEN_SHAPE.fullmatch(raw_expected)
+        ):
+            msg = "expected_token must be the 64-character hex content_token from a prior read"
+            _audit(
+                tool="artifact_update",
+                request=request,
+                outcome="denied",
+                error=msg,
+                extra={"slug": slug},
+            )
+            return _err(msg)
+        expected_token = raw_expected
         # Explicit render-kind change (the type control on the artifact page).
         # Restricted to the inline-editable kinds: `widget` / `html` render in a
         # sandboxed iframe and are NOT editable, so letting a caller select one
@@ -1779,6 +1810,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
                 event_type=event_type,
                 from_version=from_version,
                 snapshot=snapshot,
+                expected_token=expected_token,
             )
         )
         # store.update() only loads content into the returned Artifact when
@@ -1806,6 +1838,30 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             error=str(exc),
         )
         return _err(str(exc))
+    except ArtifactConflictError as exc:
+        # Optimistic-concurrency loss: someone else changed the content since
+        # this caller read it. 409 with the LIVE token + version so the client
+        # can refetch and re-base. Nothing observable was mutated: the store
+        # compares before writing, and on the file-backed path it stages its
+        # own copy and installs it only after the source mirror succeeds, so
+        # a lost mirror discards the staged file and there is nothing to roll
+        # back. Must precede the ArtifactError branch below (it subclasses
+        # it) or conflicts would surface as 500s.
+        _audit(
+            tool="artifact_update",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _json_response(
+            {
+                "error": str(exc),
+                "current_token": exc.current_token,
+                "version": exc.version,
+            },
+            status=409,
+        )
     except ArtifactError as exc:
         # Catches the base class fallback — store._write_text() raises
         # ArtifactError("refusing to write sensitive path: ...") which is

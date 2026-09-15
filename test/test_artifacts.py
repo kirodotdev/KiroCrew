@@ -2,22 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
+import stat
 from pathlib import Path
 
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
+from kiro_crew import artifacts as artifacts_mod
 from kiro_crew.artifacts import (
     MAX_CONTENT_BYTES,
     MAX_VERSIONS,
     Artifact,
     ArtifactComment,
+    ArtifactConflictError,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactStore,
     ArtifactValidationError,
+    _content_sha256,
     _infer_kind,
     _validate_slug,
     detect_editor_kind,
@@ -25,7 +31,23 @@ from kiro_crew.artifacts import (
     slugify,
 )
 
+# Staged-copy recovery runs only where the artifact directory can be pinned
+# (directory-relative syscalls); elsewhere it retains leftovers untouched, so
+# the tests that exercise reconciliation are meaningful only on the pinned path.
+requires_pinned_recovery = pytest.mark.skipif(
+    not artifacts_mod._store_dir_fd_ok(),
+    reason="staged-copy recovery is pinned-only; this platform retains leftovers",
+)
+
 # ── Fixtures ─────────────────────────────────────────────────────────────────
+
+
+def _tok(store: ArtifactStore, slug: str, text: str) -> str:
+    """The wire token *store* would hand out for *slug* carrying *text*: minted
+    under the artifact's CURRENT salt. Test-side only -- the store itself has
+    no slug-plus-chosen-text mint, since that shape is the oracle the salt
+    exists to deny a writer."""
+    return store._token_for_text(text, store._load_meta(slug).content_salt)
 
 
 @pytest.fixture
@@ -301,6 +323,493 @@ class TestUpdate:
         store.create(name="x", content="a")
         with pytest.raises(ArtifactValidationError):
             store.update("x", content="a" * (MAX_CONTENT_BYTES + 1))
+
+
+# ── optimistic-concurrency token (expected_token) ──────────────────────────
+
+
+class TestConflictToken:
+    def test_matching_token_allows_write(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        art = store.update("x", content="v2", expected_token=_tok(store, "x", "v1"))
+        assert art.content == "v2"
+
+    def test_stale_token_raises_and_writes_nothing(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        with pytest.raises(ArtifactConflictError) as exc_info:
+            store.update("x", content="v2", expected_token=_tok(store, "x", "something else"))
+        # The exception carries what a client needs to re-base.
+        assert exc_info.value.current_token == _tok(store, "x", "v1")
+        assert exc_info.value.version == 1
+        # Refused BEFORE any mutation: live content and metadata untouched.
+        assert store.get("x").content == "v1"
+
+    def test_token_omitted_keeps_last_write_wins(self, store: ArtifactStore) -> None:
+        # Opt-in: existing callers that send no token are unchanged.
+        store.create(name="x", content="v1")
+        art = store.update("x", content="v2")
+        assert art.content == "v2"
+
+    def test_token_ignored_for_metadata_only_update(self, store: ArtifactStore) -> None:
+        # A rename/retag cannot clobber content, so a token (even a stale
+        # one) must not block it.
+        store.create(name="x", content="v1")
+        art = store.update("x", description="new desc", expected_token="not-a-real-sha")
+        assert art.description == "new desc"
+
+    def test_malformed_token_is_a_validation_error_not_a_conflict(
+        self, store: ArtifactStore
+    ) -> None:
+        # Only a 64-hex token can have been minted by this store. Anything
+        # else on a content write is a caller error -- including a non-ASCII
+        # string, which hmac.compare_digest would refuse by raising TypeError.
+        store.create(name="x", content="v1")
+        for bad in ("abc", "é" * 64, "A" * 64, "not-a-real-sha"):
+            with pytest.raises(ArtifactValidationError):
+                store.update("x", content="v2", expected_token=bad)
+        assert store.get("x").content == "v1"
+
+    def test_silent_save_trips_stale_token_despite_same_version(self, store: ArtifactStore) -> None:
+        # The reason the token is a content hash and not the version number:
+        # a silent save (snapshot=False) mutates live content WITHOUT bumping
+        # the version, so a version-based token would read two different live
+        # states as identical.
+        store.create(name="x", content="v1")
+        store.update("x", content="v2", snapshot=False)  # silent — version stays 1
+        assert store.get("x").version == 1
+        with pytest.raises(ArtifactConflictError):
+            store.update("x", content="v3", expected_token=_tok(store, "x", "v1"))
+        # The current token succeeds.
+        art = store.update("x", content="v3", expected_token=_tok(store, "x", "v2"))
+        assert art.content == "v3"
+
+    def test_external_source_file_edit_trips_guard(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # File-backed artifacts hash the get() read path — source_path on
+        # disk — so an external write (agent editing the repo file directly)
+        # also registers as a conflict.
+        src = tmp_path / "linked.md"
+        src.write_text("original", encoding="utf-8")
+        store.create(name="linked", content="original", source_path=str(src), kind="markdown")
+        src.write_text("changed behind the editor's back", encoding="utf-8")
+        with pytest.raises(ArtifactConflictError) as exc_info:
+            store.update(
+                "linked", content="stale edit", expected_token=_tok(store, "linked", "original")
+            )
+        assert exc_info.value.current_token == _tok(
+            store, "linked", "changed behind the editor's back"
+        )
+        # The external edit survives.
+        assert src.read_text(encoding="utf-8") == "changed behind the editor's back"
+
+    def test_source_write_race_after_compare_conflicts_not_clobbers(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The store lock cannot exclude an EXTERNAL writer landing between
+        # the guard's compare and the source mirror. The mirror runs as a
+        # descriptor-pinned compare-and-swap for guarded writes, so that
+        # window answers conflict instead of overwriting the newer bytes.
+        # Simulate the race by rewriting the file at the moment the CAS runs.
+        src = tmp_path / "raced.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="raced", content="base", source_path=str(src), kind="markdown")
+
+        from kiro_crew import hooks as hooks_mod
+
+        real_cas = hooks_mod.verified_replace_file_nolink
+
+        def race_then_cas(raw, content, base_hash, **kwargs):
+            Path(raw).write_text("external winner", encoding="utf-8")
+            return real_cas(raw, content, base_hash, **kwargs)
+
+        monkeypatch.setattr("kiro_crew.artifacts.hooks.verified_replace_file_nolink", race_then_cas)
+        with pytest.raises(ArtifactConflictError) as exc_info:
+            store.update("raced", content="stale edit", expected_token=_tok(store, "raced", "base"))
+        assert exc_info.value.current_token == _tok(store, "raced", "external winner")
+        # The racing writer's bytes survive on disk AND in the store's view;
+        # the losing writer changed nothing.
+        assert src.read_text(encoding="utf-8") == "external winner"
+        assert store.get("raced").content == "external winner"
+
+    def test_unguarded_mirror_still_last_write_wins(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # No token = today's behavior end to end, including the mirror.
+        src = tmp_path / "plain.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="plain", content="base", source_path=str(src), kind="markdown")
+        src.write_text("external write", encoding="utf-8")
+        art = store.update("plain", content="my edit")
+        assert art.content == "my edit"
+        assert src.read_text(encoding="utf-8") == "my edit"
+
+    def test_guarded_refused_mirror_demotes_and_keeps_the_edit(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # "refused" is the one guarded mirror verdict that carries NO
+        # competing writer — the file itself cannot be replaced (read-only,
+        # foreign owner, outside its authorizing root). Raising 409 for it
+        # strands the client in a permanent retry loop: the 409 body's sha
+        # rebases the token onto the same unwritable file and the next save
+        # is refused again. So it falls through to the unguarded path's
+        # demotion instead — the edit lands in the store's copy and the
+        # artifact visibly stops claiming the source tracks it.
+        src = tmp_path / "readonly.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="readonly", content="base", source_path=str(src), kind="markdown")
+
+        real_write = type(store)._try_write_source_path
+
+        def refusing_write(self, source_path, content, source_root="", *, base_hash=None):
+            if base_hash is not None:
+                return "refused"
+            return real_write(self, source_path, content, source_root, base_hash=base_hash)
+
+        monkeypatch.setattr(type(store), "_try_write_source_path", refusing_write)
+        art = store.update(
+            "readonly", content="new", expected_token=_tok(store, "readonly", "base")
+        )
+        monkeypatch.undo()
+        # The edit is saved in the store's copy; the unwritable source keeps
+        # its bytes; the artifact is demoted, not left a lying live pointer.
+        assert art.content == "new"
+        assert src.read_text(encoding="utf-8") == "base"
+        loaded = store.get("readonly")
+        assert loaded.content == "new"
+        assert loaded.source_copy_only is True
+
+    def test_non_utf8_source_saves_cleanly_under_guard(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # The token for a live file-backed read is the RAW-byte digest (what
+        # get() hands the client), and the mirror's CAS verifies the same raw
+        # bytes — one read feeds both, so a source with a non-round-tripping
+        # byte (e.g. a latin-1 é) saves cleanly instead of 409ing forever.
+        src = tmp_path / "latin1.md"
+        src.write_bytes(b"caf\xe9 notes")  # \xe9 is not valid UTF-8
+        store.create(name="latin1", content="seed", source_path=str(src), kind="markdown")
+        # The client's token, exactly as get() serves it.
+        token = store.get("latin1").to_dict(include_content=True)["content_token"]
+        art = store.update("latin1", content="clean utf-8 now", expected_token=token)
+        assert art.content == "clean utf-8 now"
+        assert src.read_text(encoding="utf-8") == "clean utf-8 now"
+
+    def test_external_edit_confined_to_malformed_bytes_still_trips_guard(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # Two byte sequences that differ only in malformed UTF-8 decode to the
+        # same text. A token over the DECODED text would let a stale save pass
+        # after such an external edit; the raw-byte token does not, and the
+        # 409 hands back the new raw digest so a refetch converges.
+        src = tmp_path / "bytes.md"
+        src.write_bytes(b"caf\xff notes")
+        store.create(name="bytes", content="seed", source_path=str(src), kind="markdown")
+        served = store.get("bytes")
+        token = served.to_dict(include_content=True)["content_token"]
+        src.write_bytes(b"caf\xfe notes")  # same decoded text, different bytes
+        assert store.get("bytes").content == served.content, "decoded views are identical"
+        with pytest.raises(ArtifactConflictError) as ei:
+            store.update("bytes", content="mine", expected_token=token)
+        assert src.read_bytes() == b"caf\xfe notes", "the newer bytes survive"
+        fresh = store.get("bytes").to_dict(include_content=True)["content_token"]
+        assert ei.value.current_token == fresh
+        # Re-based on the fresh token, the save proceeds.
+        store.update("bytes", content="mine", expected_token=ei.value.current_token)
+        assert src.read_text(encoding="utf-8") == "mine"
+
+    def test_token_follows_the_text_for_valid_utf8_and_store_only(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # The raw-byte token equals the text token wherever the bytes are
+        # valid UTF-8 — every store-written file and every well-formed source
+        # — so a client that re-reads gets the same token either way.
+        src = tmp_path / "ok.md"
+        src.write_text("héllo", encoding="utf-8")
+        store.create(name="ok", content="seed", source_path=str(src), kind="markdown")
+        assert store.get("ok").to_dict(include_content=True)["content_token"] == _tok(
+            store, "ok", "héllo"
+        )
+        store.create(name="only", content="store-only")
+        only = store.get("only").to_dict(include_content=True)
+        assert only["content_token"] == _tok(store, "only", "store-only")
+        assert "content_sha256" not in only, "the raw digest never reaches the wire"
+
+    def test_token_is_opaque_not_the_content_hash(self, store: ArtifactStore) -> None:
+        # The HTTP serializer redacts credentials out of ``content`` AFTER the
+        # token is computed, so an unkeyed hash beside the redacted text would
+        # let a reader test low-entropy guesses for the secret offline. The
+        # token is a keyed digest: 64 hex chars that are not the SHA-256 of the
+        # content, differ per content, and are stable for the same content.
+        secret = "password=hunter2"
+        store.create(name="s", content=secret)
+        token = store.get("s").to_dict(include_content=True)["content_token"]
+        assert re.fullmatch(r"[0-9a-f]{64}", token)
+        assert token != _content_sha256(secret)
+        assert token != hashlib.sha256(secret.encode()).hexdigest()
+        assert token == store.get("s").to_dict(include_content=True)["content_token"]
+        store.create(name="t", content="other")
+        assert store.get("t").to_dict(include_content=True)["content_token"] != token
+
+    def test_token_key_is_persisted_in_the_store_root(self, store: ArtifactStore) -> None:
+        # A token taken before a gateway restart must still validate after it:
+        # a second store on the same root (a new process) mints the same
+        # token, and a store on a different root mints a different one.
+        store.create(name="x", content="v1")
+        token = store.get("x").to_dict(include_content=True)["content_token"]
+        key_file = store.root / ".token_key"
+        assert key_file.is_file() and key_file.stat().st_size == 32
+        if os.name == "posix":
+            assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+        reopened = ArtifactStore(store.root)
+        assert reopened.get("x").to_dict(include_content=True)["content_token"] == token
+        reopened.update("x", content="v2", expected_token=token)
+        other = ArtifactStore(store.root.parent / "elsewhere")
+        other.create(name="x", content="v1")
+        assert other.get("x").to_dict(include_content=True)["content_token"] != token
+        # meta.json carries the salt (the token's domain) but never the token.
+        meta = json.loads((store._artifact_dir("x") / "meta.json").read_text(encoding="utf-8"))
+        assert "content_token" not in meta
+        assert re.fullmatch(r"[0-9a-f]{32}", meta["content_salt"])
+
+    def test_a_writer_cannot_mint_a_comparison_token_for_a_guess(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # The oracle a keyed-but-content-only token would leave open: a reader
+        # who can also WRITE saves a guessed secret somewhere and compares the
+        # token that comes back with the target's. Every content write lands
+        # under a fresh salt, so neither a new artifact nor an overwrite of the
+        # target itself yields a token comparable to the one it read -- while
+        # an EXTERNAL edit (which rotates nothing) still moves the token.
+        secret = "password=hunter2"
+        store.create(name="target", content=secret)
+        target_token = store.get("target").to_dict(include_content=True)["content_token"]
+        store.create(name="probe", content=secret)
+        assert store.get("probe").to_dict(include_content=True)["content_token"] != target_token
+        overwritten = store.update("target", content=secret)
+        assert overwritten.content_token != target_token, "a rewrite is a new domain"
+        assert store.get("target").to_dict(include_content=True)["content_token"] != target_token
+        # The token read before the write is stale too (the write rotated the domain).
+        with pytest.raises(ArtifactConflictError):
+            store.update("target", content="v3", expected_token=target_token)
+        # External edit: salt untouched, digest moved -> the guard still trips.
+        src = tmp_path / "linked.md"
+        src.write_text("original", encoding="utf-8")
+        store.create(name="linked", content="seed", source_path=str(src), kind="markdown")
+        held = store.get("linked").to_dict(include_content=True)["content_token"]
+        src.write_text("external", encoding="utf-8")
+        with pytest.raises(ArtifactConflictError):
+            store.update("linked", content="mine", expected_token=held)
+
+    def test_historical_reads_carry_no_token(self, store: ArtifactStore) -> None:
+        # The other half of the oracle: snapshot a guess, then compare the
+        # version tokens of the guess and of the hidden original, both minted
+        # under the same current salt. A version is never an editing base, so
+        # a historical read simply carries no token.
+        store.create(name="x", content="secret-v1")
+        store.update("x", content="guess", snapshot=True)
+        v1 = store.get("x", version=1)
+        v2 = store.get("x", version=2)
+        assert v1.content == "secret-v1" and v2.content == "guess"
+        assert v1.content_token is None and v2.content_token is None
+        assert "content_token" not in v1.to_dict(include_content=True)
+        # The current read still carries one.
+        assert store.get("x").to_dict(include_content=True)["content_token"]
+
+    def test_snapshot_keeps_the_token_domain(self, store: ArtifactStore) -> None:
+        # A snapshot re-reads the SAME content; rotating the salt there would
+        # 409 an editor holding a token against content that did not change.
+        store.create(name="x", content="v1")
+        held = store.get("x").to_dict(include_content=True)["content_token"]
+        store.update("x", snapshot=True)
+        store.update("x", content="v2", expected_token=held)
+        assert store.get("x").content == "v2"
+
+    def test_legacy_artifact_without_salt_still_tokenizes_and_gains_one_on_write(
+        self, store: ArtifactStore
+    ) -> None:
+        # Two pre-upgrade artifacts must not share a domain either: an artifact
+        # with no salt is minted under a domain derived from its slug.
+        for slug in ("x", "y"):
+            store.create(name=slug, content="v1")
+            meta_path = store._artifact_dir(slug) / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            del meta["content_salt"]
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        held_x = store.get("x").to_dict(include_content=True)["content_token"]
+        held_y = store.get("y").to_dict(include_content=True)["content_token"]
+        assert held_x == store._token_for_text("v1", "legacy:x")
+        assert held_x != held_y, "same content, different legacy domains"
+        store.update("x", content="v2", expected_token=held_x)
+        assert json.loads(
+            (store._artifact_dir("x") / "meta.json").read_text(encoding="utf-8")
+        )["content_salt"]
+
+    def test_every_store_content_write_rotates_the_domain(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # The oracle needs ONE content-writing path that leaves the salt
+        # alone. Settling a blank's draft and creating an image (an empty text
+        # body a later write may replace) are content writes like any other.
+        store.create(name="Untitled", content="", slug="blank")
+        blank_token = store.get("blank").to_dict(include_content=True)["content_token"]
+        blank_salt = store._load_meta("blank").content_salt
+        assert store.settle_blank("blank", untitled_name="Untitled", draft="guess") == "saved"
+        assert store._load_meta("blank").content_salt != blank_salt
+        assert store.get("blank").to_dict(include_content=True)["content_token"] != blank_token
+        # A settled guess is not comparable to a token minted before the settle.
+        assert store.get("blank").to_dict(include_content=True)[
+            "content_token"
+        ] != store._token_for_text("guess", blank_salt)
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+            "0000000d4944415478da63f8ffff3f0300050001019e79f5d10000000049454e44ae426082"
+        )
+        img = store.create_image(name="pic", image_bytes=png, mime="image/png", slug="pic")
+        assert img.content_salt, "an image artifact starts with a salt too"
+        assert store._load_meta("pic").content_salt == img.content_salt
+
+    def test_malformed_key_file_is_refused_not_silently_replaced(
+        self, store: ArtifactStore
+    ) -> None:
+        # Regenerating over a truncated key would silently invalidate every
+        # token in flight; a malformed file is reported, and the fix is to
+        # remove it (one 409 per open editor).
+        store.create(name="x", content="v1")
+        (store.root / ".token_key").write_bytes(b"short")
+        with pytest.raises(ArtifactError, match="malformed"):
+            ArtifactStore(store.root)
+
+    @requires_symlinks
+    def test_a_link_at_the_key_path_is_refused_with_the_same_remedy(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # The key is opened O_NOFOLLOW; a link planted at its name reads as a
+        # malformed key (fail closed, "remove it"), not as a raw ELOOP.
+        key_file = store.root / ".token_key"
+        key_file.unlink()
+        elsewhere = tmp_path / "elsewhere.key"
+        elsewhere.write_bytes(b"k" * 32)
+        key_file.symlink_to(elsewhere)
+        with pytest.raises(ArtifactError, match="malformed"):
+            ArtifactStore(store.root)
+
+    @requires_symlinks
+    def test_a_link_at_the_key_path_is_refused_without_o_nofollow(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Windows has no O_NOFOLLOW, so the open would follow the link and
+        # read a perfectly valid-looking key; the lstat check refuses it first.
+        key_file = store.root / ".token_key"
+        key_file.unlink()
+        elsewhere = tmp_path / "elsewhere.key"
+        elsewhere.write_bytes(b"k" * 32)
+        key_file.symlink_to(elsewhere)
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        with pytest.raises(ArtifactError, match="not a regular file"):
+            ArtifactStore(store.root)
+
+    def test_invalid_event_type_validates_before_any_write(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # event_type is validated BEFORE the source mirror and current.html
+        # writes — a rejected request must not leave the user's file (or the
+        # store) partially updated.
+        src = tmp_path / "validated.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="validated", content="base", source_path=str(src), kind="markdown")
+        with pytest.raises(ArtifactValidationError):
+            store.update(
+                "validated",
+                content="new",
+                snapshot=True,
+                event_type="bogus",
+                expected_token=_tok(store, "validated", "base"),
+            )
+        assert src.read_text(encoding="utf-8") == "base"
+        assert store.get("validated").content == "base"
+
+    def test_store_write_failure_leaves_the_source_untouched(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The guarded save STAGES the store's own copy first and only then
+        # mirrors to the source (CAS). If staging fails, the mirror has not
+        # run — the failed save leaves the user's file untouched with no
+        # compensation write. (A mirror-first ordering would need a rollback
+        # here, and rolling back through the lossy decode could corrupt a
+        # non-UTF-8 file. The ordering, not a smarter rollback, is the
+        # guarantee: the source is written at most once, with the new
+        # content, via the CAS.)
+        src = tmp_path / "rollback.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="rollback", content="base", source_path=str(src), kind="markdown")
+
+        def failing_stage(self, path, text):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(type(store), "_stage_text", failing_stage)
+        with pytest.raises(OSError):
+            store.update("rollback", content="new", expected_token=_tok(store, "rollback", "base"))
+        monkeypatch.undo()
+        # The source was never written; the store still serves the old content.
+        assert src.read_text(encoding="utf-8") == "base"
+        assert store.get("rollback").content == "base"
+
+    def test_guarded_conflict_installs_nothing_and_never_rewrites_source_bytes(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A guarded mirror that loses its CAS must leave BOTH files exactly as
+        # they were, with no restore write on either side: the source bytes
+        # byte-identical (a non-UTF-8 source is never re-encoded through the
+        # lossy decode), and the store copy uninstalled — the staged file is
+        # discarded, so there is no rollback that could itself fail and leave
+        # the rejected edit behind.
+        raw = b"caf\xe9 v1"  # \xe9 is not valid UTF-8
+        src = tmp_path / "latin1-conflict.md"
+        src.write_bytes(raw)
+        store.create(name="latin1c", content="seed", source_path=str(src), kind="markdown")
+        token = store.get("latin1c").to_dict(include_content=True)["content_token"]
+        current = store._artifact_dir("latin1c") / "current.html"
+        before = current.read_bytes()
+
+        real_write = type(store)._try_write_source_path
+
+        def conflicting_write(self, source_path, content, source_root="", *, base_hash=None):
+            if base_hash is not None:
+                return "conflict"
+            return real_write(self, source_path, content, source_root, base_hash=base_hash)
+
+        monkeypatch.setattr(type(store), "_try_write_source_path", conflicting_write)
+        with pytest.raises(ArtifactConflictError):
+            store.update("latin1c", content="new", expected_token=token)
+        monkeypatch.undo()
+        assert src.read_bytes() == raw
+        assert current.read_bytes() == before
+        assert not list(current.parent.glob("*.staged"))
+        assert store.get("latin1c").source_copy_only is False
+
+    def test_guarded_ok_installs_the_staged_copy(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # The happy path: staged copy installed, no staging residue left in
+        # the artifact directory, source carries the new content.
+        src = tmp_path / "happy.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="happy", content="base", source_path=str(src), kind="markdown")
+        art = store.update("happy", content="new", expected_token=_tok(store, "happy", "base"))
+        assert art.content == "new"
+        assert src.read_text(encoding="utf-8") == "new"
+        assert store.get("happy").content == "new"
+        assert not list(store._artifact_dir("happy").glob("*.staged"))
+
+    def test_to_dict_carries_content_token(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        art = store.get("x")
+        d = art.to_dict(include_content=True)
+        assert d["content_token"] == _tok(store, "x", "v1")
+        # Absent when content is excluded — the token is only meaningful
+        # alongside the content it describes.
+        assert "content_token" not in art.to_dict(include_content=False)
 
 
 # ── list / list_versions ────────────────────────────────────────────────────
@@ -651,10 +1160,577 @@ class TestPersistence:
         assert loaded.tags == []
 
     def test_atomic_write_uses_tmp(self, store: ArtifactStore, tmp_path: Path) -> None:
-        # After successful write, no .tmp files should remain.
+        # After successful write, no staging files should remain.
         store.create(name="x", content="a")
         store.update("x", content="b", snapshot=True)
         assert not list(store.root.rglob("*.tmp"))
+        assert not list(store.root.rglob("*.staged"))
+
+    def test_staging_never_writes_through_a_planted_sibling(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # A hostile writer with access to the artifact directory plants a
+        # symlink at the name a predictable staging scheme would use. The
+        # staging file must be created exclusively under an unpredictable
+        # name, so the planted link is neither followed nor replaced-through
+        # and its target is never touched.
+        store.create(name="x", content="a")
+        current = store._artifact_dir("x") / "current.html"
+        victim = tmp_path / "victim.txt"
+        victim.write_text("untouched", encoding="utf-8")
+        for planted in (
+            current.with_suffix(current.suffix + ".staged"),
+            current.with_suffix(current.suffix + ".tmp"),
+        ):
+            planted.symlink_to(victim)
+        store.update("x", content="b", snapshot=True)
+        assert victim.read_text(encoding="utf-8") == "untouched"
+        assert store.get("x").content == "b"
+        assert not current.is_symlink()
+
+    def test_install_never_follows_a_symlink_swapped_in_after_staging(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The install must not re-resolve the destination: a symlink that
+        # replaces current.html AFTER staging (while a guarded save is in
+        # its source CAS) is replaced as a link, and its target is never
+        # written. Simulated by swapping the link in during the mirror step.
+        src = tmp_path / "linked.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="x", content="base", source_path=str(src), kind="markdown")
+        current = store._artifact_dir("x") / "current.html"
+        victim = tmp_path / "protected.json"
+        victim.write_text("{}", encoding="utf-8")
+
+        real_write = type(store)._try_write_source_path
+
+        def swap_then_write(self, source_path, content, source_root="", *, base_hash=None):
+            current.unlink()
+            current.symlink_to(victim)
+            return real_write(self, source_path, content, source_root, base_hash=base_hash)
+
+        monkeypatch.setattr(type(store), "_try_write_source_path", swap_then_write)
+        store.update("x", content="new", expected_token=_tok(store, "x", "base"))
+        monkeypatch.undo()
+        assert victim.read_text(encoding="utf-8") == "{}"
+        assert not current.is_symlink()
+        assert current.read_text(encoding="utf-8") == "new"
+
+    def test_stage_refuses_a_symlinked_target(self, store: ArtifactStore, tmp_path: Path) -> None:
+        # A target that is ALREADY a symlink at staging time is refused
+        # outright rather than resolved and written through.
+        store.create(name="x", content="a")
+        current = store._artifact_dir("x") / "current.html"
+        victim = tmp_path / "victim.txt"
+        victim.write_text("untouched", encoding="utf-8")
+        current.unlink()
+        current.symlink_to(victim)
+        with pytest.raises(ArtifactError):
+            store.update("x", content="b", snapshot=True)
+        assert victim.read_text(encoding="utf-8") == "untouched"
+
+    def test_stage_refuses_a_parent_swapped_for_a_symlink_after_resolution(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The artifact DIRECTORY is swapped for a symlink between the store's
+        # one path resolution and the creation of the staging file. A by-name
+        # create (mkstemp) would follow the link and drop the bytes into the
+        # attacker's directory; the pinned create refuses, and nothing is
+        # written anywhere.
+        if not artifacts_mod._store_dir_fd_ok():
+            pytest.skip("pinned staging exists only where dir-fd syscalls do")
+        store.create(name="x", content="a")
+        art_dir = store._artifact_dir("x")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        real_resolve = type(store)._resolve_write_dest
+
+        def resolve_then_swap(path: Path):
+            parent, dest = real_resolve(path)
+            moved = art_dir.with_name(art_dir.name + ".moved")
+            art_dir.rename(moved)
+            art_dir.symlink_to(elsewhere, target_is_directory=True)
+            return parent, dest
+
+        monkeypatch.setattr(type(store), "_resolve_write_dest", staticmethod(resolve_then_swap))
+        with pytest.raises(ArtifactError):
+            store._stage_text(art_dir / "current.html", "planted?")
+        monkeypatch.undo()
+        assert list(elsewhere.iterdir()) == [], "no bytes landed through the swapped parent"
+
+    def test_install_lands_in_the_directory_the_stage_was_created_in(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # After staging, the artifact directory is replaced by a DIFFERENT
+        # directory under the same name (a fresh one, or a symlink to
+        # elsewhere). The install goes through the descriptor the stage was
+        # created in, so it lands in THAT directory whatever its name is now;
+        # the swapped-in directory and the link's target receive nothing.
+        if not artifacts_mod._store_dir_fd_ok():
+            pytest.skip("pinned staging exists only where dir-fd syscalls do")
+        store.create(name="x", content="a")
+        art_dir = store._artifact_dir("x")
+        staged = store._stage_text(art_dir / "current.html", "new")
+        assert staged.dfd is not None
+        moved = art_dir.with_name(art_dir.name + ".moved")
+        art_dir.rename(moved)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        art_dir.symlink_to(elsewhere, target_is_directory=True)
+
+        store._install_staged(staged)
+        assert staged.dfd is None, "descriptor closed on install"
+        assert list(elsewhere.iterdir()) == []
+        assert (moved / "current.html").read_text(encoding="utf-8") == "new"
+        assert not list(moved.glob("*.staged"))
+
+    def test_discard_reaches_a_stage_whose_directory_was_swapped(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A REFUSED mirror plus a failing install must leave no stage behind,
+        # even when the artifact directory was swapped away between staging
+        # and install: a pathname-based cleanup would miss the stage in the
+        # moved directory, and restoring that directory with the source
+        # unreadable would let a later snapshot install the failed save.
+        # The discard unlinks through the held descriptor instead.
+        if not artifacts_mod._store_dir_fd_ok():
+            pytest.skip("pinned staging exists only where dir-fd syscalls do")
+        src = tmp_path / "ro.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="r", content="base", source_path=str(src), kind="markdown")
+        art_dir = store._artifact_dir("r")
+        moved = art_dir.with_name(art_dir.name + ".moved")
+        monkeypatch.setattr(type(store), "_try_write_source_path", lambda self, *a, **kw: "refused")
+        real_install = type(store)._install_staged
+
+        def swap_then_install(staged):
+            art_dir.rename(moved)
+            art_dir.mkdir()
+            raise OSError("rename failed")
+
+        monkeypatch.setattr(type(store), "_install_staged", staticmethod(swap_then_install))
+        with pytest.raises(OSError):
+            store.update("r", content="never applied", expected_token=_tok(store, "r", "base"))
+        monkeypatch.undo()
+        assert not list(moved.glob(".current.html.*.staged")), "stage removed where it lived"
+        assert not list(art_dir.glob(".current.html.*.staged"))
+        assert (moved / "current.html").read_text(encoding="utf-8") == "base"
+        # Restore and make the source unreadable: a snapshot finds nothing to
+        # install and captures the fallback.
+        art_dir.rmdir()
+        moved.rename(art_dir)
+        src.unlink()
+        store.update("r", snapshot=True)
+        assert (art_dir / "current.html").read_text(encoding="utf-8") == "base"
+        assert type(store)._install_staged is real_install
+
+    def test_ended_stage_is_never_readdressed_by_pathname(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A lost CAS discards the stage once, through the descriptor. If the
+        # artifact directory is swapped while the 409 body's live content is
+        # being re-read, and the replacement carries a file under the very
+        # same staging name, a second discard must not fall back to the
+        # pathname and delete that file: an ended stage is inert.
+        if not artifacts_mod._store_dir_fd_ok():
+            pytest.skip("pinned staging exists only where dir-fd syscalls do")
+        src = tmp_path / "linked.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="c", content="base", source_path=str(src), kind="markdown")
+        art_dir = store._artifact_dir("c")
+        moved = art_dir.with_name(art_dir.name + ".moved")
+        captured: dict[str, Path] = {}
+        real_stage = type(store)._stage_text
+
+        def capture_stage(self, path, text):
+            staged = real_stage(self, path, text)
+            captured["name"] = staged.staged
+            return staged
+
+        monkeypatch.setattr(
+            type(store), "_try_write_source_path", lambda self, *a, **kw: "conflict"
+        )
+        monkeypatch.setattr(type(store), "_stage_text", capture_stage)
+        real_read = type(store)._try_read_source_bytes
+        calls = {"n": 0}
+
+        def swap_then_read(self, *a, **kw):
+            # Call 1 is the guard's read; call 2 runs after the CAS verdict,
+            # while the 409 body is assembled.
+            calls["n"] += 1
+            if calls["n"] == 2:
+                art_dir.rename(moved)
+                art_dir.mkdir()
+                (art_dir / captured["name"].name).write_text("innocent bystander", encoding="utf-8")
+            return real_read(self, *a, **kw)
+
+        monkeypatch.setattr(type(store), "_try_read_source_bytes", swap_then_read)
+        with pytest.raises(ArtifactConflictError):
+            store.update("c", content="mine", expected_token=_tok(store, "c", "base"))
+        monkeypatch.undo()
+        bystander = art_dir / captured["name"].name
+        assert bystander.read_text(encoding="utf-8") == "innocent bystander"
+        assert not list(moved.glob(".current.html.*.staged")), "the real stage was discarded"
+
+    def test_discard_and_install_are_inert_after_the_stage_ended(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        store.create(name="x", content="a")
+        current = store._artifact_dir("x") / "current.html"
+        staged = store._stage_text(current, "new")
+        store._discard_staged(staged)
+        assert staged.ended and staged.dfd is None
+        # A same-named file appearing later must survive a repeat discard.
+        staged.staged.write_text("later", encoding="utf-8")
+        store._discard_staged(staged)
+        store._install_staged(staged)
+        assert staged.staged.read_text(encoding="utf-8") == "later"
+        assert current.read_text(encoding="utf-8") == "a"
+        staged.staged.unlink()
+
+    def test_recovery_acts_only_on_the_directory_it_opened(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A leftover is found; then, while recovery reads the source to decide,
+        # the artifact directory is swapped for a symlink to a directory holding
+        # a same-named file and a decoy current.html. The reinstall and the
+        # unlink must land in the directory the scan opened (now renamed away),
+        # never in the link's target.
+        if not artifacts_mod._store_dir_fd_ok():
+            pytest.skip("pinned recovery exists only where dir-fd syscalls do")
+        src = tmp_path / "linked.md"
+        src.write_text("committed", encoding="utf-8")
+        store.create(name="r", content="base", source_path=str(src), kind="markdown")
+        art_dir = store._artifact_dir("r")
+        leftover = ".current.html.deadbeef.staged"
+        (art_dir / leftover).write_text("committed", encoding="utf-8")
+        moved = art_dir.with_name(art_dir.name + ".moved")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / leftover).write_text("bystander", encoding="utf-8")
+        (elsewhere / "current.html").write_text("decoy", encoding="utf-8")
+        real_read = type(store)._try_read_source_bytes
+
+        def swap_then_read(self, *a, **kw):
+            art_dir.rename(moved)
+            art_dir.symlink_to(elsewhere, target_is_directory=True)
+            return real_read(self, *a, **kw)
+
+        monkeypatch.setattr(type(store), "_try_read_source_bytes", swap_then_read)
+        store._recover_staged_store_copy("r", store._load_meta("r"), about_to_write=True)
+        monkeypatch.undo()
+        assert (elsewhere / leftover).read_text(encoding="utf-8") == "bystander"
+        assert (elsewhere / "current.html").read_text(encoding="utf-8") == "decoy"
+        assert (moved / "current.html").read_text(encoding="utf-8") == "committed"
+        assert not list(moved.glob(".current.html.*.staged"))
+        art_dir.unlink()
+        moved.rename(art_dir)
+
+    def test_stage_lifecycle_leaks_no_descriptors(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Every way a stage ends (install, discard after a lost CAS, discard
+        # after a refused mirror + failed install, release after an "ok"
+        # mirror + failed install) closes the directory descriptor.
+        if not artifacts_mod._store_dir_fd_ok() or not Path("/proc/self/fd").is_dir():
+            pytest.skip("needs dir-fd staging and /proc to count descriptors")
+        src = tmp_path / "s.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="s", content="base", source_path=str(src), kind="markdown")
+
+        def open_fds() -> int:
+            return len(os.listdir("/proc/self/fd"))
+
+        store.update("s", content="warm", expected_token=_tok(store, "s", "base"))
+        src.write_text("warm", encoding="utf-8")
+        before = open_fds()
+        for i in range(5):
+            # install
+            store.update("s", content=f"v{i}", expected_token=_tok(store, "s", src.read_text()))
+            # lost CAS -> discard
+            with pytest.raises(ArtifactConflictError):
+                store.update("s", content="stale", expected_token=_tok(store, "s", "nope"))
+            # failed install after ok / refused
+            for verdict in ("ok", "refused"):
+                base = src.read_text(encoding="utf-8")
+                monkeypatch.setattr(
+                    type(store), "_try_write_source_path", lambda self, *a, **kw: verdict
+                )
+                monkeypatch.setattr(
+                    type(store),
+                    "_install_staged",
+                    staticmethod(lambda staged: (_ for _ in ()).throw(OSError("boom"))),
+                )
+                with pytest.raises(OSError):
+                    store.update("s", content=f"fail{i}", expected_token=_tok(store, "s", base))
+                monkeypatch.undo()
+                for leftover in store._artifact_dir("s").glob(".current.html.*.staged"):
+                    leftover.unlink()
+        assert open_fds() == before
+
+    def test_recovery_retains_leftovers_where_the_directory_cannot_be_pinned(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        # Without directory-relative syscalls (Windows) the scan does not run:
+        # acting by pathname would follow a swapped ancestor into a directory
+        # it never inspected. A leftover is retained untouched, current.html
+        # is left alone, the update proceeds, and the degradation is logged.
+        store.create(name="w", content="base")
+        adir = store._artifact_dir("w")
+        leftover = adir / ".current.html.deadbeef.staged"
+        leftover.write_text("stale", encoding="utf-8")
+        monkeypatch.setattr(artifacts_mod, "_store_dir_fd_ok", lambda: False)
+        with caplog.at_level("WARNING"):
+            store.update("w", description="touched", snapshot=False)
+        monkeypatch.undo()
+        assert leftover.read_text(encoding="utf-8") == "stale", "retained, not judged"
+        assert (adir / "current.html").read_text(encoding="utf-8") == "base"
+        assert "recovery is unavailable without directory-relative syscalls" in caplog.text
+
+    @requires_pinned_recovery
+    def test_failed_install_after_committed_source_recovers_on_next_update(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The source CAS commits, then the store-copy install fails. The
+        # staged file is retained as the record of that commit; reads keep
+        # serving the source meanwhile; the next update() on the slug
+        # completes the install before doing anything else.
+        src = tmp_path / "recover.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="r", content="base", source_path=str(src), kind="markdown")
+        adir = store._artifact_dir("r")
+
+        def failing_install(staged):
+            raise OSError("rename failed")
+
+        monkeypatch.setattr(type(store), "_install_staged", staticmethod(failing_install))
+        with pytest.raises(OSError):
+            store.update("r", content="new", expected_token=_tok(store, "r", "base"))
+        monkeypatch.undo()
+        # Source committed, store copy stale, staged record kept, read serves source.
+        assert src.read_text(encoding="utf-8") == "new"
+        assert (adir / "current.html").read_text(encoding="utf-8") == "base"
+        assert len(list(adir.glob(".current.html.*.staged"))) == 1
+        assert store.get("r").content == "new"
+        # Any later update reconciles first — here a metadata-only change.
+        store.update("r", description="touched")
+        assert (adir / "current.html").read_text(encoding="utf-8") == "new"
+        assert not list(adir.glob(".current.html.*.staged"))
+
+    @requires_pinned_recovery
+    def test_unreadable_source_retains_the_staged_copy_until_it_can_be_judged(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The leftover may be the ONLY copy of a committed edit. If the source
+        # cannot be read when recovery runs (moved, unmounted, permission
+        # flap), the leftover must survive; it is judged on a later pass once
+        # the source is readable again.
+        src = tmp_path / "flaky.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="f", content="base", source_path=str(src), kind="markdown")
+        adir = store._artifact_dir("f")
+
+        def failing_install(staged):
+            raise OSError("rename failed")
+
+        monkeypatch.setattr(type(store), "_install_staged", staticmethod(failing_install))
+        with pytest.raises(OSError):
+            store.update("f", content="new", expected_token=_tok(store, "f", "base"))
+        monkeypatch.undo()
+        assert len(list(adir.glob(".current.html.*.staged"))) == 1
+        # Source vanishes; recovery must not destroy the record.
+        hidden = tmp_path / "flaky.md.moved"
+        src.rename(hidden)
+        store.update("f", description="touched while source is away")
+        assert len(list(adir.glob(".current.html.*.staged"))) == 1
+        assert (adir / "current.html").read_text(encoding="utf-8") == "base"
+        # Source returns unchanged: the commit is recognised and completed.
+        hidden.rename(src)
+        store.update("f", description="touched again")
+        assert (adir / "current.html").read_text(encoding="utf-8") == "new"
+        assert not list(adir.glob(".current.html.*.staged"))
+
+    @requires_pinned_recovery
+    def test_pending_copy_is_installed_ahead_of_a_write_while_source_is_unreadable(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The committed edit's install failed, then the source disappeared,
+        # then a SECOND guarded save arrives based on the fallback (old)
+        # content. Retaining the leftover here would be fatal: the save's
+        # unreadable-source fallback installs its own content and demotes
+        # the pointer, and the next pass would discard the leftover as
+        # belonging to a store-only artifact -- the only copy of the
+        # committed edit, gone. Instead the pending copy is installed first,
+        # so the stale save 409s onto it (a real rebase target), and a save
+        # re-based on it proceeds. Nothing is destroyed at any step.
+        src = tmp_path / "flaky.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="f", content="base", source_path=str(src), kind="markdown")
+        adir = store._artifact_dir("f")
+
+        def failing_install(staged):
+            raise OSError("rename failed")
+
+        monkeypatch.setattr(type(store), "_install_staged", staticmethod(failing_install))
+        with pytest.raises(OSError):
+            store.update("f", content="committed edit", expected_token=_tok(store, "f", "base"))
+        monkeypatch.undo()
+        assert src.read_text(encoding="utf-8") == "committed edit"  # the CAS landed
+        assert (adir / "current.html").read_text(encoding="utf-8") == "base"
+        src.unlink()  # source gone for good
+
+        # A stale guarded save (client still holds "base") is answered with a
+        # 409 that carries the pending content's sha, not accepted.
+        with pytest.raises(ArtifactConflictError) as ei:
+            store.update("f", content="stale save", expected_token=_tok(store, "f", "base"))
+        assert ei.value.current_token == _tok(store, "f", "committed edit")
+        assert (adir / "current.html").read_text(encoding="utf-8") == "committed edit"
+        assert not list(adir.glob(".current.html.*.staged"))
+        assert not store._load_meta("f").source_copy_only  # nothing demoted by a 409
+
+        # Re-based on what the 409 handed back, the save proceeds: the source
+        # is unreadable, so the fallback path installs it and demotes.
+        store.update("f", content="rebased save", expected_token=_tok(store, "f", "committed edit"))
+        assert (adir / "current.html").read_text(encoding="utf-8") == "rebased save"
+        assert store._load_meta("f").source_copy_only
+        # And a later pass has nothing left to discard.
+        store.update("f", description="touched")
+        assert (adir / "current.html").read_text(encoding="utf-8") == "rebased save"
+
+    @requires_pinned_recovery
+    def test_failed_install_after_a_refused_mirror_leaves_nothing_to_recover(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The mirror is REFUSED (nothing written to the source) and the store
+        # install then fails: the save errors out and the caller knows it did
+        # not apply. No stage may survive that -- otherwise, once the source
+        # is unreadable, a later snapshot would install and version the
+        # failed save's content as though it had been accepted.
+        src = tmp_path / "ro.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="r", content="base", source_path=str(src), kind="markdown")
+        adir = store._artifact_dir("r")
+        monkeypatch.setattr(
+            type(store),
+            "_try_write_source_path",
+            lambda self, *a, **kw: "refused",
+        )
+
+        def failing_install(staged):
+            raise OSError("rename failed")
+
+        monkeypatch.setattr(type(store), "_install_staged", staticmethod(failing_install))
+        with pytest.raises(OSError):
+            store.update("r", content="never applied", expected_token=_tok(store, "r", "base"))
+        monkeypatch.undo()
+        assert src.read_text(encoding="utf-8") == "base"
+        assert not list(adir.glob(".current.html.*.staged")), "refused mirror leaves no stage"
+        assert (adir / "current.html").read_text(encoding="utf-8") == "base"
+        # Source vanishes; a snapshot must capture the fallback, not the
+        # failed save.
+        src.unlink()
+        store.update("r", snapshot=True)
+        assert (adir / "current.html").read_text(encoding="utf-8") == "base"
+        assert store.get("r").content == "base"
+
+    @requires_pinned_recovery
+    def test_newest_pending_copy_wins_when_several_are_undecidable(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Two leftovers (a reconciling install can itself fail and leave a
+        # second one), the source vanished, then an unguarded write: the
+        # LATEST staged edit is what becomes visible (the older one was
+        # superseded under the same lock), and both leftovers are consumed.
+        src = tmp_path / "flaky.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="f", content="base", source_path=str(src), kind="markdown")
+        adir = store._artifact_dir("f")
+        older = adir / ".current.html.aaaa.staged"
+        newer = adir / ".current.html.bbbb.staged"
+        older.write_text("first", encoding="utf-8")
+        newer.write_text("second", encoding="utf-8")
+        st = os.lstat(newer)
+        os.utime(older, ns=(st.st_atime_ns, st.st_mtime_ns - 10**9))
+        # Name order would pick "aaaa"; mtime order must pick "bbbb".
+        src.unlink()
+
+        seen: list[str] = []
+        real_reinstall = type(store)._reinstall_through
+
+        def spy_reinstall(self, store_dir, current, text):
+            seen.append(text)
+            return real_reinstall(self, store_dir, current, text)
+
+        monkeypatch.setattr(type(store), "_reinstall_through", spy_reinstall)
+        store.update("f", content="unguarded")
+        monkeypatch.undo()
+        assert seen == ["second"], "the pending install came first and chose the newest"
+        assert (adir / "current.html").read_text(encoding="utf-8") == "unguarded"
+        assert not list(adir.glob(".current.html.*.staged"))
+
+    @requires_pinned_recovery
+    def test_oversized_staging_lookalike_is_removed_and_update_proceeds(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # The store never stages more than MAX_CONTENT_BYTES, so a bigger
+        # entry cannot be a store copy. It must be discarded like any other
+        # lookalike — not left to fail every subsequent update on the slug.
+        from kiro_crew.artifacts import MAX_CONTENT_BYTES
+
+        src = tmp_path / "big.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="g", content="base", source_path=str(src), kind="markdown")
+        adir = store._artifact_dir("g")
+        (adir / ".current.html.huge.staged").write_bytes(b"x" * (MAX_CONTENT_BYTES + 1))
+        store.update("g", description="touched")
+        assert not list(adir.glob(".current.html.*.staged"))
+        assert (adir / "current.html").read_text(encoding="utf-8") == "base"
+
+    @requires_pinned_recovery
+    def test_stale_staged_copy_that_never_committed_is_discarded(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # A leftover whose bytes do not match the source means the failure
+        # came before the mirror committed (or the source moved on since):
+        # nothing to install, the store copy stays as it was.
+        src = tmp_path / "stale.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="s", content="base", source_path=str(src), kind="markdown")
+        adir = store._artifact_dir("s")
+        (adir / ".current.html.abc123.staged").write_text("never committed", encoding="utf-8")
+        store.update("s", description="touched")
+        assert (adir / "current.html").read_text(encoding="utf-8") == "base"
+        assert not list(adir.glob(".current.html.*.staged"))
+
+    @requires_pinned_recovery
+    def test_staged_copy_for_a_store_only_artifact_is_discarded(self, store: ArtifactStore) -> None:
+        # No source to compare against: the store copy is authoritative and a
+        # leftover can only be waste.
+        store.create(name="o", content="a")
+        adir = store._artifact_dir("o")
+        (adir / ".current.html.zzz.staged").write_text("orphan", encoding="utf-8")
+        store.update("o", description="touched")
+        assert (adir / "current.html").read_text(encoding="utf-8") == "a"
+        assert not list(adir.glob(".current.html.*.staged"))
+
+    @requires_pinned_recovery
+    def test_planted_symlink_at_a_staging_name_is_removed_not_read(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # Recovery matches by name shape only, so a symlink planted there is
+        # unlinked as a link: its target is neither read nor installed.
+        src = tmp_path / "planted.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="p", content="base", source_path=str(src), kind="markdown")
+        adir = store._artifact_dir("p")
+        victim = tmp_path / "victim.txt"
+        victim.write_text("base", encoding="utf-8")  # same bytes as the source
+        link = adir / ".current.html.evil.staged"
+        link.symlink_to(victim)
+        store.update("p", description="touched")
+        assert not link.exists() and not link.is_symlink()
+        assert victim.read_text(encoding="utf-8") == "base"
+        assert (adir / "current.html").read_text(encoding="utf-8") == "base"
 
 
 # ── Dataclass roundtrip ────────────────────────────────────────────────────
@@ -1123,7 +2199,7 @@ class TestSourcePathSecurityHardening:
             lambda p: p == resolved,
         )
         assert store._try_read_source_path(traversal) is None
-        assert store._try_write_source_path(traversal, "data") is False
+        assert store._try_write_source_path(traversal, "data") == "refused"
 
     @requires_symlinks
     def test_symlink_to_sensitive_resolves_before_sensitive_check(
@@ -1145,7 +2221,50 @@ class TestSourcePathSecurityHardening:
         )
         # Read should fall through to None (refused).
         assert store._try_read_source_path(str(link)) is None
-        assert store._try_write_source_path(str(link), "data") is False
+        assert store._try_write_source_path(str(link), "data") == "refused"
+
+    def test_store_write_refuses_a_sensitive_target_before_creating_directories(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The sensitive-path gate must run BEFORE the parent is created:
+        # otherwise a refused write still plants directories under the
+        # sensitive location on its way to refusing the file.
+        forbidden = tmp_path / "forbidden"
+        target = forbidden / "deeper" / "current.html"
+        monkeypatch.setattr(
+            artifacts_mod,
+            "is_sensitive_path",
+            lambda p: str(p).startswith(str(forbidden)),
+        )
+        with pytest.raises(ArtifactError):
+            store._write_text(target, "x")
+        assert not forbidden.exists(), "no directory may be created for a refused write"
+
+    def test_oversize_source_demotes_instead_of_looping_on_409(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A linked source larger than MAX_CONTENT_BYTES is served truncated,
+        # so the client's token hashes the truncated view. The guard passes
+        # (same truncated read), and the mirror CAS answers "too_large". A 409
+        # here would hand back the token the client already holds — every
+        # retry re-passes the guard and re-hits too_large, forever. The
+        # condition has no competing writer, so it demotes like "refused":
+        # the edit lands in the store copy, the artifact stops tracking the
+        # source, and the oversize file is never written.
+        monkeypatch.setattr(artifacts_mod, "MAX_CONTENT_BYTES", 64)
+        src = tmp_path / "big.md"
+        big = "x" * 200
+        src.write_text(big, encoding="utf-8")
+        store.create(name="big", content="seed", source_path=str(src), kind="markdown")
+        served = store.get("big").content
+        assert served == big[:64]  # truncated view, as get() serves it
+        result = store.update("big", content="edited", expected_token=_tok(store, "big", served))
+        assert result.source_copy_only is True
+        assert store.get("big").content == "edited"
+        assert src.read_text(encoding="utf-8") == big, "oversize source never written"
+        # And the client is not stranded: the next save has a real token.
+        store.update("big", content="edited again", expected_token=_tok(store, "big", "edited"))
+        assert store.get("big").content == "edited again"
 
     def test_utf8_truncation_uses_byte_count_not_char_count(
         self, store: ArtifactStore, tmp_path: Path, monkeypatch
@@ -1816,12 +2935,12 @@ class TestSourceRootBarrier:
 
     def test_write_refused_without_recorded_root(self, home_store, project_file) -> None:
         _proj, src = project_file
-        assert home_store._try_write_source_path(str(src), "edited") is False
+        assert home_store._try_write_source_path(str(src), "edited") == "refused"
         assert src.read_text(encoding="utf-8") == "# live from the project"
 
     def test_write_allowed_with_recorded_root(self, home_store, project_file) -> None:
         proj, src = project_file
-        assert home_store._try_write_source_path(str(src), "edited", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "edited", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "edited"
 
     def test_recorded_root_does_not_widen_other_artifacts(self, home_store, tmp_path) -> None:
@@ -1902,7 +3021,7 @@ class TestSourceRootBarrier:
         proj, src = project_file
         src.write_text("ORIGINAL", encoding="utf-8")
         monkeypatch.setattr(_os, "supports_dir_fd", set(), raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "new body"
         # No staging litter left behind on this path either.
@@ -1949,7 +3068,7 @@ class TestSourceRootBarrier:
             return st
 
         monkeypatch.setattr(_os, "stat", lying_stat)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "refused"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
@@ -1978,9 +3097,7 @@ class TestSourceRootBarrier:
 
         before = open_fds()
         for _ in range(40):
-            assert (
-                home_store._try_write_source_path(str(outside), "nope", str(proj)) is False
-            )
+            assert home_store._try_write_source_path(str(outside), "nope", str(proj)) == "refused"
         # A leak would add ~40 descriptors; allow a little slack for unrelated I/O.
         assert open_fds() - before < 10
 
@@ -2011,7 +3128,7 @@ class TestSourceRootBarrier:
             raise OSError(1, "Operation not permitted")
 
         monkeypatch.setattr(_os, "setxattr", refuse_setxattr, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "refused"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
@@ -2033,7 +3150,7 @@ class TestSourceRootBarrier:
             raise OSError(95, "Operation not supported")
 
         monkeypatch.setattr(_os, "setxattr", refuse_setxattr, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "new body"
 
@@ -2058,7 +3175,7 @@ class TestSourceRootBarrier:
             raise OSError(_errno.EACCES, "Permission denied")
 
         monkeypatch.setattr(_os, "listxattr", failing_list, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "refused"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
@@ -2079,7 +3196,7 @@ class TestSourceRootBarrier:
             raise OSError(_errno.ENOTSUP, "Operation not supported")
 
         monkeypatch.setattr(_os, "listxattr", unsupported, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "new body"
 
@@ -2100,7 +3217,7 @@ class TestSourceRootBarrier:
             os.setxattr(str(src), "user.kirocrew_test", b"keepme")
         except (AttributeError, OSError):
             pytest.skip("filesystem or platform has no xattr support")
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "new body"
         assert os.getxattr(str(src), "user.kirocrew_test") == b"keepme"
 
@@ -2118,7 +3235,7 @@ class TestSourceRootBarrier:
 
         proj, src = project_file
         monkeypatch.delattr(_os, "geteuid", raising=False)
-        assert home_store._try_write_source_path(str(src), "no euid here", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "no euid here", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "no euid here"
 
     def test_pinned_parent_check_only_applies_where_pinning_exists(
@@ -2136,7 +3253,7 @@ class TestSourceRootBarrier:
         proj, src = project_file
         src.write_text("ORIGINAL", encoding="utf-8")
         monkeypatch.setattr(_os, "supports_dir_fd", set(), raising=False)
-        assert home_store._try_write_source_path(str(src), "fallback body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "fallback body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "fallback body"
 
@@ -2168,7 +3285,7 @@ class TestSourceRootBarrier:
             return _Foreign()
 
         monkeypatch.setattr(_os, "fstat", fstat_foreign)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "new body"
 
@@ -2206,7 +3323,7 @@ class TestSourceRootBarrier:
                 _os.replace(str(newer), str(src))
 
         monkeypatch.setattr(_os, "fsync", fsync_then_replace)
-        assert home_store._try_write_source_path(str(src), "our body", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "our body", str(proj)) == "refused"
         monkeypatch.undo()
         # The editor's newer content survived; ours was refused.
         assert src.read_text(encoding="utf-8") == "A NEWER SAVE FROM THE EDITOR"
@@ -2228,7 +3345,7 @@ class TestSourceRootBarrier:
 
         proj, src = project_file
         src.chmod(0o644)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "new body"
         assert _stat.S_IMODE(src.stat().st_mode) == 0o644
 
@@ -2244,7 +3361,7 @@ class TestSourceRootBarrier:
         proj, src = project_file
         decoy = src.parent / f".{src.name}.kirocrew-tmp"
         decoy.write_text("someone else's data", encoding="utf-8")
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "new body"
         assert decoy.read_text(encoding="utf-8") == "someone else's data"
 
@@ -2277,7 +3394,7 @@ class TestSourceRootBarrier:
             return real_write(fd, data)
 
         monkeypatch.setattr(hooks_mod.os, "write", exploding_write)
-        assert home_store._try_write_source_path(str(src), "replacement", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "replacement", str(proj)) == "refused"
         monkeypatch.setattr(hooks_mod.os, "write", real_write)
         assert src.read_text(encoding="utf-8") == original
         # And no staging litter is left behind.
@@ -2307,7 +3424,7 @@ class TestSourceRootBarrier:
         assert art.source_copy_only is False
 
         monkeypatch.setattr(
-            type(home_store), "_try_write_source_path", lambda self, *a, **k: False
+            type(home_store), "_try_write_source_path", lambda self, *a, **k: "refused"
         )
         home_store.update("linked-demote", content="# my edit")
 
@@ -2583,7 +3700,7 @@ class TestAllowedRootsSingleProducer:
         target = data_home / "note.md"
         target.write_text("in the data home", encoding="utf-8")
         assert home_store._try_read_source_path(str(target)) == "in the data home"
-        assert home_store._try_write_source_path(str(target), "edited") is True
+        assert home_store._try_write_source_path(str(target), "edited") == "ok"
 
     def test_no_second_copy_of_the_root_assembly_in_source(self) -> None:
         """Anti-drift pin: only ``allowed_source_roots`` may assemble the set.
