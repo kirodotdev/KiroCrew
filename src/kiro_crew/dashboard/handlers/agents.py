@@ -25,6 +25,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE,
     model_registry_namespace,
     selectable_backend_values,
 )
@@ -1827,8 +1828,8 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
     (``SessionCapabilities.resolves_model_from_advertised_list``) is the property
     this list depends on: a backend whose served list is the only source of ids it
     accepts back is exactly the backend whose advertised list has to be read. The
-    NAMESPACE gate (``model_id_namespace``) is whose ids these are. Two harnesses
-    hold that capability now and their served ids do not overlap, so a retained
+    NAMESPACE gate (``model_id_namespace``) is whose ids these are. The harnesses
+    holding that capability have distinct vocabularies, so a retained
     claude session would otherwise answer the codex picker with claude ids --
     every one of which codex refuses.
 
@@ -2086,33 +2087,20 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     return merged
 
 
-def _codex_models(request: web.Request, configured_default: str = "") -> list[dict]:
-    """Assemble the codex model dropdown from what codex-acp itself advertises.
+def _advertised_models(
+    request: web.Request, namespace: str, configured_default: str = ""
+) -> list[dict]:
+    """Offer a namespace's advertised ids without a static catalog or subprocess.
 
-    codex-acp has no static catalog on our side: the registry carries no codex
-    namespace, and kiro-cli's ``--list-models`` names models codex refuses with a
-    bare ``-32602`` at startup. The ONLY ids ``session/set_config_option("model")``
-    accepts are the ones the adapter advertised as its ``model`` select on
-    ``session/new``, so those are the only rows offered.
-
-    Source order: a live CODEX session's advertised list first (the
-    namespace-selected read :func:`_advertised_cc_models` does, so a retained
-    claude session cannot answer with ids codex refuses), then the cross-session
-    cache that :meth:`AcpClient._capture_available_models` fed on the last codex
-    ``session/new`` -- so a cold dashboard after a restart still offers the real
-    list instead of nothing. Both empty means no codex session has ever
-    started on this install; the picker then offers ``auto`` alone, and the
-    frontend refetches on the next session spawn.
-
-    ``auto`` always leads: it means "inherit codex's own default" and is never an
-    entitlement question. The configured default is resurrected only when nothing
-    is known -- force-including a pin the adapter did not advertise would put back
-    the exact row that kills the session.
+    The newest non-empty live advertisement wins, then that namespace's cache.
+    Non-sentinel ids retain their spelling: alias folding would merge distinct
+    provider models or rewrite the value sent back on selection. ``auto`` leads
+    as "inherit the backend default"; a configured pin is offered only when no
+    advertisement is known, so a stale pin cannot override known entitlement.
     """
-    codex_namespace = model_registry_namespace(ACP_BACKEND_CODEX)
-    advertised = _advertised_cc_models(request, codex_namespace)
+    advertised = _advertised_cc_models(request, namespace)
     if not advertised:
-        cached = model_registry.advertised_models(codex_namespace)
+        cached = model_registry.advertised_models(namespace)
         advertised = [{"model_name": m, "display_name": m, "description": ""} for m in cached]
 
     rows: list[dict] = [
@@ -2149,6 +2137,20 @@ def _codex_models(request: web.Request, configured_default: str = "") -> list[di
     return rows
 
 
+def _codex_models(request: web.Request, configured_default: str = "") -> list[dict]:
+    """Offer only codex-acp's model-select vocabulary and backend default."""
+    return _advertised_models(
+        request, model_registry_namespace(ACP_BACKEND_CODEX), configured_default
+    )
+
+
+def _opencode_models(request: web.Request, configured_default: str = "") -> list[dict]:
+    """Offer OpenCode's own advertised vocabulary and backend default."""
+    return _advertised_models(
+        request, model_registry_namespace(ACP_BACKEND_OPENCODE), configured_default
+    )
+
+
 def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
     """Sandbox-wrap the ``--list-models`` argv at the configured tier.
 
@@ -2172,8 +2174,8 @@ async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — the model list for the configured backend.
 
     kiro-family backends read kiro-cli's ``--list-models`` catalog (narrowed to a
-    live session's entitlement); claude and codex read what their adapter
-    advertised, because neither accepts an id from that catalog.
+    live session's entitlement); claude, codex and OpenCode read what their adapter
+    advertised, because none accepts an id from that catalog.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
@@ -2181,6 +2183,8 @@ async def api_models(request: web.Request) -> web.Response:
         return web.json_response(_cc_models(request, configured_default=cfg.agent.model))
     if backend == ACP_BACKEND_CODEX:
         return web.json_response(_codex_models(request, configured_default=cfg.agent.model))
+    if backend == ACP_BACKEND_OPENCODE:
+        return web.json_response(_opencode_models(request, configured_default=cfg.agent.model))
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
