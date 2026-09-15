@@ -10,6 +10,7 @@ import { specApi } from '../apps/spec-builder/api'
 
 vi.mock('../hooks/useAvailableModels', () => ({
   useAvailableModels: () => [{ name: 'test-model-x', description: '' }],
+  useModelOrderLoadFailed: () => false,
 }))
 
 function renderModal(qc: QueryClient, onClose = () => {}) {

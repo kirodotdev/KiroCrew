@@ -1084,7 +1084,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.selectable-models",
     "label": "Selectable Models",
     "labelKey": "pages.settings.chatPanel.selectable_models",
-    "description": "Choose which advertised models appear in Chat model pickers. Auto and an active session model always remain visible.",
+    "description": "Choose which advertised models appear in Chat model pickers. Auto and an active session model always remain visible. Drag to set the order pickers use.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1,

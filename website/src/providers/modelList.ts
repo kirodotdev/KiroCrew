@@ -60,3 +60,109 @@ export function withAutoFirst(models: ModelInfo[]): ModelInfo[] {
   // list was fetched.
   return [{ ...live, name: 'auto', description: '' }, ...rest]
 }
+
+/**
+ * Reorder the picker list to honour a user-authored order (config
+ * `agent.model_order`), applied on top of `withAutoFirst`'s output.
+ *
+ * ## Contract
+ *
+ * - Models named in `order` come first, in exactly that order.
+ * - A name in `order` that no live model matches is silently SKIPPED, never
+ *   rendered as a phantom row. kiro renames and re-prices models, so a saved
+ *   order routinely outlives some of the ids it lists; the write side keeps a
+ *   well-formed-but-unknown id rather than rejecting it, and this is the render
+ *   side that makes that safe.
+ * - Every model NOT named in `order` is appended after the ordered ones, in the
+ *   backend order it arrived in. "My picks first, kiro's order below" is the
+ *   whole feature: it is predictable, and nothing is ever hidden (the settings
+ *   drag UI shows every model). This is deliberately NOT the neighbour-relative
+ *   reinsertion of `appstore/categories.ts::mergeCategoryOrder` — that solves a
+ *   different problem (a partial order over a fixed category map) and its
+ *   semantics would surprise here, so it is not reused or generalised.
+ * - `auto` is pinned first REGARDLESS of the saved order, preserving
+ *   `withAutoFirst`'s merge/dedup contract and the 1.0x-baseline reading of the
+ *   credit-multiplier badges. An `auto` entry inside `order` is ignored rather
+ *   than honoured, so a saved order can never demote the baseline row.
+ * - An empty or absent `order` returns the input unchanged (same reference), so
+ *   the default install pays nothing and the `useMemo` in `useAvailableModels`
+ *   stays referentially stable.
+ *
+ * Pure and total: it reads `order` and `models`, allocates a new array, and
+ * never touches the network or the query cache — which is what lets
+ * `useAvailableModels` apply it in a `useMemo` so a settings change reorders
+ * every picker on the next render instead of on the next model refetch.
+ */
+export function applyModelOrder(models: ModelInfo[], order: string[]): ModelInfo[] {
+  // Empty/absent order is the default install: identity, same reference.
+  if (!order || order.length === 0) return models
+
+  // Auto is pinned separately and is never subject to the saved order, so it is
+  // lifted out before ordering and prepended back at the end. Matched by exact
+  // id, mirroring withAutoFirst.
+  const auto = models.find(m => m.name === 'auto')
+  const orderable = auto ? models.filter(m => m.name !== 'auto') : models
+
+  const byName = new Map(orderable.map(m => [m.name, m]))
+  const placed = new Set<string>()
+  const ordered: ModelInfo[] = []
+  for (const name of order) {
+    // Skip `auto` (pinned, not ordered), unknown-but-well-formed stale ids
+    // (no live match), and any duplicate the order lists twice.
+    if (name === 'auto' || placed.has(name)) continue
+    const m = byName.get(name)
+    if (m) { ordered.push(m); placed.add(name) }
+  }
+
+  // Everything the order did not name, in backend (input) order.
+  const tail = orderable.filter(m => !placed.has(m.name))
+  const reordered = [...ordered, ...tail]
+  return auto ? [auto, ...reordered] : reordered
+}
+
+/**
+ * Merge a REORDERED sequence of live model names back into the saved order,
+ * for the write side of a drag: the result is what gets PATCHed to
+ * `agent.model_order`.
+ *
+ * Why this exists: the drag surface renders `applyModelOrder`'s output, which
+ * deliberately SKIPS saved ids the live list doesn't currently advertise (a
+ * stale id must never add a phantom row). Persisting that rendered array
+ * verbatim would therefore silently and permanently DELETE every stale id on
+ * the first drag — while the write side's documented contract (see
+ * `applyModelOrder` above, and the backend's grammar-only validation) is that
+ * a well-formed-but-unknown id is KEPT, precisely because kiro renames models
+ * and a saved order must outlive a rename.
+ *
+ * Semantics: each saved slot keeps its kind. A slot holding a LIVE id is
+ * re-filled with the next name from the reordered live sequence; a slot
+ * holding a STALE id keeps that id exactly where it was, so when the model
+ * comes back it reappears in the position the user gave it, not at the
+ * bottom. Live names beyond the saved ones (the unlisted backend tail, which
+ * the drag surface also renders) append after, giving every live model an
+ * explicit slot in the written order.
+ */
+export function mergeReorderedNames(savedOrder: string[], liveReordered: string[]): string[] {
+  const live = new Set(liveReordered)
+  const out: string[] = []
+  const seen = new Set<string>()
+  let li = 0
+  for (const name of savedOrder) {
+    if (seen.has(name)) continue
+    if (live.has(name)) {
+      // A live-occupied slot: fill with the next name of the new live
+      // sequence. Skipping names already emitted keeps the output
+      // duplicate-free even if a caller hands over an unnormalized order.
+      while (li < liveReordered.length && seen.has(liveReordered[li])) li++
+      if (li < liveReordered.length) { out.push(liveReordered[li]); seen.add(liveReordered[li]); li++ }
+    } else {
+      out.push(name)
+      seen.add(name)
+    }
+  }
+  while (li < liveReordered.length) {
+    if (!seen.has(liveReordered[li])) { out.push(liveReordered[li]); seen.add(liveReordered[li]) }
+    li++
+  }
+  return out
+}

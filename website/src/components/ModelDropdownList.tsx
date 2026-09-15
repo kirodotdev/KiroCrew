@@ -2,6 +2,8 @@ import { useRef, useEffect } from 'react'
 import { Check, LoaderCircle } from 'lucide-react'
 
 import { isPricedMultiplier } from '../providers/modelList'
+import { useModelOrderLoadFailed } from '../hooks/useAvailableModels'
+import ErrorNotice from './ErrorNotice'
 import type { ModelInfo } from '../providers/types'
 import { fmtNumber } from '../i18n/format'
 import { i18nT } from '../i18n/t'
@@ -120,12 +122,29 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
    *  its rows. */
   failed?: boolean
 }) {
+  const orderLoadFailed = useModelOrderLoadFailed()
   const activeRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'center', behavior: 'instant' })
   }, [])
   return (
     <div className="overflow-y-auto flex flex-col gap-0.5">
+      {/* The saved order failed to load, so this list is showing the backend's
+          own order as a fallback. Surfaced HERE, in the one renderer every
+          picker mounts, rather than in the 11 hosts — the errors-use-error-notice
+          decision is made once. askAgent off; the No hand-off decision, named
+          concretely: (1) this notice lives inside a transient dropdown portal
+          that unmounts on selection or outside-click, so an agent hand-off
+          button here would vanish mid-click; (2) the host that opened the
+          portal may hold an unsaved draft (a composer message in ChatPage or
+          ChatPane, an agent edit in AgentsPage) that navigating away to a chat
+          would abandon; (3) the state self-clears — React Query retries the
+          config read — and the durable, actionable surface for the same
+          failure is Settings ▸ Chat's Selectable-models control, whose rows
+          carry the reorder grips and disable while the order is unloaded. */}
+      {orderLoadFailed && (
+        <ErrorNotice variant="inline" message={i18nT('components.modelDropdownList.order_load_failed')} />
+      )}
       {models.map(m => {
         const active = activeModel === m.name
         const mult = m.rateMultiplier

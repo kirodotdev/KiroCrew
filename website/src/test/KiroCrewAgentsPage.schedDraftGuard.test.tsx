@@ -9,7 +9,7 @@
  * a rail pane switch and editor dismissal both confirm before discarding.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
 
@@ -235,6 +235,16 @@ describe('crew editor — schedule-draft discard guard', () => {
       // The escape: Discard unlocks and the visible note switches to the
       // honest caveat — the request is not cancelled, so the schedule may
       // still be created.
+      // The unlock re-render can land a tick after the advance when another
+      // subscription (e.g. the shared model-order config read) resolves in
+      // the same window. Flush those ticks WITHOUT moving the clock — a
+      // zero-length async advance drains pending microtasks while fake time
+      // stays pinned at the 8s deadline — then assert immediately. waitFor
+      // would auto-advance fake time under shouldAdvanceTime and tolerate a
+      // regressed later unlock, so the deadline is asserted synchronously.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
       expect(discard).not.toBeDisabled()
       expect(screen.getByTestId('crew-sched-discard-saving-note').textContent)
         .toMatch(/may still be created/i)

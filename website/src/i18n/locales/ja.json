@@ -6993,7 +6993,8 @@
       "credit_multiplier": "Auto のクレジット消費量の {{value}}",
       "credit_multiplier_baseline": "{{value}}、クレジット消費量の基準",
       "loading_models": "モデルを読み込み中…",
-      "no_matches": "一致するものがありません"
+      "no_matches": "一致するものがありません",
+      "order_load_failed": "保存されたモデルの順序を読み込めませんでした。読み込まれるまでデフォルトの順序を表示します。"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "設定で管理",
@@ -7453,6 +7454,8 @@
     },
     "multiSelect": {
       "deselect_all": "すべてを選択解除",
+      "reorder_clear_search": "並べ替えるには検索をクリアしてください",
+      "reorder_unavailable": "保存された順序が読み込まれるまで並べ替えはできません",
       "select_all": "すべてを選択"
     },
     "searchableSelect": {
@@ -13137,7 +13140,7 @@
         "model_picker_selected_models": "{{selected}} / {{total}} を選択",
         "search_models": "モデルを検索…",
         "selectable_models": "選択可能なモデル",
-        "selectable_models_description": "チャットのモデル選択に表示する提供モデルを選びます。Auto とアクティブなセッションのモデルは常に表示されます。",
+        "selectable_models_description": "チャットのモデル選択に表示する提供モデルを選びます。Auto とアクティブなセッションのモデルは常に表示されます。ドラッグして選択リストで使う順序を設定できます。",
         "default_normal_length": "標準 — 通常の長さ",
         "default_reasoning_effort": "デフォルト推論努力度",
         "default_to_autopilot_mode": "オートパイロットモードをデフォルトに",
@@ -15127,6 +15130,11 @@
         "description": "永続は既知の情報を使い、新しいメモリを保存します。プライベートは既知の情報を使いますが、新しいメモリは保存しません。一時的は空の状態で始まり、何も保存しません。すべてのチャットは履歴に残ります。各チャットのモードは変更できます。",
         "label": "デフォルトのメモリモード",
         "persistent": "永続"
+      },
+      "modelOrder": {
+        "reorder": "{{model}} を並べ替え",
+        "reset": "既定の順序にリセット",
+        "saveFailed": "モデルの順序を保存できませんでした。もう一度お試しください。最後に保存した順序が表示されています。"
       },
       "plainDiff": {
         "description": "差分を構文ハイライトなしのプレーンな unified diff テキストとして表示します。大きな差分でのメモリ使用量が減ります。",

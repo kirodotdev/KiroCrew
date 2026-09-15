@@ -2549,6 +2549,21 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         streaming=agent_data.get("streaming", True),
         model=agent_data.get("model", DEFAULT_MODEL),
         role_models=coerce_role_models(agent_data.get("role_models")),
+        # Saved model-picker order. Dedup first-occurrence-wins, drop
+        # non-strings and oversized ids, and cap the entry count, mirroring
+        # the PATCH validator via the shared sections constants so a
+        # hand-edited file loads the same bounded shape a PATCH writes.
+        model_order=(
+            list(
+                dict.fromkeys(
+                    m
+                    for m in _model_order
+                    if isinstance(m, str) and len(m) <= _sections.MODEL_ORDER_MAX_ID_LEN
+                )
+            )[: _sections.MODEL_ORDER_MAX_ENTRIES]
+            if isinstance(_model_order := agent_data.get("model_order"), list)
+            else []
+        ),
         role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
         fallback_model=coerce_fallback_model(agent_data.get("fallback_model", "auto")),
         refusal_fallback_model=_sections.coerce_refusal_fallback_model(
