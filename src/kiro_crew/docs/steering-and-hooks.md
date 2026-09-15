@@ -207,6 +207,13 @@ written against a documented name rather than a guess at one. The manual trigger
 is the furthest of the six from running — Kiro's current hook-file schema has no
 equivalent for it at all, so `Test` is its whole run path here.
 
+**`SessionLaneChanged` is a seventh trigger nothing fires, and every rule below about
+"the six" applies to it too.** It is not an agent trigger: it is the gateway's own
+event, for a session's status tags moving it between your board columns, and the
+gateway's emit site for it has not landed yet. So it is authorable and stored, marked
+`not fired yet`, saved switched off, and takes no matcher — for the same reasons, and
+differing only in what it waits for, which its own tooltip states.
+
 **A hook on one of the six is saved switched off.** Nothing runs it either way
 today, so that costs you nothing now, and it is what keeps a later release honest:
 the change that starts firing these events finds your hook already off, so it
@@ -241,14 +248,17 @@ one of them and then picking a tool event again gives your filter back.
 
 **You can see this on the row without reading this page.** The Hooks tab marks a
 hook against one of the six in its Status column, and marks the trigger in the
-picker as you choose it — `not fired yet` for the two the agent supports, `never fires`
-for the four it does not. The two marks also LOOK different, because at pill size the
-wording alone was still being mixed up: a trigger the agent asks for gets a solid pill,
-one it does not gets a hollow dashed one. Both stay muted — neither is a fault. Choosing
+picker as you choose it — `not fired yet` for a trigger that will run once the side
+that fires it lands (the two the agent supports, and the pending gateway event),
+`never fires` for the four nothing will ever fire on their own. The two marks also
+LOOK different, because at pill size the wording alone was still being mixed up: a
+trigger that is waiting on something gets a solid pill, one waiting on nothing gets a
+hollow dashed one. Both stay muted — neither is a fault. Choosing
 one spells the mark out in the form as ordinary text, and either mark also carries the
 same line as a tooltip on the row. The mark is read
-from the same two sets the table above states, so a trigger that gains delivery
-stops being marked without anyone editing the words. Once you Test such a hook the
+from the same three sets the tables above state — the two agent groups and the
+pending gateway one — so a trigger that gains delivery stops being marked without
+anyone editing the words. Once you Test such a hook the
 run's result appears BESIDE the mark rather than replacing it: whether anything
 fires the trigger and how the last run went are different facts, and a single Test
 should not delete the first one from the table for good.
@@ -286,7 +296,7 @@ A hook's fields:
 
 | Field | Means |
 |---|---|
-| `event` | one of the eleven above |
+| `event` | one of the twelve above |
 | `matcher` | what the hook filters on; empty means every call, or every message |
 | `matcher_mode` | `glob` (default), `regex`, or `contains` — read only for the message events, never for a tool matcher |
 | `command` | the shell line |

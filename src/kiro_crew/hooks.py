@@ -176,11 +176,40 @@ HOOK_EVENTS_AGENT_REQUESTED = (
     HOOK_EVENT_POST_TASK_EXECUTION,
 )
 
+# Gateway events whose DELIVERY has not landed yet. Authorable and persisted, and
+# fired by nothing today, so a hook written against one waits for its emit site
+# rather than for a Kiro Agent to ask.
+#
+# A third tuple rather than a member of either existing one, because both of those
+# carry a promise this does not. ``HOOK_EVENTS`` promises a ``fire`` call site, and
+# ``HOOK_EVENTS_KAS_ONLY`` promises a PascalCase twin of a Kiro trigger name -- and
+# ``SessionLaneChanged`` is neither: it is the gateway's own event, and the gateway
+# is where its emit site will go. Keeping it out of ``HOOK_EVENTS`` is what leaves
+# the exit-code contract in ``steering-and-hooks.md`` true of the five that run.
+#
+# The dashboard reads this split rather than restating it, so the picker marks a
+# pending event as unfired from the same source the other dormant marks come from.
+# The round that ships delivery moves the name into ``HOOK_EVENTS`` and every
+# surface follows.
+HOOK_EVENT_SESSION_LANE_CHANGED = "SessionLaneChanged"
+
+HOOK_EVENTS_PENDING = (HOOK_EVENT_SESSION_LANE_CHANGED,)
+
+#: Every event NOTHING FIRES: the store's own gates read this rather than either
+#: group, because every one of them asks the same question -- will this run by
+#: itself -- and the answer is no for both reasons. A hook created against one is
+#: saved switched OFF so the release that starts firing it cannot inherit a
+#: pre-authorised command, and a matcher is refused because these events carry no
+#: payload to match on. Reading one group here was the defect: the pending event
+#: joined the authoring vocabulary while every gate still asked about the other
+#: group, so it persisted enabled with a matcher the form had already hidden.
+HOOK_EVENTS_DORMANT = HOOK_EVENTS_KAS_ONLY + HOOK_EVENTS_PENDING
+
 #: Every event a hook may be authored against and persisted under. This is the
 #: authoring vocabulary -- the dashboard form's options, the create/update
 #: schemas, and the store's own load and save gates all read this set, so an
 #: event absent from it is refused at authoring time and dropped on reload.
-HOOK_EVENTS_ALL = HOOK_EVENTS + HOOK_EVENTS_KAS_ONLY
+HOOK_EVENTS_ALL = HOOK_EVENTS + HOOK_EVENTS_PENDING + HOOK_EVENTS_KAS_ONLY
 
 
 @dataclass
@@ -4357,7 +4386,7 @@ def validate_hook_fields(
     * ``skills`` is combined with a ``command`` (the skills would never fire);
     * ``skills`` is paired with an event other than UserPromptSubmit/AgentSpawn
       (the "Load skills:" directive has no consumer there);
-    * ``matcher`` is paired with one of ``HOOK_EVENTS_KAS_ONLY`` -- no event fires
+    * ``matcher`` is paired with one of ``HOOK_EVENTS_DORMANT`` -- no event fires
       those, so no payload exists for a matcher to filter and the field's subject
       is undefined; storing one now would hand the round that defines the payload
       a filter written against a different subject than the one it picks;
@@ -4386,7 +4415,7 @@ def validate_hook_fields(
                 f"skills hooks cannot fire on {event} events — "
                 "choose UserPromptSubmit or AgentSpawn"
             )
-    if matcher and event in HOOK_EVENTS_KAS_ONLY:
+    if matcher and event in HOOK_EVENTS_DORMANT:
         raise ValueError(
             f"a matcher cannot be set on {event} — no event fires it, so there is "
             "no payload to filter; leave the matcher empty"
@@ -4553,7 +4582,7 @@ class ScriptHook:
         # fields and would meet the stored matcher. Normalizing here means the store
         # never holds the combination and update never sees it. The matcher is the
         # part with no meaning on these events; the hook itself is kept.
-        if matcher and event in HOOK_EVENTS_KAS_ONLY:
+        if matcher and event in HOOK_EVENTS_DORMANT:
             logger.warning(
                 "hook %s on %s carried a matcher; dropping it (no event fires this, "
                 "so there is no payload to filter)",
@@ -5182,7 +5211,7 @@ class ScriptHookStore:
         # the Test endpoint does not read ``enabled``, so Test still works, which
         # is the only way one of these runs at all. An explicit ``enabled: true``
         # is honoured -- that IS the reconfirmation.
-        if "enabled" not in data and hook.event in HOOK_EVENTS_KAS_ONLY:
+        if "enabled" not in data and hook.event in HOOK_EVENTS_DORMANT:
             hook.enabled = False
         # Enforce the SAME invariants `update` does, via the shared validator:
         # checking them only in `update` lets a direct/internal caller of `create`
@@ -5215,7 +5244,7 @@ class ScriptHookStore:
             hook = self._hooks.get(hook_id)
             if not hook:
                 return None
-            was_dormant = hook.event in HOOK_EVENTS_KAS_ONLY
+            was_dormant = hook.event in HOOK_EVENTS_DORMANT
             for k in ("name", "event", "matcher", "matcher_mode", "command", "timeout", "enabled"):
                 if k in data:
                     setattr(hook, k, data[k])
@@ -5235,7 +5264,7 @@ class ScriptHookStore:
             if (
                 "event" in data
                 and not was_dormant
-                and hook.event in HOOK_EVENTS_KAS_ONLY
+                and hook.event in HOOK_EVENTS_DORMANT
                 and "enabled" not in data
             ):
                 hook.enabled = False
@@ -5252,7 +5281,7 @@ class ScriptHookStore:
                 "event" in data
                 and "matcher" not in data
                 and hook.matcher
-                and hook.event in HOOK_EVENTS_KAS_ONLY
+                and hook.event in HOOK_EVENTS_DORMANT
             ):
                 logger.warning(
                     "hook %s moved onto %s; dropping its matcher (no event fires "

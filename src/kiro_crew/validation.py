@@ -168,6 +168,7 @@ LESSON_LIST_OFFSET_MAX = 100_000_000
 ALLOWED_SCHEDULE_KINDS = frozenset({"every", "cron", "at"})
 
 # Every event a script hook may be authored against: the five the gateway fires,
+# the gateway event whose delivery is still pending (``hooks.HOOK_EVENTS_PENDING``),
 # plus the six a Kiro Agent session owns, which are stored and fired by no event
 # (``hooks.HOOK_EVENTS_KAS_ONLY``, whose header says which of the six a Kiro
 # Agent even asks for and why Test still runs one). Spelled
@@ -182,6 +183,7 @@ ALLOWED_HOOK_EVENTS = frozenset(
         "PreToolUse",
         "PostToolUse",
         "Stop",
+        "SessionLaneChanged",
         "PreTaskExecution",
         "PostTaskExecution",
         "FileCreated",
