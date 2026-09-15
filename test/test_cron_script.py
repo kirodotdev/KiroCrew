@@ -2328,3 +2328,144 @@ class TestCronSpawnTiersAreAligned:
         )
 
         assert modes[-1] == "strict"
+
+
+class TestCronScratchTmpdirRecreation:
+    """Issue #10567: recreate vanished TMPDIR / scratch directories before mkstemp."""
+
+    @pytest.fixture(autouse=True)
+    def _passthrough_sandbox(self, monkeypatch, posix_test_shell):
+        import os as _os
+
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        existing = _os.environ.get("PYTHONPATH", "")
+        monkeypatch.setenv("PYTHONPATH", src_dir + (_os.pathsep + existing if existing else ""))
+        monkeypatch.setattr(
+            "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
+
+    def _write_script(self, tmp_path, code="def run(ctx):\n    return None\n"):
+        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir.mkdir(parents=True, exist_ok=True)
+        script = crons_dir / "test_job.py"
+        script.write_text(code)
+        return str(script)
+
+    def test_run_script_sandboxed_recreates_vanished_tmpdir(self, tmp_path, monkeypatch):
+        """When inherited TMPDIR was reclaimed, run_script_sandboxed recreates it."""
+        import tempfile
+
+        script_path = self._write_script(tmp_path)
+        vanished = tmp_path / "vanished_tmp"
+        assert not vanished.exists()
+
+        monkeypatch.setattr(tempfile, "tempdir", str(vanished))
+        monkeypatch.setenv("TMPDIR", str(vanished))
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+
+        result = run_script_sandboxed(f"{script_path}:run", job_id="job-vanished-tmp", timeout=10)
+
+        assert result["status"] == "ok"
+        assert vanished.exists()
+
+    def test_run_script_sandboxed_recreates_scratch_with_owner_record(
+        self, tmp_path, monkeypatch
+    ):
+        """A recreated scratch dir inside scratch_root gets an owner record for future sweep."""
+        import tempfile
+        from kiro_crew import agent_scratch
+
+        scratch_root = tmp_path / "scratch"
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("kiro_crew.agent_scratch.scratch_root", lambda: scratch_root)
+
+        vanished_scratch = scratch_root / "runtime-deadbeef"
+        assert not vanished_scratch.exists()
+
+        monkeypatch.setattr(tempfile, "tempdir", str(vanished_scratch))
+        monkeypatch.setenv("TMPDIR", str(vanished_scratch))
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+
+        script_path = self._write_script(tmp_path)
+        result = run_script_sandboxed(f"{script_path}:run", job_id="job-scratch-owner", timeout=10)
+
+        assert result["status"] == "ok"
+        assert vanished_scratch.exists()
+        owner_file = vanished_scratch / agent_scratch.OWNER_FILENAME
+        assert owner_file.exists()
+        assert int(owner_file.read_text(encoding="utf-8").strip()) == os.getpid()
+
+    def test_run_script_sandboxed_granted_recreates_vanished_tmpdir(
+        self, tmp_path, monkeypatch
+    ):
+        """A granted script run also survives a swept TMPDIR while keeping launcher in pinned dir."""
+        import sys
+        import tempfile
+
+        vanished = tmp_path / "vanished_granted_tmp"
+        assert not vanished.exists()
+
+        monkeypatch.setattr(tempfile, "tempdir", str(vanished))
+        monkeypatch.setenv("TMPDIR", str(vanished))
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.cron_script.wrap_argv",
+            lambda argv, **k: ([sys.executable, "-Wignore", *argv[1:]], None),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._secret_env_precheck",
+            lambda *a, **k: ({"TOKEN": "v"}, ""),
+        )
+
+        script_path = self._write_script(tmp_path)
+        result = run_script_sandboxed(
+            f"{script_path}:run",
+            job_id="job-granted-tmp",
+            timeout=10,
+            secret_env={"TOKEN": "vault:t"},
+            secret_env_pin="pin",
+        )
+
+        assert result["status"] == "ok"
+        assert vanished.exists()
+
+    def test_write_grant_epochs_recreates_parent_directory(self, tmp_path):
+        """_write_grant_epochs creates missing parent directories before mkstemp."""
+        from kiro_crew.cron_script import _write_grant_epochs
+
+        epochs_dir = tmp_path / "sub" / "crons"
+        epochs_file = epochs_dir / "grant_epochs.json"
+        assert not epochs_dir.exists()
+
+        data = {"job-1": 42}
+        _write_grant_epochs(epochs_file, data)
+
+        assert epochs_dir.exists()
+        assert epochs_file.exists()
+        assert json.loads(epochs_file.read_text(encoding="utf-8")) == data
+
+    def test_ensure_temp_dir_direct(self, tmp_path, monkeypatch):
+        """_ensure_temp_dir creates directory and assigns owner when under scratch root."""
+        from kiro_crew import agent_scratch
+        from kiro_crew.cron_script import _ensure_temp_dir
+
+        scratch_root = tmp_path / "scratch"
+        monkeypatch.setattr("kiro_crew.agent_scratch.scratch_root", lambda: scratch_root)
+
+        scratch_dir = scratch_root / "runtime-direct-test"
+        assert not scratch_dir.exists()
+
+        res = _ensure_temp_dir(scratch_dir)
+        assert res.exists()
+        owner_file = res / agent_scratch.OWNER_FILENAME
+        assert owner_file.exists()
+        assert int(owner_file.read_text(encoding="utf-8").strip()) == os.getpid()
+
+        # Non-scratch path does not get an owner file
+        plain_dir = tmp_path / "plain" / "temp"
+        res_plain = _ensure_temp_dir(plain_dir)
+        assert res_plain.exists()
+        assert not (res_plain / agent_scratch.OWNER_FILENAME).exists()
