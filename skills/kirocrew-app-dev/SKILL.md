@@ -452,22 +452,37 @@ A handler that writes to the cron store itself gets none of that. Nothing
 reconciles those jobs, nobody reading the manifest or the review diff can see
 what will run, and the disable path below cannot take them away.
 
-### Cadence: hourly floor, push over polling
+### Cadence: a 5-minute floor, push over polling
 
 | Rule | Why |
 |------|-----|
-| Never more often than hourly when the job calls a third-party or shared service | Every install runs the same schedule, so the service absorbs installs × frequency and has no channel to ask you to slow down |
+| Never more often than every 5 minutes when the job calls a third-party or shared service, and never per-minute polling | Every install runs the same schedule, so the service absorbs installs × frequency and has no channel to ask you to slow down |
 | Prefer a webhook, changelog, event feed or push subscription wherever the service offers one | A poll asks "did anything change" a thousand times to learn "no". Push tells you once, when it did. `register_hook` is the callback side of this |
 | Poll only where no push path exists, and then at the coarsest cadence the feature tolerates | A stale panel is a smaller cost than an app the service owner has to block |
 
-**Sub-hourly schedules get no jitter at all.** `_compute_jitter`
-(`src/kiro_crew/cron.py`) returns `0.0` for `every` under 3600s and for any
-`cron_expr` whose minute field contains `/`, `,` or `*`; hourly schedules get
-0 to 5 minutes of spread and daily ones 0 to 59. Nothing spreads a sub-hourly
-job, so anything that makes it overdue on many machines at once (a released app
-update, a gateway restart, a fleet coming back after an outage) fires it
-immediately on all of them and lands as one synchronised burst on the service.
-Crossing the hourly line is what buys you the platform's spread.
+**A 5-minute schedule gets no jitter from the platform, so add your own.**
+`_compute_jitter` (`src/kiro_crew/cron.py`) returns `0.0` for `every` under
+3600s and for any `cron_expr` whose minute field contains `/`, `,` or `*`;
+only hourly schedules get spread (0 to 5 minutes) and daily ones (0 to 59).
+Nothing spreads a 5-minute job, so anything that makes it overdue on many
+machines at once (a released app update, a gateway restart, a fleet coming back
+after an outage) fires it immediately on all of them and lands as one
+synchronised burst on the service.
+
+So spread it yourself. Pick one stable offset per install, uniform in
+`[0, interval)` — hash the install id, or write a random value once into your
+state file — and reuse that same number every tick. A fixed offset per install,
+not a fresh one per run: a stable offset keeps each install's schedule
+predictable while pulling the fleet apart, and survives the restart that would
+otherwise re-align everybody. Bounding it below the interval is what stops a
+hashed offset from pushing a 5-minute job past its own next tick.
+
+Apply it as a **phase offset your own due-check honours**: read the offset, and
+treat the tick as not-yet-due until `now` has passed that offset inside the
+current window. Sleeping the offset at the top of the tick reaches the same fire
+time, but it is the worse form — a multi-minute sleep holds the run's session
+open for most of the interval — so keep the sleep for an offset of a few seconds
+and use the phase offset for anything longer.
 
 ### Bounded concurrency
 
@@ -551,8 +566,9 @@ owner and no off switch.
 ### Reviewer checklist
 
 - [ ] Every schedule lives in `app.json` `crons`; no handler writes to the cron store.
-- [ ] No schedule fires more often than hourly against a third-party or shared service.
+- [ ] No schedule fires more often than every 5 minutes against a third-party or shared service, and none polls per minute.
 - [ ] Polling is used only where the service offers no webhook, changelog or push.
+- [ ] A 5-minute or sub-hourly schedule carries its own per-install offset; the platform adds none. Read it off the diff rather than trusting the box: `app.json` declares the sub-hourly `every`, the state file schema holds an offset key, and the tick reads that key before its first outbound call. A schedule under 3600s with no offset in state fails this line.
 - [ ] Each tick has bounded fan-out; no session-per-item.
 - [ ] Backoff on `429`/`5xx` plus a circuit breaker persisted in state.
 - [ ] Outbound calls carry an app-specific identifier.
@@ -722,8 +738,8 @@ No separate workspace needed. The installed app IS the workspace.
 | Buttons navigate away from app | Using `navigate('/chat')` for automated work | Use `POST /api/chat?ws=1` background slots |
 | Refresh/update leaves app page | Using `window.__mc_chat_launch` + navigate | Background slot + disabled state + timeout |
 | Cron keeps firing after the user disables the app | App schedules work but never declares `permissions.cron` — the disable path gates cron cleanup on that grant | Declare `permissions.cron`, then verify disable leaves no job on the Schedule page |
-| Every install hits the same service in the same minute | Sub-hourly schedules get zero jitter, so a rollout or restart syncs them | Use hourly or coarser so the platform spreads the fire time |
-| Downstream service starts throttling the app | Unattributable polling load from every install | Hourly floor, push/webhook instead of polling, app-specific `User-Agent` |
+| Every install hits the same service in the same minute | Sub-hourly schedules get zero jitter, so a rollout or restart syncs them | Add a stable per-install offset in your own state file, or go hourly or coarser and let the platform spread it |
+| Downstream service starts throttling the app | Unattributable polling load from every install | A 5-minute floor with no per-minute polling, push/webhook instead of polling, app-specific `User-Agent` |
 | One cron tick spawns dozens of agent sessions | Fan-out per work item, with no per-app quota to stop it | Bounded batch per tick plus a cursor in the state file |
 
 ## Testing Locally
