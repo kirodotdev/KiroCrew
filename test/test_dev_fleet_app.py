@@ -355,9 +355,16 @@ async def test_remove_succeeds_when_oid_matches():
 # --- session bus graceful degradation ---
 @pytest.mark.asyncio
 async def test_remove_proceeds_when_session_bus_absent():
-    """When require_backend() raises PodBackendAbsent, removal proceeds."""
+    """An absent backend is checked off-loop and leaves no live pod to protect."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
     from kiro_crew.pod.runtime import PodBackendAbsent
+
+    event_loop_thread = threading.get_ident()
+    backend_threads: list[int] = []
+
+    def absent_backend() -> None:
+        backend_threads.append(threading.get_ident())
+        raise PodBackendAbsent("no session bus")
 
     with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
                       return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
@@ -368,33 +375,65 @@ async def test_remove_proceeds_when_session_bus_absent():
          patch.object(fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"), \
          patch.object(runtime_mod, "_load_cfg", return_value=object()), \
          patch.object(runtime_mod, "_POD_AVAILABLE", True), \
-         patch.object(runtime_mod.rt, "require_backend", side_effect=PodBackendAbsent("no session bus")), \
+         patch.object(runtime_mod.rt, "require_backend", side_effect=absent_backend), \
          patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
          patch.object(repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
         result = await mod._worktree_remove("feat-x", force=False)
     assert result["ok"] is True
+    assert len(backend_threads) == 2
+    assert all(thread != event_loop_thread for thread in backend_threads)
 
 
 @pytest.mark.asyncio
-async def test_remove_refuses_operational_pod_error():
-    """When require_backend() passes but active_names raises, removal is refused."""
+async def test_remove_refuses_stale_explicit_bus_address(monkeypatch):
+    """A stale explicit bus address must never authorize worktree removal."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
-    with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
-                      return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
-         patch.object(repository_mod, "_real_dirty", new_callable=AsyncMock, return_value=False), \
-         patch.object(fleet_state_mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "MERGED"}), \
-         patch.object(repository_mod, "_own_commits_count", new_callable=AsyncMock, return_value=1), \
-         patch.object(repository_mod, "_git", new_callable=AsyncMock, return_value="aaa1111"), \
-         patch.object(fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"), \
-         patch.object(runtime_mod, "_load_cfg", return_value=object()), \
-         patch.object(runtime_mod, "_POD_AVAILABLE", True), \
-         patch.object(runtime_mod.rt, "require_backend", return_value=None), \
-         patch.object(runtime_mod.rt, "active_names", side_effect=OSError("launchctl error")), \
-         patch.object(repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
+    detail = "Failed to connect to bus: No such file or directory"
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/4242/stale-bus")
+    with (
+        patch.object(
+            repository_mod,
+            "_find_worktree",
+            new_callable=AsyncMock,
+            return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None),
+        ),
+        patch.object(repository_mod, "_real_dirty", new_callable=AsyncMock, return_value=False),
+        patch.object(
+            fleet_state_mod,
+            "_pr_status_cached",
+            new_callable=AsyncMock,
+            return_value={"state": "MERGED"},
+        ),
+        patch.object(repository_mod, "_own_commits_count", new_callable=AsyncMock, return_value=1),
+        patch.object(repository_mod, "_git", new_callable=AsyncMock, return_value="aaa1111"),
+        patch.object(
+            fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"
+        ),
+        patch.object(runtime_mod, "_load_cfg", return_value=object()),
+        patch.object(runtime_mod, "_POD_AVAILABLE", True),
+        patch.object(runtime_mod.rt, "IS_MACOS", False),
+        patch.object(runtime_mod.rt, "IS_WINDOWS", False),
+        patch.object(runtime_mod.rt, "IS_LINUX", True),
+        patch.object(runtime_mod.rt.shutil, "which", return_value="/usr/bin/systemctl"),
+        patch.object(
+            runtime_mod.rt.platform_compat,
+            "trusted_system_bin",
+            return_value="/usr/bin/systemctl",
+        ),
+        patch.object(
+            runtime_mod.rt,
+            "_run",
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr=detail),
+        ),
+        patch.object(
+            repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"
+        ),
+    ):
         result = await mod._worktree_remove("feat-x", force=False)
     assert result["ok"] is False
-    assert "cannot verify pod state" in result["error"]
+    assert "cannot verify pod backend" in result["error"]
+    assert detail in result["error"]
 
 
 @pytest.mark.asyncio

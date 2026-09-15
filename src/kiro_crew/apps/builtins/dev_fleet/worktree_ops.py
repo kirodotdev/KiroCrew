@@ -1019,8 +1019,9 @@ async def _worktree_remove_locked(
             # the socket were removed under a running pod, that pod is now
             # uncontrollable and will terminate on its next watchdog cycle.
             # As a defense-in-depth measure, we also probe the unit file directly.
+            loop = asyncio.get_running_loop()
             try:
-                runtime.rt.require_backend()
+                await loop.run_in_executor(subprocess_executor(), runtime.rt.require_backend)
             except runtime.rt.PodBackendAbsent:
                 # Defense-in-depth: attempt a direct unit-state query. If this
                 # somehow succeeds (bus re-appeared between require_backend and
@@ -1056,6 +1057,11 @@ async def _worktree_remove_locked(
                     residue,
                     name,
                 )
+            except runtime.rt.PodError as exc:
+                return {
+                    "ok": False,
+                    "error": f"cannot verify pod backend: {runtime._redact(str(exc))}",
+                }
             else:
                 try:
                     loop = asyncio.get_running_loop()
@@ -1186,13 +1192,21 @@ async def _worktree_remove_locked(
             # the pod. Removing the checkout under a live pod would leave its
             # gateway running from deleted files, so re-verify inactivity now.
             if runtime._POD_AVAILABLE and cfg:
+                loop = asyncio.get_running_loop()
                 try:
-                    runtime.rt.require_backend()
+                    await loop.run_in_executor(subprocess_executor(), runtime.rt.require_backend)
                 except runtime.rt.PodBackendAbsent:
                     pass  # backend provably absent — no pods can exist
+                except runtime.rt.PodError as exc:
+                    return {
+                        "ok": False,
+                        "error": (
+                            "cannot re-verify pod backend before removal: "
+                            f"{runtime._redact(str(exc))}"
+                        ),
+                    }
                 else:
                     try:
-                        loop = asyncio.get_running_loop()
                         active3 = await loop.run_in_executor(
                             subprocess_executor(), runtime.rt.active_names, cfg
                         )

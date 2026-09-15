@@ -24,9 +24,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
-from kiro_crew import pinned_fs
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew import seed as seed_mod
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.dashboard.urls import dashboard_socket_name
@@ -71,10 +72,10 @@ class PodError(RuntimeError):
 class PodBackendAbsent(PodError):
     """The pod service manager is provably not running on this host.
 
-    Raised only from branches where the backend is demonstrably absent (e.g.
-    Linux with no session bus socket and no DBUS_SESSION_BUS_ADDRESS). Callers
-    that need to distinguish 'backend absent, no pods possible' from 'backend
-    present but erroring' can catch this subclass specifically.
+    Raised only when no user-bus address exists or a completed systemctl probe
+    reports no user session. An executable, timeout, or other operational
+    failure remains :class:`PodError`, so callers never infer that no live pod
+    can exist from a probe they could not run.
     """
 
 
@@ -839,15 +840,32 @@ def session_bus_socket() -> str:
 
 
 def has_session_bus() -> bool:
-    """Whether ``systemctl --user`` can reach a per-user systemd instance.
+    """Whether a systemd user-bus address is available to probe.
 
-    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` is taken at face value (the
-    caller has deliberately pointed somewhere, possibly not a filesystem path);
-    otherwise the conventional socket must actually exist.
+    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` is taken at face value because
+    it may name a non-filesystem transport. Otherwise the conventional socket
+    must exist. This is only the cheap availability hint; :func:`probe_user_bus`
+    makes the authoritative connection attempt.
     """
     if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
         return True
     return os.path.exists(session_bus_socket())
+
+
+USER_BUS_REACHABLE = "reachable"
+USER_BUS_NO_SESSION = "no_session"
+USER_BUS_SANDBOXED_AWAY = "sandboxed_away"
+USER_BUS_ERROR = "error"
+_USER_BUS_PROBE_TIMEOUT_SECONDS = 5
+
+
+@dataclass(frozen=True)
+class UserBusProbe:
+    """One ``systemctl --user is-system-running`` reachability verdict."""
+
+    status: str
+    socket: str
+    detail: str
 
 
 def _systemctl_env() -> dict[str, str]:
@@ -873,31 +891,111 @@ def _systemctl_env() -> dict[str, str]:
         if os.path.exists(sock):
             env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={sock}"
     env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+    # Kiro Crew's CLI and error classifier use English diagnostics. Pin the
+    # service-manager tools to their stable C messages so a host locale cannot
+    # turn Permission denied or No medium found into the generic failure class.
+    env["LC_ALL"] = "C"
     return env
 
 
 def _run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
     return subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, env=_systemctl_env()
+        cmd,
+        capture_output=True,
+        timeout=timeout,
+        env=_systemctl_env(),
+        **UTF8_TEXT,
     )
 
 
+def probe_user_bus() -> UserBusProbe:
+    """Classify whether this process can connect to the systemd user bus.
+
+    A socket's existence proves only that a user manager created it. An outer
+    sandbox can still deny ``connect(2)``, which is the failure this probe must
+    keep distinct from a machine with no user manager at all. A nonzero
+    ``is-system-running`` result with a state on stdout is reachable: systemd
+    returns nonzero for valid states such as ``degraded``.
+
+    A provably absent address needs no subprocess and is the only source of
+    ``USER_BUS_NO_SESSION``. Once a probe is spawned, permission denial is the
+    only separately classified failure; every other failure is operationally
+    unknown, never proof that no backend exists.
+    """
+    sock = session_bus_socket()
+    if not has_session_bus():
+        return UserBusProbe(USER_BUS_NO_SESSION, sock, "")
+
+    systemctl_bin = platform_compat.trusted_system_bin("systemctl")
+    if systemctl_bin is None:
+        return UserBusProbe(
+            USER_BUS_ERROR,
+            sock,
+            "systemctl was not found in trusted system directories",
+        )
+
+    try:
+        cp = _run(
+            [systemctl_bin, "--user", "is-system-running"],
+            timeout=_USER_BUS_PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return UserBusProbe(
+            USER_BUS_ERROR,
+            sock,
+            f"systemctl --user is-system-running timed out after {exc.timeout}s",
+        )
+    except OSError as exc:
+        return UserBusProbe(USER_BUS_ERROR, sock, str(exc))
+
+    stdout = (cp.stdout or "").strip()
+    detail = (cp.stderr or cp.stdout or "").strip()
+    lowered = detail.casefold()
+    if "permission denied" in lowered or "eacces" in lowered:
+        return UserBusProbe(USER_BUS_SANDBOXED_AWAY, sock, detail)
+    if cp.returncode == 0 or stdout:
+        return UserBusProbe(USER_BUS_REACHABLE, sock, detail)
+    if not detail:
+        detail = f"systemctl --user is-system-running exited {cp.returncode} without output"
+    return UserBusProbe(USER_BUS_ERROR, sock, detail)
+
+
+def user_bus_failure_message(result: UserBusProbe) -> str:
+    """Render one actionable pod error and retain any systemctl diagnostic."""
+    raw = result.detail.strip()
+    reason = raw.rsplit(":", 1)[-1].strip() if raw else "probe failed without a diagnostic"
+    if result.status == USER_BUS_SANDBOXED_AWAY:
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
+            "An outer layer, such as a container or launcher shim, blocks this "
+            "process from reaching the user bus. Run pod commands from a host shell."
+        )
+    elif result.status == USER_BUS_NO_SESSION:
+        uid = getattr(os, "getuid", lambda: -1)()
+        user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} (no user session bus). "
+            "Pods are systemd --user units, so one is required. "
+            f"Fix: loginctl enable-linger {user}"
+        )
+    else:
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
+            "Run `systemctl --user is-system-running` from a host shell and fix that "
+            "error before using pod commands."
+        )
+    if raw:
+        return f"{message}\nRaw systemctl error: {raw}"
+    return message
+
+
 def require_systemd() -> None:
-    """Raise :class:`PodError` unless this host can run ``systemctl --user``.
+    """Raise :class:`PodError` unless cheap systemd prerequisites exist.
 
     Pods are Linux ``systemd --user`` only (see ``pod/README.md`` → Platform).
-    Without this gate the first ``subprocess.run(["systemctl", ...])`` raises a
-    bare ``FileNotFoundError`` and every verb dumps a traceback on macOS /
-    Windows instead of the documented "report the failure" one-liner. Checked
-    here — the single chokepoint every systemd call funnels through — so no verb
-    can forget it.
-
-    The third gate is the session bus. :func:`_systemctl_env` backfills the bus
-    pointers when the socket exists, but when ``systemd --user`` is genuinely
-    not running (no login session and ``Linger=no``) there is nothing to point
-    at and systemctl emits a raw "Failed to connect to bus: No medium found"
-    that names neither the cause nor the fix. Translate it here, keyed on the
-    socket's absence rather than on matching systemctl's stderr.
+    This gate stays in-process because every systemd and journalctl helper calls
+    it. The authoritative connection attempt belongs at :func:`require_backend`
+    verb entry and in doctor, not before every unit query.
     """
     if not IS_LINUX:
         raise PodError(
@@ -907,24 +1005,17 @@ def require_systemd() -> None:
     if shutil.which("systemctl") is None:
         raise PodError("pods require `systemctl --user`, but no `systemctl` was found on PATH.")
     if not has_session_bus():
-        uid = getattr(os, "getuid", lambda: -1)()
-        user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
         raise PodBackendAbsent(
-            f"no `systemd --user` session bus for uid {uid} "
-            f"(looked for {session_bus_socket()}).\n"
-            "Pods are systemd --user units, so one is required.\n"
-            f"Fix: loginctl enable-linger {user}   "
-            "# keeps the per-user instance alive independently of login sessions"
+            user_bus_failure_message(UserBusProbe(USER_BUS_NO_SESSION, session_bus_socket(), ""))
         )
 
 
 def require_backend() -> None:
     """Gate on whatever service manager THIS host uses for pods.
 
-    Dispatches instead of replacing :func:`require_systemd`: that function is
-    still the systemd gate with its own contract and messages, so Linux
-    behaviour is provably unchanged by the macOS and Windows work — on any host
-    that is neither darwin nor win32 this is exactly ``require_systemd()``.
+    Linux verb entries pay for one authoritative connection probe. Low-level
+    systemctl helpers retain only :func:`require_systemd`'s cheap checks, so one
+    verb cannot spawn a fresh five-second probe before every unit query.
     """
     if IS_MACOS:
         try:
@@ -938,12 +1029,24 @@ def require_backend() -> None:
         except win_backend.WindowsTaskError as exc:  # translate to the pod error type
             raise PodError(str(exc)) from exc
         return
+
     require_systemd()
+    result = probe_user_bus()
+    if result.status == USER_BUS_REACHABLE:
+        return
+    error_type = PodBackendAbsent if result.status == USER_BUS_NO_SESSION else PodError
+    raise error_type(user_bus_failure_message(result))
 
 
 def systemctl(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     require_systemd()
-    return _run(["systemctl", "--user", *args], timeout=timeout)
+    systemctl_bin = platform_compat.trusted_system_bin("systemctl")
+    if systemctl_bin is None:
+        raise PodError(
+            "pods require `systemctl --user`, but no systemctl executable was found "
+            "in trusted system directories; refusing to resolve it from PATH."
+        )
+    return _run([systemctl_bin, "--user", *args], timeout=timeout)
 
 
 def is_active(cfg: PodConfig, name: str) -> bool:

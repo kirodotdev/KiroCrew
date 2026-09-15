@@ -212,6 +212,8 @@ class TestPodSessionBus:
 
     @staticmethod
     def _linux(monkeypatch, tmp_path: Path, *, bus: bool) -> Path:
+        from kiro_crew.pod import runtime as rt
+
         monkeypatch.setattr(cli_doctor.sys, "platform", "linux")
         monkeypatch.setattr(cli_doctor.shutil, "which", lambda n: f"/usr/bin/{n}")
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
@@ -220,7 +222,45 @@ class TestPodSessionBus:
         sock = tmp_path / "bus"
         if bus:
             sock.touch()
+        status = rt.USER_BUS_REACHABLE if bus else rt.USER_BUS_NO_SESSION
+        detail = "degraded" if bus else "Failed to connect to bus: No medium found"
+        monkeypatch.setattr(
+            rt,
+            "probe_user_bus",
+            lambda: rt.UserBusProbe(status=status, socket=sock, detail=detail),
+        )
         return sock
+
+    def test_sandboxed_away_bus_names_outer_layer_and_host_shell(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        from kiro_crew.pod import runtime as rt
+
+        sock = self._linux(monkeypatch, tmp_path, bus=True)
+        monkeypatch.setattr(
+            rt,
+            "probe_user_bus",
+            lambda: rt.UserBusProbe(
+                status=rt.USER_BUS_SANDBOXED_AWAY,
+                socket=sock,
+                detail="Failed to connect to bus: Permission denied",
+            ),
+        )
+        monkeypatch.setattr(
+            cli_doctor,
+            "_linger_enabled",
+            lambda _user: pytest.fail("linger is irrelevant when the bus is unreachable"),
+        )
+        issues: list[str] = []
+
+        cli_doctor._doctor_pod_session_bus(issues)
+
+        out = capsys.readouterr().out
+        assert "sandboxed away" in out
+        assert "outer layer" in out
+        assert "host shell" in out
+        assert "Failed to connect to bus: Permission denied" in out
+        assert issues == []
 
     def test_missing_bus_is_reported_but_never_blocks(
         self, monkeypatch, tmp_path: Path, capsys

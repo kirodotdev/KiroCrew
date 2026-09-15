@@ -51,7 +51,7 @@
 1 src/kiro_crew/mcp_shared.py
 4 src/kiro_crew/platform_compat.py
 1 src/kiro_crew/pod/launchd.py
-2 src/kiro_crew/pod/runtime.py
+1 src/kiro_crew/pod/runtime.py
 2 src/kiro_crew/sandbox.py
 2 src/kiro_crew/service/apparmor.py
 4 src/kiro_crew/service/linux.py

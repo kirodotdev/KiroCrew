@@ -4632,9 +4632,9 @@ class TestCliVerbs:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
-        # This test asserts the LINUX path, so satisfy the platform gate — the
-        # suite must exercise it on macOS/Windows runners too.
-        monkeypatch.setattr(rt, "require_systemd", lambda: None)
+        # This test asserts the Linux install path, so satisfy the verb-entry
+        # backend gate. The low-level systemctl stub below owns reload behavior.
+        monkeypatch.setattr(rt, "require_backend", lambda: None)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
         recorded: list[tuple] = []
         monkeypatch.setattr(
@@ -4652,7 +4652,7 @@ class TestCliVerbs:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setattr(rt, "require_systemd", lambda: None)
+        monkeypatch.setattr(rt, "require_backend", lambda: None)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=1))
         recorded: list[tuple] = []
         monkeypatch.setattr(
@@ -4684,6 +4684,7 @@ class TestUpVerb:
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
         # Force git resolution to miss so the root fallback resolves deterministically.
         monkeypatch.setattr(rt, "_git_worktrees", lambda ref: {})
+        monkeypatch.setattr(rt, "require_backend", lambda: None)
         # Insulate `_up` from the HOST's real port occupancy. `allocate_port`
         # bind-probes, so without this a developer's own pod sitting on the
         # derived port would push these tests down the fallback path and they
@@ -5592,6 +5593,20 @@ class TestPlatformGuard:
     journalctl call funnels through.
     """
 
+    @pytest.fixture(autouse=True)
+    def _linux_systemctl_seams(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep Linux-shaped probe tests deterministic on Windows and macOS."""
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt, "IS_MACOS", False)
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
+        monkeypatch.setattr(rt.sys, "platform", "linux")
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            platform_compat,
+            "trusted_system_bin",
+            lambda name: "/usr/bin/systemctl" if name == "systemctl" else None,
+        )
+
     def test_require_systemd_refuses_off_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(rt, "IS_LINUX", False)
         monkeypatch.setattr(rt.sys, "platform", "darwin")
@@ -5614,11 +5629,192 @@ class TestPlatformGuard:
     ) -> None:
         monkeypatch.setattr(rt, "IS_LINUX", True)
         monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
-        # Third gate: a reachable session bus (see TestSessionBus).
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
         (tmp_path / "bus").touch()
-        rt.require_systemd()  # must not raise
+        monkeypatch.setattr(
+            rt,
+            "probe_user_bus",
+            lambda: pytest.fail("require_systemd must not spawn the user-bus probe"),
+        )
+
+        rt.require_systemd()
+
+    def test_user_bus_probe_classifies_reachable_degraded_manager(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        (tmp_path / "bus").touch()
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(stdout="degraded\n", returncode=1),
+        )
+
+        result = rt.probe_user_bus()
+
+        assert result.status == rt.USER_BUS_REACHABLE
+        assert result.detail == "degraded"
+
+    def test_user_bus_probe_classifies_outer_sandbox_denial(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        (tmp_path / "bus").touch()
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(
+                returncode=1,
+                stderr="Failed to connect to bus: Permission denied\n",
+            ),
+        )
+
+        result = rt.probe_user_bus()
+
+        assert result.status == rt.USER_BUS_SANDBOXED_AWAY
+        assert result.detail == "Failed to connect to bus: Permission denied"
+        message = rt.user_bus_failure_message(result)
+        assert "outer layer" in message
+        assert "container" in message
+        assert "launcher shim" in message
+        assert "host shell" in message
+
+    def test_stale_explicit_bus_address_is_operational_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stale = "unix:path=/run/user/4242/stale-bus"
+        detail = "Failed to connect to bus: No such file or directory"
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", stale)
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(returncode=1, stderr=detail),
+        )
+
+        result = rt.probe_user_bus()
+
+        assert result.status == rt.USER_BUS_ERROR
+        assert result.detail == detail
+        with pytest.raises(rt.PodError) as exc:
+            rt.require_backend()
+        assert not isinstance(exc.value, rt.PodBackendAbsent)
+        assert detail in str(exc.value)
+
+    def test_user_bus_probe_preserves_an_unclassified_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        (tmp_path / "bus").touch()
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(
+                returncode=1,
+                stderr="Failed to connect to bus: Connection reset by peer\n",
+            ),
+        )
+
+        result = rt.probe_user_bus()
+
+        assert result.status == rt.USER_BUS_ERROR
+        assert result.detail == "Failed to connect to bus: Connection reset by peer"
+
+    def test_user_bus_probe_classifies_exec_failure_as_operational_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_MACOS", False)
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        (tmp_path / "bus").touch()
+
+        def broken_systemctl(_cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            raise FileNotFoundError("systemctl shim interpreter is missing")
+
+        monkeypatch.setattr(rt, "_run", broken_systemctl)
+
+        result = rt.probe_user_bus()
+
+        assert result.status == rt.USER_BUS_ERROR
+        with pytest.raises(rt.PodError) as exc:
+            rt.require_backend()
+        assert not isinstance(exc.value, rt.PodBackendAbsent)
+        assert "systemctl shim interpreter is missing" in str(exc.value)
+
+    def test_user_bus_probe_does_not_treat_generic_enoent_as_no_session(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_MACOS", False)
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        (tmp_path / "bus").touch()
+        detail = (
+            "systemctl: error while loading shared libraries: "
+            "libsystemd-shared.so: No such file or directory"
+        )
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(returncode=127, stderr=detail),
+        )
+
+        result = rt.probe_user_bus()
+
+        assert result.status == rt.USER_BUS_ERROR
+        with pytest.raises(rt.PodError) as exc:
+            rt.require_backend()
+        assert not isinstance(exc.value, rt.PodBackendAbsent)
+        assert detail in str(exc.value)
+
+    def test_pod_up_reports_bus_denial_before_worktree_resolution(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/4242/bus")
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(
+                returncode=1,
+                stderr="Failed to connect to bus: Permission denied\n",
+            ),
+        )
+        monkeypatch.setattr(
+            pod_cli,
+            "_resolve_or_die",
+            lambda *_args, **_kwargs: pytest.fail("worktree resolution ran before bus probe"),
+        )
+        audits: list[tuple[str, str, str, str]] = []
+        monkeypatch.setattr(
+            pod_cli,
+            "_audit",
+            lambda operation, outcome, resources, *, error="": audits.append(
+                (operation, outcome, resources, error)
+            ),
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            pod_cli.dispatch(argparse.Namespace(pod_action="up", name="busdiag-live-smoke"))
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "outer layer" in err
+        assert "host shell" in err
+        assert "Failed to connect to bus: Permission denied" in err
+        assert len(audits) == 1
+        assert audits[0][:3] == (
+            "pod.up",
+            "failure",
+            "name=busdiag-live-smoke",
+        )
+        assert "Permission denied" in audits[0][3]
 
     def test_systemctl_gated_before_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The guard runs BEFORE the subprocess, so no spawn is attempted."""
@@ -5628,6 +5824,97 @@ class TestPlatformGuard:
         with pytest.raises(rt.PodError):
             rt.systemctl("list-units")
         assert spawned == []
+
+    def test_unit_queries_do_not_run_user_bus_probe(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_MACOS", False)
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        (tmp_path / "bus").touch()
+        monkeypatch.setattr(
+            rt,
+            "probe_user_bus",
+            lambda: pytest.fail("unit queries must not run the user-bus probe"),
+        )
+        spawned: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kwargs) -> subprocess.CompletedProcess:
+            spawned.append(cmd)
+            if "show" in cmd:
+                return _cp(stdout="MainPID=4242\n")
+            return _cp(returncode=0)
+
+        monkeypatch.setattr(rt, "_run", fake_run)
+
+        assert rt.systemctl("daemon-reload").returncode == 0
+        assert rt.is_active(cfg, "alpha") is True
+        assert rt.main_pid(cfg, "alpha") == 4242
+        assert len(spawned) == 3
+        assert all("is-system-running" not in cmd for cmd in spawned)
+
+    def test_systemctl_spawns_only_the_trusted_absolute_binary(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_MACOS", False)
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        impostor_dir = tmp_path / "bin"
+        impostor_dir.mkdir()
+        impostor = impostor_dir / "systemctl"
+        impostor.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        impostor.chmod(0o755)
+        monkeypatch.setenv("PATH", str(impostor_dir))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        (tmp_path / "bus").touch()
+        monkeypatch.setattr(
+            platform_compat,
+            "trusted_system_bin",
+            lambda name: "/usr/bin/systemctl" if name == "systemctl" else None,
+        )
+        spawned: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kwargs) -> subprocess.CompletedProcess:
+            spawned.append(cmd)
+            return _cp(stdout="running\n")
+
+        monkeypatch.setattr(rt, "_run", fake_run)
+
+        assert rt.probe_user_bus().status == rt.USER_BUS_REACHABLE
+        assert rt.systemctl("is-active", rt.pod_unit(cfg, "alpha")).returncode == 0
+        assert [cmd[0] for cmd in spawned] == ["/usr/bin/systemctl", "/usr/bin/systemctl"]
+        assert all(cmd[0] != str(impostor) for cmd in spawned)
+
+    def test_missing_trusted_systemctl_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(rt, "IS_MACOS", False)
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt.shutil, "which", lambda _n: str(tmp_path / "systemctl"))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        (tmp_path / "bus").touch()
+        monkeypatch.setattr(platform_compat, "trusted_system_bin", lambda _name: None)
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: pytest.fail("an untrusted systemctl was spawned"),
+        )
+
+        result = rt.probe_user_bus()
+
+        assert result.status == rt.USER_BUS_ERROR
+        assert "trusted system" in result.detail
+        with pytest.raises(rt.PodError) as exc:
+            rt.require_backend()
+        assert not isinstance(exc.value, rt.PodBackendAbsent)
+        with pytest.raises(rt.PodError, match="trusted system"):
+            rt.systemctl("list-units")
 
     def test_recent_journal_gated(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch) -> None:
         """journalctl is a sibling of systemctl, not routed through it — gate it too."""
@@ -5721,6 +6008,14 @@ class TestSessionBus:
         self._bus(monkeypatch, tmp_path / "run", exists=True)
         assert rt._systemctl_env()["XDG_RUNTIME_DIR"] == str(tmp_path / "run")
 
+    def test_systemctl_diagnostics_use_the_c_locale(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._bus(monkeypatch, tmp_path / "run", exists=True)
+        monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+
+        assert rt._systemctl_env()["LC_ALL"] == "C"
+
     def test_has_session_bus_trusts_an_explicit_address(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -5745,16 +6040,24 @@ class TestSessionBus:
         # Keyed on the socket's absence, not on matching systemctl's stderr.
         assert "No medium found" not in msg
 
-    def test_missing_bus_is_reported_before_any_spawn(
+    def test_missing_bus_is_reported_without_spawning(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        monkeypatch.setattr(rt, "IS_MACOS", False)
+        monkeypatch.setattr(rt, "IS_WINDOWS", False)
         monkeypatch.setattr(rt, "IS_LINUX", True)
         monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
         self._bus(monkeypatch, tmp_path / "run", exists=False)
         spawned: list[list[str]] = []
-        monkeypatch.setattr(rt, "_run", lambda cmd, **k: spawned.append(cmd))
-        with pytest.raises(rt.PodError):
-            rt.systemctl("list-units")
+        monkeypatch.setattr(rt, "_run", lambda cmd, **_kwargs: spawned.append(cmd))
+
+        result = rt.probe_user_bus()
+        assert result.status == rt.USER_BUS_NO_SESSION
+        assert result.detail == ""
+        with pytest.raises(rt.PodBackendAbsent):
+            rt.require_systemd()
+        with pytest.raises(rt.PodBackendAbsent):
+            rt.require_backend()
         assert spawned == []
 
     def test_systemctl_env_is_the_only_env_source_for_systemd_calls(self) -> None:
@@ -6108,6 +6411,7 @@ class TestBootTimeSettings:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
         monkeypatch.setattr(rt, "_git_worktrees", lambda ref: {})
+        monkeypatch.setattr(rt, "require_backend", lambda: None)
         _ready_worktree(tmp_path / "wts", "demo")
         monkeypatch.setattr(rt, "derive_port", lambda cfg, n: 7811)
         monkeypatch.setattr(rt, "is_active", lambda cfg, n: active)

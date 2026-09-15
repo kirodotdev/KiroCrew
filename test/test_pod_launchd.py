@@ -38,8 +38,32 @@ def cfg(tmp_path, monkeypatch) -> PodConfig:
 
 @pytest.fixture(autouse=True)
 def _no_real_launchctl(monkeypatch):
-    """Never shell out to a real launchctl, and let require_backend pass."""
+    """Never drive a real service manager from the launchd unit tests."""
     monkeypatch.setattr(launchd, "require_backend", lambda: None)
+    monkeypatch.setattr(rt, "require_backend", lambda: None)
+
+
+@pytest.mark.parametrize(
+    ("platform", "is_macos", "is_windows"),
+    [("darwin", True, False), ("win32", False, True)],
+)
+def test_up_user_bus_preflight_is_linux_only(
+    monkeypatch, platform: str, is_macos: bool, is_windows: bool
+):
+    """A pod-up preflight must never drive launchd or Task Scheduler."""
+    from kiro_crew.pod import cli as pod_cli
+
+    monkeypatch.setattr(rt, "IS_LINUX", False)
+    monkeypatch.setattr(rt, "IS_MACOS", is_macos)
+    monkeypatch.setattr(rt, "IS_WINDOWS", is_windows)
+    monkeypatch.setattr(rt.sys, "platform", platform)
+    monkeypatch.setattr(
+        rt,
+        "require_backend",
+        lambda: pytest.fail("off-Linux pod up reached the user-bus preflight"),
+    )
+
+    pod_cli._require_up_user_bus("smoke")
 
 
 # --------------------------------------------------------------------------

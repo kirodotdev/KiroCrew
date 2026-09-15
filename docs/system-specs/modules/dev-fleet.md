@@ -328,7 +328,23 @@ it as hung clicks again or reloads mid-scan.
 
 ## Pod Integration
 
-Relies on `kiro_crew.pod` subpackage (optional import — degrades gracefully if unavailable):
+Relies on `kiro_crew.pod` subpackage (optional import — degrades gracefully if unavailable).
+On Linux, `runtime.require_backend()` runs `systemctl --user is-system-running` once at
+pod verb entry and at each Dev Fleet removal safety gate. `kirocrew doctor` runs the same
+probe for its advisory row. Low-level `systemctl()`, `is_active()`, and `main_pid()` calls
+keep only the cheap platform, executable, and bus-address checks, so a multi-query verb does
+not pay a five-second probe before every unit command. A provably absent bus address returns
+`no_session` without spawning systemctl, and that pre-spawn check is the only source of
+backend absence. Every spawned probe failure is operational except a positive permission-denied
+match, which is `sandboxed_away`; neither can become `PodBackendAbsent`. Probe and unit operations
+resolve `systemctl` through `platform_compat.trusted_system_bin()` and pass that absolute path to
+the subprocess seam; a PATH entry can neither execute code nor forge the removal-safety verdict.
+If no trusted executable exists, the operation fails closed. Dev Fleet therefore refuses
+removal instead of treating the host as unable to contain a live pod. Spawned probes use
+`LC_ALL=C`, distinguish a reachable manager,
+an outer sandbox denial, and an unclassified failure, and retain systemctl's raw
+diagnostic. Dev Fleet runs both backend probes through `subprocess_executor()` so
+worktree removal never blocks the gateway event loop.
 
 - `runtime.active_names(cfg)` — one point-in-time systemctl/launchctl listing per fleet build
   (blocking, offloaded via `run_in_executor`), shared by every worktree row

@@ -39,9 +39,10 @@ def _isolate_pod_host_state(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.fixture(autouse=True)
 def _systemd_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the systemd backend so ``rt.systemctl`` patches hold on every host."""
+    """Pin the systemd backend so runtime boundary patches hold on every host."""
     monkeypatch.setattr(rt, "IS_MACOS", False)
     monkeypatch.setattr(rt, "IS_WINDOWS", False)
+    monkeypatch.setattr(rt, "require_backend", lambda: None)
 
 
 def _cp(stdout: str = "", returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess:

@@ -2169,29 +2169,16 @@ def _doctor_source_checkout(repo: Path) -> None:
 
 
 def _doctor_pod_session_bus(issues: list[str]) -> None:
-    """Report whether pods have a reachable ``systemd --user`` session bus.
+    """Report whether pods can reach the per-user service manager.
 
-    Pods are ``systemd --user`` units, so ``systemctl --user`` must be able to
-    reach the per-user systemd instance. A gateway started from a systemd SYSTEM
-    unit (``kirocrew service install``) inherits no login-session environment,
-    and if the per-user instance is not running at all there is nothing for
-    KiroCrew to point at — every pod verb then fails with "Failed to connect to
-    bus: No medium found". Diagnosing that belongs here.
+    Socket existence is not reachability: an outer sandbox can leave
+    ``$XDG_RUNTIME_DIR/bus`` visible while denying ``connect(2)``. The shared
+    pod probe keeps that state separate from an absent user session bus and from
+    an unclassified systemctl failure.
 
-    Three outcomes: socket present → pass; absent → ❌ with the remediation;
-    present but ``Linger=no`` → warn, because pods work now and will die on
-    logout.
-
-    Advisory only (never appended to ``issues``, like the embedding-model URL
-    probe): a host with no per-user systemd instance — a container, a CI runner,
-    a headless server — is not a broken install, it is one where an optional dev
-    feature is unavailable. macOS and Windows already report that as "not
-    applicable" and block nothing, so blocking on Linux would be inconsistent as
-    well as a false alarm for everyone who never runs a pod.
-
-    Doctor only reports: enabling linger changes the user's login-session
-    lifetime and is theirs to choose, never a side effect of installing a
-    service.
+    Advisory only. Pods are an optional development feature, so an unavailable
+    backend never changes doctor's exit code. Doctor reports the action but does
+    not enable linger or change the caller's sandbox.
     """
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     print("\nPods")
@@ -2205,23 +2192,37 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         print("  session bus: ⏹ not applicable (no `systemctl` on PATH)")
         return
 
-    # Local import: keeps the pod package out of the CLI's import graph for
-    # every other command (circular-safe — pod.runtime imports no CLI module).
-    from kiro_crew.pod.runtime import has_session_bus, session_bus_socket
+    # Local import keeps the pod package out of every other CLI command's import
+    # graph. pod.runtime imports no CLI module, so this remains circular-safe.
+    from kiro_crew.pod.runtime import (
+        USER_BUS_NO_SESSION,
+        USER_BUS_REACHABLE,
+        USER_BUS_SANDBOXED_AWAY,
+        probe_user_bus,
+        user_bus_failure_message,
+    )
 
-    uid = getattr(os, "getuid", lambda: -1)()
-    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
-    sock = session_bus_socket()
-    if not has_session_bus():
-        print(f"  session bus: ❌ none for uid {uid} (looked for {sock})")
-        print("               Pods are systemd --user units, so `kirocrew pod` is")
-        print("               unavailable until one exists. Everything else works.")
-        print(f"               Fix: loginctl enable-linger {user}")
+    result = probe_user_bus()
+    if result.status != USER_BUS_REACHABLE:
+        label = {
+            USER_BUS_NO_SESSION: "no user session bus",
+            USER_BUS_SANDBOXED_AWAY: "sandboxed away",
+        }.get(result.status, "unreachable")
+        print(f"  session bus: ❌ {label} ({result.socket})")
+        for line in user_bus_failure_message(result).splitlines():
+            print(f"               {line}")
+        print("               Everything else works.")
         return
-    print(f"  session bus: ✅ {sock}")
+
+    print(f"  session bus: ✅ {result.socket}")
+    user = (
+        os.environ.get("USER")
+        or os.environ.get("LOGNAME")
+        or str(getattr(os, "getuid", lambda: -1)())
+    )
     if _linger_enabled(user) is False:
-        print("  linger:      ⚠️  disabled — the per-user systemd instance exits on " "logout,")
-        print("               taking running pods with it. " f"Fix: loginctl enable-linger {user}")
+        print("  linger:      ⚠️  disabled — the per-user systemd instance exits on logout,")
+        print(f"               taking running pods with it. Fix: loginctl enable-linger {user}")
 
 
 # Where SwapTotal is read from. A module attribute (not inlined) so tests can

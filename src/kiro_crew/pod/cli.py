@@ -215,8 +215,25 @@ def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_popul
     )
 
 
+def _require_up_user_bus(name: str) -> None:
+    """Diagnose Linux user-bus reachability before pod-up preparation.
+
+    launchd and Task Scheduler keep their established gates at the operations
+    that use them. Running those capability probes here would mutate host
+    service state before pod-up reaches its platform-specific seam.
+    """
+    if not rt.IS_LINUX:
+        return
+    try:
+        rt.require_backend()
+    except rt.PodError as exc:
+        _audit("pod.up", "failure", f"name={name}", error=str(exc)[:120])
+        raise
+
+
 def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
+    _require_up_user_bus(name)
     checkout = _resolve_or_die(cfg, name)
 
     scenario = ""
