@@ -153,13 +153,16 @@ describe('ChatInput', () => {
 
     it('disables Optimize button when connected=false even with text', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hello" connected={false} />)
-      const btn = screen.getByRole('button', { name: /Optimize disabled/ })
+      // "Optimize prompt", not "Optimize": the offline name now reuses this
+      // control's own online accessible name instead of a second raw literal, so
+      // the two agree. It was the only offline name here that disagreed.
+      const btn = screen.getByRole('button', { name: /Optimize prompt disabled/ })
       expect(btn).toBeDisabled()
     })
 
     it('exposes offline-aware aria-label and tooltip on Optimize button', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hi" connected={false} />)
-      const btn = screen.getByLabelText('Optimize disabled — gateway offline')
+      const btn = screen.getByLabelText('Optimize prompt disabled — gateway offline')
       expect(btn).toHaveAttribute('title', 'Gateway offline — reconnect to optimize')
     })
 

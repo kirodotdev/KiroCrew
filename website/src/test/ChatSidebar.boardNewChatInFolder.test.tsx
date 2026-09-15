@@ -97,10 +97,15 @@ const columns: TagColumn[] = [
 ]
 const folders: ChatFolder[] = [{ id: FOLDER_ID, name: 'CDF', order: 0, collapsed: true }]
 
+/** `connected: true` is load-bearing, not tidying: every case here asserts a create
+ *  REACHES the server (`createChatSlot` called, the folder PATCHed), and
+ *  `createChatInFolder` now refuses at its sink while the gateway is down. With the
+ *  inherited disconnected default these cases would assert an online write against
+ *  an offline fixture and fail for the opposite of the reason they exist. */
 function renderSidebar(folderData: ChatFolder[] = folders) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [], approvalMode: 'normal',
+      status: {}, connected: true, slots: [], approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',

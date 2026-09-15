@@ -25,6 +25,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import type { RootState } from '../store'
+import type { ChatFolder } from '../types'
 
 // Render framer-motion elements as plain DOM because jsdom cannot run projection.
 vi.mock('framer-motion', async () => {
@@ -63,7 +64,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), listInstances: vi.fn() }))
+const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), listInstances: vi.fn(), chatFolders: vi.fn() }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy(mocks as Record<string, unknown>, {
@@ -100,10 +101,10 @@ function LocationProbe() {
   return <div data-testid="location">{loc.pathname}{loc.search}</div>
 }
 
-function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string } = {}) {
+function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string; connected?: boolean; folders?: ChatFolder[] } = {}) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [], approvalMode: 'normal',
+      status: {}, connected: opts.connected ?? false, slots: [], approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -115,7 +116,11 @@ function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: st
     ...(opts.warm ? { instances: { warm: opts.warm } as unknown as RootState['instances'] } : {}),
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  qc.setQueryData(['chat-folders'], [])
+  // Seeded AND mocked: the sidebar's ['chat-folders'] query refetches on mount,
+  // so a seed alone is replaced by the Proxy's default [] mid-test and any row
+  // awaited into existence unmounts again. Defaults to [] — the prior behaviour.
+  mocks.chatFolders.mockResolvedValue(opts.folders ?? [])
+  qc.setQueryData(['chat-folders'], opts.folders ?? [])
   const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -172,7 +177,7 @@ afterEach(() => {
 
 describe('create-button caret menu', () => {
   it('lists "New chat" next to "New autopilot chat"', async () => {
-    renderSidebar()
+    renderSidebar({ connected: true })
     openCreateMenu()
     expect(await findCreateMenuItem('New chat')).toBeTruthy()
     expect(screen.getByText('New autopilot chat')).toBeTruthy()
@@ -195,7 +200,7 @@ describe('create-button caret menu', () => {
   it('leaves the plain entries single-line', async () => {
     // "New chat" / "New folder" need no gloss, and describing them would bury
     // the contrast between the two engineered modes.
-    renderSidebar()
+    renderSidebar({ connected: true })
     openCreateMenu()
     await findCreateMenuItem('New chat')
     // Assert on the menu ITEM, not the text node: the label is a bare child of
@@ -209,7 +214,7 @@ describe('create-button caret menu', () => {
 
   it('"New chat" creates a plain session even when defaultAutopilot is on', async () => {
     cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: true }
-    renderSidebar()
+    renderSidebar({ connected: true })
     openCreateMenu()
     fireEvent.click(await findCreateMenuItem('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
@@ -220,7 +225,7 @@ describe('create-button caret menu', () => {
   })
 
   it('"New autopilot chat" still creates an orchestrator session', async () => {
-    renderSidebar()
+    renderSidebar({ connected: true })
     openCreateMenu()
     fireEvent.click(await screen.findByText('New autopilot chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
@@ -292,7 +297,7 @@ describe('create-button caret menu', () => {
     // sidebar harness renders with no instances slice at all — so this is also
     // the shape that proves the slice read stays guarded.
     localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
-    renderSidebar()
+    renderSidebar({ connected: true })
     openCreateMenu()
     await findCreateMenuItem('New chat')
     expect(screen.queryByTestId('new-chat-on-crew')).toBeNull()
@@ -303,7 +308,7 @@ describe('create-button caret menu', () => {
     // The gate is the point: a connected crew alone must not surface the entry,
     // because the landing is what is unfinished. Anchored on a sibling entry so
     // an empty query cannot pass on a menu that simply failed to open.
-    renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } } })
+    renderSidebar({ connected: true, warm: { 'i-nobita': { local_port: 7879, token: 't' } } })
     openCreateMenu()
     await findCreateMenuItem('New chat')
     expect(screen.queryByTestId('new-chat-on-crew')).toBeNull()
@@ -415,10 +420,48 @@ describe('create-button caret menu', () => {
   it('still stamps the default agent on an ordinary local create', async () => {
     // The contrast that makes the subtraction above a deliberate one rather than
     // a dropped argument: the local entry DOES carry this machine's default.
-    renderSidebar({ defaultAgent: 'planner' })
+    renderSidebar({ connected: true,  defaultAgent: 'planner' })
     openCreateMenu()
     fireEvent.click(await findCreateMenuItem('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
     expect(mocks.createChatSlot.mock.calls.at(-1)?.[1]).toBe('planner')
+  })
+})
+
+describe('create-menu folder rows refuse offline like their siblings', () => {
+  // Listed INLINE at phone width, which is also the only width where jsdom can
+  // reach them: a Radix flyout needs PointerEvent support jsdom lacks, so the
+  // desktop submenu for these same rows cannot be opened here.
+  const folders: ChatFolder[] = [{ id: 'f-alpha', name: 'Alpha', order: 0 } as ChatFolder]
+
+  it('offline the row dims, announces itself, and refuses the pick', async () => {
+    mobileViewport.value = true
+    renderSidebar({ connected: false, folders })
+    openCreateMenu()
+    // The offline accessible name REPLACES the folder name, which is the point:
+    // finding it under 'Alpha' would mean the announcement never applied.
+    const row = await screen.findByRole('menuitem', { name: 'Alpha disabled \u2014 gateway offline' })
+    expect(row.className).toContain('opacity-40')
+    expect(row.className).toContain('text-muted')
+    expect(row.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(row)
+    // Radix keys menu close on onSelect, so a surviving menu is the suppression
+    // firing — and it keeps the standing reason row the refusal depends on.
+    expect(screen.getByTestId('new-menu-offline-reason')).toBeInTheDocument()
+    // Re-queried, not the reference above: the menu re-renders on the select, so
+    // the original node is detached even though the row is still on screen.
+    expect(screen.getByRole('menuitem', { name: 'Alpha disabled \u2014 gateway offline' })).toBeInTheDocument()
+  })
+
+  it('connected the same row keeps its own name and carries no dim', async () => {
+    mobileViewport.value = true
+    renderSidebar({ connected: true, folders })
+    openCreateMenu()
+    // The control for both assertions above: online the row is addressable by
+    // the folder name and is not dimmed, so neither is a blanket property.
+    const row = await screen.findByRole('menuitem', { name: 'Alpha' })
+    expect(row.className).not.toContain('opacity-40')
+    expect(row.getAttribute('aria-disabled')).toBe('false')
+    expect(screen.queryByTestId('new-menu-offline-reason')).toBeNull()
   })
 })

@@ -29,6 +29,23 @@ interface FolderMoveSubmenuProps {
    * artifact folders keep their own stored order.
    */
   readonly sortMode?: FolderSortMode
+  /**
+   * Dim the trigger and announce it as unavailable, for a caller whose `onPick`
+   * refuses while the gateway is down.
+   *
+   * Opt-in, defaulting to off, because the refusal is the CALLER's: the sidebar
+   * session menus and the artifact-library pickers reach different sinks and are
+   * not this PR's to judge. Only the chat-folder re-parent callers pass it.
+   *
+   * The trigger is dimmed rather than Radix-`disabled`: the submenu still opens,
+   * so a reader can see which folders exist and read the offline tooltip, and the
+   * pick is refused at the sink with a notice that names moving. Disabling it
+   * would take the trigger out of the focus order and drop the tooltip with
+   * `pointer-events-none`, leaving a screen-reader user no way to learn why.
+   */
+  readonly offline?: boolean
+  /** Offline tooltip for the trigger; required in substance when `offline` is set. */
+  readonly offlineTitle?: string
 }
 
 /**
@@ -103,6 +120,8 @@ export default function FolderMoveSubmenu({
   label = 'Move to folder',
   rootLabel = 'No folder (root)',
   sortMode = 'custom',
+  offline = false,
+  offlineTitle,
 }: FolderMoveSubmenuProps) {
   // Pick the primitive family for this surface. Both families share the same
   // props shape, so the body below is identical regardless of variant.
@@ -113,7 +132,11 @@ export default function FolderMoveSubmenu({
 
   return (
     <Sub>
-      <SubTrigger>
+      <SubTrigger
+        className={offline ? 'text-muted opacity-40' : undefined}
+        aria-disabled={offline || undefined}
+        title={offline ? offlineTitle : undefined}
+      >
         <Folder size={13} className="shrink-0 text-muted" />
         <span className="flex-1">{label}</span>
         <ChevronRight size={12} className="text-muted" />

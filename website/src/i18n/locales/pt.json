@@ -17175,9 +17175,22 @@
       "saving": "Salvando..."
     },
     "offline": {
+      "change_folder_settings": "alterar as configurações da pasta",
+      "continue": "continuar",
+      "create_folders": "criar pastas",
+      "create_sessions": "criar sessões",
+      "delete_folders": "excluir pastas",
       "disabled_gateway_offline": "{{label}} indisponível — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — reconecte para {{action}}",
-      "submit_comments": "enviar comentários"
+      "hide_folders": "ocultar pastas",
+      "menu_reason": "Gateway offline — as ações esmaecidas precisam de conexão",
+      "move_folders": "mover pastas",
+      "optimize": "otimizar",
+      "rename_folders": "renomear pastas",
+      "resume_sessions": "retomar sessões",
+      "send": "enviar",
+      "submit_comments": "enviar comentários",
+      "switch_sessions": "alternar sessões"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Seu navegador bloqueou a janela destacada. Permita pop-ups para este site e tente novamente."

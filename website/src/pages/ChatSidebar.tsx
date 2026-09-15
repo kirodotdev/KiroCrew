@@ -1,7 +1,7 @@
 import { useState, useRef, useReducer, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Zap, Check, Copy, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Zap, Check, Copy, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server, WifiOff } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -20,6 +20,7 @@ import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
 import { useAppDispatch, useAppSelector } from '../store'
 import type { RootState } from '../store'
 import { useConnected } from '../hooks/useConnected'
+import OfflineMenuReason from '../components/OfflineMenuReason'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
@@ -2733,7 +2734,7 @@ const SessionRow = memo(function SessionRow({
           <ContextMenuTrigger asChild>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming && !foreignRow).toString()}
-          className={`session-row group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-40 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={
             // Both drag paths are off for a peer-owned row and for a row that
@@ -2760,7 +2761,7 @@ const SessionRow = memo(function SessionRow({
                 ? i18nT('pages.chatSidebar.opens_on_members_page')
                 : undefined
           }
-          {...offlineProps(connected, 'switch sessions')}
+          {...offlineProps(connected, i18nT('utils.offline.switch_sessions'))}
           role="button"
           tabIndex={0}
           data-session-row={rowIdentity}
@@ -3611,6 +3612,9 @@ function ChatSidebar({
   // update already rolls the cache back, but a rolled-back rename with no message
   // reads as a dead click.
   const [folderActionError, setFolderActionError] = useState('')
+  // Kept apart from the error above because nothing was sent: a refusal is status
+  // text, and routing it through the danger surface would claim a failure.
+  const [folderOfflineNotice, setFolderOfflineNotice] = useState('')
   // A failed "New chat" (any local variant) used to be a silent no-op: the
   // react-query rejection was swallowed and nothing rendered. Mirrors
   // remoteCrewError below, but lives above the list rather than in the menu,
@@ -4238,6 +4242,15 @@ function ChatSidebar({
   const subagentApprovalCounts = useAppSelector(selectSidebarApprovalCounts, shallowEqual)
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const connected = useConnected()
+  // An offline refusal stops being true once the gateway is back, so retire it on
+  // the transition.
+  const wasConnected = useRef(connected)
+  useEffect(() => {
+    if (connected && !wasConnected.current) {
+      if (folderOfflineNotice) setFolderOfflineNotice('')
+    }
+    wasConnected.current = connected
+  }, [connected, folderOfflineNotice])
   // O(1) lookup set for the filter predicate (mirrors the `pinned` and
   // `slotSearchRanks` patterns elsewhere in this file).
   const unreadSet = useMemo(() => new Set(unreadSlots), [unreadSlots])
@@ -6638,12 +6651,12 @@ function ChatSidebar({
         steering_dirs: v.steeringDirs && v.steeringDirs.length > 0 ? v.steeringDirs : undefined,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
-    onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
+    onError: (e) => { setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))); setFolderOfflineNotice('') },
   })
   const deleteFolderMutation = useMutation({
     mutationFn: (id: string) => api.deleteChatFolder(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
-    onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
+    onError: (e) => { setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))); setFolderOfflineNotice('') },
   })
   const updateFolderMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: object; onCommitted?: () => void }) => api.updateChatFolder(id, body),
@@ -6671,6 +6684,7 @@ function ChatSidebar({
       // The rollback below restores the cache; this names the failure so the
       // rename / collapse / move that just snapped back is not read as a dead click.
       setFolderActionError((errMessage(err) || i18nT('components.errorBoundary.something_went_wrong')))
+      setFolderOfflineNotice('')
       if (!ctx?.before) return
       const { id, body, before } = ctx
       queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old => (old ?? []).map(f => {
@@ -6686,8 +6700,35 @@ function ChatSidebar({
   })
   const toggleCollapse = useCallback((id: string) => {
     const f = folders.find(x => x.id === id)
-    if (f) updateFolderMutation.mutate({ id, body: { collapsed: !f.collapsed } })
-  }, [folders, updateFolderMutation])
+    if (!f) return
+    // Offline this flips the CACHED flag and sends nothing. Disclosure is a read:
+    // the rows inside a collapsed folder are already in hand, and refusing the
+    // toggle made cached sessions unreachable for the whole outage to protect a
+    // preference write nobody asked about -- which is the opposite of this PR's own
+    // rule that an affordance reaching only cached state stays live. Design and UX
+    // both raised it on 3b0e657a07.
+    //
+    // Safe where a refusal was not: an earlier revision let the PATCH through, and
+    // its onError raised the false "Folder update failed" AND cleared the rename
+    // refusal that the same double-click had just set (measured in a browser: the
+    // refusal survived under 100ms). The optimistic flip was never the problem --
+    // it is exactly what `updateFolderMutation.onMutate` already does on every
+    // ONLINE toggle, with double-click-to-rename working fine beside it. What broke
+    // the refusal was the failing request's error path, and offline there is no
+    // request to fail.
+    //
+    // Not persisted, deliberately: a queued write would have to survive a reload
+    // and reconcile against whatever the server says on reconnect, which is a
+    // sync feature, not this fix. Board view already layers client-local overrides
+    // over the same server flag, so a local-only collapse is the established shape
+    // here rather than a new one.
+    if (!connected) {
+      queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old =>
+        (old ?? []).map(x => x.id === id ? { ...x, collapsed: !f.collapsed } : x))
+      return
+    }
+    updateFolderMutation.mutate({ id, body: { collapsed: !f.collapsed } })
+  }, [folders, updateFolderMutation, connected, queryClient])
 
   // Board-view collapse is per (column, folder): the same root folders render
   // once per column, and the shared server flag would collapse a folder in
@@ -6728,6 +6769,17 @@ function ChatSidebar({
     // restriction is expected -- the affordance is withdrawn, not a write that
     // failed. Re-parenting by drag is routed before this and still works.
     if (!folderReorderable) return
+    // Opus 5 on 3b0e657a07: offline this is the SAME gateway write `moveFolderTo`
+    // refuses, reached by the same drag gesture routed one sink over -- a sibling
+    // drop instead of a drop onto a folder. Ungated it moved optimistically,
+    // snapped back, and raised the `folder_update_failed` notice this PR exists to
+    // stop claiming. Refused BEFORE the optimistic `setQueryData`, so the rows
+    // never move, and it names moving rather than reordering because that is the
+    // verb the other sink already uses for this gesture.
+    if (!connected) {
+      setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') }))
+      return
+    }
     // Read latest from cache to avoid stale-closure ordering on rapid successive drags
     const current = queryClient.getQueryData<ChatFolder[]>(['chat-folders']) ?? []
     // Scoped to the dragged folder's own container, not to the root lane: a
@@ -6767,7 +6819,7 @@ function ChatSidebar({
       )
       queryClient.invalidateQueries({ queryKey: ['chat-folders'] })
     })
-  }, [queryClient, folderReorderable])
+  }, [queryClient, folderReorderable, connected])
   // Re-parent a folder: move it into `parentId`, or to the top level (null).
   // Client-side guards mirror the server (self/descendant targets rejected)
   // so an invalid pick or drop is a silent no-op instead of a 400 round-trip.
@@ -6776,6 +6828,17 @@ function ChatSidebar({
   // arms on it. A guarded no-op never acknowledges, so an offer armed over one
   // simply expires unarmed.
   const moveFolderTo = useCallback((folderId: string, parentId: string | null, opts?: { onCommitted?: () => void }) => {
+    // Gated at the SINK, not at each entry point, because re-parenting arrives by
+    // two routes: the Move-to-folder submenu's onPick and a drag. Both reached
+    // `updateFolderMutation` while offline, so the row moved optimistically, snapped
+    // back, and raised the "Folder update failed" notice this change exists to stop
+    // claiming for a request that was never sent. The submenu's own SubTrigger still
+    // renders full weight — dimming it needs a flag threaded into
+    // `FolderMoveSubmenu.tsx`, which #10911 owns — so the refusal has to live here.
+    if (!connected) {
+      setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') }))
+      return
+    }
     const current = queryClient.getQueryData<ChatFolder[]>(['chat-folders']) ?? []
     const folder = current.find(f => f.id === folderId)
     if (!folder) return
@@ -6783,7 +6846,7 @@ function ChatSidebar({
     if ((folder.parent_id || '') === target) return
     if (target && collectFolderSubtreeIds(current, folderId).has(target)) return
     updateFolderMutation.mutate({ id: folderId, body: { parent_id: target }, onCommitted: opts?.onCommitted })
-  }, [queryClient, updateFolderMutation])
+  }, [queryClient, updateFolderMutation, connected])
   // Subtree sets for every folder, recomputed only when the folder list
   // changes — the render paths below (menu target filters + drag data)
   // do map lookups instead of re-walking the tree on every render pass.
@@ -7054,9 +7117,20 @@ function ChatSidebar({
     runReveal('folder', folderId, folderId)
   }, [revealRequest, dispatch, folders, expandFolderAncestors, runReveal, setSlotFilter, setFilterHiddenFolders, setFlatView])
   const renameCommit = useCallback((id: string, name: string) => {
+    // Re-checked HERE, not only where the editor opens. Those gates stop an editor
+    // OPENING offline, but the gateway can drop while one is already open — an
+    // ordinary condition, not contrived timing — and this commit used to fire the
+    // PATCH and clear `editingId` unconditionally. The mutation's rollback restores
+    // the STORED name, so what was lost was the text the user had just typed, on
+    // the one path everything else here refuses. Keep the editor and its draft, and
+    // say why, so the rename survives to be completed on reconnect.
+    if (!connected) {
+      setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') }))
+      return
+    }
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
-  }, [updateFolderMutation])
+  }, [updateFolderMutation, connected])
   // Shared optimistic move (also used by the session-header dropdown and
   // drag-to-folder) — single source of truth for slot→folder assignment. Both
   // the menu "Move to folder" submenus and drag-to-folder route through this.
@@ -7437,7 +7511,26 @@ function ChatSidebar({
       setFolderCreateError({ folderId, columnId, message, title, report, offerSettings: isStaleProjectDir })
     },
   })
+  /** The offline create refusal, in one place: the folder-row `+` buttons reach it
+   *  through the `createChatInFolder` sink, and the split button's primary segment
+   *  calls it directly (its create does not route through that sink). Two spellings
+   *  of the same sentence would be a translation seam for no reason. */
+  const refuseCreateOffline = useCallback(() => {
+    setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.create_sessions') }))
+  }, [])
   const createChatInFolder = useCallback((folderId: string, opts?: { columnId?: string; focus?: boolean; memoryMode?: 'incognito' | 'temporary'; inNewTab?: boolean }) => {
+    // Opus 5 on 3b0e657a07: refused at the SINK, because the menu rows that reach
+    // here are gated one-by-one but the folder-row quick-create `+` buttons were
+    // not -- four of them, in both views, dispatching a doomed create beside rows
+    // that dim and refuse. Gating the sink covers every caller at once, including
+    // the ancestor-expanding PATCH loop below, which would otherwise fire a
+    // `collapsed: false` write per collapsed ancestor before the create even ran.
+    // The buttons keep their own `offlineProps` for the affordance; this is the
+    // behavioural floor, not a replacement for it.
+    if (!connected) {
+      refuseCreateOffline()
+      return
+    }
     // A nested folder selected from the create menu may be hidden behind one
     // or more collapsed ancestors. Expand the complete path optimistically so
     // the destination and its new session are visible as creation begins.
@@ -7456,7 +7549,7 @@ function ChatSidebar({
       currentId = folder.parent_id || undefined
     }
     createChatInFolderMutation.mutate({ folderId, columnId: opts?.columnId, focus: opts?.focus, attempt: ++folderCreateAttemptRef.current, memoryMode: opts?.memoryMode, inNewTab: opts?.inNewTab })
-  }, [createChatInFolderMutation, folders, updateFolderMutation])
+  }, [createChatInFolderMutation, folders, updateFolderMutation, connected, refuseCreateOffline])
 
   // Create autopilot session mutation (consistent with useMutation pattern)
   //
@@ -7781,7 +7874,7 @@ function ChatSidebar({
             // Double-click rename is a mouse-only power shortcut; the accessible
             // path is the ⋯-menu Rename item, so scope-disable the interaction rule.
             // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-            <span className="flex-1 truncate" title={i18nT('pages.chatSidebar.double_click_to_rename')} onDoubleClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}>{folder.name}</span>
+            <span className="flex-1 truncate" title={i18nT('pages.chatSidebar.double_click_to_rename')} {...offlineProps(connected, i18nT('utils.offline.rename_folders'))} onDoubleClick={e => { e.stopPropagation(); if (!connected) { setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') })); return } setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}>{folder.name}</span>
           )}
           <span className="text-[10px] text-muted shrink-0">{count}</span>
           {/* List-view parity: an empty folder's row keeps its action cluster
@@ -7798,8 +7891,8 @@ function ChatSidebar({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-                <DropdownMenuItem onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
+                <DropdownMenuItem offline={!connected} {...offlineProps(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'))} onSelect={e => { if (!connected) { e.preventDefault(); return } suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'))} onSelect={e => { if (!connected) { e.preventDefault(); return } setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
                 {(() => {
                   const rows = (
                     <>
@@ -7807,8 +7900,8 @@ function ChatSidebar({
                        *  scoped out): a menu closes on select, and Radix keyboard
                        *  activation synthesizes a modifier-free click, so the
                        *  gesture would be mouse-only and undiscoverable. */}
-                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-incognito`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</DropdownMenuItem>
-                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-temporary`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</DropdownMenuItem>
+                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-incognito`} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.incognito'))} onSelect={e => { if (!connected) { e.preventDefault(); return } createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</DropdownMenuItem>
+                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-temporary`} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.temporary'))} onSelect={e => { if (!connected) { e.preventDefault(); return } createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</DropdownMenuItem>
                     </>
                   )
                   // A flyout has nowhere to open at phone width, so inline the rows
@@ -7835,16 +7928,22 @@ function ChatSidebar({
                 <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
                   folders={reparentTargets}
                   currentFolderId={folder.parent_id || null}
+                  // Same dim as the list/context surface: `moveFolderTo` is the one
+                  // sink all three reach, so the trigger must not read as live here
+                  // either. See the sibling call site for why it is not `disabled`.
+                  offline={!connected}
+                  offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
                   onPick={pid => moveFolderTo(folder.id, pid)} />
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-settings`} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-settings`} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.change_folder_settings'), i18nT('components.folderConfigModal.folder_settings'))} onSelect={e => { if (!connected) { e.preventDefault(); return } setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-danger focus:text-danger" onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+                <DropdownMenuItem className="text-danger focus:text-danger" offline={!connected} {...offlineProps(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.chatSidebar.delete_folder'))} onSelect={e => { if (!connected) { e.preventDefault(); return } if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+                <OfflineMenuReason testId="col-folder-offline-reason" />
               </DropdownMenuContent>
             </DropdownMenu>
             {/* Same three-gesture contract as the header New button; the
              *  existing stopPropagation stays so the header click/drag
              *  handlers never see the press. */}
-            <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
+            <button type="button" data-testid={`col-${columnId}-folder-${folder.id}-new-chat`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer p-[2px]" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
               onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { columnId, inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) }) }}
               onMouseDown={e => { e.stopPropagation(); if (e.button === 1 && onOpenSlotInNewTab) e.preventDefault() }}
               onAuxClick={onOpenSlotInNewTab ? (e => {
@@ -7879,7 +7978,7 @@ function ChatSidebar({
                   createChatInFolder(folder.id, { columnId, inNewTab: true })
                 }) : undefined}
                 onClick={e => createChatInFolder(folder.id, { columnId, inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) })}
-                title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
+                title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
                 className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[11px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
                 <span>{i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}</span><MessageSquarePlus size={11} className="shrink-0 ml-auto" />
               </button>
@@ -8164,14 +8263,14 @@ function ChatSidebar({
          *  scoped out): a menu closes on select, and Radix keyboard
          *  activation synthesizes a modifier-free click, so the
          *  gesture would be mouse-only and undiscoverable. */}
-        <Item data-testid={tid('new-incognito')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</Item>
-        <Item data-testid={tid('new-temporary')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</Item>
+        <Item data-testid={tid('new-incognito')} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.incognito'))} onSelect={e => { if (!connected) { e.preventDefault(); return } createChatInFolder(folder.id, { memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</Item>
+        <Item data-testid={tid('new-temporary')} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.temporary'))} onSelect={e => { if (!connected) { e.preventDefault(); return } createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</Item>
       </>
     )
     return (
       <>
-        <Item data-testid={tid('rename')} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
-        <Item data-testid={tid('new-subfolder')} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
+        <Item data-testid={tid('rename')} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'))} onSelect={e => { if (!connected) { e.preventDefault(); return } suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
+        <Item data-testid={tid('new-subfolder')} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'))} onSelect={e => { if (!connected) { e.preventDefault(); return } setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
         {/* A flyout has nowhere to open at phone width, so inline the rows
          *  under a caption there instead (parity with the + New menu). The
          *  context family has no Label primitive, so the caption is a plain
@@ -8197,8 +8296,16 @@ function ChatSidebar({
         <FolderMoveSubmenu variant={variant} label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
           folders={reparentTargets}
           currentFolderId={folder.parent_id || null}
+          // UX on 3b0e657a07: the menu's own reason row teaches that dimmed rows
+          // need a connection, so a full-weight row here read as working and the
+          // refusal only landed after the reader had picked a target. #10911 was
+          // going to dim it; measured 2026-09-28 it is CONFLICTING and a day stale,
+          // so "imminent" does not hold and the dim lands here. The submenu still
+          // OPENS -- see the prop's contract.
+          offline={!connected}
+          offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
           onPick={pid => moveFolderTo(folder.id, pid)} />
-        <Item data-testid={tid('settings')} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</Item>
+        <Item data-testid={tid('settings')} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.change_folder_settings'), i18nT('components.folderConfigModal.folder_settings'))} onSelect={e => { if (!connected) { e.preventDefault(); return } setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</Item>
         {/* Hide this folder from the session lists (flat lane + tree).
          *  Same state the filter menu's checkboxes drive, reached from the
          *  folder itself — which is where the user is looking when they
@@ -8210,10 +8317,11 @@ function ChatSidebar({
             : <><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_folder')}</>}
         </Item>
         {folderOffersHide(folder, foldersWithActiveSubtree) && (
-          <Item data-testid={tid('hide')} onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</Item>
+          <Item data-testid={tid('hide')} offline={!connected} {...offlineProps(connected, i18nT('utils.offline.hide_folders'), i18nT('pages.chatSidebar.hide_when_empty'))} onSelect={e => { if (!connected) { e.preventDefault(); return } updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</Item>
         )}
         <Separator />
-        <Item className="text-danger focus:text-danger" data-testid={tid('delete')} onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</Item>
+        <Item className="text-danger focus:text-danger" offline={!connected} data-testid={tid('delete')} {...offlineProps(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.chatSidebar.delete_folder'))} onSelect={e => { if (!connected) { e.preventDefault(); return } if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</Item>
+        <OfflineMenuReason testId={ctx ? 'folder-offline-reason-ctx' : 'folder-offline-reason'} />
       </>
     )
   }
@@ -8378,6 +8486,12 @@ function ChatSidebar({
                 'aria-expanded': !collapsed,
                 'aria-label': collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name }),
                 onClick: () => toggleCollapse(folder.id),
+                // No offline affordance here, and that is the point: `toggleCollapse`
+                // now flips the cached flag offline instead of refusing, so this
+                // control WORKS during an outage. An earlier revision spread
+                // `offlineProps` here to explain a refusal; carrying it now would
+                // announce `aria-disabled` and promise a reconnect on a control that
+                // needs neither, which is a worse lie than the silence it replaced.
               })}>
               {/* An inert row's glyph says "inactive" by WEIGHT, not by shape. The
                *  closed shape is this product's "collapsed, click to expand"
@@ -8409,7 +8523,7 @@ function ChatSidebar({
                *  nothing to mark — are untouched, and that difference is itself the
                *  cue: the marked row is the one that explains the result. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
-              <span className="flex-1 text-[13px] font-medium text-text truncate text-left" title={i18nT('pages.chatSidebar.double_click_to_rename')} onDoubleClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}>{highlightText(folderNameText(folder), slotFilter.trim(), false, -1)}</span>
+              <span className="flex-1 text-[13px] font-medium text-text truncate text-left" title={i18nT('pages.chatSidebar.double_click_to_rename')} {...offlineProps(connected, i18nT('utils.offline.rename_folders'))} onDoubleClick={e => { e.stopPropagation(); if (!connected) { setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') })); return } setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}>{highlightText(folderNameText(folder), slotFilter.trim(), false, -1)}</span>
               {/* Channel-owned folder (created by per-channel session filing):
                *  show the channel's brand mark so the folder reads as "these are
                *  the Discord conversations" at a glance. Guarded the same way the
@@ -8471,7 +8585,7 @@ function ChatSidebar({
            *  creates and switches; Cmd/Ctrl-click and middle-click create the
            *  session as a background TAB. Gated on `onOpenSlotInNewTab` --
            *  embedded hosts have no tab strip, so the modifier is ignored. */}
-          <button type="button" data-testid={`folder-new-chat-${folder.id}`} className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
+          <button type="button" data-testid={`folder-new-chat-${folder.id}`} className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
             onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}
             onAuxClick={onOpenSlotInNewTab ? (e => {
               if (e.button !== 1) return
@@ -8634,7 +8748,7 @@ function ChatSidebar({
             createChatInFolder(folder.id, { inNewTab: true })
           }) : undefined}
           onClick={e => createChatInFolder(folder.id, { inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) })}
-          title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
+          title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name }))}
           className="w-full flex items-center gap-2.5 pl-3.5 pr-3 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
           <span>{i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />
         </button>
@@ -8829,7 +8943,19 @@ function ChatSidebar({
           <div className="relative flex items-center rounded-md bg-accent text-accent-fg overflow-hidden shrink-0" data-create-menu>
             <button
               disabled={creatingSlot}
-              className={`flex items-center h-7 cursor-pointer bg-transparent border-none text-accent-fg hover:bg-accent-hover active:scale-95 transition-all disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
+              // Offline the PRESS affordances come off: `active:scale-95` and the hover
+              // fill are what made a refused click read as accepted, so a control that
+              // will refuse no longer animates as though it accepted.
+              //
+              // No opacity dim here, deliberately. The accent fill belongs to the
+              // wrapper `div`, not to this button, so `opacity-40` on the button fades
+              // only the glyph and label while the pill stays vivid -- a class that
+              // claims a dim a reader cannot see, which is worse than not claiming it
+              // (checked against the captured frame, where it still read bright green).
+              // Dimming the wrapper instead would drag the caret trigger down with it,
+              // and that menu still WORKS offline. So the refusal is carried by the
+              // tooltip, `aria-disabled` and the notice on click, all below.
+              className={`flex items-center h-7 cursor-pointer bg-transparent border-none text-accent-fg transition-all disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${connected ? 'hover:bg-accent-hover active:scale-95' : ''} ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
               // Same three-gesture contract as a session row: plain click
               // creates and switches; Cmd/Ctrl-click and middle-click create the
               // session as a background TAB and leave the user where they are.
@@ -8838,14 +8964,33 @@ function ChatSidebar({
               // modifier is ignored and the click stays an ordinary create.
               // Middle-press autoscroll is cancelled on mousedown, as on rows.
               onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}
+              // Opus 5 on 3b0e657a07: this is the SAME create as the `New chat` row
+              // 6px below in the caret menu, which dims and refuses offline. Ungated,
+              // the full-weight primary segment dispatched a doomed `createSlot` and
+              // raised a create-failure banner, so the two halves of one split button
+              // disagreed about whether creating was possible. Gated on BOTH gestures
+              // -- plain click and middle-click-to-tab -- because either one reaches
+              // the same mutation.
+              // Opus 5 + UX on 349e1513e7: the bail alone made this a SILENT no-op on
+              // the sidebar's most prominent create control -- it still depressed
+              // (`active:scale-95`) and lit on hover, so it read as live and did
+              // nothing, which is the dead-click pattern the rest of this PR removes.
+              // It now says so: the same neutral `folder-action-offline` notice the
+              // folder `+` buttons raise, naming creating.
               onAuxClick={onOpenSlotInNewTab ? (e => {
                 if (e.button !== 1 || creatingSlot) return
                 e.preventDefault()
+                if (!connected) { refuseCreateOffline(); return }
                 createChatMutation.mutate({ inNewTab: true })
               }) : undefined}
-              onClick={e => { createChatMutation.mutate({ inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) }) }}
+              onClick={e => { if (!connected) { refuseCreateOffline(); return } createChatMutation.mutate({ inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) }) }}
               title={i18nT('pages.chatSidebar.new_chat')}
               aria-label={i18nT('pages.chatSidebar.new_chat_session')}
+              // Spread only while offline, never online: this button also carries
+              // `disabled={creatingSlot}`, and an unconditional spread announced
+              // aria-disabled="false" on a control the browser had already made inert
+              // during an in-flight create -- unfocusable and advertised as available.
+              {...(connected ? {} : offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat_session')))}
               aria-busy={creatingSlot}
             >{creatingSlot ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}{!compactHeader && <span className="whitespace-nowrap">{creatingSlot ? i18nT('pages.chatSidebar.creating') : i18nT('pages.chatSidebar.new')}</span>}</button>
             <span className="w-px h-4 bg-accent-fg opacity-30" aria-hidden="true" />
@@ -8865,7 +9010,7 @@ function ChatSidebar({
                  *  ordinary one reads as if autopilot were the only kind of
                  *  chat the caret can make. Listed first so the default stays
                  *  the default. */}
-                <DropdownMenuItem disabled={creatingSlot} onClick={() => { createPlainChatMutation.mutate() }}>
+                <DropdownMenuItem offline={!connected} data-testid="new-plain-chat" {...(connected ? {} : offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat')))} disabled={creatingSlot} onSelect={e => { if (!connected) { e.preventDefault(); return } createPlainChatMutation.mutate() }}>
                   <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
                 </DropdownMenuItem>
                 {/* The two engineered modes carry a one-line description, because the
@@ -8876,7 +9021,7 @@ function ChatSidebar({
                  *  no gloss, and describing them would bury the contrast that
                  *  actually needs drawing. `items-start` so the icon aligns to the
                  *  label, not to the middle of the two-line block. */}
-                <DropdownMenuItem className="items-start" disabled={creatingSlot} onClick={() => { createAutopilotMutation.mutate() }}>
+                <DropdownMenuItem className="items-start" offline={!connected} data-testid="new-autopilot-chat" {...(connected ? {} : offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_autopilot_chat')))} disabled={creatingSlot} onSelect={e => { if (!connected) { e.preventDefault(); return } createAutopilotMutation.mutate() }}>
                   <Zap size={14} className="text-muted mt-[3px] shrink-0" />
                   <span className="flex min-w-0 flex-col gap-px">
                     <span>{i18nT('pages.chatSidebar.new_autopilot_chat')}</span>
@@ -8893,14 +9038,14 @@ function ChatSidebar({
                 {(() => {
                   const ephemeralRows = (
                     <>
-                      <DropdownMenuItem className="items-start" data-testid="new-incognito-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('incognito') }}>
+                      <DropdownMenuItem className="items-start" offline={!connected} data-testid="new-incognito-chat" {...(connected ? {} : offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.incognito')))} disabled={creatingSlot} onSelect={e => { if (!connected) { e.preventDefault(); return } createEphemeralChatMutation.mutate('incognito') }}>
                         <EyeOff size={14} className="text-muted mt-[3px] shrink-0" />
                         <span className="flex min-w-0 flex-col gap-px">
                           <span>{i18nT('components.welcomeView.incognito')}</span>
                           <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('components.welcomeView.incognito_desc')}</span>
                         </span>
                       </DropdownMenuItem>
-                      <DropdownMenuItem className="items-start" data-testid="new-temporary-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('temporary') }}>
+                      <DropdownMenuItem className="items-start" offline={!connected} data-testid="new-temporary-chat" {...(connected ? {} : offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.temporary')))} disabled={creatingSlot} onSelect={e => { if (!connected) { e.preventDefault(); return } createEphemeralChatMutation.mutate('temporary') }}>
                         <VenetianMask size={14} className="text-muted mt-[3px] shrink-0" />
                         <span className="flex min-w-0 flex-col gap-px">
                           <span>{i18nT('components.welcomeView.temporary')}</span>
@@ -8965,7 +9110,13 @@ function ChatSidebar({
                   </span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}>
+                {/* Same create-folder modal the ⋯-menu's New subfolder row opens,
+                  *  and that row is gated — so leaving this one live left the
+                  *  identical action at full weight inside a menu that ends with
+                  *  "the dimmed actions need a connection", teaching that the
+                  *  undimmed rows are the working ones. Its modal could only fail
+                  *  on submit. */}
+                <DropdownMenuItem data-testid="new-folder" offline={!connected} {...(connected ? {} : offlineProps(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_folder')))} onSelect={e => { if (!connected) { e.preventDefault(); return } setFolderModal({ mode: 'create', parentId: '' }) }}>
                   <FolderPlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_folder')}
                 </DropdownMenuItem>
                 {folders.length > 0 && (() => {
@@ -8976,7 +9127,7 @@ function ChatSidebar({
                     const walk = (list: ChatFolder[], depth: number) => { for (const f of list) { items.push({ f, depth }); walk(childrenOf(f.id), depth + 1) } }
                     walk(roots, 0)
                     return items.map(({ f, depth }) => (
-                      <DropdownMenuItem key={f.id} style={{ paddingLeft: `${12 + depth * 16}px` }} onClick={() => createChatInFolder(f.id, { focus: true })}>
+                      <DropdownMenuItem key={f.id} offline={!connected} style={{ paddingLeft: `${12 + depth * 16}px` }} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), f.name)} onSelect={e => { if (!connected) { e.preventDefault(); return } createChatInFolder(f.id, { focus: true }) }}>
                         <Folder size={14} className={depth === 0 ? 'text-muted' : 'text-muted/60'} /> {f.name}
                       </DropdownMenuItem>
                     ))
@@ -9089,6 +9240,9 @@ function ChatSidebar({
                     </DropdownMenuSub>
                   )
                 })()}
+                {/* Last, like every other gated menu: without it the dimmed rows
+                    state that something is unavailable but never why. */}
+                {!connected && <OfflineMenuReason testId="new-menu-offline-reason" />}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -9876,6 +10030,28 @@ function ChatSidebar({
           </div>
         </div>
       )}
+      {/* A refusal is not a failure: no request was sent, so the danger surface
+        *  below would dress a non-event as one. Neutral, and `role="status"` so it
+        *  is announced without the assertive interrupt an alert carries. The
+        *  wrapping row matches the notice beside it — at sidebar width an inline
+        *  dismiss squeezed the sentence to a word per line. */}
+      {folderOfflineNotice && (
+        <div role="status" className="mx-2 mt-2 shrink-0 rounded-lg border border-border bg-bg-elevated px-3 py-2 flex items-start gap-2 text-[13px] text-muted" data-testid="folder-action-offline">
+          <WifiOff size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
+          <div className="min-w-0 flex-1 flex flex-wrap items-start gap-x-2 gap-y-1">
+            <div className="min-w-0 grow basis-[12rem] whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>
+              {folderOfflineNotice}
+            </div>
+          </div>
+          <IconButton
+            className="shrink-0"
+            aria-label={i18nT('components.errorNotice.dismiss')}
+            onClick={() => setFolderOfflineNotice('')}
+          >
+            <X size={14} aria-hidden="true" />
+          </IconButton>
+        </div>
+      )}
       {/* Folder writes (create / delete / update) and local "New chat" creates.
        *  Inputs are already persisted or were never typed (a create menu pick),
        *  so the hand-off loses nothing. Dismissable: the failure is a moment, not
@@ -9883,7 +10059,7 @@ function ChatSidebar({
       <ErrorNotice
         title={i18nT('pages.chatSidebar.folder_update_failed')}
         message={folderActionError}
-        askAgent
+        askAgent={connected}
         onDismiss={() => setFolderActionError('')}
         className="mx-2 mt-2 shrink-0"
         testId="folder-action-error"
@@ -10965,7 +11141,7 @@ function ChatSidebar({
                     dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
                   }
                   return (
-                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
+                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-40 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, i18nT('utils.offline.resume_sessions'))} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
                       // WCAG 2.1.1: history rows must be resumable via keyboard.
                       if (e.key !== 'Enter' && e.key !== ' ') return
                       if ((e.target as HTMLElement) !== e.currentTarget) return
