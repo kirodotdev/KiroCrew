@@ -122,5 +122,6 @@ agent loads only the one it needs.
 | [connections.md](connections.md) | Third-party account connections: provider registry and tiers, the mint endpoints, grant custody at the kiro-cli boundary, warm-table prewarming, owner-only disconnect, and the L0/L1 launch gates. |
 | [connector-capability-manifest.md](connector-capability-manifest.md) | The connector campaign's manifest field schema (one row per required operation) and the `W00`–`W16` work-stream DAG that sequences its provider rounds. |
 | [connector-github.md](connector-github.md) | The GitHub connector (`W02`): per-operation instance data and the GitHub-specific wire parsing (pagination, rate-limit signals, status/body-to-error-class mapping, capability-signature resolution). |
+| [connector-slack.md](connector-slack.md) | The Slack actions core (`W09`): per-method pagination, text/Block-Kit business validation bounded by the shipped send-path split point, the three-stage external upload protocol, and the recorded set of Slack native error strings, isolated from dispatcher and credential handling. |
 | [instances.md](instances.md) | Managing multiple instances over SSH. Sections here are cited by number from `cloud/connect.py`, so do not renumber them. |
 | [dev-fleet.md](dev-fleet.md) | Worktree fleet management and pruning. |
