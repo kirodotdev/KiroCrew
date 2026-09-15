@@ -25,6 +25,7 @@ from unittest import mock
 
 import pytest
 
+from kiro_crew import env as env_mod
 from kiro_crew.apps.builtins.pptx_maker.backend import provision
 
 
@@ -230,8 +231,8 @@ class TestResolveUv:
         packaged.write_text("#!/bin/sh", encoding="utf-8")
         fake_uv = mock.Mock(find_uv_bin=mock.Mock(return_value=str(packaged)))
         with (
-            mock.patch.dict(sys.modules, {"uv": fake_uv}),
-            mock.patch.object(provision.shutil, "which") as which,
+            mock.patch.object(env_mod, "_uv_package", fake_uv),
+            mock.patch.object(env_mod.shutil, "which") as which,
         ):
             assert provision.resolve_uv() == str(packaged)
         assert not which.called, "PATH must not be consulted when the package resolves"
@@ -243,16 +244,16 @@ class TestResolveUv:
             find_uv_bin=mock.Mock(side_effect=FileNotFoundError("no uv in any location"))
         )
         with (
-            mock.patch.dict(sys.modules, {"uv": fake_uv}),
-            mock.patch.object(provision.shutil, "which", return_value="/usr/local/bin/uv"),
+            mock.patch.object(env_mod, "_uv_package", fake_uv),
+            mock.patch.object(env_mod.shutil, "which", return_value="/usr/local/bin/uv"),
         ):
             assert provision.resolve_uv() == "/usr/local/bin/uv"
 
     def test_falls_back_to_path_when_the_package_is_absent(self):
         """An install without the uv wheel at all must not raise ImportError."""
         with (
-            mock.patch.dict(sys.modules, {"uv": None}),
-            mock.patch.object(provision.shutil, "which", return_value="/usr/bin/uv"),
+            mock.patch.object(env_mod, "_uv_package", None),
+            mock.patch.object(env_mod.shutil, "which", return_value="/usr/bin/uv"),
         ):
             assert provision.resolve_uv() == "/usr/bin/uv"
 
@@ -261,8 +262,8 @@ class TestResolveUv:
         than hand an absolute nonexistent path to `subprocess.run`."""
         fake_uv = mock.Mock(find_uv_bin=mock.Mock(return_value=str(tmp_path / "gone")))
         with (
-            mock.patch.dict(sys.modules, {"uv": fake_uv}),
-            mock.patch.object(provision.shutil, "which", return_value="/usr/bin/uv"),
+            mock.patch.object(env_mod, "_uv_package", fake_uv),
+            mock.patch.object(env_mod.shutil, "which", return_value="/usr/bin/uv"),
         ):
             assert provision.resolve_uv() == "/usr/bin/uv"
 
@@ -271,8 +272,8 @@ class TestResolveUv:
         binary — a system uv must still be used rather than reporting none."""
         fake_uv = mock.Mock(find_uv_bin=mock.Mock(side_effect=FileNotFoundError("no binary")))
         with (
-            mock.patch.dict(sys.modules, {"uv": fake_uv}),
-            mock.patch.object(provision.shutil, "which", return_value="/opt/homebrew/bin/uv"),
+            mock.patch.object(env_mod, "_uv_package", fake_uv),
+            mock.patch.object(env_mod.shutil, "which", return_value="/opt/homebrew/bin/uv"),
         ):
             assert provision.resolve_uv() == "/opt/homebrew/bin/uv"
 
@@ -281,8 +282,8 @@ class TestResolveUv:
         condition, not a traceback inside a detached background job."""
         fake_uv = mock.Mock(find_uv_bin=mock.Mock(side_effect=FileNotFoundError("nope")))
         with (
-            mock.patch.dict(sys.modules, {"uv": fake_uv}),
-            mock.patch.object(provision.shutil, "which", return_value=None),
+            mock.patch.object(env_mod, "_uv_package", fake_uv),
+            mock.patch.object(env_mod.shutil, "which", return_value=None),
         ):
             assert provision.resolve_uv() is None
 
@@ -291,7 +292,7 @@ class TestResolveUv:
         packaged = tmp_path / "uv"
         packaged.write_text("#!/bin/sh", encoding="utf-8")
         locator = mock.Mock(return_value=str(packaged))
-        with mock.patch.dict(sys.modules, {"uv": mock.Mock(find_uv_bin=locator)}):
+        with mock.patch.object(env_mod, "_uv_package", mock.Mock(find_uv_bin=locator)):
             assert provision.resolve_uv() == str(packaged)
             assert provision.resolve_uv() == str(packaged)
         assert locator.call_count == 1

@@ -62,6 +62,16 @@ cd ..
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 # Optional voice extras (local speech-to-text): pip install -e ".[dev,voice]"
+#
+# Working from several worktrees? Build the venv with uv instead — same deps,
+# but site-packages are hardlinks into one global cache, so each extra venv
+# costs ~1 MB of disk and ~10 s instead of ~400 MB and ~1 min (see
+# docs/request-for-change/rfc-shared-dependency-cache.md):
+#   uv venv --seed --python 3.12 .venv
+#   uv pip install --link-mode hardlink --python .venv/bin/python --project . -e ".[dev]"
+# Hardlinked site-packages are shared with every sibling venv and the cache:
+# never edit a dependency in place there (use a pip venv, or `uv cache clean
+# <package>` and re-provision to repair).
 
 # 4. Configure and verify
 kirocrew setup               # data dir, agent backend (channels connect later)

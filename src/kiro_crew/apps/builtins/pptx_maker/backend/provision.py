@@ -42,6 +42,7 @@ from pathlib import Path
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, paths
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.env import resolve_uv as _shared_resolve_uv
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
@@ -110,22 +111,10 @@ _uv_path_resolved = False
 def resolve_uv() -> str | None:
     """Absolute path to a usable ``uv``, or ``None`` when genuinely absent.
 
-    ``uv`` is a DECLARED Python dependency (``setup.cfg``), so a stock
-    ``pip install kirocrew`` always has the binary — but not necessarily on
-    ``PATH``: a wheel install puts it in the venv's scripts dir, and the gateway
-    may run with a minimal ``PATH`` (an installed launchd/systemd service). So it
-    is resolved through the INSTALLED PACKAGE rather than looked up by name.
-
-    Order, widest-trust first:
-
-    1. ``uv.find_uv_bin()`` — the wheel's own locator, the normal pip case. It
-       raises ``UvNotFound`` (a ``FileNotFoundError`` subclass) when the binary
-       is missing, e.g. an odd repackaging;
-    2. ``shutil.which("uv")`` — a user's own, possibly newer, uv still works;
-    3. ``None``.
-
-    Never raises: an absent uv is a reportable condition, so the caller can fail
-    with an actionable message instead of a traceback in a background job.
+    The ladder itself — ``uv.find_uv_bin()`` from the declared wheel, then
+    ``shutil.which("uv")``, never raising — is :func:`kiro_crew.env.resolve_uv`,
+    shared with pod provisioning so the minimal-``PATH`` case (an installed
+    launchd/systemd gateway) is handled in exactly one place.
 
     Cached process-wide: this runs on every provision and the answer cannot
     change within a process (the interpreter's own site-packages are fixed at
@@ -134,27 +123,9 @@ def resolve_uv() -> str | None:
     global _uv_path_cache, _uv_path_resolved
     if _uv_path_resolved:
         return _uv_path_cache
-    _uv_path_cache = _resolve_uv_uncached()
+    _uv_path_cache = _shared_resolve_uv()
     _uv_path_resolved = True
     return _uv_path_cache
-
-
-def _resolve_uv_uncached() -> str | None:
-    """The resolution ladder itself. See :func:`resolve_uv`."""
-    try:
-        # Optional-dependency import (the `top-level-imports` carve-out): `uv` is a
-        # declared dependency, but this must still answer on an install where the
-        # wheel is absent or repackaged without its binary — a missing uv is a
-        # reported "engine unavailable", never an ImportError at module load.
-        import uv as uv_package
-
-        found = uv_package.find_uv_bin()
-        if found and os.path.isfile(found):
-            return found
-    except (ImportError, FileNotFoundError, OSError) as exc:
-        logger.debug("pptx-maker: uv.find_uv_bin() did not resolve: %s", exc)
-
-    return shutil.which(_UV_BASENAME)
 
 
 def mcp_tools_path() -> str:
