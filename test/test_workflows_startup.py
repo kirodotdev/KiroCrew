@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -37,6 +38,63 @@ def _seed(store):
         task_id="task-1",
     )
     store.save(handle.run_id, handle.to_store_json())
+
+
+# A hang guard, not the assertion: ``_await_restart_write`` settles on causality
+# and this only turns a lost run into a failed test, well under pytest-timeout.
+_HANG_GUARD_SECS = 60.0
+
+
+async def _await_restart_write(entered: asyncio.Event, startup: asyncio.Task) -> None:
+    """Wait for the restart write to begin, or for startup to be unable to reach it.
+
+    The write is scheduled only after the real ``start_dashboard`` has bound and
+    kicked workflow initialization, which then loads config, constructs the
+    service and hydrates the store off-loop. A fixed wall-clock budget across
+    all of that measured runner speed, not the bind-before-write ordering under
+    test. Settle on causality instead: ``entered`` fires, a failed boot raises
+    its own error, or the initializer finishes without ever writing, which is a
+    deterministic failure.
+    """
+    give_up_at = time.monotonic() + _HANG_GUARD_SECS
+    initializer = None
+    while not entered.is_set():
+        if initializer is None and startup.done():
+            _, state, _ = startup.result()
+            initializer = state.workflow_startup_task
+            assert initializer is not None, "startup finished without kicking initialization"
+        if initializer is not None and initializer.done():
+            initializer.result()
+            raise AssertionError("workflow initialization settled without the restart write")
+        assert time.monotonic() < give_up_at, "the restart write never began"
+        await asyncio.sleep(0.005)
+
+
+@pytest.mark.asyncio
+async def test_restart_write_barrier_is_causal_not_wall_clock():
+    entered = asyncio.Event()
+
+    async def failed_boot():
+        raise RuntimeError("boot failed before the write")
+
+    with pytest.raises(RuntimeError, match="boot failed"):
+        await _await_restart_write(entered, asyncio.create_task(failed_boot()))
+
+    settled = asyncio.create_task(asyncio.sleep(0))
+    await settled
+
+    async def booted():
+        return None, SimpleNamespace(workflow_startup_task=settled), None
+
+    with pytest.raises(AssertionError, match="settled without the restart write"):
+        await _await_restart_write(entered, asyncio.create_task(booted()))
+
+    booting = asyncio.create_task(asyncio.sleep(3600))
+    try:
+        entered.set()
+        await _await_restart_write(entered, booting)  # returns on the signal alone
+    finally:
+        booting.cancel()
 
 
 @pytest.mark.asyncio
@@ -136,7 +194,7 @@ async def test_dashboard_binds_before_restart_write_and_owns_initialization(
     state = None
     shutdown = None
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await _await_restart_write(entered, startup)
         assert bound.is_set(), "restart write delayed socket readiness"
         runner, state, _ = await asyncio.wait_for(asyncio.shield(startup), 5)
         assert state.ready
