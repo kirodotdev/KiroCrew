@@ -267,7 +267,7 @@ Jobs can define `skip_dates` — a list of dates (YYYY-MM-DD) on which the job s
 
 ### Strict Schedule (`strict_schedule`)
 
-Jobs receive random jitter by default (0-5min hourly, 0-59min daily) to spread load. Set `strict_schedule: true` on a job to disable jitter entirely — the job fires at the exact cron/interval time.
+Jobs receive random jitter by default (0-5min hourly, 0-59min daily) to spread load. Sub-hourly schedules receive no jitter: intervals shorter than one hour, and cron expressions whose parsed minute field fires more than once per hour. The cron parser expands and deduplicates wildcard, step, list, range, and combined forms; a single literal minute keeps the existing hourly, multi-hour, or daily band selected from the hour field. Set `strict_schedule: true` on a job to disable jitter entirely — the job fires at the exact cron/interval time.
 
 ### Create-path persistence-owner validation (`timezone` / `skip_dates`)
 
