@@ -5,13 +5,10 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import functools
-import importlib.util
 import inspect
 import json
 import logging
 import os
-import sys
-import sysconfig
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Mapping, N
 import aiohttp
 from aiohttp import web
 
-from kiro_crew import extras, platform_compat
+from kiro_crew import extras
 from kiro_crew.agent_discovery import (
     SKILL_URI_PREFIX,
     expand_skill_uri,
@@ -2427,35 +2424,15 @@ def _probe_persisted_session(slot_name: str) -> tuple[bool, str | None]:
 def _pip_install_channel_available() -> bool:
     """True when ``<gateway python> -m pip install`` can plausibly succeed.
 
-    Three environments make that command a guaranteed dead end, and surfacing
-    it there recreates the press-and-nothing-changes failure this surface
-    exists to avoid:
-
-    - the desktop app's bundled interpreter (see
-      :func:`platform_compat.is_bundled_interpreter`): pip may exist, but a
-      pip install writes into the code-signed bundle — breaking launches and
-      updates — and is discarded on every app update;
-    - an interpreter without the ``pip`` module (uv tool installs, some
-      pipx layouts);
-    - a PEP 668 externally-managed interpreter (distro/brew pythons), where
-      pip refuses to install. Checked only outside a venv: inside one, pip
-      works and deliberately ignores the marker, so a venv returns True.
+    Thin wrapper over :func:`kiro_crew.extras.pip_install_channel_available`,
+    which owns the predicate because it also renders the command the predicate
+    governs -- `doctor` asks the same question about the same command, and two
+    copies of "can pip install here" would drift apart.
 
     Touches the filesystem (``find_spec``, then the marker file), so call it
     from a worker thread on an async path.
     """
-    if platform_compat.is_bundled_interpreter():
-        return False
-    if importlib.util.find_spec("pip") is None:
-        return False
-    # PEP 668 applies to the environment pip would install into. Inside a venv
-    # pip deliberately ignores the marker, and `sysconfig.get_path("stdlib")`
-    # resolves to the BASE interpreter's directory — where distro/brew pythons
-    # place it — so checking it from a venv would misfire on the recommended
-    # install layout (venv on a Debian/Ubuntu/Homebrew python).
-    if sys.prefix != sys.base_prefix:
-        return True
-    return not (Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED").exists()
+    return extras.pip_install_channel_available()
 
 
 def pip_extra_install_command(extra: str) -> str:
