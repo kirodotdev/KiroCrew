@@ -3460,6 +3460,47 @@ class TestRelayedSendToBusyPeerSlotIsRefused:
         assert "peer-just-closed" not in state._slots
 
     @pytest.mark.asyncio
+    async def test_a_relayed_send_to_an_idle_slot_owing_a_teardown_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """A relay send can be neither queued nor dispatched here, so it is refused.
+
+        Queueing drains without the mirror, so the owner's answer is lost behind a
+        200. Dispatching instead answers the conversation the user asked to discard.
+        The 409 is the only disposition left: any non-2xx makes the owner's
+        ``_peer_turn_chunks`` raise, which surfaces a resend prompt rather than
+        silence, and the retry lands once the teardown settles.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("chat-peer-2")  # a plain LOCAL slot, as it is on the peer
+        slot._pending_reset_history_key = "dashboard:chat-peer-2"
+        state._slots[slot.key] = slot
+        started = asyncio.Event()
+
+        async def fake_run_chat(st, sl, msg, **kwargs):
+            started.set()
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+        # The teardown must REMAIN pending, or the gate lands it and falls through.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._consume_pending_reset",
+            AsyncMock(return_value=False),
+        )
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send?relay=1",
+                json={"slot": slot.key, "message": "relayed"},
+            )
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "remote_turn_busy"
+        # Neither disposition the refusal replaces actually happened.
+        assert slot._queue == []
+        assert not started.is_set()
+        assert slot._pending_reset_history_key == "dashboard:chat-peer-2"
+
+    @pytest.mark.asyncio
     async def test_a_relayed_send_to_a_busy_local_slot_is_refused(self, tmp_path):
         from aiohttp.test_utils import TestClient, TestServer
 

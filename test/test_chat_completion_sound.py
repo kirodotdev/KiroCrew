@@ -122,7 +122,7 @@ async def test_queued_recovery_is_not_a_finished_conversation(completion_state):
 async def test_auth_blocked_queue_requires_input_not_automatic_work(completion_state):
     state, slot = completion_state
     slot.queue_append("held until the user signs in")
-    slot._last_turn_auth_required = True
+    slot._queue_held = True
     frame = await finish_frame(state, slot)
     assert frame.get("continuing", False) is False
 

@@ -1862,6 +1862,154 @@ class TestConsumePendingReset:
         assert state.sessions.reset.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_a_retry_that_lands_the_reset_releases_the_held_queue(
+        self, tmp_path, monkeypatch
+    ):
+        # The retry lands the teardown OUTSIDE any turn boundary, so no turn's finally
+        # recomputes the hold and the cards would sit on an idle slot until a send.
+        monkeypatch.setattr(chat_runner, "_PENDING_RESET_RETRY_DELAY_SECS", 0.01)
+        drained: list[str] = []
+
+        async def fake_drain(st, sl):
+            drained.append(sl.key)
+            return True
+
+        monkeypatch.setattr(chat_runner, "_start_next_queued_turn", fake_drain)
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot.linked_session_key = "slack:123.456"
+        slot._pending_reset_history_key = "slack:123.456"
+        slot.queue_append("held prompt")
+        slot._queue_held = True
+        state.sessions.reset = AsyncMock(side_effect=[False, True])
+
+        await chat_runner._consume_pending_reset(state, slot, allow_discard=False)
+        task = chat_runner._pending_reset_retries.get(slot.key)
+        assert task is not None
+        await asyncio.wait_for(task[1], timeout=2.0)
+
+        assert slot._pending_reset_history_key is None
+        assert slot._queue_held is False
+        assert drained == [slot.key]
+
+    @pytest.mark.asyncio
+    async def test_a_declined_discard_arms_a_retry_that_lands_it_and_drains(
+        self, tmp_path, monkeypatch
+    ):
+        """The sibling above covers the RESET cause; a discard carries no reset key.
+
+        A retry keyed on that key would neither be armed nor stay alive past its first
+        tick, and a channel-linked slot passes no dashboard turn boundary -- so the
+        accepted prompt would park until the user happened to send again.
+        """
+        monkeypatch.setattr(chat_runner, "_PENDING_RESET_RETRY_DELAY_SECS", 0.01)
+        drained: list[str] = []
+
+        async def fake_drain(st, sl):
+            drained.append(sl.key)
+            return True
+
+        monkeypatch.setattr(chat_runner, "_start_next_queued_turn", fake_drain)
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot.linked_session_key = "slack:123.456"
+        slot._pending_discard_conversation_key = "slack:123.456"
+        slot.queue_append("held prompt")
+        slot._queue_held = True
+        # No reset cause anywhere: this is the discard-ONLY case.
+        assert slot._pending_reset_history_key is None
+        state.sessions.discard_conversation = AsyncMock(side_effect=[False, True])
+
+        await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
+        assert slot._pending_discard_conversation_key == "slack:123.456"
+
+        task = chat_runner._pending_reset_retries.get(slot.key)
+        assert task is not None
+        assert task[0] is slot
+        await asyncio.wait_for(task[1], timeout=2.0)
+
+        assert slot._pending_discard_conversation_key is None
+        assert slot._queue_held is False
+        assert drained == [slot.key]
+        assert state.sessions.discard_conversation.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_retry_release_preserves_a_signed_out_hold(self, tmp_path, monkeypatch):
+        """A reset lands without auth, so its release must not speak for the sign-out.
+
+        Draining here walks every queued prompt into the same auth wall, which is the
+        loss the auth hold exists to prevent -- so the reset clearing is not enough.
+        """
+        monkeypatch.setattr(chat_runner, "_PENDING_RESET_RETRY_DELAY_SECS", 0.01)
+        drained: list[str] = []
+
+        async def fake_drain(st, sl):
+            drained.append(sl.key)
+            return True
+
+        monkeypatch.setattr(chat_runner, "_start_next_queued_turn", fake_drain)
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot.linked_session_key = "slack:123.456"
+        slot._pending_reset_history_key = "slack:123.456"
+        slot.queue_append("held prompt")
+        slot._queue_held = True
+        slot._queue_held_auth = True
+        state.sessions.reset = AsyncMock(side_effect=[False, True])
+
+        await chat_runner._consume_pending_reset(state, slot, allow_discard=False)
+        task = chat_runner._pending_reset_retries.get(slot.key)
+        assert task is not None
+        await asyncio.wait_for(task[1], timeout=2.0)
+
+        assert slot._pending_reset_history_key is None
+        assert slot._queue_held is True
+        assert drained == []
+        assert slot.queue_depth == 1
+
+    @pytest.mark.asyncio
+    async def test_a_slot_replaced_during_the_consume_is_not_drained(self, tmp_path, monkeypatch):
+        """The consume yields, so the caller's registration check is already spent.
+
+        Dispatching on the retired object runs work under a key its replacement owns,
+        and nothing downstream aborts a turn for being on the wrong slot.
+        """
+        monkeypatch.setattr(chat_runner, "_PENDING_RESET_RETRY_DELAY_SECS", 0.01)
+        drained: list[str] = []
+
+        async def fake_drain(st, sl):
+            drained.append(sl.key)
+            return True
+
+        monkeypatch.setattr(chat_runner, "_start_next_queued_turn", fake_drain)
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot.linked_session_key = "slack:123.456"
+        slot._pending_reset_history_key = "slack:123.456"
+        slot.queue_append("held prompt")
+        slot._queue_held = True
+        successor = _slot(slot.key)
+        calls = {"n": 0}
+
+        async def reset_then_replace(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return False  # refused, which is what arms the retry
+            state._slots[slot.key] = successor
+            return True
+
+        state.sessions.reset = AsyncMock(side_effect=reset_then_replace)
+
+        await chat_runner._consume_pending_reset(state, slot, allow_discard=False)
+        task = chat_runner._pending_reset_retries.get(slot.key)
+        assert task is not None
+        await asyncio.wait_for(task[1], timeout=2.0)
+
+        assert state.get_slot(slot.key) is successor
+        assert drained == []
+        assert slot.queue_depth == 1
+
+    @pytest.mark.asyncio
     async def test_replacement_slot_retry_is_not_suppressed(self, tmp_path, monkeypatch):
         # A retiring owner's still-live retry task must not dedupe away a
         # REPLACEMENT slot's retry under the same key: the old task exits on
