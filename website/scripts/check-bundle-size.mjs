@@ -71,7 +71,33 @@ export const CHUNK_BUDGETS = {
   // editor, store picker/card, carve, backups, retired) across all 13 catalogs
   // on top of that: with them the chunk builds at 11,332,186 B (11067 KB), so
   // the 5% headroom is taken over that measurement rather than main's.
-  all: 11620 * KB, // measured 11067 KB on feat/memory-v2-ui 2026-09-10 (~5% headroom)
+  // Raised 2026-09-11 for the additional zh-TW catalog, and this one is NOT
+  // routine string growth — it is a whole new language, so it is measured
+  // base-against-head on the same command rather than asserted. Two
+  // `vite build --mode analyze` runs, same node_modules, differing only in this
+  // branch's commits:
+  //   base, origin/main @ 61dcac515 : 11,481,175 B (11,212.1 KB) — gate PASSES,
+  //                                   407.9 KB under the 11620 KB ceiling (3.6%)
+  //   head, this branch             : 12,268,616 B (11,981.1 KB) — gate FAILS by
+  //                                   361.1 KB
+  //   delta                         : +787,441 B raw, +280.9 kB gzip
+  //                                   (3,290.31 -> 3,571.26 kB on this chunk)
+  // The failure is branch-caused: base is green in the same gate with the same
+  // command, while adding the catalog exceeds the inherited ceiling.
+  //
+  // Why the growth is irreducible HERE rather than behind a lazy import: this
+  // chunk is `src/i18n/all.ts`, and `src/i18n/index.ts` states why every catalog
+  // is registered before first render — ~600 components call `t()` during render
+  // and ~4000 test assertions match visible English, so `t()` must stay
+  // synchronous. The documented seam (`i18next-http-backend` + `Suspense`,
+  // catalogs moved to `public/locales/`) is a migration of all thirteen, not a
+  // per-locale opt-out, and deferring one catalog alone would fork the registry
+  // that `catalogs.ts` exists to keep single. The seam deferral is gated
+  // separately, and on a reviewer's explicit acceptance, by the
+  // `does not add a fourteenth statically bundled catalog` ratchet in
+  // `catalogParity.test.ts`; this ceiling is not that acceptance and does not
+  // stand in for it.
+  all: 12580 * KB, // measured 11981.1 KB on this branch 2026-09-11 (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because

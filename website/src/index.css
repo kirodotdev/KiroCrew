@@ -119,6 +119,41 @@
                  U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
                  U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
+/* Traditional Chinese needs its own alias for the same reason Japanese does, and
+   the reason is sharper here: TC and SC share nearly every Han code point but not
+   the glyph forms drawn for them, and a Simplified face asked for 這 draws it in
+   Mainland proportions and stroke shapes. Taiwan also uses Bopomofo (U+3100-312F
+   plus the Extended block) for pronunciation annotations, which the SC ranges
+   already cover but the SC faces do not always draw well. Kana is deliberately
+   absent — this is Chinese, not Japanese. */
+@font-face {
+  font-family: 'KC Han TC Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('PingFang TC'), local('PingFangTC-Regular'), local('Heiti TC'),
+       local('Hiragino Sans CNS'), local('HiraginoSansCNS-W3'),
+       local('Microsoft JhengHei'), local('MicrosoftJhengHei'),
+       local('Microsoft JhengHei UI'), local('MicrosoftJhengHeiUI'),
+       local('Noto Sans CJK TC'), local('NotoSansCJKtc-Regular'),
+       local('Noto Sans TC'), local('NotoSansTC-Regular'),
+       local('Source Han Sans TC'), local('SourceHanSansTC-Regular');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3100-312F, U+31A0-31BF,
+                 U+31C0-31EF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
+                 U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Han TC Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('PingFang TC Semibold'), local('PingFangTC-Semibold'),
+       local('Hiragino Sans CNS W6'), local('HiraginoSansCNS-W6'),
+       local('Microsoft JhengHei Bold'), local('MicrosoftJhengHei-Bold'),
+       local('Microsoft JhengHei UI Bold'), local('MicrosoftJhengHeiUI-Bold'),
+       local('Noto Sans CJK TC Bold'), local('NotoSansCJKtc-Bold'),
+       local('Noto Sans TC Bold'), local('NotoSansTC-Bold'),
+       local('Source Han Sans TC Bold'), local('SourceHanSansTC-Bold');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3100-312F, U+31A0-31BF,
+                 U+31C0-31EF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
+                 U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
 /* Monospace Han, for code and CLI surfaces. Rarely installed on a stock machine;
    when absent 'KC Han Fallback' follows it in the :lang(zh-CN) mono token, so Han in
    a code block draws from a proportional face — the same pairing the browser's
@@ -178,6 +213,24 @@
   unicode-range: U+1100-11FF, U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3130-318F,
                  U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
                  U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Han TC Mono Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Sarasa Mono TC'), local('SarasaMonoTC-Regular'),
+       local('Noto Sans Mono CJK TC'), local('NotoSansMonoCJKtc-Regular');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3100-312F, U+31A0-31BF,
+                 U+31C0-31EF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
+                 U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Han TC Mono Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Sarasa Mono TC Bold'), local('SarasaMonoTC-Bold'),
+       local('Noto Sans Mono CJK TC Bold'), local('NotoSansMonoCJKtc-Bold');
+  unicode-range: U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3100-312F, U+31A0-31BF,
+                 U+31C0-31EF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
+                 U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
 @font-face {
   font-family: 'KC Devanagari Fallback';
@@ -334,6 +387,15 @@ html:lang(zh-CN) {
      and useZoom already resolve var(--script-fallbacks) on <html>. */
   --script-fallbacks:'KC Straight Quotes','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+}
+html:lang(zh-TW) {
+  /* Isolated Traditional aliases for Taiwan's UI. Never retain the SC aliases:
+     they cover the same Han code points, so a retained Simplified face sits in
+     front of the only face asked to draw Traditional glyph forms and wins every
+     shared ideograph — which is most of them. Scoped to zh-TW, not zh-Hant:
+     this change ships Taiwan, and zh-HK/zh-MO keep resolving as they did. */
+  --script-fallbacks:'KC Straight Quotes','KC Han TC Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Han TC Mono Fallback','KC Han TC Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 html:lang(ja) {
   /* Never retain the SC aliases here. If no named Japanese face is installed,

@@ -90,10 +90,22 @@ const CEILINGS: Record<string, number> = {
   // unbalanced Korean values carry exactly the English value's own delta and none
   // introduce an imbalance of their own, so the +8 is arithmetic on a defect
   // Phase 3 repairs by de-fragmenting the key, not new bad copy.
-  'unbalanced-delimiter': 168,
+  //
+  // 178, not 168, for the same reason one catalog later: zh-TW (#2571) adds 10,
+  // and the same attribution was run rather than assumed — every one of the 10 is
+  // a key whose ENGLISH value already violates this check, and zh-TW reproduces
+  // the source's own delta (`"(commonly"` -> `"（常見為"`). None is a bracket the
+  // translation dropped. `I18N_QA_REPORT=1` prints the list.
+  'unbalanced-delimiter': 178,
   'odd-quote-count': 27,
+  // Unchanged at 15 deliberately. zh-TW would have added one — zh-CN's copy of
+  // `pages.artifactDeployPage.publish_publish_to_public_web_your_aws` turned the
+  // English NBSPs into ordinary spaces — so zh-TW keeps the U+00A0 the English
+  // source uses instead, which is also what those characters are there for.
   'edge-whitespace': 15,
-  'doubled-space': 10,
+  // 11, not 10: the English source spells this hint `kirocrew  —  leave blank`,
+  // two spaces either side of the dash, and zh-TW keeps that spacing.
+  'doubled-space': 11,
   'bare-connector': 66,
   'fullwidth-alphanumeric': 0,
 }

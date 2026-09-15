@@ -85,6 +85,11 @@ export const OPERAND_QUOTE_PAIRS = {
   ja: ['\u300C', '\u300D'],
   ko: ['\u2018', '\u2019'],
   'zh-CN': ['\u201C', '\u201D'],
+  // Taiwan takes corner brackets, not the curly pair zh-CN takes: 教育部
+  // 《重訂標點符號手冊》 makes 「 」 the primary quotation pair, and a
+  // curly quote around a filename reads as Mainland typesetting to a
+  // Taiwanese reader. Same glyphs as ja, for the same reason.
+  'zh-TW': ['\u300C', '\u300D'],
 }
 
 const count = (haystack, needle) => haystack.split(needle).length - 1

@@ -66,6 +66,13 @@ export const TARGET_SCRIPTS = {
   ko: ['Hangul'],
   ru: ['Cyrillic'],
   'zh-CN': ['Han'],
+  // Same script name as zh-CN, and that is the point: this check asks "is this
+  // value written in the target script at all", which catches an English value
+  // left in place. It does NOT distinguish Simplified from Traditional — both are
+  // `Han` to Unicode, so a zh-CN value pasted into zh-TW passes here. That
+  // distinction is `src/i18n/style/zhTWStyle.test.ts`'s job, and the two gates
+  // are complementary rather than redundant.
+  'zh-TW': ['Han'],
 }
 
 /**
@@ -341,4 +348,17 @@ export function passthroughViolations({ lang, catalog, enFlat = {}, checks }) {
     }
   }
   return findings
+}
+
+/**
+ * Findings in a catalog that is NEW on this branch: every value is judged, and a
+ * finding survives unless `allowedExact` names the exact key/value pair as invariant.
+ * The allowlist is explicit so untranslated debt in another locale cannot silently
+ * license the same defect in a new catalog.
+ */
+export function newCatalogPassthroughFindings({
+  lang, head, enHead = {}, checks, allowedExact = new Map(),
+}) {
+  return passthroughFindings({ lang, base: {}, head, enHead, checks })
+    .filter(f => !allowedExact.get(f.key)?.has(f.value))
 }
