@@ -336,6 +336,18 @@ async def _cancel_stray_tasks() -> None:
 
 class TestStartDashboardWiring:
     @pytest.mark.asyncio
+    async def test_app_backends_receive_the_declared_port_verbatim(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The boot spawn runs before the TCP site binds, so it cannot read the
+        bound port; start_dashboard hands it the DECLARED one. 0 (--port auto)
+        must arrive as 0, not be normalised away: it is what tells the spawn
+        path to withhold KIROCREW_GATEWAY_URL instead of guessing."""
+
+        async with _dashboard(tmp_path, monkeypatch) as (_runner, _state, spies):
+            spies["start_enabled_app_backends"].assert_called_once_with(gateway_port=0)
+
+    @pytest.mark.asyncio
     async def test_the_app_is_wired_and_reports_ready(self, tmp_path, monkeypatch) -> None:
         """Readiness is published at the boot-to-ready boundary, last.
 

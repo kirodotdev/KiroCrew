@@ -2347,6 +2347,12 @@ class TestBuiltinSecretForMcpServers:
     @pytest.fixture(autouse=True)
     def _clean_port_env(self, monkeypatch):
         monkeypatch.delenv("KIROCREW_PORT", raising=False)
+        # The self-reference guard asks the serving-port resolver; pin it to the
+        # default so the :5476 assertions below do not depend on what this test
+        # process's environment or data home happens to resolve.
+        from kiro_crew import port_resolution
+
+        monkeypatch.setattr(port_resolution, "resolve_serving_port", lambda: 5476)
 
     def _register_only(self, monkeypatch, apps):
         """Run register_builtin_apps() with exactly `apps` as the builtin set."""
@@ -2373,6 +2379,21 @@ class TestBuiltinSecretForMcpServers:
         # self-referential gateway port is refused by the proxy → no secret
         assert not _app_declares_backend(
             {"mcpServers": {"x": {"url": "http://127.0.0.1:5476/mcp"}}}
+        )
+
+    def test_self_reference_is_judged_against_the_port_this_gateway_serves(self, monkeypatch):
+        """A --port override is a constructor argument, never KIROCREW_PORT, so the
+        guard must ask the serving-port resolver rather than guess 5476."""
+        from kiro_crew import port_resolution
+        from kiro_crew.apps.manager import resolve_mcp_backend_url
+
+        monkeypatch.setattr(port_resolution, "resolve_serving_port", lambda: 7790)
+        # The gateway's own port on a --port 7790 gateway is refused...
+        assert resolve_mcp_backend_url({"x": {"url": "http://127.0.0.1:7790/mcp"}}) is None
+        # ...and 5476, some other listener's port here, is an ordinary backend.
+        assert (
+            resolve_mcp_backend_url({"x": {"url": "http://127.0.0.1:5476/mcp"}})
+            == "http://127.0.0.1:5476"
         )
 
     def test_mcpservers_only_builtin_gets_secret(self, tmp_path, app_home, monkeypatch):

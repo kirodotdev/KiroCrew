@@ -627,6 +627,31 @@ process — but the contract DIFFERS from builtins (`auto_research` etc.):
 - Trust: backend code runs UNSANDBOXED with full gateway privileges (SEC-012
   warning logged; `agent.apps_allow_third_party=false` refuses it entirely).
 
+## Subprocess Backends (`backend.entryPoint`): Calling the Gateway Back
+
+A spawned backend (Python, ASGI, Node or exec) gets an ALLOWLIST env, not the
+gateway's — `KIROCREW_PORT` and everything else from the operator's shell is
+stripped. The gateway sets what the backend needs:
+
+- `PORT` — listen here. `KIROCREW_APP_NAME`, `KIROCREW_HOME` — identity + data home.
+- `KIROCREW_GATEWAY_URL` — loopback base URL of the gateway that spawned you,
+  e.g. `http://127.0.0.1:7790` (no trailing slash), or `http://[::1]:7790` on a
+  gateway bound to `::1` / `::` — always the loopback host it actually listens
+  on. Use it for EVERY call back into the gateway (`/api/token/local`,
+  `/apps/<name>/api/...`). It reflects the port being served, `--port N`
+  overrides included. NEVER hardcode `http://localhost:5476` — that is the
+  "fetch failed" on any non-default port. Two gaps, both WITHHELD rather than
+  guessed: a `--port auto` gateway spawns boot-time backends before the OS
+  assigns its port (the next spawn — app disable/enable or update — sets it;
+  nothing respawns a backend on its own), and a `KIROCREW_BIND` no accepted
+  loopback URL reaches (a specific non-loopback interface, or an alternate
+  loopback like `127.0.0.2` that the Host check refuses). Treat absence as
+  "not available", never as 5476.
+- `KIROCREW_PROXY_SECRET` — verify the `X-KiroCrew-Proxy` HMAC on proxied requests.
+
+The Python client (`packages/kirocrew-client-py`) already defaults `base_url`
+to `KIROCREW_GATEWAY_URL`.
+
 ## Dev Loop for App UIs
 
 - **Preferred: dev mode** — `kirocrew app dev <name>` (off: `--off`). Serves that

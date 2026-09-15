@@ -667,7 +667,8 @@ async with KiroCrewClient(app_name="my-app") as mc:
 
 ```python
 KiroCrewClient(
-    base_url="",              # default: http://localhost:{KIROCREW_PORT or 5476}
+    base_url="",              # default: KIROCREW_GATEWAY_URL (set by the gateway for
+                              # app backends), else http://localhost:{KIROCREW_PORT or 5476}
     token="",                 # optional for localhost
     app_name="",              # for app-scoped storage & auto-auth
     timeout=30,               # request timeout seconds

@@ -2737,7 +2737,14 @@ def resolve_mcp_backend_url(mcp_servers: Any) -> str | None:
     """
     if not isinstance(mcp_servers, dict):
         return None
-    gateway_port = int(os.environ.get("KIROCREW_PORT", "5476"))
+    # The port THIS gateway serves, not a KIROCREW_PORT-or-5476 guess: a --port
+    # override is a constructor argument the environment never carries, so the
+    # guess compared a manifest URL against the wrong port and let a genuinely
+    # self-referential URL through on any --port N gateway. Function-local import
+    # for the same reason as apps.backend.gateway_loopback_url.
+    from kiro_crew.port_resolution import resolve_serving_port
+
+    gateway_port = resolve_serving_port()
     for server_cfg in mcp_servers.values():
         if not isinstance(server_cfg, dict):
             continue
