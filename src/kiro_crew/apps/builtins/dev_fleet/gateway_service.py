@@ -68,15 +68,17 @@ untouched and the operator keeps the manual-restart advisory.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import subprocess
 from pathlib import Path
-from typing import IO, Awaitable, Callable, Protocol
+from typing import IO, Awaitable, Callable, Protocol, TypeVar
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.executors import subprocess_executor
 
 # service.* is import-safe on every platform (it only touches launchctl/systemctl
 # when called) and never imports apps.*, so there is no cycle to dodge here.
@@ -89,10 +91,20 @@ from kiro_crew.service.macos import (
     write_live_program,
 )
 
+
+async def _off_loop(fn: Callable[..., "T"], *args: object) -> "T":
+    """Run a filesystem-touching callable on the subprocess executor.
+
+    These backends run on the GATEWAY's event loop, which serves the whole dashboard:
+    a drop-in write, a plist read or a marker scan must not happen inline on it.
+    """
+    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), fn, *args)
+
 # (rc, stdout, stderr) — live.py's sandboxed subprocess chokepoint. Injected
 # rather than imported so every spawn stays audited through the one seam the
 # tests already patch, and so this module has no import cycle with live.py.
 RunCmd = Callable[..., Awaitable[tuple[int, str, str]]]
+T = TypeVar("T")
 #: ``shutil.which``-shaped tool lookup, injected for the same reason as the
 #: platform string (see :func:`backend`).
 Which = Callable[[str], "str | None"]
@@ -241,11 +253,15 @@ class SystemdBackend:
         self._dropin_path = dropin_path
         self._dropin_content = dropin_content
 
-    def _available(self) -> bool:
-        return self._platform == "linux" and bool(self._which("systemctl"))
+    async def _available(self) -> bool:
+        # ``which`` walks every PATH entry with stat/access: off the loop, like every
+        # other filesystem step here, so a stalled PATH mount cannot stall the gateway.
+        if self._platform != "linux":
+            return False
+        return bool(await _off_loop(self._which, "systemctl"))
 
     async def status(self) -> str:
-        if not self._available():
+        if not await self._available():
             return "no_systemd"
         # Gate on the unit being known to the --user manager: a `service
         # install` SYSTEM unit is not controllable with a --user drop-in, and
@@ -256,7 +272,7 @@ class SystemdBackend:
         return "ok" if rc == 0 else "no_user_unit"
 
     async def active(self) -> bool:
-        if not self._available():
+        if not await self._available():
             return False
         rc, _out, _err = await self._run(
             ["systemctl", "--user", "is-active", self._unit()], timeout=5
@@ -268,7 +284,7 @@ class SystemdBackend:
         ExecStart main-PID spawn, so it changes the instant the NEW process
         starts (a unit can enter ``active`` before its replacement main PID
         exists) and can never repeat or go backwards if NTP steps the clock."""
-        if not self._available():
+        if not await self._available():
             return None
         rc, out, _err = await self._run(
             ["systemctl", "--user", "show", self._unit(),
@@ -315,9 +331,13 @@ class SystemdBackend:
             content = self._dropin_content(worktree, kcbin)
         except _UnsafeTargetValue as exc:
             return False, "unsafe_path", f"unsafe value in unit directive: {exc}"
-        try:
+
+        def _write() -> None:
             dropin.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(dropin, content)
+
+        try:
+            await _off_loop(_write)
         except OSError as exc:
             return False, "write_failed", f"failed to write drop-in: {exc}"
         rc, _out, stderr = await self._run(
@@ -330,7 +350,7 @@ class SystemdBackend:
     async def reload(self) -> None:
         """Re-read unit files. Called on the rollback path so the loaded config
         matches the restored disk state rather than the rejected override."""
-        if self._available():
+        if await self._available():
             await self._run(["systemctl", "--user", "daemon-reload"], timeout=10)
 
     def rollback(self, prior: str | None) -> bool:
@@ -394,8 +414,10 @@ class LaunchdBackend:
     def plist_path() -> Path:
         return PLIST_PATH
 
-    def _available(self) -> bool:
-        return self._platform == "darwin" and bool(self._which("launchctl"))
+    async def _available(self) -> bool:
+        if self._platform != "darwin":
+            return False
+        return bool(await _off_loop(self._which, "launchctl"))
 
     # -- state --
     async def _print(self) -> tuple[int, str]:
@@ -405,7 +427,7 @@ class LaunchdBackend:
         return rc, out
 
     async def status(self) -> str:
-        if not self._available():
+        if not await self._available():
             return "no_launchd"
         rc, _out = await self._print()
         if rc != 0:
@@ -414,26 +436,32 @@ class LaunchdBackend:
         # ProgramArguments goes through our launcher. An agent installed by an
         # older build points straight at a bin path; rewriting the launcher would
         # then be a silent no-op, so say so instead.
-        try:
-            if str(self.live_program()) not in self.plist_path().read_text():
+
+        def _probe() -> str | None:
+            try:
+                if str(self.live_program()) not in self.plist_path().read_text():
+                    return "agent_not_indirected"
+            except OSError:
                 return "agent_not_indirected"
-        except OSError:
-            return "agent_not_indirected"
-        # The plist is right but the launcher itself is gone (a "reset the app"
-        # gesture that deleted Application Support). The agent would fail to
-        # spawn at next login with nothing on screen to explain it, so name the
-        # repair rather than reporting a healthy service.
-        if not self.live_program().exists():
-            return "live_program_missing"
-        if (
-            not restart_contract_current(self.plist_path())
-            or not loaded_restart_contract_current(_out)
-        ):
+            # The plist is right but the launcher itself is gone (a "reset the app"
+            # gesture that deleted Application Support). The agent would fail to
+            # spawn at next login with nothing on screen to explain it, so name the
+            # repair rather than reporting a healthy service.
+            if not self.live_program().exists():
+                return "live_program_missing"
+            if not restart_contract_current(self.plist_path()):
+                return "agent_restart_contract_outdated"
+            return None
+
+        probed = await _off_loop(_probe)
+        if probed is not None:
+            return probed
+        if not loaded_restart_contract_current(_out):
             return "agent_restart_contract_outdated"
         return "ok"
 
     async def active(self) -> bool:
-        if not self._available():
+        if not await self._available():
             return False
         rc, out = await self._print()
         if rc != 0:
@@ -461,7 +489,7 @@ class LaunchdBackend:
         restart window to confuse the handshake. ``None`` when the agent is
         loaded but not running — callers degrade rather than wait forever.
         """
-        if not self._available():
+        if not await self._available():
             return None
         rc, out = await self._print()
         return None if rc != 0 else self._parse_pid(out)
@@ -483,7 +511,7 @@ class LaunchdBackend:
         SIGTERM has before SIGKILL. This is safe to call from inside the process
         being restarted, since launchd performs both the signal and the respawn.
         """
-        if not restart_contract_current(self.plist_path()):
+        if not await _off_loop(restart_contract_current, self.plist_path()):
             return False, (
                 "launchd agent restart contract is outdated; re-run "
                 "`kirocrew service install`"
@@ -547,7 +575,7 @@ class LaunchdBackend:
         except _UnsafeTargetValue as exc:
             return False, "unsafe_path", f"unsafe value in live target: {exc}"
         try:
-            write_live_program(content, self.live_program())
+            await _off_loop(write_live_program, content, self.live_program())
         except OSError as exc:
             return False, "write_failed", f"failed to write live launcher: {exc}"
         return True, "", ""
@@ -800,18 +828,22 @@ class ForegroundBackend:
     # -- protocol subset (status / identity / restart / plan) --
     async def status(self) -> str:
         """``ok`` when a restart can actually be attempted on this host."""
-        if self._confinement() is not None:
-            return "backend_confined"
-        located = self._locate()
-        if located is None:
-            return "no_foreground_gateway"
-        if self._resolve_binary(located[0]) is None:
-            return "no_kirocrew_binary"
-        return STATUS_OK
+
+        def _probe() -> str:
+            if self._confinement() is not None:
+                return "backend_confined"
+            located = self._locate()
+            if located is None:
+                return "no_foreground_gateway"
+            if self._resolve_binary(located[0]) is None:
+                return "no_kirocrew_binary"
+            return STATUS_OK
+
+        return await _off_loop(_probe)
 
     async def start_id(self) -> "str | None":
         """The recorded gateway pid, or ``None`` (callers degrade, never wait)."""
-        located = self._locate()
+        located = await _off_loop(self._locate)
         return None if located is None else str(located[1])
 
     async def restart_detached(self) -> "tuple[bool, str]":
@@ -822,27 +854,32 @@ class ForegroundBackend:
         failure nothing has been signalled — the incumbent keeps running and
         the caller keeps the manual advisory.
         """
-        confined = self._confinement()
-        if confined is not None:
-            # A replacement spawned from inside the sandbox/cgroup scope would
-            # inherit that confinement for the gateway's whole lifetime — and a
-            # scope kill mid-restart could strand the host with no gateway.
-            return False, confined
-        located = self._locate()
-        if located is None:
-            return False, "no single live foreground gateway to restart"
-        port, _pid = located
-        kcbin = self._resolve_binary(port)
-        if kcbin is None:
-            return False, "kirocrew binary could not be resolved"
-        # --port pins the restart to the gateway the marker names, exactly as
-        # cli_server passes the resolved port to its own detached spawn — the
-        # child must not re-resolve and disagree.
-        try:
-            self._spawn([kcbin, "restart", "--port", str(port)])
-        except OSError as exc:
-            return False, f"could not establish detached restart: {exc}"[:200]
-        return True, ""
+        def _restart_sync() -> "tuple[bool, str]":
+            confined = self._confinement()
+            if confined is not None:
+                # A replacement spawned from inside the sandbox/cgroup scope would
+                # inherit that confinement for the gateway's whole lifetime — and a
+                # scope kill mid-restart could strand the host with no gateway.
+                return False, confined
+            located = self._locate()
+            if located is None:
+                return False, "no single live foreground gateway to restart"
+            port, _pid = located
+            kcbin = self._resolve_binary(port)
+            if kcbin is None:
+                return False, "kirocrew binary could not be resolved"
+            # --port pins the restart to the gateway the marker names, exactly as
+            # cli_server passes the resolved port to its own detached spawn — the
+            # child must not re-resolve and disagree.
+            try:
+                self._spawn([kcbin, "restart", "--port", str(port)])
+            except OSError as exc:
+                return False, f"could not establish detached restart: {exc}"[:200]
+            return True, ""
+
+        # cgroup read, marker scan, launcher stats, log open and the Popen itself
+        # are all blocking: one executor hop for the whole act.
+        return await _off_loop(_restart_sync)
 
     def plan(self, worktree: Path, kcbin: Path) -> dict:
         """Describe — without mutating anything — how the restart would run."""

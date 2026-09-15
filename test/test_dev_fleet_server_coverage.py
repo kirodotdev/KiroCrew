@@ -8,6 +8,7 @@ Everything is injected: no real git, no real subprocess, no network, and no
 writes outside ``tmp_path``. Where the module reads its config home the
 loader's ``config_dir`` is patched, so nothing touches the real one.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -143,6 +144,7 @@ def test_load_dev_fleet_cfg_ignores_unusable_files(monkeypatch, tmp_path):
 
 def test_load_dev_fleet_cfg_config_dir_failure_is_empty(monkeypatch):
     """A config home that cannot be resolved yields {} rather than an error."""
+
     def _boom():
         raise RuntimeError("no home")
 
@@ -2001,24 +2003,6 @@ async def test_worktree_remove_handler_forwards_force(monkeypatch):
     remove.assert_awaited_once_with("feat", True, discard_untracked_paths=None)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("bad", ["\x00", "a\x00b", "", 7])
-async def test_make_live_handler_rejects_malformed_expected_staged(monkeypatch, bad):
-    """A NUL byte in expected_staged would reach Path.resolve() and raise
-    ValueError into a 500; the handler must refuse it (and the other
-    malformed shapes) with a 400 before _make_live ever runs."""
-    _sel_capture(monkeypatch)
-    make_live = AsyncMock(return_value={"ok": True})
-    monkeypatch.setattr(live, "_make_live", make_live)
-
-    resp = await http_api.api_dev_fleet_make_live(
-        _json_request({"path": "/w/x", "expected_staged": bad})
-    )
-    assert resp.status == 400
-    assert "expected_staged" in json.loads(resp.text)["error"]
-    make_live.assert_not_awaited()
-
-
 def test_same_path_survives_unresolvable_operands(tmp_path):
     """Defense in depth behind the handler gate: an operand Path.resolve()
     rejects (embedded NUL, or a symlink loop — RuntimeError on some
@@ -2193,42 +2177,6 @@ async def test_sync_handler_success_is_200(monkeypatch):
     assert resp.status == 200
 
 
-# --------------------------------------------------------------------------
-# make-live handler
-# --------------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_make_live_handler_requires_path(monkeypatch):
-    _sel_capture(monkeypatch)
-    resp = await http_api.api_dev_fleet_make_live(_json_request({"path": ""}))
-    assert resp.status == 400
-    assert "non-empty string" in json.loads(resp.text)["error"]
-
-
-@pytest.mark.asyncio
-async def test_make_live_handler_rejects_non_bool_dry_run(monkeypatch):
-    _sel_capture(monkeypatch)
-    resp = await http_api.api_dev_fleet_make_live(_json_request({"path": "/w", "dry_run": "1"}))
-    assert resp.status == 400
-    assert "dry_run must be a boolean" in json.loads(resp.text)["error"]
-
-
-@pytest.mark.asyncio
-async def test_make_live_handler_forwards_dry_run(monkeypatch):
-    sink = _sel_capture(monkeypatch)
-    make_live = AsyncMock(return_value={"ok": True, "dry_run": True})
-    monkeypatch.setattr(live, "_make_live", make_live)
-
-    resp = await http_api.api_dev_fleet_make_live(_json_request({"path": "/w", "dry_run": True}))
-    assert resp.status == 200
-    make_live.assert_awaited_once_with(
-        "/w", True, expected_staged=None, undo=False
-    )
-    assert sink.events[0]["resources"] == "/w"
-
-
-# --------------------------------------------------------------------------
-# _audited
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_audited_bodyless_request_has_empty_target(monkeypatch):
     sink = _sel_capture(monkeypatch)
@@ -2670,7 +2618,8 @@ def test_create_app_exposes_health_on_both_paths():
     app = mod.create_app()
     paths = {r.resource.canonical for r in app.router.routes() if r.resource is not None}
     assert {"/health", "/api/health"} <= paths
-    assert "/api/make-live" in paths
+    # The cutover moved to the gateway process (gateway_routes.py).
+    assert "/api/make-live" not in paths
 
 
 def test_main_runs_the_app_on_loopback(monkeypatch):
@@ -2826,8 +2775,9 @@ def test_dir_size_bytes_does_not_follow_a_directory_link():
                 return True
             return real_is_link_or_junction(path)
 
-        with mock.patch.object(os.DirEntry, "is_dir", fake_is_dir), mock.patch.object(
-            fleet_state_mod, "is_link_or_junction", fake_is_link_or_junction
+        with (
+            mock.patch.object(os.DirEntry, "is_dir", fake_is_dir),
+            mock.patch.object(fleet_state_mod, "is_link_or_junction", fake_is_link_or_junction),
         ):
             size = fleet_state_mod._dir_size_bytes(str(root))
 
@@ -4277,3 +4227,197 @@ async def test_removal_failure_after_discard_says_files_were_discarded(monkeypat
     assert "could not remove the worktree" in res["error"]
     # git's own reason is preserved, not swallowed by the wrapper text
     assert "Permission denied" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_discard_waits_for_a_fresh_lease_proof_and_deletes_nothing_when_refused(
+    monkeypatch,
+):
+    """When a discard is pending, the approved deletion is the point of no return — so
+    the lease is proven FRESH (a renewal through the gateway) immediately before it. A
+    gateway that will not renew must leave every file in place and say so."""
+    cleaned: list[tuple] = []
+
+    def discard_spy(worktree, rel_paths):
+        cleaned.append((worktree, list(rel_paths)))
+        return None
+
+    monkeypatch.setattr(repository, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        return "a" * 40
+
+    git_ran: list[list] = []
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "probe.py\0", "")
+        if "remove" in cmd:
+            git_ran.append(cmd)
+            return (0, "", "")
+        return (0, "", "")
+
+    async def acquire(path: str):
+        return "cap-x"
+
+    async def renew(token: str) -> bool:
+        return False  # the gateway forgot the lease before the discard
+
+    async def release(token: str) -> None:
+        pass
+
+    live.install_removal_lease_client((acquire, renew, release))
+    try:
+        with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+            res = await worktree_ops._worktree_remove_locked(
+                "feat", force=True, discard_untracked_paths=["probe.py"]
+            )
+    finally:
+        live.install_removal_lease_client(None)
+    assert res["ok"] is False
+    assert "left in place" in res["error"] and "nothing was deleted" in res["error"]
+    assert cleaned == [], "the discard must not run without a fresh lease proof"
+    assert git_ran == []
+
+
+@pytest.mark.asyncio
+async def test_lease_refusal_after_the_discard_says_the_files_are_gone(monkeypatch):
+    """If the gateway stops renewing between the discard and the git spawn, the
+    pre-spawn gate refuses — and the report must say the discard already happened,
+    never a bland 'retry'."""
+    cleaned: list[tuple] = []
+
+    def discard_spy(worktree, rel_paths):
+        cleaned.append((worktree, list(rel_paths)))
+        return None
+
+    monkeypatch.setattr(repository, "_discard_untracked_files", discard_spy)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "" if cleaned else "probe.py\0", "")
+        if "remove" in cmd:
+            gate = kw.get("pre_spawn")
+            refusal = await gate() if gate else None
+            if refusal is not None:
+                return (-1, "", refusal)
+            raise AssertionError("git must not run after a refused gate")
+        return (0, "", "")
+
+    answers = [True, False]  # first proof (pre-discard) ok; pre-spawn proof refused
+
+    async def acquire(path: str):
+        return "cap-y"
+
+    async def renew(token: str) -> bool:
+        return answers.pop(0) if answers else False
+
+    async def release(token: str) -> None:
+        pass
+
+    live.install_removal_lease_client((acquire, renew, release))
+    try:
+        with _remove_stubs(git=git, run_cmd=run_cmd, pr_state="MERGED", own=0):
+            res = await worktree_ops._worktree_remove_locked(
+                "feat", force=True, discard_untracked_paths=["probe.py"]
+            )
+    finally:
+        live.install_removal_lease_client(None)
+    assert res["ok"] is False
+    assert cleaned, "the discard ran under a fresh proof"
+    assert "discarded 1 untracked file(s)" in res["error"]
+    assert "could not confirm that no cutover overlaps this removal" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_partial_discard_failure_reports_the_files_already_deleted(monkeypatch, tmp_path):
+    """The per-file helper can delete N-1 approved files and then fail on the Nth.
+    That refusal is not a no-op and must say how many are already gone."""
+    (tmp_path / "keep.txt").write_text("x")  # the one the helper "failed" on
+
+    ran = {"v": False}
+
+    def discard_partial(worktree, rel_paths):
+        ran["v"] = True
+        return "could not discard 'keep.txt': Permission denied"
+
+    monkeypatch.setattr(repository, "_discard_untracked_files", discard_partial)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            listing = "keep.txt\0" if ran["v"] else "a.txt\0b.txt\0keep.txt\0"
+            return (0, listing, "")
+        if "worktree" in cmd and "remove" in cmd:
+            raise AssertionError("removal must not run after a refused discard")
+        return (0, "", "")
+
+    with _remove_stubs(
+        git=git,
+        run_cmd=run_cmd,
+        pr_state="MERGED",
+        own=0,
+        target={"path": str(tmp_path), "branch": "feat/x", "is_main": False},
+    ):
+        res = await worktree_ops._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["a.txt", "b.txt", "keep.txt"]
+        )
+    assert res["ok"] is False
+    assert "Permission denied" in res["error"]
+    assert "2 of 3 approved untracked file(s) were already deleted" in res["error"]
+    assert "removal aborted" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_post_discard_dirt_reports_the_approved_files_as_gone(monkeypatch, tmp_path):
+    """Every approved file was deleted, then a new untracked file is found: the
+    refusal must not read as if nothing happened."""
+
+    ran = {"v": False}
+
+    def discard_ok(worktree, rel_paths):
+        ran["v"] = True
+        return None
+
+    monkeypatch.setattr(repository, "_discard_untracked_files", discard_ok)
+
+    async def git(path, *args, **kw):
+        sub = args[0] if args else ""
+        if sub == "status":
+            return ""
+        return "a" * 40
+
+    async def run_cmd(cmd, timeout=None, **kw):
+        if "ls-files" in cmd:
+            return (0, "fresh.log\0" if ran["v"] else "a.txt\0", "")  # appeared after approval
+        if "worktree" in cmd and "remove" in cmd:
+            raise AssertionError("removal must not run after a refused discard")
+        return (0, "", "")
+
+    with _remove_stubs(
+        git=git,
+        run_cmd=run_cmd,
+        pr_state="MERGED",
+        own=0,
+        target={"path": str(tmp_path), "branch": "feat/x", "is_main": False},
+    ):
+        res = await worktree_ops._worktree_remove_locked(
+            "feat", force=True, discard_untracked_paths=["a.txt"]
+        )
+    assert res["ok"] is False
+    assert "1 untracked file(s) remain" in res["error"]
+    assert "1 of 1 approved untracked file(s) were already deleted" in res["error"]

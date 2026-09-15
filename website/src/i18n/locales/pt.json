@@ -10715,6 +10715,8 @@
       "design_docs": "Documentos de design:",
       "dev_fleet": "Frota Dev",
       "discovery_error": "Erro de descoberta",
+      "live_state_unknown": "Estado ativo indisponível",
+      "live_state_unknown_help": "O gateway não conseguiu informar qual checkout está ativo ou preparado, por isso nenhuma linha aparece como ativa — o estado é desconhecido, não vazio. “Ativar” fica desativado até o gateway responder; use o link “Perguntar ao agente” deste aviso.",
       "disk": "Disco:",
       "disk_worktrees": "Disco (worktrees)",
       "dismiss": "Descartar",

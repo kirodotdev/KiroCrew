@@ -81,7 +81,6 @@ src/kiro_crew/apps/builtins/crew_companion/tests/test_store.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_write_failures.py
 src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py
 src/kiro_crew/apps/builtins/dev_fleet/gateway_service.py
-src/kiro_crew/apps/builtins/dev_fleet/server.py
 src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-playwright.py
 src/kiro_crew/apps/builtins/issue_radar/backend/crew_routes.py
 src/kiro_crew/apps/builtins/issue_radar/backend/crew_store.py
@@ -585,7 +584,6 @@ test/test_design_tweak_relay_paths.py
 test/test_dev_fleet_app.py
 test/test_dev_fleet_node_toolchain.py
 test/test_dev_fleet_repo_accessor.py
-test/test_dev_fleet_server_coverage.py
 test/test_dev_fleet_server_more_coverage.py
 test/test_diagnostics.py
 test/test_discord_client_coverage.py
@@ -697,7 +695,6 @@ test/test_lesson_contradiction.py
 test/test_lesson_ranking.py
 test/test_lifecycle_hooks.py
 test/test_link_dashboard.py
-test/test_live_target.py
 test/test_llm_pool.py
 test/test_local_gate.py
 test/test_loopback_proxy.py

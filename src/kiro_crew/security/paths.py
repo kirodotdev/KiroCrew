@@ -261,6 +261,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # backend opens it directly rather than through this gate, so writes keep
     # working.
     "md-notebook-staging",
+    # Where the sandbox launcher stages the live-target pointer's absent-equivalent
+    # stub before linking it into place. Classified as the whole DIRECTORY so the
+    # in-flight temp is never a visible, linkable name: a second hard link to that
+    # inode would be an unmasked path to the bytes the gateway executes. Only the
+    # gateway process writes here.
+    "live-target-staging",
     # The AWS Control builtin's app data directory. ``backup.json`` in here holds
     # ``nightly``, the bit that AUTHORIZES the app's startup loop to upload the
     # gateway's memory and workspace to S3 unattended, so a prompt-injected agent
@@ -460,9 +466,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # resolved during startup and exec'd into, so a writable one is arbitrary
     # code execution in the gateway's own identity — the agent must not be able
     # to author it, and must not be able to read it back to discover a target to
-    # aim at either. Only the human-driven dashboard cutover writes it, and the
-    # gateway's own startup reader opens it directly rather than through this
-    # gate, so both keep working.
+    # aim at either. The GATEWAY process writes it (Dev Fleet's in-gateway
+    # cutover route, on the dashboard owner's request); the sandboxed Dev Fleet
+    # backend does not touch the file at all and reads pointer state through
+    # that route. The gateway's own startup reader opens it directly rather than
+    # through this gate, so both keep working.
     "live_target.json",
     # Holds `backup/redaction.json`, the switch that decides whether a bundle
     # leaving this machine is redacted first. An agent that could write it would

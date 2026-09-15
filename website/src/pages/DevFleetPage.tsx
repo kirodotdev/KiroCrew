@@ -754,7 +754,7 @@ interface Worktree {
   pod_resources?: PodResources | null
 }
 interface UndoTarget { name: string; path: string }
-interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; manual_restart?: string; fleet_totals?: FleetTotals }
+interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; live_state_known?: boolean; manual_restart?: string; fleet_totals?: FleetTotals }
 // `lastIsCause` distinguishes the two things `last` can hold. A gateway-composed
 // diagnosis is decision-critical prose ending in the action to take, so it must
 // not render in the muted 11.5px monospace the raw log tail uses.
@@ -1049,6 +1049,12 @@ export default function DevFleetPage() {
   // row (the busy flag is per-worktree, the hazard is process-wide).
   const makeLivePending = Object.entries(busy).some(([k, v]) => v && k.endsWith(':makelive'))
   const gatewayMutating = restarting || makeLivePending
+  // The gateway could not report which checkout is live or staged (see the notice
+  // above the rows). With no row marked live, the "not live" guard on Make live would
+  // otherwise offer a cutover on every row — the already-live one included — chosen
+  // against a state nobody knows. Make live is disabled for the whole outage; the
+  // notice's Ask-the-agent hand-off is the recovery path.
+  const liveStateUnknown = fleet?.live_state_known === false
   // The worktree a cutover is staged onto (live-target pointer written, gateway
   // not yet restarted into it), but only while the backend would ACCEPT the
   // pointer-only cancel: on a drivable host /make-live refuses it
@@ -1252,7 +1258,7 @@ export default function DevFleetPage() {
             notify(i18nT('pages.devFleetPage.build_finished_restarting_gateway'), { type: 'success' })
             setRestarting(true)
             setGatewayError(null)
-            api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
+            api.postGateway<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
               .then(async (r) => {
                 if (!r?.ok) {
                   const msg = r?.error || i18nT('pages.devFleetPage.restart_failed')
@@ -1640,7 +1646,7 @@ export default function DevFleetPage() {
     setRestarting(true)
     setGatewayError(null)
     try {
-      const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
+      const r = await api.postGateway<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
       if (!r?.ok) {
         const msg = r?.error || i18nT('pages.devFleetPage.restart_failed')
         notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false); return
@@ -1695,7 +1701,7 @@ export default function DevFleetPage() {
     if (!ok) return
     setFlag(w.name + ':makelive', true)
     try {
-      const r = await api.post<{
+      const r = await api.postGateway<{
         ok?: boolean; error?: string; start_id?: string | null
         staged_only?: boolean; cancelled?: boolean; notice?: string
       }>('/make-live', cancellingStage && stagedWorktree?.path
@@ -1910,7 +1916,13 @@ export default function DevFleetPage() {
         // back. Consistent with makeLive()'s guard: shown iff the row is NOT live.
         if (!w.is_live && !w.is_staged) {
           out.push(
-            <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}>
+            <Btn
+              key="makelive"
+              onClick={() => makeLive(w)}
+              disabled={gatewayMutating || liveStateUnknown}
+              title={liveStateUnknown ? i18nT('pages.devFleetPage.live_state_unknown') : i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}
+              data-testid={liveStateUnknown ? 'fleet-make-live-disabled-unknown' : undefined}
+            >
               {iconLabel(<Rocket size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.make_live'))}
             </Btn>
           )
@@ -1956,7 +1968,7 @@ export default function DevFleetPage() {
       // hide it on exactly the hosts it exists to serve.
       // Hidden on the already-staged row: there it only re-stages, and next
       // to Cancel staged cutover it misreads as "complete the cutover now".
-      !w.is_live && !w.is_staged ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
+      !w.is_live && !w.is_staged ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating || liveStateUnknown, title: liveStateUnknown ? i18nT('pages.devFleetPage.live_state_unknown') : i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
       // The cancel counterpart: only while THIS row is live and a cutover is
       // staged onto another worktree. Ungated on podsAvailable for the same
       // reason as Make live — cancelling touches only the live-target pointer.
@@ -2208,7 +2220,24 @@ export default function DevFleetPage() {
     ? <ErrorNotice title={i18nT('pages.devFleetPage.discovery_error')} message={error} askAgent testId="fleet-discovery-error" />
     : <ErrorNotice title={i18nT('pages.devFleetPage.backend_unavailable')} message={error} askAgent testId="fleet-backend-error" />
   else if (!wts.length) body = <EmptyState icon={<Server size={28} className="lucide-inline" />} title={i18nT('pages.devFleetPage.no_worktrees_found')} subtitle={i18nT('pages.devFleetPage.nothing_under_the_worktrees_root_yet')} />
-  else body = <div>{columnHeader}{visible.map(renderRow)}{legacyToggle}</div>
+  // Worktrees are discovered from git independently of the live-target pointer,
+  // so a gateway that cannot report which checkout is live still yields rows.
+  // Rendering those rows with no badge would read as "nothing is live" — the
+  // opposite remedy (stage a cutover) from the true one (check the gateway) — so
+  // the unknown state is an error notice above the list, never a bare list.
+  else body = (
+    <div>
+      {fleet?.live_state_known === false && (
+        <ErrorNotice
+          title={i18nT('pages.devFleetPage.live_state_unknown')}
+          message={i18nT('pages.devFleetPage.live_state_unknown_help')}
+          askAgent
+          testId="fleet-live-state-unknown"
+        />
+      )}
+      {columnHeader}{visible.map(renderRow)}{legacyToggle}
+    </div>
+  )
 
   const confirmDialog = (
     <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{confirmReq?.cancelLabel || i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || i18nT('pages.devFleetPage.confirm')}</Btn></>}>

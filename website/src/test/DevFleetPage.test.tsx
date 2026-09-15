@@ -502,6 +502,49 @@ describe('DevFleetPage', () => {
     }
   })
 
+  it('renders the live-state-unknown notice above the rows when the gateway could not report pointer state', async () => {
+    // A broker outage yields rows (git still enumerates worktrees) but no
+    // live/staged badge. Without the notice that reads as "nothing is live", the
+    // opposite remedy from the true one — so the notice must be present, and
+    // the rows must still render beneath it.
+    const FLEET_UNKNOWN = { ...FLEET, live_state_known: false }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_UNKNOWN), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    const notice = await waitFor(() => screen.getByTestId('fleet-live-state-unknown'))
+    expect(notice.textContent).toMatch(/live state unavailable/i)
+    expect(notice.textContent).toMatch(/unknown, not empty/i)
+    expect(screen.getByText('feature-x')).toBeInTheDocument()
+    // The notice precedes the first row in document order.
+    const row = screen.getByText('feature-x')
+    expect(notice.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // With no row marked live, the "not live" guard would offer Make live on every
+    // row, the already-live one included. During the outage the control is
+    // disabled; its tooltip is the notice's short title (the long help names "this
+    // notice", which a tooltip has no view of).
+    const makeLive = screen.getByTestId('fleet-make-live-disabled-unknown') as HTMLButtonElement
+    expect(makeLive.disabled).toBe(true)
+    expect(makeLive.title).toMatch(/live state unavailable/i)
+  })
+
+  it('does not render the live-state-unknown notice when the pointer state was read', async () => {
+    const FLEET_KNOWN = { ...FLEET, live_state_known: true }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_KNOWN), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => screen.getByText('feature-x'))
+    expect(screen.queryByTestId('fleet-live-state-unknown')).toBeNull()
+    expect(screen.queryByTestId('fleet-make-live-disabled-unknown')).toBeNull()
+  })
+
   it('shows build-pending chip when fleet.build_pending is true', async () => {
     const FLEET_BP = { ...FLEET, build_pending: true }
     vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {

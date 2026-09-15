@@ -1805,9 +1805,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/backend/routes.py",
         # Dev Fleet's redactor wrapper and the cohesive owners that apply it to
         # the app's own API/state/worktree surfaces, all carrying the same
-        # non-core-egress classification.
+        # non-core-egress classification. `gateway_routes` is the same surface
+        # served from the gateway process (the live-target cutover), redacting
+        # the target path and error text bound for its SEL record and JSON reply.
         "apps/builtins/dev_fleet/runtime.py",
         "apps/builtins/dev_fleet/http_api.py",
+        "apps/builtins/dev_fleet/gateway_routes.py",
         "apps/builtins/dev_fleet/fleet_state.py",
         "apps/builtins/dev_fleet/repository.py",
         "apps/builtins/dev_fleet/live.py",

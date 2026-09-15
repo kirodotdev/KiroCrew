@@ -6574,6 +6574,8 @@
       "design_docs": "Design docs:",
       "dev_fleet": "Dev Fleet",
       "discovery_error": "Discovery Error",
+      "live_state_unknown": "Live state unavailable",
+      "live_state_unknown_help": "The gateway couldn't report which checkout is live or staged, so no row is marked live — this is unknown, not empty. Make live is disabled until the gateway answers; use the Ask the agent link in this notice.",
       "disk": "Disk:",
       "disk_worktrees": "Disk (worktrees)",
       "dismiss": "Dismiss",

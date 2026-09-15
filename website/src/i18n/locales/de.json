@@ -10558,6 +10558,8 @@
       "design_docs": "Design-Dokumente:",
       "dev_fleet": "Dev Fleet",
       "discovery_error": "Fehler bei der Erkennung",
+      "live_state_unknown": "Live-Status nicht verfügbar",
+      "live_state_unknown_help": "Das Gateway konnte nicht melden, welcher Checkout live oder vorgemerkt ist; deshalb ist keine Zeile als live markiert — der Zustand ist unbekannt, nicht leer. „Live schalten“ ist deaktiviert, bis das Gateway antwortet; nutze den Link „Agent fragen“ in diesem Hinweis.",
       "disk": "Datenträger:",
       "disk_worktrees": "Datenträger (Worktrees)",
       "dismiss": "Schließen",

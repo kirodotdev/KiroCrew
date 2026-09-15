@@ -209,6 +209,8 @@ def _neutralise_outside_process_work(monkeypatch) -> dict[str, Any]:
     spies: dict[str, Any] = {
         # Spawns a real backend process per enabled app.
         "start_enabled_app_backends": MagicMock(return_value=[]),
+        # The bound-port wave (Dev Fleet) — spawned after the site is bound.
+        "start_deferred_app_backends": MagicMock(return_value=[]),
         # Writes into the apps dir and re-materialises builtin manifests.
         "register_builtin_apps": MagicMock(),
         # Rewrites the operator's REAL ~/.kiro/settings/mcp.json — the one step
@@ -402,6 +404,43 @@ class TestStartDashboardWiring:
             assert runner.app["state"] is state
             assert runner.app["port"] == 0
             assert state.resume_channel_agents is None
+
+    @pytest.mark.asyncio
+    async def test_bound_port_backends_start_only_after_the_export_and_the_rest_before_setup(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Two waves, one contract each. The main wave runs before ``runner.setup()``
+        so an app's startup hooks find its backend running, and it DEFERS the apps
+        that need the gateway's actually-bound port at spawn. Those start only after
+        ``_export_bound_port`` created ``KIROCREW_BOUND_PORT`` — a Dev Fleet backend
+        spawned earlier would have no port for its whole lifetime (pointer broker
+        unconfigured: "live state unknown", removals refusing) until a restart."""
+        seen: dict[str, bool] = {}
+        real_export = srv._export_bound_port
+
+        def _export(runner, port):
+            seen["main_wave_before_export"] = srv.start_enabled_app_backends.called
+            seen["deferred_wave_before_export"] = srv.start_deferred_app_backends.called
+            return real_export(runner, port)
+
+        monkeypatch.setattr(srv, "_export_bound_port", _export)
+        real_setup = web.AppRunner.setup
+
+        async def _setup(self_runner):
+            seen["main_wave_before_setup"] = srv.start_enabled_app_backends.called
+            return await real_setup(self_runner)
+
+        monkeypatch.setattr(web.AppRunner, "setup", _setup)
+        async with _dashboard(tmp_path, monkeypatch) as (_runner, _state, spies):
+            assert seen == {
+                "main_wave_before_setup": True,
+                "main_wave_before_export": True,
+                "deferred_wave_before_export": False,
+            }
+            import kiro_crew.apps.backend as backend_mod
+
+            assert backend_mod.DEV_FLEET_APP_NAME == "dev-fleet"
+            assert spies["start_deferred_app_backends"].called
 
     @pytest.mark.asyncio
     async def test_gateway_launch_can_defer_restored_channel_agents(

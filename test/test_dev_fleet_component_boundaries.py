@@ -124,8 +124,10 @@ def test_route_manifest_and_http_adapter_ownership_are_stable() -> None:
         ("POST", "/api/pod/provision", "api_dev_fleet_pod_provision"),
         ("POST", "/api/pod/provision/dismiss", "api_dev_fleet_pod_provision_dismiss"),
         ("POST", "/api/rebase", "api_dev_fleet_rebase"),
-        ("POST", "/api/restart-gateway", "api_dev_fleet_restart_gateway"),
-        ("POST", "/api/make-live", "api_dev_fleet_make_live"),
+        # NOT here: /api/restart-gateway and /api/make-live. They touch the live-target
+        # pointer (or its cutover latch), which is masked from this sandboxed backend and
+        # every child it spawns; the gateway process serves them under
+        # /api/apps/dev-fleet/ (gateway_routes.py, pinned by test_dev_fleet_gateway_routes).
     ]
     actual = [
         (route.method, route.resource.canonical, route.handler.__name__)

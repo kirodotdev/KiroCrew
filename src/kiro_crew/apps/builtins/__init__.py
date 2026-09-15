@@ -7,6 +7,9 @@ BUILTIN_NAMES: list[str] = [
     "code_review_sage",
     "crew_companion",
     "design_critique",
+    # Spawned backend AND in-gateway routes: the live-target cutover must run in the
+    # gateway process (gateway_routes.py), so the package exports register_routes.
+    "dev_fleet",
     "issue_radar",
     "meetings",
     "ops_mission_control",

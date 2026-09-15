@@ -360,9 +360,28 @@ async def api_dev_fleet_prune_run(request: web.Request) -> web.Response:
         # Per-item _MAKE_LIVE_LOCK is held inside _prune_one for each forced
         # removal (recheck + _worktree_remove atomically), preventing a
         # concurrent /make-live from staging between check and deletion.
-        live_path = await live._live_worktree_path()
+        try:
+            live_path = await live._live_worktree_path()
+            staged_path = await live._staged_target_resolved()
+        except live.PointerUnavailable as exc:
+            # The protected set cannot be computed without the pointer state; a
+            # forced removal screened against "nothing is live" could delete a
+            # staged cutover target. Refuse the whole request instead.
+            runtime.logger.warning(
+                "prune-run: live-target state unavailable: %s", runtime._redact(str(exc))
+            )
+            return web.json_response(
+                {
+                    "ok": False,
+                    "code": "live_target_unavailable",
+                    "error": (
+                        "cannot verify which checkout is live or staged "
+                        "-- retry when the gateway answers"
+                    ),
+                },
+                status=503,
+            )
         live_name = Path(live_path).name if live_path else None
-        staged_path = live._staged_target()
         staged_name = Path(staged_path).name if staged_path else None
         guarded: set[str] = set()
         for nm in overrides:
@@ -592,56 +611,10 @@ async def api_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "start_id": await live._gateway_start_id()})
 
 
-@_audited("dev_fleet_restart_gateway")
-async def api_dev_fleet_restart_gateway(request: web.Request) -> web.Response:
-    result = await live._restart_gateway()
-    return web.json_response(result)
-
-
-@_audited("dev_fleet_make_live")
-async def api_dev_fleet_make_live(request: web.Request) -> web.Response:
-    body, err = await _json_body(request)
-    if err is not None:
-        return err
-    assert body is not None
-    path = body.get("path")
-    if not isinstance(path, str) or not path:
-        return web.json_response({"error": "'path' must be a non-empty string"}, status=400)
-    dry_run = body.get("dry_run")
-    if dry_run is not None and not isinstance(dry_run, bool):
-        return web.json_response({"error": "dry_run must be a boolean"}, status=400)
-    undo = body.get("undo")
-    if undo is not None and not isinstance(undo, bool):
-        return web.json_response(
-            {"code": "invalid_undo", "error": "undo must be a boolean"}, status=400
-        )
-    expected_staged = body.get("expected_staged")
-    if expected_staged is not None and (
-        not isinstance(expected_staged, str) or not expected_staged or "\x00" in expected_staged
-    ):
-        return web.json_response(
-            {
-                "code": "invalid_expected_staged",
-                "error": "expected_staged must be a non-empty string " "without NUL bytes",
-            },
-            status=400,
-        )
-    if undo is True and expected_staged is not None:
-        return web.json_response(
-            {
-                "code": "undo_conflicts_with_expected_staged",
-                "error": "undo and expected_staged are mutually exclusive",
-            },
-            status=400,
-        )
-    return web.json_response(
-        await live._make_live(
-            path,
-            dry_run is True,
-            expected_staged=expected_staged,
-            undo=undo is True,
-        )
-    )
+# NOT here: the make-live and restart-gateway handlers. Both reach the live-target
+# pointer (or the cutover latch that guards it), which this sandboxed backend must
+# never touch — see gateway_routes.py, where they run in the gateway process behind
+# the dashboard owner's own request.
 
 
 __all__ = (
@@ -656,7 +629,6 @@ __all__ = (
     "_with_live_run_pointers",
     "api_dev_fleet_disk",
     "api_dev_fleet_fleet",
-    "api_dev_fleet_make_live",
     "api_dev_fleet_pod_down",
     "api_dev_fleet_pod_logs",
     "api_dev_fleet_pod_provision",
@@ -668,7 +640,6 @@ __all__ = (
     "api_dev_fleet_prune_run",
     "api_dev_fleet_prune_status",
     "api_dev_fleet_rebase",
-    "api_dev_fleet_restart_gateway",
     "api_dev_fleet_run",
     "api_dev_fleet_sync",
     "api_dev_fleet_worktree",

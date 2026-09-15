@@ -10715,6 +10715,8 @@
       "design_docs": "Documentos de diseño:",
       "dev_fleet": "Flota de desarrollo",
       "discovery_error": "Error de detección",
+      "live_state_unknown": "Estado en vivo no disponible",
+      "live_state_unknown_help": "El gateway no pudo indicar qué checkout está en vivo o preparado, así que ninguna fila aparece como en vivo: el estado es desconocido, no vacío. «Poner en vivo» está desactivado hasta que el gateway responda; usa el enlace «Preguntar al agente» de este aviso.",
       "disk": "Disco:",
       "disk_worktrees": "Disco (worktrees)",
       "dismiss": "Descartar",

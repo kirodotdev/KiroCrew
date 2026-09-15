@@ -22,7 +22,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import (
@@ -969,18 +968,6 @@ async def test_restart_gateway_refuses_confined_status(monkeypatch):
     assert "kirocrew restart" in out["error"]
 
 
-@pytest.mark.asyncio
-async def test_restart_gateway_handler_returns_result(monkeypatch):
-    monkeypatch.setattr(runtime, "_sel", lambda: _NullSel())
-    monkeypatch.setattr(live, "_restart_gateway", AsyncMock(return_value={"ok": True}))
-
-    request = make_mocked_request("POST", "/api/restart-gateway")
-    resp = await http_api.api_dev_fleet_restart_gateway(request)
-
-    assert resp.status == 200
-    assert json.loads(resp.text) == {"ok": True}
-
-
 class _NullSel:
     def log_tool_invocation(self, **kw) -> None:  # pragma: no cover - sink
         pass
@@ -997,94 +984,6 @@ def _body_request(raw: bytes) -> MagicMock:
     request.content_length = len(raw)
     request.can_read_body = True
     return request
-
-
-@pytest.mark.asyncio
-async def test_make_live_handler_rejects_unparseable_body(monkeypatch):
-    monkeypatch.setattr(runtime, "_sel", lambda: _NullSel())
-    monkeypatch.setattr(live, "_make_live", AsyncMock(side_effect=RuntimeError))
-
-    resp = await http_api.api_dev_fleet_make_live(_body_request(b"{not json"))
-
-    assert resp.status == 400
-    assert json.loads(resp.text) == {"error": "invalid JSON body"}
-
-
-@pytest.mark.asyncio
-async def test_make_live_handler_requires_path_string(monkeypatch):
-    monkeypatch.setattr(runtime, "_sel", lambda: _NullSel())
-    monkeypatch.setattr(live, "_make_live", AsyncMock(side_effect=RuntimeError))
-    raw = json.dumps({"path": 12}).encode()
-
-    resp = await http_api.api_dev_fleet_make_live(_body_request(raw))
-
-    assert resp.status == 400
-    assert json.loads(resp.text) == {"error": "'path' must be a non-empty string"}
-
-
-@pytest.mark.asyncio
-async def test_make_live_handler_validates_dry_run_type(monkeypatch):
-    monkeypatch.setattr(runtime, "_sel", lambda: _NullSel())
-    monkeypatch.setattr(live, "_make_live", AsyncMock(side_effect=RuntimeError))
-    raw = json.dumps({"path": "/wt/feat", "dry_run": "yes"}).encode()
-
-    resp = await http_api.api_dev_fleet_make_live(_body_request(raw))
-
-    assert resp.status == 400
-    assert json.loads(resp.text) == {"error": "dry_run must be a boolean"}
-
-
-@pytest.mark.asyncio
-async def test_make_live_handler_passes_dry_run_through(monkeypatch):
-    monkeypatch.setattr(runtime, "_sel", lambda: _NullSel())
-    make_live = AsyncMock(return_value={"ok": True, "dry_run": True})
-    monkeypatch.setattr(live, "_make_live", make_live)
-    raw = json.dumps({"path": "/wt/feat", "dry_run": True}).encode()
-
-    resp = await http_api.api_dev_fleet_make_live(_body_request(raw))
-
-    assert resp.status == 200
-    make_live.assert_awaited_once_with(
-        "/wt/feat", True, expected_staged=None, undo=False
-    )
-
-
-@pytest.mark.asyncio
-async def test_make_live_handler_validates_and_passes_undo(monkeypatch):
-    monkeypatch.setattr(runtime, "_sel", lambda: _NullSel())
-    make_live = AsyncMock(return_value={"ok": True})
-    monkeypatch.setattr(live, "_make_live", make_live)
-
-    bad = await http_api.api_dev_fleet_make_live(
-        _body_request(json.dumps({"path": "/wt/main", "undo": "yes"}).encode())
-    )
-    assert bad.status == 400
-    assert json.loads(bad.text) == {
-        "code": "invalid_undo",
-        "error": "undo must be a boolean",
-    }
-
-    ambiguous = await http_api.api_dev_fleet_make_live(
-        _body_request(
-            json.dumps(
-                {
-                    "path": "/wt/main",
-                    "undo": True,
-                    "expected_staged": "/wt/feature",
-                }
-            ).encode()
-        )
-    )
-    assert ambiguous.status == 400
-    assert json.loads(ambiguous.text)["code"] == "undo_conflicts_with_expected_staged"
-
-    ok = await http_api.api_dev_fleet_make_live(
-        _body_request(json.dumps({"path": "/wt/main", "undo": True}).encode())
-    )
-    assert ok.status == 200
-    make_live.assert_awaited_once_with(
-        "/wt/main", False, expected_staged=None, undo=True
-    )
 
 
 @pytest.mark.asyncio

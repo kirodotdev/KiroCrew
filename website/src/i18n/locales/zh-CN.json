@@ -10401,6 +10401,8 @@
       "design_docs": "设计文档：",
       "dev_fleet": "开发机群",
       "discovery_error": "发现错误",
+      "live_state_unknown": "无法获取在线状态",
+      "live_state_unknown_help": "网关无法报告哪个检出处于在线或已暂存状态，因此没有任何行被标记为在线——这是“未知”，而不是“空”。在网关做出回应之前，“设为在线”处于禁用状态；请使用本提示中的“询问智能体”链接。",
       "disk": "磁盘：",
       "disk_worktrees": "磁盘（工作树）",
       "dismiss": "忽略",

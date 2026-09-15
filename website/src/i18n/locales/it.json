@@ -10715,6 +10715,8 @@
       "design_docs": "Documenti di progettazione:",
       "dev_fleet": "Dev Fleet",
       "discovery_error": "Errore di rilevamento",
+      "live_state_unknown": "Stato live non disponibile",
+      "live_state_unknown_help": "Il gateway non è riuscito a indicare quale checkout è live o in attesa, quindi nessuna riga è contrassegnata come live: lo stato è sconosciuto, non vuoto. «Rendi live» è disattivato finché il gateway non risponde; usa il link «Chiedi all'agente» in questo avviso.",
       "disk": "Disco:",
       "disk_worktrees": "Disco (worktree)",
       "dismiss": "Ignora",

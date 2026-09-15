@@ -187,6 +187,10 @@ class TestANewOwnedLeavesAppCannotSilentlySkipMaterialization:
         covered = {
             sb.MD_NOTEBOOK_APP_NAME: set(sb._MD_NOTEBOOK_PRECREATE_CONTENT)
             | {sb._MD_NOTEBOOK_STAGING_LEAF},
+            # NOT dev-fleet: its live-target pointer stays masked from its own backend
+            # (build children share that namespace — see
+            # test_sandbox_dev_fleet_live_target.py); the pointer is still materialised
+            # before every spawn, but as a mask TARGET, not as an owned leaf.
         }
         assert set(sb._APP_BACKEND_OWNED_LEAVES) == set(covered), (
             "an app gained entries in _APP_BACKEND_OWNED_LEAVES without materialisation "

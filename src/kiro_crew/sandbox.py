@@ -204,6 +204,29 @@ _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 # in none of them. Spelled here rather than imported so this low-level module keeps not
 # importing the 7k-line security module (the ``_POLICY_CACHE_LEAF`` convention above).
 
+#: The live-target pointer's file name under the crew data home.
+#:
+#: The pointer names the checkout the gateway execs into at startup, so it is masked from
+#: EVERY sandboxed process — including Dev Fleet's own backend, whose cutover runs in the gateway.
+#: That backend is a sandboxed spawn whose ``npm ci`` / build children run inside the same
+#: namespace (a nested sandbox is denied by design), so any leaf it could reach, a
+#: worktree's lifecycle script could reach too. The cutover therefore runs in the gateway
+#: process (``dev_fleet/gateway_routes.py``) and the mask here stays whole; what this
+#: module adds is a MOUNT TARGET for it (:func:`_materialize_live_target_mask_target`), so
+#: the mask is never vacuous on a host that has not pinned a target yet. Spelled here
+#: rather than imported from ``service.live_target`` to keep this low-level module free of
+#: that import chain; ``test_sandbox_dev_fleet_live_target.py`` pins the spellings equal.
+_LIVE_TARGET_LEAF: str = "live_target.json"
+#: The masked DIRECTORY the pointer's absent-equivalent stub is staged in before it is
+#: linked into place. Staging beside the target — in the data-home root — would put the
+#: temp at a name every sandbox can see: a concurrent namespace could ``link(2)`` it and
+#: keep a second, writable path to the inode the gateway later reads, and a bind mask
+#: covers a PATH, not an inode. A hidden directory covers every name inside it, present
+#: and future, so the temp is never visible; :func:`_materialize_live_target_mask_target`
+#: additionally refuses any pointer whose link count is not exactly one. Same shape and
+#: reason as ``_MD_NOTEBOOK_STAGING_LEAF`` / ``aws-control-staging``.
+_LIVE_TARGET_STAGING_LEAF: str = "live-target-staging"
+
 #: The md-notebook builtin's name, and its own state files under the crew data home.
 #: Named so the mask, the backend carve-out that lifts it, and the materialiser that
 #: gives it a mount target cannot drift apart on a literal.
@@ -314,7 +337,19 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "agentcore-inbound",
     "routing",
     "webhooks",
-    "live_target.json",
+    # The live-target pointer: it names the checkout the gateway ``execve``s into at
+    # startup, so a sandboxed process that could write it would choose the code the
+    # whole host runs next. Masked from Dev Fleet's OWN backend as well — that spawn's
+    # build children share its namespace, so a carve-out for it is a carve-out for any
+    # worktree's lifecycle script. The only writer is the gateway process (Dev Fleet's
+    # in-gateway cutover route); the backend reads pointer state through that route.
+    # Given a mount target before every spawn by
+    # :func:`_materialize_live_target_mask_target`, because an ABSENT file cannot be
+    # masked and the data-home root is writable in-sandbox.
+    _LIVE_TARGET_LEAF,
+    # Where that pointer's absent-equivalent stub is staged before being linked in; a
+    # whole-directory mask so the in-flight temp is never a visible, linkable name.
+    _LIVE_TARGET_STAGING_LEAF,
     "backup",
     "mcp-apps",
     # Named memory stores (``memory_stores.py``): one subdirectory per crew, each
@@ -509,6 +544,12 @@ def _resolved_kiro_agents_targets() -> list[str]:
 #: backend belong here — an in-process builtin (routes/hooks) runs unsandboxed in the
 #: gateway and needs no exemption.
 _APP_BACKEND_OWNED_LEAVES: dict[str, tuple[str, ...]] = {
+    # NOT here: dev-fleet's live-target pointer. Its backend is that leaf's writer, but a
+    # carve-out would reach every descendant of that long-lived spawn — a nested sandbox
+    # is denied by design, so ``wrap_argv`` runs its ``npm ci`` / build children inside
+    # the SAME namespace — and a worktree's lifecycle script could then pick the code
+    # the gateway execs next. The pointer stays masked; Dev Fleet moves the cutover to a
+    # gateway-process route instead (``dev_fleet/gateway_routes.py``).
     MD_NOTEBOOK_APP_NAME: (
         *_MD_NOTEBOOK_STATE_LEAVES,
         # The writers stage here and rename onto the leaves above, so the backend needs
@@ -838,6 +879,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # ``SENSITIVE_DIRS`` loop skips it, and the directory the backend creates later shows
     # up INSIDE that running sandbox — with the PAT staging window in it.
     _MD_NOTEBOOK_STAGING_LEAF,
+    # The live-target stub's staging directory, by the same rule: created before the
+    # first spawn so the mask has a mount target, and the temp the materialiser stages
+    # in it is never visible to a running namespace.
+    _LIVE_TARGET_STAGING_LEAF,
     # Private memory has the same late-creation hazard: an agent spawned before
     # the first member must never gain access when that member's database appears.
     "memory_stores",
@@ -869,6 +914,32 @@ _MD_NOTEBOOK_PRECREATE_CONTENT: dict[str, bytes] = {
     f"workspace/{MD_NOTEBOOK_APP_NAME}/settings.json": b"{}\n",
 }
 assert set(_MD_NOTEBOOK_PRECREATE_CONTENT) == set(_MD_NOTEBOOK_STATE_LEAVES)
+
+#: The masked live-target pointer materialised before a namespace spawn, and what it
+#: holds. Same gap as :data:`_MD_NOTEBOOK_PRECREATE_CONTENT` closes, arrived at from the
+#: opposite direction: the ``SENSITIVE_FILES`` loop guards on ``isfile``, so an ABSENT
+#: pointer gets NO mask, and a namespace that outlives the pointer's later creation sees
+#: the real file in a directory it can write. For md-notebook that gap leaks a secret; for
+#: this leaf it hands over a code-execution input — the pointer names the checkout the
+#: gateway ``execve``s into, so an agent that writes one chooses what the host runs next.
+#:
+#: That gap was never vacuous for THIS leaf: the crew data-home root is writable in every
+#: sandbox (an in-sandbox ``atomic_write`` stages its temp there), so with the pointer
+#: absent an agent shell can simply create one. The pointer's legitimate writer is now the
+#: gateway process (Dev Fleet's in-gateway cutover route); the sandboxed backend and its
+#: build children are readers at most, and only through that route.
+#:
+#: A DIRECT child of the data home, so :func:`_publish_empty_ceiling` needs no
+#: intermediate-component walk — the hazard :func:`_materialize_md_notebook_mask_targets`
+#: guards against (an agent-writable ancestor swapped for a link) has no path here.
+#:
+#: The document is the pointer's absent-equivalent by construction rather than by
+#: coincidence: ``live_target.NO_TARGET_DOCUMENT`` is defined for this purpose and
+#: ``read_target_reason`` answers ``(None, None)`` for it, exactly as for an absent file —
+#: no boot warning, no "unusable pointer" in the fleet view. Spelled as a literal here for
+#: the reason the leaf name is (this module does not import the config-loader chain);
+#: ``test_sandbox_dev_fleet_live_target.py`` pins the two equal.
+_LIVE_TARGET_PRECREATE_CONTENT: bytes = b'{\n  "checkout": null\n}\n'
 
 #: What a materialised ceiling holds — the empty JSON object every reader above
 #: already treats as its absent default. NOT a zero-byte file, which is not valid
@@ -1297,6 +1368,118 @@ def _materialize_maskable_dirs() -> list[str]:
             ) from exc
         created.append(target)
     return created
+
+
+def _materialize_live_target_mask_target() -> str | None:
+    """Publish the live-target pointer's absent-equivalent document so its mask can mount.
+
+    The FILE counterpart of :func:`_materialize_maskable_dirs`, and it shares that
+    function's simplifying property: the pointer is a DIRECT child of the data home, so
+    there is no agent-writable intermediate component for a planted link to redirect, and
+    no per-component descent is needed — the whole hazard
+    :func:`_materialize_md_notebook_mask_targets` walks chains to avoid.
+
+    Why at all: the launcher's ``SENSITIVE_FILES`` loop guards on ``isfile``, so an absent
+    pointer is an UNMASKED pointer for every namespace already running, and the crew data
+    home is writable at OS level. An agent in such a namespace can simply CREATE the
+    pointer, and the gateway ``execve``s into whatever it names at its next start.
+    Publishing the document first makes the mask non-vacuous, so every namespace binds an
+    empty file over the name from the outset.
+    :data:`_LIVE_TARGET_PRECREATE_CONTENT` carries the absent-equivalence argument.
+
+    Linux spawn path only, at the same site as the other materialisers: a Seatbelt deny is
+    a path rule that already holds for a name which does not exist yet, so macOS needs
+    nothing here. The LIVE data home only (``config_dir()``) — a stub under the deprecated
+    spelling would be a file nothing reads — and an absent data home is left absent.
+
+    **Fail-closed**, like the directory materialiser and for the same reason: launching
+    with the pointer maskless is the exposure this exists to prevent. Never truncates and
+    never removes — an existing regular file is left byte-for-byte alone, whether it holds
+    a real pin or this stub. Returns the path if it published one.
+    """
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for live-target masking")
+        return None
+    if not os.path.isdir(root):
+        return None
+    target = os.path.join(root, _LIVE_TARGET_LEAF)
+    _refuse_if_dangling_symlink(target)
+    # A RESOLVING link is the attack entry, not just a dangling one: a mount follows its
+    # target, so the mask would bind over the referent while the lexical name stayed an
+    # agent-replaceable link in a writable directory. Refused before the isfile check,
+    # exactly as the directory materialiser refuses before its isdir check.
+    _refuse_if_symlink_leaf(target)
+    if os.path.exists(target):
+        _refuse_unless_sole_regular_link(target)
+        return None
+    # The temp is staged in a MASKED directory, never beside the target: the data-home
+    # root is visible in every sandbox, so a temp there is a name a concurrent namespace
+    # can ``link(2)`` — and a bind mask covers a path, not the inode behind it. The
+    # staging directory is precreated (``_CREW_PRECREATE_HIDDEN_DIR_LEAVES``); it is a
+    # direct child of the data home, so its own chain has no agent-writable component.
+    staging = os.path.join(root, _LIVE_TARGET_STAGING_LEAF)
+    try:
+        os.makedirs(staging, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot create {staging} to stage the live-target pointer's mask target: {exc}"
+        ) from exc
+    if not stat.S_ISDIR(os.lstat(staging).st_mode):
+        raise SandboxCeilingUnsealable(
+            f"{staging} is not a directory; refusing to stage the live-target pointer's "
+            "mask target through it"
+        )
+    if _publish_empty_ceiling(target, staging, content=_LIVE_TARGET_PRECREATE_CONTENT):
+        # ``os.link`` publishes by adding a second name to the temp's inode, and the
+        # temp is unlinked right after — so a link count above one here means someone
+        # else linked the inode in the window, and a mask over THIS name would not
+        # cover THEIR path to the bytes the gateway executes.
+        _refuse_unless_sole_regular_link(target)
+        return target
+    # A lost publish race is benign only if the winner cleared the same bar. Publishing is
+    # ``os.link``, which fails EEXIST rather than clobbering, so the ordinary loser finds a
+    # regular, singly-linked file here; anything else means the name is not maskable.
+    try:
+        _refuse_unless_sole_regular_link(target)
+        return None
+    except FileNotFoundError:
+        pass
+    raise SandboxCeilingUnsealable(
+        f"cannot give the live-target pointer's mask a mount target at {target}. "
+        "Launching anyway would leave the pointer maskless in every agent namespace, "
+        "where writing it selects the code the gateway starts next."
+    )
+
+
+def _refuse_unless_sole_regular_link(target: str) -> None:
+    """Raise unless *target* is a regular file with exactly one hard link.
+
+    Two refusals, one reason each. A non-regular file (FIFO, socket, device): the
+    launcher's ``isdir``/``isfile`` loops classify neither, so its mask would be skipped
+    for every sandbox. A link count above one: a bind mask covers the NAME, so a second
+    name on the same inode is an unmasked path to the bytes the gateway ``execve``s from
+    — whether planted by a same-uid process in a namespace that could see a staging
+    temp, or left by an operator's ``ln``. ``FileNotFoundError`` propagates so a
+    publish-race caller can tell "gone" from "unfit".
+    """
+    st = os.lstat(target)
+    if not stat.S_ISREG(st.st_mode):
+        raise SandboxCeilingUnsealable(
+            f"cannot mask {target}: a non-regular file (a link, FIFO, socket, or device "
+            "node) is sitting at the live-target pointer's path. The launcher's "
+            "isdir/isfile loops classify neither, so its mask would be silently "
+            "skipped for every sandbox. Remove or replace it with a regular file."
+        )
+    if st.st_nlink != 1:
+        raise SandboxCeilingUnsealable(
+            f"cannot mask {target}: the live-target pointer has {st.st_nlink} hard links, "
+            "so a mask over this name would leave another path to the same bytes "
+            "unmasked. List every name for these bytes with "
+            f"'find {os.path.dirname(target)} -samefile {target}', remove the extra "
+            "link(s), and restart."
+        )
 
 
 def _md_notebook_degraded_mask_dirs() -> list[str]:
@@ -5738,6 +5921,11 @@ def namespace_argv(
     # leaves — creatable on a sandboxed host now that the backend carve-out exists —
     # need a mount target too.
     _materialize_md_notebook_mask_targets()
+    # The live-target pointer needs one for a stronger reason than a leak: it names the
+    # checkout the gateway execs into, and there is no carve-out for it at all — it is
+    # creatable from any sandbox simply because the data-home ROOT is writable there and
+    # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
+    _materialize_live_target_mask_target()
     # A pre-upgrade orphan already ON disk is a different problem from an absent mask
     # target, and this one is not Linux-specific: see the sweep's own docstring for why
     # the macOS path calls it too.

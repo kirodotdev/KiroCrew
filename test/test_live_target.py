@@ -42,9 +42,7 @@ from kiro_crew.service.live_target import (
 @pytest.fixture(autouse=True)
 def _isolate_pointer(tmp_path, monkeypatch):
     """Route pointer_path() to tmp_path so no test touches the real data home."""
-    monkeypatch.setattr(
-        "kiro_crew.config.loader.config_dir", lambda: tmp_path
-    )
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
 
 
 def _place_entry_point(checkout: Path, mode: int = 0o755) -> Path:
@@ -334,6 +332,99 @@ class TestWriteTarget:
             pytest.skip("POSIX permission bits are not meaningful here")
         assert pointer_path().stat().st_mode & 0o777 == 0o600
 
+    def test_stages_in_the_masked_directory_never_beside_the_pointer(self, tmp_path, monkeypatch):
+        """The temp file must never carry a name in the data-home root: every sandbox
+        sees that root and, same-uid, could ``link(2)`` the temp before the rename —
+        a second name for the inode the gateway execs from, outside the pointer's
+        mask. So the temp is staged in the masked ``live-target-staging`` directory."""
+        from kiro_crew.service import live_target as lt
+
+        seen: list[Path] = []
+        real = lt.atomic_write
+
+        def spy(path, content, **kw):
+            seen.append(Path(path))
+            return real(path, content, **kw)
+
+        monkeypatch.setattr(lt, "atomic_write", spy)
+        checkout = _make_valid_checkout(tmp_path)
+        write_target(checkout)
+        assert seen and all(p.parent == pointer_path().parent / lt._STAGING_LEAF for p in seen)
+        assert read_target() == checkout.resolve()
+        assert not list((pointer_path().parent / lt._STAGING_LEAF).iterdir()), "temp left behind"
+
+    def test_refuses_to_stage_through_a_symlinked_staging_dir(self, tmp_path):
+        from kiro_crew.service import live_target as lt
+
+        if os.name != "posix":
+            pytest.skip("symlink semantics are POSIX here")
+        root = pointer_path().parent
+        root.mkdir(parents=True, exist_ok=True)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (root / lt._STAGING_LEAF).symlink_to(elsewhere)
+        checkout = _make_valid_checkout(tmp_path)
+        with pytest.raises(OSError):
+            write_target(checkout)
+        assert not pointer_path().exists()
+
+    def test_refuses_to_stage_through_a_staging_dir_that_is_not_owner_only(self, tmp_path):
+        """The materialiser creates the directory 0700; one that is wider was made by
+        something else, and its temps' names would be listable by another account. The
+        write is refused with the remedy rather than the mode being silently repaired."""
+        from kiro_crew.service import live_target as lt
+
+        if os.name != "posix":
+            pytest.skip("POSIX mode bits")
+        root = pointer_path().parent
+        root.mkdir(parents=True, exist_ok=True)
+        staging = root / lt._STAGING_LEAF
+        staging.mkdir(mode=0o755)
+        # mkdir's mode is umask-filtered; pin the insecure mode this test is about.
+        os.chmod(staging, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- deliberately group/other-readable: the assertion below is that the publisher refuses it.  # noqa: E501  # fmt: skip
+        checkout = _make_valid_checkout(tmp_path)
+        with pytest.raises(OSError, match="not owner-only.*chmod 700"):
+            write_target(checkout)
+        assert not pointer_path().exists()
+        os.chmod(staging, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- 0o700 is owner-only, the tightest traversable directory mode.  # noqa: E501  # fmt: skip
+        assert write_target(checkout) == checkout.resolve()
+
+    def test_unpublishes_a_pointer_that_gained_a_second_link(self, tmp_path, monkeypatch):
+        """If the published inode ends up with more than one name, the write is
+        refused and the pointer removed: an absent pointer boots the gateway's own
+        image, which is the safe default."""
+        from kiro_crew.service import live_target as lt
+
+        if os.name != "posix":
+            pytest.skip("hard-link counts are POSIX here")
+        real_replace = lt.replace_with_retry
+
+        def replace_then_link(src, dst):
+            real_replace(src, dst)
+            os.link(dst, str(Path(dst).parent / "alias.json"))  # the race, won by the agent
+
+        monkeypatch.setattr(lt, "replace_with_retry", replace_then_link)
+        checkout = _make_valid_checkout(tmp_path)
+        with pytest.raises(OSError) as exc:
+            write_target(checkout)
+        assert "hard link" in str(exc.value)
+        assert not pointer_path().exists()
+
+    def test_restore_stages_in_the_masked_directory(self, tmp_path, monkeypatch):
+        from kiro_crew.service import live_target as lt
+
+        seen: list[Path] = []
+        real = lt.atomic_write
+
+        def spy(path, content, **kw):
+            seen.append(Path(path))
+            return real(path, content, **kw)
+
+        monkeypatch.setattr(lt, "atomic_write", spy)
+        assert restore('{"checkout": "/x"}\n') is True
+        assert seen and seen[-1].parent == pointer_path().parent / lt._STAGING_LEAF
+        assert pointer_path().read_text() == '{"checkout": "/x"}\n'
+
     def test_lockdown_precedes_content(self, tmp_path, monkeypatch):
         """The pointer — a code-execution input read at startup — must never
         exist in a file that has not been locked down yet.
@@ -356,9 +447,10 @@ class TestWriteTarget:
         monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
         checkout = _make_valid_checkout(tmp_path)
         write_target(checkout)
-        # Filter to the pointer's directory: the hook is patched process-wide,
+        # Filter to the pointer's staging directory (the temp is locked down
+        # there, before the rename): the hook is patched process-wide,
         # so an unrelated secret write must not shift the indexing.
-        pointer_calls = [(p, s) for p, s in calls if p.parent == pointer_path().parent]
+        pointer_calls = [(p, s) for p, s in calls if p.parent.name == "live-target-staging"]
         assert pointer_calls, f"the pointer lockdown never ran: {calls}"
         _, size = pointer_calls[0]
         assert size == 0, f"the file already held {size} payload bytes at lockdown time"
@@ -386,13 +478,65 @@ class TestSnapshotRestore:
     def test_absent_file_returns_none(self):
         assert snapshot() is None
 
-    def test_restore_none_deletes_file(self, tmp_path):
+    def test_restore_none_unpins_with_the_absent_stub_not_an_absent_name(self, tmp_path):
+        """Rolling back to "there was nothing" must not leave the NAME absent.
+
+        The sandbox mask covers a regular file at the pointer's name; it cannot
+        cover a name that does not exist. A launcher building a namespace between
+        the rollback's unlink and its own materialising stub would mount nothing,
+        and an agent could then create the pointer and pick the checkout the
+        gateway executes next. So the rollback publishes ``NO_TARGET_DOCUMENT``
+        -- indistinguishable from absence to every reader -- through the same
+        hardened publisher.
+        """
+        from kiro_crew.service import live_target as lt
+
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("anything")
-        result = restore(None)
-        assert result is True
+        path.write_text('{"checkout": "/was/pinned"}\n')
+        assert restore(None) is True
+        assert path.is_file(), "the name must stay occupied by a maskable regular file"
+        assert path.read_text() == lt.NO_TARGET_DOCUMENT
+        # Reads exactly like absence: no target, no reason to log.
+        assert read_target_reason() == (None, None)
+        assert snapshot() == lt.NO_TARGET_DOCUMENT
+        if os.name != "nt":
+            assert os.stat(path).st_mode & 0o077 == 0, "stub must be owner-only too"
+            assert os.stat(path).st_nlink == 1
+
+    def test_restore_none_when_already_absent_still_publishes_the_stub(self, tmp_path):
+        """The first-cutover case: nothing was pinned, the cutover failed."""
+        from kiro_crew.service import live_target as lt
+
+        path = pointer_path()
         assert not path.exists()
+        assert restore(None) is True
+        assert path.read_text() == lt.NO_TARGET_DOCUMENT
+        assert read_target() is None
+
+    def test_restore_none_stages_in_the_masked_directory(self, tmp_path, monkeypatch):
+        """The unpin takes the same link-safe path as every other publish."""
+        from kiro_crew.service import live_target as lt
+
+        seen: list[Path] = []
+        real = lt.atomic_write
+
+        def spy(path, content, **kw):
+            seen.append(Path(path))
+            return real(path, content, **kw)
+
+        monkeypatch.setattr(lt, "atomic_write", spy)
+        assert restore(None) is True
+        assert seen and seen[-1].parent == pointer_path().parent / lt._STAGING_LEAF
+
+    def test_restore_none_reports_false_when_the_publisher_refuses(self, tmp_path, monkeypatch):
+        from kiro_crew.service import live_target as lt
+
+        def refuse(_payload):
+            raise OSError(1, "refused")
+
+        monkeypatch.setattr(lt, "_publish_pointer", refuse)
+        assert restore(None) is False
 
     def test_restore_text_rewrites_byte_for_byte(self, tmp_path):
         prior = '{"checkout": "/old/path"}\n'
@@ -436,26 +580,39 @@ class TestSnapshotRestore:
 
         assert restore('{"checkout": "/old/path"}\n') is True
 
-        # Filter to the pointer's directory: the hook is patched process-wide,
+        # Filter to the pointer's staging directory (the temp is locked down
+        # there, before the rename): the hook is patched process-wide,
         # so an unrelated secret write must not shift the indexing.
-        pointer_calls = [(p, s) for p, s in calls if p.parent == path.parent]
+        pointer_calls = [(p, s) for p, s in calls if p.parent.name == "live-target-staging"]
         assert pointer_calls, f"restore must harden the file it writes: {calls}"
         _, size = pointer_calls[0]
         assert size == 0, f"the file already held {size} payload bytes at lockdown time"
 
-    def test_restore_none_does_not_harden_a_deleted_pointer(self, tmp_path, monkeypatch):
-        """Deleting leaves no file, so there is nothing to apply a DACL to."""
-        hardened: list = []
-        monkeypatch.setattr(
-            "kiro_crew.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
+    def test_restore_none_hardens_the_stub_before_content(self, tmp_path, monkeypatch):
+        """The unpin publishes a real file, so it gets the same lockdown as any
+        other pointer write — applied to the staged temp before any payload byte
+        exists (a stub with inherited permissions would be a writable code-
+        execution input under the pointer's name)."""
+        from kiro_crew import platform_compat
+
+        calls: list[tuple[Path, int]] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring(target):
+            calls.append((Path(target), os.stat(target).st_size))
+            return real_restrict(target)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("anything")
 
         assert restore(None) is True
 
-        assert not path.exists()
-        assert hardened == []
+        pointer_calls = [(p, s) for p, s in calls if p.parent.name == "live-target-staging"]
+        assert pointer_calls, f"the unpin must harden the stub it writes: {calls}"
+        _, size = pointer_calls[0]
+        assert size == 0, f"the stub already held {size} payload bytes at lockdown time"
 
     def test_restore_returns_false_when_hardening_fails(self, tmp_path, monkeypatch):
         """A partial rollback reports False so the caller can warn the operator.
@@ -463,6 +620,7 @@ class TestSnapshotRestore:
         The lockdown failure now happens BEFORE the rename, so a rollback that
         could not be hardened also never publishes an unprotected pointer.
         """
+
         def boom(_path):
             raise OSError(5, "icacls failed")
 
@@ -521,9 +679,7 @@ class TestMaybeReexec:
         maybe_reexec(["gateway"])
         mock_execve.assert_not_called()
 
-    def test_returns_without_exec_when_pointer_invalid_and_warns(
-        self, tmp_path, monkeypatch
-    ):
+    def test_returns_without_exec_when_pointer_invalid_and_warns(self, tmp_path, monkeypatch):
         """An unusable pointer is ignored with a warning."""
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -595,9 +751,7 @@ class TestMaybeReexec:
         # Must NOT raise — the caller keeps booting
         maybe_reexec(["gateway"])
 
-    def test_chdir_failure_warned_but_exec_still_happens(
-        self, tmp_path, monkeypatch
-    ):
+    def test_chdir_failure_warned_but_exec_still_happens(self, tmp_path, monkeypatch):
         """A cwd we cannot enter is warned, not fatal — the exec still fires."""
         checkout = _make_valid_checkout(tmp_path)
         write_target(checkout)
@@ -615,10 +769,7 @@ class TestMaybeReexec:
         # The exec was still attempted despite chdir failure
         mock_execve.assert_called_once()
         # A warning was emitted about chdir
-        warn_calls = [
-            c for c in log.warning.call_args_list
-            if "chdir" in (c[0][0] % c[0][1:])
-        ]
+        warn_calls = [c for c in log.warning.call_args_list if "chdir" in (c[0][0] % c[0][1:])]
         assert len(warn_calls) >= 1
 
 

@@ -49,10 +49,19 @@ def test_register_routes_mounts_exactly_the_agent_surface() -> None:
 
 
 def test_package_reexports_register_routes() -> None:
-    """Gateway startup looks for ``register_routes`` on the PACKAGE, not a submodule."""
+    """Gateway startup looks for ``register_routes`` on the PACKAGE, not a submodule.
+
+    The package hook composes this module's agent-facing pod routes with the
+    gateway-side cutover routes (``gateway_routes.py``), so what is pinned is that a
+    call through the package mounts every pod route — identity with this module's
+    function alone would leave the other family unmounted.
+    """
     import kiro_crew.apps.builtins.dev_fleet as pkg
 
-    assert pkg.register_routes is agent_pod_api.register_routes
+    app = web.Application()
+    pkg.register_routes(app)
+    mounted = {(r.method, r.resource.canonical) for r in app.router.routes() if r.method != "HEAD"}
+    assert _EXPECTED_ROUTES <= mounted, sorted(_EXPECTED_ROUTES - mounted)
 
 
 def test_every_route_is_named_in_the_strict_internal_table() -> None:

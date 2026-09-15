@@ -16,7 +16,6 @@ from kiro_crew.apps.builtins.dev_fleet import live, repository, runtime
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import is_link_or_junction
-from kiro_crew.service import live_target
 
 # --- build-pending detection (server-side truth) ---
 _START_EPOCH = time.time()
@@ -1082,9 +1081,31 @@ def _completed_cutover_undo_target(
 
 
 async def _build_fleet() -> dict:
-    live_path = await live._live_worktree_path()
-    staged_path = live._staged_target()
-    previous_path = live_target.read_previous_target()
+    # Pointer state is answered by the gateway (the pointer file is masked from this
+    # backend). A broker outage must not take the whole fleet view down with it: the
+    # rows still render with no live/staged badge, and the reason goes to the backend
+    # log — the operator-facing surface for a gateway that stopped answering. The
+    # destructive paths (removal, prune override) refuse on the same condition.
+    # ONE snapshot carries all four pointer-derived fields (live, staged, cancel
+    # availability, undo target), so a gateway that goes away while the rest of the
+    # fleet is being built cannot fail a later read.
+    try:
+        pointer = await live.pointer_state()
+        live_state_known = True
+    except live.PointerUnavailable as exc:
+        runtime.logger.warning(
+            "fleet view: live-target state unavailable, no row will be marked live or "
+            "staged: %s",
+            runtime._redact(str(exc)),
+        )
+        pointer = live.PointerState(live=None, staged=None, staged_cancel_available=False)
+        # Carried in the payload so "state unknown" is not rendered as "nothing is
+        # live": the two invite opposite actions (check the gateway vs. stage a
+        # cutover). The badges below stay unset; this one field says why.
+        live_state_known = False
+    live_path = pointer.live
+    staged_path = pointer.staged
+    previous_path = Path(pointer.previous) if pointer.previous is not None else None
     worktrees = await repository._discover_worktrees()
     cfg = runtime._load_cfg()
     loop = asyncio.get_running_loop()
@@ -1329,11 +1350,13 @@ async def _build_fleet() -> dict:
         # pruned previous checkouts, and every still-staged transition.
         "undo_target": undo_target,
         # Whether the pointer-only cancel of that stage would be accepted (see
-        # _staged_cancel_available). Only probed while a stage exists; false
-        # otherwise so the dashboard's cancel control stays hidden.
-        "staged_cancel_available": (
-            staged_path is not None and await live._staged_cancel_available()
-        ),
+        # _staged_cancel_available). From the same snapshot as the stage itself, so
+        # the two can never disagree; false with no stage so the dashboard's cancel
+        # control stays hidden.
+        "staged_cancel_available": (staged_path is not None and pointer.staged_cancel_available),
+        # False only while the gateway's pointer state could not be read: the
+        # live/staged fields above are then UNKNOWN, not empty.
+        "live_state_known": live_state_known,
         "manual_restart": live._manual_restart_command(),
         # WHY the gateway cannot be restarted/repointed from here, when it
         # cannot. Same lesson as pods_unavailable_reason below: the previous

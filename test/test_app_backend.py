@@ -1392,6 +1392,77 @@ class TestBootAdmissionRevet:
         # Builtin is exempt from the gate — start_app_backend was invoked for it.
         assert "core-builtin" in started
 
+    def test_deferred_backends_are_admitted_now_and_spawned_later(self, tmp_path, app_env, monkeypatch):
+        """``defer`` holds a name back from the main spawn wave without skipping its
+        vetting; ``start_deferred_app_backends`` then spawns exactly that set, once.
+        Dev Fleet is deferred so it is handed the gateway's actually-bound port."""
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [
+            {"name": "dev-fleet", "enabled": True, "origin": "builtin",
+             "manifest": {"backend": {"entryPoint": "server.py"}}},
+            {"name": "md-notebook", "enabled": True, "origin": "builtin",
+             "manifest": {"backend": {"entryPoint": "server.py"}}},
+        ]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        assert started == ["md-notebook"]
+        bmod.start_deferred_app_backends()
+        assert started == ["md-notebook", "dev-fleet"]
+        # A second call spawns nothing: the deferred set was consumed.
+        bmod.start_deferred_app_backends()
+        assert started == ["md-notebook", "dev-fleet"]
+
+    def test_a_deferred_app_that_is_disabled_is_not_spawned_later(self, tmp_path, app_env, monkeypatch):
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [{"name": "dev-fleet", "enabled": False, "origin": "builtin",
+                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        bmod.start_deferred_app_backends()
+        assert started == []
+
+    def test_a_deferred_app_disabled_between_the_waves_is_not_spawned(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """The deferral leaves a window (the rest of start_dashboard) in which the
+        operator can run `kirocrew app disable dev-fleet`. The cached admission
+        must not outlive that: enablement is re-read at spawn time, and an
+        unreadable state (None) is treated as not enabled."""
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [{"name": "dev-fleet", "enabled": True, "origin": "builtin",
+                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        assert started == []
+        # Operator disables the app while the gateway is still booting.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+        bmod.start_deferred_app_backends()
+        assert started == []
+        # And an unreadable state is not a licence to spawn either.
+        bmod.start_enabled_app_backends()
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: None)
+        bmod.start_deferred_app_backends()
+        assert started == []
+
+    def test_a_deferred_app_denied_by_governance_between_the_waves_is_not_spawned(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import kiro_crew.apps.manager as manager
+
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [{"name": "dev-fleet", "enabled": True, "origin": "builtin",
+                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        monkeypatch.setattr(manager, "_app_activation_denied", lambda name: "policy tightened")
+        bmod.start_deferred_app_backends()
+        assert started == []
+
+    def test_dev_fleet_is_the_bound_port_deferred_backend(self):
+        import kiro_crew.apps.backend as bmod
+
+        assert bmod.DEV_FLEET_APP_NAME == "dev-fleet"
+
     def test_spawn_exception_isolated_and_boot_continues(self, tmp_path, app_env, monkeypatch):
         """A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing on macOS 26
         where sandbox-exec is gone) must NOT crash the whole gateway — the loop logs,

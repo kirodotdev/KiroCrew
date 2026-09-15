@@ -1965,6 +1965,20 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         # the inherited PATH; minimal_env() would otherwise strip them.
         if _k.startswith("KIROCREW_DEVFLEET_BIN_"):
             _platform_extra[_k] = _v
+    # The port the gateway ACTUALLY bound (``dashboard.server._export_bound_port``),
+    # handed to the ONE backend that calls back into the gateway: Dev Fleet reads
+    # live-target pointer state through an in-gateway route, because the pointer
+    # itself is masked from its namespace. Scoped by app name exactly as the
+    # ``KIROCREW_DEVFLEET_BIN_`` loop above is — no other backend has a consumer, and
+    # ``pod/runtime.py`` deliberately scrubs this variable from spawns that must not
+    # aim at the live gateway. Not a secret: it is the port every dashboard client
+    # already connects to, and the gateway's own auth governs what a caller may do
+    # there. Absent (a foreground gateway before its site is up, or a test) it is not
+    # passed and the backend degrades as documented.
+    if app_name == DEV_FLEET_APP_NAME:
+        _bound = os.environ.get("KIROCREW_BOUND_PORT", "")
+        if _bound.isdigit():
+            _platform_extra["KIROCREW_BOUND_PORT"] = _bound
     env = minimal_env(
         PORT=str(port),
         KIROCREW_APP_NAME=app_name,
@@ -3661,11 +3675,23 @@ def _reap_stale_app_backends() -> int:
     return len(reaped)
 
 
+#: The one app backend that needs the gateway's ACTUALLY-bound port at spawn
+#: (``KIROCREW_BOUND_PORT``): it reads live-target pointer state through an
+#: in-gateway route. ``start_dashboard`` starts every other backend before
+#: ``runner.setup()`` so an app's startup hooks find its backend running, and starts
+#: this one only after ``_export_bound_port`` — the value does not exist before the bind.
+DEV_FLEET_APP_NAME: str = "dev-fleet"
+
+
 def start_enabled_app_backends() -> list[str]:
     """Start backends for all enabled apps that declare one.
 
     Called during gateway startup to restore app backends.
     Returns list of app names that were started.
+
+    The :data:`DEV_FLEET_APP_NAME` backend is vetted and reconciled like
+    every other app but NOT spawned here; ``start_dashboard`` starts it with
+    :func:`start_deferred_app_backends` once the bound port exists.
     """
     # Reap app backends left running by a prior (e.g. SIGKILLed) gateway
     # generation before starting the new one. See the RFC,
@@ -3835,7 +3861,44 @@ def start_enabled_app_backends() -> list[str]:
                 continue
         admitted.append(name)
 
-    return _start_backends_concurrently(admitted)
+    global _DEV_FLEET_DEFERRED
+    _DEV_FLEET_DEFERRED = DEV_FLEET_APP_NAME in admitted
+    return _start_backends_concurrently([n for n in admitted if n != DEV_FLEET_APP_NAME])
+
+
+#: Whether the boot wave admitted Dev Fleet and held its spawn back for the bound port.
+_DEV_FLEET_DEFERRED: bool = False
+
+
+def start_deferred_app_backends() -> list[str]:
+    """Spawn the Dev Fleet backend ``start_enabled_app_backends`` held back.
+
+    Its admission and reconcile work already ran in the same boot, but the deferral
+    leaves a window (the rest of ``start_dashboard``) in which the operator can
+    disable the app or a policy can tighten — so enablement and governance are
+    re-checked here, fail-closed, immediately before the spawn. Same per-app
+    isolation as the main wave. Returns the names that started; a second call is a
+    no-op.
+    """
+    global _DEV_FLEET_DEFERRED
+    from kiro_crew.apps.manager import _app_activation_denied
+
+    deferred, _DEV_FLEET_DEFERRED = _DEV_FLEET_DEFERRED, False
+    if not deferred:
+        return []
+    name = DEV_FLEET_APP_NAME
+    # ``True`` only: an unreadable state (None) is not a licence to spawn.
+    if _app_enabled_state(name) is not True:
+        logger.info("Deferred boot: %s is no longer enabled — not started", name)
+        return []
+    try:
+        gov_denied = _app_activation_denied(name)
+    except Exception as exc:  # noqa: BLE001 — fail closed, never crash boot
+        gov_denied = f"activation re-vet error: {exc}"
+    if gov_denied:
+        logger.warning("Deferred boot: %s not started: %s", name, gov_denied)
+        return []
+    return _start_backends_concurrently([name])
 
 
 def _preclaim_fixed_ports(names: list[str]) -> None:
