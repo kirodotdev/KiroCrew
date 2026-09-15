@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { columnLetter, detectFileType, HtmlViewer, JsonlViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
+import { consumeChatHandoff, installSoftNavigate, __resetNavSeamForTests } from '../utils/errorReport'
 
 // `useCanOpenFile` reads both of these, and it is the gate deciding whether the
 // Open button exists at all. Drive them explicitly: on the test host they would
@@ -127,7 +128,7 @@ describe('OfficeViewer', () => {
 
   /** Stub /api/file-office-preview with a Response-shaped object. Mirrors the
    *  pattern used in MarkdownRenderer.test.tsx for the file-read HEAD probe. */
-  function stubPreview(body: { text?: string; truncated?: boolean; error?: string } | null, ok = true, status = 200) {
+  function stubPreview(body: { text?: string; truncated?: boolean; error?: string; slides?: { index: number; text: string }[] } | null, ok = true, status = 200) {
     globalThis.fetch = vi.fn(() =>
       Promise.resolve({
         ok,
@@ -135,6 +136,21 @@ describe('OfficeViewer', () => {
         json: () => Promise.resolve(body ?? {}),
       } as unknown as Response),
     ) as unknown as typeof fetch
+  }
+
+  /** Route by endpoint: the slide renderer asks /api/file-office-slides first
+   *  and the text viewer /api/file-office-preview; a deck exercises both. */
+  function stubByUrl(routes: Record<string, { body?: unknown; ok?: boolean; status?: number }>) {
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      const key = Object.keys(routes).find(k => url.includes(k))
+      const route = key ? routes[key] : { ok: false, status: 404 }
+      return Promise.resolve({
+        ok: route.ok ?? true,
+        status: route.status ?? (route.ok === false ? 500 : 200),
+        json: () => Promise.resolve(route.body ?? {}),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
   }
 
   afterEach(() => {
@@ -159,6 +175,248 @@ describe('OfficeViewer', () => {
     // not the full-size button — this is the preview state.
     expect(screen.getByRole('link', { name: /quarterly-report\.docx/i })).toBeInTheDocument()
     expect(screen.getByText('Download original')).toBeInTheDocument()
+  })
+
+  it('renders a .pptx as a slide outline when the host has no LibreOffice, naming the install command', async () => {
+    // Without LibreOffice on the machine the gateway runs on, the slides endpoint answers
+    // `unavailable`; the deck then renders as its text outline UNDER a row that
+    // says why and shows the gateway's own install hint. A deck shown as text
+    // with no explanation reads as "the panel failed to render my slides".
+    stubByUrl({
+      '/api/file-office-slides': { body: { status: 'unavailable', reason: 'soffice_unavailable', hint: 'sudo apt install libreoffice' } },
+      '/api/file-office-preview': {
+        body: {
+          text: '--- Slide 1 ---\nRoadmap\nQ3 goals\n\n--- Slide 3 ---\nRisks',
+          truncated: false,
+          slides: [
+            { index: 1, text: 'Roadmap\nQ3 goals' },
+            { index: 3, text: 'Risks' },
+          ],
+        },
+      },
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/roadmap.pptx" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slide-outline')).toBeInTheDocument()
+    })
+    const degrade = screen.getByTestId('office-slides-degrade')
+    expect(degrade).toHaveTextContent(/need LibreOffice on the machine Kiro Crew runs on/)
+    expect(degrade).toHaveTextContent('sudo apt install libreoffice')
+    expect(screen.queryByTestId('office-slides')).toBeNull()
+    // The remedy is a hand-off, not only a command to copy: the button stages a
+    // prompt naming the gateway's own install command and opens the chat. The
+    // user reads and sends it; nothing runs on the click itself.
+    const navigated: string[] = []
+    installSoftNavigate(to => { navigated.push(to) })
+    try {
+      fireEvent.click(screen.getByRole('button', { name: /ask the agent to install it/i }))
+      const prompt = consumeChatHandoff()
+      expect(prompt).toContain('LibreOffice')
+      expect(prompt).toContain('sudo apt install libreoffice')
+      expect(navigated).toEqual(['/chat'])
+    } finally {
+      __resetNavSeamForTests()
+    }
+    expect(screen.getByText(/Text outline only/)).toBeInTheDocument()
+    // Deck numbering, not a renumbering: slide 2 carried no text.
+    expect(screen.getByRole('region', { name: 'Slide 1' })).toHaveTextContent('Roadmap')
+    expect(screen.getByRole('region', { name: 'Slide 3' })).toHaveTextContent('Risks')
+    expect(screen.queryByRole('region', { name: 'Slide 2' })).toBeNull()
+    // The flat separator string is NOT what renders — it would duplicate the headings.
+    expect(screen.queryByText(/--- Slide 1 ---/)).toBeNull()
+    expect(screen.getByText('Download original')).toBeInTheDocument()
+  })
+
+  it('says why a deck the render refused on content grounds shows only its redacted outline', async () => {
+    // A slide is a picture of the deck's text and cannot be redacted after the
+    // fact, so a credential-bearing deck answers `unavailable` with
+    // `content_redacted`. The row names that reason -- not a missing LibreOffice
+    // -- and offers no install hand-off, because installing anything would not
+    // change the answer.
+    stubByUrl({
+      '/api/file-office-slides': { body: { status: 'unavailable', reason: 'content_redacted' } },
+      '/api/file-office-preview': {
+        body: { text: '--- Slide 1 ---\nKey: [REDACTED: credential]', slides: [{ index: 1, text: 'Key: [REDACTED: credential]' }] },
+      },
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/secrets.pptx" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slide-outline')).toBeInTheDocument()
+    })
+    const degrade = screen.getByTestId('office-slides-degrade')
+    expect(degrade).toHaveTextContent(/looks like a credential/)
+    expect(degrade).not.toHaveTextContent(/LibreOffice/)
+    expect(screen.queryByTestId('office-slides-ask-install')).toBeNull()
+    expect(screen.queryByTestId('office-slides')).toBeNull()
+  })
+
+  it('renders a .pptx as pictures with a pager when the host rendered it', async () => {
+    stubByUrl({
+      '/api/file-office-slides': {
+        body: {
+          status: 'ready', digest: 'a'.repeat(64), count: 3, truncated: false,
+          slides: [
+            { n: 1, width: 1280, height: 720 },
+            { n: 2, width: 1280, height: 720 },
+            { n: 3, width: 1280, height: 720 },
+          ],
+        },
+      },
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/roadmap.pptx" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slides')).toBeInTheDocument()
+    })
+    // Once the slides are ready the outline that stood in while they rendered
+    // is gone, and so is the "Rendering slides" row: the deck is shown as slides.
+    expect(screen.queryByTestId('office-slide-outline')).toBeNull()
+    expect(screen.queryByTestId('office-slides-degrade')).toBeNull()
+    // Stage shows slide 1 from the slide endpoint, with the deck's numbering.
+    const stage = screen.getByRole('img', { name: 'Slide 1 of 3' })
+    expect(stage).toHaveAttribute('src', expect.stringContaining('/api/file-office-slide?path='))
+    expect(stage).toHaveAttribute('src', expect.stringContaining('&n=1'))
+    // Pinned to the manifest's digest, so an edited deck never gets a browser-cached slide.
+    expect(stage).toHaveAttribute('src', expect.stringContaining('&digest=' + 'a'.repeat(64)))
+    expect(screen.getByRole('button', { name: 'Previous slide' })).toBeDisabled()
+    // Next pages forward; the thumbstrip tracks the selection.
+    fireEvent.click(screen.getByRole('button', { name: 'Next slide' }))
+    expect(screen.getByRole('img', { name: 'Slide 2 of 3' })).toHaveAttribute('src', expect.stringContaining('&n=2'))
+    expect(screen.getByRole('option', { name: 'Slide 2 of 3' })).toHaveAttribute('aria-selected', 'true')
+    // A thumbnail jumps straight to its slide, and the last slide disables Next.
+    fireEvent.click(screen.getByRole('option', { name: 'Slide 3 of 3' }))
+    expect(screen.getByRole('img', { name: 'Slide 3 of 3' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Next slide' })).toBeDisabled()
+    // Keyboard paging works from inside the pager.
+    fireEvent.keyDown(screen.getByTestId('office-slides'), { key: 'Home' })
+    expect(screen.getByRole('img', { name: 'Slide 1 of 3' })).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByTestId('office-slides'), { key: 'ArrowRight' })
+    expect(screen.getByRole('img', { name: 'Slide 2 of 3' })).toBeInTheDocument()
+    // The card's actions stay reachable beneath the pager.
+    expect(screen.getByText('Download original')).toBeInTheDocument()
+  })
+
+  it('keeps a failed Open on the compact card in its own row above the two file actions', async () => {
+    // Inside the pager footer the card is compact. A failed Open renders the
+    // shared notice (its own Ask the agent and dismiss controls) as a row of
+    // its own, so the row with Open and Download never carries more than two.
+    stubByUrl({
+      '/api/file-office-slides': {
+        body: { status: 'ready', digest: 'c'.repeat(64), count: 1, truncated: false, slides: [{ n: 1, width: 1280, height: 720 }] },
+      },
+    })
+    vi.mocked(api.revealPath).mockRejectedValue(new ApiError(500, 'boom'))
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/roadmap.pptx" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slides')).toBeInTheDocument()
+    })
+    const open = screen.getByRole('button', { name: /open with default app/i })
+    fireEvent.click(open)
+    const notice = await screen.findByTestId('office-card-open-error')
+    expect(notice.parentElement).not.toBe(open.parentElement)
+    expect(open.parentElement?.querySelectorAll('button, a')).toHaveLength(2)
+  })
+
+  it('replaces a slide that fails to load with an ErrorNotice and a way to render again', async () => {
+    // The slide endpoint answers 409 after an edit and 404 after eviction; the
+    // <img> only knows it failed. A broken image is a dead end, so the stage
+    // shows the shared notice (agent hand-off included) and a button that asks
+    // for the manifest again -- a changed deck gets its new digest, an evicted
+    // one is rendered again.
+    stubByUrl({
+      '/api/file-office-slides': {
+        body: { status: 'ready', digest: 'b'.repeat(64), count: 2, truncated: false, slides: [{ n: 1, width: 1280, height: 720 }, { n: 2, width: 1280, height: 720 }] },
+      },
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/roadmap.pptx" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slides')).toBeInTheDocument()
+    })
+    const before = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(c => String(c[0]).includes('/api/file-office-slides')).length
+    fireEvent.error(screen.getByRole('img', { name: 'Slide 1 of 2' }))
+    expect(screen.getByTestId('office-slide-load-error')).toHaveTextContent(/Slide 1 did not load/)
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    // Paging away still works: slide 2 is untouched by slide 1's failure.
+    fireEvent.click(screen.getByRole('button', { name: 'Next slide' }))
+    expect(screen.getByRole('img', { name: 'Slide 2 of 2' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Previous slide' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Render slides again' }))
+    await waitFor(() => {
+      const after = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(c => String(c[0]).includes('/api/file-office-slides')).length
+      expect(after).toBeGreaterThan(before)
+    })
+  })
+
+  it('falls back to the text outline with an ErrorNotice carrying the server reason when rendering errors', async () => {
+    stubByUrl({
+      '/api/file-office-slides': { ok: false, status: 502, body: { error: 'could not render slides', code: 'convert_failed', detail: 'soffice exited 77' } },
+      '/api/file-office-preview': { body: { text: '--- Slide 1 ---\nOnly text', slides: [{ index: 1, text: 'Only text' }] } },
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/broken.pptx" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slide-outline')).toBeInTheDocument()
+    })
+    // A failed render is an error: the shared notice, with the server's reason
+    // and code preserved, and the agent hand-off beside it.
+    const notice = screen.getByTestId('office-slides-render-error')
+    expect(notice).toHaveTextContent(/could not be rendered/)
+    expect(notice).toHaveTextContent('could not render slides: soffice exited 77 (convert_failed)')
+  })
+
+  it('shows the text outline under a rendering row while the first render runs', async () => {
+    // The manifest fetch never resolves here: the panel must not sit blank on
+    // a spinner for the ~30 s a cold conversion takes when the outline is instant.
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/file-office-slides')) return new Promise<Response>(() => {})
+      return Promise.resolve({
+        ok: true, status: 200,
+        json: () => Promise.resolve({ text: '--- Slide 1 ---\nInstant text', slides: [{ index: 1, text: 'Instant text' }] }),
+      } as unknown as Response)
+    }) as unknown as typeof fetch
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/slow.pptx" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slide-outline')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('office-slides-degrade')).toHaveTextContent(/Rendering slides/)
+    expect(screen.getByText('Instant text')).toBeInTheDocument()
+  })
+
+  it('shows the download card under the degrade row for a legacy .ppt without LibreOffice', async () => {
+    // .ppt has no XML for the text outline (415 from the preview endpoint is
+    // short-circuited client-side), so without soffice the card is all there
+    // is -- but the row still says what would make slides appear.
+    stubByUrl({
+      '/api/file-office-slides': { body: { status: 'unavailable', reason: 'soffice_unavailable', hint: 'brew install --cask libreoffice' } },
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/legacy.ppt" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slides-degrade')).toBeInTheDocument()
+    })
+    expect(screen.getByText('legacy.ppt')).toBeInTheDocument()
+    expect(screen.getByText('Download')).toBeInTheDocument()
+  })
+
+  it('does not ask the slides endpoint for a .docx', async () => {
+    stubByUrl({ '/api/file-office-preview': { body: { text: 'Introduction', truncated: false } } })
+    renderWithQuery(<OfficeViewer filePath="/home/user/docs/report.docx" />)
+    await waitFor(() => {
+      expect(screen.getByText('Introduction')).toBeInTheDocument()
+    })
+    const urls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(c => String(c[0]))
+    expect(urls.some(u => u.includes('/api/file-office-slides'))).toBe(false)
+    expect(screen.queryByTestId('office-slides-degrade')).toBeNull()
+  })
+
+  it('keeps the flat text preview when the response carries no slides', async () => {
+    // The .docx path, and any backend that predates `slides`: same body,
+    // same <pre>, no notice about slides.
+    stubPreview({ text: 'Introduction\nBody', truncated: false })
+    renderWithQuery(<OfficeViewer filePath="/home/user/docs/report.docx" />)
+    await waitFor(() => {
+      expect(screen.getByText(/Introduction/)).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('office-slide-outline')).toBeNull()
+    expect(screen.queryByText(/Text outline only/)).toBeNull()
   })
 
   it('makes the preview scroll container keyboard-focusable', async () => {

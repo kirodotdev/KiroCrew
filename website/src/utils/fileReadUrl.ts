@@ -54,3 +54,28 @@ export function fileStreamUrl(filePath: string): string {
 export function fileOfficePreviewUrl(filePath: string): string {
   return fileDownloadUrl(filePath).replace('/api/file-download', '/api/file-office-preview')
 }
+
+/** Build the /api/file-office-slides URL — the rendered-slides manifest for a
+ * .pptx / .ppt (LibreOffice → PDF → PNG on the gateway host, cached by content).
+ *
+ * Same query shape as the other file endpoints, so it is derived from
+ * fileDownloadUrl like fileOfficePreviewUrl above. The response is either
+ * `{status: 'ready', count, slides}` or `{status: 'unavailable', hint}` when the
+ * host has no LibreOffice; see `api_file_office_slides` in
+ * `src/kiro_crew/dashboard/handlers/office_slides.py`. */
+export function fileOfficeSlidesUrl(filePath: string): string {
+  return fileDownloadUrl(filePath).replace('/api/file-download', '/api/file-office-slides')
+}
+
+/** Build the /api/file-office-slide URL — one rendered slide (PNG), 1-based.
+ *
+ * `n` and the deck's content `digest` (from the manifest) are appended AFTER
+ * the encoded path (and after `resolve=1` for a relative path), so the path
+ * value is never split by the extra parameters. The digest is what makes the
+ * URL safe to cache: an edited deck has a new digest, hence a new URL, so the
+ * browser can never answer a stale slide for the new file — and the server
+ * refuses a digest that no longer matches the file (409). */
+export function fileOfficeSlideUrl(filePath: string, n: number, digest?: string): string {
+  const base = fileDownloadUrl(filePath).replace('/api/file-download', '/api/file-office-slide') + '&n=' + String(n)
+  return digest ? base + '&digest=' + encodeURIComponent(digest) : base
+}

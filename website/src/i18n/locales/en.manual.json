@@ -1979,6 +1979,8 @@
     "fileRenderers": {
       "media_preview_failed": "Playback failed — the browser cannot decode this file.",
       "office_open_hint": "Preview isn't available for this file. Open it in its app, or download a copy.",
+      "pptx_outline_notice": "Text outline only. Slide layouts, images and charts aren't rendered in this panel; open the deck in your presentation app to see the slides.",
+      "pptx_slide_label": "Slide {{n}}",
       "scroll_for_more_count": "Scroll for more… ({{count}} remaining)",
       "sheet_cols_truncated": "Additional columns not shown",
       "sheet_empty": "Empty sheet",
@@ -1988,7 +1990,23 @@
       "sheet_showing_rows": "Showing first {{shown}} rows",
       "sheet_tabs_truncated": "Showing {{shown}} of {{total}} sheets",
       "showing_raw_content_count": "Showing raw content ({{count}} chars)",
-      "showing_raw_content_truncated_count": "Showing raw content ({{count}} chars, first {{shown}} shown)"
+      "showing_raw_content_truncated_count": "Showing raw content ({{count}} chars, first {{shown}} shown)",
+      "slide_load_failed": "Slide {{n}} did not load: the file changed since it was rendered, or its rendered slides were removed from the cache.",
+      "slide_n_of_count": "Slide {{n}} of {{count}}",
+      "slide_next": "Next slide",
+      "slide_previous": "Previous slide",
+      "slides_ask_agent_install": "Ask the agent to install it",
+      "slides_content_redacted": "Slides are not shown for this deck: its text contains what looks like a credential. Any text shown below is redacted.",
+      "slides_install_agent_prompt": "The file panel is showing a slide deck as a text outline because LibreOffice is not installed on the machine {{productName}} runs on. Please install LibreOffice there so slides render as pictures, then tell me to reopen the file.",
+      "slides_install_agent_prompt_hint": "The install command {{productName}} suggests for that machine: {{hint}}",
+      "slides_need_libreoffice": "Slide images need LibreOffice on the machine {{productName}} runs on. Showing the text outline instead. To render slides, install it there and reopen the file.",
+      "slides_render_failed": "The slides could not be rendered on the machine {{productName}} runs on. Showing the text outline instead.",
+      "slides_platform_unsupported": "Slide images are not available on the machine {{productName}} runs on: its file system lacks the guarantees the renderer needs. Showing the text outline instead.",
+      "slides_render_again": "Render slides again",
+      "slides_rendering": "Rendering slides…",
+      "slides_rendering_hint": "The first time a deck is viewed, the machine {{productName}} runs on converts it; this can take up to half a minute. Later views are instant.",
+      "slides_thumbstrip": "Slides",
+      "slides_truncated": "Slide limit reached at {{n}}; the rest of the deck is not shown."
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (not installed)",

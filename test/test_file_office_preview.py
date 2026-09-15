@@ -54,6 +54,21 @@ def _write_docx(path: str, paragraphs: list[str]) -> None:
         zf.writestr("word/document.xml", xml)
 
 
+def _write_pptx(path: str, slides: list[list[str]]) -> None:
+    for i, texts in enumerate(slides, 1):
+        shapes = "".join(
+            f"<p:sp><p:txBody><a:p><a:r><a:t>{t}</a:t></a:r></a:p></p:txBody></p:sp>" for t in texts
+        )
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+            ' xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            f"<p:cSld><p:spTree>{shapes}</p:spTree></p:cSld></p:sld>"
+        )
+        with zipfile.ZipFile(path, "a") as zf:
+            zf.writestr(f"ppt/slides/slide{i}.xml", xml)
+
+
 # --- Happy path: contract the frontend relies on ---
 
 
@@ -72,6 +87,85 @@ async def test_docx_preview_returns_text_and_truncated_only(tmp_path, mock_sel):
     assert "format" not in body
     assert "supported" not in body
     assert "empty" not in body
+
+
+@pytest.mark.asyncio
+async def test_docx_preview_carries_no_slides(tmp_path, mock_sel):
+    # `slides` is the .pptx shape; a document has none, and an empty list
+    # would make the panel probe a field that can never be populated.
+    f = tmp_path / "report.docx"
+    _write_docx(str(f), ["Introduction"])
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}")
+            assert resp.status == 200
+            body = await resp.json()
+    assert "slides" not in body
+
+
+@pytest.mark.asyncio
+async def test_pptx_preview_returns_slides_beside_the_flat_text(tmp_path, mock_sel):
+    """A deck comes back slide by slide, and the flat text is the join of those slides.
+
+    The panel renders `slides`; `text` stays for the .docx path and for any
+    consumer that predates `slides`. Both come from ONE extraction, so the
+    contract is equality, not resemblance.
+    """
+    f = tmp_path / "deck.pptx"
+    _write_pptx(str(f), [["Roadmap", "Q3 goals"], [], ["Risks"]])
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}")
+            assert resp.status == 200
+            body = await resp.json()
+    # Deck numbering, not a renumbering: slide 2 carried no text.
+    assert body["slides"] == [
+        {"index": 1, "text": "Roadmap\nQ3 goals"},
+        {"index": 3, "text": "Risks"},
+    ]
+    assert body["text"] == "--- Slide 1 ---\nRoadmap\nQ3 goals\n\n--- Slide 3 ---\nRisks"
+    assert body["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_pptx_slides_share_the_preview_cap(tmp_path, mock_sel):
+    """The structured form never carries more text than the flat one.
+
+    One budget of _OFFICE_PREVIEW_CAP is spent across the deck in slide
+    order: the slide that crosses it is cut to what is left, and the slides
+    after it are dropped -- not a second cap, and not an uncapped list beside
+    a capped string.
+    """
+    f = tmp_path / "long.pptx"
+    half = _OFFICE_PREVIEW_CAP // 2
+    _write_pptx(str(f), [["a" * half], ["b" * half], ["c" * 10], ["d" * 10]])
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}")
+            assert resp.status == 200
+            body = await resp.json()
+    assert body["truncated"] is True
+    assert len(body["text"]) == _OFFICE_PREVIEW_CAP
+    assert [s["index"] for s in body["slides"]] == [1, 2]
+    assert sum(len(s["text"]) for s in body["slides"]) == _OFFICE_PREVIEW_CAP
+
+
+@pytest.mark.asyncio
+async def test_pptx_slides_are_redacted_before_the_cap(tmp_path, mock_sel):
+    # Same rule as the flat text (test_redaction_runs_before_truncation): a
+    # credential straddling the per-slide cut must not leak as a prefix.
+    f = tmp_path / "creds.pptx"
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    _write_pptx(str(f), [["x" * (_OFFICE_PREVIEW_CAP - 10) + secret], ["next"]])
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}")
+            assert resp.status == 200
+            body = await resp.json()
+    joined = "".join(s["text"] for s in body["slides"])
+    assert secret not in joined
+    assert secret[:10] not in joined
+    assert secret not in body["text"]
 
 
 @pytest.mark.asyncio

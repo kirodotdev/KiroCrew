@@ -405,6 +405,9 @@
     "apps.meetings.broadcastBar.pausingPlaceholder": "Compose-bar placeholder while the pause request is still in flight; must not claim the meeting is already paused.",
     "apps.meetings.broadcastBar.resumingPlaceholder": "Compose-bar placeholder while the resume request is in flight; must not instruct the user to click Resume again.",
     "apps.meetings.transcript.emptyHintPaused": "Empty-transcript hint while the meeting is paused; reassures nothing was discarded without promising live speech.",
-    "apps.meetings.meeting.endingReview": "Transitional badge and compose placeholder while the End-and-review request is in flight; explains why controls are disabled."
+    "apps.meetings.meeting.endingReview": "Transitional badge and compose placeholder while the End-and-review request is in flight; explains why controls are disabled.",
+    "components.fileRenderers.slides_ask_agent_install": "Small link-styled button on the row that says a slide deck is shown as a text outline because the gateway host has no LibreOffice. Clicking it opens the chat with a pre-filled request to the agent to install LibreOffice; nothing is installed by the click itself. Verb + object.",
+    "components.fileRenderers.slides_install_agent_prompt": "The message pre-filled into the chat composer by \"Ask the agent to install it\" -- the user reads it and presses send, so it is ordinary prose addressed to the agent. Keep `LibreOffice` verbatim.",
+    "components.fileRenderers.slides_install_agent_prompt_hint": "Second paragraph of the same pre-filled message, present only when the gateway sent an install command for its platform. {{hint}} is that command (for example `sudo apt install libreoffice`) and must stay verbatim."
   }
 }
