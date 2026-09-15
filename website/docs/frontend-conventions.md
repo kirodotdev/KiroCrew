@@ -409,6 +409,23 @@ Two habits belong to the same concern:
 - Do NOT add a new CSS `@keyframes`. The existing ones in `index.css` back
   specific low-level effects (skeleton pulse, caret blink, indeterminate
   progress); a new component animation goes through Framer Motion.
+- **Hover PAINTS; it never moves or resizes.** A hover state may change colour,
+  border, brightness or shadow, but not `scale` or `translate` — growing a row
+  under the cursor nudges its neighbours and reads as a layout change rather
+  than "you are pointing at this". Press feedback (`whileTap`, `active:scale-*`)
+  is fine: that answers an action the user took. A selected-state scale applied
+  by STATE is an indicator, not a hover effect. A hover *rotation* is out of
+  scope — it leaves the element's box where it is.
+  - Removing a hover transform is only half the job: check the control still has
+    SOME hover cue. On a small swatch or dot the scale is often the only one, and
+    taking it away leaves a clickable thing that answers nothing.
+  - Pick the cue by what the element can actually show. `brightness` is a no-op
+    on a `transparent` fill (tint the border instead), and a class-based cue
+    cannot beat an inline `style`, so an element whose colour is animated needs
+    its cue on a property nothing animates.
+  - `src/test/hoverNoScale.guard.test.ts` enforces this and names the fix in its
+    failure message. Deliberate exceptions live in that file's ALLOWLIST with a
+    written reason.
 
 ## Styling
 

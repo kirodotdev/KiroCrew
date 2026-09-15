@@ -60,15 +60,15 @@ export default function SessionColorPicker({ slotKey, colorIndex }: { slotKey?: 
   return (
     <Popover open={open} onOpenChange={o => { setOpen(o); if (!o) setSaveError(null) }}>
       <PopoverTrigger asChild>
-        <button className="shrink-0 cursor-pointer transition-all hover:scale-125 pl-1" title={i18nT('pages.chat.sessionColorPicker.session_color')} aria-label={i18nT('pages.chat.sessionColorPicker.session_color')}>
-          <span className="block w-3 h-3 rounded-full border-[1.5px] transition-colors" style={color ? { background: color, borderColor: color, boxShadow: `0 0 4px ${color}` } : { background: 'transparent', borderColor: 'var(--muted)' }} />
+        <button className="group shrink-0 cursor-pointer transition-all pl-1 hover:brightness-125" title={i18nT('pages.chat.sessionColorPicker.session_color')} aria-label={i18nT('pages.chat.sessionColorPicker.session_color')}>
+          <span className={`block w-3 h-3 rounded-full border-[1.5px] transition-colors ${color ? '' : 'border-muted group-hover:border-text'}`} style={color ? { background: color, borderColor: color, boxShadow: `0 0 4px ${color}` } : { background: 'transparent' }} />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="p-2.5 w-fit">
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={i18nT('pages.chat.sessionColorPicker.session_colors')}>
-          <button type="button" aria-label={i18nT('pages.chat.sessionColorPicker.no_color')} aria-pressed={colorIndex == null} className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform hover:scale-110 ${colorIndex == null ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('pages.chat.sessionColorPicker.no_color')} />
+          <button type="button" aria-label={i18nT('pages.chat.sessionColorPicker.no_color')} aria-pressed={colorIndex == null} className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform hover:brightness-110 ${colorIndex == null ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('pages.chat.sessionColorPicker.no_color')} />
           {paletteColors.map((c, i) => (
-            <button type="button" key={i} aria-label={colorName(c)} aria-pressed={colorIndex === i} className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform hover:scale-110 ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
+            <button type="button" key={i} aria-label={colorName(c)} aria-pressed={colorIndex === i} className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform hover:brightness-110 ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
           ))}
         </div>
         <div className="text-[11px] text-muted mt-1.5">{i18nT('pages.chat.sessionColorPicker.change_your_color_palette_in_display_settings')}</div>
