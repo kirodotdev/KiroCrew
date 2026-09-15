@@ -15949,7 +15949,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "ターンが進行中です — 完了してからもう一度お試しください。"
+      "turn_in_flight": "ターンが進行中です — 完了してからもう一度お試しください。",
+      "workspace_unavailable": "設定されたプロジェクトフォルダーが利用できません。存在するか確認してから、もう一度お試しください。"
     },
     "channelOrigin": {
       "direct_message": "ダイレクトメッセージ"

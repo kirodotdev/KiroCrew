@@ -7133,7 +7133,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "A turn is running — try again when it finishes."
+      "turn_in_flight": "A turn is running — try again when it finishes.",
+      "workspace_unavailable": "The configured project folder isn't available — check that it exists, then try again."
     },
     "cronUtils": {
       "create": "Create",
