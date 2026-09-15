@@ -19,6 +19,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from kiro_crew import cli_doctor, mcp_core
 
 
@@ -59,6 +61,114 @@ class TestStrictIdentityDiagnosis:
         assert "did not verify" in out
         assert "trust root" in out
         assert "mcp_gateway.stub_servers" not in out
+
+    def test_signing_refusal_names_the_searched_mapping_path(self, monkeypatch, tmp_path) -> None:
+        """The refusal must say WHERE the verifier looked.
+
+        When an agent spec pins a foreign ``KIROCREW_HOME`` into the stub's
+        environment, the mapping is searched in a home the real gateway never
+        writes. Without the resolved path in the message, the operator is sent
+        to ``kirocrew doctor`` on the real gateway — which reports a healthy
+        trust root and points nowhere near the poisoned home.
+        """
+        from kiro_crew.config import paths as config_paths
+
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "4242")
+        poisoned = tmp_path / "poisoned-home"
+        monkeypatch.setenv("KIROCREW_HOME", str(poisoned))
+        mapping = poisoned.resolve() / "session_pid_4242.txt"
+        with (
+            patch.object(mcp_core, "current_caller", return_value=None),
+            patch.object(mcp_core, "_resolve_session_key_strict", return_value=""),
+        ):
+            out = mcp_core.strict_identity_diagnosis()
+            assert f"mapping searched: {mapping}" in out
+
+            # The wording is existence-independent: a mapping that exists (but
+            # fails the HMAC check) produces the identical suffix, still naming
+            # the path.
+            config_paths.config_dir().mkdir(parents=True, exist_ok=True)
+            mapping.write_text("dashboard:chat-1\n", encoding="utf-8")
+            out_present = mcp_core.strict_identity_diagnosis()
+            assert f"mapping searched: {mapping}" in out_present
+            assert out_present == out
+
+    def test_signing_refusal_wording_is_not_an_existence_oracle(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The wording must not vary with what is at the mapping path.
+
+        The mapping directory is same-uid agent-writable, so an agent can plant
+        a symlink at the mapping path aimed at a guessed sensitive target. Any
+        wording that differs between present/absent/planted would leak
+        existence through the refusal text; the suffix only names the path the
+        verifier searched.
+        """
+        from kiro_crew.config import paths as config_paths
+
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "4242")
+        home = tmp_path / "home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        mapping = home.resolve() / "session_pid_4242.txt"
+        with (
+            patch.object(mcp_core, "current_caller", return_value=None),
+            patch.object(mcp_core, "_resolve_session_key_strict", return_value=""),
+        ):
+            absent = mcp_core.strict_identity_diagnosis()
+            config_paths.config_dir().mkdir(parents=True, exist_ok=True)
+            # Dangling symlink at the mapping path, aimed at a guessed target.
+            mapping.symlink_to(tmp_path / "guessed-secret-that-does-not-exist")
+            planted = mcp_core.strict_identity_diagnosis()
+        assert f"mapping searched: {mapping}" in absent
+        assert planted == absent, "wording varied with filesystem state: existence oracle"
+
+    def test_the_diagnostic_never_creates_the_home_directory(self, monkeypatch, tmp_path) -> None:
+        """Naming a path must not materialize it.
+
+        ``config_dir()`` mkdirs as start-of-process maintenance; a diagnostic
+        that inherited that side effect would raise on an uncreatable home —
+        replacing the denial it decorates with a crash — and would create
+        directories from a message-formatting path.
+        """
+        from kiro_crew.session_pid_sig import session_pid_mapping_path
+
+        home = tmp_path / "never-created"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        mapping = session_pid_mapping_path("4242")
+        assert mapping == home.resolve() / "session_pid_4242.txt"
+        assert not home.exists(), "the diagnostic resolver must not mkdir the home"
+
+    @pytest.mark.parametrize(
+        "exc",
+        [OSError("uncreatable home"), RuntimeError("no home directory"), ValueError("garbage")],
+        ids=["oserror", "runtimeerror", "valueerror"],
+    )
+    def test_an_unresolvable_home_keeps_the_generic_denial(self, monkeypatch, exc) -> None:
+        """A path-resolution error downgrades the message, never the denial.
+
+        Strict tools append this diagnosis to their refusal; if resolving the
+        mapping path raises, the tool would error instead of returning its
+        denial. ``Path.home()`` raises RuntimeError (not OSError) when neither
+        HOME nor USERPROFILE resolves, so every arm the except clause names is
+        exercised. The generic wording is the fallback.
+        """
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setenv("KIROCREW_HOST_PID", "4242")
+        with (
+            patch.object(mcp_core, "current_caller", return_value=None),
+            patch.object(mcp_core, "_resolve_session_key_strict", return_value=""),
+            patch.object(
+                mcp_core,
+                "session_pid_mapping_path",
+                side_effect=exc,
+            ),
+        ):
+            out = mcp_core.strict_identity_diagnosis()
+        assert "did not verify" in out
+        assert "trust root" in out
+        assert "mapping" not in out.split("did not verify")[1].split(".")[0]
 
 
 class TestRefusalsCarryTheDiagnosis:

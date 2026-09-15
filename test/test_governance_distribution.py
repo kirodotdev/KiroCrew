@@ -3067,8 +3067,14 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
         from kiro_crew import agent as agent_mod
 
         rebuilds: list[int] = []
-        monkeypatch.setattr(agent_mod, "rebuild_agent_config", lambda **kw: rebuilds.append(1))
+
+        def fake_reporting(**kw):
+            rebuilds.append(1)
+            return Path("/shared/agents/kirocrew.json"), True
+
+        monkeypatch.setattr(agent_mod, "rebuild_agent_config_reporting", fake_reporting)
         monkeypatch.setattr(agent_mod, "_projected_ceiling_generation", None, raising=False)
+        monkeypatch.setattr(agent_mod, "_pending_projection_warned_generation", None, raising=False)
         return agent_mod, rebuilds
 
     def test_a_seeded_baseline_rebuilds_nothing_until_the_ceiling_moves(self, monkeypatch):
@@ -3116,8 +3122,9 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
             attempts.append(1)
             if len(attempts) == 1:
                 raise OSError("could not write the agent config")
+            return Path("/shared/agents/kirocrew.json"), True
 
-        monkeypatch.setattr(agent_mod, "rebuild_agent_config", flaky)
+        monkeypatch.setattr(agent_mod, "rebuild_agent_config_reporting", flaky)
         monkeypatch.setattr(agent_mod, "_projected_ceiling_generation", None, raising=False)
         agent_mod.prime_ceiling_projection()
         install_ceiling(governance.parse_policy(_doc("tightened")))
@@ -3131,6 +3138,86 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
         # And once it succeeds, it stops.
         agent_mod.reproject_for_ceiling_change()
         assert len(attempts) == 2
+
+    def test_a_declined_shared_home_holds_the_memo(self, monkeypatch, install_ceiling, caplog):
+        """A REFUSED rebuild is not a successful one, and the memo must not say it was.
+
+        ``rebuild_agent_config_reporting`` reports the shared-home refusal as
+        ``wrote=False`` from the SAME evaluation that gated the write, so
+        without this arm the hook would mark the moved generation synchronised
+        while the on-disk ``allowedTools`` were never narrowed — stale entries
+        then auto-approve tools the ceiling forbids, short-circuiting inside
+        the harness before PreToolUse. The projection must instead stay
+        pending and apply the moment the refusal clears. The pending state
+        warns ONCE per generation, not on every confirming poll.
+        """
+        import logging
+
+        from kiro_crew import agent as agent_mod
+
+        rebuilds: list[int] = []
+        declined = {"value": True}
+
+        def fake_reporting(**kw):
+            if declined["value"]:
+                return Path("/shared/agents/kirocrew.json"), False
+            rebuilds.append(1)
+            return Path("/shared/agents/kirocrew.json"), True
+
+        monkeypatch.setattr(agent_mod, "rebuild_agent_config_reporting", fake_reporting)
+        monkeypatch.setattr(agent_mod, "_projected_ceiling_generation", None, raising=False)
+        monkeypatch.setattr(agent_mod, "_pending_projection_warned_generation", None, raising=False)
+        agent_mod.prime_ceiling_projection()
+        install_ceiling(governance.parse_policy(_doc("tightened")))
+
+        # While declined: the rebuild refuses and the memo stays behind, and
+        # the pending state warns once for the generation, not per poll.
+        with caplog.at_level(logging.WARNING, logger=agent_mod.logger.name):
+            agent_mod.reproject_for_ceiling_change()
+            agent_mod.reproject_for_ceiling_change()
+        assert rebuilds == [], "a declined instance must not commit the shared rewrite"
+        pending_warnings = [r for r in caplog.records if "is pending" in r.getMessage()]
+        assert len(pending_warnings) == 1, "the pending warning must fire once per generation"
+
+        # The refusal clears (e.g. the stale shared spec was removed): the
+        # pending generation is projected rather than lost.
+        declined["value"] = False
+        agent_mod.reproject_for_ceiling_change()
+        assert rebuilds == [1], "the pending generation must be projected once writable"
+
+        # And once projected, it stops.
+        agent_mod.reproject_for_ceiling_change()
+        assert rebuilds == [1]
+
+    def test_the_hook_never_probes_the_guard_before_the_rebuild(self, monkeypatch, install_ceiling):
+        """The refusal verdict comes from inside the rebuild, never a pre-probe.
+
+        A guard probe followed by the rebuild leaves a window: a concurrent
+        default-home boot rewrites the specs between the two reads, the
+        rebuild's own check refuses, and a memo advanced on the stale probe
+        records a projection that never landed — permanently retaining stale
+        forbidden auto-approvals. The hook must consult only the rebuild's own
+        verdict.
+        """
+        from kiro_crew import agent as agent_mod
+
+        def no_probe(**kw):
+            raise AssertionError("reproject pre-probed the guard: probe/rebuild race reopened")
+
+        monkeypatch.setattr(agent_mod, "_decline_shared_agent_home", no_probe)
+        monkeypatch.setattr(
+            agent_mod,
+            "rebuild_agent_config_reporting",
+            lambda **kw: (Path("/shared/agents/kirocrew.json"), False),
+        )
+        monkeypatch.setattr(agent_mod, "_projected_ceiling_generation", None, raising=False)
+        install_ceiling(governance.parse_policy(_doc("tightened")))
+
+        # An unseeded baseline always attempts the rebuild; the refused verdict
+        # must come back from the rebuild itself (no_probe proves no pre-probe
+        # ran) and the memo must stay behind.
+        agent_mod.reproject_for_ceiling_change()
+        assert agent_mod._projected_ceiling_generation is None, "memo advanced on a refusal"
 
     def test_an_unseeded_baseline_rebuilds_rather_than_skipping(self, monkeypatch):
         """The safe direction if some other entry point starts the poller: a redundant
