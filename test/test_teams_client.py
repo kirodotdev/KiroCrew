@@ -8,6 +8,7 @@ is absent. Inbound/outbound tests are fully mocked -- no network.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -768,3 +769,133 @@ class TestOutbound:
             )
             await c.send_message("conv-1", "hi", "https://smba.trafficmanager.net/")
             assert slept[-1] == expected, f"{headers} -> expected {expected}, got {slept[-1]}"
+
+
+# ── Wire-side byte-budget guard ──
+
+
+def _serialized_bytes(activity: dict) -> int:
+    return len(json.dumps(activity, ensure_ascii=False).encode("utf-8"))
+
+
+def _authed_client() -> TeamsClient:
+    c = TeamsClient(app_id=_APP_ID, app_password="pw")
+    c._token = "tok"
+    c._token_expiry = time.monotonic() + 999
+    return c
+
+
+class TestWireTruncationGuard:
+    """The Connector sizes the WHOLE activity in bytes and refuses an oversize
+    one with HTTP 413, losing that slice of the answer; the guard trims the
+    text at the wire so the head is delivered instead."""
+
+    BUDGET = teams_client_mod.TEAMS_MAX_ACTIVITY_TEXT_BYTES
+
+    @pytest.mark.asyncio
+    async def test_over_budget_send_is_one_post_within_budget(self) -> None:
+        c = _authed_client()
+        c._session = _FakeSession([_FakeResp(json_data={"id": "a-1"})])
+        text = "a" * (self.BUDGET + 1000)
+        mid = await c.send_message("conv-1", text, "https://smba.trafficmanager.net/")
+        assert mid == "a-1"
+        assert len(c._session.calls) == 1  # type: ignore[union-attr]
+        sent = c._session.calls[0][1]["json"]  # type: ignore[union-attr]
+        assert _serialized_bytes(sent) <= self.BUDGET
+        assert text.startswith(sent["text"])
+        assert sent["text"]  # head delivered, never emptied
+
+    @pytest.mark.asyncio
+    async def test_in_budget_send_is_untouched(self) -> None:
+        c = _authed_client()
+        c._session = _FakeSession([_FakeResp(json_data={"id": "a-2"})])
+        text = "hi there ✅🙂"
+        await c.send_message("conv-1", text, "https://smba.trafficmanager.net/")
+        sent = c._session.calls[0][1]["json"]  # type: ignore[union-attr]
+        assert sent["text"] == text
+
+    @pytest.mark.asyncio
+    async def test_truncation_never_splits_a_code_point(self) -> None:
+        # An astral codepoint is 4 UTF-8 bytes; size the run so the naive
+        # byte slice would land mid-codepoint.
+        c = _authed_client()
+        c._session = _FakeSession([_FakeResp(json_data={"id": "a-3"})])
+        text = "🙂" * (self.BUDGET // 4 + 10)
+        await c.send_message("conv-1", text, "https://smba.trafficmanager.net/")
+        sent = c._session.calls[0][1]["json"]  # type: ignore[union-attr]
+        assert _serialized_bytes(sent) <= self.BUDGET
+        assert text.startswith(sent["text"])
+        assert set(sent["text"]) == {"🙂"}  # whole code points only
+        sent["text"].encode("utf-8").decode("utf-8")  # round-trips cleanly
+
+    @pytest.mark.asyncio
+    async def test_update_message_goes_through_the_guard(self) -> None:
+        c = _authed_client()
+        c._session = _FakeSession([_FakeResp(json_data={})])
+        text = "b" * (self.BUDGET + 1000)
+        ok = await c.update_message("conv-1", "act-1", text, "https://smba.trafficmanager.net/")
+        assert ok is True
+        sent = c._session.calls[0][1]["json"]  # type: ignore[union-attr]
+        assert _serialized_bytes(sent) <= self.BUDGET
+        assert text.startswith(sent["text"])
+
+    def test_fit_activity_accounts_for_the_envelope(self) -> None:
+        # The text ALONE fits the budget; the envelope (ids, serviceUrl,
+        # recipient) pushes the serialized activity over. The guard measures
+        # the whole body, so the text is still trimmed.
+        text = "x" * (self.BUDGET - 10)
+        activity = {
+            "type": "message",
+            "text": text,
+            "textFormat": "markdown",
+            "id": "activity-123",
+            "serviceUrl": "https://smba.trafficmanager.net/emea/",
+            "recipient": {"id": "29:user-abcdef", "name": "Some User"},
+        }
+        fitted = TeamsClient._fit_activity(activity)
+        assert fitted is not activity  # trimmed copy, caller's dict untouched
+        assert activity["text"] == text
+        assert _serialized_bytes(fitted) <= self.BUDGET
+        assert len(fitted["text"]) < len(text)
+        assert text.startswith(fitted["text"])
+        # Everything except the text survives verbatim.
+        for key in ("type", "textFormat", "id", "serviceUrl", "recipient"):
+            assert fitted[key] == activity[key]
+
+    def test_fit_activity_returns_in_budget_activity_unchanged(self) -> None:
+        activity = {"type": "message", "text": "hi", "textFormat": "markdown"}
+        assert TeamsClient._fit_activity(activity) is activity
+
+    def test_fit_activity_leaves_textless_over_budget_activity_alone(self) -> None:
+        # A card or inline image over the budget still fails loudly at the
+        # Connector; shrinking an attachment is not the guard's call.
+        activity = {
+            "type": "message",
+            "attachments": [{"content": "z" * (self.BUDGET + 1000)}],
+        }
+        assert TeamsClient._fit_activity(activity) is activity
+
+    @pytest.mark.asyncio
+    async def test_unserializable_text_raises_teams_send_error(self) -> None:
+        # A lone surrogate cannot be UTF-8 encoded, so measuring raises --
+        # inside the send try, so the caller still sees TeamsSendError and
+        # the failure badge is recorded, exactly as the request's own
+        # serialization of the same object would have failed.
+        c = _authed_client()
+        states: list[tuple[bool, str]] = []
+        c.on_state_change = lambda ok, err: states.append((ok, err))
+        c._session = _FakeSession([_FakeResp(json_data={"id": "x"})])
+        with pytest.raises(TeamsSendError):
+            await c.send_message("conv-1", "\ud800", "https://smba.trafficmanager.net/")
+        assert states and states[-1][0] is False
+
+    def test_fit_activity_collapsed_text_keeps_the_placeholder(self) -> None:
+        # An envelope so large the text budget bottoms out: the text becomes
+        # the same placeholder _message_activity uses, never the empty string.
+        activity = {
+            "type": "message",
+            "text": "🙂",
+            "filler": "y" * (self.BUDGET + 100),
+        }
+        fitted = TeamsClient._fit_activity(activity)
+        assert fitted["text"] == "…"
