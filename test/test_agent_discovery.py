@@ -239,9 +239,9 @@ class TestProjectAgentNameCache:
         clear_project_agent_cache()
 
         assert project_agent_names(str(secret)) == frozenset()
-        assert sel_events and sel_events[0]["outcome"] == "denied", (
-            f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
-        )
+        assert (
+            sel_events and sel_events[0]["outcome"] == "denied"
+        ), f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
 
     def test_malformed_spec_is_not_dispatchable(self, tmp_path):
         """A file that does not parse must not contribute its filename fallback.
@@ -532,8 +532,11 @@ class TestSpecModelCoercion:
         # are excluded by NAME, not skipped silently: the lists render as chips
         # (one element each) and `kirocrew_owned` is the bool provenance flag —
         # everything else must be a plain string or React error #31 returns.
-        assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers", "kirocrew_owned"))
+        assert all(
+            isinstance(v, str)
+            for k, v in info.to_dict().items()
+            if k not in ("skills", "mcp_servers", "kirocrew_owned")
+        )
         assert isinstance(info.to_dict()["kirocrew_owned"], bool)
 
     def test_list_fields_drop_only_the_unusable_elements(self) -> None:
@@ -637,6 +640,238 @@ class TestListAgentsGlobalGuards:
         )
         agents = list_agents(agents_dir=agents_dir)
         assert any(a.name == "ok" for a in agents)
+
+
+class TestProvenance:
+    """``source`` says where a file came from, not what its name looks like."""
+
+    def _dir(self, tmp_path: Path) -> Path:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        return agents_dir
+
+    def _installed(self, monkeypatch, tmp_path: Path, *names: str) -> None:
+        home = tmp_path / "home"
+        for n in names:
+            (home / "apps" / n).mkdir(parents=True)
+            (home / "apps" / n / "installed.json").write_text("{}")
+        monkeypatch.setattr("kiro_crew.agent_discovery.peek_data_home", lambda: home)
+
+    def test_a_hand_written_file_is_local_not_builtin(self, tmp_path: Path, monkeypatch) -> None:
+        """A plain ``<name>.json`` nobody shipped is the user's: ``local``. Only
+        the files this package writes are ``builtin`` (or ``kirocrew`` for the
+        assistant and its lite twin)."""
+        from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME, LITE_AGENT_FILENAME
+
+        self._installed(monkeypatch, tmp_path)
+        d = self._dir(tmp_path)
+        (d / "reviewer.json").write_text(json.dumps({"name": "reviewer"}))
+        (d / CONDUCTOR_AGENT_FILENAME).write_text(
+            json.dumps({"name": CONDUCTOR_AGENT_FILENAME[:-5]})
+        )
+        (d / LITE_AGENT_FILENAME).write_text(json.dumps({"name": LITE_AGENT_FILENAME[:-5]}))
+        by_file = {a.filename: a for a in list_agents(agents_dir=d)}
+        assert by_file["reviewer.json"].source == "local"
+        assert by_file[CONDUCTOR_AGENT_FILENAME].source == "builtin"
+        assert by_file[LITE_AGENT_FILENAME].source == "kirocrew"
+
+    def test_an_installed_apps_materialized_agent_is_app(self, tmp_path: Path, monkeypatch) -> None:
+        """``<app>--<agent>.json`` is an app's only when ``<app>`` is installed;
+        the same shape with no such app is a local file with a dash in its name."""
+        self._installed(monkeypatch, tmp_path, "oncall-pack")
+        d = self._dir(tmp_path)
+        (d / "oncall-pack--triage.json").write_text(json.dumps({"name": "triage"}))
+        (d / "ghost-pack--scribe.json").write_text(json.dumps({"name": "scribe"}))
+        by_file = {a.filename: a for a in list_agents(agents_dir=d)}
+        assert by_file["oncall-pack--triage.json"].source == "app"
+        assert by_file["oncall-pack--triage.json"].package == "oncall-pack"
+        assert by_file["ghost-pack--scribe.json"].source == "local"
+        assert by_file["ghost-pack--scribe.json"].package == ""
+
+    def test_the_installed_app_set_is_read_once_per_listing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A cold listing (the spawn gate, a roster load) must not re-scan the
+        apps directory for every app-shaped file: the set is computed once and
+        handed to each row."""
+        from kiro_crew import agent_discovery
+
+        self._installed(monkeypatch, tmp_path, "oncall-pack")
+        d = self._dir(tmp_path)
+        for i in range(6):
+            (d / f"oncall-pack--a{i}.json").write_text(json.dumps({"name": f"a{i}"}))
+        real = agent_discovery.installed_app_names
+        calls: list[int] = []
+
+        def counted():
+            calls.append(1)
+            return real()
+
+        monkeypatch.setattr(agent_discovery, "installed_app_names", counted)
+        agent_discovery.clear_list_agents_cache()
+        rows = list(list_agents(agents_dir=d))
+        assert sum(1 for a in rows if a.source == "app") == 6
+        assert len(calls) == 1
+
+    def test_a_listing_with_no_app_shaped_file_never_touches_the_apps_directory(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The apps scan is resolved lazily, on the first `<app>--<agent>` stem:
+        a cold listing on a host with no app files (a subagent validation, most
+        installs) does no apps-directory I/O at all."""
+        from kiro_crew import agent_discovery
+
+        self._installed(monkeypatch, tmp_path, "oncall-pack")
+        d = self._dir(tmp_path)
+        (d / "reviewer.json").write_text(json.dumps({"name": "reviewer"}))
+        calls: list[int] = []
+        monkeypatch.setattr(
+            agent_discovery, "installed_app_names", lambda: calls.append(1) or frozenset()
+        )
+        agent_discovery.clear_list_agents_cache()
+        assert [a.source for a in list_agents(agents_dir=d)] == ["local"]
+        assert calls == []
+
+    def test_the_apps_scan_is_memoized_on_the_roots_signature(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A warm answer is one stat of the apps root; an install or removal
+        (a directory created or deleted under it) moves the root's mtime and
+        invalidates it; ``clear_list_agents_cache`` drops it with the rest."""
+        import os
+        import time
+
+        from kiro_crew import agent_discovery
+
+        self._installed(monkeypatch, tmp_path, "oncall-pack")
+        agent_discovery.clear_list_agents_cache()
+        scans: list[int] = []
+        real_scandir = os.scandir
+
+        def counting_scandir(path="."):
+            if str(path).endswith("apps"):
+                scans.append(1)
+            return real_scandir(path)
+
+        monkeypatch.setattr(agent_discovery.os, "scandir", counting_scandir)
+        assert agent_discovery.installed_app_names() == frozenset({"oncall-pack"})
+        assert agent_discovery.installed_app_names() == frozenset({"oncall-pack"})
+        assert len(scans) == 1
+        # A new app directory: the root's mtime moves, the scan runs again.
+        time.sleep(0.02)
+        home = tmp_path / "home"
+        (home / "apps" / "second").mkdir()
+        (home / "apps" / "second" / "installed.json").write_text("{}")
+        os.utime(home / "apps")
+        assert agent_discovery.installed_app_names() == frozenset({"oncall-pack", "second"})
+        assert len(scans) == 2
+
+    def test_an_unreadable_apps_directory_is_a_failure_not_an_empty_set(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``None`` when the apps root exists but cannot be read; the empty set
+        only when there is no apps root. And a listing taken during the failure
+        keeps app-shaped files classified as an app's (the retention-safe
+        answer) rather than demoting them to local."""
+        import os
+
+        from kiro_crew import agent_discovery
+
+        self._installed(monkeypatch, tmp_path, "oncall-pack")
+        agent_discovery.clear_list_agents_cache()
+        d = self._dir(tmp_path)
+        (d / "oncall-pack--triage.json").write_text(json.dumps({"name": "triage"}))
+        real_scandir = os.scandir
+
+        def failing_scandir(path="."):
+            if str(path).endswith("apps"):
+                raise PermissionError(13, "denied")
+            return real_scandir(path)
+
+        monkeypatch.setattr(agent_discovery.os, "scandir", failing_scandir)
+        assert agent_discovery.installed_app_names() is None
+        rows = {a.filename: a for a in list_agents(agents_dir=d)}
+        assert rows["oncall-pack--triage.json"].source == "app"
+        monkeypatch.undo()
+        agent_discovery.clear_list_agents_cache()
+        monkeypatch.setattr("kiro_crew.agent_discovery.peek_data_home", lambda: tmp_path / "nohome")
+        assert agent_discovery.installed_app_names() == frozenset()
+
+    def test_one_uninspectable_app_entry_makes_the_whole_answer_unknown(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Two apps installed; the entry of one cannot be inspected. The answer
+        is ``None`` -- not the OTHER app alone: an app omitted from the set
+        reads as uninstalled to the sync, which prunes its member and archives
+        that member's private memory. The failure is not memoized, so the next
+        listing re-asks once the entry is readable again."""
+        import os
+
+        from kiro_crew import agent_discovery
+
+        self._installed(monkeypatch, tmp_path, "oncall-pack")
+        home = tmp_path / "home"
+        (home / "apps" / "second").mkdir()
+        (home / "apps" / "second" / "installed.json").write_text("{}")
+        agent_discovery.clear_list_agents_cache()
+        assert agent_discovery.installed_app_names() == frozenset({"oncall-pack", "second"})
+        agent_discovery.clear_list_agents_cache()
+        real_stat = Path.stat
+
+        def failing_stat(self, *args, **kwargs):
+            if self.parent.name == "second" and self.name == "installed.json":
+                raise PermissionError(13, "denied")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(agent_discovery.Path, "stat", failing_stat)
+        assert agent_discovery.installed_app_names() is None
+        assert agent_discovery.installed_app_names() is None
+        monkeypatch.setattr(agent_discovery.Path, "stat", real_stat)
+        # Readable again: the scan (never memoized while it failed) answers in full.
+        assert agent_discovery.installed_app_names() == frozenset({"oncall-pack", "second"})
+        assert os.path.isdir(home / "apps" / "second")
+
+    def test_a_non_regular_installed_marker_is_undecidable_not_absent(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Only a PROVEN absence of ``installed.json`` excludes an app. A marker
+        that is present but not a regular file -- a directory, a dangling
+        link -- is nothing Kiro Crew's own writer produces and says nothing
+        about whether the app is installed; the answer is ``None`` (no prune),
+        never a set without that app."""
+        import os
+
+        from kiro_crew import agent_discovery
+
+        self._installed(monkeypatch, tmp_path, "oncall-pack")
+        home = tmp_path / "home"
+        second = home / "apps" / "second"
+        second.mkdir()
+        agent_discovery.clear_list_agents_cache()
+        # No marker at all: proven absence, the app is simply not installed.
+        assert agent_discovery.installed_app_names() == frozenset({"oncall-pack"})
+        # A directory where the marker should be: undecidable.
+        (second / "installed.json").mkdir()
+        os.utime(home / "apps")
+        agent_discovery.clear_list_agents_cache()
+        assert agent_discovery.installed_app_names() is None
+        (second / "installed.json").rmdir()
+        # A dangling link: present, undecidable.
+        (second / "installed.json").symlink_to(second / "nowhere.json")
+        agent_discovery.clear_list_agents_cache()
+        assert agent_discovery.installed_app_names() is None
+        (second / "installed.json").unlink()
+        # A regular marker: installed.
+        (second / "installed.json").write_text("{}")
+        agent_discovery.clear_list_agents_cache()
+        assert agent_discovery.installed_app_names() == frozenset({"oncall-pack", "second"})
+
+    def test_a_project_agent_is_local(self, fake_home, tmp_path: Path) -> None:
+        proj = tmp_path / "proj"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+        (proj / ".kiro" / "agents" / "helper.json").write_text(json.dumps({"name": "helper"}))
+        agents = list_agents(agents_dir=tmp_path / "none", project_dir=proj)
+        assert [a.source for a in agents if a.name == "helper"] == ["local"]
 
 
 class TestListAgentsDedup:
@@ -790,14 +1025,10 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a"}
 
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
     def test_cache_invalidates_on_remove(self, tmp_path: Path) -> None:
@@ -805,12 +1036,8 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
         (d / "b.json").unlink()
@@ -829,9 +1056,9 @@ class TestListAgentsCache:
         # Bump mtime forward deterministically so the signature is guaranteed newer.
         st = f.stat()
         os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-        assert [a.name for a in list_agents(agents_dir=d)] == ["v2"], (
-            "an in-place edit must invalidate the cache"
-        )
+        assert [a.name for a in list_agents(agents_dir=d)] == [
+            "v2"
+        ], "an in-place edit must invalidate the cache"
 
     def test_clear_cache_forces_rescan(self, tmp_path: Path) -> None:
         """clear_list_agents_cache() forces a fresh scan even when the signature

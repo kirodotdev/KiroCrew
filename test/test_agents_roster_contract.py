@@ -82,6 +82,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # Template provenance renders on the Crew Members drawer (GET /api/members).
         "template",
         "template_version",
+        # The sync's own attribution of an app row to the app that registered
+        # it; no surface renders it.
+        "source_app",
     }
 )
 

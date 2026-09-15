@@ -90,6 +90,7 @@ export default function ChatPane({
   frameless,
   followContentWidth,
   hideEmptyHint,
+  emptyState,
   openSideChat,
   leading,
   busyMode = 'split',
@@ -133,6 +134,13 @@ export default function ChatPane({
    *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
    *  so the pane does not say "go" one line under a host that says "broken". */
   hideEmptyHint?: boolean
+  /** What an EMPTY transcript shows instead of the "Session ready" hint: a
+   *  render prop handed the pane's own send, so a host can offer starter
+   *  prompts (the Members page's DM empty state: the member's duty and up to
+   *  three "Try asking" cards whose Ask sends the prompt through this pane's
+   *  composer path -- optimistic bubble, queueing rules and all). Rendered in
+   *  the message column, never as an overlay over it. */
+  emptyState?: (send: (text: string) => void) => React.ReactNode
   /** Bring a Side Chat surface for this pane's slot on screen. The selection
    *  toolbar offers "Ask" only when the host provides it: the pane owns its
    *  composer (so Quote is always there) but no Side Chat of its own — the
@@ -1322,7 +1330,11 @@ export default function ChatPane({
                   </div>
                 )}
                 {messages.length === 0 && !running && !slotDetailFailed && !hideEmptyHint && (
-                  <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
+                  emptyState ? (
+                    <div data-testid="chat-pane-empty-state">{emptyState((text) => doSend(text))}</div>
+                  ) : (
+                    <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
+                  )
                 )}
                 {/* Suppressed on the active slot: that pane renders the store's full
                     history, so the bound does not apply and the row would be false. */}

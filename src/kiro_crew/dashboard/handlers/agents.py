@@ -44,8 +44,10 @@ from kiro_crew.agent import (
 )
 from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_template
 from kiro_crew.agent_discovery import (
+    AgentInfo,
     _read_agent_spec,
     clear_list_agents_cache,
+    installed_app_names,
     list_agents,
     project_agent_names,
     spec_model,
@@ -60,6 +62,7 @@ from kiro_crew.apps.manager import (
     INSTALLED_META_FILENAME,
     app_dir,
     app_enabled_state,
+    app_lifecycle_in_progress,
     apps_dir,
 )
 from kiro_crew.atomic_write import replace_with_retry
@@ -156,8 +159,64 @@ _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 logger = logging.getLogger(__name__)
 
 
-def _namespaced_agent_file_exists(agent_name: str) -> bool:
-    """True when an app-registered agent file backs *agent_name*.
+def _apps_declaring_agents(installed: frozenset[str]) -> dict[str, set[str]]:
+    """``{declared agent name: {apps whose manifest declares it}}`` over the
+    installed apps, from the manifests -- not from the materialized files.
+
+    The sync's own evidence for "this name is an app's" is the ``<app>--<name>``
+    file, which an app update removes and rewrites under the lifecycle lock and
+    a disabled app does not have at all. A row from before app files were
+    classified (``source`` still ``package``/``aim``, no ``source_app``) needs
+    that answer precisely while the file is absent, or it misses every app-row
+    protection at the one moment they matter. Same manifest + root the resource
+    registration reads (``_registration_source``); an app whose manifest or
+    files cannot be read declares nothing here (nothing is guessed). Blocking:
+    call it off the loop.
+    """
+    from kiro_crew.apps.manifest import effective_agent_name
+
+    out: dict[str, set[str]] = {}
+    for app in sorted(installed):
+        try:
+            manifest, root = _registration_source(app)
+        except Exception:  # noqa: BLE001 - one unreadable app must not stop the sync
+            logger.debug("agents sync: could not read the manifest of app %r", app, exc_info=True)
+            continue
+        if manifest is None:
+            continue
+        for agent_path in manifest.agents or ():
+            if not isinstance(agent_path, str):
+                continue
+            declared = effective_agent_name(agent_path, root)
+            if declared:
+                out.setdefault(declared, set()).add(app)
+    return out
+
+
+def _app_agent_file_present(kiro_agent: object, source_app: object = "") -> bool:
+    """Whether an app row's agent definition is on disk RIGHT NOW.
+
+    A row that knows its app (``source_app``) is backed only by THAT app's
+    materialized ``<app>--<name>.json`` whose declared ``name`` is the row's
+    binding -- another app's same-named file is somebody else's agent, and a
+    bare ``<name>.json`` is a user's. A row from before the field existed
+    (``source_app`` empty) is checked under either name it can wear: the bare
+    ``<name>.json`` or any ``<app>--<name>.json`` declaring the name (the form
+    the app bridge writes -- an app row's ``kiro_agent`` is the DECLARED name,
+    not the file stem, so a bare-name check alone would report every app agent
+    missing)."""
+    if not isinstance(kiro_agent, str) or not kiro_agent or not _AGENT_NAME_RE.match(kiro_agent):
+        return False
+    if isinstance(source_app, str) and source_app:
+        return _namespaced_agent_file_exists(kiro_agent, app=source_app)
+    return (
+        kiro_agents_dir_path() / f"{kiro_agent}.json"
+    ).is_file() or _namespaced_agent_file_exists(kiro_agent)
+
+
+def _namespaced_agent_file_exists(agent_name: str, *, app: str = "") -> bool:
+    """True when an app-registered agent file backs *agent_name* -- any app's
+    when *app* is empty, only ``<app>--*.json`` when it names one.
 
     App agents are materialized as ``<app>--<agent>.json`` (namespaced file
     names prevent two apps' same-named agents from clobbering each other), but
@@ -168,8 +227,11 @@ def _namespaced_agent_file_exists(agent_name: str) -> bool:
     # Resolved per call, not read from a module constant: the agents dir tracks
     # the live data home (see config.md "Data Home"), and a frozen constant would
     # glob the real ~/.kiro from an isolated run.
+    if app and not _AGENT_NAME_RE.match(app):
+        return False  # not an app id this glob can name literally
     try:
-        for path in kiro_agents_dir_path().glob(f"*--{agent_name}.json"):
+        pattern = f"{app}--*.json" if app else f"*--{agent_name}.json"
+        for path in kiro_agents_dir_path().glob(pattern):
             data = _read_agent_spec(
                 path,
                 operation="api_agents_sync",
@@ -4134,10 +4196,55 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     prune_candidates: dict[str, dict] = {}
     prior_stores: dict[str, str] = {}
     try:
-        discovered_agents = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), lambda: list(list_agents())
-        )
+
+        def _discover() -> tuple[list[AgentInfo], bool, dict[str, set[str]]]:
+            # All off the loop, in one hop: the listing, whether the apps
+            # directory answered -- ``None`` is a read FAILURE, not "no apps",
+            # and the two must be told apart before any app row is pruned --
+            # and which installed apps DECLARE which agent names (from their
+            # manifests, so the answer does not depend on the materialized
+            # files, which an app update removes and rewrites under its lock).
+            listed = list(list_agents())
+            installed = installed_app_names()
+            return listed, installed is None, _apps_declaring_agents(installed or frozenset())
+
+        (
+            discovered_agents,
+            apps_unreadable,
+            apps_declaring,
+        ) = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _discover)
         discovered_names = {a.name for a in discovered_agents}
+        # The names an installed app's files answer to, kept apart: an "app"
+        # row is retained only by a same-name discovery that is ITSELF an
+        # app's file. A local or package agent that happens to share the
+        # name would otherwise keep the row alive after the app is disabled
+        # -- and the row would dispatch that unrelated definition.
+        # A name the listing's dedup gave to a different source (an
+        # earlier-sorting package file over the app's own) is AMBIGUOUS, not
+        # evidence the app stopped shipping it: the dropped app file left its
+        # provenance on the kept entry (``shadowed_sources``), and the app row
+        # is kept -- pruning it would archive a live member's memory over a
+        # filename collision.
+        # ...and keyed by the APP that ships the file, not the bare declared
+        # name alone: two installed apps may both declare ``triage``, and a row
+        # registered from one of them must not be kept -- with its private
+        # memory -- by the other's file once its own app is disabled. Each app
+        # row records its app (``source_app``); a row from before that field
+        # existed is attributed here, once, when exactly ONE installed app
+        # supplies the name (two or more is ambiguous: the row is kept and the
+        # gap logged, never guessed).
+        apps_shipping: dict[str, set[str]] = {}
+        for a in discovered_agents:
+            if a.source == "app" and a.package:
+                apps_shipping.setdefault(a.name, set()).add(a.package)
+            for app in a.shadowed_apps:
+                apps_shipping.setdefault(a.name, set()).add(app)
+        discovered_app_names = {
+            a.name for a in discovered_agents if a.source == "app" or "app" in a.shadowed_sources
+        }
+        attribute_app: dict[str, str] = {}
+        restamp_app: dict[str, str] = {}
+        orig_source: dict[str, str] = {}
 
         # Add new agents
         mc_kiro_agents = {a.kiro_agent for a in cfg.agents.values()}
@@ -4190,6 +4297,22 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                         getattr(disc, "source", "?"),
                     )
                     continue
+                # With the apps directory unreadable, discovery classifies
+                # every ``<x>--<y>.json`` as an app's (the retention-safe
+                # reading for rows that already exist). It is NOT a safe basis
+                # for CREATING one: a user's own file that happens to carry the
+                # bridge's separator would be registered as an app row with a
+                # private store, and the next readable sync would prune it as
+                # an app nobody installed -- and archive that memory. A row is
+                # never created on provenance that could not be read; the file
+                # is picked up by the next sync that can read it.
+                if disc.source == "app" and apps_unreadable:
+                    logger.info(
+                        "agents sync: not registering %r while the apps directory is "
+                        "unreadable; its provenance is decided on the next readable sync",
+                        _dn,
+                    )
+                    continue
                 await _drained_to_thread(require_member_memory_creation, disc.name)
                 _has_on_disk = await asyncio.to_thread(
                     lambda: (kiro_agents_dir_path() / f"{_dn}.json").exists()
@@ -4209,27 +4332,115 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     kiro_agent=disc.name,
                     description=disc.description,
                     source=disc.source,
+                    source_app=disc.package if disc.source == "app" else "",
                 )
                 prior_stores[disc.name] = cfg.agents[disc.name].memory_store
                 await _drained_to_thread(provision_member_memory, cfg, disc.name)
                 synced.append(disc.name)
 
         # Prune agents whose kiro_agent file no longer exists on disk.
-        # Only prune package-installed agents (never user-created or kirocrew-owned).
-        # Skip pruning if scan returned nothing -- likely a transient issue.
+        # Only prune agents the sync itself registered from an installed package
+        # or app (never user-created or kirocrew-owned). Skip pruning if scan
+        # returned nothing -- likely a transient issue.
         # Invariant: for package-sourced entries, kiro_agent == dict key == agent name.
-        # ("aim" is also accepted for backward-compat with older configs.)
+        # ("aim" is also accepted for backward-compat with older configs.) An
+        # app's agents are registered as "app" (the discovery names the
+        # installed app that ships the file); disabling or removing the app
+        # deletes the materialized file, and a row left behind would dispatch
+        # to a definition that is gone -- so it is pruned like a package's,
+        # and only a discovery that is itself an app's file keeps it.
         # A STARRED package crew is pruned like any other -- a registry row with
         # no spec on disk is not spawnable. The star goes with the row: a
         # reinstalled crew comes back un-starred and one click restores it
         # (deliberately no parking list -- a permanent config key is not worth
         # a re-click, and a name-keyed list would pre-star an unrelated future
         # package that reused the name).
+        if apps_unreadable:
+            # An unreadable apps directory is not an empty one: every app row
+            # would read as "its app is gone" and be pruned with its memory
+            # archived. App rows are left exactly as they are until the
+            # directory reads again; package rows are decided as usual.
+            logger.warning(
+                "agents sync: the apps directory could not be read; app members are "
+                "kept until it can"
+            )
+        # An app's materialized files are in transit while its lifecycle lock
+        # is held (an update deregisters them and registers them again under
+        # one hold), so a scan that ran alongside one saw absences that mean
+        # nothing. This sync cannot take that lock -- it holds the config
+        # lock, which the lifecycle routes take INSIDE theirs -- so it asks
+        # whether one is held and, if so, leaves every app row for the next
+        # sync. Package rows are decided as usual.
+        apps_in_transit = app_lifecycle_in_progress()
+        if apps_in_transit:
+            logger.info(
+                "agents sync: an app lifecycle operation is in progress; app members are "
+                "reconsidered on the next sync"
+            )
+        keep_app_rows = apps_unreadable or apps_in_transit
         if discovered_names:
             for name, agent_cfg in list(cfg.agents.items()):
-                if agent_cfg.source in ("package", "aim") and (
-                    agent_cfg.kiro_agent not in discovered_names
+                # A row the sync registered before app files were classified
+                # as an app's (an old discovery filed ``<app>--<agent>.json``
+                # under ``package``) would miss every app-row protection --
+                # the lifecycle hold, own-app retention, the in-lock re-check
+                # -- and a sync racing an app update would prune it and
+                # archive its memory. When discovery now says the row's file
+                # is an app's, the row is RE-STAMPED (source ``app`` + the
+                # app) in the locked write below and treated as an app row
+                # from here on in this pass. Only an unambiguous reading
+                # re-stamps: two apps shipping the name leave the row as is.
+                if (
+                    agent_cfg.source in ("package", "aim")
+                    and not agent_cfg.source_app
+                    # Never re-stamped on provenance that could not be read: an
+                    # unreadable apps directory makes every ``--`` file "an
+                    # app's", which is no evidence about THIS row.
+                    and not apps_unreadable
                 ):
+                    # The file on disk first; when no app file is present RIGHT
+                    # NOW (an update has the app's files in transit, or the app
+                    # dropped the agent), the installed manifests decide whether
+                    # the name is an app's -- so a legacy row is recognised as
+                    # an app row exactly when the app-row protections matter,
+                    # not only when its file happens to be readable.
+                    shipping = apps_shipping.get(agent_cfg.kiro_agent, set()) or apps_declaring.get(
+                        agent_cfg.kiro_agent, set()
+                    )
+                    if len(shipping) == 1 and agent_cfg.kiro_agent not in {
+                        a.name for a in discovered_agents if a.source in ("package", "aim")
+                    }:
+                        restamp_app[name] = next(iter(shipping))
+                        orig_source[name] = agent_cfg.source
+                        agent_cfg = dataclasses.replace(
+                            agent_cfg, source="app", source_app=restamp_app[name]
+                        )
+                        cfg.agents[name] = agent_cfg
+                if agent_cfg.source == "app" and keep_app_rows:
+                    continue
+                if agent_cfg.source == "app":
+                    shipping = apps_shipping.get(agent_cfg.kiro_agent, set())
+                    if agent_cfg.source_app:
+                        gone = agent_cfg.source_app not in shipping
+                    elif len(shipping) == 1:
+                        # Attributed once: the one app shipping the name is
+                        # the row's; recorded in the locked write below.
+                        attribute_app[name] = next(iter(shipping))
+                        gone = False
+                    elif shipping:
+                        logger.warning(
+                            "agents sync: app row %r predates source_app and %d installed apps "
+                            "ship an agent of that name; the row is kept unattributed -- "
+                            "re-hire it from the app it belongs to",
+                            name,
+                            len(shipping),
+                        )
+                        gone = False
+                    else:
+                        gone = agent_cfg.kiro_agent not in discovered_app_names
+                else:
+                    gone = agent_cfg.kiro_agent not in discovered_names
+                if agent_cfg.source in ("package", "aim", "app") and gone:
                     # Record the SNAPSHOT entry: the locked mutate below only
                     # prunes a name whose in-lock entry still equals this one,
                     # so an agent (re)added by a newer sync between this
@@ -4263,7 +4474,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
             logger.warning("SEL logging failed for agent sync failure", exc_info=True)
         return web.json_response({"ok": False, "error": "sync failed", "synced": []}, status=500)
 
-    if synced or pruned:
+    if synced or pruned or attribute_app or restamp_app:
         try:
             # The caller (api_kirocrew_agents_sync) holds _get_config_lock().
             # Persist as a DELTA read-modify-write inside a single sidecar-
@@ -4274,6 +4485,17 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
             # them. _drained_to_thread so a cancellation cannot release the
             # asyncio lock while the worker is mid-write.
             to_add = {n: cfg.agents[n] for n in synced if n in cfg.agents}
+            attribute_snapshot = {
+                n: dataclasses.asdict(cfg.agents[n]) for n in attribute_app if n in cfg.agents
+            }
+            # The re-stamped rows as they stood BEFORE the re-stamp (the in-lock
+            # document still holds the old spelling): the write applies only
+            # while the entry still equals that.
+            restamp_snapshot = {
+                n: dict(dataclasses.asdict(cfg.agents[n]), source=orig_source[n], source_app="")
+                for n in restamp_app
+                if n in cfg.agents
+            }
             to_add_stores = {
                 n: (
                     cfg.agents[n].memory_store,
@@ -4282,10 +4504,13 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 for n in to_add
             }
 
-            def _write_sync() -> list[str]:
+            def _write_sync() -> tuple[list[str], list[str]]:
                 retired_stores: list[str] = []
                 created_archives: list[tuple[str, str]] = []
                 skipped_allocations: list[tuple[str, str]] = []
+                # Snapshot prune candidates the locked read overruled: they
+                # stay, and the answer must not report them pruned.
+                kept_back: list[str] = []
 
                 def _mutate(doc: dict) -> dict | None:
                     agents = coerce_dict_section(doc, "agents")
@@ -4311,20 +4536,48 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     # snapshot and this lock hold is newer evidence than the
                     # stale discovered_names and must survive.
                     for aname, snap_entry in prune_candidates.items():
-                        if agents.get(aname) == snap_entry:
-                            store_name = snap_entry.get("memory_store", "")
-                            record = stores.get(store_name)
-                            if isinstance(record, dict) and record.get("memory_version") == 2:
-                                owner = record.get("owner_member")
-                                if owner != aname:
-                                    raise UnknownMemoryStore(
-                                        f"memory store {store_name!r} ownership changed concurrently"
-                                    )
-                                if archive_member_memory_store(store_name, aname):
-                                    created_archives.append((store_name, aname))
-                                retired_stores.append(store_name)
-                            del agents[aname]
-                            changed = True
+                        if agents.get(aname) != snap_entry:
+                            kept_back.append(aname)
+                            continue
+                        if snap_entry.get("source") == "app" and _app_agent_file_present(
+                            snap_entry.get("kiro_agent"), snap_entry.get("source_app")
+                        ):
+                            # The app's file is back (a lifecycle operation
+                            # that began after the check above finished
+                            # registering it): the row is live, not stale.
+                            kept_back.append(aname)
+                            continue
+                        store_name = snap_entry.get("memory_store", "")
+                        record = stores.get(store_name)
+                        if isinstance(record, dict) and record.get("memory_version") == 2:
+                            owner = record.get("owner_member")
+                            if owner != aname:
+                                raise UnknownMemoryStore(
+                                    f"memory store {store_name!r} ownership changed concurrently"
+                                )
+                            if archive_member_memory_store(store_name, aname):
+                                created_archives.append((store_name, aname))
+                            retired_stores.append(store_name)
+                        del agents[aname]
+                        changed = True
+                    # A legacy app row attributed to the one app shipping its
+                    # name: recorded only while the in-lock entry still equals
+                    # the snapshot (an edit in between is newer evidence).
+                    for aname, app in attribute_app.items():
+                        entry = agents.get(aname)
+                        if entry is None or entry != attribute_snapshot.get(aname):
+                            continue
+                        entry["source_app"] = app
+                        changed = True
+                    # A pre-existing row whose file discovery now classifies as
+                    # an app's: re-stamped as that app's row, same guard.
+                    for aname, app in restamp_app.items():
+                        entry = agents.get(aname)
+                        if entry is None or entry != restamp_snapshot.get(aname):
+                            continue
+                        entry["source"] = "app"
+                        entry["source_app"] = app
+                        changed = True
                     return doc if changed else None
 
                 with memory_store_namespace_lock():
@@ -4345,9 +4598,11 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     retire_unpublished_member_memory_store(store_name, owner)
                 for store_name in retired_stores:
                     release_cached_memory_store(store_name)
-                return retired_stores
+                return retired_stores, kept_back
 
-            retired_stores = await _drained_to_thread(_write_sync)
+            retired_stores, kept_back = await _drained_to_thread(_write_sync)
+            if kept_back:
+                pruned = [n for n in pruned if n not in kept_back]
             if (state := request.app.get("state")) is not None:
                 for store_name in retired_stores:
                     await release_markdown_memory_store(state, store_name)

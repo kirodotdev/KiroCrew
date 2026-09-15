@@ -123,10 +123,16 @@ class TemplateUnavailable(Exception):
     by path).
     """
 
-    def __init__(self, code: str, message: str, *, status: int = 404):
+    def __init__(self, code: str, message: str, *, status: int = 404, ref: str = ""):
         super().__init__(message)
         self.code = code
         self.status = status
+        #: The template's canonical ``<app>/<declared name>`` when the refusal
+        #: came after the shipped spec was read (not materialized, tampered,
+        #: runtime prompt): what a wrapper row hired from it records as its
+        #: ``template``, so a listing can still attribute existing crewmates to
+        #: a card it cannot offer. ``""`` when the name is not knowable.
+        self.ref = ref
 
 
 @dataclass
@@ -562,6 +568,41 @@ def _resolve_from_root(
         )
     declared = spec.get("name")
     agent_name = declared if isinstance(declared, str) and declared else Path(agent_path).stem
+    try:
+        return _resolve_named(
+            app,
+            manifest,
+            card,
+            agent_path,
+            root,
+            root_fd,
+            agent_name,
+            spec,
+            spec_bytes,
+            verified,
+            signature_required=signature_required,
+        )
+    except TemplateUnavailable as exc:
+        exc.ref = exc.ref or template_ref(app, agent_name)
+        raise
+
+
+def _resolve_named(
+    app: str,
+    manifest: Any,
+    card: CrewTemplate,
+    agent_path: str,
+    root: Path,
+    root_fd: int,
+    agent_name: str,
+    spec: dict[str, Any],
+    spec_bytes: bytes,
+    verified: dict[str, bytes],
+    *,
+    signature_required: bool,
+) -> StoreTemplate:
+    """The rest of the resolve once the declared name is known: every refusal
+    from here on carries the template's canonical ref."""
     materialized = _safe_link_name(_namespace(app, agent_name))
     materialized_path = kiro_agents_dir_path() / f"{materialized}.json"
     if not materialized_path.is_file():

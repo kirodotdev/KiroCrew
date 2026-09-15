@@ -45,7 +45,9 @@ Missing history must never silently turn a private topic into Global memory.
 | `src/kiro_crew/subagent.py` | `_validate_agent` — what an `agent=` name is checked against, and `UNADVERTISED_AGENTS` |
 | `src/kiro_crew/config/prompt-orchestrator.md` | The orchestrator prompt that names `select_crew` and the delegation rule |
 | `src/kiro_crew/dashboard/handlers/agents.py` | Crew CRUD on `/api/agents`, and the roster row serializer |
-| `src/kiro_crew/dashboard/handlers/members.py` | `/api/members` roster, `POST /api/members`, thread get-or-create, rules, activity |
+| `src/kiro_crew/dashboard/handlers/members.py` | `/api/members` roster, `POST /api/members`, thread get-or-create, rules, activity, briefing, the hire gallery's catalog |
+| `src/kiro_crew/member_gallery.py` | The hire gallery's catalog: every template a member can be hired from, from an app's cards, the shipped built-ins and the user's own agent files, in one shape |
+| `src/kiro_crew/agent_discovery.py` | `list_agents` and the provenance of each agent file (`source`: `kirocrew` / `builtin` / `app` / `package` / `local`) |
 | `website/src/pages/KiroCrewAgentsPage.tsx` | The Crews UI, mounted as the **Crews** tab of `CapabilitiesPage` (Agent Capabilities) |
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
@@ -1361,6 +1363,291 @@ completing after another member was selected attributed to the member it was for
 and
 `MembersPage.identity.test.tsx` (the notice's History link, the reason a kept
 thread stayed, the fired row gone from the roster with the drawer).
+
+## Hire gallery (design step 6): `/members/hire`, `GET /api/members/templates`
+
+The one place a crew member is hired from, whatever the template's origin --
+the rail stays on Crew Members; the gallery is a view under the page (its own
+route so a hire can be linked to; `App.tsx` mounts it lazily like the page).
+The roster's **Add a Crewmate** (header `+` and the empty roster's call to action)
+opens it. Three sources, one card shape (`member_gallery.build_catalog`, served
+by `GET /api/members/templates`, owner-gated like the hire it leads to; free
+text on a card passes the roster's identity redactor):
+
+- **App cards** -- every card an ENABLED installed app offers in
+  `crew.templates` (`app-kit-platform.md` §3.1), resolved through
+  `member_templates.resolve_store_template` so the card carries the
+  materialized agent's name and capabilities; a card whose hire would be
+  refused right now (not materialized, unreadable spec, invalid crew section)
+  still lists with `hireable: false` and the hire's own code as
+  `unavailable_code`, so the gallery says why Hire is off in the words the
+  hire would use. `source` is `{kind: "store", app, agent}`.
+- **Built-ins** -- the agent files this package ships (`OWNED_KIRO_AGENT_FILES`,
+  `source == "builtin"` in discovery): role humanized from the name
+  (`pipeline-conductor` -> *Pipeline Conductor*), duty from the spec's
+  description, publisher *Kiro Crew*, category `other`. `source` is
+  `{kind: "local", agent}`.
+- **Local files** -- the user's own agent files (`source == "local"`), the same
+  derivation, publisher empty. The assistant (`kirocrew`) is never a card (the
+  `default` member IS it); a member's **private copy** is never a card (it is
+  one colleague's definition, not a posting); an app's materialized file is
+  offered only through its card; a package's agent is the package's to offer.
+
+Each card: `id` (`app:<app>/<agent path>`, `builtin:<name>`, `local:<name>`),
+`origin`, `source`, `role`, `duty` (a card without one falls back to its
+description's first sentence), `description`, `tags`, `category` (the closed
+`CREW_CATEGORIES` vocabulary; unset or unknown is `other`), `starter_prompts`,
+`avatar` (the card's ghost, or null), `publisher`, `version`, `agent`,
+`capabilities` (the definition's skills and MCP servers, each once), and
+`hired_as` -- the crewmates hired from this card and still enrolled, each
+`{id, display_name}` in roster order (`member_gallery.enrolled_records`: the
+same `enrolled_member_ids` predicate `GET /api/members` applies, so a row that
+merely binds the card's file, a session that used the template or a record
+whose generation is not the row's store is not a hire; a fired crewmate has no
+record and drops out). The `id` opens the DM, the `display_name` is what the
+gallery's *Chat with* and picker say (two crewmates may carry one label; the id
+tells them apart). A card that cannot be hired from today still names them: the
+crewmates are the owner's whatever the template's state, so *Chat with* / the
+picker stay while Hire is off. They are attributed by the template's canonical
+ref -- the refusal's own (`TemplateUnavailable.ref`, set once the shipped spec
+was read and the declared name is known: not materialized, tampered, runtime
+prompt) or, when the spec itself could not be read, the card's file stem, which
+is the declared name in every case but a spec that renames itself.
+Every free-text field on a card -- `role`, `duty`, `description`, `publisher`,
+`version` (a semver build suffix is app-authored text like the publisher),
+`unavailable_reason`, the `tags`, the `starter_prompts`, each capability's
+`name` (an MCP server or skill name is app- or user-authored config too) and each
+hired crewmate's `display_name` -- passes the roster's identity redactor
+(`_identity_text`) before it ships, so a credential-shaped string in a manifest
+or an agent file never renders in the gallery. The ROUTING identifiers -- `id`,
+`agent`, `source.agent` / `source.app`, and a hired crewmate's `id` -- are what the
+client posts or navigates back, so they cannot be redacted and still work: a
+card (or a `hired_as` entry) whose routing identifier the redactor would alter
+(a hand-authored agent file or a hand-edited row named like a credential; the
+agent-name grammar admits one) is OMITTED
+from the listing rather than shipped raw (pinned:
+`test_credential_shaped_card_text_is_redacted`,
+`test_a_card_whose_routing_identifier_reads_as_a_credential_is_omitted`).
+
+**Provenance is real, not guessed from the filename.** `agent_discovery`
+classifies a user-level agent file as `kirocrew` (the assistant and its lite
+twin, which the sync never auto-creates a crew for), `builtin` (another file
+this package ships), `app` (`<app>--<agent>.json` where `<app>` is an INSTALLED
+app -- known from the apps root, `installed_app_names`, resolved LAZILY on the first
+app-shaped stem so a listing without one does no apps-directory I/O, memoized on the
+root's stat signature so a warm listing costs one stat, and answering `None` when the
+root exists but cannot be read -- a failure kept apart from the empty set, during which
+an app-shaped file is classified as an app's, the retention-safe answer; the double
+dash is the bridge's separator and never a package's, so a leftover of an uninstalled
+app is `local`, not a package named `<app>-`), `package` (`{package}-{name}.json`) or
+`local` (everything else -- a hand-written file is the user's, not built in). A
+project checkout's own `.kiro/agents` file is `local`. The roster's *mine*
+filter reads `kirocrew` and `local` alike (`normalize_member_source`). The sync
+(`POST /api/agents/sync`) registers an app's agents with `source: "app"`, and its
+prune step treats that spelling as it treats `package` (and the legacy `aim`):
+disabling or removing the app deletes the materialized `<app>--<agent>.json`, and
+a row left behind would dispatch to a definition that is gone, so it is pruned --
+and an `app` row is KEPT only by ITS OWN app's file of that name: the sync
+records the registering app on the row (`source_app`, the app's name -- the row's
+`kiro_agent` is the bare DECLARED name, which two installed apps may both use),
+and the row survives only while a discovery that is that app's file (`source ==
+"app"`, `package == source_app`) -- or one whose dedup DROPPED that app's file of
+the name (`AgentInfo.shadowed_apps` beside `shadowed_sources`: the apps and the
+sources the listing gave up in favour of the kept entry; a name an app and an
+earlier-sorting package both ship is ambiguous, not proof the app stopped shipping
+it, so the app row and its memory stay -- pinned:
+`test_a_name_an_app_and_a_package_both_ship_keeps_the_app_row`) -- still answers to
+it. Another app's same-named file keeps nothing: with the originating app disabled
+the row goes, so its private memory never follows a bare name to a different app
+(pinned: `test_an_app_row_is_kept_only_by_its_own_apps_file`). A row from before
+`source_app` existed is attributed once, in the locked write, when exactly one
+installed app ships the name; two or more is ambiguous -- the row is kept
+unattributed and the gap logged, never guessed (pinned:
+`test_a_legacy_app_row_is_attributed_once_when_one_app_ships_the_name`). A row an
+older sync spelled `package` (or `aim`) for what discovery now classifies as an
+app's `<app>--<agent>.json` is RE-STAMPED the same way -- `source: app` plus the
+app -- when exactly one installed app ships the name and no package file declares
+it, in the locked write and as an app row for the rest of that pass, so an install
+that already had members gets the app-row protections too (pinned:
+`test_a_pre_existing_package_row_for_an_apps_file_is_restamped_as_the_apps`). "Ships
+the name" is answered by the materialized file first and, when no app file is
+present right now, by the installed MANIFESTS (`_apps_declaring_agents`, the same
+manifest + root the resource registration reads): an app update removes and
+rewrites its files under the lifecycle lock, and a legacy row caught in that window
+would otherwise stay `package`, miss the lifecycle hold and prune with its memory
+archived -- the one moment the app-row protections matter (pinned:
+`test_a_legacy_package_row_whose_app_file_is_in_transit_is_recognised_from_the_manifest`).
+Neither the re-stamp nor the CREATION of an app row happens while the apps
+directory cannot be read: discovery's unreadable-time reading ("every `--` file is
+an app's") is retention-safe for rows that exist and no evidence for a new one -- a
+user's own `foo--bar.json` would be registered with a private store and pruned, memory
+archived, by the next readable sync; such a file waits for a sync that can read the
+provenance (pinned: `test_an_unreadable_apps_directory_creates_and_restamps_no_app_row`). The
+predicate behind the roster, `enrolled_member_ids`, lives in `agent_state` beside
+the record it reads; the roster route wraps it and the gallery reads it there. A local
+or package agent that happens to share the name
+must not keep the row alive after the app is disabled, or the row would dispatch
+that unrelated definition in the app agent's name; when the apps directory could
+not be read (`installed_app_names() is None`, asked off the loop in the same hop as
+the listing -- and ONE app entry that cannot be decided makes the whole answer
+`None`, never "the other apps": an entry that cannot be inspected, or an
+`installed.json` present but not a regular file (a directory, a dangling link --
+nothing Kiro Crew's own writer produces); only a PROVEN absence of the marker excludes
+an app, because an app omitted from the set reads as uninstalled and its member would
+be pruned; the failure is not memoized) NO `app` row is pruned -- an
+unreadable directory or entry says nothing about which apps are gone, and pruning on
+it would archive an app member's memory --
+while package rows are decided as usual; and while ANY app's lifecycle lock is
+held (`app_lifecycle_in_progress`: an install, update, enable, disable or
+uninstall running on the loop) NO `app` row is pruned either -- an update
+deregisters an app's materialized agents and registers them again under one
+hold, so a file a scan alongside it found missing is in transit, not gone; the
+sync cannot take that lock (it holds the config lock, which the lifecycle routes
+take inside theirs), so it leaves every app row for the next sync. The locked
+write re-checks an app row's file on disk (`_app_agent_file_present`: for a row
+that records its app, only `<source_app>--*.json` declaring the row's binding; for
+a legacy row, either name it can wear -- the bare `<name>.json` or any
+`<app>--<name>.json` declaring the name -- an app row's `kiro_agent` is the
+DECLARED name, not the file stem, so a bare-name check alone would call every app
+agent missing) and keeps a row whose file is back (a lifecycle operation that
+began after the check finished registering it), and the answer's `pruned` names
+only the rows that went. `local` rows -- the user's
+own files -- never are pruned (pinned in `test/test_agent_sync_prune.py`,
+including `test_an_app_lifecycle_in_progress_prunes_no_app_row` and
+`test_an_app_file_back_on_disk_at_write_time_keeps_the_row`).
+
+**Frontend** (`pages/members/HireGalleryPage.tsx`): scenario chips (All plus
+every category present, in the design's order), a search over role, duty, tags
+and publisher, cards (ghost avatar seeded by the card id or wearing the card's
+ghost; role; duty; the first three tags; the actions below -- the card wraps, the
+text keeps a minimum basis and the action cluster drops to its own row on a narrow
+viewport instead of crushing the role and duty or overflowing), and a detail Dialog
+(full description, every tag, an `ErrorNotice` when unhireable, **Try asking**
+starters -- previews, not controls: a row that reads like a question must not
+commit a hire; the same prompts become the Ask cards in the new member's thread
+-- a collapsible **Built-in capabilities (N)**, a quiet `publisher · vX · origin ·
+hired as <display name>` / `hired N times` line, and the same actions in its
+footer). No publisher, version or verified mark on the card face.
+
+**Hire is named, then confirmed.** **Hire** is the PRIMARY action on every card
+and in the detail, whatever the card's count, and it always opens the naming
+step (`HireNameDialog`, composed through the dialog's standard slots --
+`DialogHeader` / `DialogBody` / `DialogFooter` supply the inset and the header's
+clearance from the close button, since `DialogContent` carries no padding of its
+own; the picker below is composed the same way): the role is the input's
+placeholder, never its value;
+a blank or whitespace-only name cannot be confirmed (the button is disabled and
+the hint says a name is required); Cancel or Escape closes it with NO request
+made, and the next card's dialog starts with an empty field. Only the confirm
+sends `POST /api/members {source, display_name}` -- the name whitespace-collapsed
+(`hireName`) -- after which the roster, catalog and installed-agent queries are
+invalidated and the page navigates to `/members?member=<id>`. A refusal is said
+inside the naming dialog with the typed name kept for the retry (no hand-off:
+the dialog is the unsaved state).
+
+**One secondary action follows the count** (`hired_as.length`, the server's
+enrolled-active count): **0** -- none; **1** -- **Chat with <display name>**,
+which opens that crewmate's DM by its immutable id; **2+** -- **Your crewmates
+(N)**, which opens an accessible picker (`CrewmatePicker`, a Dialog listing each
+crewmate by name with its id beside, in roster order) where nothing navigates
+until a row is chosen and Escape leaves the gallery where it was. Opening a chat
+never hires. Before navigating, the page re-reads the roster: a crewmate fired
+since the catalog was read is SAID (`hire-chat-error`, "<name> isn't one of your
+crewmates anymore", and the catalog is refetched), never opened as an empty
+thread or swapped for another crewmate from the same card; a roster that cannot
+be read is said the same way with the hand-off, and nothing navigates. Either
+outcome first closes the layer the action came from -- the detail Dialog or the
+picker -- so the notice, which lives on the page under them, is not covered by
+the dialog that led to it. The rail
+row stays active under `/members/hire` (`navRowActive` matches the prefix).
+Pinned in `test/test_member_gallery.py` (**the gate**: cards from all three
+sources with the exact source bodies, the app card's every field, a member's
+copy never listed; **the gate**: `hired_as` is the enrolled active roster from
+the card -- two named hires listed by id and name, a rename followed, a
+hand-bound row and a hand-templated row not counted, a fired crewmate dropped; a
+record of another generation not a hire; an unhireable card listed with the
+hire's code and still naming the crewmates hired from it, a disabled app's cards
+absent; redaction, including a
+credential-shaped enrolled id omitted from `hired_as`; owner gate;
+`humanize_agent_name`), `test/test_agent_discovery.py::TestProvenance` and
+`HireGalleryPage.test.tsx` (filter and chips, the face and its actions per
+count, **the gates**: Hire asks for a name and posts nothing until it is
+confirmed, then sends source + name and lands on the thread; both dialogs use the
+header / body / footer slots; cancel writes
+nothing and the next card's field is fresh; Chat with opens by id and hires
+nothing; the picker navigates only on an explicit choice and tells two same-label
+crewmates apart by id; a second hire from a hired card goes through the same
+naming step, whose description then says it ADDS one -- "you already have N
+crewmate(s) hired from this template" (`name_description_another`, plural) -- so
+a reader cannot mistake it for a duplicate; Hire from the detail layer CLOSES that
+layer as the naming step opens (one Hire on screen at a time); a fired target is
+said; the detail layer (its capability kind tags in sentence case: "Skill", "Tool
+server", "Knowledge"); a refusal said in the dialog; catalog and roster errors, a
+failed chat from the detail layer or the picker closing that layer; the empty
+state).
+
+**Post-hire thread** (`pages/members/MemberThreadExtras.tsx`): the DM header's
+title row is the **rename affordance** -- a crewmate arrives already named by
+its owner (the gallery's naming step is required), so the header shows that
+name with the role as a subtitle (withheld while it equals the name, so it never
+reads "X · X") and no hint about how it was named; the pencil opens an input
+over the label, Enter saves `display_name` ONLY through `PUT /api/agents/{id}`
+(Escape cancels, an unchanged name writes nothing). **This reverses a recorded
+decision, on purpose and for one field**: the Crew page was pinned as "never a
+second writer" (#9103; its avatar entry was likewise kept a navigation, #9425) --
+the pencil used to open the crew editor. With the gallery, the display name is
+what the owner typed at the naming step moments before, and sending them to
+another page to fix a typo in it made the hire's own words a second-class edit;
+`display_name` is a label with zero blast radius (the id never moves), so the
+header writes THAT field and nothing else -- every other change still leaves
+the page (`learn-cron-dashboard.md` says the same). Naming the reversal here is
+the record; a maintainer who wants the old pin back reverts `MemberNameEditor`
+to a navigation. **Same-label twins wear their
+id**: when two roster rows carry one label (a role hired twice and named alike, or
+a rename landing on a sibling's name -- `rosterFilter.twinLabelIds`, exact after
+whitespace normalization), the roster row and the thread header show the mono id
+beside the label with the word **id** on its face (*id: Night-pager*), on those
+rows only, so the destination says which of the two it is -- and which of the two
+strings is the name -- the way the picker did; distinct labels stay a list of
+names (pinned: `MembersPage.identity.test.tsx`). The editor is
+mounted with `key={active.name}`, so switching members mid-rename remounts it: a
+failed request's draft, its error and its retry cannot outlive the member they
+were typed for and land on the next one (pinned in `MembersPage.test.tsx`). No
+navigation to the crew editor for a name; the drawer's Configuration keeps the "Edit in crew
+manager" exit for everything else. The **empty thread** is ChatPane's
+`emptyState` render prop (handed the pane's own `doSend`, so a starter goes
+through the composer path -- optimistic bubble, queueing rules -- and renders in
+the message column, never as an overlay): a greeting, the member's one-line duty
+(from the catalog card that attributes the member, else its role) and up to
+three starter prompts whose **Ask** sends the prompt (`cardForMember` finds the
+card whose `hired_as` names the member); a member with no card
+falls back to the plain "Session ready" hint, and a catalog that cannot be read is
+said there as an `ErrorNotice` (never a "Session ready" that reads like a member
+with no card). The roster says the same about a failed apps read (the badge then
+falls back to the app id) in an `ErrorNotice` above the rows.
+
+**Drawer as data** (`pages/members/drawerSections.tsx`): the Crewmate summary is an
+ordered `DrawerSection[]` rendered by one loop (`DRAWER_SECTION_ORDER`):
+**Briefing** (`GET /api/members/{slug}/briefing?member=`, owner-gated, read-only,
+the same pinned fail-closed read the prompt builder uses, the text through the
+identity redactors -- an absent file is empty text, a platform that cannot read
+one race-free says so) -> **Capabilities**
+(the skills and MCP servers of the file the member is bound to, from
+`/api/agents/installed`; the hire invalidates that list so the new copy's
+capabilities read right away) -> **Role template** (a store-hired member only:
+the role-update offer / up-to-date line and detach, in the open part of the
+drawer because an offer the owner cannot see is not one) -> **Activity** (the
+Today / 7-day tiles and the recent log) -> **Sessions it's driving** -> **Auto
+patrol** -> **Wake sources** -> **Configuration** (Member id, Role, Source,
+Agent template, Model, Workspace, Memory store, the memory notice and the
+crew-manager exit) folded behind a disclosure, closed by default. Fire stays at
+the foot, outside the sections. **Roster rows** wear the member's face (the
+card's ghost, copied at hire) and a compact source badge on a third line --
+the pack's display name on the face, the version in the title; *Built-in* for a
+shipped member; none for a member created here. Pinned in
+`MembersPage.test.tsx` (rename in place, no just-hired hint, the empty state
+sending through the pane, the section order against the rendered document and
+the folded Configuration) and `MembersPage.identity.test.tsx` (badges).
 
 ## Selection: the `select_crew` contract
 

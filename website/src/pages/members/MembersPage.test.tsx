@@ -20,6 +20,14 @@ vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
     memberThread: vi.fn(),
+    memberTemplates: vi.fn(() => Promise.resolve({ templates: [] })),
+    memberBriefing: vi.fn(() => Promise.resolve({ text: '', supported: true })),
+    agentsInstalled: vi.fn(() => Promise.resolve([])),
+    // The Role template section (a store-hired member only): "up to date"
+    // unless a case says otherwise.
+    memberRoleUpdatePlan: vi.fn(() => Promise.resolve({ member: '', template: '', member_version: '1.2.0', installed_version: '1.2.0', update_available: false, member_fingerprint: 'x', template_fingerprint: 'y', fields: [] })),
+    apps: vi.fn(() => Promise.resolve([])),
+    updateKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
     webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
@@ -77,10 +85,15 @@ vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 /* ChatPane is the full chat stack (WS, Redux slot machinery). The page's own
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
+/* The stub renders the host's `emptyState` render prop the way the real pane
+ * does on an empty transcript, handing it a recording send, so the Members
+ * page's DM empty state (duty + starter prompts) is driven here. */
+export const paneSends: string[] = []
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, agentLocked, followContentWidth, busyMode }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string }) => (
+  default: ({ slotKey, agentLocked, followContentWidth, busyMode, emptyState }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; emptyState?: (send: (text: string) => void) => React.ReactNode }) => (
     <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'}>
       {slotKey}
+      {emptyState ? <div data-testid="chat-pane-empty-state">{emptyState((text) => { paneSends.push(text) })}</div> : null}
     </div>
   ),
 }))
@@ -109,6 +122,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 })
 
 import { api } from '../../api/client'
+import { DRAWER_SECTION_ORDER } from './drawerSections'
 import MembersPage, { CREW_SUMMARY_TAB_ID, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_UNFED_VIEWS, MEMBERS_WITHHELD_VIEWS, panelSitsBeside, resolveDefaultMember } from './MembersPage'
 import { __resetPanelTabs, VIEW_DATA_SOURCE } from '../../hooks/usePanelTabs'
 
@@ -123,6 +137,15 @@ const WIDE_WINDOW = 1440
 const NARROW_WINDOW = 1000
 function setWindowWidth(px: number) {
   Object.defineProperty(window, 'innerWidth', { value: px, configurable: true, writable: true })
+}
+
+
+/** The drawer's Configuration section is folded by default (design step 6);
+ *  the rows under it are read after opening the disclosure. */
+async function openConfig() {
+  const toggle = await screen.findByTestId('member-section-configuration-toggle')
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle)
+  await screen.findByTestId('member-section-configuration-body')
 }
 
 function row(overrides: Record<string, unknown> = {}) {
@@ -557,6 +580,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall', model: 'claude-opus-5', memory_version: 1 })])
     fireEvent.click(await rosterRow('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
+    await openConfig()
     expect(drawer).toHaveTextContent('kirocrew')
     expect(drawer).toHaveTextContent('claude-opus-5')
     expect(drawer).toHaveTextContent('Uses the current shared memory (V1), not a private store.')
@@ -571,6 +595,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     ])
     fireEvent.click(await screen.findByText('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
+    await openConfig()
     expect(drawer).toHaveTextContent(/used only by its owner/i)
     expect(screen.getByRole('button', { name: 'Manage memory' })).toBeInTheDocument()
   })
@@ -582,6 +607,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     ])
     fireEvent.click(await screen.findByText('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
+    await openConfig()
     expect(drawer).toHaveTextContent('Uses the current shared memory (V1), not a private store.')
     expect(drawer).not.toHaveTextContent('Private memory (V2) starts empty in a new chat')
     expect(within(drawer).getByRole('button', { name: 'Set up private memory' })).toBeVisible()
@@ -596,6 +622,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall', ...memory })])
     fireEvent.click(await screen.findByText('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
+    await openConfig()
     expect(drawer).toHaveTextContent(reason)
     expect(drawer).not.toHaveTextContent(/unavailable or belongs/i)
     expect(drawer).not.toHaveTextContent(/Uses the current shared memory \(V1\), not a private store\./)
@@ -996,8 +1023,11 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-crew-summary')
-    // Edit is a rare secondary action: it must NOT be a header-level peer.
+    // Edit is a rare secondary action: it must NOT be a header-level peer, and
+    // it lives under the folded Configuration section (design step 6).
     expect(screen.queryByTestId('member-edit-jump')).toBeNull()
+    expect(screen.queryByTestId('member-edit-in-manager')).toBeNull()
+    await openConfig()
     // Mutation check: the assertion is on the DESTINATION (explicit ?tab=crews
     // beats CapabilitiesPage's remembered last tab, and ?crew=<name> opens
     // THIS member's editor rather than the roster), so retargeting the jump
@@ -1009,24 +1039,21 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     }
   })
 
-  it('the roster header has an add-member entry that lands on the crew manager\'s create form', async () => {
+  it('the roster header has an add-member entry that opens the hire gallery', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
-    // Adding a member IS creating a crew; the crew manager stays the only
-    // write path, so the entry is a navigation (destination pinned with the
-    // explicit ?tab=crews, same as the edit affordance). It opens the create
-    // form directly — `new=1` — not the crew list a second click would be
-    // needed on (#9513), and names its origin so the create can return here.
+    // Adding a member is a hire: the gallery under this page is the one
+    // entry point, whatever the template's origin (design step 6).
     fireEvent.click(screen.getByTestId('member-add'))
-    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
+    expect(navigateSpy).toHaveBeenCalledWith('/members/hire')
   })
 
-  it('the empty roster\'s call to action lands on the same create form as the header "+"', async () => {
+  it('the empty roster\'s call to action opens the same gallery as the header "+"', async () => {
     await renderPage([])
     const cta = await screen.findByTestId('member-empty-cta')
     expect(cta).toHaveTextContent('Add a Crewmate')
     fireEvent.click(cta)
-    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
+    expect(navigateSpy).toHaveBeenCalledWith('/members/hire')
   })
 
   it('the empty roster names the hire path for existing rows only when the registry holds more than `default`', async () => {
@@ -1748,48 +1775,98 @@ describe('MembersPage member edit entry (issue #9425)', () => {
 
   beforeEach(() => { localStorage.clear() })
 
-  it('the DM header carries a pencil right of the name, named "Edit member", that opens this member\'s editor', async () => {
+  it('the DM header carries a pencil right of the name that renames the member IN PLACE (design step 6)', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    const btn = await screen.findByTestId('member-edit-name-button')
+    const btn = await screen.findByTestId('member-rename-button')
     expect(btn.tagName).toBe('BUTTON')
-    // The label names what the click does — the whole editor, not the builder.
-    expect(btn).toHaveAccessibleName('Edit crewmate')
-    expect(btn).toHaveAttribute('title', 'Edit crewmate')
+    expect(btn).toHaveAccessibleName('Rename')
     expect(btn.querySelector('svg')).not.toBeNull()
     // It sits INSIDE the title row, right AFTER the name — never a
-    // header-level peer (docked wide, the header carries no panel control at
-    // all; the panel is a permanent column).
+    // header-level peer.
     const titleRow = screen.getByTestId('member-title-row')
     expect(titleRow).toContainElement(btn)
-    expect(titleRow.textContent).toContain('oncall')
     const nameEl = within(titleRow).getByText('oncall')
     expect(nameEl.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.queryByTestId('member-panel-toggle')).toBeNull()
+    // The click opens an input over the label; Enter saves display_name ONLY
+    // through the crew record's PUT -- no navigation, the id never moves.
     fireEvent.click(btn)
-    // Mutation check on the DESTINATION: this page never writes — the crew
-    // manager opens THIS crew's editor. No `&avatar=1`: the builder is one
-    // row inside that editor, not where an "edit this member" click lands.
-    expect(navigateSpy).toHaveBeenCalledWith(EDIT_LINK)
-    expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('avatar=1'))
+    const input = await screen.findByTestId('member-rename-input')
+    expect((input as HTMLInputElement).value).toBe('oncall')
+    fireEvent.change(input, { target: { value: '  Ada   Lovelace ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(api.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { display_name: 'Ada Lovelace' }))
+    expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/capabilities'))
+    await waitFor(() => expect(screen.queryByTestId('member-rename-input')).toBeNull())
+    // Escape cancels without a write; an unchanged name writes nothing.
+    fireEvent.click(screen.getByTestId('member-rename-button'))
+    fireEvent.keyDown(screen.getByTestId('member-rename-input'), { key: 'Escape' })
+    expect(screen.queryByTestId('member-rename-input')).toBeNull()
+    fireEvent.click(screen.getByTestId('member-rename-button'))
+    fireEvent.keyDown(screen.getByTestId('member-rename-input'), { key: 'Enter' })
+    expect(api.updateKirocrewAgent).toHaveBeenCalledTimes(1)
   })
 
-  it('the pencil is invisible at rest, revealed by hovering the title row or by focus, and low-contrast-persistent on touch', async () => {
+  it('a rename that failed does not follow the user to the next member', async () => {
+    // The editor is keyed by the member: switching members mid-rename remounts
+    // it, so a failed request's draft -- and a retry of it -- cannot land on the
+    // member the user switched to.
+    let reject: (e: Error) => void = () => {}
+    vi.mocked(api.updateKirocrewAgent).mockImplementationOnce(
+      () => new Promise((_, rej) => { reject = rej }),
+    )
+    await renderPage([
+      row({ bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'scribe', slug: 'scribe', bound: true, slot_key: 'member-scribe' }),
+    ])
+    fireEvent.click(await rosterRow('oncall'))
+    fireEvent.click(await screen.findByTestId('member-rename-button'))
+    fireEvent.change(screen.getByTestId('member-rename-input'), { target: { value: 'Ada' } })
+    fireEvent.keyDown(screen.getByTestId('member-rename-input'), { key: 'Enter' })
+    await waitFor(() => expect(api.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { display_name: 'Ada' }))
+    // Switch while the request is in flight, then let it fail.
+    fireEvent.click(await rosterRow('scribe'))
+    await waitFor(() => expect(screen.getByTestId('member-title-row')).toHaveTextContent('scribe'))
+    reject(new Error('rename refused'))
+    await waitFor(() => expect(screen.queryByTestId('member-rename-input')).toBeNull())
+    // No draft, no error and no retry carried over onto scribe.
+    expect(screen.queryByTestId('member-rename-error')).toBeNull()
+    fireEvent.click(screen.getByTestId('member-rename-button'))
+    expect((screen.getByTestId('member-rename-input') as HTMLInputElement).value).toBe('scribe')
+    fireEvent.keyDown(screen.getByTestId('member-rename-input'), { key: 'Enter' })
+    expect(api.updateKirocrewAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it('a crewmate named after its role shows the name once, and no hint about how it was named', async () => {
+    // Every crewmate is named by its owner at the hire, so there is no flag to
+    // read and no "just hired" hint to show -- the header is the same for
+    // every member, whatever its name happens to equal.
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', display_name: 'Oncall Triage Engineer', role: 'Oncall Triage Engineer' })])
+    fireEvent.click(await rosterRow('Oncall Triage Engineer'))
+    await screen.findByTestId('member-title-row')
+    expect(screen.queryByTestId('member-just-hired-hint')).toBeNull()
+    expect(screen.queryByText(/just hired/i)).toBeNull()
+    // The role subtitle is withheld while it IS the name: never "X · X".
+    expect(screen.getByTestId('member-header-label')).toHaveTextContent('Oncall Triage Engineer')
+    expect(screen.queryByTestId('member-header-role')).toBeNull()
+  })
+
+  it('a member shows the rename pencil at rest (dimmed) and brings it to full strength on hover or focus', async () => {
+    // The naming dialog promises "You can rename it later from its chat"; a
+    // pencil hidden until hover would make that promise hard to find.
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    const btn = await screen.findByTestId('member-edit-name-button')
+    expect(screen.queryByTestId('member-just-hired-hint')).toBeNull()
+    const btn = await screen.findByTestId('member-rename-button')
     const cls = btn.className
-    expect(cls).toContain('opacity-0')
+    expect(cls).not.toContain('opacity-0')
+    expect(cls).toContain('opacity-60')
     expect(cls).toContain('group-hover/title:opacity-100')
     expect(cls).toContain('focus-visible:opacity-100')
-    // Reveal is scoped to the TITLE row, so hovering the panel toggle (overlay
-    // mode) to the right does not summon it.
     expect(screen.getByTestId('member-title-row').className).toContain('group/title')
-    // Transition present, deferring to prefers-reduced-motion.
     expect(cls).toContain('transition-opacity')
     expect(cls).toContain('motion-reduce:transition-none')
-    // No hover on touch: the pencil stays, dimmed, instead of never appearing.
-    expect(cls).toContain('[@media(hover:none)]:opacity-60')
   })
 
   it('the chat surface\'s avatar is just an avatar: no scrim, no badge, no chip, no text "Edit avatar" button', async () => {
@@ -1824,15 +1901,128 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-crew-summary')
+    await openConfig()
     fireEvent.click(screen.getByTestId('member-edit-in-manager'))
     expect(navigateSpy).toHaveBeenCalledWith(EDIT_LINK)
   })
 
-  it('encodes the crew name in the deep link', async () => {
+  it('the drawer\'s crew-manager exit encodes the crew name in the deep link', async () => {
     await renderPage([row({ name: 'on call/2', slug: 'on-call-2', bound: true, slot_key: 'member-on-call-2' })])
     fireEvent.click(await rosterRow('on call/2'))
-    fireEvent.click(await screen.findByTestId('member-edit-name-button'))
+    await openConfig()
+    fireEvent.click(await screen.findByTestId('member-edit-in-manager'))
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=on%20call%2F2')
+  })
+})
+
+describe('MembersPage drawer sections (design step 6)', () => {
+  beforeEach(() => { localStorage.clear() })
+
+  it('renders the sections in the designed order, Configuration folded behind a disclosure', async () => {
+    vi.mocked(api.memberBriefing).mockResolvedValueOnce({ text: '# Day one\nRead the runbook.', supported: true })
+    vi.mocked(api.agentsInstalled).mockResolvedValueOnce([{ name: 'oncall', skills: ['prepare-pr'], mcp_servers: ['github'] }] as never)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', kiro_agent: 'oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const drawer = await screen.findByTestId('member-crew-summary')
+    // No template lineage on this member: the Role template section is absent.
+    expect(within(drawer).queryByTestId('member-section-template')).toBeNull()
+    const order = DRAWER_SECTION_ORDER.filter((id) => id !== 'template').map((id) => within(drawer).getByTestId(`member-section-${id}`))
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    expect(DRAWER_SECTION_ORDER).toEqual(['briefing', 'capabilities', 'template', 'activity', 'sessions', 'patrol', 'wake', 'configuration'])
+    // Briefing: the member's own text, read-only. Capabilities: skills + MCP servers of its definition.
+    expect(await within(drawer).findByTestId('member-briefing')).toHaveTextContent('Read the runbook.')
+    const caps = await within(drawer).findByTestId('member-capabilities')
+    expect(caps).toHaveTextContent('prepare-pr')
+    expect(caps).toHaveTextContent('github')
+    // Activity carries the Today / 7-day tiles.
+    expect(within(drawer).getByTestId('member-section-activity')).toContainElement(within(drawer).getByTestId('member-stats'))
+    // Configuration is folded: no rows until the disclosure opens; opening reveals them.
+    const cfg = within(drawer).getByTestId('member-section-configuration')
+    expect(cfg).toHaveAttribute('data-section-open', '0')
+    expect(within(cfg).queryByTestId('member-config-id')).toBeNull()
+    const toggle = within(cfg).getByTestId('member-section-configuration-toggle')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(within(cfg).getByTestId('member-config-id')).toHaveTextContent('oncall')
+    expect(within(cfg).getByTestId('member-config-template')).toBeInTheDocument()
+    // Fire stays outside the sections, at the foot.
+    const fire = within(drawer).getByTestId('member-fire-start')
+    expect(cfg.compareDocumentPosition(fire) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('a store-hired member gets the Role template section in the open drawer, between Capabilities and Activity', async () => {
+    vi.mocked(api.memberRoleUpdatePlan).mockResolvedValueOnce({
+      member: 'oncall', template: 'oncall-pack/triage', member_version: '1.2.0', installed_version: '1.3.0',
+      update_available: true, member_fingerprint: 'x', template_fingerprint: 'y', fields: [],
+    } as never)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', kiro_agent: 'oncall', template: 'oncall-pack/triage', template_version: '1.2.0' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const drawer = await screen.findByTestId('member-crew-summary')
+    const section = await within(drawer).findByTestId('member-section-template')
+    // The offer is visible with Configuration still folded.
+    expect(within(drawer).getByTestId('member-section-configuration')).toHaveAttribute('data-section-open', '0')
+    expect(await within(section).findByTestId('member-role-update-available')).toHaveTextContent('v1.3.0')
+    const caps = within(drawer).getByTestId('member-section-capabilities')
+    const activity = within(drawer).getByTestId('member-section-activity')
+    expect(caps.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(section.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('an empty briefing and a definition with nothing to list say so, and a briefing read failure is an ErrorNotice', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const drawer = await screen.findByTestId('member-crew-summary')
+    expect(await within(drawer).findByTestId('member-briefing-empty')).toHaveTextContent('No briefing yet')
+    expect(await within(drawer).findByTestId('member-capabilities-empty')).toBeInTheDocument()
+  })
+})
+
+describe('MembersPage DM empty state (design step 6)', () => {
+  beforeEach(() => { localStorage.clear(); paneSends.length = 0 })
+
+  const CARD = {
+    id: 'app:oncall-pack/agents/triage.json', origin: 'app', source: { kind: 'store', app: 'oncall-pack', agent: 'agents/triage.json' },
+    role: 'Oncall Triage Engineer', duty: 'Triages every page, correlates it with deploys.', description: 'Owns a paging queue.',
+    tags: [], category: 'ops', starter_prompts: [{ text: 'What paged overnight?' }, { text: 'Draft a rollback plan.', attachment: 'incident.md' }, { text: 'Third' }, { text: 'Fourth, never shown' }],
+    avatar: null, publisher: 'Oncall pack', version: '1.2.0', agent: 'triage', capabilities: [], hired_as: [{ id: 'oncall', display_name: 'oncall' }], hireable: true, unavailable_code: '', unavailable_reason: '',
+  }
+
+  it('an empty thread shows the member\'s duty and up to three starter prompts whose Ask sends through the pane', async () => {
+    vi.mocked(api.memberTemplates).mockResolvedValueOnce({ templates: [CARD] } as never)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const empty = await screen.findByTestId('member-empty-state')
+    await waitFor(() => expect(within(empty).getByTestId('member-empty-duty')).toHaveTextContent('Triages every page, correlates it with deploys.'))
+    const asks = within(empty).getAllByTestId('member-empty-ask')
+    expect(asks).toHaveLength(3)
+    expect(empty).not.toHaveTextContent('Fourth, never shown')
+    expect(empty).toHaveTextContent('incident.md')
+    fireEvent.click(asks[1])
+    expect(paneSends).toEqual(['Draft a rollback plan.'])
+    // Rendered in the message column (inside the pane), not as an overlay.
+    expect(screen.getByTestId('chat-pane-stub')).toContainElement(empty)
+  })
+
+  it('a member with no card falls back to its role and the plain ready hint', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', role: 'Judge' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const empty = await screen.findByTestId('member-empty-state')
+    expect(within(empty).getByTestId('member-empty-duty')).toHaveTextContent('Judge')
+    expect(within(empty).queryByTestId('member-empty-starters')).toBeNull()
+    expect(empty).toHaveTextContent('Session ready')
+  })
+
+  it('a catalog that cannot be read is said inside the empty state, never rendered as a plain ready hint', async () => {
+    vi.mocked(api.memberTemplates).mockRejectedValueOnce(new Error('catalog down'))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', role: 'Judge' })])
+    fireEvent.click(await rosterRow('oncall'))
+    const empty = await screen.findByTestId('member-empty-state')
+    const notice = await within(empty).findByTestId('member-empty-catalog-error')
+    expect(notice).toHaveTextContent('The hire catalog could not be read')
+    expect(empty).not.toHaveTextContent('Session ready')
   })
 })
 

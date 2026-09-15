@@ -30,7 +30,7 @@ from aiohttp import web
 
 import kiro_crew.dashboard.handlers as _h
 import kiro_crew.dashboard.handlers.agents as _agents_handlers
-from kiro_crew import agent_state, member_templates
+from kiro_crew import agent_state, member_gallery, member_templates
 from kiro_crew import members as members_mod
 from kiro_crew import platform_compat
 from kiro_crew.agent import _spec_path_is_safe, agents_spec_lock, write_agent_definition
@@ -154,20 +154,7 @@ def enrolled_member_ids(cfg: KiroCrewConfig, *, strict: bool = False) -> list[st
     A lenient read logs and answers no members -- for callers that only
     DECORATE (a sidebar badge, a lineage caption) and have an honest empty.
     """
-    try:
-        records = agent_state.all_crewmate_records(strict=strict)
-    except (OSError, ValueError):
-        if strict:
-            raise
-        logger.warning("crewmate record unreadable; the roster lists no members", exc_info=True)
-        return []
-    out: list[str] = []
-    for name, row in cfg.agents.items():
-        if not isinstance(name, str) or not _AGENT_NAME_RE.match(name):
-            continue
-        if agent_state.record_covers_store(records.get(name), row.memory_store):
-            out.append(name)
-    return out
+    return agent_state.enrolled_member_ids(cfg.agents, strict=strict)
 
 
 def _member_names_for_slug(cfg: KiroCrewConfig | Collection[str], slug: str) -> list[str]:
@@ -201,8 +188,9 @@ def _member_names_for_slug(cfg: KiroCrewConfig | Collection[str], slug: str) -> 
 #: The roster's origin vocabulary. ``source`` on the record is free text in a
 #: hand-editable, agent-writable config, so it never reaches the response raw:
 #: the two known non-package origins pass through and everything else -- the
-#: legacy ``aim`` spelling, a typo, a credential-shaped string -- collapses to
-#: ``package``, which is also what the sync's prune step treats as package.
+#: legacy ``aim`` spelling, an installed app's ``app``, a typo, a
+#: credential-shaped string -- collapses to ``package``; the sync's prune step
+#: prunes the three spellings it wrote itself (``package``, ``aim``, ``app``).
 _SOURCE_KIROCREW = "kirocrew"
 _SOURCE_BUILTIN = "builtin"
 _SOURCE_PACKAGE = "package"
@@ -225,12 +213,82 @@ def _identity_text(value: object) -> str:
 
 
 def normalize_member_source(raw: object) -> str:
-    """Bound a record's ``source`` to the three values the roster renders."""
-    if raw == _SOURCE_KIROCREW:
+    """Bound a record's ``source`` to the three values the roster renders.
+
+    ``kirocrew`` (created here) and ``local`` (a row the sync made for an agent
+    file the user wrote) are both *mine*; ``builtin`` is shipped by this
+    package; everything else -- ``package``, ``aim``, ``app`` -- came from a
+    package or an installed app.
+    """
+    if raw in (_SOURCE_KIROCREW, "local"):
         return _SOURCE_KIROCREW
     if raw == _SOURCE_BUILTIN:
         return _SOURCE_BUILTIN
     return _SOURCE_PACKAGE
+
+
+async def api_member_templates(request: web.Request) -> web.Response:
+    """GET /api/members/templates — the hire gallery's catalog.
+
+    Every template a member can be hired from, in one shape: the job cards
+    enabled installed apps offer (``crew.templates``), the agent files this
+    package ships (built-ins) and the user's own agent files
+    (:mod:`kiro_crew.member_gallery`). Each card carries the exact ``source``
+    body ``POST /api/members`` takes, what the gallery renders (role, duty,
+    description, tags, category, starter prompts, face, publisher, version),
+    the definition's capabilities, the crewmates already hired from it
+    (``hired_as``: enrolled, active, each with the id that opens its DM and
+    the display name the roster shows), and -- when a hire would be refused
+    right now -- the refusal's code. A read: the listing is assembled from the
+    manifests, the agent files and the enrollment records. Owner-gated like
+    the hire it leads to. Free text on a card (role, duty, description, tags,
+    prompts, the capabilities' names and the hired crewmates' display names --
+    an MCP server or skill name is app- or user-authored config too) passes
+    the same redactor the roster's identity fields do, and the card's avatar
+    passes the roster's avatar shape allowlist (``_roster_avatar``: ``traits``
+    values masked, structural keys pinned). The ROUTING identifiers
+    -- ``id``, ``agent``, ``source.agent`` / ``source.app``, and a hired
+    crewmate's ``id`` -- are what the client posts or navigates back, so they
+    cannot be redacted and still work: a card (or a ``hired_as`` entry) whose
+    routing identifier the redactor would alter (a hand-authored agent file or
+    a hand-edited row named like a credential) is OMITTED from the listing
+    instead of shipping the raw value across the dashboard boundary.
+    """
+    denied = await require_owner_dashboard_request(request, "member.templates")
+    if denied is not None:
+        return denied
+    cards = await asyncio.to_thread(member_gallery.build_catalog)
+    payload = []
+    for card in cards:
+        d = card.to_dict()
+        # ``version`` too: an app's version string is app-authored text like
+        # its publisher (a semver build suffix can carry anything), and the
+        # roster's ``template_version`` already ships through this redactor.
+        for key in ("role", "duty", "description", "publisher", "version", "unavailable_reason"):
+            d[key] = _identity_text(d[key])
+        d["tags"] = [_identity_text(t) for t in d["tags"]]
+        d["starter_prompts"] = [
+            {k: _identity_text(v) for k, v in s.items()} for s in d["starter_prompts"]
+        ]
+        d["capabilities"] = [
+            {"kind": c["kind"], "name": _identity_text(c["name"])} for c in d["capabilities"]
+        ]
+        d["hired_as"] = [
+            {"id": m["id"], "display_name": _identity_text(m["display_name"])}
+            for m in d["hired_as"]
+            if _identity_text(m["id"]) == m["id"]
+        ]
+        # The card's ghost goes through the roster's avatar shape allowlist:
+        # ``traits`` values are app-authored text like the rest of the manifest,
+        # so they are masked the same way (``_roster_avatar``); a card with no
+        # avatar stays ``None`` (the gallery seeds a default face from the id).
+        d["avatar"] = _agents_handlers._roster_avatar(d["avatar"]) if d["avatar"] else None
+        routing = [d["id"], d["agent"], *(v for v in d["source"].values() if isinstance(v, str))]
+        if any(isinstance(v, str) and _identity_text(v) != v for v in routing):
+            logger.warning("hire gallery: omitting a card whose identifiers read as a credential")
+            continue
+        payload.append(d)
+    return web.json_response({"templates": payload})
 
 
 async def api_members(request: web.Request) -> web.Response:
@@ -853,6 +911,55 @@ async def api_member_activity(request: web.Request) -> web.Response:
             "entries": [r[2] for r in rows[:_ACTIVITY_LIMIT]],
         }
     )
+
+
+async def api_member_briefing_get(request: web.Request) -> web.Response:
+    """GET /api/members/{slug}/briefing?member=<name> — the member's own briefing, read-only.
+
+    The drawer's Briefing section (design step 6): what the member keeps in
+    ``members/<slug>/briefing.md`` -- seeded once from a template's
+    ``initial_briefing``, then the member's own. Read through
+    :func:`members.read_member_briefing`, the same pinned, fail-closed read the
+    prompt builder uses (no symlink followed anywhere on the agent-writable
+    path, non-regular files refused, capped with a visible marker), so the
+    drawer can never show a byte the prompt would not. ``member`` is required
+    and must derive the slug, the activity endpoint's posture. An absent
+    briefing is ``{"text": "", "supported": true}``; where the platform cannot
+    read one race-free, ``supported`` is false and the drawer says so instead
+    of "no briefing yet". Owner-gated like every other read of a member's own
+    text (the briefing is prompt-adjacent and may be anything the member or a
+    template wrote), and the text passes the same redactors the identity fields
+    do, so a credential-shaped line in a briefing does not reach the browser raw.
+    """
+    denied = await require_owner_dashboard_request(request, "members.briefing")
+    if denied is not None:
+        return denied
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    member = request.query.get("member", "")
+    if not member or not _AGENT_NAME_RE.match(member):
+        return web.json_response(
+            {"error": "member query parameter required", "code": "missing_member"}, status=400
+        )
+    try:
+        if members_mod.slug_for_name(member) != slug:
+            return web.json_response(
+                {"error": "member does not derive this slug", "code": "member_slug_mismatch"},
+                status=400,
+            )
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member name", "code": "invalid_member_slug"}, status=400
+        )
+    if not members_mod.member_briefing_supported():
+        return web.json_response({"text": "", "supported": False})
+    text = await asyncio.to_thread(members_mod.read_member_briefing, slug)
+    return web.json_response({"text": _redact_external(text or ""), "supported": True})
 
 
 async def api_member_rules_get(request: web.Request) -> web.Response:

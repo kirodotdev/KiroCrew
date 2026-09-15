@@ -3406,6 +3406,17 @@ class KiroCrewAgentConfig:
         default="kirocrew",
         metadata=_meta("Source", "Agent origin: kirocrew or builtin."),
     )
+    source_app: str = field(
+        default="",
+        metadata=_meta(
+            "Source App",
+            "For a row the agents sync registered from an installed app's agent "
+            "file (source 'app'): that app's name. Only that app's own file keeps "
+            "the row on later syncs -- a same-named agent another app ships does "
+            "not, so the row's private memory never follows a name to a different "
+            "app. Empty for every other source.",
+        ),
+    )
     display_name: str = field(
         default="",
         metadata=_meta(

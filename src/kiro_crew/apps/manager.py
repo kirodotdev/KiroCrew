@@ -465,9 +465,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
         # prefix: an app-owned name that merely shares the prefix (e.g.
         # ".kirocrew-deps-staging-assets") is the app's data and must copy.
         skip = {
-            n
-            for n in names
-            if n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
+            n for n in names if n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
         }
         for n in names:
             if n in skip:
@@ -488,9 +486,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
                     # (Windows) or mixed abs/rel — treat as escaping.
                     escapes = True
                 if escapes:
-                    logger.warning(
-                        "Omitting symlink escaping app source root: %s", p
-                    )
+                    logger.warning("Omitting symlink escaping app source root: %s", p)
                     skip.add(n)
         return skip
 
@@ -516,9 +512,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
                 continue
             rel_to_src = os.path.relpath(os.path.realpath(p), src_root)
             os.remove(p)
-            os.symlink(
-                os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p
-            )
+            os.symlink(os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p)
 
 
 # Per-app lifecycle locks, shared by every async entry point (registry
@@ -568,6 +562,20 @@ def app_lifecycle_lock(name: str) -> LoopBoundLock:
     if name not in _LIFECYCLE_LOCKS:
         _LIFECYCLE_LOCKS[name] = LoopBoundLock()
     return _LIFECYCLE_LOCKS[name]
+
+
+def app_lifecycle_in_progress() -> bool:
+    """Whether ANY app's install / update / enable / disable / uninstall is
+    running on this loop right now (its lifecycle lock is held).
+
+    For a reader that treats an app file's ABSENCE as evidence -- the agents
+    sync pruning an app's rows -- and cannot take the lifecycle lock itself
+    (it already holds the config lock, which the lifecycle routes take
+    inside theirs): an update deregisters an app's materialized agents and
+    registers them again under one lock hold, so a file missing while a lock
+    is held is a file in transit, not a file that is gone. Loop-thread only.
+    """
+    return any(lock.locked() for lock in _LIFECYCLE_LOCKS.values())
 
 
 # ---------------------------------------------------------------------------
@@ -620,8 +628,7 @@ def install_app(
     name = manifest.name
     if expected_name is not None and name != expected_name:
         detail = (
-            f"app identity changed during install: expected {expected_name!r}, "
-            f"found {name!r}"
+            f"app identity changed during install: expected {expected_name!r}, " f"found {name!r}"
         )
         sel().log_api_access(
             caller="app_install",
@@ -1119,14 +1126,17 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                 # the provisioner's own open.
                 _lflags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
                 _lock_name = (
-                    ".kirocrew-deps.lock" if _data_pin.fd is not None
+                    ".kirocrew-deps.lock"
+                    if _data_pin.fd is not None
                     else str(data / ".kirocrew-deps.lock")
                 )
                 # Match the provisioner's creator election: uninstall can race
                 # its first open before either caller holds the dependency lock.
                 try:
                     _lfd = os.open(
-                        _lock_name, _lflags | os.O_CREAT | os.O_EXCL, 0o644,
+                        _lock_name,
+                        _lflags | os.O_CREAT | os.O_EXCL,
+                        0o644,
                         dir_fd=_data_pin.fd,
                     )
                 except FileExistsError:
@@ -1278,8 +1288,7 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                     shutil.move(str(_tmp_restore), str(_data_restore))
             except OSError as restore_exc:
                 logger.warning(
-                    "Could not restore preserved data for app %s after a "
-                    "failed uninstall: %s",
+                    "Could not restore preserved data for app %s after a " "failed uninstall: %s",
                     name,
                     restore_exc,
                 )
@@ -1338,9 +1347,7 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                 f"({restore_exc}). Review the current installed app, then re-grant "
                 f"it in Settings only if you still trust that occupant."
             )
-        return AppResult(
-            ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}"
-        )
+        return AppResult(ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}")
 
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 
@@ -1533,6 +1540,7 @@ def _drop_trust_grant(name: str) -> None:
         if isinstance(local_locked, list):
             agent_locked["apps_trusted_local"] = [a for a in local_locked if a != name]
         return raw_locked
+
     # Concurrency: this is the repo's standard config read-modify-write, and it
     # inherits that model exactly — no cross-process lock, atomic (tmp+rename) on
     # the way out so no reader can see a torn file. `read_config_for_update`'s own
@@ -1717,8 +1725,7 @@ def _restore_trust_grant(
                 "in Settings before installing or running this name"
             ) from rollback_exc
         raise RuntimeError(
-            "the installed app changed while its grant was restored; the grant "
-            "was withdrawn"
+            "the installed app changed while its grant was restored; the grant " "was withdrawn"
         )
     logger.info("Restored %s's trust grant after a failed uninstall", name)
     try:
@@ -1766,9 +1773,13 @@ def _app_activation_denied(name: str) -> str | None:
                 from kiro_crew.sel import sel
 
                 sel().log_governance_decision(
-                    session_key=HOST_SESSION_KEY, tool_name=f"enable_app:{name}", scope="apps",
-                    item=name, outcome="denied",
-                    rule=getattr(decision, "rule", ""), layer=getattr(decision, "layer", ""),
+                    session_key=HOST_SESSION_KEY,
+                    tool_name=f"enable_app:{name}",
+                    scope="apps",
+                    item=name,
+                    outcome="denied",
+                    rule=getattr(decision, "rule", ""),
+                    layer=getattr(decision, "layer", ""),
                     reason=getattr(decision, "reason", ""),
                 )
             except Exception:
@@ -1825,9 +1836,7 @@ def enable_app(name: str) -> AppResult:
                 resources=f"name={name!r}",
                 error=denied,
             )
-            return AppResult(
-                ok=False, name=name, error=f"blocked by admission policy: {denied}"
-            )
+            return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
 
     # Deny before enabled metadata or any route-level registration, dependency,
     # lifecycle-script, hook, or backend side effect can occur.
@@ -2059,8 +2068,7 @@ def app_enabled_state(name: str) -> bool | None:
             # platform, so it cannot decide the verdict on its own.
             if not _absence_is_genuine(meta_path):
                 logger.warning(
-                    "Metadata path %s cannot exist: a component of it is not a "
-                    "directory",
+                    "Metadata path %s cannot exist: a component of it is not a " "directory",
                     meta_path,
                 )
                 return None
@@ -2227,9 +2235,7 @@ def register_external_app(
     admission_manifest = None
     if manifest_data:
         admission_manifest = AppManifest.from_dict(manifest_data)
-    denied = app_admission_denied(
-        name, manifest=admission_manifest, action="register_external"
-    )
+    denied = app_admission_denied(name, manifest=admission_manifest, action="register_external")
     if denied:
         sel().log_api_access(
             caller="app_register_external",
@@ -2866,9 +2872,7 @@ def register_builtin_apps() -> int:
         # link target and delete data OUTSIDE the apps tree. Also require the
         # resolved path to stay contained under apps_dir().
         if esc_dir.is_symlink():
-            logger.warning(
-                "Skipping escalation cleanup for %r: app dir is a symlink", esc_name
-            )
+            logger.warning("Skipping escalation cleanup for %r: app dir is a symlink", esc_name)
             continue
         if not esc_dir.is_dir():
             continue
@@ -2900,7 +2904,8 @@ def register_builtin_apps() -> int:
             logger.info(
                 "Skipping escalation cleanup for %r: platform lacks dir_fd "
                 "primitives to pin validation to deletion — remove the "
-                "directory manually if no longer needed", esc_name,
+                "directory manually if no longer needed",
+                esc_name,
             )
             continue
         parent_fd = -1
@@ -2969,7 +2974,8 @@ def register_builtin_apps() -> int:
                 # Symlinked data/ (ELOOP) or unreadable — fail closed: keep.
                 logger.warning(
                     "Skipping escalation cleanup for %r: cannot inspect data/: %s",
-                    esc_name, exc,
+                    esc_name,
+                    exc,
                 )
                 continue
             if has_data:
@@ -2977,7 +2983,8 @@ def register_builtin_apps() -> int:
                 # the operator.
                 logger.info(
                     "Keeping escalated builtin %r: data/ is non-empty — remove "
-                    "the directory manually if no longer needed", esc_name,
+                    "the directory manually if no longer needed",
+                    esc_name,
                 )
                 continue
 
@@ -2998,7 +3005,8 @@ def register_builtin_apps() -> int:
                 else:
                     logger.warning(
                         "Escalation cleanup for %r: directory entry changed "
-                        "after pin — leaving the new entry in place", esc_name,
+                        "after pin — leaving the new entry in place",
+                        esc_name,
                     )
             except FileNotFoundError:
                 pass
@@ -3060,7 +3068,10 @@ def register_builtin_apps() -> int:
                 "Not registering builtin %r: a user-installed app already occupies "
                 "%s (source=%r, origin=%r). Leaving its manifest and metadata "
                 "untouched; the builtin is not registered on this host.",
-                name, app_dir(name), existing.source, existing.origin,
+                name,
+                app_dir(name),
+                existing.source,
+                existing.origin,
             )
             continue
 

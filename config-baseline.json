@@ -7610,6 +7610,20 @@
       "defaultValue": "kirocrew"
     },
     {
+      "path": "agents.*.source_app",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Source App",
+      "help": "For a row the agents sync registered from an installed app's agent file (source 'app'): that app's name. Only that app's own file keeps the row on later syncs -- a same-named agent another app ships does not, so the row's private memory never follows a name to a different app. Empty for every other source.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.display_name",
       "kind": "core",
       "type": "string",

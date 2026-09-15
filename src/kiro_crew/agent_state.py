@@ -38,6 +38,7 @@ import json
 import logging
 import math
 import os
+import re
 import stat
 import threading
 from pathlib import Path
@@ -688,6 +689,60 @@ def _crewmate_entries(data: dict) -> dict[str, dict]:
         for k, v in members.items()
         if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("generation"), str)
     }
+
+
+#: The member-id grammar, byte-equal to ``validation._AGENT_NAME_RE`` (pinned by
+#: the roster tests); spelled here because ``validation`` imports config sections
+#: and this module sits below them.
+_MEMBER_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$")
+
+
+def enrolled_member_ids(agents: Mapping[str, object], *, strict: bool = False) -> list[str]:
+    """The ids on the roster: the *agents* rows (``config.agents``, name -> row
+    with a ``memory_store``) that carry a crewmate ENROLLMENT record whose
+    generation is the row's private store, in the mapping's order.
+
+    Membership is decided by the record alone (``all_crewmate_records``, written
+    by a confirmed hire inside its locked publication, removed by the fire) --
+    never by a row's presence in ``config.agents``, its source, its display
+    name, a member directory or a session that used it. So ``default``, a
+    built-in, an app's materialized agent, a file the agent sync registered and
+    a plain crew-manager crew all stay session agents until the owner hires them
+    by name. A record that does not cover the row's store
+    (:func:`record_covers_store`: its generation, or the generation a store
+    change through the API is moving it to) is a record of a member that was
+    deleted and recreated under the same id: not this row.
+
+    Nothing is enrolled on upgrade. No build before this one wrote a mark that
+    only a hire could have written -- an earlier hire verb's private copy and
+    ``member-`` store are exactly what the crew editor's fork and private-memory
+    provisioning give a plain crew -- so every pre-existing row, that class
+    included, stays a session agent until the owner hires it by name; nothing
+    is deleted, retired or rebound.
+
+    ``strict`` raises on an unreadable sidecar (a route about to WRITE for a
+    member must not read "cannot verify" as "not a member"); a lenient read
+    logs and answers no members, which fails closed for the roster. Lives here,
+    beside the record it reads, so the gallery, the roster route and any later
+    non-dashboard reader share one predicate without reaching into the HTTP layer.
+    """
+    try:
+        records = all_crewmate_records(strict=strict)
+    except (OSError, ValueError):
+        if strict:
+            raise
+        logger.warning("crewmate record unreadable; the roster lists no members", exc_info=True)
+        return []
+    out: list[str] = []
+    for name, row in agents.items():
+        if not isinstance(name, str) or not _MEMBER_ID_RE.match(name):
+            continue
+        store = getattr(row, "memory_store", None)
+        if not isinstance(store, str):
+            store = row.get("memory_store", "") if isinstance(row, dict) else ""
+        if record_covers_store(records.get(name), store):
+            out.append(name)
+    return out
 
 
 def record_covers_store(record: dict | None, store: str) -> bool:

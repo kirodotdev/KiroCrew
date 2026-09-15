@@ -102,6 +102,25 @@ export function memberLabel(m: { name: string; display_name?: string }): string 
   return m.display_name || m.name
 }
 
+/** The ids whose LABEL another roster row also wears. Two crewmates hired from
+ *  one template and named alike ("Pager triage" twice, or a rename that lands
+ *  on a sibling's name) are indistinguishable by label alone; the row and the
+ *  thread header then show the id beside the label -- only then, so a roster of
+ *  distinct names stays quiet. Exact after whitespace normalization (the
+ *  server's): "Oncall" and "oncall" already read apart, so they are not twins. */
+export function twinLabelIds(rows: readonly { name: string; display_name?: string }[]): Set<string> {
+  const byLabel = new Map<string, string[]>()
+  for (const m of rows) {
+    const key = memberLabel(m).trim().replace(/\s+/g, ' ')
+    const ids = byLabel.get(key)
+    if (ids) ids.push(m.name)
+    else byLabel.set(key, [m.name])
+  }
+  const twins = new Set<string>()
+  for (const ids of byLabel.values()) if (ids.length > 1) for (const id of ids) twins.add(id)
+  return twins
+}
+
 /** Most-recently-active first (like any IM member list); never-talked members
  *  fall to the bottom alphabetically. `name` is a plain locale-aware sort over
  *  the LABEL — what the user reads — with the id as the tiebreak so two members

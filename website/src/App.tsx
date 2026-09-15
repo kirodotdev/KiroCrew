@@ -104,6 +104,9 @@ import CapabilitiesPage from './pages/CapabilitiesPage'
 // chunk sits at its size budget — the import() boundary keeps the page (and
 // its drawer/roster tree) out of the initial bundle.
 const MembersPage = lazy(() => import('./pages/members/MembersPage'))
+// The hire gallery lives UNDER the Crew Members page (design step 6): its own
+// route so a hire can be linked to, the rail still on Crew Members.
+const HireGalleryPage = lazy(() => import('./pages/members/HireGalleryPage'))
 import ArtifactsPage from './pages/ArtifactsPage'
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import RemoteArtifactDetailPage from './pages/RemoteArtifactDetailPage'
@@ -4483,6 +4486,7 @@ export default function App() {
             <Route path="/knowledge" element={<Navigate to="/capabilities?tab=knowledge" replace />} />
 
             <Route path="/members" element={<ErrorBoundary><Suspense fallback={null}><MembersPage /></Suspense></ErrorBoundary>} />
+            <Route path="/members/hire" element={<ErrorBoundary><Suspense fallback={null}><HireGalleryPage /></Suspense></ErrorBoundary>} />
             <Route path="/overview" element={<Navigate to="/settings/overview" replace />} />
             <Route path="/schedule" element={<SchedulePage />} />
             {/* Agents and Connections live in the Agent Capabilities panel. */}

@@ -16,6 +16,7 @@ import functools
 import json
 import logging
 import os
+import stat
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -27,7 +28,12 @@ from kiro_crew.agent_files import (
     LITE_AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
 )
-from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir, project_kiro_dir
+from kiro_crew.config.paths import (
+    kiro_agents_dir,
+    peek_data_home,
+    project_agents_dir,
+    project_kiro_dir,
+)
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.security import is_sensitive_path
@@ -106,7 +112,15 @@ class AgentInfo:
     model: str
     skills: list[str] = field(default_factory=list)
     mcp_servers: list[str] = field(default_factory=list)
-    source: str = "builtin"  # "kirocrew" | "package" | "builtin"
+    #: Where the file came from. ``kirocrew``: the two agent files Kiro Crew's
+    #: own setup writes (the built-in assistant and its lite twin -- the sync
+    #: never auto-creates a crew for them); ``builtin``: another file the
+    #: package ships (``OWNED_KIRO_AGENT_FILES``: the conductors); ``app``: a
+    #: file an installed app materialized (``<app>--<agent>.json`` with
+    #: ``<app>`` installed -- known from the apps directory, not guessed from
+    #: the name); ``package``: an AIM package's ``{package}-{name}.json``;
+    #: ``local``: everything else -- a file the user wrote or dropped in.
+    source: str = "builtin"  # "kirocrew" | "builtin" | "app" | "package" | "local"
     package: str = ""  # AIM package name (e.g. "Customer360GenAIContext")
     scope: str = SCOPE_GLOBAL  # "global" | "project"
     # Display-only provenance, deliberately NOT folded into ``source``: that field
@@ -119,6 +133,17 @@ class AgentInfo:
     # standalone template deserving its own agent.
     forked_from: str = ""
     private_to: str = ""
+    #: Sources of the same-name files the listing's dedup DROPPED in favour of
+    #: this one (``app`` / ``package`` / ``local``). Provenance the agents sync
+    #: needs even though only one file dispatches: an app's file that lost the
+    #: name to an earlier-sorting package file still proves the app ships that
+    #: agent, and the sync must not read its absence from the kept entry as
+    #: "the app is gone" and prune the app member (archiving its memory).
+    shadowed_sources: tuple[str, ...] = ()
+    # The installed apps whose same-name file the dedup dropped for this
+    # entry: the sync attributes an app row to ONE app, so the kind alone
+    # (``shadowed_sources``) cannot say whether the row's own app still ships it.
+    shadowed_apps: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Make the annotations above TRUE, at every construction site.
@@ -168,7 +193,12 @@ class AgentInfo:
         self.kirocrew_owned = self.kirocrew_owned is True
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        # The wire shape the dashboard renders. ``shadowed_sources`` is the
+        # sync's provenance bookkeeping, not a field any surface shows.
+        out = asdict(self)
+        out.pop("shadowed_sources", None)
+        out.pop("shadowed_apps", None)
+        return out
 
 
 SKILL_URI_PREFIX = "skill://"
@@ -992,6 +1022,8 @@ def clear_list_agents_cache() -> None:
     file).
     """
     _LIST_AGENTS_CACHE.clear()
+    global _INSTALLED_APPS_CACHE
+    _INSTALLED_APPS_CACHE = None
     global _PARSED_SPECS_GEN
     with _PARSED_SPECS_LOCK:
         _PARSED_SPECS_CACHE.clear()
@@ -1051,7 +1083,13 @@ def _with_edition_agents(disk_agents: list[AgentInfo]) -> list[AgentInfo]:
     return list(by_name.values())
 
 
-def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
+def _global_agent_info(
+    f: Path,
+    data: dict[str, Any],
+    installed_apps: frozenset[str] | None = None,
+    *,
+    apps_unreadable: bool = False,
+) -> AgentInfo:
     """Build an :class:`AgentInfo` for a user-level (``~/.kiro/agents``) config."""
     # Coerced BEFORE the package-detection below, which does
     # ``stem.endswith(agent_name)``: a non-string name raised TypeError there, and
@@ -1062,10 +1100,34 @@ def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
     stem = f.stem
 
     package = ""
+    # An installed app's materialized agent: the bridge writes it as
+    # ``<app>--<agent>.json``, and the prefix must name an app that is actually
+    # installed -- a hand-written file that happens to contain ``--`` is not an
+    # app's.
+    app_name = stem.split("--", 1)[0] if "--" in stem else ""
+    # The installed-app set is computed ONCE per listing by ``list_agents`` (and
+    # only when the listing holds an app-shaped file) and passed in: re-scanning
+    # the apps directory for every such file would multiply filesystem work by
+    # their number on a cold listing. When the apps directory could not be read
+    # (*apps_unreadable*) an app-shaped file is classified as an app's: the
+    # retention-safe answer, since a row kept for a leftover file is a row the
+    # next readable listing prunes, while a row dropped on a read failure is
+    # a member gone with its memory archived.
+    if installed_apps is None and app_name and not apps_unreadable:
+        installed_apps = installed_app_names()
+        if installed_apps is None:
+            apps_unreadable = True
+    is_app_file = bool(app_name) and (
+        apps_unreadable or (installed_apps is not None and app_name in installed_apps)
+    )
     # Package-installed agents follow the "{package}-{name}.json" filename
     # convention (a generic package-manager convention, not tied to any specific
-    # tool). A plain "{name}.json" is built-in.
-    is_package_filename = agent_name and stem.endswith(agent_name) and stem != agent_name
+    # tool). The double dash is the app bridge's separator, never a package's:
+    # an ``<app>--<agent>`` file whose app is NOT installed is a leftover
+    # nobody owns -- local -- not a package named ``<app>-``.
+    is_package_filename = (
+        not app_name and agent_name and stem.endswith(agent_name) and stem != agent_name
+    )
     if is_package_filename:
         pkg_stem = f.stem
         if pkg_stem.startswith("local-"):
@@ -1074,10 +1136,17 @@ def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
 
     if f.name in (AGENT_FILENAME, LITE_AGENT_FILENAME):
         source = "kirocrew"
+    elif f.name in OWNED_KIRO_AGENT_FILES:
+        # Shipped by this package (the conductors): built in, and the only
+        # files that are. Every other plain ``<name>.json`` is the user's.
+        source = "builtin"
+    elif is_app_file:
+        source = "app"
+        package = app_name
     elif is_package_filename:
         source = "package"
     else:
-        source = "builtin"
+        source = "local"
 
     return AgentInfo(
         name=agent_name,
@@ -1107,11 +1176,79 @@ def _project_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
         model=spec_model(data),
         skills=_extract_skills(data),
         mcp_servers=_mcp_server_names(data),
-        source="builtin",
+        # A checkout's own ``.kiro/agents`` file is the user's, never shipped.
+        source="local",
         package="",
         scope=SCOPE_PROJECT,
         kirocrew_owned=False,
     )
+
+
+#: ``(apps-root signature, names)`` of the last apps scan. The signature is
+#: ONE stat of the apps root (an install or removal creates or deletes an
+#: app directory, which moves the root's mtime), so a warm listing costs a
+#: stat instead of a directory walk. Cleared with the listing caches.
+_INSTALLED_APPS_CACHE: tuple[tuple[int, int, int], frozenset[str]] | None = None
+
+
+def installed_app_names() -> frozenset[str] | None:
+    """Names of the installed apps: the directories under the apps root that
+    carry an ``installed.json``. ``None`` when the apps root EXISTS but could
+    not be read, or when ANY entry under it could not be decided (an entry
+    that cannot be inspected; an ``installed.json`` present but not a
+    regular file) -- a failure, kept apart from the empty set an install
+    with no apps (or no apps root) answers, because the two mean opposite
+    things to a caller that removes rows for apps that are gone: only a
+    PROVEN absence of the marker excludes an app. Memoized on the apps
+    root's stat signature (a failure is never memoized); nothing is
+    created."""
+    global _INSTALLED_APPS_CACHE
+    root = peek_data_home() / "apps"
+    try:
+        st = os.stat(root)
+    except FileNotFoundError:
+        return frozenset()
+    except OSError:
+        return None
+    signature = (st.st_ino, st.st_mtime_ns, st.st_ctime_ns)
+    cached = _INSTALLED_APPS_CACHE
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    try:
+        entries = list(os.scandir(root))
+    except FileNotFoundError:
+        return frozenset()
+    except OSError:
+        return None
+    names: set[str] = set()
+    for entry in entries:
+        # ONE entry that cannot be decided makes the whole answer unknown,
+        # not "every other app": an app omitted here reads as gone to the
+        # sync, which prunes its member and archives that member's private
+        # memory. Only PROVEN absence excludes an app -- no ``installed.json``
+        # at all; an entry that cannot be inspected, or a marker that is
+        # present but not a regular file (a directory, a fifo, a dangling
+        # link -- nothing Kiro Crew's own writer produces), says nothing about
+        # whether the app is installed. Fail closed (uncached, so the next
+        # listing re-asks).
+        try:
+            if not entry.is_dir():
+                continue
+            marker = Path(entry.path) / "installed.json"
+            try:
+                st = marker.stat()
+            except FileNotFoundError:
+                if marker.is_symlink():
+                    return None  # a dangling link: present, undecidable
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                return None
+            names.add(entry.name)
+        except OSError:
+            return None
+    result = frozenset(names)
+    _INSTALLED_APPS_CACHE = (signature, result)
+    return result
 
 
 def _mcp_server_names(data: dict[str, Any]) -> list[str]:
@@ -1163,6 +1300,13 @@ def list_agents(
     if d.is_dir():
         user_candidates = 0
         user_parsed = 0
+        # Resolved LAZILY, on the first app-shaped stem: a listing with no
+        # `<app>--<agent>` file (most installs, every subagent validation on
+        # a host without apps) never touches the apps directory, and the
+        # memoized scan makes the warm case one stat.
+        installed_apps: frozenset[str] | None = None
+        apps_resolved = False
+        apps_unreadable = False
         for f in sorted(d.glob("*.json")):
             # AppleDouble sidecars are rejected by design, not by failure — a
             # directory holding only sidecars is empty of specs, not broken.
@@ -1172,7 +1316,23 @@ def list_agents(
                 data = _read_agent_spec(f, operation="list_agents", source="unknown")
                 if data is None:
                     continue
-                agents.append(_global_agent_info(f, data))
+                if "--" in f.stem and not apps_resolved:
+                    installed_apps = installed_app_names()
+                    apps_unreadable = installed_apps is None
+                    apps_resolved = True
+                    if apps_unreadable:
+                        logger.warning(
+                            "agent discovery: the apps directory could not be read; "
+                            "app-shaped agent files are listed as app files until it can"
+                        )
+                agents.append(
+                    _global_agent_info(
+                        f,
+                        data,
+                        installed_apps if not apps_unreadable else frozenset(),
+                        apps_unreadable=apps_unreadable,
+                    )
+                )
                 # Counted AFTER the append: a spec that parses but whose row
                 # construction raises into the handler below still ends in
                 # "discovery listed nothing", which is exactly what the
@@ -1199,15 +1359,32 @@ def list_agents(
                     a.forked_from = fork_info["forked_from"]
                     a.private_to = fork_info["private_to"]
 
-    # Deduplicate by name — prefer package-installed (has package) over fallback
+    # Deduplicate by name — prefer package-installed (has package) over fallback.
+    # Whatever loses the name keeps a trace on the winner (``shadowed_sources``):
+    # the sync reads provenance from the listing, and a name that two sources
+    # both claim is AMBIGUOUS, not proof that the losing source stopped
+    # shipping it.
+    def _shadow(kept: AgentInfo, dropped: AgentInfo) -> None:
+        if dropped.source not in kept.shadowed_sources:
+            kept.shadowed_sources = (*kept.shadowed_sources, dropped.source)
+        for src in dropped.shadowed_sources:
+            if src not in kept.shadowed_sources:
+                kept.shadowed_sources = (*kept.shadowed_sources, src)
+        apps = [dropped.package] if dropped.source == "app" and dropped.package else []
+        for app in (*apps, *dropped.shadowed_apps):
+            if app not in kept.shadowed_apps:
+                kept.shadowed_apps = (*kept.shadowed_apps, app)
+
     seen: dict[str, AgentInfo] = {}
     for a in agents:
         existing = seen.get(a.name)
         if existing is None:
             seen[a.name] = a
         elif a.package and not existing.package:
+            _shadow(a, existing)
             seen[a.name] = a
         elif a.package and existing.package:
+            _shadow(existing, a)
             if a.package == existing.package:
                 # Package managers publish a locally-built package as BOTH
                 # "{package}-{name}.json" AND "local-{package}-{name}.json";
@@ -1233,6 +1410,10 @@ def list_agents(
                     a.package,
                     existing.package,
                 )
+        else:
+            # Neither carries a package (or only the kept one does): the kept
+            # entry stands, the dropped one leaves its provenance behind.
+            _shadow(existing, a)
 
     # Project scope LAST so it shadows: kiro-cli resolves --agent against its cwd
     # before the user-level dir, and Kiro Crew spawns it with the session's project

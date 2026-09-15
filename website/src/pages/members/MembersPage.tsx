@@ -65,6 +65,9 @@ import { emitSlotRead } from '../../lib/slotReadRelay'
 import CrewAvatar from '../../components/CrewAvatar'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
+import { MemberEmptyState, MemberNameEditor, cardForMember } from './MemberThreadExtras'
+import { DrawerSectionView, MemberBriefing, MemberCapabilities, type DrawerSection } from './drawerSections'
+import { HIRE_TEMPLATES_QUERY_KEY } from './HireGalleryPage'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import RoleUpdatePanel from './RoleUpdatePanel'
@@ -75,7 +78,7 @@ import { useConnected } from '../../hooks/useConnected'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FILTER_MENU_LABEL_CLS, FILTER_MENU_CONTENT_CLS } from '../../components/SearchFilterBar'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import {
-  countByFilter, memberLabel, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows, sortRoster,
+  countByFilter, memberLabel, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows, sortRoster, twinLabelIds,
   SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
   type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
 } from './rosterFilter'
@@ -107,7 +110,9 @@ const CREW_MANAGER_PATH = '/capabilities?tab=crews'
  *  user came from, so a successful create lands on the new member's thread
  *  here instead of back on the crew list. Spelled out in full (not built from
  *  CREW_MANAGER_PATH) so the i18n lint reads it as the route it is. */
-const CREW_CREATE_PATH = '/capabilities?tab=crews&new=1&from=members'
+/** Adding a member is a HIRE: the gallery under this page is the one entry
+ *  point (design step 6), whatever the template's origin. */
+const HIRE_PATH = '/members/hire'
 
 /** One member's editor, reached THROUGH the crew manager: the deep link opens
  *  that crew's full editor — name, template, model, workspace, triggers, and
@@ -330,6 +335,7 @@ export default function MembersPage() {
   // error after a good read keeps showing the last roster.
   const rosterQuery = useQuery(membersRosterQuery)
   const members = rosterQuery.data ?? EMPTY_ROSTER
+  const twinIds = useMemo(() => twinLabelIds(members), [members])
   const loaded = rosterQuery.data !== undefined || rosterQuery.isError
   const loadError = rosterQuery.data === undefined && rosterQuery.isError
   // Only for the empty crew: does the registry hold anything besides
@@ -393,6 +399,9 @@ export default function MembersPage() {
   // quiet for that name, or every drawer fire would say it twice ("has been
   // fired" and "is no longer on the roster", once by label, once by id).
   const firedNameRef = useRef('')
+  // The drawer's Configuration section folds behind a disclosure, closed by
+  // default: identity and plumbing are the least read rows (design step 6).
+  const [configOpen, setConfigOpen] = useState(false)
   // The member the fallback is about to open in place of a gone one a link
   // named. Set right before the fallback's URL write, read (and cleared) by
   // the open that write triggers, so that open can skip the memory write. A
@@ -989,13 +998,46 @@ export default function MembersPage() {
   const appsForProvenance = useQuery({
     queryKey: ['apps'],
     queryFn: () => api.listApps(),
-    enabled: !!active?.template,
+    enabled: !!active?.template || members.some((r) => !!r.template),
   })
   const templateAppLabel = useCallback((template: string) => {
     const appName = template.split('/')[0]
     const app = appsForProvenance.data?.find((a) => a.name === appName)
     return app?.manifest?.displayName || appName
   }, [appsForProvenance.data])
+  /** The roster row's compact source badge: pack name on the face, version
+   *  in the title; built-ins say so; a member created here wears none. */
+  const rowSourceBadge = useCallback((m: MemberRosterRow): { label: string; title: string } | null => {
+    if (m.template) {
+      const label = templateAppLabel(m.template)
+      return { label, title: m.template_version ? `${label} v${m.template_version}` : label }
+    }
+    if (m.source === 'builtin') {
+      const label = t('pages.membersPage.filter_source_builtin')
+      return { label, title: label }
+    }
+    if (m.source && m.source !== 'kirocrew') {
+      // Not the filter menu's "From packages": beside a pack's own name on the
+      // next row that read as a second pack. One word that is not pack-shaped,
+      // with the fuller sentence in the title.
+      return {
+        label: t('pages.membersPage.source_badge_package'),
+        title: t('pages.membersPage.filter_source_package_description'),
+      }
+    }
+    return null
+  }, [templateAppLabel, t])
+  // The card the open member was hired from (the catalog attributes members
+  // to cards by id): the DM empty state's duty and starter prompts. Read
+  // only while a member is open; a catalog that cannot be read is SAID inside
+  // the empty state (an ErrorNotice in place of the duty and starters), never
+  // rendered as a plain "Session ready" that reads like a member with no card.
+  const hireCards = useQuery({
+    queryKey: HIRE_TEMPLATES_QUERY_KEY,
+    queryFn: () => api.memberTemplates().then((r) => r.templates),
+    enabled: !!active,
+    staleTime: 30_000,
+  })
   const wakeSources = [cronsQuery, hooksQuery, defaultAgentQ]
   const wakeFailed = wakeSources.some((q) => q.data === undefined && q.isError)
   const wakeLoaded = wakeFailed || wakeSources.every((q) => q.data !== undefined)
@@ -1409,11 +1451,11 @@ export default function MembersPage() {
             <Users size={15} className="lucide-inline text-muted shrink-0" />
             <h1 className={LIST_TITLE_CLS}>{t('pages.membersPage.title')}</h1>
           </div>
-          {/* Adding a member IS creating a crew, and the crew manager is the
-              only write path — so this is a navigation, not an inline form.
-              It lands ON the create form, not on the crew list (#9513). */}
+          {/* Adding a member is a hire: the gallery under this page lists every
+              template (apps, built-ins, local files) and lands the new
+              member in its thread. */}
           <button
-            onClick={() => navigate(CREW_CREATE_PATH)}
+            onClick={() => navigate(HIRE_PATH)}
             className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
             aria-label={t('pages.membersPage.add_member')}
             title={t('pages.membersPage.add_member')}
@@ -1629,6 +1671,19 @@ export default function MembersPage() {
             {t('pages.membersPage.member_gone_roster', { name: gone.name })}
           </div>
         )}
+        {/* The badges name a template's app by display name from the apps
+            read; when that read fails the badge falls back to the app id, and
+            the failure is SAID here rather than passed off as the app's name. */}
+        {appsForProvenance.isError && members.some((r) => !!r.template) && (
+          <div className="px-3 py-1.5">
+            <ErrorNotice
+              message={t('pages.membersPage.provenance_apps_error')}
+              variant="inline"
+              askAgent
+              testId="member-roster-apps-error"
+            />
+          </div>
+        )}
         <ul
           className={`${LIST_BODY_CLS} list-none m-0`}
           style={{ scrollbarWidth: 'none' }}
@@ -1649,7 +1704,7 @@ export default function MembersPage() {
                   way to change that — the create form, same destination as
                   the header "+". */}
               <button
-                onClick={() => navigate(CREW_CREATE_PATH)}
+                onClick={() => navigate(HIRE_PATH)}
                 className="mt-2 inline-flex items-center gap-1 text-[11.5px] px-2 py-1 rounded border border-border hover:bg-accent/40"
                 data-testid="member-empty-cta"
               >
@@ -1792,15 +1847,24 @@ export default function MembersPage() {
                       width. Without a role the label has the line. */}
                   <span className={`flex min-w-0 items-baseline ${ROW_TITLE_CLS} font-semibold text-text`} data-testid="member-row-label">
                     <span className={`min-w-0 truncate ${m.role ? 'max-w-[60%] shrink-0' : ''}`}>{memberLabel(m)}</span>
+                    {/* Two rows wearing one label are told apart by the id --
+                        shown only then, in mono, so a roster of distinct names
+                        stays a list of names (see twinLabelIds). */}
+                    {twinIds.has(m.name) && (
+                      <span className="ml-1.5 shrink-0 truncate max-w-[40%] rounded border border-border bg-bg-elevated px-1 font-mono text-[11px] font-normal text-muted" title={t('pages.membersPage.member_id')} aria-label={`${t('pages.membersPage.member_id')}: ${m.name}`} data-testid="member-row-id">{t('pages.membersPage.member_id_badge', { id: m.name })}</span>
+                    )}
                     {m.role && (
                       <span className="min-w-0 truncate font-normal text-muted" data-testid="member-row-role">
                         {PROJECT_SEPARATOR}{m.role}
                       </span>
                     )}
                   </span>
-                  {/* Last-message preview, like a session row — presence
+                  {/* Third line: a compact SOURCE badge (the pack the member was
+                      hired from, by display name; the version rides the title,
+                      never the face) and the last-message preview -- presence
                       already rides the avatar dot, so a textual Idle/Working
-                      label says nothing the dot does not. A "Stopped" chip
+                      label says nothing the dot does not. A member created here
+                      wears no badge: quiet is the default. A "Stopped" chip
                       leads the preview when the thread's NEWEST event is a
                       Stop press: the server skips the stop card's JSON, so the
                       preview is the last conversational line, which reads as
@@ -1811,7 +1875,16 @@ export default function MembersPage() {
                       the preview, not the label, is what truncates. The server
                       flag is false once a newer real message lands, so the chip
                       cannot outlive the stop. */}
-                  <span className={`flex items-center gap-1 ${ROW_STATUS_CLS} text-muted min-w-0`}>
+                  <span className={`flex items-center gap-1.5 min-w-0 ${ROW_STATUS_CLS} text-muted`}>
+                    {rowSourceBadge(m) && (
+                      <span
+                        className="inline-flex items-center shrink-0 max-w-[45%] truncate rounded-md border border-border bg-bg-elevated px-1.5 text-[10px] leading-4 text-muted"
+                        title={rowSourceBadge(m)!.title}
+                        data-testid="member-row-badge"
+                      >
+                        {rowSourceBadge(m)!.label}
+                      </span>
+                    )}
                     {m.last_message_stopped && (
                       <span
                         className="inline-flex items-center gap-0.5 shrink-0 font-medium text-danger"
@@ -1821,7 +1894,7 @@ export default function MembersPage() {
                         {t('pages.membersPage.stopped_indicator')}
                       </span>
                     )}
-                    <span className="block truncate min-w-0">{m.last_message || '\u00a0'}</span>
+                    <span className="min-w-0 truncate">{m.last_message || ' '}</span>
                   </span>
                 </span>
                 {/* Unread marker on the row's right edge — the IM convention
@@ -1936,35 +2009,17 @@ export default function MembersPage() {
                 size={30}
                 working="full"
               />
-              {/* Title row = name + a small pencil to its RIGHT. That pencil is
-                  the member's edit entry: invisible at rest, it fades in when
-                  the pointer is over the title row (or the button has focus),
-                  and under (hover: none) it sits at low contrast permanently
-                  — a touch user can never hover it into view. The click opens
-                  the member's WHOLE editor in the crew manager — name,
-                  template, model, workspace, triggers, avatar — not just the
-                  avatar builder, so the label says "Edit member". It navigates
-                  rather than editing here: this page never becomes a second
-                  writer (issue #9103). `group/title` is scoped to this row so
-                  the drawer toggle to the right does not reveal it. */}
-              <div className="group/title min-w-0 flex-1 flex items-center gap-1.5" data-testid="member-title-row">
-                <div className="min-w-0 truncate">
-                  <span className="text-[13.5px] font-semibold" data-testid="member-header-label">{memberLabel(active)}</span>
-                  {active.role && (
-                    <span className="text-[12px] text-muted" data-testid="member-header-role">{PROJECT_SEPARATOR}{active.role}</span>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => navigate(crewEditPath(active.name))}
-                  className="inline-flex shrink-0 items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer focus-ring opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/title:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-60"
-                  aria-label={t('pages.membersPage.edit_member')}
-                  title={t('pages.membersPage.edit_member')}
-                  data-testid="member-edit-name-button"
-                >
-                  <Pencil size={13} className="lucide-inline" />
-                </button>
-              </div>
+              {/* Title row = name + role + a small pencil that renames IN PLACE
+                  (design step 6): a member hired from the gallery is named after
+                  its role, the row says so until the first rename, and the
+                  rename happens where the colleague already is -- no trip to
+                  the crew editor for a name. The rest of the member (template,
+                  model, workspace...) is still edited there, from the drawer's
+                  Configuration section. */}
+              {/* Keyed by the member: a switch mid-rename remounts the editor,
+                  so a failed request's draft (and its retry) cannot outlive
+                  the member it was typed for and land on the next one. */}
+              <MemberNameEditor key={active.name} member={active} separator={PROJECT_SEPARATOR} showId={twinIds.has(active.name)} />
               {/* The header carries NO panel control while the panel sits
                   beside the thread: that panel is permanent, so a toggle would
                   promise a close the strip does not offer. Only when the window
@@ -2092,6 +2147,9 @@ export default function MembersPage() {
                     // ready" would contradict it one line down.
                     hideEmptyHint={activeThreadFailed}
                     openSideChat={openMemberSideChat}
+                    emptyState={(send) => (
+                      <MemberEmptyState member={active} card={cardForMember(hireCards.data, active.name)} catalogFailed={hireCards.isError} onAsk={send} />
+                    )}
                   />
                 </ErrorBoundary>
               </div>
@@ -2126,7 +2184,9 @@ export default function MembersPage() {
             <CrewAvatar seed={active.name} avatar={active.avatar} size={22} />
             <span className="min-w-0 truncate">
               <span className="text-[13px] font-semibold" data-testid="member-summary-label">{memberLabel(active)}</span>
-              {active.role && (
+              {/* Withheld when it only repeats the label (a zero-config hire is
+                  named after its role): the thread header's rule. */}
+              {active.role && active.role !== memberLabel(active) && (
                 <span className="block text-[11px] text-muted truncate" data-testid="member-summary-role">{active.role}</span>
               )}
             </span>
@@ -2138,6 +2198,58 @@ export default function MembersPage() {
               ) : null}
             </span>
           </div>
+          {/* The drawer is DATA: an ordered list of sections, rendered by one
+              loop (design step 6). Order: Briefing, Capabilities, Activity
+              (the Today / 7-day tiles and the recent log), Sessions it's
+              driving, Auto patrol, Wake sources, then Configuration folded
+              behind a disclosure -- the identity/plumbing rows are the least
+              read and the most stable, so they sit last and closed. */}
+          {([
+            {
+              id: 'briefing',
+              title: t('pages.membersPage.section_briefing'),
+              body: <MemberBriefing slug={active.slug} member={active.name} />,
+            },
+            {
+              id: 'capabilities',
+              title: t('pages.membersPage.section_capabilities'),
+              body: <MemberCapabilities agent={active.kiro_agent ?? ''} />,
+            },
+            // Role update + detach, for a member hired from a template: the
+            // merge plan against the app as installed now, offered never
+            // applied on its own (design step 4). In the open part of the
+            // drawer so the offer is seen, not filed under Configuration.
+            // After a detach the section is gone with the template; the
+            // closure for that destructive success takes its place, for the
+            // crewmate it happened to, until the page is left.
+            ...(active.template
+              ? [{
+                  id: 'template' as const,
+                  title: t('pages.membersPage.section_template'),
+                  body: (
+                    <RoleUpdatePanel
+                      member={active}
+                      appLabel={templateAppLabel(active.template)}
+                      onDetached={(app) => setDetached({ member: active.name, app })}
+                    />
+                  ),
+                }]
+              : detached?.member === active.name
+                ? [{
+                    id: 'template' as const,
+                    title: t('pages.membersPage.section_template'),
+                    body: (
+                      <p className="text-[12px] text-muted" role="status" data-testid="member-detached-notice">
+                        {t('pages.membersPage.detached_done', { app: detached.app })}
+                      </p>
+                    ),
+                  }]
+                : []),
+            {
+              id: 'activity',
+              title: t('pages.membersPage.recent_activity'),
+              body: (
+                <>
           {/* Honest counters only — both derive from the recorded activity
               log. Semantic stats the backend cannot attest (PRs, triages,
               spend) are deliberately absent rather than fabricated. */}
@@ -2154,225 +2266,6 @@ export default function MembersPage() {
               </div>
               <div className="text-[11px] text-muted">{t('pages.membersPage.stat_week')}</div>
             </div>
-          </div>
-          {/* Sessions this member is driving — the worker sessions it opened
-              and steers. Live rows off the WS slots frames (see the
-              drivingSessions memo); each row is a jump into that session.
-              The status dot is the sidebar's vocabulary: approval (warn) >
-              needs input (info) > running (ok) > idle (muted). */}
-          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5">
-            {t('pages.membersPage.driving_sessions')}
-          </div>
-          {drivingSessions.length === 0 && !slotsLoaded ? (
-            <div className="mb-4 space-y-1.5" data-testid="member-driving-loading" aria-hidden>
-              <div className="h-3 rounded bg-accent/40 animate-pulse" />
-              <div className="h-3 w-3/4 rounded bg-accent/40 animate-pulse" />
-            </div>
-          ) : drivingSessions.length === 0 ? (
-            <div className="text-[11px] text-muted mb-4" data-testid="member-driving-empty">
-              {t('pages.membersPage.driving_none')}
-            </div>
-          ) : (
-            <div className="mb-4">
-              <ul className="list-none m-0 p-0 space-y-0.5" data-testid="member-driving-sessions">
-                {visibleDriving.map((s) => {
-                  // Precedence is the shared tab-status contract (approval and
-                  // question outrank running); no unread set here, so the
-                  // fourth state is plain idle.
-                  const kind = tabStatus(s, [], s.key)
-                  const status = DRIVING_STATUS[kind]
-                  const label = t(status.label)
-                  // Slot timestamps are ISO strings; timeAgo wants epoch seconds.
-                  const activityTs = lastActivityEpoch(s)
-                  const title = s.title || s.key
-                  return (
-                    <li key={s.key}>
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/chat?sid=${encodeURIComponent(s.key)}`)}
-                        className="w-full text-left flex items-center gap-2 text-[11px] px-1.5 py-1 -mx-1.5 rounded hover:bg-accent/40"
-                        title={title + PROJECT_SEPARATOR + label}
-                        data-testid="member-driving-row"
-                        data-status={kind}
-                      >
-                        <Circle size={8} className={`shrink-0 ${status.cls}`} aria-hidden />
-                        <span className="min-w-0 truncate flex-1">{title}</span>
-                        {/* The two states parked on the user get words, not
-                            just a colour — the sidebar's own idiom for the
-                            same signals; running/idle stay dot-only (the
-                            label is in the hover title and for AT). */}
-                        {status.spoken ? (
-                          <span className={`shrink-0 font-medium ${status.text}`}>{label}</span>
-                        ) : (
-                          <span className="sr-only">{label}</span>
-                        )}
-                        {activityTs > 0 && (
-                          <span className="text-muted shrink-0 whitespace-nowrap">{timeAgo(activityTs)}</span>
-                        )}
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-              {drivingSessions.length > DRIVING_VISIBLE && (
-                <button
-                  type="button"
-                  onClick={() => setDrivingExpandedFor(drivingExpanded ? '' : activeMemberKey)}
-                  className="mt-1 text-[11px] text-muted hover:text-text"
-                  aria-expanded={drivingExpanded}
-                  data-testid="member-driving-toggle"
-                >
-                  {drivingExpanded
-                    ? t('pages.membersPage.driving_show_less')
-                    : t('pages.membersPage.driving_show_all', { count: drivingSessions.length })}
-                </button>
-              )}
-            </div>
-          )}
-          {/* Auto patrol — the auto-nudge loop on this member's own thread,
-              beside the sessions it drives: together they answer "is this
-              member alive, and what is it doing". Three verdicts, never
-              conflated (see patrolState), plus the loading / failed states
-              every block in this drawer keeps. The readouts are the composer's
-              goal chip's: same cycle spelling, same deadline-preserving
-              countdown, same "last fire" wording — so a person who has read
-              one has read the other. The block cross-fades on a verdict
-              change; a stop that lands while the drawer is open must read as
-              a change, not a flicker. */}
-          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5 flex items-center gap-1.5">
-            <Goal
-              size={12}
-              className={`lucide-inline shrink-0 ${patrolState === 'active' ? 'text-accent' : 'text-muted'}`}
-              aria-hidden="true"
-            />
-            <span className="flex-1">{t('pages.membersPage.patrol_title')}</span>
-          </div>
-          {!patrol.loaded ? (
-            <div className="mb-4 space-y-1.5" data-testid="member-patrol-loading" aria-hidden>
-              <div className="h-3 rounded bg-bg-hover animate-pulse" />
-              <div className="h-3 w-3/4 rounded bg-bg-hover animate-pulse" />
-            </div>
-          ) : patrol.failed ? (
-            /* The shared notice, not a hand-rolled alert: it keeps the
-               structured error context and the agent hand-off. askAgent is
-               safe here — a read failure on a drawer that holds no draft. */
-            <div className="mb-4">
-              <ErrorNotice
-                message={t('pages.membersPage.patrol_error')}
-                variant="inline"
-                askAgent
-                testId="member-patrol-error"
-              />
-            </div>
-          ) : (
-            <motion.div
-              key={patrolState}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-              className="mb-4"
-              data-testid="member-patrol"
-              data-state={patrolState}
-            >
-              {patrolState === 'active' && activePatrol ? (
-                <>
-                  <div className="text-[11px] font-medium text-accent mb-1.5" data-testid="member-patrol-status">
-                    {t('pages.membersPage.patrol_active')}
-                  </div>
-                  {/* Same label/value idiom as the Configuration list below. */}
-                  <dl className="text-[11px] space-y-1 m-0">
-                    <div className="flex gap-2">
-                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_interval')}</dt>
-                      <dd className="min-w-0 truncate m-0" data-testid="member-patrol-interval">
-                        {intervalText(activePatrol.idle_secs)}
-                      </dd>
-                    </div>
-                    <div className="flex gap-2">
-                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_cycles')}</dt>
-                      <dd className="min-w-0 truncate m-0" data-testid="member-patrol-cycles">
-                        {/* Self-describing here ("3 of 24"); the chip keeps its
-                            compact "3/24", which alone read as a date. */}
-                        {activePatrol.max_cycles > 0
-                          ? t('pages.membersPage.patrol_cycles_of', { n: activePatrol.cycle_count, max: activePatrol.max_cycles })
-                          : t('pages.membersPage.patrol_cycles_unlimited', { n: activePatrol.cycle_count })}
-                      </dd>
-                    </div>
-                    <div className="flex gap-2">
-                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_last_wake')}</dt>
-                      <dd
-                        className="min-w-0 truncate m-0"
-                        title={activePatrol.last_fire_ts ? fmtDateTimeNumeric(activePatrol.last_fire_ts) : undefined}
-                      >
-                        {activePatrol.last_fire_ts
-                          ? timeAgo(activePatrol.last_fire_ts)
-                          : t('components.autoNudgePopover.never')}
-                      </dd>
-                    </div>
-                    <div className="flex gap-2">
-                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_next_wake')}</dt>
-                      <dd
-                        className="min-w-0 truncate m-0"
-                        title={activePatrol.next_due_ts > 0 ? fmtDateTimeNumeric(activePatrol.next_due_ts) : undefined}
-                        data-testid="member-patrol-next"
-                      >
-                        {(() => {
-                          // The row already says "Next wake", so the value is
-                          // the bare remainder; the due / unscheduled readings
-                          // are the composer chip's own sentences.
-                          const next = nextCycle(activePatrol, nowTs)
-                          switch (next.kind) {
-                            case 'in':
-                              return t('pages.membersPage.patrol_next_in', { time: next.time })
-                            case 'due':
-                              return t('components.autoNudgePopover.next_cycle_due')
-                            default:
-                              return t('components.autoNudgePopover.next_cycle_unscheduled')
-                          }
-                        })()}
-                      </dd>
-                    </div>
-                    {(activePatrol.banner || activePatrol.message) && (
-                      <div className="flex gap-2">
-                        <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_instruction')}</dt>
-                        {/* The banner is the SHORT stand-in the transcript row
-                            shows; without one, the instruction's first line.
-                            The full text sits in the hover title. */}
-                        <dd
-                          className="min-w-0 truncate m-0"
-                          title={activePatrol.banner || activePatrol.message}
-                          data-testid="member-patrol-instruction"
-                        >
-                          {(activePatrol.banner || activePatrol.message).split('\n')[0]}
-                        </dd>
-                      </div>
-                    )}
-                  </dl>
-                </>
-              ) : patrolState === 'stopped' && activePatrol ? (
-                <div className="text-[11px] text-muted" data-testid="member-patrol-status">
-                  <span className="text-text">{t('pages.membersPage.patrol_stopped')}</span>
-                  {activePatrol.stopped_reason && (
-                    <span className="block mt-0.5" data-testid="member-patrol-reason">
-                      {PATROL_STOPPED_REASON[activePatrol.stopped_reason]
-                        ? t(PATROL_STOPPED_REASON[activePatrol.stopped_reason])
-                        : activePatrol.stopped_reason}
-                    </span>
-                  )}
-                  {activePatrol.last_fire_ts > 0 && (
-                    <span className="block mt-0.5" title={fmtDateTimeNumeric(activePatrol.last_fire_ts)}>
-                      {t('pages.membersPage.patrol_last_wake_ago', { when: timeAgo(activePatrol.last_fire_ts) })}
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <div className="text-[11px] text-muted" data-testid="member-patrol-status">
-                  {t('pages.membersPage.patrol_none')}
-                </div>
-              )}
-            </motion.div>
-          )}
-          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5">
-            {t('pages.membersPage.recent_activity')}
           </div>
           {/* Three states, never conflated: a pending or failed read must not
               render the affirmative "no recorded activity". */}
@@ -2514,10 +2407,243 @@ export default function MembersPage() {
               )}
             </div>
           )}
-          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5 flex items-center">
-            <span className="flex-1">{t('pages.membersPage.wake_sources')}</span>
-            {/* Read-only view; managing schedules stays on the Schedule page
-                (same jump idiom as the crew editor's wake pane). */}
+                </>
+              ),
+            },
+            {
+              id: 'sessions',
+              title: t('pages.membersPage.driving_sessions'),
+              body: (
+                <>
+          {/* Sessions this member is driving — the worker sessions it opened
+              and steers. Live rows off the WS slots frames (see the
+              drivingSessions memo); each row is a jump into that session.
+              The status dot is the sidebar's vocabulary: approval (warn) >
+              needs input (info) > running (ok) > idle (muted). */}
+          {drivingSessions.length === 0 && !slotsLoaded ? (
+            <div className="mb-4 space-y-1.5" data-testid="member-driving-loading" aria-hidden>
+              <div className="h-3 rounded bg-accent/40 animate-pulse" />
+              <div className="h-3 w-3/4 rounded bg-accent/40 animate-pulse" />
+            </div>
+          ) : drivingSessions.length === 0 ? (
+            <div className="text-[11px] text-muted mb-4" data-testid="member-driving-empty">
+              {t('pages.membersPage.driving_none')}
+            </div>
+          ) : (
+            <div className="mb-4">
+              <ul className="list-none m-0 p-0 space-y-0.5" data-testid="member-driving-sessions">
+                {visibleDriving.map((s) => {
+                  // Precedence is the shared tab-status contract (approval and
+                  // question outrank running); no unread set here, so the
+                  // fourth state is plain idle.
+                  const kind = tabStatus(s, [], s.key)
+                  const status = DRIVING_STATUS[kind]
+                  const label = t(status.label)
+                  // Slot timestamps are ISO strings; timeAgo wants epoch seconds.
+                  const activityTs = lastActivityEpoch(s)
+                  const title = s.title || s.key
+                  return (
+                    <li key={s.key}>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/chat?sid=${encodeURIComponent(s.key)}`)}
+                        className="w-full text-left flex items-center gap-2 text-[11px] px-1.5 py-1 -mx-1.5 rounded hover:bg-accent/40"
+                        title={title + PROJECT_SEPARATOR + label}
+                        data-testid="member-driving-row"
+                        data-status={kind}
+                      >
+                        <Circle size={8} className={`shrink-0 ${status.cls}`} aria-hidden />
+                        <span className="min-w-0 truncate flex-1">{title}</span>
+                        {/* The two states parked on the user get words, not
+                            just a colour — the sidebar's own idiom for the
+                            same signals; running/idle stay dot-only (the
+                            label is in the hover title and for AT). */}
+                        {status.spoken ? (
+                          <span className={`shrink-0 font-medium ${status.text}`}>{label}</span>
+                        ) : (
+                          <span className="sr-only">{label}</span>
+                        )}
+                        {activityTs > 0 && (
+                          <span className="text-muted shrink-0 whitespace-nowrap">{timeAgo(activityTs)}</span>
+                        )}
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+              {drivingSessions.length > DRIVING_VISIBLE && (
+                <button
+                  type="button"
+                  onClick={() => setDrivingExpandedFor(drivingExpanded ? '' : activeMemberKey)}
+                  className="mt-1 text-[11px] text-muted hover:text-text"
+                  aria-expanded={drivingExpanded}
+                  data-testid="member-driving-toggle"
+                >
+                  {drivingExpanded
+                    ? t('pages.membersPage.driving_show_less')
+                    : t('pages.membersPage.driving_show_all', { count: drivingSessions.length })}
+                </button>
+              )}
+            </div>
+          )}
+                </>
+              ),
+            },
+            {
+              id: 'patrol',
+              title: (
+                <span className="inline-flex items-center gap-1.5">
+                  <Goal
+                    size={12}
+                    className={`lucide-inline shrink-0 ${patrolState === 'active' ? 'text-accent' : 'text-muted'}`}
+                    aria-hidden="true"
+                  />
+                  {t('pages.membersPage.patrol_title')}
+                </span>
+              ),
+              body: (
+                <>
+          {/* Auto patrol — the auto-nudge loop on this member's own thread,
+              beside the sessions it drives: together they answer "is this
+              member alive, and what is it doing". Three verdicts, never
+              conflated (see patrolState), plus the loading / failed states
+              every block in this drawer keeps. The readouts are the composer's
+              goal chip's: same cycle spelling, same deadline-preserving
+              countdown, same "last fire" wording — so a person who has read
+              one has read the other. The block cross-fades on a verdict
+              change; a stop that lands while the drawer is open must read as
+              a change, not a flicker. */}
+          {!patrol.loaded ? (
+            <div className="mb-4 space-y-1.5" data-testid="member-patrol-loading" aria-hidden>
+              <div className="h-3 rounded bg-bg-hover animate-pulse" />
+              <div className="h-3 w-3/4 rounded bg-bg-hover animate-pulse" />
+            </div>
+          ) : patrol.failed ? (
+            /* The shared notice, not a hand-rolled alert: it keeps the
+               structured error context and the agent hand-off. askAgent is
+               safe here — a read failure on a drawer that holds no draft. */
+            <div className="mb-4">
+              <ErrorNotice
+                message={t('pages.membersPage.patrol_error')}
+                variant="inline"
+                askAgent
+                testId="member-patrol-error"
+              />
+            </div>
+          ) : (
+            <motion.div
+              key={patrolState}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+              className="mb-4"
+              data-testid="member-patrol"
+              data-state={patrolState}
+            >
+              {patrolState === 'active' && activePatrol ? (
+                <>
+                  <div className="text-[11px] font-medium text-accent mb-1.5" data-testid="member-patrol-status">
+                    {t('pages.membersPage.patrol_active')}
+                  </div>
+                  {/* Same label/value idiom as the Configuration list below. */}
+                  <dl className="text-[11px] space-y-1 m-0">
+                    <div className="flex gap-2">
+                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_interval')}</dt>
+                      <dd className="min-w-0 truncate m-0" data-testid="member-patrol-interval">
+                        {intervalText(activePatrol.idle_secs)}
+                      </dd>
+                    </div>
+                    <div className="flex gap-2">
+                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_cycles')}</dt>
+                      <dd className="min-w-0 truncate m-0" data-testid="member-patrol-cycles">
+                        {/* Self-describing here ("3 of 24"); the chip keeps its
+                            compact "3/24", which alone read as a date. */}
+                        {activePatrol.max_cycles > 0
+                          ? t('pages.membersPage.patrol_cycles_of', { n: activePatrol.cycle_count, max: activePatrol.max_cycles })
+                          : t('pages.membersPage.patrol_cycles_unlimited', { n: activePatrol.cycle_count })}
+                      </dd>
+                    </div>
+                    <div className="flex gap-2">
+                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_last_wake')}</dt>
+                      <dd
+                        className="min-w-0 truncate m-0"
+                        title={activePatrol.last_fire_ts ? fmtDateTimeNumeric(activePatrol.last_fire_ts) : undefined}
+                      >
+                        {activePatrol.last_fire_ts
+                          ? timeAgo(activePatrol.last_fire_ts)
+                          : t('components.autoNudgePopover.never')}
+                      </dd>
+                    </div>
+                    <div className="flex gap-2">
+                      <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_next_wake')}</dt>
+                      <dd
+                        className="min-w-0 truncate m-0"
+                        title={activePatrol.next_due_ts > 0 ? fmtDateTimeNumeric(activePatrol.next_due_ts) : undefined}
+                        data-testid="member-patrol-next"
+                      >
+                        {(() => {
+                          // The row already says "Next wake", so the value is
+                          // the bare remainder; the due / unscheduled readings
+                          // are the composer chip's own sentences.
+                          const next = nextCycle(activePatrol, nowTs)
+                          switch (next.kind) {
+                            case 'in':
+                              return t('pages.membersPage.patrol_next_in', { time: next.time })
+                            case 'due':
+                              return t('components.autoNudgePopover.next_cycle_due')
+                            default:
+                              return t('components.autoNudgePopover.next_cycle_unscheduled')
+                          }
+                        })()}
+                      </dd>
+                    </div>
+                    {(activePatrol.banner || activePatrol.message) && (
+                      <div className="flex gap-2">
+                        <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_instruction')}</dt>
+                        {/* The banner is the SHORT stand-in the transcript row
+                            shows; without one, the instruction's first line.
+                            The full text sits in the hover title. */}
+                        <dd
+                          className="min-w-0 truncate m-0"
+                          title={activePatrol.banner || activePatrol.message}
+                          data-testid="member-patrol-instruction"
+                        >
+                          {(activePatrol.banner || activePatrol.message).split('\n')[0]}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                </>
+              ) : patrolState === 'stopped' && activePatrol ? (
+                <div className="text-[11px] text-muted" data-testid="member-patrol-status">
+                  <span className="text-text">{t('pages.membersPage.patrol_stopped')}</span>
+                  {activePatrol.stopped_reason && (
+                    <span className="block mt-0.5" data-testid="member-patrol-reason">
+                      {PATROL_STOPPED_REASON[activePatrol.stopped_reason]
+                        ? t(PATROL_STOPPED_REASON[activePatrol.stopped_reason])
+                        : activePatrol.stopped_reason}
+                    </span>
+                  )}
+                  {activePatrol.last_fire_ts > 0 && (
+                    <span className="block mt-0.5" title={fmtDateTimeNumeric(activePatrol.last_fire_ts)}>
+                      {t('pages.membersPage.patrol_last_wake_ago', { when: timeAgo(activePatrol.last_fire_ts) })}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[11px] text-muted" data-testid="member-patrol-status">
+                  {t('pages.membersPage.patrol_none')}
+                </div>
+              )}
+            </motion.div>
+          )}
+                </>
+              ),
+            },
+            {
+              id: 'wake',
+              title: t('pages.membersPage.wake_sources'),
+              action: (
             <button
               onClick={() => navigate('/schedule')}
               className="inline-flex items-center p-0.5 rounded hover:bg-accent/40 text-muted hover:text-text"
@@ -2527,7 +2653,9 @@ export default function MembersPage() {
             >
               <ExternalLink size={12} className="lucide-inline" />
             </button>
-          </div>
+              ),
+              body: (
+                <>
           {!wakeLoaded ? (
             <div className="mb-4 space-y-1.5" data-testid="member-wake-loading" aria-hidden>
               <div className="h-3 rounded bg-accent/40 animate-pulse" />
@@ -2581,9 +2709,15 @@ export default function MembersPage() {
               ))}
             </ul>
           )}
-          <div className="text-[11px] font-semibold tracking-wide text-muted mb-2">
-            {t('pages.membersPage.configuration')}
-          </div>
+                </>
+              ),
+            },
+            {
+              id: 'configuration',
+              title: t('pages.membersPage.configuration'),
+              collapsible: true,
+              body: (
+                <>
           <dl className="text-xs space-y-2">
             {/* Identity first: the id is what crons, webhooks and other
                 members address (and what the URL carries), so a user renaming
@@ -2674,22 +2808,6 @@ export default function MembersPage() {
               <dd className="min-w-0 truncate">{String(active.memory_store ?? '')}</dd>
             </div>
           </dl>
-          {/* Role update + detach, for a member hired from a template: the
-              merge plan against the app as installed now, offered never
-              applied on its own (design step 4). */}
-          {active.template && (
-            <RoleUpdatePanel
-              member={active}
-              appLabel={templateAppLabel(active.template)}
-              onDetached={(app) => setDetached({ member: active.name, app })}
-            />
-          )}
-          {!active.template && detached?.member === active.name && (
-            /* Closure for the destructive success, where the panel stood. */
-            <p className="mt-3 text-[12px] text-muted" role="status" data-testid="member-detached-notice">
-              {t('pages.membersPage.detached_done', { app: detached.app })}
-            </p>
-          )}
           <div className="mt-3 flex flex-col gap-2 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
             <span>
               {activeMemory === 'global'
@@ -2731,6 +2849,17 @@ export default function MembersPage() {
           </button>
           {/* Fire (design step 5): the reverse of hire, withheld for the default
               member, which cannot be fired. */}
+                </>
+              ),
+            },
+          ] satisfies DrawerSection[]).map((section) => (
+            <DrawerSectionView
+              key={section.id}
+              section={section}
+              open={section.collapsible ? configOpen : true}
+              onToggle={section.collapsible ? () => setConfigOpen((v) => !v) : undefined}
+            />
+          ))}
           {/* The default member is the one the fire refuses (409
               `cannot_fire_default`): the verb is withheld for it, decided by
               the shared ['default-agent'] read the wake block already runs --

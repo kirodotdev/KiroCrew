@@ -2298,6 +2298,44 @@ export interface WebhookTestResult {
   error?: string
 }
 
+/** One card of the hire gallery (GET /api/members/templates): a template a
+ *  member can be hired from, from an installed app's `crew.templates`, the
+ *  files this package ships (`builtin`) or the user's own agent files
+ *  (`local`). `source` is the exact body `POST /api/members` takes. */
+/** One crewmate hired from a gallery card: the immutable id its DM is
+ *  opened by, and the display name a person sees (two crewmates may share
+ *  one label; the id tells them apart). */
+export interface HiredCrewmate {
+  id: string
+  display_name: string
+}
+
+export interface HireTemplateCard {
+  id: string
+  origin: 'app' | 'builtin' | 'local'
+  source: { kind: 'store'; app: string; agent: string } | { kind: 'local'; agent: string }
+  role: string
+  duty: string
+  description: string
+  tags: string[]
+  category: string
+  starter_prompts: { text: string; attachment?: string }[]
+  avatar: { kind: 'ghost'; traits?: Record<string, unknown> } | null
+  publisher: string
+  version: string
+  agent: string
+  capabilities: { kind: 'skill' | 'mcp'; name: string }[]
+  /** The crewmates hired from this card and still enrolled (the active
+   *  roster, by the server's count), in roster order. Drives the card's
+   *  secondary action: none / "Chat with <name>" / "Your crewmates (N)". */
+  hired_as: HiredCrewmate[]
+  /** False when a hire would be refused right now; the code says why, in the
+   *  hire's own vocabulary (`template_not_materialized`, ...). */
+  hireable: boolean
+  unavailable_code: string
+  unavailable_reason: string
+}
+
 /** Answer of POST /api/members. */
 export interface HireMemberResult {
   ok?: boolean
@@ -3177,6 +3215,8 @@ export const api = {
    *  the wrapper row (id minted from the name), copies the source definition
    *  into a member-owned agent file and enrolls the crewmate, atomically. */
   hireMember: (body: object) => post('/api/members', body).then(j) as Promise<HireMemberResult>,
+  /** The hire gallery's catalog: every template a member can be hired from. */
+  memberTemplates: () => fetch('/api/members/templates').then(j) as Promise<{ templates: HireTemplateCard[] }>,
   /** The role-update plan for a template-hired member; nothing is written. */
   memberRoleUpdatePlan: (member: string) =>
     fetch('/api/members/' + encodeURIComponent(member) + '/role-update').then(j) as Promise<RoleUpdatePlan>,
@@ -3204,6 +3244,11 @@ export const api = {
   // participations and routing decisions). `member` is the exact crew name —
   // slugs are lossy, so the backend filters the shared log by exact name.
   // Fetched on drawer open, never polled.
+  /** The member's own briefing, read the way the prompt builder reads it. */
+  memberBriefing: (slug: string, member: string) =>
+    fetch(
+      '/api/members/' + encodeURIComponent(slug) + '/briefing?member=' + encodeURIComponent(member),
+    ).then(j) as Promise<{ text: string; supported: boolean }>,
   memberActivity: (slug: string, member: string) =>
     fetch(
       '/api/members/' + encodeURIComponent(slug) + '/activity?member=' + encodeURIComponent(member),

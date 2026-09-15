@@ -134,7 +134,6 @@ src/kiro_crew/apps/dependencies.py
 src/kiro_crew/apps/dependency_ledger.py
 src/kiro_crew/apps/dev_mode.py
 src/kiro_crew/apps/execution.py
-src/kiro_crew/apps/manager.py
 src/kiro_crew/apps/module_loader.py
 src/kiro_crew/apps/permissions.py
 src/kiro_crew/apps/registry.py
@@ -335,7 +334,6 @@ test/test_acp_true_provider_error.py
 test/test_acp_turn_lock.py
 test/test_admission_gate.py
 test/test_agent_default_model.py
-test/test_agent_discovery.py
 test/test_agent_import_hoist.py
 test/test_agent_source_ownership_durability.py
 test/test_agent_template_skills.py
