@@ -43,8 +43,8 @@ from typing import Callable
 # Module scope, not function-local: these are the only package imports this file
 # can safely make at import time. dep_sync imports the standard library only
 # (asserted by a test) and `__version__` needs nothing beyond the package
-# itself (`kiro_crew.__init__` imports nothing but asyncio), so neither can
-# raise the ModuleNotFoundError this file exists to heal.
+# itself (`kiro_crew.__init__` imports only the standard library), so neither
+# can raise the ModuleNotFoundError this file exists to heal.
 from kiro_crew import __version__, dep_sync
 
 _PIP_TIMEOUT_SECS = 300
