@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import DetailPanel from './DetailPanel'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
+import { findReport, parseErrorCode } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import { fmtUnit } from '../i18n/format'
 
@@ -22,6 +23,13 @@ function relativeTime(iso: string): string {
   if (days < 30) return fmtUnit(days, 'day')
   const months = Math.round(days / 30)
   return fmtUnit(months, 'month')
+}
+
+/** Machine-readable code from an ApiError-shaped query failure. */
+function apiErrorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  const body = (error as { body?: unknown }).body
+  return typeof body === 'string' ? parseErrorCode(body) : undefined
 }
 
 /** Status letter color class. */
@@ -91,7 +99,13 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   }, [status?.branch, status?.ahead, refetchLog])
 
   const fileCount = status?.files?.length ?? 0
-  const isClean = fileCount === 0
+  const isRepository = status?.repo === true
+  const noRepository = !statusError && status?.repo === false
+  const hasNoChanges = fileCount === 0
+  const isClean = !statusError && isRepository && hasNoChanges
+  const statusErrorMessage = errMessage(statusError)
+  const statusUnavailable = apiErrorCode(statusError) === 'git_status_unavailable'
+  const localizedStatusFailure = i18nT('components.gitPanel.status_failed')
 
   return (
     <DetailPanel
@@ -101,30 +115,40 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
       noPadding
       customHeader={
         <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
-          {/* Branch name */}
-          <GitBranch size={14} className="text-accent shrink-0" />
-          <span className="text-[12px] font-medium text-text truncate">
-            {status?.branch || i18nT('components.gitPanel.loading')}
-          </span>
+          {statusError ? (
+            <span className="text-[12px] text-muted" aria-hidden="true">—</span>
+          ) : (
+            <>
+              {/* Branch name */}
+              <GitBranch size={14} className="text-accent shrink-0" />
+              <span className="text-[12px] font-medium text-text truncate">
+                {status?.branch || (noRepository
+                  ? i18nT('components.gitPanel.not_a_repository')
+                  : i18nT('components.gitPanel.loading'))}
+              </span>
 
-          {/* Ahead/behind pill */}
-          {status && (status.ahead != null || status.behind != null) && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-muted font-mono shrink-0">
-              {status.ahead != null && <>&#x2191;{status.ahead}</>}
-              {status.behind != null && <>{' '}&#x2193;{status.behind}</>}
-            </span>
+              {/* Ahead/behind pill */}
+              {status && (status.ahead != null || status.behind != null) && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-muted font-mono shrink-0">
+                  {status.ahead != null && <>&#x2191;{status.ahead}</>}
+                  {status.behind != null && <>{' '}&#x2193;{status.behind}</>}
+                </span>
+              )}
+            </>
           )}
 
           <span className="flex-1" />
 
           {/* Uncommitted / clean pill */}
-          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${isClean ? 'bg-ok/15 text-ok' : 'bg-warn/15 text-warn'}`}>
-            {statusLoading
-              ? '...'
-              : isClean
-                ? i18nT('components.gitPanel.clean')
-                : i18nT('components.gitPanel.uncommitted', { count: fileCount })}
-          </span>
+          {!noRepository && !statusError && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${hasNoChanges ? 'bg-ok/15 text-ok' : 'bg-warn/15 text-warn'}`}>
+              {statusLoading
+                ? '...'
+                : hasNoChanges
+                  ? i18nT('components.gitPanel.clean')
+                  : i18nT('components.gitPanel.uncommitted', { count: fileCount })}
+            </span>
+          )}
 
           {/* Refresh */}
           <button
@@ -143,8 +167,9 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
           <div className="flex flex-col gap-2 p-3">
             {statusError && (
               <ErrorNotice
-                title={errMessage(statusError) ? i18nT('components.gitPanel.status_failed') : undefined}
-                message={errMessage(statusError) || i18nT('components.gitPanel.status_failed')}
+                title={!statusUnavailable && statusErrorMessage ? localizedStatusFailure : undefined}
+                message={statusUnavailable ? localizedStatusFailure : statusErrorMessage || localizedStatusFailure}
+                report={findReport(statusErrorMessage)}
                 askAgent
                 testId="git-panel-status-error"
               />
@@ -159,8 +184,15 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
             )}
           </div>
         )}
+
+        {noRepository && (
+          <div role="status" className="px-3 py-8 text-center text-muted text-[12px]">
+            {i18nT('components.gitPanel.not_a_repository_help')}
+          </div>
+        )}
+
         {/* ── CHANGES section ── */}
-        {!isClean && (
+        {!statusError && isRepository && !hasNoChanges && (
           <section className="py-2">
             <div className="px-3 pb-1.5 flex items-center gap-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">

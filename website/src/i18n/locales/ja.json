@@ -8068,11 +8068,13 @@
       "empty_state": "表示する変更やコミットはありません。",
       "just_now": "たった今",
       "loading": "読み込み中…",
+      "not_a_repository": "Git リポジトリではありません",
+      "not_a_repository_help": "このプロジェクトフォルダーは Git リポジトリではありません。リポジトリがサブフォルダーにある場合は、メッセージボックスの下にあるフォルダー名をクリックしてください。",
       "no_project": "このセッションにはプロジェクトフォルダーが設定されていません。",
       "refresh": "更新",
       "title": "Git",
       "uncommitted": "{{count}} 件の未コミット",
-      "status_failed": "リポジトリの状態を読み取れませんでした。",
+      "status_failed": "リポジトリの状態を読み取れませんでした。コミット履歴が古い可能性があります。",
       "log_failed": "コミットログを読み取れませんでした。"
     },
     "skillsMultiSelect": {

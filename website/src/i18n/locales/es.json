@@ -8296,11 +8296,13 @@
       "empty_state": "No hay cambios ni commits que mostrar.",
       "just_now": "ahora mismo",
       "loading": "cargando...",
+      "not_a_repository": "No es un repositorio Git",
+      "not_a_repository_help": "Esta carpeta de proyecto no es un repositorio Git. Si el repositorio está en una subcarpeta, haz clic en el nombre de la carpeta debajo del cuadro de mensaje.",
       "no_project": "No hay carpeta de proyecto configurada para esta sesión.",
       "refresh": "Actualizar",
       "title": "Git",
       "uncommitted": "{{count}} sin confirmar",
-      "status_failed": "No se pudo leer el estado del repositorio.",
+      "status_failed": "No se pudo leer el estado del repositorio. El historial de commits puede estar desactualizado.",
       "log_failed": "No se pudo leer el historial de commits."
     },
     "skillsMultiSelect": {

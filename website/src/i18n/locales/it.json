@@ -8296,11 +8296,13 @@
       "empty_state": "Nessuna modifica o commit da mostrare.",
       "just_now": "proprio ora",
       "loading": "caricamento...",
+      "not_a_repository": "Non è un repository Git",
+      "not_a_repository_help": "Questa cartella di progetto non è un repository Git. Se il repository si trova in una sottocartella, fai clic sul nome della cartella sotto la casella del messaggio.",
       "no_project": "Nessuna cartella di progetto impostata per questa sessione.",
       "refresh": "Aggiorna",
       "title": "Git",
       "uncommitted": "{{count}} non committati",
-      "status_failed": "Impossibile leggere lo stato del repository.",
+      "status_failed": "Impossibile leggere lo stato del repository. La cronologia dei commit potrebbe non essere aggiornata.",
       "log_failed": "Impossibile leggere la cronologia dei commit."
     },
     "skillsMultiSelect": {

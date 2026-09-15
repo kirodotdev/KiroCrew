@@ -8296,11 +8296,13 @@
       "empty_state": "Aucune modification ni commit à afficher.",
       "just_now": "à l'instant",
       "loading": "chargement...",
+      "not_a_repository": "Ce n’est pas un dépôt Git",
+      "not_a_repository_help": "Ce dossier de projet n’est pas un dépôt Git. Si le dépôt se trouve dans un sous-dossier, cliquez sur le nom du dossier sous la zone de message.",
       "no_project": "Aucun dossier de projet défini pour cette session.",
       "refresh": "Actualiser",
       "title": "Git",
       "uncommitted": "{{count}} non validé(s)",
-      "status_failed": "Impossible de lire l’état du dépôt.",
+      "status_failed": "Impossible de lire l’état du dépôt. L’historique des commits peut être obsolète.",
       "log_failed": "Impossible de lire l’historique des commits."
     },
     "skillsMultiSelect": {

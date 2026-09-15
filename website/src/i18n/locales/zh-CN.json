@@ -8068,11 +8068,13 @@
       "empty_state": "没有可显示的更改或提交。",
       "just_now": "刚刚",
       "loading": "加载中…",
+      "not_a_repository": "不是 Git 仓库",
+      "not_a_repository_help": "此项目文件夹不是 Git 仓库。如果仓库位于子文件夹中，请点击消息框下方的文件夹名称。",
       "no_project": "此会话未设置项目文件夹。",
       "refresh": "刷新",
       "title": "Git",
       "uncommitted": "{{count}} 个未提交",
-      "status_failed": "无法读取仓库状态。",
+      "status_failed": "无法读取仓库状态。提交历史可能已过时。",
       "log_failed": "无法读取提交记录。"
     },
     "skillsMultiSelect": {

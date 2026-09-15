@@ -8296,11 +8296,13 @@
       "empty_state": "Nenhuma alteração ou commit para exibir.",
       "just_now": "agora mesmo",
       "loading": "carregando...",
+      "not_a_repository": "Não é um repositório Git",
+      "not_a_repository_help": "Esta pasta do projeto não é um repositório Git. Se o repositório estiver em uma subpasta, clique no nome da pasta abaixo da caixa de mensagem.",
       "no_project": "Nenhuma pasta de projeto definida para esta sessão.",
       "refresh": "Atualizar",
       "title": "Git",
       "uncommitted": "{{count}} sem commit",
-      "status_failed": "Não foi possível ler o estado do repositório.",
+      "status_failed": "Não foi possível ler o estado do repositório. O histórico de commits pode estar desatualizado.",
       "log_failed": "Não foi possível ler o histórico de commits."
     },
     "skillsMultiSelect": {
