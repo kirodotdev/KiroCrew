@@ -1472,6 +1472,18 @@ fails with its name instead of silently substituting a different persona.
 Template resources cannot import Global V1 memory or another member's state;
 the owner's preferences/projects use the separately validated private reader.
 Declared globs have bounded enumeration and do not follow linked directories.
+A directory the managed-state isolation refuses -- a workspace's own managed
+subtree, or an admin root such as the crew data home -- that a glob component
+with a wildcard merely walks past is skipped with a debug log and contributes
+no documents, so a glob over a workspace-rooted project (the default
+workspace's own `memory/`) resolves its other matches instead of failing the
+member turn. The skip applies to any pattern component carrying a glob
+metacharacter, including a character class: a declaration spelled `[m]emory/…`
+resolves to zero documents rather than refusing. A managed component spelled
+literally -- `memory/…`, whether or not a later component globs -- is still
+refused, matched managed FILES still refuse rather than skip, and every
+resolved document is re-checked against the managed-state isolation at read
+time.
 Containment is judged on resolved paths on both sides: a declared root (the
 project root, or the owner's home for a resource outside it) is normalized the
 same way an admitted document is, so a root reached through a symlink -- a

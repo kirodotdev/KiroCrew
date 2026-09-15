@@ -239,6 +239,21 @@ def _matches(root: Path, pattern: str) -> list[Path]:
                         )
                     if entry.is_dir(follow_symlinks=False):
                         if component == "**" or offset + 1 < len(pieces):
+                            try:
+                                _refuse_managed_source(path)
+                            except MemberEssentialContextError:
+                                # A managed subtree the wildcard merely walks
+                                # past yields no documents -- skip it, like the
+                                # FileNotFoundError arm below: a walk that finds
+                                # nothing usable here is not an error. A literal
+                                # declared managed path is still refused when it
+                                # is popped, and _read re-checks every document.
+                                logger.debug(
+                                    "Essential glob %s skips managed directory %s",
+                                    root / pattern,
+                                    path,
+                                )
+                                continue
                             pending.append((path, offset if component == "**" else offset + 1))
                     elif offset == len(pieces) - 1:
                         result.add(path)

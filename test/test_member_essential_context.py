@@ -1,6 +1,7 @@
 """V2 keeps actual essential sources complete through every provider lifecycle."""
 
 import json
+import logging
 import os
 import threading
 from pathlib import Path
@@ -756,3 +757,139 @@ def test_managed_source_never_resolves_unvalidated_candidate(tmp_path, monkeypat
 
     monkeypatch.setattr(os.path, "realpath", resolve)
     mec._refuse_managed_source(candidate)
+
+
+def _default_workspace_project_with_memory(env):
+    """A project root that IS the default workspace, with its managed memory/."""
+    from kiro_crew.config import config_dir
+
+    project = config_dir() / "workspace"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "AGENTS.md").write_text("DEFAULT_WORKSPACE_GUIDE", encoding="utf-8")
+    guides = project / "guides"
+    guides.mkdir(exist_ok=True)
+    (guides / "AGENTS.md").write_text("WALKED_GUIDE_BODY", encoding="utf-8")
+    memory = project / "memory"
+    memory.mkdir(exist_ok=True)
+    (memory / "preferences.md").write_text("GLOBAL_SECRET", encoding="utf-8")
+    (memory / "AGENTS.md").write_text("GLOBAL_SECRET", encoding="utf-8")
+    deep = memory / "deep" / "deeper"
+    deep.mkdir(parents=True, exist_ok=True)
+    (deep / "AGENTS.md").write_text("GLOBAL_SECRET", encoding="utf-8")
+    agents = project / ".kiro/agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    return project, agents / "workspace-template.json"
+
+
+@pytest.mark.parametrize("resource", ["file://*/AGENTS.md", "file://**/AGENTS.md"])
+def test_wildcard_walk_skips_managed_memory_instead_of_failing(env, resource, caplog):
+    """A managed subtree a glob merely walks past yields no documents, not an error.
+
+    With the default workspace as the project root, a template resource like
+    ``*/AGENTS.md`` walks into ``memory/``; the walk skips that subtree with a
+    debug log and resolves its other matches instead of failing the whole
+    member turn.
+    """
+    from kiro_crew.member_essential_context import documents_for_member
+
+    project, spec = _default_workspace_project_with_memory(env)
+    spec.write_text(json.dumps({"name": "workspace-template", "resources": [resource]}))
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.member_essential_context"):
+        documents = documents_for_member("workspace-template", str(project))
+    bodies = [body for _, body in documents]
+    assert any("WALKED_GUIDE_BODY" in body for body in bodies)
+    assert not any("GLOBAL_SECRET" in body for body in bodies)
+    assert not any("memory" in Path(name).parts for name, _ in documents)
+    assert any(
+        "skips managed directory" in record.getMessage()
+        for record in caplog.records
+        if record.name == "kiro_crew.member_essential_context"
+    )
+
+
+def test_literal_managed_resource_still_refuses(env):
+    """Control: declaring a managed path outright must keep raising."""
+    from kiro_crew.member_essential_context import documents_for_member
+
+    project, spec = _default_workspace_project_with_memory(env)
+    spec.write_text(
+        json.dumps({"name": "workspace-template", "resources": ["file://memory/AGENTS.md"]})
+    )
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        documents_for_member("workspace-template", str(project))
+
+
+def test_literal_prefix_into_managed_subtree_refuses_at_the_walk(env):
+    """Control for the pop-time guard itself: a literal component that names a
+    managed directory is refused by the walk, before any document is read."""
+    from kiro_crew import member_essential_context as essentials
+
+    project, _ = _default_workspace_project_with_memory(env)
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        essentials._matches(project, "memory/*.md")
+
+
+def test_wildcard_walk_skips_an_admin_root_it_passes(env):
+    """The skip covers the guard's admin-root arm too: a crew data home that a
+    wildcard walks past yields no documents while a plain sibling resolves."""
+    from kiro_crew import member_essential_context as essentials
+    from kiro_crew.config import config_dir
+
+    walk_root = config_dir().parent
+    (config_dir() / "guides").mkdir(parents=True, exist_ok=True)
+    (config_dir() / "guides" / "AGENTS.md").write_text("ADMIN_SECRET", encoding="utf-8")
+    plain = walk_root / "plainproj" / "guides"
+    plain.mkdir(parents=True, exist_ok=True)
+    (plain / "AGENTS.md").write_text("PLAIN_GUIDE", encoding="utf-8")
+    paths = essentials._matches(walk_root, "*/guides/AGENTS.md")
+    assert plain / "AGENTS.md" in paths
+    assert not any(path.is_relative_to(config_dir()) for path in paths)
+
+
+def test_non_first_component_memory_directory_is_not_managed(env):
+    """Only a workspace's FIRST path component is managed state: a nested
+    project directory that happens to be named memory resolves normally."""
+    from kiro_crew.member_essential_context import documents_for_member
+
+    project, spec = _default_workspace_project_with_memory(env)
+    nested = project / "guides" / "memory"
+    nested.mkdir(exist_ok=True)
+    (nested / "note.md").write_text("NESTED_MEMORY_NOTE", encoding="utf-8")
+    spec.write_text(
+        json.dumps({"name": "workspace-template", "resources": ["file://*/memory/*.md"]})
+    )
+    documents = documents_for_member("workspace-template", str(project))
+    assert any("NESTED_MEMORY_NOTE" in body for _, body in documents)
+    assert not any("GLOBAL_SECRET" in body for _, body in documents)
+
+
+def test_prefix_colliding_project_directories_are_skipped_not_fatal(env):
+    """The guard's first-component prefix heuristic over-matches ordinary
+    directories such as memory-foo; a wildcard walk omits them silently
+    (safe direction) rather than failing the member turn, while a
+    non-colliding sibling proves the walk itself stays healthy."""
+    from kiro_crew import member_essential_context as essentials
+
+    project, _ = _default_workspace_project_with_memory(env)
+    for name in ("memory-foo", "lessons-archive"):
+        collider = project / name
+        collider.mkdir(exist_ok=True)
+        (collider / "note.md").write_text("COLLIDER_NOTE", encoding="utf-8")
+    plain = project / "plain-notes"
+    plain.mkdir(exist_ok=True)
+    (plain / "note.md").write_text("PLAIN_NOTE", encoding="utf-8")
+    paths = essentials._matches(project, "*/note.md")
+    assert paths == [plain / "note.md"]
+
+
+def test_matched_managed_file_still_refuses(env):
+    """The skip is scoped to walked DIRECTORIES: a matched file the guard
+    refuses -- here an ordinary top-level file whose name collides with the
+    managed prefix -- keeps failing loudly at read time."""
+    from kiro_crew.member_essential_context import documents_for_member
+
+    project, spec = _default_workspace_project_with_memory(env)
+    (project / "memory-notes.md").write_text("COLLIDER_BODY", encoding="utf-8")
+    spec.write_text(json.dumps({"name": "workspace-template", "resources": ["file://*.md"]}))
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        documents_for_member("workspace-template", str(project))
