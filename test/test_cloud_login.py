@@ -526,13 +526,15 @@ class TestIdentityProviderFlags:
             )
 
         monkeypatch.setattr(ssm, "run_command", fake_run_command)
+        from kiro_crew.cloud.login_target import KiroLoginTarget
+
         login.start_device_login(
             "i-0abc",
             "dev",
             open_browser=False,
-            identity_provider="https://d-test.awsapps.com/start",
-            license_="pro",
-            idp_region="us-east-1",
+            target=KiroLoginTarget.from_fields(
+                license="pro", start_url="https://d-test.awsapps.com/start", region="us-east-1"
+            ),
         )
         assert "--identity-provider https://d-test.awsapps.com/start" in captured["command"]
         assert "--license pro" in captured["command"]

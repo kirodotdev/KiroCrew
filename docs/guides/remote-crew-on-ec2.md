@@ -113,6 +113,37 @@ kirocrew cloud login     # device-code flow for the new account
 `logout` also kills any background login still polling on the box — otherwise it
 would quietly re-authenticate the account you just dropped.
 
+### Which Kiro identity the crew signs in as
+
+A managed crew is "your Kiro running elsewhere", so its sign-in identity is a
+property of the launch, not of whichever `kiro-cli login` happens to run:
+
+- **Inherited by default.** `kirocrew setup`'s cloud step, `kirocrew cloud launch`
+  and the dashboard's Remote Crew launch read your local `kiro-cli whoami`. If you
+  are signed in through **IAM Identity Center** (Kiro Pro), the crew is signed in
+  through the same organization portal — you are asked for the **Identity Center
+  region** (the AWS Region your Identity Center instance lives in, *not* the EC2
+  region the crew runs in) because `whoami` does not report it. Builder ID users
+  get the Builder ID flow, exactly as before.
+- **Overridable.** `kirocrew cloud launch --identity-provider https://example.awsapps.com/start --license pro --idp-region us-east-1`
+  names the identity explicitly; `--no-inherit-identity` forces Builder ID. The
+  dashboard form offers the same choice. If `kiro-cli whoami` fails to run on the
+  launching computer (it hangs, errors out, or the binary cannot be resolved), the
+  identity is unknown and the launch refuses rather than guessing Builder ID — pass
+  one of those two forms. A computer with no kiro-cli at all has no sign-in to
+  inherit and gets the Builder ID flow.
+- **Durable.** The target is stored with the launch job and used on every start
+  *and* resume of the device flow, so a gateway restart or an expired device code
+  never falls back to Builder ID. An Identity Center sign-in that cannot produce a
+  device code fails visibly rather than degrading to a different identity.
+- **Verified.** "Already signed in" now means signed in *as the intended identity*.
+  A valid session for the wrong account (a Builder ID session on a crew that should
+  be on your organization's Identity Center) is reported as a mismatch with the
+  `cloud logout` / `cloud login` commands to switch — not as success.
+
+The same three flags exist on `kirocrew cloud login` for an already-launched crew;
+with a wrong-but-valid session present, run `kirocrew cloud logout` first.
+
 ### Port/tunnel mismatch (the common one)
 
 `kirocrew doctor`'s "Remote access" hint and its `dashboard: http://localhost:5476`

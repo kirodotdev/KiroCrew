@@ -170,6 +170,45 @@ class TestRunLaunch:
         # Persisted terminal state is visible to a fresh reader.
         assert lj.LaunchJobStore(root=s.root).get(job.id).status == lj.DONE
 
+    def test_verified_identity_mismatch_registers_then_fails_not_done(self, tmp_path):
+        """A refused sign-in (the box holds a session for a DIFFERENT identity
+        than the pinned target -- ordinary on a re-launch onto a reused stack) is
+        neither "already signed in" nor the benign no-URL case. The crew must
+        still be registered (visible, so ``cloud logout`` is reachable and it is
+        not a billing ghost), but the job ends FAILED with the refusal, never
+        DONE with a dead-end "sign in from the dashboard"."""
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        handle = FakeHandle(already=False, url="")
+        handle.error = "the instance is signed in to a different Kiro identity than X; run logout"
+        eng = FakeEngine(handle=handle)
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.FAILED
+        assert out.error.startswith("the instance is signed in to a different Kiro identity")
+        assert out.signin_detected is False
+        assert out.step(lj.STEP_SIGNIN).state == lj.STEP_FAILED
+        assert out.step(lj.STEP_SIGNIN).detail == handle.error
+        # Registered anyway -- the recovery needs the crew to exist in the hub.
+        assert out.step(lj.STEP_CONNECT).state == lj.STEP_DONE
+        assert [c[0] for c in eng.calls] == ["preflight", "provision", "begin_signin", "register"]
+        assert handle.closed is True
+        assert lj.LaunchJobStore(root=s.root).get(job.id).status == lj.FAILED
+
+    def test_real_handle_carries_the_prompt_error(self, monkeypatch):
+        """``_RealSigninHandle`` must expose ``prompt.error``: dropping it is what
+        let a verified mismatch masquerade as the no-URL case."""
+        from kiro_crew.cloud import launch_engine as le
+        from kiro_crew.cloud.login import LoginPrompt
+
+        refused = LoginPrompt(error="the instance is signed in to a different Kiro identity")
+        monkeypatch.setattr(le.login, "start_device_login", lambda *a, **k: refused)
+        h = le._RealSigninHandle("i-0abc123456789def0", "dev", "us-east-1")
+        assert h.error == refused.error
+        assert h.already_logged_in is False and h.url == ""
+        ok = LoginPrompt(url="https://example.com/device", code="ABCD-EFGH")
+        monkeypatch.setattr(le.login, "start_device_login", lambda *a, **k: ok)
+        assert le._RealSigninHandle("i-0abc123456789def0", "dev", "us-east-1").error == ""
+
     def test_device_code_awaiting_then_signed(self, tmp_path):
         s = _store(tmp_path)
         job = s.create(profile="dev", region="us-east-1", size_key="balanced")
@@ -714,3 +753,38 @@ class TestProvisionerOnTheJob:
         assert got.status == lj.FAILED
         assert "EC2 stack" not in got.error
         assert "instance may still exist" in got.error
+
+
+class TestTargetCompatibilityIsDecidedBeforeProvisioning:
+    def test_legacy_engine_with_identity_center_target_fails_at_preflight(self, tmp_path):
+        """The engine cannot receive a login_target; a job carrying an Identity
+        Center target must fail BEFORE `provision` runs. Deciding it at the
+        sign-in step would strand a billed, running, unregistered instance that
+        no teardown arm covers (those fire only on a provision-step failure)."""
+        from kiro_crew.cloud.login_target import KiroLoginTarget
+
+        s = _store(tmp_path)
+        job = s.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            login_target=KiroLoginTarget(
+                license="pro", start_url="https://example.awsapps.com/start", region="us-east-1"
+            ),
+        )
+        eng = FakeEngine()  # begin_signin(instance_id, profile, region): the legacy shape
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.FAILED
+        assert out.step(lj.STEP_PREFLIGHT).state == lj.STEP_FAILED
+        assert out.step(lj.STEP_PROVISION).state == lj.STEP_PENDING
+        assert "login_target" in out.error and "Builder ID" in out.error
+        # Nothing was provisioned, so nothing needed tearing down or registering.
+        assert [c[0] for c in eng.calls] == []
+
+    def test_legacy_engine_with_default_target_still_launches(self, tmp_path):
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        eng = FakeEngine()
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.DONE
+        assert [c[0] for c in eng.calls] == ["preflight", "provision", "begin_signin", "register"]

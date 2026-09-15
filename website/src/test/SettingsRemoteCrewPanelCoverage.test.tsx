@@ -51,6 +51,7 @@ vi.mock('../api/client', () => {
       cloudLaunches: vi.fn(),
       cloudPreflight: vi.fn(),
       cloudProvisioners: vi.fn(),
+      cloudIdentity: vi.fn(),
       cloudIamPolicy: vi.fn(),
       cloudLaunch: vi.fn(),
       cloudLaunchStatus: vi.fn(),
@@ -193,6 +194,10 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
   vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+  // The launching computer's own sign-in, READ as Builder ID: the stock answer
+  // that lets the Builder ID default count as a decision; a case about the
+  // identity read itself overrides it.
+  vi.mocked(api.cloudIdentity).mockResolvedValue({ identity: { account_type: 'BuilderId' }, suggested_target: { license: '', start_url: '', region: '' }, discovery: 'read' })
   // The setup tab asks which provisioners the gateway offers, and the AWS
   // preflight waits for that answer (it must not probe AWS for a provisioner that
   // has nothing to do with AWS). The stock single-row answer keeps every case
