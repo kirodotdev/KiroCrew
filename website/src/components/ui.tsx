@@ -544,6 +544,27 @@ export function Slider({
     if (next !== value) onChange(next)
   }
 
+  // Armed only when setPointerCapture is missing or throws on pointer-down:
+  // window-level up/cancel listeners for that specific pointerId, so an
+  // uncaptured drag can always terminate — the same acquisition-side
+  // fallback the shared usePointerDrag hook arms.
+  const fallbackRef = React.useRef<{ pointerId: number; dispose: () => void } | null>(null)
+  const disarmFallback = React.useCallback(() => {
+    fallbackRef.current?.dispose()
+    fallbackRef.current = null
+  }, [])
+  // Single-fire end path shared by the element handlers, the capture-loss
+  // handler and the window fallback below.
+  const terminateDrag = React.useCallback(() => {
+    if (!pointerDown.current) return
+    pointerDown.current = false
+    disarmFallback()
+    setDragging(false)
+  }, [disarmFallback])
+  // If the component unmounts mid-uncaptured-drag, the window listeners must
+  // not outlive it.
+  React.useEffect(() => disarmFallback, [disarmFallback])
+
   const onPointerDown = (e: React.PointerEvent) => {
     if (disabled) return
     e.preventDefault()
@@ -551,7 +572,30 @@ export function Slider({
     // focus the track explicitly — otherwise arrow keys after a click-to-seek go
     // to whatever had focus before instead of the slider.
     trackRef.current?.focus()
-    ;(e.target as Element).setPointerCapture?.(e.pointerId)
+    // A new press replaces whatever gesture was in flight, so a fallback armed
+    // for the outgoing pointer goes with it.
+    disarmFallback()
+    // Capture is best-effort (missing or throwing): the seek below still runs.
+    // But an uncaptured drag gets no retargeting, so without a fallback a
+    // release outside the track strands `pointerDown` with the slider pressed.
+    let captured = true
+    try { (e.target as Element).setPointerCapture(e.pointerId) } catch { captured = false }
+    if (!captured) {
+      const pointerId = e.pointerId
+      const onWindowEnd = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return
+        terminateDrag()
+      }
+      window.addEventListener('pointerup', onWindowEnd)
+      window.addEventListener('pointercancel', onWindowEnd)
+      fallbackRef.current = {
+        pointerId,
+        dispose: () => {
+          window.removeEventListener('pointerup', onWindowEnd)
+          window.removeEventListener('pointercancel', onWindowEnd)
+        },
+      }
+    }
     pointerDown.current = true
     // A click (down without move) is a discrete seek — leave `dragging` false
     // so the knob springs to the new spot. Movement below flips into drag mode.
@@ -574,9 +618,8 @@ export function Slider({
   const onPointerLeave = () => { if (!pointerDown.current) setHoverVal(null) }
   const endDrag = (e: React.PointerEvent) => {
     if (!pointerDown.current) return
-    pointerDown.current = false
-    ;(e.target as Element).releasePointerCapture?.(e.pointerId)
-    setDragging(false)
+    try { (e.target as Element).releasePointerCapture(e.pointerId) } catch { /* best-effort */ }
+    terminateDrag()
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -625,6 +668,10 @@ export function Slider({
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        // A capture steal (another element capturing mid-drag) stops
+        // retargeting pointerup here with no further event: end the drag on
+        // the loss itself, as the shared usePointerDrag hook does.
+        onLostPointerCapture={endDrag}
         onPointerLeave={onPointerLeave}
         // outline-none is CORRECT here and must stay: the knob below already
         // carries the replacement cue (`group-focus-visible:ring-2`), which
