@@ -1019,6 +1019,81 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "shared code: a channel cannot forget what it does not call.",
     ),
     (
+        "Webex persisted transcript rows",
+        "webex/transport_dispatch.py",
+        "The turn this channel writes to the conversation log, served back to dashboard "
+        "readers. Its user side can carry store-sourced text no ingress scan ever saw -- an "
+        "auto-nudge goal composed from a hand-edited store, arriving as a synthetic inbound "
+        "whose single `text` field is both the prompt and the row. So it is redacted AT THE "
+        "SINK, inside `_persist_turn`, which runs after the turn completes: the prompt the "
+        "model received is already consumed and cannot be rewritten, so the instruction "
+        "survives verbatim while the persisted copy is scrubbed. The sibling persisters carry "
+        "the same call for two different reasons: `discord/transport_dispatch.py` can receive "
+        "that synthetic inbound, while `telegram/transport_dispatch.py` cannot -- "
+        "`binding_key_for` honours only `slack:`/`discord:`/`webex:`, so no nudge is ever "
+        "armed there and its scrub covers ordinary inbound user text on the same egress.",
+    ),
+    (
+        "Feishu persisted transcript rows",
+        "feishu/transport_dispatch.py",
+        "Same persisted-row egress as the Discord/Telegram/Webex persisters: the user side "
+        "of the turn this channel writes to the conversation log is served back to dashboard "
+        "readers. No nudge synthetic inbound reaches it -- `binding_key_for` honours only "
+        "`slack:`/`discord:`/`webex:` -- so the scrub covers ordinary inbound user text, "
+        "which is the same reader-facing sink and therefore the same rule.",
+    ),
+    (
+        "Teams persisted transcript rows",
+        "teams/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. No nudge "
+        "is armed on a teams session, so this covers ordinary inbound user text.",
+    ),
+    (
+        "WeCom persisted transcript rows",
+        "wecom/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. No nudge "
+        "is armed on a wecom session, so this covers ordinary inbound user text.",
+    ),
+    (
+        "Weixin persisted transcript rows",
+        "weixin/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. No nudge "
+        "is armed on a weixin session, so this covers ordinary inbound user text.",
+    ),
+    (
+        "WhatsApp persisted transcript rows",
+        "whatsapp/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. No nudge "
+        "is armed on a whatsapp session, so this covers ordinary inbound user text.",
+    ),
+    (
+        "iMessage persisted transcript rows",
+        "imessage/transport_dispatch.py",
+        "Same persisted-row egress as the sibling persisters: the user side of the logged "
+        "turn is served back to dashboard readers, so it is scrubbed at the sink. This "
+        "module also calls `redact_handle` for gate-side log hygiene, which is why its "
+        "siblings `imessage/client.py` and `imessage/transport.py` are non-egress; adding "
+        "the transcript scrub here made THIS one a content sink, so it is registered "
+        "rather than allowlisted. No nudge is armed on an imessage session, so the scrub "
+        "covers ordinary inbound user text.",
+    ),
+    (
+        "Slack persisted transcript rows",
+        "slack/transport_dispatch.py",
+        "The inbound user row this channel writes to the conversation log, served back to "
+        "dashboard readers. Scrubbed for the PERSISTED copy only: the same `text` still "
+        "reaches `build_message`, so the model prompt stays verbatim. This module's OTHER "
+        "user rows do not call a redactor here -- they go through "
+        "`save_conversation_turn`, which scrubs on behalf of all twelve of its Slack "
+        "callers, so this entry covers the direct append and that helper covers the rest. "
+        "The two assistant appends need no call: `_redact_at_write_boundary` already "
+        "scrubs every role other than `user`, and that exemption is the gap being closed.",
+    ),
+    (
         "Webex delivery",
         "webex/renderer.py",
         "The Webex DELIVERY boundary. Webex renders markdown, so it reassembles a "
@@ -1652,7 +1727,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # can reassemble a credential that scan could not see.
         "imessage/client.py",
         "imessage/transport.py",
-        "imessage/transport_dispatch.py",
         # The tool-permission prompt and its SEL record. Neither crosses a
         # machine boundary: the prompt is written to the operator's OWN terminal
         # in their own process, and the audit line goes to the local SEL log. The

@@ -78,7 +78,7 @@ def _make_state(history_messages=None):
             slot.messages = []
             slot.title = ""
 
-            def append(role, content, cls, broadcast=True, meta=None, mint_mid=True):
+            def append(role, content, cls, broadcast=True, meta=None, mint_mid=True, redacted=None):
                 # Mirror the real ``_ChatSlot.append`` contract: preserve a
                 # supplied ``meta.mid`` and mint only when the caller allows it.
                 # Disk replay passes ``mint_mid=False`` so a legacy row cannot
@@ -92,6 +92,7 @@ def _make_state(history_messages=None):
                     "content": content,
                     "cls": cls,
                     **({"meta": stored_meta} if stored_meta else {}),
+                    **({"redacted": True} if redacted else {}),
                 }
                 slot.messages.append(msg)
                 return msg

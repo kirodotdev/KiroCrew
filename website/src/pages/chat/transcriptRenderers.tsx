@@ -399,6 +399,7 @@ export function createTranscriptRenderers(
               timestampTitle={fmtMessageTimeFull(m.ts)}
               renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}
               hideSteerBadge
+              redacted={m.redacted === true}
             />,
             true,
           ),

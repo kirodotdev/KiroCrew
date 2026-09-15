@@ -1322,6 +1322,9 @@ export interface ChatMessage {
   rawText?: string
   /** Structured metadata for role-specific data (e.g. tool_input for permission messages). */
   meta?: Record<string, unknown>
+  /** This stored row is a REWRITE: a scrub replaced a span before it was persisted and
+   *  kept no original. Absent from an older gateway, which means unmarked not verbatim. */
+  redacted?: boolean
   /** Regenerated variants of an assistant message (most recent last). */
   variants?: { content: string; ts?: string }[]
   /** Which variant index is currently active. */

@@ -10090,6 +10090,7 @@
         "cancel_esc": "रद्द करें (Esc)",
         "copy": "कॉपी करें",
         "copy_link_to_message": "संदेश का लिंक कॉपी करें",
+        "row_redacted": "[REDACTED...] मूल पाठ नहीं रखा गया",
         "edit_message": "संदेश संपादित करें",
         "edit_resend": "संपादित करें और फिर भेजें",
         "send": "भेजें",
