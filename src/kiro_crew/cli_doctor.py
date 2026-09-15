@@ -61,6 +61,8 @@ from kiro_crew.cron import job_pause_state_from_disk, unhealthy_jobs_from_disk
 from kiro_crew.dashboard.crash_dump_store import (
     dump_age_seconds,
     dump_first_stack_lines,
+    dump_superseded,
+    dumps_with_stacks,
     get_dumps_dir,
     newest_dump_with_stacks,
 )
@@ -411,6 +413,15 @@ _FFMPEG_LINUX_HINT = (
 # backend, and the verdict comes from ``agent_sdk.probe_backend`` so doctor and the
 # dashboard cannot give different answers.
 _CLAUDE_ACP_BIN = "claude-agent-acp"
+
+#: How recent a loop-stall dump stays a CURRENT issue whatever restarted after it.
+#: File ordering alone cannot answer that question on the shipped `Restart=always`
+#: unit (docs/guides/assets/kirocrew.service): the supervisor restarts a wedged
+#: gateway within seconds, and the replacement's pre-created dump file supersedes
+#: the stall almost immediately -- so a gateway wedging hourly would report every
+#: stall as a past incident. Within a day a stall is still the operator's news,
+#: restarts notwithstanding.
+_STALL_CURRENT_SECS = 24 * 3600
 
 # Managed servers doctor must NEVER add to ``allowedTools``.
 #
@@ -4128,9 +4139,42 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         _latest = newest_dump_with_stacks(dumps_dir)
         if _latest is not None:
             _age_s = dump_age_seconds(_latest)
+            # Every gateway start pre-creates its own dump file, so a dump WITH
+            # stacks that a later local session's header file sits after was
+            # written by a session another one has already replaced without
+            # wedging. That is a past incident: counting it as something to fix
+            # makes `doctor` report a fault for a week after one stall, on a
+            # gateway that has been healthy the whole time — and the real
+            # finding in that run gets read as one more line of the same noise.
+            #
+            # Ordering alone is not enough to conclude it, though. Under the
+            # shipped `Restart=always` unit a wedged gateway is replaced within
+            # seconds, so the successor supersedes the stall almost at once and
+            # a gateway wedging hourly would downgrade every stall forever —
+            # under-reporting exactly the chronic case an operator needs. Two
+            # further terms keep that case visible: a stall inside
+            # `_STALL_CURRENT_SECS` is still current news whatever restarted
+            # since, and two or more stalls on record is a gateway wedging
+            # repeatedly, which no amount of successful restarting makes
+            # historical.
+            #
+            # The stacks are printed either way, because they are what anyone
+            # investigating that stall needs; only the issue verdict changes.
+            _stalls_on_record = dumps_with_stacks(dumps_dir)
+            _superseded = (
+                dump_superseded(_latest, dumps_dir)
+                and _age_s >= _STALL_CURRENT_SECS
+                and _stalls_on_record < 2
+            )
             if _age_s < 7 * 86400:  # Less than 7 days old
                 _age_h = _age_s / 3600
-                print(f"  last dump:   ⚠️  {_latest.name} ({_age_h:.1f}h ago)")
+                _icon = "ℹ️ " if _superseded else "⚠️ "
+                print(f"  last dump:   {_icon} {_latest.name} ({_age_h:.1f}h ago)")
+                if _superseded:
+                    print(
+                        "               a later gateway session started after it and did "
+                        "not wedge — past incident, not a current fault"
+                    )
                 # 8 lines = preamble + thread header + ~6 frames: enough to
                 # reach past the asyncio plumbing into the Kiro Crew frame
                 # that identifies WHERE the loop wedged.
@@ -4153,12 +4197,14 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                     _paused_job = job_pause_state_from_disk(_attribution.job.job_id)
                     if _paused_job is not None:
                         print(f"    job is currently {_paused_job}")
-                    issues.append(
-                        "loop-stall dump attributed to cron job "
-                        f"{_safe_display(_attribution.job.name)} "
-                        f"({_safe_display(_attribution.job.job_id)})"
-                    )
-                issues.append(f"recent loop-stall crash dump ({_age_h:.0f}h ago)")
+                    if not _superseded:
+                        issues.append(
+                            "loop-stall dump attributed to cron job "
+                            f"{_safe_display(_attribution.job.name)} "
+                            f"({_safe_display(_attribution.job.job_id)})"
+                        )
+                if not _superseded:
+                    issues.append(f"recent loop-stall crash dump ({_age_h:.0f}h ago)")
             else:
                 print(
                     f"  last dump:   ✅ oldest only ({_age_s / 86400:.0f}d ago, no recent stalls)"
