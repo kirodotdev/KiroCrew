@@ -235,7 +235,12 @@ describe('crew editor — schedule-draft discard guard', () => {
       // The escape: Discard unlocks and the visible note switches to the
       // honest caveat — the request is not cancelled, so the schedule may
       // still be created.
-      expect(discard).not.toBeDisabled()
+      // waitFor rather than a synchronous read: the unlock re-render can land
+      // a tick after the advance when another subscription (e.g. the shared
+      // model-order config read) resolves in the same window; the contract is
+      // "unlocks after the grace period", not "in the same render tick".
+      // shouldAdvanceTime above keeps waitFor live under fake timers.
+      await waitFor(() => expect(discard).not.toBeDisabled())
       expect(screen.getByTestId('crew-sched-discard-saving-note').textContent)
         .toMatch(/may still be created/i)
       fireEvent.click(discard)

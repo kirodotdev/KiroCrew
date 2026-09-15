@@ -31,6 +31,14 @@ import {
 import ModelDropdownList from '../components/ModelDropdownList'
 import type { ChatSlot, RemoteCrewCapabilities } from '../types'
 
+// ModelDropdownList subscribes to the shared order-load-failure state
+// (useModelOrderLoadFailed → useQuery); these renders deliberately mount it
+// bare, so stub the subscription rather than adding a provider each render.
+vi.mock('../hooks/useAvailableModels', async importOriginal => ({
+  ...(await importOriginal<typeof import('../hooks/useAvailableModels')>()),
+  useModelOrderLoadFailed: () => false,
+}))
+
 const capsMock = vi.mocked(api.instancesCapabilities)
 
 function doc(overrides: Partial<RemoteCrewCapabilities> = {}): RemoteCrewCapabilities {

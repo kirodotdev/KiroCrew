@@ -845,6 +845,116 @@ class TestDefaultReasoningEffortPatch:
         state.sessions.reload_provider_factory.assert_not_awaited()
 
 
+# ── Model-picker display order (agent.model_order, the str_list validator) ─
+
+
+class TestModelOrderStrList:
+    """The model-picker display order — the only ``str_list`` config field.
+
+    Same deliberate tolerance as ``agent.model``: each entry is grammar-checked
+    only, an unknown-but-well-formed id is accepted (a stale entry is ignored at
+    render, never rejected on save), ``[]`` means "backend order" (what Reset
+    writes), and duplicates are deduped first-occurrence-wins rather than
+    rejected. The write triggers no post-write hook, so a stateless app suffices.
+    """
+
+    @pytest.mark.asyncio
+    async def test_valid_order_persists_nested(self, tmp_config) -> None:
+        order = ["claude-opus-4.8", "opus-4.8-1m", "claude-sonnet-4.5"]
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.model_order", order)
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["model_order"] == order
+        # Sibling agent keys survive the nested write.
+        assert data["agent"]["approval_mode"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_empty_list_is_valid(self, tmp_config) -> None:
+        # [] is the "Reset to default order" value — defer to the backend order.
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.model_order", [])
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["model_order"] == []
+
+    @pytest.mark.asyncio
+    async def test_non_list_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.model_order", "claude-opus-4.8")).status == 400
+        # The refused value must not have been persisted.
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert "model_order" not in data["agent"]
+
+    @pytest.mark.asyncio
+    async def test_non_string_entry_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.model_order", ["claude-opus-4.8", 42])).status == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "claude opus",  # whitespace
+            "model;rm -rf /",  # shell metacharacters
+            "../../etc/passwd",  # path traversal
+            "model$(id)",  # command substitution
+            "model\nnewline",
+        ],
+    )
+    async def test_grammar_violation_rejected(self, tmp_config, bad) -> None:
+        # One malformed entry alongside a valid one still fails the whole write.
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.model_order", ["ok-model", bad])).status == 400
+
+    @pytest.mark.asyncio
+    async def test_overlong_entry_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.model_order", ["a" * 65])).status == 400
+
+    @pytest.mark.asyncio
+    async def test_over_cap_rejected(self, tmp_config) -> None:
+        # 101 DISTINCT well-formed ids — over the 100-entry cap.
+        order = [f"model-{i}" for i in range(101)]
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.model_order", order)).status == 400
+
+    @pytest.mark.asyncio
+    async def test_exactly_cap_accepted(self, tmp_config) -> None:
+        order = [f"model-{i}" for i in range(100)]
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.model_order", order)).status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["model_order"] == order
+
+    @pytest.mark.asyncio
+    async def test_cap_is_measured_before_dedup(self, tmp_config) -> None:
+        # 150 copies of one id collapse to a single entry, but the cap guards
+        # the SUBMITTED list (so the loop is bounded) — the raw length is refused
+        # rather than the post-dedup length being quietly accepted.
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.model_order", ["dup"] * 150)).status == 400
+
+    @pytest.mark.asyncio
+    async def test_unknown_but_well_formed_id_accepted(self, tmp_config) -> None:
+        # kiro renames/re-prices models; a saved order must not be rejected just
+        # because this build has never seen the id. It is ignored at render.
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.model_order", ["totally-made-up-model.9"])
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["model_order"] == ["totally-made-up-model.9"]
+
+    @pytest.mark.asyncio
+    async def test_duplicates_are_deduped_first_occurrence_wins(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.model_order", ["a", "b", "a", "c", "b"])
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        # First occurrence fixes the position; later repeats drop out.
+        assert data["agent"]["model_order"] == ["a", "b", "c"]
+
+
 # ── Local telemetry switch (telemetry.enabled) ───────────────────────────
 
 

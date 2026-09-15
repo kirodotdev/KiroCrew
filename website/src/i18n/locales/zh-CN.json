@@ -6879,7 +6879,8 @@
       "credit_multiplier": "积分消耗为 Auto 的 {{value}}",
       "credit_multiplier_baseline": "{{value}}，积分消耗基准",
       "loading_models": "正在加载模型…",
-      "no_matches": "无匹配项"
+      "no_matches": "无匹配项",
+      "order_load_failed": "无法加载你保存的模型顺序 — 加载完成前将显示默认顺序。"
     },
     "modelEffortDropdown": {
       "manage_in_settings": "设置中管理",
@@ -7325,6 +7326,8 @@
     },
     "multiSelect": {
       "deselect_all": "取消全选",
+      "reorder_clear_search": "清除搜索后才能重新排序",
+      "reorder_unavailable": "在加载已保存的顺序之前无法重新排序",
       "select_all": "全选"
     },
     "searchableSelect": {
@@ -14756,6 +14759,11 @@
         "description": "持久模式会使用已知信息并保存新记忆。隐身模式会使用已知信息，但不保存新记忆。临时模式从空白开始，不保存任何记忆。所有聊天仍会显示在历史记录中。你可以更改任意聊天的模式。",
         "label": "默认记忆模式",
         "persistent": "持久"
+      },
+      "modelOrder": {
+        "reorder": "重新排序 {{model}}",
+        "reset": "重置为默认顺序",
+        "saveFailed": "无法保存模型顺序，请重试。"
       },
       "plainDiff": {
         "description": "以普通 unified diff 文本显示差异，不使用语法高亮着色。在大型差异上占用更少内存。",

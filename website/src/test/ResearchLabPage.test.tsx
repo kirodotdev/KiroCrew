@@ -40,6 +40,8 @@ vi.mock('../api/client', () => ({
 // real hook fetches through the provider context, which this harness does not
 // stand up. Non-vendor test ids only.
 vi.mock('../hooks/useAvailableModels', () => ({
+  // The order-load-failure flag the hosts now render; false = not failed.
+  useModelOrderLoadFailed: () => false,
   useAvailableModels: () => [
     { name: 'auto', description: '' },
     { name: 'test-model-x', description: 'Test model X' },

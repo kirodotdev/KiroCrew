@@ -2932,6 +2932,8 @@
     },
     "multiSelect": {
       "deselect_all": "Deselect all",
+      "reorder_clear_search": "Clear the search to reorder",
+      "reorder_unavailable": "Reordering is unavailable until the saved order loads",
       "select_all": "Select all"
     },
     "searchableSelect": {
@@ -3188,6 +3190,9 @@
       "label": "changes need a restart",
       "tooltip": "This setting cannot change while {{productName}} is running. The saved value is kept and applies the next time {{productName}} restarts (Settings → About, or the terminal where you launched it).",
       "schema_unavailable": "Couldn't check whether this setting needs a restart."
+    },
+    "modelDropdownList": {
+      "order_load_failed": "Couldn't load your saved model order — showing the default order until it loads."
     }
   },
   "hooks": {
@@ -6321,6 +6326,11 @@
         "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
         "label": "Default Memory Mode",
         "persistent": "Persistent"
+      },
+      "modelOrder": {
+        "reorder": "Reorder {{model}}",
+        "reset": "Reset to default order",
+        "saveFailed": "Couldn't save the model order. Please try again."
       },
       "plainDiff": {
         "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",

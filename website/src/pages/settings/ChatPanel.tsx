@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsField, SettingsMultiSelect } from '../../components/settings'
 import { Btn, Input } from '../../components/ui'
@@ -17,6 +17,7 @@ import { useAppSelector } from '../../store'
 import { serializeDefaultMemoryModeUpdate } from '../../api/queryClient'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
+import { mergeReorderedNames, applyModelOrder } from '../../providers/modelList'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
@@ -142,6 +143,7 @@ type KirocrewConfigShape = {
   session_summary?: { enabled?: boolean }
   agent?: {
     model?: string
+    model_order?: string[]
     role_models?: { background?: string; subagent?: string }
     role_efforts?: { background?: string; subagent?: string }
     reasoning_effort?: string
@@ -835,6 +837,41 @@ export function ChatPanel() {
       : [...hiddenModels.filter(value => value !== model), model]
     saveHiddenModels(selected ? { next, remove: [model] } : { next, add: [model] })
   }
+  // ── Model order (agent.model_order) ──
+  // The same rows carry ordering: a drag writes the merged order through the
+  // shared optimistic overlay, so the list re-sorts before the PATCH lands
+  // (useAvailableModelsQuery re-derives from the ['kirocrewConfig'] cache).
+  // `mergeReorderedNames` keeps saved ids the live list does not currently
+  // advertise — kiro renames models, and a drag must not delete them.
+  const savedModelOrder = mcCfg?.agent?.model_order ?? []
+  const modelOrderOpts = overlay.mutationOpts<string[]>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (v: string[]) => api.patchConfig('agent.model_order', v),
+    path: () => 'agent.model_order',
+    // The raw array, not a join(): `shown()` hands this back as the pending
+    // value, and the options projection below reorders the rows with it — a
+    // completed drag must hold its order through the PATCH round-trip
+    // instead of snapping back (the pre-rev-3 editor's documented property).
+    displayValue: v => v,
+    applyToCache: (cached, v) => setConfigPathValue(cached as KirocrewConfigShape, 'agent.model_order', v),
+    onFailure: () => setPathSaveError('agent.model_order', i18nT('settings.chat.modelOrder.saveFailed')),
+    onSupersede: clearOwnPathError,
+  })
+  const modelOrderMut = useMutation({
+    ...modelOrderOpts,
+    // Serialized like hidden-models above: drags land in UI order.
+    scope: { id: 'agent.model_order' },
+  })
+  const shownModelOrder = overlay.shown<string[]>('agent.model_order', savedModelOrder)
+  const reorderModels = (ordered: string[]) =>
+    modelOrderMut.mutate(mergeReorderedNames(shownModelOrder, ordered))
+  // Rows in the SHOWN order (pending save wins over the cache): idempotent
+  // with the hook's own ordering once the PATCH settles, ahead of it while
+  // the save is in flight.
+  const orderedAvailableModels = useMemo(
+    () => applyModelOrder(availableModels, shownModelOrder),
+    [availableModels, shownModelOrder],
+  )
   const advertisedModelIds = new Set(availableModels.map(model => model.name))
   const hiddenUnadvertisedModels = hiddenModels.filter(model => !advertisedModelIds.has(model))
   const advertisedOptionalModelIds = availableModels.filter(model => model.name !== 'auto').map(model => model.name)
@@ -1025,7 +1062,7 @@ export function ChatPanel() {
           <SettingsMultiSelect
             label={i18nT('pages.settings.chatPanel.selectable_models')}
             description={i18nT('pages.settings.chatPanel.selectable_models_description')}
-            options={availableModels.map(model => ({
+            options={orderedAvailableModels.map(model => ({
               value: model.name,
               label: model.name,
               description: model.name === 'auto'
@@ -1045,6 +1082,17 @@ export function ChatPanel() {
                 onSelect: deselectAllModels,
               },
             ]}
+            footerAction={{
+              label: i18nT('settings.chat.modelOrder.reset'),
+              onSelect: () => modelOrderMut.mutate([]),
+              // Data-loss gate: a failed/pending config read means the client
+              // never saw the saved order — writing [] then would erase state
+              // the user could not have meant to discard.
+              disabled: !mcQ.isSuccess,
+            }}
+            onReorder={reorderModels}
+            reorderDisabled={!mcQ.isSuccess || availableModelsQ.isDegraded}
+            reorderRowLabel={name => i18nT('settings.chat.modelOrder.reorder', { model: name })}
             summary={modelPickerSummary}
             searchPlaceholder={i18nT('pages.settings.chatPanel.search_models')}
             disabled={!dashQ.isSuccess || !availableModelsQ.isSuccess || availableModelsQ.isDegraded}

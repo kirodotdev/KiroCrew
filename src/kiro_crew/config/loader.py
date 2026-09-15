@@ -2482,6 +2482,14 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         streaming=agent_data.get("streaming", True),
         model=agent_data.get("model", DEFAULT_MODEL),
         role_models=coerce_role_models(agent_data.get("role_models")),
+        # Saved model-picker order. Dedup first-occurrence-wins and drop
+        # non-strings, mirroring the PATCH validator's str_list coercion so a
+        # hand-edited file loads the same normalized shape a PATCH writes.
+        model_order=(
+            list(dict.fromkeys(m for m in _model_order if isinstance(m, str)))
+            if isinstance(_model_order := agent_data.get("model_order"), list)
+            else []
+        ),
         role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
         fallback_model=coerce_fallback_model(agent_data.get("fallback_model", "auto")),
         reasoning_effort=agent_data.get("reasoning_effort", ""),
