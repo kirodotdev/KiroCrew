@@ -309,6 +309,39 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 
 ## Modules
 
+### Encrypted Secret Vault (`secrets/vault.py`)
+
+`SecretVault` (`secrets/vault.py`) stores named secrets encrypted on disk under
+`<config_dir>/.vault/` (`secrets.enc`, per-entry AES-256-GCM ciphertext, plus a
+`0600` `.vault_key` key file). The whole `.vault` directory is a keystone leaf
+in `_CREW_SECRET_LEAVES`, so it is hidden from the agent by the same
+verb-independent sensitive-path backstop that covers `~/.aws` and `~/.ssh` —
+every Kiro Crew-mediated read (file tools via `is_sensitive_path`, and every
+shell form via `is_sensitive_bash_command`, including a scripted `python -c
+"open(...)"`) is refused. This is the same application-level trust model as
+`.local_secret` and SSH keys; it does not rely on OS-level UID isolation.
+
+- **Spawn-time resolution, bound-server-only.** An MCP server's `env` may
+  reference a stored secret as `secret://NAME`
+  (`mcp_gateway/secret_uri.py::resolve_secret_uris`). At spawn, the gateway
+  resolves the reference and injects the plaintext into **that server's**
+  environment alone — never the agent's, and never into the on-disk `mcp.json`
+  or its sidecar, which retains the literal `secret://NAME` template so the
+  value is never persisted in plaintext outside the vault. If the named secret
+  does not exist, the server fails to start rather than launching with a
+  missing credential.
+- **Write-only surface.** There is no CLI or API read-back: `GET /api/secrets`
+  returns stored names and a managed-integration catalog, never a value, and
+  `SecretValue.__repr__`/`__str__` render as `****` so an accidental log or
+  error message cannot echo one. This closes the exfiltration oracle a
+  read/list-with-value endpoint would otherwise be.
+- **`.env` migration importer.** `kirocrew secrets import [--apply]`
+  (`secrets/migrate.py`) is the one CLI surface: it reads the fixed data-home
+  `.env` (never an arbitrary path), and with `--apply` stores the discovered
+  credentials in the vault and rewrites the `.env` lines to `secret://KEY`
+  references. See [cli.md](cli.md#secrets-command) for the command and
+  [secrets-env.md](../../guides/secrets-env.md) for the end-to-end guide.
+
 ### OS-Level Sandbox (`sandbox.py`)
 
 Hides credential paths from kiro-cli subprocess tree using platform-native isolation:
