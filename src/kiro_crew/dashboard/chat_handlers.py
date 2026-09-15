@@ -159,7 +159,7 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
-from kiro_crew.history import carry_provenance, is_incognito_transcript, transcript_stems
+from kiro_crew.history import carry_provenance, is_incognito_transcript, same_transcript
 from kiro_crew.llm_helpers import pick_epoch_host, slot_switch_session_lock
 from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
 from kiro_crew.messaging.link import is_channel_session_key
@@ -3348,18 +3348,27 @@ def _replacement_shares_transcript(state: DashboardState, name: str, slot: _Chat
     write touches and the mapping is not injective: ``history._safe_key`` folds
     ``slack:<ts>`` and the ``slack_<ts>`` filename stem onto one ``.jsonl``, and a
     Slack thread predating the canonical key still resolves to its bare
-    ``thread_ts`` stem (:func:`~kiro_crew.history.transcript_stems` carries both).
-    The two errors are not symmetric: over-reporting "shared" only declines an
-    archive the next close will make, while under-reporting stamps ``closed`` onto a
-    file a live slot is still writing, which is the whole harm being guarded.
+    ``thread_ts`` stem. The two errors are not symmetric: over-reporting "shared"
+    only declines an archive the next close will make, while under-reporting stamps
+    ``closed`` onto a file a live slot is still writing, which is the whole harm
+    being guarded.
+
+    :func:`~kiro_crew.history.same_transcript` rather than a raw intersection of
+    both keys' stems, because the bare ``thread_ts`` alias can be backed by its OWN
+    live transcript: two distinct Slack sessions then overlap on that alias while
+    resolving to different files, and the raw form reports them shared. That
+    over-report is not free here — it suppresses the ``closed`` stamp on a
+    transcript no live slot writes, so ``channel_slots._close_stands`` reads the
+    absent flag as "never dismissed" and the reconcile pass resurfaces the tab the
+    user closed, which is the failure this guard exists to prevent. The refinement
+    withholds an alias only when a different transcript independently backs it,
+    i.e. only when the two slots provably write different files, so the
+    under-report the paragraph above guards against stays unreachable.
     """
     current = state._slots.get(name)
     if current is None or current is slot:
         return False
-    return bool(
-        set(transcript_stems(slot_history_key(current)))
-        & set(transcript_stems(slot_history_key(slot)))
-    )
+    return same_transcript(slot_history_key(current), slot_history_key(slot))
 
 
 def _resettle_restricted_key(state: DashboardState, name: str) -> None:

@@ -120,6 +120,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401 - facade re-exports
     stream_and_collect_json,
 )
 from kiro_crew.messaging.link import canonical_key, is_legacy_slack_key, legacy_key
+from kiro_crew.pinned_fs import lstat_by_name
 from kiro_crew.preview_text import strip_markdown_preview  # noqa: F401 - facade re-export
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel  # noqa: F401 - facade re-export
@@ -1217,6 +1218,60 @@ def transcript_stems(key: str) -> tuple[str, ...]:
         if legacy not in stems:
             stems.append(legacy)
     return tuple(stems)
+
+
+def coexisting_transcript_stems(key: str, base: Path | None = None) -> frozenset[str]:
+    """Stems among *key*'s aliases that a DIFFERENT surviving transcript backs.
+
+    :func:`transcript_stems` returns the canonical and legacy bare stem for one Slack key because
+    :meth:`ConversationLog._path` may resolve to either. That assumes only one is backed. When both
+    transcript files exist they are two live sessions, so treating the shared alias as belonging to
+    either one reports one live session as the other.
+
+    Empty unless at least two stems are backed, so a lone legacy thread keeps resolving exactly as
+    before. The retained stem mirrors ``_path``: canonical when its transcript exists, else the
+    first legacy one whose transcript does.
+
+    Backing is probed with :func:`~kiro_crew.pinned_fs.lstat_by_name`, which does not follow the
+    final component, so a link planted at a stem counts as backed rather than being traversed
+    during the probe. That direction is the safe one: a planted name is treated as another
+    session's territory instead of as free space.
+    """
+    sessions = base or _sessions_dir()
+    backed = [
+        stem
+        for stem in transcript_stems(key)
+        if lstat_by_name(sessions / f"{stem}.jsonl") is not None
+    ]
+    if len(backed) < 2:
+        return frozenset()
+    return frozenset(backed[1:])
+
+
+def resolved_transcript_stems(key: str, base: Path | None = None) -> frozenset[str]:
+    """The stems *key* can resolve to, minus those a DIFFERENT live transcript backs.
+
+    :func:`transcript_stems` returns both Slack spellings because :meth:`ConversationLog._path`
+    may resolve to either, which holds only while one of them is backed. When both are backed
+    they are two separate live sessions, so the alias
+    :func:`coexisting_transcript_stems` names belongs to the OTHER one and is not a name this
+    key resolves to.
+    """
+    return frozenset(transcript_stems(key)) - coexisting_transcript_stems(key, base)
+
+
+def same_transcript(a: str, b: str, base: Path | None = None) -> bool:
+    """True when two session keys resolve to the SAME transcript file.
+
+    Compared as stem SETS, never by string equality: ``_safe_key`` is many-to-one, so
+    ``slack:C1:1.2`` and ``slack:C1_1.2`` both land in ``slack_C1_1.2.jsonl`` and an
+    equality test reports "different transcript" when nothing moved.
+
+    Intersected over :func:`resolved_transcript_stems` rather than the raw alias sets, so two
+    coexisting Slack transcripts that share the legacy bare spelling are not conflated: matching
+    on that shared alias reported one live session as the other and routed its context there.
+    """
+    return bool(resolved_transcript_stems(a, base) & resolved_transcript_stems(b, base))
 
 
 def transcript_lock_stems(key: str) -> tuple[str, ...]:

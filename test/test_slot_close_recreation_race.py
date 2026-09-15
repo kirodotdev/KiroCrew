@@ -306,6 +306,51 @@ def test_shares_transcript_compares_files_not_key_strings(tmp_path) -> None:
     assert handlers._replacement_shares_transcript(state, stem, original) is True
 
 
+def test_shares_transcript_splits_two_slack_threads_on_a_shared_legacy_alias(
+    tmp_path, monkeypatch
+) -> None:
+    """Two live Slack threads overlapping only on the legacy alias are NOT shared.
+
+    Once both the canonical ``slack_<ts>`` and the bare ``<ts>`` transcript exist they
+    are two live sessions writing two files, and a raw intersection of the alias sets
+    still reports them shared on the stem they merely spell in common. Here that
+    over-report is the harm: it withholds the ``closed`` stamp from a file no live
+    slot writes, so ``channel_slots._close_stands`` reads the absent flag as "never
+    dismissed" and the reconcile pass resurfaces the tab the user closed.
+
+    The second half is the control against a blanket False: remove the coexisting
+    file and the same pair reads shared again, because nothing else backs the alias.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    sessions = tmp_path / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+
+    ts = "1785370133.085469"
+    state = _make_state(tmp_path)
+    original = state.get_or_create_slot(NAME, linked_session_key=f"slack:{ts}")
+    state._slots.pop(NAME)
+    replacement = state.get_or_create_slot(NAME, linked_session_key=ts)
+    assert replacement is not original
+
+    stems = [
+        handlers.slot_history_key(original),
+        handlers.slot_history_key(replacement),
+    ]
+    canonical_file = sessions / f"slack_{ts}.jsonl"
+    legacy_file = sessions / f"{ts}.jsonl"
+    for path in (canonical_file, legacy_file):
+        path.write_text('{"role": "user", "content": "x"}\n')
+
+    assert (
+        handlers._replacement_shares_transcript(state, NAME, original) is False
+    ), f"two coexisting Slack threads were reported as one transcript: {stems}"
+
+    legacy_file.unlink()
+    assert (
+        handlers._replacement_shares_transcript(state, NAME, original) is True
+    ), "a lone canonical transcript stopped being shared by the key that resolves to it"
+
+
 # --------------------------------------------------------------------------- #
 # api_chat_slot_delete
 # --------------------------------------------------------------------------- #
