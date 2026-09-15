@@ -140,6 +140,8 @@
       "app-menu.js",
       "windows-menu-model.js",
       "windows-titlebar.js",
+      "display-preferences/index.js",
+      "display-preferences/schema.js",
       "badge.js",
       "native-theme.js",
       "zoom.js",

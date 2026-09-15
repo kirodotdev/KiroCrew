@@ -5,6 +5,18 @@ const path = require("node:path");
 const { buildMenuTemplate } = require("../app-menu");
 const { serializeMenuItems } = require("../windows-menu-model");
 
+// Ids of the top-level menus the Windows custom-titlebar surface renders.
+// A straight `.map` over the template — no `visible !== false` filter — is
+// what this file asserts about. The filter that lived here on 8742b9cc7
+// was added for a hidden `menu-bar-toggle` accelerator carrier that was
+// deleted in the Fable First-Principles response (F10 toggle removed
+// entirely: framed Linux already shows the bar, Wayland/CSD has nowhere
+// to render it). No hidden top-level items ship on any platform now, so
+// the filter would match none of them anyway.
+function visibleTopLevelIds(template) {
+  return template.map((m) => m.id).filter(Boolean);
+}
+
 // The Windows titlebar menu's top-level list is maintained in THREE places that
 // must agree, and every disagreement fails silently rather than loudly:
 //
@@ -39,6 +51,11 @@ function windowsTemplate() {
     toggleAlwaysOnTop: record(), openNewConnectionWindow: record(),
     renameCurrentWindow: record(), promptRemoteHost: record(),
     refreshToken: record(), openConfigFile: record(),
+    // Display-preferences + menu-bar deps that buildMenuTemplate now reads.
+    // Safe no-op values: the tests care about menu STRUCTURE, not the click
+    // handlers' effects.
+    currentFontSize: 16,
+    setFontSize: record(),
   });
 }
 
@@ -69,7 +86,7 @@ function rendererIds() {
 }
 
 test("the native template's top-level menu ids are all allowlisted for IPC", () => {
-  const templateIds = windowsTemplate().map((m) => m.id).filter(Boolean);
+  const templateIds = visibleTopLevelIds(windowsTemplate());
   assert.deepStrictEqual(
     [...templateIds].sort(), [...allowlistIds()].sort(),
     "app-menu.js top-level ids and window-lifecycle.js WINDOWS_TITLEBAR_MENU_IDS disagree — "
@@ -78,7 +95,7 @@ test("the native template's top-level menu ids are all allowlisted for IPC", () 
 });
 
 test("the renderer offers exactly the menus the template defines", () => {
-  const templateIds = windowsTemplate().map((m) => m.id).filter(Boolean);
+  const templateIds = visibleTopLevelIds(windowsTemplate());
   assert.deepStrictEqual(
     [...templateIds].sort(), [...rendererIds()].sort(),
     "app-menu.js top-level ids and WindowsTitlebarMenu.tsx WINDOWS_MENUS disagree — "
@@ -90,7 +107,7 @@ test("the renderer's menu ORDER matches the native template", () => {
   // Order is user-visible (it is the left-to-right label row) and it also drives
   // ArrowLeft/ArrowRight traversal, so a reorder in one place is a real defect
   // rather than a cosmetic drift.
-  const templateIds = windowsTemplate().map((m) => m.id).filter(Boolean);
+  const templateIds = visibleTopLevelIds(windowsTemplate());
   assert.deepStrictEqual(templateIds, rendererIds());
 });
 

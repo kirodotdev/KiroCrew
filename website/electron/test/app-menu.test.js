@@ -25,6 +25,13 @@ function makeDeps(overrides = {}) {
     promptRemoteHost: record("promptRemoteHost"),
     refreshToken: record("refreshToken"),
     openConfigFile: record("openConfigFile"),
+    // Font-size deps land at the tail. Safe no-op defaults so any existing
+    // test that calls makeDeps() without overrides still builds a valid
+    // template. The `toggleMenuBar` + `isLinux` deps that lived here on
+    // 8742b9cc7 were removed alongside the F10 accelerator (Fable First-
+    // Principles response).
+    currentFontSize: 16,
+    setFontSize: record("setFontSize"),
     ...overrides,
   };
   return { deps, calls };
@@ -97,18 +104,49 @@ test("win/linux: File menu is first with Settings… and quit", () => {
 test("win/linux: Help menu is last with About", () => {
   const { deps } = makeDeps({ isMac: false });
   const template = buildMenuTemplate(deps);
-  const help = template[template.length - 1];
+  const visible = template.filter((item) => item.visible !== false);
+  const help = visible[visible.length - 1];
   assert.strictEqual(help.label, "Help");
   assert.strictEqual(help.submenu[0].label, "About Kiro Crew");
 });
 
-test("win/linux: every custom-titlebar menu has a stable native menu id", () => {
+test("win/linux: every custom-titlebar menu has a stable native menu id (no hidden top-level menu-bar toggle)", () => {
   const { deps } = makeDeps({ isMac: false });
   const template = buildMenuTemplate(deps);
+  // Straight ids-of-top-level pin — no visible-filter, because the earlier
+  // hidden top-level `menu-bar-toggle` accelerator carrier this filter was
+  // added for was deleted in the Fable First-Principles response (F10
+  // toggle removed entirely — zero-option cost, framed Linux already
+  // shows the bar and Wayland/CSD has nowhere to render it). Restoring
+  // the straight `.map` is Fable's F9 subtraction.
   assert.deepStrictEqual(
     template.map((item) => item.id),
     ["file-menu", "edit-menu", "view-menu", "connection-menu", "window-menu", "help-menu"],
   );
+});
+
+test("no F10 Toggle Menu Bar item on any platform (removed in Fable First-Principles response)", () => {
+  // Regression guard against a future PR that would restore the F10 toggle
+  // without addressing the zero-option-cost argument. On framed Linux the
+  // menu bar is already visible; on Wayland/CSD there is no rendering
+  // surface, and menu items are reached through WindowsTitlebarMenu
+  // instead. No user path requires a toggle affordance, so no toggle
+  // ships on any platform.
+  for (const platform of [
+    { isMac: false, isLinux: true },
+    { isMac: false, isLinux: false },
+    { isMac: true, isLinux: false },
+  ]) {
+    const { deps } = makeDeps(platform);
+    const template = buildMenuTemplate(deps);
+    const topLevelToggle = template.find((item) => item.id === "menu-bar-toggle");
+    assert.strictEqual(topLevelToggle, undefined);
+    const viewMenu = template.find((item) => item.id === "view-menu");
+    const viewToggle = viewMenu?.submenu?.find((i) => i.id === "view-toggle-menu-bar");
+    assert.strictEqual(viewToggle, undefined);
+    const f10 = findItem(template, (item) => item.accelerator === "F10");
+    assert.strictEqual(f10, null);
+  }
 });
 
 test("win/linux: no macOS-only roles anywhere in the template", () => {
@@ -250,3 +288,78 @@ for (const isMac of [true, false]) {
     ]);
   });
 }
+
+// ── View → Content Text Size flat items (Content Text Size ladder inlined into View; see
+// app-menu.js for the Windows custom-titlebar renderer constraint) ──
+
+test("view: four flat Content Text Size radio items sit under View in tier order", () => {
+  const { deps } = makeDeps({ isMac: false, currentFontSize: 16 });
+  const view = findItem(buildMenuTemplate(deps), (item) => item.id === "view-menu");
+  const fontItems = view.submenu.filter((item) =>
+    typeof item.label === "string" && item.label.startsWith("Content Text Size:"),
+  );
+  assert.strictEqual(fontItems.length, 4);
+  const labels = fontItems.map((item) => item.label);
+  assert.deepStrictEqual(labels, [
+    "Content Text Size: Small",
+    "Content Text Size: Medium",
+    "Content Text Size: Large",
+    "Content Text Size: Very Large",
+  ]);
+  // Chrome ships a 5th "Very Small" (9px) at the bottom of the ladder; Kiro
+  // Crew's chrome is px-pinned via ~4k text-[NNpx] declarations across
+  // website/src/ that don't reflow cleanly below 10px baseline (see
+  // website/AGENTS.md's floor). The 9px verySmall tier was dropped in the
+  // Fable First-Principles response — regression-pin the four remaining.
+  //
+  // Each item carries a stable id so an in-process change can reconcile the
+  // menu radios in place via Menu.getMenuItemById — see updateFontSizeChecks
+  // in window-lifecycle.js.
+  const ids = fontItems.map((item) => item.id);
+  assert.deepStrictEqual(ids, [
+    "font-size-small",
+    "font-size-medium",
+    "font-size-large",
+    "font-size-veryLarge",
+  ]);
+  for (const item of fontItems) {
+    assert.strictEqual(item.type, "radio");
+    assert.strictEqual(typeof item.click, "function");
+  }
+});
+
+test("view: Content Text Size item matching currentFontSize is checked, others are not", () => {
+  const { deps } = makeDeps({ isMac: false, currentFontSize: 20 });
+  const view = findItem(buildMenuTemplate(deps), (item) => item.id === "view-menu");
+  const fontItems = view.submenu.filter((item) =>
+    typeof item.label === "string" && item.label.startsWith("Content Text Size:"),
+  );
+  const large = fontItems.find((item) => item.label === "Content Text Size: Large");
+  assert.strictEqual(large.checked, true);
+  for (const item of fontItems) {
+    if (item.label === "Content Text Size: Large") continue;
+    assert.strictEqual(item.checked, false, `${item.label} is unchecked`);
+  }
+});
+
+test("view: Content Text Size click invokes setFontSize with the tier's px", () => {
+  const setCalls = [];
+  const { deps } = makeDeps({
+    isMac: false,
+    currentFontSize: 16,
+    setFontSize: (px) => setCalls.push(px),
+  });
+  const view = findItem(buildMenuTemplate(deps), (item) => item.id === "view-menu");
+  const large = view.submenu.find((item) => item.label === "Content Text Size: Large");
+  large.click();
+  assert.deepStrictEqual(setCalls, [20]);
+});
+
+test("view: Content Text Size items also present on macOS with the same shape", () => {
+  const { deps } = makeDeps({ isMac: true, currentFontSize: 16 });
+  const view = findItem(buildMenuTemplate(deps), (item) => item.id === "view-menu");
+  const fontItems = view.submenu.filter((item) =>
+    typeof item.label === "string" && item.label.startsWith("Content Text Size:"),
+  );
+  assert.strictEqual(fontItems.length, 4);
+});

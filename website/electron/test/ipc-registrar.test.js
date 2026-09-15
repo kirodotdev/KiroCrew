@@ -231,6 +231,16 @@ function harness({
   const liveContents = {
     isDestroyed: () => false,
     send: (...args) => sentUpdates.push(args),
+    // display-preferences.js live-applies via the CDP debugger; the harness
+    // stubs the surface so async ripples don't blow up in tests that don't
+    // otherwise care about font size (a `TypeError: Cannot read properties
+    // of undefined (reading 'isAttached')` would fire on an unhandled
+    // promise otherwise).
+    debugger: {
+      isAttached: () => false,
+      attach: () => {},
+      sendCommand: async () => {},
+    },
   };
   const destroyedContents = {
     isDestroyed: () => true,
@@ -583,6 +593,16 @@ function crashScanResult(overrides = {}) {
 }
 
 const CRASH_CHANNELS = ["crash-reports:get", "crash-reports:reveal"];
+
+// ── display-prefs behavioural wiring ─────────────────────────────────────
+// The display-prefs:get and display-prefs:set IPC handlers were removed in
+// the Fable First-Principles response (PR #10247, `8cf1176fc` → next SHA):
+// zero consumers in website/src/ meant the IPC bridge was scaffolding for a
+// hypothetical Settings-page control that wasn't in this PR. The Content Text
+// Size feature reaches changeFontSize directly from window-lifecycle.js's
+// menu click handler, so no IPC round-trip is needed. See
+// display-preferences.test.js for the in-process function-level tests that
+// still exercise changeFontSize + resolveTier + tier boundaries.
 
 test("crash-reports channels reject wrong and unreadable sender origins", async () => {
   for (const channel of CRASH_CHANNELS) {
@@ -1204,3 +1224,5 @@ test("pane:clear-http-cache is gated to the local dashboard sender", async () =>
   );
   assert.equal(purges.length, 0);
 });
+
+

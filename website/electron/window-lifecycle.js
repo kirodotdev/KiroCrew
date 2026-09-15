@@ -39,6 +39,34 @@ const { DEFAULT_REMOTE_BIN, DEFAULT_REMOTE_PATH } = require("./remote-token");
 const { identityFamily } = require("./instance-guard");
 const { decideLinuxFrame, applyWindowControl } = require("./linux-frame");
 const { buildMenuTemplate } = require("./app-menu");
+const displayPrefs = require("./display-preferences/index");
+
+// Reconcile the Font Size menu radios to reflect `px`. Called from both the
+// menu-click path (window-lifecycle.js buildApplicationMenu deps.setFontSize)
+// and the IPC-driven path (ipc-registrar.js display-prefs:set handler) so
+// the OS menu stays in sync with either mutation origin.
+//
+// Idiomatic Electron radio-group behavior: set ONLY the target item's
+// checked=true and let the radio group auto-toggle its siblings. Setting
+// .checked=false explicitly on non-target items conflicts with the
+// "exactly one checked" invariant on some platforms — the OS display then
+// shows the LAST-touched item rather than the actual target, which was the
+// observed bug ("always says Very Large" regardless of the picked tier).
+// Docs: https://www.electronjs.org/docs/api/menu-item#menuitemchecked
+//
+// Kept as a top-level pure function (menu + tiers + px in, side effects on
+// the target item only) so it is unit-testable in isolation — see
+// test/window-lifecycle.test.js "reconcileFontSizeChecks — Font Size menu
+// radio state". `tiers` is passed in rather than sourced from
+// displayPrefs.TIERS at the top level so the test can stub the schema
+// without dragging the whole module.
+function reconcileFontSizeChecks(menu, tiers, px) {
+  if (!menu) return;
+  const target = tiers.find((tier) => tier.px === px);
+  if (!target) return;
+  const item = menu.getMenuItemById(`font-size-${target.name}`);
+  if (item) item.checked = true;
+}
 const { serializeMenuItems, executeMenuItem } = require("./windows-menu-model");
 const {
   paintTitleBarOverlay,
@@ -140,6 +168,36 @@ function createWindowLifecycle(options) {
     ? decideLinuxFrame({ env, override: store.get("linuxFrameless") })
     : null;
   const LINUX_FRAMELESS = !!(LINUX_FRAME_DECISION && LINUX_FRAME_DECISION.frameless);
+
+  // Seed the fontSize cache from the store BEFORE any window is created, so
+  // the four `defaultFontSize: displayPrefs.getCurrentFontSize()` reads in
+  // `webPreferences` land on the persisted value instead of the pre-init
+  // fallback. Called once here rather than from main.js because the factory
+  // owns every window-creation site — a future window added below would
+  // otherwise silently boot at 16px on the first paint.
+  displayPrefs.initCurrentFontSize(store);
+
+  // Shell-window construction helpers. Route EVERY BrowserWindow /
+  // WebContentsView the shell creates through these two functions so the
+  // runtime font-size ripple can filter to shell-owned WebContents (see
+  // display-preferences/index.js SHELL_OWNED_WC). The one exception is the
+  // embedded browser panel's WebContentsView (search for the
+  // `SHELL-BARE:` marker) which hosts arbitrary user-browsed sites and is
+  // deliberately excluded from both the construction-time defaultFontSize
+  // seed AND the runtime ripple. A contract test in
+  // `test/window-lifecycle.test.js` forbids bare `new BrowserWindow` /
+  // `new WebContentsView` in this file without a SHELL-BARE marker.
+  function createShellBrowserWindow(opts) {
+    const win = new BrowserWindow(opts);
+    displayPrefs.markShellOwned(win.webContents);
+    return win;
+  }
+
+  function createShellWebContentsView(opts) {
+    const view = new WebContentsView(opts);
+    displayPrefs.markShellOwned(view.webContents);
+    return view;
+  }
 
   let mainWindow = null;
   let tray = null;
@@ -353,11 +411,23 @@ function createWindowLifecycle(options) {
     const windowPort = new URL(windowBackendUrl).port;
     let customName = null;
 
-    const view = new WebContentsView({
+    const view = createShellWebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
+        // Chromium's default UI base font size. The user picks a tier via
+        // View → Font Size (see display-preferences/); the cache is seeded at
+        // boot from electron-store so the first paint already sits at the
+        // persisted size instead of flashing 16 then re-laying-out.
+        defaultFontSize: displayPrefs.getCurrentFontSize(),
+        // Seed monospace too — CDP `Page.setFontSizes({standard,fixed})`
+        // in display-preferences/index.js sets both at runtime, so
+        // seeding both keeps the restart-vs-live invariant symmetric.
+        // Without this, monospace reverts to Chromium's default 13px
+        // on restart while standard text keeps the tier — Fable Design
+        // Review Watch on acefffa4b caught the mismatch.
+        defaultMonospaceFontSize: displayPrefs.getCurrentFontSize(),
         // Frameless Linux is a launch-time decision, not a platform constant.
         // The preload reads this argument to reserve caption-control space.
         additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
@@ -490,7 +560,7 @@ function createWindowLifecycle(options) {
 
       const entry = { id, agentAct: false };
       entry.manager = createBrowserViewManager({
-        createView: () => new WebContentsView({
+        createView: () => new WebContentsView({ // SHELL-BARE: browser panel — deliberately excluded from font-size seed AND ripple (Design Review PR #10247 confirmed this is the right split)
           webPreferences: {
             // Persistent for ordinary browser logins, but isolated from the
             // dashboard's host-scoped mc_token_<port> cookie jar.
@@ -859,6 +929,14 @@ function createWindowLifecycle(options) {
     }
     if (IS_WINDOWS) {
       opts.titleBarStyle = "hidden";
+      // `autoHideMenuBar: true` alone is NOT enough on Windows: Alt-tap
+      // still slides the native menu bar into the client area, duplicating
+      // the custom titlebar's menus and shifting layout. The hard-hide
+      // itself is `setMenuBarVisibility(false)` after `new BaseWindow`
+      // (see hardHideNativeMenuBarOnWindows below) — Fable Design Review
+      // caught the regression on 0c0bb8b3d, where the earlier F10 iteration
+      // had displaced the two hard-hide calls into a shared helper and
+      // this PR removed the helper without inlining the calls back.
       opts.autoHideMenuBar = true;
       opts.titleBarOverlay = {
         color: WINDOWS_TITLEBAR_BACKGROUND,
@@ -870,10 +948,24 @@ function createWindowLifecycle(options) {
     }
     if (LINUX_FRAMELESS) {
       opts.frame = false;
-      // Keep the application menu reachable with Alt without stacking a native
-      // menu bar above the dashboard's own header.
+      // Wayland/CSD Linux: no OS-drawn frame, so no natural rendering
+      // surface for a native menu bar. `autoHideMenuBar: true` prevents
+      // Electron from allocating layout space for a bar that would be
+      // orphaned. The in-app custom titlebar menu (WindowsTitlebarMenu,
+      // gated on `isWinElectron || isLinuxFramelessElectron` at
+      // App.tsx:3353) is what users reach the menu items through on
+      // this surface.
       opts.autoHideMenuBar = true;
     }
+    // NOTE: framed Linux (X11 / Wayland+SSD) intentionally does NOT autohide the
+    // menu bar. Fable First-Principles review (PR #10247, `2a00fa154`) pointed
+    // out that hiding it was collateral scope with no reported user impact —
+    // the original motivation (matching Windows) doesn't hold on framed
+    // Linux where the OS-drawn menu bar IS the discoverability path.
+    // Framed Linux users keep their visible bar; frameless (Wayland/CSD)
+    // Linux reaches menu items through the in-app custom titlebar menu
+    // (WindowsTitlebarMenu, gated on isWinElectron || isLinuxFramelessElectron
+    // at App.tsx:3353) rather than any native surface.
     if (includeIcon && (IS_WIN || IS_LINUX)) {
       const iconFile = identityFamily(app.getVersion()) === "nightly"
         && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
@@ -882,6 +974,25 @@ function createWindowLifecycle(options) {
       opts.icon = path.join(__dirname, iconFile);
     }
     return opts;
+  }
+
+  // Windows-only: after `new BaseWindow(opts)` completes, `setMenuBarVisibility(false)`
+  // is what actually MAKES the native menu bar unreachable — `autoHideMenuBar: true`
+  // in the constructor options only removes it from initial layout, it does NOT block
+  // Alt-tap from re-revealing it. The custom titlebar owns menu discoverability on
+  // Windows (WindowsTitlebarMenu), so revealing the native bar would duplicate the
+  // menus and shift the client area. macOS uses the OS-level menubar (out of the
+  // window) so this doesn't apply; Linux framed intentionally keeps its native bar
+  // visible as the primary discoverability path; Linux frameless has no frame to
+  // render the bar on anyway, and reaches menu items through WindowsTitlebarMenu.
+  function hardHideNativeMenuBarOnWindows(win) {
+    if (!IS_WINDOWS || !win) return;
+    // BaseWindow doesn't expose setMenuBarVisibility on all Electron versions;
+    // BrowserWindow does. Guard defensively — a no-op on a build that lacks
+    // the method is safer than throwing during boot.
+    if (typeof win.setMenuBarVisibility === "function") {
+      win.setMenuBarVisibility(false);
+    }
   }
 
   function persistMainWindowState() {
@@ -921,9 +1032,17 @@ function createWindowLifecycle(options) {
     }
 
     mainWindow = new BaseWindow(opts);
-    if (IS_WINDOWS && typeof mainWindow.setMenuBarVisibility === "function") {
-      mainWindow.setMenuBarVisibility(false);
-    }
+    // Windows: hard-hide the native menu bar so Alt-tap can't slide it into
+    // the client area beside the custom titlebar. `autoHideMenuBar: true`
+    // in opts alone is not enough — see hardHideNativeMenuBarOnWindows. No-op
+    // on non-Windows. macOS uses the OS menubar (outside the window). Linux
+    // framed intentionally keeps its native bar as the discoverability path.
+    // Linux frameless has no frame to render on anyway; menu items are
+    // reached through WindowsTitlebarMenu (see App.tsx:3353's render gate). The F10 toggle + menuBarVisible
+    // persistence that lived here on `8742b9cc7` were removed in the Fable
+    // First-Principles response (zero-option cost); the two hard-hide calls
+    // that had displaced with them are restored here post-Fable Design Review.
+    hardHideNativeMenuBarOnWindows(mainWindow);
     setupWindowContents(mainWindow, backendUrl);
 
     // Persist continuously (debounced), then synchronously on real quit so the
@@ -1138,7 +1257,7 @@ function createWindowLifecycle(options) {
       .replace(/"/g, "&quot;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
-    const promptWin = new BrowserWindow({
+    const promptWin = createShellBrowserWindow({
       width: 480,
       height: 400,
       resizable: false,
@@ -1146,7 +1265,20 @@ function createWindowLifecycle(options) {
       parent: focused,
       modal: true,
       backgroundColor: "#00000000",
-      webPreferences: { nodeIntegration: false, contextIsolation: true },
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        // Modals inherit the dashboard's font-size tier so an accessibility
+        // choice reaches every window authored by Kiro Crew, not just the main one.
+        defaultFontSize: displayPrefs.getCurrentFontSize(),
+        // Seed monospace too — CDP `Page.setFontSizes({standard,fixed})`
+        // in display-preferences/index.js sets both at runtime, so
+        // seeding both keeps the restart-vs-live invariant symmetric.
+        // Without this, monospace reverts to Chromium's default 13px
+        // on restart while standard text keeps the tier — Fable Design
+        // Review Watch on acefffa4b caught the mismatch.
+        defaultMonospaceFontSize: displayPrefs.getCurrentFontSize(),
+      },
     });
     const html = `<!DOCTYPE html><html><head><style>
       ${css}
@@ -1270,9 +1402,10 @@ function createWindowLifecycle(options) {
       backgroundColor: "#0f1117",
     });
     const connWin = new BaseWindow(connOpts);
-    if (IS_WINDOWS && typeof connWin.setMenuBarVisibility === "function") {
-      connWin.setMenuBarVisibility(false);
-    }
+    // Windows: hard-hide the native menu bar — see hardHideNativeMenuBarOnWindows
+    // + the twin call in createWindow(). Constructor-side `autoHideMenuBar: true`
+    // is not sufficient to block Alt-tap.
+    hardHideNativeMenuBarOnWindows(connWin);
     setupWindowContents(connWin, connectionBackendUrl);
 
     // initialPath can carry a one-shot intent (/chat?new=1). The retry target
@@ -1317,7 +1450,7 @@ function createWindowLifecycle(options) {
     mainWindow.show();
 
     const css = await getModalCSS();
-    const promptWin = new BrowserWindow({
+    const promptWin = createShellBrowserWindow({
       width: 400,
       height: 180,
       resizable: false,
@@ -1325,7 +1458,20 @@ function createWindowLifecycle(options) {
       parent: mainWindow,
       modal: true,
       backgroundColor: "#00000000",
-      webPreferences: { nodeIntegration: false, contextIsolation: true },
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        // Modals inherit the dashboard's font-size tier so an accessibility
+        // choice reaches every window authored by Kiro Crew, not just the main one.
+        defaultFontSize: displayPrefs.getCurrentFontSize(),
+        // Seed monospace too — CDP `Page.setFontSizes({standard,fixed})`
+        // in display-preferences/index.js sets both at runtime, so
+        // seeding both keeps the restart-vs-live invariant symmetric.
+        // Without this, monospace reverts to Chromium's default 13px
+        // on restart while standard text keeps the tier — Fable Design
+        // Review Watch on acefffa4b caught the mismatch.
+        defaultMonospaceFontSize: displayPrefs.getCurrentFontSize(),
+      },
     });
     const html = `<!DOCTYPE html><html><head><style>
       ${css}
@@ -1390,7 +1536,7 @@ function createWindowLifecycle(options) {
       const css = vars && vars.bg
         ? modalCSSFromVars(vars)
         : modalCSSForMode(nativeTheme.shouldUseDarkColors);
-      const promptWin = new BrowserWindow({
+      const promptWin = createShellBrowserWindow({
         width: 400,
         height: 200,
         resizable: false,
@@ -1398,7 +1544,20 @@ function createWindowLifecycle(options) {
         parent: focused,
         modal: true,
         backgroundColor: "#00000000",
-        webPreferences: { nodeIntegration: false, contextIsolation: true },
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          // Modals inherit the dashboard's font-size tier so an accessibility
+          // choice reaches every window authored by Kiro Crew, not just the main one.
+          defaultFontSize: displayPrefs.getCurrentFontSize(),
+          // Seed monospace too — CDP `Page.setFontSizes({standard,fixed})`
+          // in display-preferences/index.js sets both at runtime, so
+          // seeding both keeps the restart-vs-live invariant symmetric.
+          // Without this, monospace reverts to Chromium's default 13px
+          // on restart while standard text keeps the tier — Fable Design
+          // Review Watch on acefffa4b caught the mismatch.
+          defaultMonospaceFontSize: displayPrefs.getCurrentFontSize(),
+        },
       });
       const html = `<!DOCTYPE html><html><head><style>
         ${css}
@@ -1688,13 +1847,39 @@ function createWindowLifecycle(options) {
       promptRemoteHost: () => promptRemoteHost(),
       refreshToken: () => refreshToken(),
       openConfigFile: () => openPathHardened(shell, store.path),
+      // Font-size deps. currentFontSize is read from the module-level cache
+      // (hydrated at boot in main.js via initCurrentFontSize) so the correct
+      // radio is checked on first paint. setFontSize routes through
+      // changeFontSize — validate + persist + live-apply — matching the IPC
+      // handler's path exactly, so a menu-driven change is indistinguishable
+      // from a dashboard-driven one.
+      //
+      // After changeFontSize, we call updateFontSizeChecks(applied) so BOTH
+      // entry points (menu click here, IPC set in ipc-registrar.js) leave
+      // the menu radios in a consistent state. Electron auto-toggles the
+      // clicked radio, but a dashboard-driven change would otherwise leave
+      // the menu displaying the previous selection.
+      currentFontSize: displayPrefs.getCurrentFontSize(),
+      setFontSize: (px) => {
+        const applied = displayPrefs.changeFontSize(store, webContents, px);
+        updateFontSizeChecks(applied);
+        return applied;
+      },
     }));
     Menu.setApplicationMenu(appMenu);
     return appMenu;
   }
 
   function menuItems(sender, id) {
-    if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
+    // Predicate widened in PR #10247's Fable First-Principles response:
+    // the same custom hamburger menu that Windows renders (WindowsTitlebarMenu)
+    // now renders on Linux frameless (Wayland/CSD) too — see the App.tsx
+    // render gate `isWinElectron || isLinuxFramelessElectron`. The IPC
+    // handler behind the menu must accept both surfaces or the dropdown
+    // opens empty on Linux. macOS uses the OS-level menubar (not this
+    // façade), framed Linux uses its native menu bar — those two cases
+    // still return [] because they never hit this path.
+    if ((!IS_WINDOWS && !LINUX_FRAMELESS) || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
     const menu = appMenu || Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById(id);
     const win = windowForWebContents(sender);
@@ -1703,8 +1888,11 @@ function createWindowLifecycle(options) {
   }
 
   function executeMenu(sender, id, index) {
+    // Same predicate widening as menuItems above — the click dispatch path
+    // must accept the Linux frameless surface, or the submenu items open
+    // but doing anything on them silently no-ops.
     if (
-      !IS_WINDOWS
+      (!IS_WINDOWS && !LINUX_FRAMELESS)
       || !WINDOWS_TITLEBAR_MENU_IDS.has(id)
       || !Number.isInteger(index)
     ) return;
@@ -1721,6 +1909,23 @@ function createWindowLifecycle(options) {
     const menu = Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById("devtools-toggle");
     if (item) item.visible = !!enabled;
+  }
+
+  // Reconcile the Font Size radio group's `checked` state with the given
+  // px. Called from BOTH entry points:
+  //   1. The menu-click closure (Electron auto-updates the OS-visible radio,
+  //      but we also flip the template items so a subsequent template read
+  //      via serializeMenuItems returns the right shape for the Windows
+  //      custom-titlebar renderer).
+  //   2. The IPC handler in ipc-registrar.js — a dashboard-driven change
+  //      would otherwise leave the menu radio stuck on the previous
+  //      selection, lying to the user next time they open View.
+  //
+  // Missing item ids are ignored: this runs before every setFontSize
+  // completes, and the menu may not yet exist during boot (initCurrentFontSize
+  // runs before buildApplicationMenu on the first tick).
+  function updateFontSizeChecks(px) {
+    reconcileFontSizeChecks(Menu.getApplicationMenu(), displayPrefs.TIERS, px);
   }
 
   function setThemeAccent(hex) {
@@ -2008,7 +2213,6 @@ function createWindowLifecycle(options) {
     platform: {
       isMac: IS_MAC,
       isWindows: IS_WINDOWS,
-      isLinux: IS_LINUX,
       linuxFrameless: LINUX_FRAMELESS,
       linuxFrameDecision: LINUX_FRAME_DECISION,
     },
@@ -2062,4 +2266,5 @@ module.exports = {
   HEADER_CSS_PX,
   WINDOWS_TITLEBAR_MENU_IDS,
   createWindowLifecycle,
+  reconcileFontSizeChecks,
 };

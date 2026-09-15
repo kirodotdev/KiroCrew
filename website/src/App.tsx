@@ -3328,7 +3328,7 @@ export default function App() {
               grid track, and the menu growing from the hamburger to its six
               labels therefore consumes the GROUP's width -- which its container
               query responds to -- instead of eating the centred search's. */}
-          {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
+          {!isMobile && (isWinElectron || isLinuxFramelessElectron) && <WindowsTitlebarMenu />}
 
           {/* Route-history Back/Forward (#8258). Desktop layout only: on mobile
               the platform owns Back (left-edge swipe), and the drill-in surfaces

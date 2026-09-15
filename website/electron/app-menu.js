@@ -14,6 +14,8 @@
 // and the click wiring are unit-testable without a display server.
 // Menu.buildFromTemplate stays in main.js.
 
+const { TIERS } = require("./display-preferences");
+
 function buildMenuTemplate(deps) {
   const {
     isMac,
@@ -34,6 +36,8 @@ function buildMenuTemplate(deps) {
     promptRemoteHost,
     refreshToken,
     openConfigFile,
+    currentFontSize, // current fontSize px, used to check the matching radio item
+    setFontSize, // click handler for View > Content Text Size > <tier>
   } = deps;
 
   // Shared destinations. CmdOrCtrl+, is the Settings convention on macOS and
@@ -84,6 +88,41 @@ function buildMenuTemplate(deps) {
         { label: "Actual Size", accelerator: "CmdOrCtrl+0", click: zoomActualSize },
         { label: "Zoom In", accelerator: "CmdOrCtrl+=", click: zoomIn },
         { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: zoomOut },
+        { type: "separator" },
+        // Content Text Size ladder — flat rather than nested. The Windows custom
+        // titlebar popup renders only one level (see windows-menu-model.js /
+        // windows-titlebar-contract.test.js), so a `Content Text Size` submenu
+        // would appear as a dead item there. Kept flat for now; if the
+        // titlebar renderer ever teaches nesting, this can collapse into a submenu.
+        //
+        // The label reads "Content Text Size" rather than "Font Size" —
+        // Fable First-Principles review pointed out that "Font Size" implies
+        // universal scope (chrome + content), which this feature can't
+        // deliver: 4096 px-pinned text-[NNpx] literals across website/src
+        // ignore Chromium's defaultFontSize. Renaming to "Content Text Size"
+        // is the honest scope: this ladder grows ambient DOM text (chat
+        // messages, markdown, dialog copy) — not sidebars, tab strips,
+        // buttons, or menu chrome. Internal API names (`fontSize`,
+        // `changeFontSize`, `defaultFontSize`) unchanged — those speak
+        // Chromium's own vocabulary at the technical layer.
+        //
+        // Each item carries an id (`font-size-<tier.name>`) so an in-process
+        // change (via updateFontSizeChecks in window-lifecycle.js) can reach
+        // into the built menu and update the `checked` state after the fact.
+        // Menu-driven clicks auto-update the radio via Electron.
+        ...TIERS.map((tier) => ({
+          id: `font-size-${tier.name}`,
+          label: `Content Text Size: ${tier.label}`,
+          type: "radio",
+          checked: currentFontSize === tier.px,
+          click: () => setFontSize(tier.px),
+        })),
+        // No F10 "Toggle Menu Bar" item on any platform. Framed Linux
+        // (X11, KDE Wayland+SSD) shows the OS-drawn menu bar via the WM's
+        // frame; Wayland/CSD Linux and Windows both reach menu items
+        // through the in-app WindowsTitlebarMenu (App.tsx:3353 gates it
+        // on isWinElectron || isLinuxFramelessElectron). No user path
+        // needs a toggle affordance.
         { type: "separator" },
         { role: "togglefullscreen" },
         // Checkable, no accelerator: there is no cross-platform convention for
@@ -145,6 +184,11 @@ function buildMenuTemplate(deps) {
         },
     // Windows/Linux home for About (Help > About <app>).
     ...(isMac ? [] : [{ id: "help-menu", label: "Help", submenu: [aboutItem] }]),
+    // Note: no F10 "Toggle Menu Bar" accelerator exists on any platform in
+    // this PR's final shape — the Linux-only in-View item that PR #10247
+    // originally added was deleted in the Fable First-Principles response
+    // (zero-option cost: framed Linux already shows the bar, Wayland/CSD
+    // has nowhere to render it, so the toggle serves no user).
   ];
 }
 
