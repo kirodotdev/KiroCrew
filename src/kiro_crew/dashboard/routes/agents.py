@@ -64,6 +64,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/members/{slug}/activity", handlers.api_member_activity)
     app.router.add_get("/api/members/{slug}/rules", handlers.api_member_rules_get)
     app.router.add_put("/api/members/{slug}/rules", handlers.api_member_rules_put)
+    app.router.add_get("/api/members/{member}/role-update", handlers.api_member_role_update_get)
+    app.router.add_post("/api/members/{member}/role-update", handlers.api_member_role_update_apply)
+    app.router.add_post("/api/members/{member}/detach", handlers.api_member_detach)
 
     # Crew appearance library: the dashboard's own pack store, separate from
     # Crew Companion's. On the dashboard router so a crew's face renders while

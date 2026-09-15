@@ -32,7 +32,6 @@ from kiro_crew.acp_backends import (
 from kiro_crew.agent import (
     AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
-    _atomic_json_write,
     _refresh_forked_templates,
     _spec_path_is_safe,
     agents_spec_lock,
@@ -41,6 +40,7 @@ from kiro_crew.agent import (
     get_shipped_tools,
     install_agent,
     kiro_agents_dir_path,
+    write_agent_definition,
 )
 from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_template
 from kiro_crew.agent_discovery import (
@@ -3606,12 +3606,12 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 for key in before_patch:
                                     if key not in data:
                                         fresh.pop(key, None)
-                                sanitize_agent_config_governance(fresh)
-                                # Atomic replace: a direct write truncates first,
-                                # so ENOSPC mid-write would destroy the existing
-                                # template. Same tmp+rename helper as the fork
-                                # refresh and install paths.
-                                _atomic_json_write(f, fresh)
+                                # Governance ceiling + atomic replace (a direct
+                                # write truncates first, so ENOSPC mid-write
+                                # would destroy the existing template) through
+                                # the one whole-definition writer, shared with
+                                # the crewmate role-update merge.
+                                write_agent_definition(f, fresh)
 
                         try:
                             await asyncio.to_thread(_locked_overwrite)

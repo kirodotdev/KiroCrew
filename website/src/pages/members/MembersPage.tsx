@@ -67,6 +67,7 @@ import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
+import RoleUpdatePanel from './RoleUpdatePanel'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
@@ -346,6 +347,11 @@ export default function MembersPage() {
     : false
   // Identity is the exact crew name (unique in the registry); the slug is not.
   const [activeName, setActiveName] = useState<string>('')
+  // The last detach this drawer performed: a destructive success must not be
+  // silent, and the only other evidence is the Source row flipping. Kept per
+  // member name so the closure and the "(detached from X)" reading of the
+  // template row show for THAT crewmate only, until the page is left.
+  const [detached, setDetached] = useState<{ member: string; app: string } | null>(null)
   // The member the LAST open asked for, written synchronously by `activate`.
   // The URL sync effect below guards on this, not on `activeName`: the roster
   // is a React Query read, so a store update (the thread endpoint confirming a
@@ -2595,7 +2601,12 @@ export default function MembersPage() {
                   "reviewer (Customized)" made two answers to one question. */}
               <dd className="min-w-0 truncate" data-testid="member-config-template">
                 {active.template_origin
-                  ? t('pages.membersPage.own_copy_of', { template: active.template_origin })
+                  ? detached?.member === active.name && !active.template
+                    /* Just detached: "triage — customized copy" beside a Source
+                       of "Created here" reads as a contradiction; say what
+                       happened to the pair. */
+                    ? t('pages.membersPage.own_copy_of_detached', { template: active.template_origin, app: detached.app })
+                    : t('pages.membersPage.own_copy_of', { template: active.template_origin })
                   : active.kiro_agent || t('pages.membersPage.inherited')}
               </dd>
             </div>
@@ -2616,6 +2627,22 @@ export default function MembersPage() {
               <dd className="min-w-0 truncate">{String(active.memory_store ?? '')}</dd>
             </div>
           </dl>
+          {/* Role update + detach, for a member hired from a template: the
+              merge plan against the app as installed now, offered never
+              applied on its own (design step 4). */}
+          {active.template && (
+            <RoleUpdatePanel
+              member={active}
+              appLabel={templateAppLabel(active.template)}
+              onDetached={(app) => setDetached({ member: active.name, app })}
+            />
+          )}
+          {!active.template && detached?.member === active.name && (
+            /* Closure for the destructive success, where the panel stood. */
+            <p className="mt-3 text-[12px] text-muted" role="status" data-testid="member-detached-notice">
+              {t('pages.membersPage.detached_done', { app: detached.app })}
+            </p>
+          )}
           <div className="mt-3 flex flex-col gap-2 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
             <span>
               {activeMemory === 'global'

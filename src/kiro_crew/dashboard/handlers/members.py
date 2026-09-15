@@ -19,10 +19,12 @@ or opening threads that speak as them).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import Callable, Collection
 from datetime import datetime, timezone
+from pathlib import Path
 
 from aiohttp import web
 
@@ -30,9 +32,11 @@ import kiro_crew.dashboard.handlers as _h
 import kiro_crew.dashboard.handlers.agents as _agents_handlers
 from kiro_crew import agent_state, member_templates
 from kiro_crew import members as members_mod
-from kiro_crew.agent import agents_spec_lock
+from kiro_crew.agent import _spec_path_is_safe, agents_spec_lock, write_agent_definition
+from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.apps.manager import app_lifecycle_lock
 from kiro_crew.config.loader import (
+    KiroCrewAgentConfig,
     KiroCrewConfig,
     default_project_dir,
     update_config_locked,
@@ -45,7 +49,7 @@ from kiro_crew.dashboard.chat_utils import drained, effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
-from kiro_crew.member_identity import effective_display_name
+from kiro_crew.member_identity import display_name_too_long, effective_display_name
 from kiro_crew.members import MemberSlugError
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.validation import _AGENT_NAME_RE
@@ -1510,20 +1514,25 @@ def _link_member_to_template(
         return doc
 
     def publish_files(_doc: dict) -> None:
+        # After the row's commit landed, inside the same lock hold: a rename
+        # that fails leaves no base claiming a provenance the row never got,
+        # and a same-id fire + rehire (which takes this lock) cannot slip in
+        # between the row and its base or receive this hire's briefing.
         slug = members_mod.slug_for_name(member_id)
         wrote_pristine = wrote_briefing = False
         try:
-            member_templates.write_pristine_copy(slug, store)
+            member_templates.write_pristine_copy(member_id, store, generation=generation)
             wrote_pristine = True
             wrote_briefing = member_templates.seed_briefing(slug, store.initial_briefing)
             enroll(member_id, generation)
         except BaseException:
             # Still inside the lock hold, the row still this hire's: the files
-            # this step wrote go with it, or the next member to take the slug
-            # (a local hire, say) would inherit this hire's base and briefing
-            # as its own. The caller rolls the row back afterwards.
+            # this step wrote go with it, or the next member to take the id or
+            # the slug (a rehire, a local hire of the same name) would inherit
+            # this hire's base and briefing as its own. The caller rolls the
+            # row back afterwards.
             member_templates.remove_step_four_files(
-                slug, pristine=wrote_pristine, briefing=wrote_briefing
+                member_id, pristine=wrote_pristine, briefing=wrote_briefing
             )
             raise
 
@@ -1647,3 +1656,656 @@ def _remove_private_copy(copy_name: str, member_id: str) -> None:
 
     update_config_locked(mutate=_check_then_unlink)
     _agents_handlers.clear_list_agents_cache()
+
+
+# ── Role update (design step 4): three-way merge against the template ──
+
+
+def _member_row(cfg: KiroCrewConfig, member: str) -> KiroCrewAgentConfig | web.Response:
+    if not isinstance(member, str) or not _AGENT_NAME_RE.match(member):
+        return web.json_response(
+            {"error": "invalid member id", "code": "invalid_member"}, status=400
+        )
+    row = cfg.agents.get(member)
+    if row is None:
+        return web.json_response(
+            {"error": f"Crew Member {member!r} not found", "code": "member_not_found"}, status=404
+        )
+    return row
+
+
+def _template_unavailable(exc: member_templates.TemplateUnavailable) -> web.Response:
+    # The refusal quotes the ref it resolved -- template-author-typed text from
+    # an agent-writable config -- so it ships redacted like every identity string.
+    return web.json_response(
+        {"error": _redact_external(str(exc)), "code": exc.code}, status=exc.status
+    )
+
+
+def _load_member_spec(member: str, row: KiroCrewAgentConfig) -> tuple[dict, Path] | web.Response:
+    """The member's OWN agent file: read, and proven to be its private copy.
+
+    A role update rewrites this file, so the binding must be the copy the hire
+    made for THIS member (the sidecar's ``private_to``), read through the same
+    no-symlink / in-directory fence the agent editor's PATCH applies, and never
+    a shared template another member is bound to.
+    """
+    agents_dir = _agents_handlers.kiro_agents_dir_path()
+    copy_name = row.kiro_agent
+    # The binding is free text in a hand-editable, agent-writable config: a
+    # non-string (``kiro_agent: []``) or a value outside the agent-name grammar
+    # is not the name of any private copy -- answered as such, never handed
+    # to the sidecar lookup (an unhashable key there is a 500) or the path.
+    if not isinstance(copy_name, str) or not _AGENT_NAME_RE.match(copy_name):
+        return web.json_response(
+            {
+                "error": f"Crew Member {member!r} is not bound to its own copy of the template",
+                "code": "not_private_copy",
+            },
+            status=409,
+        )
+    fork = agent_state.get_fork_info(copy_name)
+    if not fork or fork.get("private_to") != member:
+        return web.json_response(
+            {
+                "error": f"Crew Member {member!r} is not bound to its own copy of the template",
+                "code": "not_private_copy",
+            },
+            status=409,
+        )
+    path = agents_dir / f"{copy_name}.json"
+    if not _spec_path_is_safe(path, agents_dir):
+        return web.json_response(
+            {"error": "the member's agent file is not a regular file", "code": "agent_unreadable"},
+            status=409,
+        )
+    spec = _read_agent_spec(path, operation="api_member_role_update", source="dashboard")
+    if spec is None:
+        return web.json_response(
+            {"error": "the member's agent file could not be read", "code": "agent_unreadable"},
+            status=409,
+        )
+    return spec, path
+
+
+def _role_update_plan(
+    member: str,
+    row: KiroCrewAgentConfig,
+) -> (
+    tuple[member_templates.StoreTemplate, dict, dict, Path, list[member_templates.FieldDelta]]
+    | web.Response
+):
+    """Everything the GET reports and the POST re-derives, on a worker thread.
+
+    Returns ``(template, pristine, spec, path, deltas)`` or a ready response.
+    """
+    if not row.template:
+        return web.json_response(
+            {
+                "error": f"Crew Member {member!r} was not hired from a template",
+                "code": "not_linked",
+            },
+            status=409,
+        )
+    try:
+        template = member_templates.resolve_template_ref(row.template)
+    except member_templates.TemplateUnavailable as exc:
+        return _template_unavailable(exc)
+    pristine = member_templates.read_pristine_copy(member, generation=row.memory_store)
+    if pristine is None or pristine.get("template") != row.template:
+        return web.json_response(
+            {
+                "error": "the member's pristine copy of the template is missing; there is no "
+                "base to merge against. Detach the member, or hire again",
+                "code": "pristine_copy_missing",
+            },
+            status=409,
+        )
+    loaded = _load_member_spec(member, row)
+    if isinstance(loaded, web.Response):
+        return loaded
+    spec, path = loaded
+    deltas = member_templates.plan_role_update(
+        pristine, spec, {"role": row.role, "triggers": row.triggers}, template
+    )
+    return template, pristine, spec, path, deltas
+
+
+def _member_fingerprint(spec: dict, row: KiroCrewAgentConfig) -> str:
+    """A digest of MINE as the plan saw it: the member's definition and card.
+
+    The apply must carry it back: a plan is a decision about the member AS
+    REVIEWED, and a member edited in between (a prompt rewritten in the crew
+    editor, a role renamed) makes a stale ``theirs`` choice overwrite the newer
+    customization. Canonical JSON so a re-read of the same file digests the same.
+    """
+    payload = json.dumps(
+        {"spec": spec, "role": row.role, "triggers": row.triggers},
+        sort_keys=True,
+        separators=(",", ":"),
+        # ``ensure_ascii=True``: the digest is over ``\uXXXX`` escapes, which
+        # every str -- including one holding a lone surrogate a member's
+        # spec file may carry -- serializes to; ``ensure_ascii=False`` puts the
+        # raw code point in the payload and ``.encode("utf-8")`` then raises
+        # on the surrogate, turning the plan into a 500.
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _template_fingerprint(template: member_templates.StoreTemplate) -> str:
+    """A digest of THEIRS as the plan saw it: the template's materialized
+    definition, its card and its version.
+
+    The version alone is not an anchor: an app can re-materialize different
+    bytes under the same version (a rewrite of the shipped file, a re-plumbed
+    bridge output), and an apply pinned to the version alone would merge a
+    template body nobody reviewed. The apply carries this back and a mismatch
+    is ``template_changed``, the same refusal a version move gets.
+    """
+    payload = json.dumps(
+        {
+            "version": template.version,
+            "spec": template.materialized_spec,
+            "role": template.card.role,
+            "triggers": template.card.triggers,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,  # see _member_fingerprint: encodable for every str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _redact_plan_leaves(value: object) -> object:
+    """Run the credential / exfiltration-URL redactors over every string leaf
+    (and string key) of a merge-plan field value, rebuilding lists and dicts.
+
+    The plan echoes each side's VALUE -- ``base`` (the pristine copy), ``mine``
+    (the member's own agent file) and ``theirs`` (the template as shipped) --
+    so the review dialog can show what each side says. Those are agent-file
+    fields: a prompt, a tools list, an ``mcpServers`` map whose ``env`` can
+    carry a token, a URL with a secret in its query. The file is
+    hand-editable and agent-writable, so a credential can sit in any of them,
+    and the plan GET would otherwise hand it to the dashboard verbatim. Same
+    discipline as the roster's identity strings (``_identity_text``) and the
+    MCP app payloads: scrub before the value crosses to the browser. Shapes
+    are preserved (the dialog renders by type); non-string scalars pass.
+
+    Iterative (an explicit work stack), like ``member_templates.json_equal``:
+    the value is JSON the parser accepted, and ``json.loads`` accepts nesting
+    far deeper than the interpreter's recursion limit, so a recursive rebuild
+    would raise ``RecursionError`` out of the plan GET and turn a legal file
+    into a 500. Each container is rebuilt into a fresh list/dict; the input is
+    never mutated (``delta.to_dict()`` hands out the plan's own values).
+    """
+
+    def _leaf(v: object) -> object:
+        return _redact_external(v) if isinstance(v, str) else v
+
+    def _shell(v: object) -> object:
+        # An empty container of the same kind, filled by the stack below.
+        return [] if isinstance(v, list) else {}
+
+    if not isinstance(value, (list, dict)):
+        return _leaf(value)
+    root = _shell(value)
+    # (source container, its rebuilt shell); children are appended to the
+    # shell in order, so a list keeps its order and a dict its key order.
+    stack: list[tuple[object, object]] = [(value, root)]
+    while stack:
+        src, dst = stack.pop()
+        if isinstance(src, list):
+            assert isinstance(dst, list)
+            for item in src:
+                if isinstance(item, (list, dict)):
+                    child = _shell(item)
+                    dst.append(child)
+                    stack.append((item, child))
+                else:
+                    dst.append(_leaf(item))
+        else:
+            assert isinstance(src, dict) and isinstance(dst, dict)
+            for k, v in src.items():
+                key = _redact_external(k) if isinstance(k, str) else k
+                if isinstance(v, (list, dict)):
+                    child = _shell(v)
+                    dst[key] = child
+                    stack.append((v, child))
+                else:
+                    dst[key] = _leaf(v)
+    return root
+
+
+def _redacted_field(delta: member_templates.FieldDelta) -> dict[str, object]:
+    """One plan field for the wire: every leaf redacted, then the opaque ``id``
+    set back verbatim -- the redactor must never rewrite the handle the apply
+    has to match a resolution to."""
+    out = _redact_plan_leaves(delta.to_dict())
+    if not isinstance(out, dict):  # pragma: no cover - to_dict() is a dict
+        return {"id": delta.id}
+    out["id"] = delta.id
+    return out
+
+
+def _plan_payload(
+    member: str,
+    row: KiroCrewAgentConfig,
+    template: member_templates.StoreTemplate,
+    pristine: dict,
+    spec: dict,
+    deltas: list[member_templates.FieldDelta],
+) -> dict:
+    return {
+        "member": member,
+        # The template ref is template-author-typed text in an agent-writable
+        # config, like every identity string the roster ships: redacted at the
+        # boundary (the fingerprints below are over the real value).
+        "template": _identity_text(row.template),
+        # Likewise the version: a config value an agent-writable file carries.
+        "member_version": _identity_text(row.template_version),
+        "installed_version": template.version,
+        # A BASE behind the recorded version -- a pristine write that failed
+        # after the row advanced -- keeps the update offered until the base
+        # catches up, otherwise later template changes read as false conflicts.
+        "update_available": member_templates.needs_update(deltas)
+        or template.version != row.template_version
+        or pristine.get("version") != row.template_version,
+        "member_fingerprint": _member_fingerprint(spec, row),
+        "template_fingerprint": _template_fingerprint(template),
+        # Values redacted at the boundary; the fingerprints above are taken
+        # over the REAL values, so a redacted echo never changes what the
+        # apply's expected_version / fingerprint check compares against.
+        # The opaque ``id`` (derived from the field name, carrying nothing of
+        # it) is what a resolution names; set AFTER the redaction pass so the
+        # redactor can never rewrite the handle the apply must match.
+        "fields": [_redacted_field(d) for d in deltas],
+    }
+
+
+async def api_member_role_update_get(request: web.Request) -> web.Response:
+    """GET /api/members/{member}/role-update — the merge plan, nothing written.
+
+    BASE is the pristine copy the hire recorded, MINE the member's own agent
+    file plus its ``role``/``triggers``, THEIRS the template as the app ships it
+    now. Each field is ``unchanged`` / ``apply`` (only the template changed) /
+    ``keep`` (only the member changed) / ``agree`` / ``conflict`` (both changed
+    apart -- the user picks). ``update_available`` is true when applying would
+    change the member or the version would move. Values are included so the
+    review dialog can show what each side says.
+    """
+    denied = await require_owner_dashboard_request(request, "member.role_update.plan")
+    if denied is not None:
+        return denied
+    member = request.match_info["member"]
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    row = _member_row(cfg, member)
+    if isinstance(row, web.Response):
+        return row
+    planned = await asyncio.to_thread(_role_update_plan, member, row)
+    if isinstance(planned, web.Response):
+        return planned
+    template, pristine, spec, _path, deltas = planned
+    return web.json_response(_plan_payload(member, row, template, pristine, spec, deltas))
+
+
+async def api_member_role_update_apply(request: web.Request) -> web.Response:
+    """POST /api/members/{member}/role-update — apply the merge.
+
+    Body ``{"resolutions": {"<field id>": "mine" | "theirs"}, "expected_version": "1.3.0",
+    "member_fingerprint": "<from the plan>", "template_fingerprint": "<from the plan>"}``.
+    The plan is re-derived here, under the app's lifecycle lock (so the
+    template cannot move mid-merge) and the config lock; ``expected_version``
+    is required and must equal the installed version the plan was made against
+    (400 when absent, 409 ``template_changed`` otherwise); ``template_fingerprint``
+    is required and must equal the digest of THEIRS the plan reported (409
+    ``template_changed`` otherwise: the version alone does not pin the bytes an
+    app materialized under it); ``member_fingerprint``
+    is required and must equal the digest of MINE the plan reported (409
+    ``member_changed_since_plan`` otherwise: a member edited between review and
+    apply makes a stale ``theirs`` choice overwrite the newer customization);
+    and every conflict must carry a
+    resolution (409 ``unresolved_conflicts`` naming them). Order of writes:
+    the member's agent file first (spec lock, governance funnel, atomic
+    replace), then the row (``role``, ``triggers``, ``template_version``) in a
+    locked read-modify-write that requires the binding to be unchanged, then
+    the pristine copy advances. A crash between steps is recoverable by the
+    next plan: an applied spec beside an un-advanced pristine copy reads as
+    ``agree``; the reverse order would read the update as the member's own
+    customization and lose it. Lived state -- briefing, rules, activity, DM
+    thread -- is never touched.
+    """
+    denied = await require_owner_dashboard_request(request, "member.role_update.apply")
+    if denied is not None:
+        return denied
+    member = request.match_info["member"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
+    raw_resolutions = body.get("resolutions", {})
+    if not isinstance(raw_resolutions, dict) or not all(
+        isinstance(k, str) and v in ("mine", "theirs") for k, v in raw_resolutions.items()
+    ):
+        return web.json_response(
+            {
+                "error": "resolutions must map plan field ids to 'mine' or 'theirs'",
+                "code": "invalid_resolutions",
+            },
+            status=400,
+        )
+    resolutions: dict[str, str] = dict(raw_resolutions)
+    expected_version = body.get("expected_version")
+    if not isinstance(expected_version, str) or not expected_version:
+        # Required, not optional: an apply is a decision about a plan the user
+        # reviewed, and the plan names the version it was made against. Without
+        # it the route would apply THEIRS nobody looked at.
+        return web.json_response(
+            {
+                "error": "expected_version is required: the installed version the plan was made against",
+                "code": "invalid_expected_version",
+            },
+            status=400,
+        )
+    fingerprint = body.get("member_fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return web.json_response(
+            {
+                "error": "member_fingerprint is required: the plan's digest of the member as reviewed",
+                "code": "invalid_member_fingerprint",
+            },
+            status=400,
+        )
+    theirs_fingerprint = body.get("template_fingerprint")
+    if not isinstance(theirs_fingerprint, str) or not theirs_fingerprint:
+        return web.json_response(
+            {
+                "error": "template_fingerprint is required: the plan's digest of the template as reviewed",
+                "code": "invalid_template_fingerprint",
+            },
+            status=400,
+        )
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    row = _member_row(cfg, member)
+    if isinstance(row, web.Response):
+        return row
+    if not row.template:
+        return web.json_response(
+            {
+                "error": f"Crew Member {member!r} was not hired from a template",
+                "code": "not_linked",
+            },
+            status=409,
+        )
+    app_name = row.template.partition("/")[0]
+    async with app_lifecycle_lock(app_name):
+        async with _agents_handlers._get_config_lock():
+            return await drained(
+                asyncio.to_thread(
+                    _apply_role_update,
+                    member,
+                    resolutions,
+                    expected_version,
+                    fingerprint,
+                    theirs_fingerprint,
+                )
+            )
+
+
+class _ApplyRefused(Exception):
+    """A re-check inside the apply's locked mutation refused it; the response is ready."""
+
+
+def _apply_role_update(
+    member: str,
+    resolutions: dict[str, str],
+    expected_version: str,
+    fingerprint: str,
+    theirs_fingerprint: str,
+) -> web.Response:
+    cfg = KiroCrewConfig.load()
+    row = _member_row(cfg, member)
+    if isinstance(row, web.Response):
+        return row
+    planned = _role_update_plan(member, row)
+    if isinstance(planned, web.Response):
+        return planned
+    template, _pristine, spec, path, deltas = planned
+    if fingerprint != _member_fingerprint(spec, row):
+        return web.json_response(
+            {
+                "error": "the member changed since the plan was made; review it again",
+                "code": "member_changed_since_plan",
+            },
+            status=409,
+        )
+    if expected_version != template.version:
+        return web.json_response(
+            {
+                "error": f"the template moved to v{template.version} since the plan was made; "
+                "review it again",
+                "code": "template_changed",
+                "installed_version": template.version,
+            },
+            status=409,
+        )
+    if theirs_fingerprint != _template_fingerprint(template):
+        return web.json_response(
+            {
+                "error": f"the template's definition changed under v{template.version} since "
+                "the plan was made; review it again",
+                "code": "template_changed",
+                "installed_version": template.version,
+            },
+            status=409,
+        )
+    try:
+        new_spec, new_card = member_templates.merge_role_update(
+            spec, {"role": row.role, "triggers": row.triggers}, deltas, resolutions
+        )
+    except member_templates.UnresolvedConflicts as exc:
+        return web.json_response(
+            {
+                "error": "every conflicting field needs a resolution",
+                "code": "unresolved_conflicts",
+                # Opaque ids (what the client resolves by) and the redacted
+                # labels beside them -- never the field names raw, which a
+                # hand-edited agent file can make credential-shaped.
+                "fields": exc.fields,
+                "labels": [_identity_text(label) for label in exc.labels],
+            },
+            status=409,
+        )
+    if display_name_too_long(new_card["role"]):
+        return web.json_response(
+            {"error": "the template's role is too long", "code": "role_too_long"}, status=409
+        )
+    # The member's id stays the file's declared name whatever the template says.
+    new_spec["name"] = spec.get("name", row.kiro_agent)
+    agents_dir = _agents_handlers.kiro_agents_dir_path()
+    copy_name = row.kiro_agent
+    generation = row.memory_store
+    stale_card = False
+    refused: list[web.Response] = []
+
+    def mutate(doc: dict) -> dict:
+        # Every re-check runs INSIDE the config file lock, and the agent file
+        # is written only after ALL of them passed -- the row's binding and
+        # generation, the card half of MINE, the copy's lineage and the file's
+        # own bytes. Written before the card check, a stale card's 409 would
+        # leave the merged spec on disk over the member's customizations with
+        # the row and base still behind it -- the customization lost, the
+        # plan reporting nothing to re-apply. Spec lock INNER, config lock
+        # outer: the nesting every other writer of both uses.
+        nonlocal stale_card
+        agents = doc.get("agents")
+        entry = agents.get(member) if isinstance(agents, dict) else None
+        if not isinstance(entry, dict):
+            raise UnknownMemoryStore(f"Crew Member {member!r} was removed concurrently")
+        if entry.get("kiro_agent") != copy_name or entry.get("memory_store") != generation:
+            raise UnknownMemoryStore(f"Crew Member {member!r} was rebound concurrently")
+        # The LINEAGE too, ref AND version: a detach that committed after the
+        # plan strips ``template`` (and its version) without touching the
+        # binding or the generation, so the two checks above would let this
+        # apply write a merged definition -- and a new base -- over a member
+        # the owner just set free of the template; and an apply of this same
+        # plan that committed in another process advanced the version while
+        # keeping MINE on a conflict, so a second apply that passed on ref
+        # alone would write THEIRS over the choice the first one committed. A
+        # row whose template or version is not the plan's is not the member
+        # this plan was made for.
+        if (entry.get("template") or "") != (row.template or "") or (
+            entry.get("template_version") or ""
+        ) != (row.template_version or ""):
+            raise UnknownMemoryStore(
+                f"Crew Member {member!r} was detached from, updated from or rebound to "
+                "another template concurrently"
+            )
+        # The CARD half of MINE, re-read under the cross-process lock: a role
+        # or triggers edit that landed after the plan (the crew editor, in
+        # this or another process) is a customization this merge never saw,
+        # and writing the merged card over it would erase it. The binding and
+        # generation alone do not see such an edit.
+        if (entry.get("role") or "") != row.role or (entry.get("triggers") or "") != row.triggers:
+            stale_card = True
+            raise UnknownMemoryStore("the member changed since the plan was made; review it again")
+        with agents_spec_lock(agents_dir):
+            # The lineage, inside the spec lock: the file is rewritten below.
+            fork = agent_state.get_fork_info(copy_name)
+            if not fork or fork.get("private_to") != member:
+                refused.append(
+                    web.json_response(
+                        {"error": "the member's copy changed hands", "code": "not_private_copy"},
+                        status=409,
+                    )
+                )
+                raise _ApplyRefused()
+            # And the FILE itself, re-read under the same lock every other
+            # writer of it takes (the fork refresh that re-materializes MCP
+            # commands and hooks, the agent editor's PATCH): the plan read it
+            # before any lock, and a whole-file write of a merge computed from
+            # that older snapshot would revert whatever landed in between. The
+            # merge is applied only when the bytes under the lock are still
+            # the bytes the plan digested.
+            current = _read_agent_spec(path, operation="api_member_role_update", source="dashboard")
+            if current is None or _member_fingerprint(current, row) != fingerprint:
+                refused.append(
+                    web.json_response(
+                        {
+                            "error": "the member changed since the plan was made; review it again",
+                            "code": "member_changed_since_plan",
+                        },
+                        status=409,
+                    )
+                )
+                raise _ApplyRefused()
+            write_agent_definition(path, new_spec)
+        entry["role"] = new_card["role"]
+        entry["triggers"] = new_card["triggers"]
+        entry["template_version"] = template.version
+        return doc
+
+    def advance_base(_doc: dict) -> None:
+        # The pristine copy advances AFTER the row's commit landed and INSIDE
+        # the same lock hold. After, because the base is the row's provenance
+        # made concrete: a config rename that fails must leave the base where
+        # the row still is, or the next plan merges v(n+1) changes against a
+        # v(n+2) BASE and reads the template's own edits as the member's.
+        # Inside, because a same-id member replaced after this write (fire +
+        # rehire, which take this lock) can never receive a late pristine
+        # write stamped with the old generation over its own base. The
+        # publish is atomic, so a failure here keeps the PREVIOUS base intact:
+        # the row is ahead of it by one version, the next plan sees MINE equal
+        # to THEIRS on every field the template changed and its apply rewrites
+        # the base -- the state self-corrects rather than refusing.
+        try:
+            member_templates.write_pristine_copy(member, template, generation=generation)
+        except OSError:
+            logger.warning(
+                "role update %r: applied, but the pristine base could not be advanced",
+                member,
+                exc_info=True,
+            )
+
+    try:
+        update_config_locked(mutate=mutate, after_write=advance_base)
+    except _ApplyRefused:
+        return refused[0]
+    except UnknownMemoryStore as exc:
+        if stale_card:
+            return web.json_response(
+                {"error": str(exc), "code": "member_changed_since_plan"}, status=409
+            )
+        return web.json_response({"error": str(exc), "code": "member_changed"}, status=409)
+    _agents_handlers.clear_list_agents_cache()
+    return web.json_response({"ok": True})
+
+
+async def api_member_detach(request: web.Request) -> web.Response:
+    """POST /api/members/{member}/detach — sever the member from its template.
+
+    Clears ``template`` / ``template_version`` on the row and removes the
+    pristine copy; the member's agent file, role, triggers and every piece of
+    lived state stay exactly as they are. One-way: a detached member is
+    behaviorally a member hired from a local file, and re-linking is a hire.
+    """
+    denied = await require_owner_dashboard_request(request, "member.detach")
+    if denied is not None:
+        return denied
+    member = request.match_info["member"]
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    row = _member_row(cfg, member)
+    if isinstance(row, web.Response):
+        return row
+    if not row.template:
+        return web.json_response(
+            {"error": f"Crew Member {member!r} is not linked to a template", "code": "not_linked"},
+            status=409,
+        )
+    async with _agents_handlers._get_config_lock():
+        return await drained(
+            asyncio.to_thread(_detach_member, member, row.memory_store, row.template)
+        )
+
+
+def _detach_member(member: str, generation: str, template: str) -> web.Response:
+    """Sever inside the locked mutation, only from the row the request saw.
+
+    The row is re-read under the lock and must still carry the store
+    *generation* (unique per creation) and the *template* the caller validated
+    against: a same-id member replaced in between is somebody else's, and its
+    provenance and pristine base are not this request's to remove.
+    """
+
+    def mutate(doc: dict) -> dict:
+        agents = doc.get("agents")
+        entry = agents.get(member) if isinstance(agents, dict) else None
+        if not isinstance(entry, dict):
+            raise UnknownMemoryStore(f"Crew Member {member!r} was removed concurrently")
+        if entry.get("memory_store") != generation or entry.get("template") != template:
+            raise UnknownMemoryStore(f"Crew Member {member!r} was replaced concurrently")
+        entry.pop("template", None)
+        entry.pop("template_version", None)
+        return doc
+
+    def remove_base(_doc: dict) -> None:
+        # After the row's commit and inside the same hold, for the reasons the
+        # apply advances its base there: a rename that fails keeps a still
+        # linked row's base, and a same-id rehire after this write cannot lose
+        # its fresh base to this detach's late removal. A base that survives
+        # a failed removal is an orphan: the row does not point at it.
+        try:
+            member_templates.remove_pristine_copy(member)
+        except OSError:
+            logger.warning("detach %r: the pristine copy could not be removed", member)
+
+    try:
+        update_config_locked(mutate=mutate, after_write=remove_base)
+    except UnknownMemoryStore as exc:
+        return web.json_response({"error": str(exc), "code": "member_changed"}, status=409)
+    _agents_handlers.clear_list_agents_cache()
+    return web.json_response({"ok": True})

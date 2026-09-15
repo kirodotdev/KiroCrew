@@ -116,12 +116,12 @@ async def test_patch_write_is_governance_sanitized(tmp_path):
     def fake_sanitize(config):
         config["allowedTools"] = ["governance-filtered"]
 
+    # The PATCH lands through the one whole-definition writer
+    # (``agent.write_agent_definition``), which runs the funnel right before the
+    # atomic write; patch the funnel where that writer resolves it.
     with (
         patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path),
-        patch(
-            "kiro_crew.dashboard.handlers.agents.sanitize_agent_config_governance",
-            fake_sanitize,
-        ),
+        patch("kiro_crew.agent.sanitize_agent_config_governance", fake_sanitize),
     ):
         resp = await api_agent_detail(request)
 

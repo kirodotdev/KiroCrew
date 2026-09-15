@@ -2310,6 +2310,47 @@ export interface HireMemberResult {
   id?: string
 }
 
+/** One field of a role-update plan (GET /api/members/{id}/role-update): the
+ *  three-way state of one template-provided definition field or card field.
+ *  `field` is `spec.<agent-file key>` or `card.role` / `card.triggers`. A side
+ *  that has no such key is absent (not `null`, which is a JSON value). */
+export interface RoleUpdateField {
+  /** The stable, opaque handle a resolution names (derived from the field name,
+   *  carrying nothing of it). `field` is a redacted LABEL -- an agent-writable
+   *  file can make a top-level key credential-shaped -- so it is never a key. */
+  id: string
+  field: string
+  state: 'unchanged' | 'apply' | 'keep' | 'agree' | 'conflict'
+  base?: unknown
+  mine?: unknown
+  theirs?: unknown
+}
+
+/** The merge plan for a member hired from a template: BASE the pristine copy
+ *  the hire recorded, MINE the member, THEIRS the template as installed now. */
+export interface RoleUpdatePlan {
+  member: string
+  template: string
+  member_version: string
+  installed_version: string
+  /** Applying would change the member, or the recorded version would move. */
+  update_available: boolean
+  /** A digest of the member as reviewed (definition + card). The apply must
+   *  carry it back; a member edited in between is refused, never merged over. */
+  member_fingerprint: string
+  /** A digest of the template as reviewed (materialized definition + card +
+   *  version). The apply must carry it back too: the version alone does not pin
+   *  the bytes an app materialized under it. */
+  template_fingerprint: string
+  fields: RoleUpdateField[]
+}
+
+/** `{ok}` like detach: the panel refetches the roster and the plan after an
+ *  apply, so the response carries nothing the refetch does not. */
+export interface RoleUpdateResult {
+  ok: boolean
+}
+
 /** One row of GET /api/members — a global crew as a Crew Members roster entry.
  *  Crew-record fields (kiro_agent, workspace, memory_store, model, …) are
  *  spread verbatim from the backend dataclass; only the fields the page reads
@@ -3119,6 +3160,16 @@ export const api = {
    *  the wrapper row (id minted from the name), copies the source definition
    *  into a member-owned agent file and enrolls the crewmate, atomically. */
   hireMember: (body: object) => post('/api/members', body).then(j) as Promise<HireMemberResult>,
+  /** The role-update plan for a template-hired member; nothing is written. */
+  memberRoleUpdatePlan: (member: string) =>
+    fetch('/api/members/' + encodeURIComponent(member) + '/role-update').then(j) as Promise<RoleUpdatePlan>,
+  /** Apply the merge. `resolutions` names a side for every conflicting field;
+   *  `expected_version` is the installed version the plan was made against. */
+  applyMemberRoleUpdate: (member: string, body: { resolutions: Record<string, 'mine' | 'theirs'>; expected_version: string; member_fingerprint: string; template_fingerprint: string }) =>
+    post('/api/members/' + encodeURIComponent(member) + '/role-update', body).then(j) as Promise<RoleUpdateResult>,
+  /** Sever a member from its template: provenance cleared, everything else kept. One-way. */
+  detachMember: (member: string) =>
+    post('/api/members/' + encodeURIComponent(member) + '/detach', {}).then(j) as Promise<{ ok: boolean }>,
   // Crew Members page — roster of GLOBAL crews with DM-thread binding and the
   // cheap live-status fields the backend can answer without IO (richer live
   // detail rides the already-subscribed WS `slots` frames).

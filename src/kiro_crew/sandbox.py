@@ -311,6 +311,17 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # packs the user cannot get back -- the same data-loss class ``backup`` and
     # ``workflow_library`` are masked for.
     "appearance-library",
+    # The crew members' pristine template copies (``member_templates.py``): the
+    # BASE of a role update's three-way merge, one file per member. Written and
+    # read only by the GATEWAY (the owner-gated ``/api/members/*/role-update``
+    # routes and the store hire); nothing in-sandbox opens one. Left visible, a
+    # spawned interpreter could rewrite a base by ``open()`` -- past the file-tool
+    # gate -- and a forged base makes the next merge skip a template change or
+    # overwrite the member's customizations silently. HIDDEN, not read-only,
+    # because a base is also what a member's own agent must not read to learn
+    # which of its instructions are its user's edits. A TOP-LEVEL leaf: the
+    # ``trust`` subtree is sandbox-visible (see ``_CREW_SANDBOX_VISIBLE_LEAVES``).
+    "member-templates",
     "agentcore-inbound",
     "routing",
     "webhooks",
@@ -832,6 +843,12 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
     "appearance-library",
     "quarantined-clones",
+    # The members' pristine template copies share the first-use shape: the root
+    # is built by the first store hire, so an install that has never hired from
+    # the store offers the mask loop no name, and that first hire would create
+    # the merge BASE visible to every sandbox already running. The writer's own
+    # ``mkdir`` is ``exist_ok`` and tightens the mode it finds.
+    "member-templates",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
     # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the

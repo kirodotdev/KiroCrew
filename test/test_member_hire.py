@@ -1164,9 +1164,13 @@ class TestStoreHire:
             assert roster[member_id]["template_version"] == "1.2.0"
             # Lineage names the copy's source by its DECLARED name, as the fork records it.
             assert roster[member_id]["template_origin"] == "triage"
-            # The pristine copy (BASE of a later merge) and the seeded briefing.
+            # The pristine copy (BASE of a later merge) -- under trust/, keyed by
+            # the member ID and stamped with its store generation -- and the
+            # seeded briefing.
             slug = members.slug_for_name(member_id)
-            pristine = json.loads(member_templates.pristine_copy_path(slug).read_text())
+            pristine = json.loads(member_templates.pristine_copy_path(member_id).read_text())
+            assert pristine["member"] == member_id
+            assert pristine["generation"] == row.memory_store
             assert pristine["template"] == f"{APP}/triage"
             assert pristine["version"] == "1.2.0"
             assert pristine["agent"]["prompt"] == "You triage incidents."
@@ -1483,7 +1487,7 @@ class TestStoreHire:
         design): the hire copies the MATERIALIZED definition -- what sessions on
         that template run -- and records THAT as the pristine BASE. BASE and the
         member's file are the same dict; the rewritten shipped spec is neither."""
-        from kiro_crew import member_templates, members
+        from kiro_crew import member_templates
 
         rewritten = {
             "name": "triage",
@@ -1497,8 +1501,7 @@ class TestStoreHire:
             assert resp.status == 200, await resp.text()
             member_id = (await resp.json())["id"]
         copied = json.loads((agents_dir / f"{member_id}.json").read_text())
-        slug = members.slug_for_name(member_id)
-        pristine = json.loads(member_templates.pristine_copy_path(slug).read_text())
+        pristine = json.loads(member_templates.pristine_copy_path(member_id).read_text())
         assert copied["prompt"] == "You triage incidents."
         assert pristine["agent"]["prompt"] == "You triage incidents."
         assert pristine["agent"]["tools"] == ["ReadFile"]
@@ -1834,7 +1837,7 @@ class TestStoreHire:
         real = member_templates.write_pristine_copy
         seen: list[tuple[bool, str]] = []
 
-        def _observe(slug, store, **kwargs):
+        def _observe(member_id, store, **kwargs):
             contended = False
             try:
                 update_config_locked(mutate=lambda _d: None, wait_for_lock=False)
@@ -1844,16 +1847,16 @@ class TestStoreHire:
                 "template", ""
             )
             seen.append((contended, linked))
-            return real(slug, store, **kwargs)
+            return real(member_id, store, **kwargs)
 
         with patch.object(member_templates, "write_pristine_copy", side_effect=_observe):
             async with TestClient(TestServer(_app())) as client:
                 resp = await client.post("/api/members", json=_store_hire("Checkout triage"))
                 assert resp.status == 200, await resp.text()
         assert seen == [(True, f"{APP}/triage")]
-        slug = members.slug_for_name("Checkout-triage")
-        assert member_templates.pristine_copy_path(slug).exists()
-        assert members.member_briefing_path(slug).exists()
+        # The base is keyed by the member id, the briefing by the slug.
+        assert member_templates.pristine_copy_path("Checkout-triage").exists()
+        assert members.member_briefing_path(members.slug_for_name("Checkout-triage")).exists()
 
         real_write = loader.write_config_atomically
 
@@ -1869,9 +1872,8 @@ class TestStoreHire:
                 assert resp.status == 500, await resp.text()
                 assert (await resp.json())["code"] == "template_link_failed"
         assert "Payments-triage" not in KiroCrewConfig.load().agents
-        slug = members.slug_for_name("Payments-triage")
-        assert not member_templates.pristine_copy_path(slug).exists()
-        assert not members.member_briefing_path(slug).exists()
+        assert not member_templates.pristine_copy_path("Payments-triage").exists()
+        assert not members.member_briefing_path(members.slug_for_name("Payments-triage")).exists()
 
     @pytest.mark.asyncio
     async def test_a_failed_template_link_rolls_the_hire_back(
@@ -1934,7 +1936,7 @@ class TestStoreHire:
 
         slug = members.slug_for_name("Checkout-triage")
         briefing = members.member_briefing_path(slug)
-        pristine = member_templates.pristine_copy_path(slug)
+        pristine = member_templates.pristine_copy_path("Checkout-triage")
         with patch.object(
             agent_state, "set_crewmate_record", side_effect=OSError("sidecar unwritable")
         ):
@@ -2396,5 +2398,5 @@ class TestStoreHire:
         assert copy["prompt"] == rendered[1]["prompt"]
         assert "Swapped" not in json.dumps(copy)
         # The pristine BASE is the verified shipped spec, not the swap either.
-        base = json.loads(member_templates.pristine_copy_path("checkout-triage").read_text())
+        base = json.loads(member_templates.pristine_copy_path("Checkout-triage").read_text())
         assert base["agent"]["prompt"] == json.loads(agent_bytes)["prompt"]

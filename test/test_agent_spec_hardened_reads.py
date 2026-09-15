@@ -939,6 +939,14 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("forward:operation", "dashboard"),
     ],
     "kiro_crew/dashboard/handlers/hooks.py": [("api_kiro_hooks", "dashboard")],
+    # The role update reads the member's own agent file twice: once for the
+    # plan (MINE), and again INSIDE agents_spec_lock before the merged file is
+    # written, so a whole-file write never reverts an edit that landed between
+    # the plan and the lock.
+    "kiro_crew/dashboard/handlers/members.py": [
+        ("api_member_role_update", "dashboard"),
+        ("api_member_role_update", "dashboard"),
+    ],
     "kiro_crew/dashboard/handlers/mcp.py": [
         ("api_mcp_active", "dashboard"),
         ("mcp_find_server_spec", "dashboard"),

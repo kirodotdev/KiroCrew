@@ -529,16 +529,29 @@ as its own; a rename that fails writes neither file and the hire rolls back:
 records `template` (`<app>/<agent name>`) and `template_version` (the app's
 manifest version) on the row in a locked read-modify-write that requires the row
 to still carry this hire's generation and copy, writes the **pristine copy**
-`members/<slug>/template.json` (`member_templates.write_pristine_copy`: the agent
-definition as MATERIALIZED -- the same dict the hire copied into the member's file,
-never the raw shipped spec, so BASE and copy are one and the same at the hire even
-when an unsigned app's shipped file was rewritten without its materialized file
-being re-rendered, and a later merge does not read the bridge's plumbing as the
-member's customization -- plus the card's `role`/`triggers` at that version -- the
-BASE a later role update three-way merges against; published through
-`pinned_fs.write_file_pinned`, since the member directory is agent-writable and a
-by-name replace there is a truncation primitive pointed at whatever a planted link
-resolves to), and writes `members/<slug>/briefing.md` from the card's
+`<data home>/member-templates/<member id>.json` (`member_templates.write_pristine_copy`:
+the agent definition as MATERIALIZED -- the `<app>--<agent>` file the hire copies,
+the app bridge's own servers and managed refs included, never the raw shipped spec,
+so BASE and copy are one and the same at the hire even when an unsigned app's
+shipped file was rewritten without its materialized file being re-rendered, and a
+later merge does not read the bridge's plumbing as the member's customization --
+plus the card's `role`/`triggers` at that version, stamped with the member id and
+the private-store generation -- the BASE a later role update three-way merges
+against; written through `update_config_locked(after_write=)`, i.e. AFTER the row's
+rename landed and INSIDE the same lock hold, so a rename that fails leaves no base
+claiming a provenance no row got and a same-id fire + rehire cannot slip between the
+row and its base; keyed by the immutable id in a gateway-only TOP-LEVEL leaf of the
+data home -- on `sandbox._CREW_HIDDEN_LEAVES` (bind-masked from every sandboxed
+process; `trust/`, where it once lived, is sandbox-VISIBLE because the SEL key and
+log have in-sandbox readers, so a spawned interpreter's `open()` could rewrite a base
+there past the file-tool gate), on `_CREW_PRECREATE_HIDDEN_DIR_LEAVES` (materialized
+owner-only before each spawn, since the root is otherwise built by the first store
+hire and the mask loop is guarded on `isdir`) and on `security._CREW_SECRET_LEAVES`
+(the agent file tools refuse it on every OS); NOT in `members/<slug>/`: that
+directory is agent-writable and its slug is lossy, so a BASE kept there could be
+forged by an agent or shared by two members, and a forged or shared BASE makes the
+merge skip a template change or overwrite a customization silently; published
+through `pinned_fs.write_file_pinned`), and writes `members/<slug>/briefing.md` from the card's
 `initial_briefing` (`seed_briefing`: the member did not exist until this locked
 publication and no row held its slug -- the slug admission refuses a collision -- so
 nothing at that name is the member's lived state: the member directory is
@@ -809,6 +822,234 @@ nothing, a forked private copy on a `member-` store included; the two-phase
 store move covers the row on either store) and in the hire tests above; the
 DM-thread, rules and memory-ownership suites enroll the stand-in rows they
 address.
+
+## Role update and detach (design step 4)
+
+A member hired from a template can take the template's newer version without
+losing what it has become, and can leave the template for good. Both verbs live
+in `handlers/members.py` and `member_templates.py`; neither touches lived state
+(briefing, rules, activity, the DM thread) or the member's id.
+
+**The plan: `GET /api/members/{member}/role-update`.** Owner-gated; nothing is
+written. The three sides are the **pristine copy**
+`<data home>/member-templates/<member id>.json` the hire recorded (BASE --
+`read_pristine_copy`, pinned read, shape-validated, and it must name THIS member id,
+THIS row's private-store generation and the row's own `template` -- a copy written
+for a same-id member that was deleted and re-hired, or a same-name file on a
+case-insensitive filesystem, is not this member's base -- else 409
+`pristine_copy_missing`; read under the copy's own cap, `PRISTINE_COPY_MAX_BYTES`,
+eight times the spec cap, since the copy wraps the materialized spec in an envelope
+and is written pretty-printed with `ensure_ascii`, so a spec near
+`TEMPLATE_SPEC_MAX_BYTES` comes back several times larger and a read cap equal to
+the spec cap would refuse the very file the hire wrote --
+`test_a_pristine_copy_of_a_spec_near_the_cap_still_reads`), the
+member's OWN agent file plus its `role` and `triggers` (MINE -- the file is read
+through the editor's no-symlink / in-directory fence and must be the copy the
+sidecar names as `private_to` this member, else 409 `not_private_copy` -- a binding that is not a string or is outside the agent-name grammar (`kiro_agent: []` in a hand-edited config) is the same 409 from the plan and the apply (detach never reads the binding), never a sidecar lookup on an unhashable key (pinned: `test_a_malformed_binding_is_not_private_copy_not_a_500`): a row
+hand-pointed at the app's shared materialized file would otherwise have the update
+rewrite a file every member of that template shares), and the template as
+MATERIALIZED now -- the `<app>--<agent>` file the bridge writes, the same form the
+hire copied and the pristine copy recorded, so the bridge's own servers and managed
+refs read as `unchanged`, never as the member's edit (THEIRS -- `resolve_template_ref`
+walks the app's cards to the one whose agent declares the row's recorded name and
+resolves it with every check the hire runs, so a disabled, uninstalled, tampered or
+unmaterialized template answers with the hire's own codes). A member with no `template` is 409 `not_linked`.
+
+`plan_role_update` compares field by field. The fields are the union of the agent
+definition's keys on the three sides -- except `name`, which is the member's id on
+one side and the template's on the other and nobody's customization -- plus the
+card's `role` and `triggers`; a side that lacks a key is `MISSING`, distinct from a
+key set to JSON null. Equality is whole-value JSON equality (`member_templates.json_equal`:
+same type and same value through every level -- never Python's `==`, under which
+`true == 1` and `1 == 1.0`, so a member's `strict: true` -> `1` would read as
+unchanged and a template flipping the flag would be applied over the edit with no
+conflict; iterative on an explicit work stack, not recursive, since `json.loads`
+accepts nesting far past the recursion limit and a recursive compare would turn a
+legal file into a 500; pinned:
+`test_a_type_change_is_a_change_json_equality_not_pythons`,
+`test_deeply_nested_values_compare_without_recursing`): a tool list that gained
+one entry is one changed field, because a definition is what its author reviewed as
+a whole.
+Each field is `unchanged`, `apply` (only THEIRS changed), `keep` (only MINE
+changed), `agree` (both changed to the same value) or `conflict` (both changed
+apart -- the user picks). The response carries every field with its three values --
+each run, string leaf by string leaf and key by key with shapes preserved, through
+the credential / exfiltration-URL redactors before it leaves (`_redact_plan_leaves`:
+agent-file fields -- an `mcpServers` env, a URL with a secret in its query, a
+prompt -- are hand-editable, agent-writable or a third party's text, and the plan
+would otherwise hand a token to the browser verbatim; the fingerprints below are
+over the REAL values, so a redacted echo never changes what an apply is checked
+against -- pinned: `test_the_plan_echoes_no_credential_from_either_side`; the row's
+`template` ref and an unavailable template's refusal text, both template-author-typed,
+ship through the same redactor -- `test_the_plan_redacts_a_credential_shaped_template_ref`) -- and
+`update_available` -- true when any field is `apply` or `conflict`, when the
+installed version differs from the row's `template_version` (a version-only move
+still advances the record), or when the pristine copy's version is behind the
+row's (a pristine write that failed after the row advanced: applying is what
+rewrites the base, and a stale base would turn the next template change into false
+conflicts). It also carries `member_fingerprint`, a digest of MINE as the plan saw
+it (the definition plus the row's `role` and `triggers`, canonical JSON, sha256
+truncated) and `template_fingerprint`, the same digest of THEIRS (the materialized
+definition, the card's role and triggers, the version). Update is offered, never
+automatic: nothing in the gateway applies a plan by itself. A stored ref that two
+cards' agents both answer to is 409 `template_ambiguous`, never resolved by card
+order (the manifest validator refuses such an app at install and re-validation; the
+ref is a stored string, so the resolver checks too), and an app's own verdicts --
+disabled, admission-denied, an invalid crew section -- surface as themselves from
+whichever card raised them, never as `template_not_offered`.
+
+**Applying: `POST /api/members/{member}/role-update`** with
+`{"resolutions": {"<field>": "mine" | "theirs"}, "expected_version": "<v>",
+"member_fingerprint": "<from the plan>", "template_fingerprint": "<from the plan>"}`.
+The plan is re-derived under the app's lifecycle lock (the template cannot move
+mid-merge) and the config lock, and drained like a hire. All three anchors are
+REQUIRED: an apply is a decision about a plan the user reviewed, and the plan names
+the version it was made against, the template body it read and the member it was
+made about. `expected_version`
+(400 `invalid_expected_version` when absent; without it the route would apply a
+THEIRS nobody looked at) must equal the
+installed version (409 `template_changed`, naming the version now installed);
+`template_fingerprint` (400 `invalid_template_fingerprint` when absent) must equal
+the re-derived plan's digest of THEIRS (409 `template_changed` too: the version alone
+does not pin the bytes an app materialized under it -- a shipped file rewritten or
+re-plumbed under the same version would otherwise merge a body nobody reviewed);
+`member_fingerprint` (400 `invalid_member_fingerprint` when absent) must equal the
+re-derived plan's digest of MINE (409 `member_changed_since_plan`: a prompt rewritten
+in the crew editor or a role renamed between review and apply would otherwise let a
+stale `theirs` choice overwrite the newer customization; the panel re-reads the plan
+and the user reviews again); every
+`conflict` needs a resolution, keyed by the field's opaque **`id`** (`field_id`:
+`f` + 12 hex of the field name's SHA-256, set on every plan field after the
+redaction pass) -- never by the field NAME, which is member- or template-authored
+text (a hand-edited agent file can carry a credential-shaped top-level key) and so
+ships as a redacted label the apply could not match back; the refusal (409
+`unresolved_conflicts`) names the ids and the redacted labels, never the raw names
+-- a partial resolution never half-applies; a resolution for a field not in
+conflict is ignored, the plan decides what is in conflict (pinned:
+`test_the_plan_redacts_a_credential_shaped_version_and_resolves_conflicts_by_id`,
+which also pins `member_version` -- the row's `template_version` -- through the
+redactor). `merge_role_update`
+takes THEIRS for `apply` and for a conflict resolved `theirs`, keeps MINE
+otherwise, and removes a key the template removed when that applies; the member's
+declared `name` is written back unchanged. Everything below happens INSIDE one
+`update_config_locked` mutation -- config file lock outer, spec lock inner, the
+nesting every other writer of both uses -- and NOTHING is written until every
+re-check has passed: (1) the row's binding and private-store generation must be
+unchanged, and so must its lineage -- `template` AND `template_version` (409
+`member_changed`: a detach that committed after the plan strips the ref; an apply of
+this same plan that committed in another process, keeping MINE on a conflict,
+advances the version alone, and a re-check on the ref alone would let a second apply
+write THEIRS over the choice the first one committed --
+`test_a_second_apply_of_one_plan_does_not_overwrite_the_first_ones_choice`) AND its
+`role` / `triggers` still the card half of
+MINE the plan digested (409 `member_changed_since_plan`: a card edit that landed in
+another process after the plan is a customization this merge never saw, and the
+binding alone would not see it); (2) inside the spec lock, the copy's lineage is
+re-checked (409 `not_private_copy`) and the FILE is re-read and re-digested and
+must still match `member_fingerprint` (409 `member_changed_since_plan`: the plan
+read the file before any lock, and the fork refresh or the agent editor -- every
+other writer of it takes this lock -- may have landed in between; a whole-file
+write of the older merge would revert their write); only then is the member's
+agent file written -- through **`agent.write_agent_definition`**, the ONE writer
+of a whole agent definition a merge or a patch produced, shared with the agent
+editor's PATCH overwrite (the merged definition passes
+`sanitize_agent_config_governance`, the same whole-config funnel every spec writer
+runs before persisting, so a grant governance withholds cannot arrive through a
+template; then an atomic replace whose shared-template fingerprint follows the
+bytes); the caller owns the locks and the identity checks, the function owns
+governance and atomicity (pinned:
+`test_the_members_definition_is_written_through_the_one_member_writer`,
+`test_patch_write_is_governance_sanitized`) -- and the row's `role`, `triggers`
+and `template_version` updated in the same document. The file is written AFTER the card check on purpose:
+written before it, a stale card's 409 would leave the template's spec on disk over
+the member's customization with the row and base still behind it -- the
+customization lost and the next plan reporting nothing to re-apply (pinned:
+`test_a_card_edit_landing_inside_the_apply_is_not_overwritten`, the member's own
+prompt intact after the refusal); (3) the pristine copy advances to the new version (`write_pristine_copy`) AFTER the
+row's rename landed and INSIDE the same lock hold (`update_config_locked(after_write=)`):
+after, because the base is the row's provenance made concrete -- a rename that fails
+must leave the base where the row still is, or the next plan would merge against a
+BASE one version ahead of the row and read the template's own edits as the member's;
+inside, so a same-id member replaced afterwards (fire + rehire, which take the same
+lock) can never receive a late pristine write stamped with the old generation over
+its own base -- and detach removes the pristine copy the same way, after its own
+commit and inside its hold. The publish is atomic, so a base write that fails after
+the commit keeps the PREVIOUS base: the row is one version ahead of it, the next plan
+sees MINE equal to THEIRS on every field the template changed and its apply rewrites
+the base (logged, `ok` still answered -- the state self-corrects rather than
+refusing). The order is what makes a crash recoverable by the next plan: an applied
+file beside an un-advanced pristine copy reads as `agree` and re-applies as a no-op,
+whereas the reverse order would read the update as the member's own customization
+and keep it forever. The response is `{ok}`, like detach: the panel refetches the roster (the new
+`template_version`) and the plan, so the response carries nothing the refetch does
+not; the plan already told the user what applied and what was kept.
+
+**Detach: `POST /api/members/{member}/detach`.** Clears `template` and
+`template_version` on the row (409 `not_linked` when there is nothing to
+clear, so a second detach is a refusal, not a second severing) and removes the
+pristine copy (`remove_pristine_copy`: an `unlink` on the id-keyed name in
+`member-templates/`, after the row's commit landed and inside the same hold, so a
+commit that fails keeps a still-linked row's base). The severing runs under the config lock as a read-modify-write that
+requires the row to still carry the store generation and the template the request
+validated against (409 `member_changed`): a same-id member replaced in between --
+deleted and re-hired, or linked to another template -- is somebody else's, and its
+provenance and pristine base are not this request's to remove. The agent file, `role`,
+`triggers`, the copy's lineage and every piece of lived state stay as they are;
+the roster row then reads as a locally created member with a customized copy.
+One-way: re-linking is a hire.
+
+Frontend (`pages/members/RoleUpdatePanel.tsx`, under the drawer's Source row for
+a member with a `template`): reads the plan; says *Template up to date (vX)*, or
+*<App> vY is available (this member is on vX)* with a **Review update** button,
+or why the template is unavailable (no base, not its own copy, app gone or
+disabled), and always offers **Detach from <App>** as a two-step inline confirm
+that says what stays -- with the cost said BEFORE the click too, in one line under
+the button (*Keeps everything; stops following <App>. Cannot be undone -- you'll be
+asked to confirm first.*), so the reader need not press it to learn whether it can
+be undone nor fear that the first click is the act; the button and the review
+dialog's title (*Update role from <App>*) name the app, so "template" in this panel
+is only ever the Agent template row's file. While the confirm is open, Review update
+stays in place disabled and its title says why (*Finish or cancel the detach
+first.*). A detach that succeeds is not silent: the roster refetch clears
+`template` and unmounts this panel, so the drawer renders the closure where the
+panel stood (*Detached from <App>. This crewmate keeps everything it has and no
+longer follows that template.*, `role="status"`) and, for that crewmate, reads the
+Agent template row as *<template> -- customized copy (detached from <App>)* so it
+does not contradict the Source row's *Created here*; both are the drawer's memory
+of the detach it performed (kept per member name until the page is left -- nothing
+durable marks a detached row, whose lineage honestly still names the template it
+was copied from). The "no base" reason reads in the user's words (*The original
+copy of its template is missing, so changes can't be compared. Detach it, or hire
+again.*). Pinned: `RoleUpdatePanel.test.tsx`, `MembersPage.identity.test.tsx`
+("a detach is not silent"). The review dialog lists
+only fields that change or need a decision (`apply`, `keep`, `conflict`;
+`unchanged`/`agree` say nothing), shows each side's value, and keeps **Apply vY**
+disabled until every conflict has a side chosen (the disabled button's title says
+which fields still need one); a `template_changed` or `member_changed_since_plan`
+refusal is said in the dialog (an `ErrorNotice` with NO agent hand-off: the dialog
+holds the user's unsaved conflict picks, and *Ask the agent* would navigate away and
+lose them -- the retry is the same button) and the plan re-read, and the picks made
+against the old plan are dropped whenever either fingerprint moves -- a `theirs`
+chosen for the old prompt is not carried onto the new one. Both mutations refetch the roster and the plan before their pending
+state ends. Pinned in `test/test_member_role_update.py` (**the step-4 gate**:
+update a template one member customized -- the member's prompt edit and added
+tool survive, the template's new hook and triggers apply, the prompt conflict is
+resolved the member's way, version and pristine copy advance, briefing untouched,
+a second apply is a no-op; a moved template, a template body rewritten under the
+same version, two cards answering one ref (`template_ambiguous`; a banned app
+surfaces its own verdict), a member edited or renamed since the plan, bad bodies, an unlinked member, an
+unavailable template, a missing or foreign pristine copy (another template, another
+member, an earlier generation) and a shared binding are refused before anything is
+written; a pristine copy behind the row keeps the update offered until an apply
+advances it; the pristine path is id-keyed, validated, and distinct for two ids that
+share a slug; the bridge's plumbing reads as unchanged and a
+re-plumbed materialized file as the template's change; the governance funnel runs on the merged
+definition; a conflict resolved the template's way takes theirs; a renamed role is
+kept when the card did not move; detach clears provenance and leaves everything
+else, and refuses a member replaced under it) and `RoleUpdatePanel.test.tsx`
+(current vs available, Apply gated on conflicts and sent with the plan's version
+and fingerprint, `template_changed` and `member_changed_since_plan` said in place,
+unavailable reasons, two-step detach).
 
 ## Selection: the `select_crew` contract
 

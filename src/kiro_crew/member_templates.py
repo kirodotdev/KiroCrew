@@ -10,10 +10,20 @@ module is the read side the hire route composes:
   definition and the initial briefing text.
 * :func:`template_ref` -- the ``template`` the wrapper row records
   (``<app>/<agent>``), the same namespacing the materialized file uses.
-* :func:`write_pristine_copy` -- the unmodified template payload at the
-  installed version, kept at ``members/<slug>/template.json`` so a later role
-  update can three-way merge (BASE = this file, MINE = the member's agent file,
-  THEIRS = the new version). The reader arrives with that update.
+* :func:`write_pristine_copy` / :func:`read_pristine_copy` -- the unmodified
+  template payload at the installed version, kept at
+  ``<data home>/member-templates/<member id>.json`` (a gateway-only top-level
+  leaf: sandbox-masked, refused to agent file tools) and stamped with the member's id
+  and private-store generation: the BASE of the role update's three-way merge
+  (MINE = the member's agent file and card fields, THEIRS = the template as
+  installed now).
+* :func:`resolve_template_ref` -- from a wrapper row's ``template``
+  (``<app>/<agent name>``) back to the listing, for the update.
+* :func:`plan_role_update` / :func:`merge_role_update` -- the per-field
+  three-way merge: only THEIRS changed -> apply, only MINE changed -> keep,
+  both -> the user picks. Scope is the template-provided definition (the agent
+  file's keys except ``name``, which is the member's id) plus the card's
+  ``role`` and ``triggers`` -- never lived state.
 * :func:`seed_briefing` -- write ``initial_briefing`` as the new member's own
   ``briefing.md``; from then on the file is the member's lived state and no
   template operation touches it.
@@ -37,7 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import members
+from kiro_crew import members, platform_compat
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.apps import admission as _admission
 from kiro_crew.apps import bridges as _bridges
@@ -45,6 +55,7 @@ from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.bridges import _namespace, _safe_link_name, render_app_agent_spec
 from kiro_crew.apps.manager import _read_installed, app_dir, get_app_manifest
 from kiro_crew.apps.manifest import AppManifest, CrewTemplate, _path_escapes_app_root
+from kiro_crew.config.paths import data_home
 from kiro_crew.pinned_fs import (
     create_and_open_dir_pinned,
     open_dir_pinned,
@@ -55,11 +66,23 @@ from kiro_crew.pinned_fs import (
     write_file_pinned,
 )
 from kiro_crew.sel import sel
+from kiro_crew.validation import _AGENT_NAME_RE
 
 logger = logging.getLogger(__name__)
 
-#: The pristine copy's file name inside ``members/<slug>/``.
-PRISTINE_COPY_FILE = "template.json"
+#: The pristine copies' directory: a TOP-LEVEL leaf of the data home holding one
+#: ``<member id>.json`` per member, bind-masked from every sandboxed process
+#: (``sandbox._CREW_HIDDEN_LEAVES``), pre-created before each spawn so the mask
+#: has a name to bind over (``_CREW_PRECREATE_HIDDEN_DIR_LEAVES``) and refused
+#: to the agent file tools on every OS (``security._CREW_SECRET_LEAVES``). NOT
+#: inside ``members/<slug>/``: that directory is agent-writable and its slug is
+#: lossy (two ids can share one). NOT under ``trust/`` either: that subtree is
+#: sandbox-VISIBLE (its SEL key and log have in-sandbox readers and appenders),
+#: so a spawned interpreter's ``open()`` could rewrite a base there, bypassing
+#: the file-tool gate. A forged or shared BASE makes the merge skip a template
+#: change or overwrite a customization silently, which is the harm the fence
+#: exists for; only the gateway reads or writes a base.
+PRISTINE_COPIES_DIR_NAME = "member-templates"
 
 #: Largest initial briefing a template may seed (bytes). The member's own
 #: briefing is injection-capped downstream; this bounds what a store listing can
@@ -71,6 +94,18 @@ INITIAL_BRIEFING_MAX_BYTES = 64 * 1024
 TEMPLATE_SPEC_MAX_BYTES = 512 * 1024
 # A file-backed system prompt the card pins: read through the pinned root, inlined.
 TEMPLATE_PROMPT_MAX_BYTES = 256 * 1024
+
+#: Largest pristine copy the role update reads back (bytes). The copy wraps a
+#: spec that passed ``TEMPLATE_SPEC_MAX_BYTES`` -- as MATERIALIZED, so with the
+#: bridge's own servers and managed refs merged in -- in an envelope (member,
+#: generation, template, version, the card fields) and is written pretty-printed
+#: with ``ensure_ascii``; a compact spec near the cap expands several-fold on
+#: the way to disk, and a read cap equal to the spec cap would refuse the very
+#: file the hire just wrote and report ``pristine_copy_missing`` for a member
+#: that has one. Eight times the spec cap covers the indentation of any JSON
+#: shape (each nesting level adds at most a handful of bytes per token) plus
+#: the envelope, with room for the plumbing.
+PRISTINE_COPY_MAX_BYTES = 8 * TEMPLATE_SPEC_MAX_BYTES
 
 _SAFE_APP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
@@ -105,11 +140,16 @@ class StoreTemplate:
     #: The materialized agent file's stem: ``<app>--<agent_name>``. This is the
     #: ``kiro_agent`` the member is created against and then forked from.
     materialized: str
-    #: The template's agent definition as shipped (the pristine BASE).
+    #: The template's agent definition as shipped inside the app.
     spec: dict[str, Any] = field(default_factory=dict)
-    #: The materialized file's content as read ONCE at resolve time (and, for a
-    #: pinned card, verified against the bridge's rendering): what the hire
-    #: copies into the member's own file, so no path is reopened after the checks.
+    #: The definition as MATERIALIZED -- the shipped spec after the app bridge
+    #: added the app's own MCP servers, the host's managed refs and its policy --
+    #: read ONCE at resolve time (and, for a pinned card, verified against the
+    #: bridge's rendering). This is the dict the hire copies into the member's
+    #: own file (no path is reopened after the checks), so it is the pristine
+    #: BASE a role update merges against and the THEIRS it merges in; comparing
+    #: the member against the raw shipped spec would read the bridge's plumbing
+    #: as the member's own customization.
     materialized_spec: dict[str, Any] = field(default_factory=dict)
     initial_briefing: str = ""
 
@@ -603,78 +643,419 @@ def _resolve_from_root(
     )
 
 
-def pristine_copy_path(slug: str) -> Path:
-    return members.member_dir(slug) / PRISTINE_COPY_FILE
+def resolve_template_ref(ref: str) -> StoreTemplate:
+    """Resolve a wrapper row's ``template`` (``<app>/<agent name>``) to the listing.
+
+    The row records the DECLARED agent name, not the manifest path the card
+    names, so the card is found by resolving each card of the app and matching
+    the name it declares; the path's stem is tried first because it is the
+    common case and costs no extra read. Raises :class:`TemplateUnavailable`
+    with the same codes as :func:`resolve_store_template`, plus
+    ``template_not_offered`` when no card of the app declares that name.
+    """
+    app, sep, agent_name = ref.partition("/")
+    if not sep or not agent_name or not isinstance(app, str) or not _SAFE_APP_NAME_RE.match(app):
+        raise TemplateUnavailable("template_not_offered", f"{ref!r} does not name a template")
+    manifest = get_app_manifest(app)
+    if manifest is None:
+        raise TemplateUnavailable("app_not_installed", f"App '{app}' is not installed")
+    cards = list(manifest.crew.templates)
+    cards.sort(key=lambda c: Path(c.agent).stem != agent_name)
+    matches: list[StoreTemplate] = []
+    # The refusal of the card that NAMES this agent, kept aside: a card whose
+    # agent file's stem is the name we resolve is the one the ref points at,
+    # and its own verdict (not materialized, unreadable spec, tampered) is the
+    # answer when no other card turns out to register under that name --
+    # swallowing it would report `template_not_offered` for a template the app
+    # does offer, and hide a tampering refusal behind a wrong-name message.
+    named_refusal: TemplateUnavailable | None = None
+    for card in cards:
+        try:
+            template = resolve_store_template(app, card.agent)
+        except TemplateUnavailable as exc:
+            # The app's own verdicts are the answer, whichever card raised
+            # them: disabled, banned, or a crew section that fails to
+            # validate. Another card's own trouble (unreadable spec, not
+            # materialized) is skipped in the search for the named agent.
+            if exc.code in ("app_disabled", "app_admission_denied", "template_invalid"):
+                raise
+            if named_refusal is None and Path(card.agent).stem == agent_name:
+                named_refusal = exc
+            continue
+        if template.agent_name == agent_name:
+            matches.append(template)
+    if len(matches) > 1:
+        # Two cards whose agents register under one name: the manifest
+        # validator refuses this at install and at every re-validation, but a
+        # ref is resolved from a stored string, so the answer is checked here
+        # too rather than picking a card by list order.
+        raise TemplateUnavailable(
+            "template_ambiguous",
+            f"App '{app}' offers more than one template named {agent_name!r}; "
+            "the app must give its agents distinct names",
+            status=409,
+        )
+    if matches:
+        return matches[0]
+    if named_refusal is not None:
+        raise named_refusal
+    raise TemplateUnavailable(
+        "template_not_offered", f"App '{app}' offers no template named {agent_name!r}"
+    )
+
+
+def pristine_copies_root() -> Path:
+    return data_home() / PRISTINE_COPIES_DIR_NAME
+
+
+def pristine_copy_path(member_id: str) -> Path:
+    """Absolute path of one member's pristine copy, containment-checked.
+
+    Keyed by the immutable member ID (the config key, inside the agent-name
+    grammar, so the filename cannot traverse), never by the lossy slug. Lives
+    in the OS-hidden top-level leaf ``PRISTINE_COPIES_DIR_NAME`` describes:
+    neither a sandboxed process nor an agent file tool can reach it, the
+    gateway opens it directly.
+    """
+    if not isinstance(member_id, str) or not _AGENT_NAME_RE.match(member_id):
+        raise members.MemberSlugError(f"invalid member id {member_id!r}")
+    root = pristine_copies_root().resolve()
+    target = (root / f"{member_id}.json").resolve()
+    if target.parent != root:
+        raise members.MemberSlugError(f"member id {member_id!r} escapes {root}")
+    return target
+
+
+def read_pristine_copy(member_id: str, *, generation: str) -> dict[str, Any] | None:
+    """The pristine copy as :func:`write_pristine_copy` left it, or ``None``.
+
+    ``None`` when the member has none (hired before templates existed, or from
+    a local file), when it cannot be read through the pinned path, when it does
+    not have the shape the writer produces, or when it was written for another
+    member: the file must name THIS member id and THIS private-store
+    *generation* (the store name the create minted, unique per creation), so a
+    same-id member deleted and re-hired, or a same-name file on a
+    case-insensitive filesystem, never lends its BASE to the wrong member.
+    """
+    try:
+        data = _read_json_capped(
+            pristine_copy_path(member_id), PRISTINE_COPY_MAX_BYTES, what="member pristine copy"
+        )
+    except members.MemberSlugError:
+        return None
+    if data is None:
+        return None
+    if data.get("member") != member_id or data.get("generation") != generation:
+        return None
+    if not isinstance(data.get("template"), str) or not isinstance(data.get("version"), str):
+        return None
+    if not isinstance(data.get("agent"), dict) or not isinstance(data.get("card"), dict):
+        return None
+    return data
+
+
+def remove_pristine_copy(member_id: str) -> None:
+    """Remove a member's pristine copy; a missing one is nothing to remove."""
+    try:
+        pristine_copy_path(member_id).unlink(missing_ok=True)
+    except members.MemberSlugError:
+        return
+
+
+#: A field one side does not have at all. Distinct from ``None`` (a key set to
+#: JSON null is a value) so "removed the key" and "set it to null" merge apart.
+MISSING: Any = object()
+
+#: The card fields a role update merges alongside the agent definition.
+CARD_FIELDS = ("role", "triggers")
+
+#: Field-state vocabulary the plan reports and the frontend renders.
+UNCHANGED = "unchanged"
+APPLY = "apply"  # only THEIRS changed: the update applies it
+KEEP = "keep"  # only MINE changed: the member's customization stays
+AGREE = "agree"  # both changed to the same value: nothing to decide
+CONFLICT = "conflict"  # both changed apart: the user picks
+
+
+def field_id(field: str) -> str:
+    """The stable, opaque handle a plan field is resolved by: ``f`` + 12 hex of
+    the field name's SHA-256.
+
+    The field NAME (``spec.<key>``) is member- or template-authored text -- a
+    hand-edited agent file can carry a credential-shaped top-level key -- so the
+    plan ships it through the same redactor as every other leaf. A redacted
+    name is not a name the apply could match a resolution back to, and a
+    refusal that echoed the original would leak what the redaction withheld.
+    So the client resolves by this id, which is derived from the name but
+    carries nothing of it, and the refusal names ids.
+    """
+    return "f" + hashlib.sha256(field.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+
+
+@dataclass
+class FieldDelta:
+    """One mergeable field across the three sides."""
+
+    #: ``spec.<key>`` for an agent-file key, ``card.role`` / ``card.triggers``.
+    field: str
+    state: str
+    base: Any = MISSING
+    mine: Any = MISSING
+    theirs: Any = MISSING
+
+    @property
+    def id(self) -> str:
+        return field_id(self.field)
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"id": self.id, "field": self.field, "state": self.state}
+        for side in ("base", "mine", "theirs"):
+            value = getattr(self, side)
+            if value is not MISSING:
+                out[side] = value
+        return out
+
+
+class UnresolvedConflicts(Exception):
+    """A merge was asked to apply while conflicting fields had no resolution.
+
+    ``fields`` are the conflicting fields' opaque ids (what the client resolves
+    by); ``labels`` their names, for the caller to redact before showing.
+    """
+
+    def __init__(self, deltas: list["FieldDelta"]):
+        self.fields = [d.id for d in deltas]
+        self.labels = [d.field for d in deltas]
+        super().__init__(f"unresolved conflicts: {len(deltas)} field(s)")
+
+
+def json_equal(a: Any, b: Any) -> bool:
+    """JSON-value equality: same TYPE and same value, through every level.
+
+    Python's ``==`` is not JSON's: ``True == 1``, ``1 == 1.0`` and ``0 == False``,
+    so a member that changed ``"strict": true`` to ``"strict": 1`` would read as
+    UNCHANGED, and a template flipping the flag to ``false`` would then be
+    APPLIED over the member's edit without a conflict. Here a bool is only
+    equal to a bool, a number only to a number of the same kind, and lists
+    and objects compare member by member the same way. ``MISSING`` is equal
+    only to itself. Iterative (an explicit work stack), not recursive: a
+    template or member file is JSON the parser accepted, and ``json.loads``
+    accepts nesting far deeper than the interpreter's recursion limit -- a
+    recursive compare would raise ``RecursionError`` out of the plan and turn a
+    legal file into a 500.
+    """
+    stack: list[tuple[Any, Any]] = [(a, b)]
+    while stack:
+        x, y = stack.pop()
+        if x is MISSING or y is MISSING:
+            if x is not y:
+                return False
+            continue
+        if isinstance(x, bool) or isinstance(y, bool):
+            if not (isinstance(x, bool) and isinstance(y, bool) and x == y):
+                return False
+            continue
+        if isinstance(x, (int, float)) or isinstance(y, (int, float)):
+            if type(x) is not type(y) or x != y:
+                return False
+            continue
+        if isinstance(x, dict) or isinstance(y, dict):
+            if not (isinstance(x, dict) and isinstance(y, dict)) or x.keys() != y.keys():
+                return False
+            stack.extend((x[k], y[k]) for k in x)
+            continue
+        if isinstance(x, list) or isinstance(y, list):
+            if not (isinstance(x, list) and isinstance(y, list)) or len(x) != len(y):
+                return False
+            stack.extend(zip(x, y))
+            continue
+        if type(x) is not type(y) or x != y:
+            return False
+    return True
+
+
+def _classify(base: Any, mine: Any, theirs: Any) -> str:
+    # JSON equality, not Python's: a type change (``true`` -> ``1``) is a change.
+    mine_changed = not json_equal(mine, base)
+    theirs_changed = not json_equal(theirs, base)
+    if not mine_changed and not theirs_changed:
+        return UNCHANGED
+    if theirs_changed and not mine_changed:
+        return APPLY
+    if mine_changed and not theirs_changed:
+        return KEEP
+    return AGREE if json_equal(mine, theirs) else CONFLICT
+
+
+def plan_role_update(
+    pristine: dict[str, Any],
+    mine_spec: dict[str, Any],
+    mine_card: dict[str, Any],
+    theirs: StoreTemplate,
+) -> list[FieldDelta]:
+    """Compare BASE (the pristine copy), MINE (the member) and THEIRS (the
+    template as installed now) field by field.
+
+    Fields are the union of the agent-definition keys on the three sides --
+    THEIRS being the template as MATERIALIZED, the same form the hire copied and
+    the pristine copy recorded, so the bridge's plumbing (the app's own MCP
+    servers, the host's managed refs) reads as unchanged rather than as the
+    member's edit -- except ``name`` -- the member's file declares its own id,
+    the template's declares the template's, and neither is anybody's
+    customization -- plus
+    the card's ``role`` and ``triggers``. Equality is JSON-value equality on
+    the whole field: a list of tools that gained one entry is one changed
+    field, not a per-entry merge, because a definition is what the author
+    reviewed as a whole. Order is stable (spec keys sorted, card last) so the
+    plan the client saw is the plan the apply re-derives.
+    """
+    raw_spec, raw_card = pristine.get("agent"), pristine.get("card")
+    base_spec: dict[str, Any] = raw_spec if isinstance(raw_spec, dict) else {}
+    base_card: dict[str, Any] = raw_card if isinstance(raw_card, dict) else {}
+    deltas: list[FieldDelta] = []
+    theirs_spec = theirs.materialized_spec
+    keys = set(base_spec) | set(mine_spec) | set(theirs_spec)
+    keys.discard("name")
+    for key in sorted(keys):
+        b, m, t = (
+            base_spec.get(key, MISSING),
+            mine_spec.get(key, MISSING),
+            theirs_spec.get(key, MISSING),
+        )
+        deltas.append(FieldDelta(f"spec.{key}", _classify(b, m, t), b, m, t))
+    theirs_card = {"role": theirs.card.role, "triggers": theirs.card.triggers}
+    for key in CARD_FIELDS:
+        b = base_card.get(key, "")
+        m = mine_card.get(key, "")
+        t = theirs_card.get(key, "")
+        deltas.append(FieldDelta(f"card.{key}", _classify(b, m, t), b, m, t))
+    return deltas
+
+
+def needs_update(deltas: list[FieldDelta]) -> bool:
+    """True when applying the plan would change anything on the member."""
+    return any(d.state in (APPLY, CONFLICT) for d in deltas)
+
+
+def merge_role_update(
+    mine_spec: dict[str, Any],
+    mine_card: dict[str, Any],
+    deltas: list[FieldDelta],
+    resolutions: dict[str, str],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Produce the member's new agent definition and card fields.
+
+    ``resolutions`` maps a conflicting field's opaque ``id`` (:func:`field_id`,
+    what the plan ships) to ``"mine"`` or ``"theirs"``; a conflict without one
+    raises :class:`UnresolvedConflicts` before anything is decided, so a
+    partial resolution never half-applies. A resolution for a field that is
+    not in conflict is ignored: the plan, not the client, says what is in
+    conflict. The member's ``name`` is never touched, and a field the template
+    REMOVED (THEIRS missing) is removed from the member when it applies.
+    """
+    unresolved = [
+        d for d in deltas if d.state == CONFLICT and resolutions.get(d.id) not in ("mine", "theirs")
+    ]
+    if unresolved:
+        raise UnresolvedConflicts(unresolved)
+    spec = dict(mine_spec)
+    card = {key: str(mine_card.get(key, "") or "") for key in CARD_FIELDS}
+    for d in deltas:
+        take_theirs = d.state == APPLY or (
+            d.state == CONFLICT and resolutions.get(d.id) == "theirs"
+        )
+        if not take_theirs:
+            continue
+        kind, _, key = d.field.partition(".")
+        if kind == "spec":
+            if d.theirs is MISSING:
+                spec.pop(key, None)
+            else:
+                spec[key] = d.theirs
+        elif kind == "card":
+            card[key] = str(d.theirs or "")
+    return spec, card
 
 
 def _ensure_members_root() -> None:
     members.members_root().mkdir(parents=True, exist_ok=True)
 
 
-def write_pristine_copy(slug: str, template: StoreTemplate) -> Path:
+def write_pristine_copy(member_id: str, template: StoreTemplate, *, generation: str) -> Path:
     """Record the unmodified template payload at the installed version.
 
     The BASE of a later three-way merge: the agent definition as MATERIALIZED
     -- the very dict the hire copied into the member's own file
     (``StoreTemplate.materialized_spec``), never the raw shipped spec -- plus
-    the card's mergeable fields (role, triggers). BASE and the copy are the
-    same bytes at the hire, so a shipped definition rewritten under an unsigned
-    app whose materialized file was not re-rendered (nothing verifies the two
-    agree for an unpinned card: a user's edits to an unsigned app's shared
-    template are preserved by design) cannot leave a member whose BASE never
-    matched what it started from; and a later merge that compared the member
-    against the raw shipped spec would read the bridge's plumbing (own MCP
-    servers, managed refs, policy) as the member's own customization. Written
-    atomically; the member directory is created if the member has not written
-    anything yet.
+    the card's mergeable fields (role, triggers), stamped with the member id
+    and the private-store *generation* :func:`read_pristine_copy` checks.
+    BASE and the copy are the same bytes at the hire, so a shipped definition
+    rewritten under an unsigned app whose materialized file was not
+    re-rendered (nothing verifies the two agree for an unpinned card: a user's
+    edits to an unsigned app's shared template are preserved by design) cannot
+    leave a member whose BASE never matched what it started from; and a merge
+    that compared the member against the raw shipped spec would read the
+    bridge's plumbing (own MCP servers, managed refs, policy) as the member's
+    own customization. Published through the pinned writer (the root itself is
+    created by name -- it is the gateway's, not agent-named, and normally
+    already materialized owner-only before the first sandbox spawn -- and a
+    planted link at the final name is refused rather than written through).
     """
-    path = pristine_copy_path(slug)
+    path = pristine_copy_path(member_id)
     payload = {
+        "member": member_id,
+        "generation": generation,
         "template": template.ref,
         "version": template.version,
         "agent": template.materialized_spec,
         "card": {"role": template.card.role, "triggers": template.card.triggers},
     }
-    # The member directory is agent-writable: a by-name atomic replace there is
-    # a truncation primitive pointed at whatever the name resolves to when the
-    # rename lands. ``write_file_pinned`` creates the member directory through
-    # the PINNED members root and refuses a planted link at either name; only
-    # the root itself -- trust-rooted under the data home, not agent-named --
-    # is created by name, as the pinned helpers require of their callers.
-    _ensure_members_root()
-    write_file_pinned(
-        path, json.dumps(payload, indent=2, ensure_ascii=False), what="member pristine copy"
-    )
+    root = pristine_copies_root()
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        platform_compat.restrict_dir_to_owner(root)
+    except OSError:
+        logger.debug("could not tighten mode on %s", root, exc_info=True)
+    # ``ensure_ascii=True``: a lone surrogate the template's JSON carried
+    # (json.loads accepts the escape; ``str.encode`` does not) serializes
+    # back to its escape instead of raising ``UnicodeEncodeError`` on the
+    # write -- which no caller treats as an I/O failure, so it would escape
+    # as a 500 after the apply committed and leave the base behind for good.
+    write_file_pinned(path, json.dumps(payload, indent=2), what="member pristine copy")
     return path
 
 
-def remove_step_four_files(slug: str, *, pristine: bool, briefing: bool) -> None:
+def remove_step_four_files(member_id: str, *, pristine: bool, briefing: bool) -> None:
     """Undo what a store hire's step 4 wrote when the step did not complete.
 
-    The pristine copy and the seeded briefing are slug-keyed files in the
-    agent-writable member directory: left behind by a hire whose enrollment
-    failed (its row is rolled back, so no crewmate ever existed), the NEXT
-    member to take the slug -- a local hire, say -- would inherit them as its
-    own base and briefing. Each is removed through the pinned member
-    directory (``unlink_pinned``: a link planted at an ancestor is never
-    followed), only the ones this step wrote (*pristine* / *briefing*), and
-    only while the caller still holds the config lock the step published
-    under, so the files are provably still this hire's. Best-effort: a
-    failure is logged, since the caller is already unwinding.
+    The pristine copy (id-keyed, in the gateway-only leaf) and the seeded
+    briefing (slug-keyed, in the agent-writable member directory): left behind
+    by a hire whose enrollment failed (its row is rolled back, so no crewmate
+    ever existed), the NEXT member to take the id or the slug -- a rehire, a
+    local hire of the same name -- would inherit them as its own base and
+    briefing. Only the ones this step wrote go (*pristine* / *briefing*), the
+    briefing through the pinned member directory (``unlink_pinned``: a link
+    planted at an ancestor is never followed), and only while the caller still
+    holds the config lock the step published under, so the files are provably
+    still this hire's. Best-effort: a failure is logged, since the caller is
+    already unwinding.
     """
     if pristine:
         try:
-            unlink_pinned(pristine_copy_path(slug), what="member pristine copy")
-        except (OSError, ValueError, members.MemberSlugError):
+            remove_pristine_copy(member_id)
+        except OSError:
             logger.warning(
-                "could not remove the pristine copy of %s on unwind", slug, exc_info=True
+                "could not remove the pristine copy of %s on unwind", member_id, exc_info=True
             )
     if briefing:
         try:
-            unlink_pinned(members.member_briefing_path(slug), what="member briefing")
+            unlink_pinned(
+                members.member_briefing_path(members.slug_for_name(member_id)),
+                what="member briefing",
+            )
         except (OSError, ValueError, members.MemberSlugError):
             logger.warning(
-                "could not remove the seeded briefing of %s on unwind", slug, exc_info=True
+                "could not remove the seeded briefing of %s on unwind", member_id, exc_info=True
             )
 
 

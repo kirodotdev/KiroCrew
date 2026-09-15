@@ -436,6 +436,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Recovery is a re-import, but a prompt-injected agent corrupting user data
     # is the mainline threat these leaves exist for.
     "appearance-library",
+    # The crew members' pristine template copies (``member_templates.py``): the
+    # BASE a role update's three-way merge reads. Only the gateway's owner-gated
+    # routes open one, directly, so fencing it costs nothing in-process. Left
+    # off this list, an agent's file tools could rewrite a base on any host --
+    # the sandbox bind-mask covers the Linux shell plane only -- and a forged
+    # base makes the next merge skip a template change or silently overwrite
+    # the member's own customizations.
+    "member-templates",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

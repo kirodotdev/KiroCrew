@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 
 /* The id / display_name split (design: Crew Member = Custom Agent + Wrapper,
@@ -21,6 +21,8 @@ vi.mock('../../api/client', () => ({
     updateKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
     listApps: vi.fn(() => Promise.resolve([])),
+    memberRoleUpdatePlan: vi.fn(() => Promise.resolve({ member: '', template: '', member_version: '1.2.0', installed_version: '1.2.0', update_available: false, member_fingerprint: 'x', template_fingerprint: 'y', fields: [] })),
+    detachMember: vi.fn(() => Promise.resolve({ ok: true })),
   },
 }))
 
@@ -191,6 +193,28 @@ describe('MembersPage Source row reads the normalized source', () => {
     await waitFor(() =>
       expect(screen.getByTestId('member-config-provenance')).toHaveTextContent('Hired from Oncall pack — “triage” (v1.2.0)'),
     )
+  })
+
+  it('a detach is not silent: the drawer says so where the panel stood, and the template row says what happened to the pair', async () => {
+    vi.mocked(api.listApps).mockResolvedValue([
+      { name: 'oncall-pack', version: '1.2.0', enabled: true, manifest: { name: 'oncall-pack', version: '1.2.0', displayName: 'Oncall pack', description: '', author: '' } },
+    ] as never)
+    const hired = row('Pager-triage', { display_name: 'Pager triage', template: 'oncall-pack/triage', template_version: '1.2.0', template_origin: 'triage' })
+    await renderPage([hired], '?member=Pager-triage')
+    await waitFor(() => expect(screen.getByTestId('member-config-provenance')).toHaveTextContent('Hired from Oncall pack'))
+    expect(screen.getByTestId('member-config-template')).toHaveTextContent('triage — customized copy')
+    // After the detach the roster refetch answers a row with no template: the
+    // panel unmounts, and the closure + the "(detached from …)" reading take over.
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: [{ ...hired, template: '', template_version: '' }] })
+    fireEvent.click(await screen.findByTestId('member-detach'))
+    fireEvent.click(screen.getByTestId('confirm-detach-member'))
+    await waitFor(() => expect(api.detachMember).toHaveBeenCalledWith('Pager-triage'))
+    const notice = await screen.findByTestId('member-detached-notice')
+    expect(notice).toHaveTextContent('Detached from Oncall pack. This crewmate keeps everything it has and no longer follows that template.')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(screen.getByTestId('member-config-provenance')).toHaveTextContent('Created here')
+    expect(screen.getByTestId('member-config-template')).toHaveTextContent('triage — customized copy (detached from Oncall pack)')
+    expect(screen.queryByTestId('member-detach')).toBeNull()
   })
 
   it('drops the version parenthetical when the row records no version', async () => {

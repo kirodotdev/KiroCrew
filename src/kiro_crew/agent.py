@@ -112,6 +112,7 @@ from kiro_crew.platform.governance import (
     CU_MCP_SERVER,
     agentcore_posture,
     may_skip_gate_now,
+    sanitize_agent_config_governance,
     strip_ungoverned_auto_approve,
 )
 from kiro_crew.platform.governance_profiles import governance_permits
@@ -179,6 +180,28 @@ def _agent_identity_enabled() -> bool:
             log_message="agentcore posture lookup failed; treating as disabled",
         )
     )
+
+
+def write_agent_definition(path: Path, spec: dict) -> None:
+    """The ONE writer of a WHOLE agent definition that a merge or a patch
+    produced: the editor's PATCH overwrite and a crewmate's role-update merge.
+
+    The whole-config governance funnel runs immediately before the bytes are
+    persisted (``sanitize_agent_config_governance``: the ceiling on
+    ``allowedTools`` / ``autoApprove`` every whole-config writer must apply),
+    and the write is atomic (:func:`_atomic_json_write`, tmp + rename with the
+    shared-template fingerprint following the bytes), so a reader never sees a
+    partial file and a failed write leaves the last-good definition.
+
+    The caller owns the locks and the identity checks: this runs INSIDE the
+    config lock and/or the spec lock the caller holds, after it has established
+    that *path* is the file its change was computed from. Nothing here re-checks
+    those -- keeping the check-and-write in one hold is the caller's job. The
+    create-time writers (fork, publish) have their own exclusive-create funnel
+    (``_write_new_agent_config``) and apply the same ceiling there.
+    """
+    sanitize_agent_config_governance(spec)
+    _atomic_json_write(path, spec)
 
 
 def _atomic_json_write(path: Path, data: dict) -> None:
