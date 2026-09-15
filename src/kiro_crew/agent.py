@@ -1259,6 +1259,75 @@ def managed_mcp_spec_entry(name: str) -> dict[str, Any] | None:
     return entry
 
 
+def _is_agentcore_gateway_entry(spec: Any) -> bool:
+    """True for an MCP entry that reaches an AgentCore Gateway URL, under ANY name.
+
+    Delegates to :func:`platform.governance.is_agentcore_gateway_entry`, the one
+    predicate the final-map pass (``strip_ungoverned_auto_approve``) also uses,
+    so the early withhold here and the last pass every writer runs agree. A
+    co-present ``command`` does not exempt an entry: the question is what the
+    entry REACHES, and a Gateway ``url`` (with or without headers) is the shape
+    a session inject has -- on disk it can only be the operator's authoring.
+    """
+    from kiro_crew.platform.governance import is_agentcore_gateway_entry
+
+    return is_agentcore_gateway_entry(spec)
+
+
+def _merge_edition_mcp(mcp: dict[str, Any]) -> None:
+    """Merge edition extras and keep the reserved Gateway name session-only.
+
+    Extras are ADD-only (setdefault) after secret keys are stripped so a
+    companion ``Authorization`` header cannot land in kirocrew.json. The
+    Gateway is session-injected, never written into the agent file, so a
+    profile that disabled AgentCore cannot inherit it from ``--agent``.
+
+    That guarantee has to hold for the operator's authoring too. ``mcp`` is
+    the GENERATED agent config, assembled from the shipped defaults and the
+    operator's override file: an AgentCore Gateway URL entry -- under the
+    reserved name or ANY other -- can only have come from that override (or
+    an edition extra). Emitting it would mount an unsigned Gateway remote in
+    every session that loads the agent, including the ones whose governance
+    profile denies AgentCore -- the bypass the session inject exists to
+    prevent -- and would persist whatever bearer headers it carried. So every
+    such entry is WITHHELD from the generated file (the operator's own file
+    is not modified; a warning names each entry), and the Gateway reaches a
+    session only through the governed inject. Other remotes and command
+    servers are untouched.
+    Login withhold of other remotes is a later PR.
+    """
+    from kiro_crew.platform.agentcore_gateway import (
+        GATEWAY_SERVER_NAME,
+        strip_secret_spec_keys,
+    )
+
+    for name, spec in _extra_mcp_servers().items():
+        if (
+            name == GATEWAY_SERVER_NAME
+            or not isinstance(spec, dict)
+            or _is_agentcore_gateway_entry(spec)
+        ):
+            continue
+        mcp.setdefault(name, strip_secret_spec_keys(spec))
+    if mcp.get(GATEWAY_SERVER_NAME) is None:
+        mcp.pop(GATEWAY_SERVER_NAME, None)
+    withheld = sorted(name for name, spec in mcp.items() if _is_agentcore_gateway_entry(spec))
+    for name in withheld:
+        mcp.pop(name, None)
+    if withheld:
+        logger.warning(
+            "%s: %d MCP server entr%s pointing at an AgentCore Gateway (%s) %s not written "
+            "to the generated agent config; the Gateway is attached per session by the "
+            "identity posture (Settings > Security > Agent identity), never as a plain "
+            "remote server.",
+            _user_overrides_path(),
+            len(withheld),
+            "y" if len(withheld) == 1 else "ies",
+            ", ".join(withheld),
+            "is" if len(withheld) == 1 else "are",
+        )
+
+
 def _extra_mcp_scope_globals() -> list[Path]:
     """Provider-global MCP config files contributed by the edition (CPP seam).
 
@@ -2654,8 +2723,7 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     # contributes {} (unchanged), the Amazon companion adds the internal MCP server etc.
     # Entries are already kiro-spec-shaped, so we only extend the map — no spec
     # restructuring, deny_unknown_fields invariant preserved.
-    for name, spec in _extra_mcp_servers().items():
-        mcp.setdefault(name, dict(spec))
+    _merge_edition_mcp(mcp)
 
     # Default-model tracking ("managed" vs frozen) is recorded in the
     # agent_state sidecar by the install path (rebuild_agent_config), never as
@@ -2803,12 +2871,7 @@ def _refresh_dynamic_fields(
             entry, spec, registry_mode, auto_approve="seed" if is_new else "preserve"
         )
 
-    # Edition-contributed MCP servers (PlatformContext).  ADD-only: only seed a
-    # server the user doesn't already have, so user customizations on a refresh
-    # are preserved.  Standalone contributes {} (unchanged); Amazon adds
-    # the internal MCP server etc.  Already kiro-spec-shaped — no restructuring.
-    for name, extra_spec in _extra_mcp_servers().items():
-        mcp.setdefault(name, dict(extra_spec))
+    _merge_edition_mcp(mcp)
 
     # Security: hooks always from bundled config.
     # Hard-fail if bundled defaults are missing — deny-by-default.

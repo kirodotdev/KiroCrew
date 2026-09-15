@@ -769,9 +769,75 @@ pass `{channel_type, provider_user_id}` the same way without a second
 session key. `tool_input` cannot supply `subject` / `userId` —
 `reject_tool_input_identity` refuses those kwargs.
 
-Gateway inbound attach (sidecar / SigV4) is a later stack PR. The
-principal must already be known *before* `session/new` so that layer
-can write the sidecar first.
+Workload Gateway MCP is injected only on `session/new` as the live
+loopback SigV4 listen URL. The default Kiro transport is `AcpRuntime`
+(`create_session` / `load_session`); `AcpClient._pooled_mcp_servers`
+is the same inject for the leftover client path. It is never written
+into the agent file.
+The unsigned https Gateway hostname is never injected. Every agent-config
+writer withholds any MCP entry whose `url` is a managed AgentCore Gateway
+hostname (`*.gateway.bedrock-agentcore.<region>.amazonaws.com`) — under
+the reserved `agentcore-gateway` name or ANY other, with or without
+headers or other extras, and REGARDLESS of a co-present `command` (the
+question is what the entry reaches; a mixed-transport entry would still
+persist its bearer). The rule lives in the FINAL-map governance pass
+(`platform.governance.strip_ungoverned_auto_approve` →
+`withhold_agentcore_gateway_entries`) that the host install/rebuild, fork
+refresh, worker and conductor installers and app-agent materialization all
+run last, so a Gateway URL arriving from an app manifest, a per-agent MCP
+policy, the ambient `mcp.json` copy, an edition extra or the operator's
+override is withheld wherever it lands, not only at the first merge point
+(`_merge_edition_mcp` still withholds early so the operator warning names
+the override entry). An operator URL-only remote that is not that hostname
+stays. Both the inject gate (`agentcore_gateway._current_posture`) and the
+proxy recheck read the EFFECTIVE posture and Gateway URL
+(`agentcore_aws.resolved_posture` / `resolved_gateway_url`: a loaded
+ceiling first, launch env / home authoring only when none is loaded), so a
+CloudFormation instance configured through its unit environment with no
+policy document receives its Gateway, while leftover env never outranks a
+ceiling that disabled or re-pinned the posture.
+Proxy authentication is bound to a per-session GENERATION, not to the
+session key alone: the inject that builds a session's proxy headers
+registers a fresh generation nonce for the key on the live proxy before
+`session/new` (`GatewaySigV4Proxy.register_session` /
+`session_headers`), the `X-Kirocrew-Proxy-Auth` digest is the per-boot
+token HMAC'd over session key, agent AND that generation, and every hop
+must present the generation currently registered for its key
+(`X-Kirocrew-Proxy-Generation`, compared constant-time, never forwarded
+upstream). Registering the same key again REPLACES the generation, so a
+stalled predecessor whose teardown failed and whose key a successor
+reuses cannot regain signing authority through the successor's liveness
+— its digest still verifies against the per-boot token but its
+generation is no longer the registered one (`proxy_generation` refusal).
+The inject retires the key's existing generation FIRST
+(`retire_proxy_session`), before any of its own gates (profile, posture,
+loopback listener): a successor the gates deny must still end the
+predecessor's signed hops, and a replacement generation is minted only
+after every gate has passed. Teardown may `retire_session` the key
+outright. The per-hop liveness check counts a key whose `session/new`
+is still in flight (an allocation reservation, not yet a registered
+session) as live, since the Gateway MCP initialize happens inside that
+window.
+Each hop re-checks the calling session's profile ∩ policy **after
+the request body is read, immediately before signing**, so a stalled
+upload cannot keep a permit that was revoked mid-body. It signs only
+when the composed posture is `workload`, and requires **this hop's**
+proxy upstream (not the process-wide replacement listener) to still
+match the ceiling Gateway URL — a stalled request on A cannot
+authorize against B and then sign to A. A session key that is no
+longer registered on a live `SessionManager` is refused even when
+its profile would still permit (shared-runtime leftover headers
+after a child teardown); `HOST_SESSION_KEY` (`_host`) is the
+owner-dashboard catalog path and is never an ACP session. A missing session header
+or unbound proxy token is 401 and SEL-audited
+(`agentcore.sigv4_proxy`, denied) before the response is sent.
+Shared-runtime
+children (`create_session` / `load_session`) inject Gateway under
+the session's `crew_agent` argument, not the parent runtime's
+identity; subagent and task-runner callers pass the child agent. `login` uses JWT
+inbound, not instance IAM. The principal must already be known *before*
+`session/new` so a later login sidecar can attach on the first human
+turn. Login inbound sidecars are a later stack PR.
 
 ## Stop Orchestration
 

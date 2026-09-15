@@ -682,6 +682,7 @@ class SessionAllocationService:
                 # owner, its broker stubs carry a token no claim names and
                 # resolve to nothing (fail closed), and before the token they
                 # resolved to the run's parent session.
+                crew_agent=agent or "",
                 session_key=key,
             )
         except AcpWorkspaceBindingError:

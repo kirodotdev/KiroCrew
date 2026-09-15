@@ -4211,7 +4211,67 @@ def strip_ungoverned_auto_approve(
         except Exception:  # noqa: BLE001 — audit must not break the filter
             logger.debug("SEL audit unavailable for autoApprove strip", exc_info=True)
         out[name] = trimmed
-    return out
+    return withhold_agentcore_gateway_entries(out)
+
+
+def is_agentcore_gateway_entry(spec: object) -> bool:
+    """True for an MCP entry that reaches an AgentCore Gateway URL, under ANY
+    name and REGARDLESS of a co-present ``command``.
+
+    The governance question is what the entry reaches, not what it is called or
+    which transport key sits beside the URL: an entry carrying a Gateway ``url``
+    (with or without ``headers``, with or without a ``command``) is the shape a
+    governed session inject has, and on disk it can only be authoring. A
+    non-object entry never matches.
+    """
+    if not isinstance(spec, dict):
+        return False
+    url = spec.get("url")
+    if not isinstance(url, str) or not url:
+        return False
+    from kiro_crew.platform.agentcore_sigv4 import is_agentcore_gateway_url
+
+    return is_agentcore_gateway_url(url)
+
+
+def withhold_agentcore_gateway_entries(servers: Mapping[str, object]) -> Dict[str, object]:
+    """Return ``servers`` without any entry that reaches an AgentCore Gateway.
+
+    Runs inside :func:`strip_ungoverned_auto_approve`, i.e. on the FINAL server
+    map every agent-config writer produces (the host's ``install_agent`` and
+    rebuild paths, fork refresh, worker/conductor installers, and app-agent
+    materialization in ``apps/bridges.py``), so a Gateway URL that arrives from
+    an app manifest, a per-agent MCP policy, the ambient ``mcp.json`` copy, an
+    edition extra or the operator's override is withheld wherever it lands --
+    not only at the one merge point that first filtered it. The Gateway reaches
+    a session only through the governed, signed inject; a plain remote entry
+    would mount it unsigned in every session that loads the agent, including
+    those whose profile denies AgentCore, and would persist its bearer headers.
+    Other remotes and command servers are untouched.
+    """
+    withheld = sorted(name for name, spec in servers.items() if is_agentcore_gateway_entry(spec))
+    if not withheld:
+        return dict(servers)
+    logger.warning(
+        "%d MCP server entr%s pointing at an AgentCore Gateway (%s) %s not written to the "
+        "generated agent config; the Gateway is attached per session by the identity "
+        "posture (Settings > Security > Agent identity), never as a plain remote server.",
+        len(withheld),
+        "y" if len(withheld) == 1 else "ies",
+        ", ".join(withheld),
+        "is" if len(withheld) == 1 else "are",
+    )
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="mcp_agentcore_gateway_withheld",
+            outcome="ok",
+            source="withhold_agentcore_gateway_entries",
+            resources=", ".join(withheld),
+        )
+    except Exception:  # noqa: BLE001 — audit must not break the filter
+        logger.debug("SEL audit unavailable for Gateway withhold", exc_info=True)
+    return {name: spec for name, spec in servers.items() if name not in withheld}
 
 
 def may_skip_gate_now(ref: str) -> bool:

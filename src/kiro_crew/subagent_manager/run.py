@@ -1893,6 +1893,7 @@ class RunEventCoordinator(ManagerComponent):
             # with the PARENT slot. Naming the owner here binds this session's
             # stub token to the subagent before its stubs register, so the
             # subagent cannot act as — or be re-pointed at — its parent.
+            crew_agent=agent or "",
             session_key=session_key,
         )
         # A subagent's provider never rekeys either, and its whole point is that
