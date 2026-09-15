@@ -55,7 +55,7 @@ def test_status_remains_available_during_scoped_memory_recovery(
             failed_store = "default" if phase == "global_failed" else "member-alice"
             startup.fail_store(failed_store, ValueError("staged recovery failed"))
             assert startup.complete()
-        snapshot = state.status_snapshot()
+        snapshot = state.status_snapshot(lessons=state._count_lessons())
         assert snapshot["sessions"] == 0
         assert snapshot["lessons"] == (1 if phase == "member_failed" else None)
     finally:

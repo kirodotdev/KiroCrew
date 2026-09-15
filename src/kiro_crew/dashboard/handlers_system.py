@@ -190,9 +190,13 @@ def _gateway_memory_fields() -> tuple[int, int]:
 async def api_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     uptime = time.time() - state.start_time
-    from kiro_crew.dashboard.handlers import updates as _updates_mod
+    from kiro_crew.dashboard.status_counts import cached_status_snapshot
 
-    data = state.status_snapshot(**_updates_mod.status_update_fields())  # type: ignore[arg-type]
+    # Route the lesson/cron counts through the ONE gateway-wide cache all three
+    # status emitters share, so the counts never compute inline on the event
+    # loop (JSONL + sqlite COUNT under the vector store lock, and a crons.json
+    # parse) — the freeze class no-blocking-call-on-event-loop guards against.
+    data = await cached_status_snapshot(state)
     static_info = _get_static_system_info()
     if state._owner_hash is not None:
         owner_hash = state._owner_hash
