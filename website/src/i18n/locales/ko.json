@@ -6221,7 +6221,20 @@
       "searching_enter_held": "검색 중… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
       "type_2_chars_to_search_files_ctrl_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "type_2_chars_to_search_files_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
-      "search_failed": "파일을 검색할 수 없습니다. 다시 시도하세요."
+      "search_failed": "파일 검색에 실패했습니다",
+      "search_denied_ctrl_enter_sends": "프로젝트 폴더에 접근할 수 없습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "search_denied_enter_sends": "프로젝트 폴더에 접근할 수 없습니다 — Enter 키를 누르면 메시지가 전송됩니다",
+      "search_failed_ctrl_enter_sends": "파일 검색에 실패했습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "search_failed_enter_sends": "파일 검색에 실패했습니다 — Enter 키를 누르면 메시지가 전송됩니다",
+      "search_root_missing_ctrl_enter_sends": "프로젝트 폴더를 찾을 수 없습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "search_root_missing_enter_sends": "프로젝트 폴더를 찾을 수 없습니다 — Enter 키를 누르면 메시지가 전송됩니다",
+      "search_timed_out_ctrl_enter_sends": "파일 검색 시간 초과 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "search_timed_out_enter_sends": "파일 검색 시간 초과 — Enter 키를 누르면 메시지가 전송됩니다",
+      "stale_rows_notice": "{{cause}} — 이전 결과를 표시합니다.",
+      "search_timed_out": "파일 검색 시간 초과",
+      "search_denied": "프로젝트 폴더에 접근할 수 없습니다",
+      "search_root_missing": "프로젝트 폴더를 찾을 수 없습니다",
+      "retry": "다시 시도"
     },
     "fileRenderers": {
       "download": "다운로드",

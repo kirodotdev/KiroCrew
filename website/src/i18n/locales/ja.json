@@ -6221,7 +6221,20 @@
       "searching_enter_held": "検索中… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
       "type_2_chars_to_search_files_ctrl_enter_held": "ファイルとフォルダーを検索するには 2 文字以上入力してください… — Ctrl+Enter ではまだ送信されません。Esc を押して閉じると、Ctrl+Enter でメッセージを送信できます",
       "type_2_chars_to_search_files_enter_held": "ファイルとフォルダーを検索するには 2 文字以上入力してください… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
-      "search_failed": "ファイルを検索できませんでした。もう一度お試しください。"
+      "search_failed": "ファイル検索に失敗しました",
+      "search_denied_ctrl_enter_sends": "プロジェクトフォルダーへのアクセスが拒否されました — Ctrl+Enter でメッセージを送信します",
+      "search_denied_enter_sends": "プロジェクトフォルダーへのアクセスが拒否されました — Enter でメッセージを送信します",
+      "search_failed_ctrl_enter_sends": "ファイル検索に失敗しました — Ctrl+Enter でメッセージを送信します",
+      "search_failed_enter_sends": "ファイル検索に失敗しました — Enter でメッセージを送信します",
+      "search_root_missing_ctrl_enter_sends": "プロジェクトフォルダーが見つかりません — Ctrl+Enter でメッセージを送信します",
+      "search_root_missing_enter_sends": "プロジェクトフォルダーが見つかりません — Enter でメッセージを送信します",
+      "search_timed_out_ctrl_enter_sends": "ファイル検索がタイムアウトしました — Ctrl+Enter でメッセージを送信します",
+      "search_timed_out_enter_sends": "ファイル検索がタイムアウトしました — Enter でメッセージを送信します",
+      "stale_rows_notice": "{{cause}} — 以前の結果を表示しています。",
+      "search_timed_out": "ファイル検索がタイムアウトしました",
+      "search_denied": "プロジェクトフォルダーへのアクセスが拒否されました",
+      "search_root_missing": "プロジェクトフォルダーが見つかりません",
+      "retry": "再試行"
     },
     "fileRenderers": {
       "download": "ダウンロード",
