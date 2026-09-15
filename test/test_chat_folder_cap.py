@@ -37,14 +37,16 @@ def _state(folders: list[dict[str, Any]], *, on_mutate: Any = None) -> Dashboard
     state.push_slots_update = MagicMock()
     state.conversation_log = None
 
-    async def _mutate(fn: Any) -> Any:
+    async def _mutate(fn: Any, on_committed: Any = None) -> Any:
         # The real store runs the callback while holding the lock and hands back
         # its second element. `on_mutate` stands in for a concurrent creator that
         # won the lock first, so the callback sees a list that grew after the
         # request was admitted.
         if on_mutate is not None:
             on_mutate(state._folders)
-        _changed, value = fn(state._folders)
+        changed, value = fn(state._folders)
+        if changed and on_committed is not None:
+            on_committed()
         return value
 
     state.mutate_folders = _mutate
