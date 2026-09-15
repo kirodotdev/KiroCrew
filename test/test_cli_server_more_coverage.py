@@ -1998,6 +1998,49 @@ class TestUpdateWheelInstaller:
         assert "Already on the latest version" in capsys.readouterr().out
 
 
+class TestStatusCountLines:
+    """`kirocrew status` renders the two cached counts `/api/status` publishes,
+    and an unknown count (``null`` while the shared cache has not refreshed)
+    as a dash rather than ``None`` or a fabricated zero."""
+
+    def test_known_counts_print_as_numbers(self) -> None:
+        data = {"cron_jobs": 3, "lessons": 42}
+        assert cli_server._format_count(data, "cron_jobs") == "3"
+        assert cli_server._format_count(data, "lessons") == "42"
+
+    def test_null_count_prints_a_dash_not_none(self) -> None:
+        # Fails on the previous head, which printed ``Lessons: None`` for a
+        # payload whose count was still unknown.
+        data = {"cron_jobs": None, "lessons": None}
+        assert cli_server._format_count(data, "cron_jobs") == "—"
+        assert cli_server._format_count(data, "lessons") == "—"
+
+    def test_missing_key_prints_a_dash_not_zero(self) -> None:
+        assert cli_server._format_count({"uptime": "1h"}, "lessons") == "—"
+
+    def test_status_reads_the_cron_jobs_key(self, monkeypatch, capsys) -> None:
+        # Fails on the previous head, which read a ``crons`` key the snapshot
+        # never emits and so always printed ``Cron jobs: 0``.
+        import io
+        import json
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        payload = {"uptime": "1h", "cron_jobs": 7, "lessons": None}
+
+        @contextmanager
+        def _urlopen(url, timeout):
+            yield io.BytesIO(json.dumps(payload).encode())
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+        cli_server._status(SimpleNamespace(port=None))
+        out = capsys.readouterr().out
+        assert "Cron jobs:   7" in out
+        assert "Lessons:     —" in out
+        assert "None" not in out
+
+
 class TestStatusMemoryLine:
     """`kirocrew status` prints the gateway RSS and the session ceiling from the
     two fields `/api/status` publishes for it."""

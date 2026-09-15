@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1373,6 +1374,20 @@ class TestDashboardStream:
         event = asyncio.Event()
         monkeypatch.setattr(updates, "shutdown_event", event)
         return event
+
+    @pytest.fixture(autouse=True)
+    def _warm_status_counts(self, monkeypatch):
+        # The SSE `dashboard` frame routes its lesson/cron counts through the
+        # shared status_counts cache now, not an inline status_snapshot call.
+        # Seed it warm so the writer serves serializable counts without the
+        # MagicMock state's count methods (which return non-serializable Mocks)
+        # ever running.
+        from kiro_crew.dashboard import status_counts as sc
+
+        monkeypatch.setattr(sc, "_counts_cache", (0, 0))
+        monkeypatch.setattr(sc, "_counts_cache_ts", time.monotonic())
+        monkeypatch.setattr(sc, "_counts_cache_failures", 0)
+        monkeypatch.setattr(sc, "_counts_refresh_inflight", False)
 
     def _request_with_queue(
         self, notes: list[dict], *, is_dashboard_user: bool = True

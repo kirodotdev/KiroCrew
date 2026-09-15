@@ -4423,18 +4423,16 @@ class CronService:
     def count_enabled_from_disk(self) -> int:
         """Count enabled jobs by reading ``crons.json`` directly — thread-safe.
 
-        Unlike :meth:`list_jobs` (which calls ``_sync()`` → ``_load()`` →
-        ``_arm_timer()``), this performs ONLY a read-only file parse. It never
-        mutates loop-owned state (``self._jobs``, ``self._last_mtime``) and
+        Unlike :meth:`list_jobs`, which serves the in-memory snapshot that the
+        loop-side timer refreshes, this performs ONLY a read-only file parse. It
+        never mutates loop-owned state (``self._jobs``, ``self._last_mtime``) and
         never touches the asyncio timer, so it is safe to invoke from a worker
         thread via ``asyncio.to_thread``.
 
-        This exists specifically for the dashboard WS status pusher, which needs
-        an enabled-job count off the event loop: routing ``list_jobs`` through a
-        worker thread would run ``_arm_timer()`` (which calls
-        ``asyncio.create_task``) with no running loop in that thread, raising
-        ``RuntimeError`` — and because ``_arm_timer`` cancels the existing timer
-        first, that would silently stop all scheduled jobs until restart.
+        This exists specifically for the dashboard status count refresh, which
+        needs an enabled-job count off the event loop that is current across
+        processes: a job added by the CLI or an MCP tool reaches the snapshot
+        only on the next timer tick, while this read sees it at once.
 
         Enabled semantics come from the shared ``_record_is_enabled`` predicate
         (the single owner used by ``_load`` too): a job is enabled when it is

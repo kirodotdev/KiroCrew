@@ -32,6 +32,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
+from kiro_crew.dashboard.status_counts import cached_status_snapshot
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.git_divergence import (
     UNREADABLE_TIMEOUT,
@@ -2196,13 +2197,14 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
 
             data = json.dumps(
                 {
-                    # The SSE stream is the THIRD status emitter, and it was reading
-                    # the cache directly on a key this contract renamed — so it
-                    # published `False` unconditionally, and flattened the tri-state
-                    # while doing it (a check that never ran is not "no update").
-                    # `status_update_fields()` is the one reader; /api/status and the
-                    # WebSocket push already go through it.
-                    **state.status_snapshot(**status_update_fields()),  # type: ignore[arg-type]
+                    # The SSE stream is the THIRD status emitter. It routes the
+                    # lesson/cron counts through the ONE gateway-wide cache all
+                    # three emitters share (status_counts.cached_status_snapshot)
+                    # so they never compute inline on the event loop, and that
+                    # funnel joins in the update fields from
+                    # `status_update_fields()` itself — the one reader — so the
+                    # tri-state update fields are not flattened.
+                    **await cached_status_snapshot(state),
                     "version": _display_local_version(),
                 }
             )

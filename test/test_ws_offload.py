@@ -31,7 +31,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew.dashboard.ws import (
+from kiro_crew.dashboard.status_counts import (
     _WS_COUNTS_WARN_AFTER_FAILURES,
     _counts_refresh_decision,
     _load_status_counts,
@@ -289,11 +289,11 @@ def test_warn_counts_failure_first_warning_survives_early_boot(caplog, monkeypat
     POST-FIX: the latch is ``None`` until the first warning, so the first
     warning always fires; a second within the interval is suppressed.
     """
-    from kiro_crew.dashboard import ws as ws_module
+    from kiro_crew.dashboard import status_counts as ws_module
 
     # Module-level global — monkeypatch restores it even on early return.
     monkeypatch.setattr(ws_module, "_last_counts_warn_monotonic", None)
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.ws"):
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.status_counts"):
         ws_module._warn_counts_failure(6, "lessons: RuntimeError")
         assert any(
             "6 consecutive refreshes" in r.message for r in caplog.records
@@ -314,7 +314,7 @@ async def test_gateway_wide_refresh_is_single_touch_per_ttl(monkeypatch):
     the cached tuple back without touching the store — and a successful
     refresh resets the warn latch so the NEXT outage warns again.
     """
-    from kiro_crew.dashboard import ws as ws_module
+    from kiro_crew.dashboard import status_counts as ws_module
 
     monkeypatch.setattr(ws_module, "_counts_cache", (None, None))
     monkeypatch.setattr(ws_module, "_counts_cache_ts", float("-inf"))
@@ -343,15 +343,22 @@ async def test_gateway_wide_refresh_is_single_touch_per_ttl(monkeypatch):
     assert touches["n"] == 1, "a second socket's tick must not touch the store within the TTL"
 
 
-def test_status_frame_publishes_null_for_unknown_counts():
-    """Pins the frame emission itself — the load-bearing half. The
-    sentinel 0 passed to ``status_snapshot`` (to suppress its inline on-loop
-    default) must be OVERWRITTEN by the true cached values, so an
-    unknown-lessons frame carries ``None`` (rendered as a skeleton) while the
-    independently known cron count ships as a real number. Deleting either
-    overwrite key silently restores the authoritative false 0.
+@pytest.mark.asyncio
+async def test_cached_status_snapshot_publishes_null_for_unknown_counts(monkeypatch):
+    """Pins the shared funnel's emission — the contract all three status
+    emitters (WS ``_status_frame``, ``/api/status``, SSE) route through. The
+    cached counts pass straight into ``status_snapshot``, which emits them
+    verbatim: an unknown-lessons snapshot carries ``None`` (rendered as a
+    skeleton) while the independently known cron count ships as a real number.
     """
-    from kiro_crew.dashboard.ws import _status_frame
+    from kiro_crew.dashboard import status_counts as sc_module
+    from kiro_crew.dashboard.status_counts import cached_status_snapshot
+
+    # A warm cache with a known cron count and an UNKNOWN lesson count.
+    async def fake_refresh(_state):
+        return (4, None)
+
+    monkeypatch.setattr(sc_module, "_refresh_status_counts", fake_refresh)
 
     seen_kwargs: dict = {}
 
@@ -361,11 +368,213 @@ def test_status_frame_publishes_null_for_unknown_counts():
 
     state = SimpleNamespace(status_snapshot=fake_snapshot)
 
-    frame = _status_frame(state, crons=4, lessons=None)  # type: ignore[arg-type]
+    snap = await cached_status_snapshot(state)  # type: ignore[arg-type]
 
-    # The sentinel suppressed the inline default...
-    assert seen_kwargs["lessons"] == 0
-    # ...and the overwrite published the honest unknown, not the sentinel.
+    # The cached counts pass straight through — no sentinel, no overwrite.
+    assert seen_kwargs["lessons"] is None
+    assert seen_kwargs["cron_jobs"] == 4
+    # ...and status_snapshot emits them verbatim: honest unknown, real number.
+    assert snap["lessons"] is None
+    assert snap["cron_jobs"] == 4
+
+
+@pytest.mark.asyncio
+async def test_status_frame_publishes_null_for_unknown_counts(monkeypatch):
+    """Pins the WS ``dashboard`` frame: it delegates to ``cached_status_snapshot``
+    (so the inline on-loop fallback can never run here) and appends
+    ``version``/``platform``. An unknown lesson count still ships as ``None``.
+    """
+    from kiro_crew.dashboard import status_counts as sc_module
+    from kiro_crew.dashboard.ws import _status_frame
+
+    async def fake_refresh(_state):
+        return (4, None)
+
+    monkeypatch.setattr(sc_module, "_refresh_status_counts", fake_refresh)
+
+    def fake_snapshot(**kwargs):
+        return {"cron_jobs": kwargs["cron_jobs"], "lessons": kwargs["lessons"], "sessions": 1}
+
+    state = SimpleNamespace(status_snapshot=fake_snapshot)
+
+    frame = await _status_frame(state)  # type: ignore[arg-type]
+
     assert frame["lessons"] is None
     assert frame["cron_jobs"] == 4
     assert "version" in frame and "platform" in frame
+
+
+def _warm_counts_cache(monkeypatch, counts):
+    """Seed the shared status-counts cache warm so ``_refresh_status_counts``
+    returns ``counts`` immediately without any store touch this TTL.
+    """
+    from kiro_crew.dashboard import status_counts as sc_module
+
+    monkeypatch.setattr(sc_module, "_counts_cache", counts)
+    monkeypatch.setattr(sc_module, "_counts_cache_ts", time.monotonic())
+    monkeypatch.setattr(sc_module, "_counts_cache_failures", 0)
+    monkeypatch.setattr(sc_module, "_counts_refresh_inflight", False)
+
+
+def _recording_state(monkeypatch, tmp_path):
+    """A real DashboardState whose two inline count sources RECORD any call, so
+    a test can prove the status path never invoked them.
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard.state import DashboardState
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    calls = {"count_lessons": 0, "list_jobs": 0}
+
+    crons = MagicMock()
+
+    def _list_jobs():
+        calls["list_jobs"] += 1
+        return [{"id": "j1"}, {"id": "j2"}]
+
+    crons.list_jobs.side_effect = _list_jobs
+    crons.status.return_value = {}
+    crons.count_enabled_from_disk.return_value = 0
+    lessons = MagicMock()
+    lessons.load_all.return_value = [{"rule": "r1"}]
+    state = DashboardState(
+        sessions=MagicMock(count=3),
+        crons=crons,
+        lessons=lessons,
+        start_time=time.time() - 60,
+        subagents=MagicMock(count=1),
+    )
+
+    def _count_lessons():
+        calls["count_lessons"] += 1
+        return 999
+
+    monkeypatch.setattr(state, "_count_lessons", _count_lessons)
+    return state, calls
+
+
+@pytest.mark.asyncio
+async def test_api_status_serves_warm_cache_without_inline_counts(monkeypatch, tmp_path):
+    """FAILURE SCENARIO: pre-fix ``api_status`` called
+    ``state.status_snapshot(...)`` with no counts, so the snapshot computed
+    ``_count_lessons`` (JSONL + sqlite COUNT under the vector store lock) and
+    ``crons.list_jobs`` INLINE on the event loop every request.
+
+    POST-FIX: ``/api/status`` routes through the shared
+    ``cached_status_snapshot``, so a warm cache serves ``lessons``/``cron_jobs``
+    from the cache and NEITHER inline source is touched.
+    """
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.dashboard.handlers_system import api_status
+
+    state, calls = _recording_state(monkeypatch, tmp_path)
+    _warm_counts_cache(monkeypatch, (7, 42))
+
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("GET", "/api/status", app=app)
+
+    resp = await api_status(req)
+    import json as _json
+
+    body = _json.loads(resp.body.decode())
+
+    assert body["cron_jobs"] == 7
+    assert body["lessons"] == 42
+    assert calls["count_lessons"] == 0, "the inline lesson count must not run on a warm cache"
+    assert calls["list_jobs"] == 0, "the inline cron count must not run on a warm cache"
+
+
+@pytest.mark.asyncio
+async def test_api_status_warm_cache_none_yields_null_not_fallback(monkeypatch, tmp_path):
+    """FAILURE SCENARIO: pre-fix an unknown count fell back to the inline
+    ``_count_lessons``/``list_jobs`` totals, so a store that never initialized
+    published an authoritative-looking count instead of unknown.
+
+    POST-FIX: a ``(None, None)`` cache yields ``null`` for BOTH keys in
+    ``/api/status`` — the loading-skeleton signal — and still never calls the
+    inline sources.
+    """
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.dashboard.handlers_system import api_status
+
+    state, calls = _recording_state(monkeypatch, tmp_path)
+    _warm_counts_cache(monkeypatch, (None, None))
+
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("GET", "/api/status", app=app)
+
+    resp = await api_status(req)
+    import json as _json
+
+    body = _json.loads(resp.body.decode())
+
+    assert body["cron_jobs"] is None
+    assert body["lessons"] is None
+    assert calls["count_lessons"] == 0
+    assert calls["list_jobs"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sse_dashboard_event_serves_warm_cache_without_inline_counts(monkeypatch, tmp_path):
+    """FAILURE SCENARIO: pre-fix the SSE ``dashboard`` writer emitted
+    ``state.status_snapshot(**status_update_fields())`` with no counts, so
+    every tick computed ``_count_lessons`` + ``list_jobs`` INLINE on the loop.
+
+    POST-FIX: the SSE writer routes through the shared ``cached_status_snapshot``,
+    so a warm cache serves the counts and the inline sources are never touched.
+    Drives ONE iteration of the real ``api_stream`` loop and captures the
+    ``dashboard`` frame it writes.
+    """
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.dashboard.handlers import updates as updates_mod
+
+    state, calls = _recording_state(monkeypatch, tmp_path)
+    _warm_counts_cache(monkeypatch, (7, 42))
+
+    writes: list[bytes] = []
+
+    class _FakeResp:
+        content_type = ""
+        headers: dict = {}
+
+        async def prepare(self, _request):
+            return None
+
+        async def write(self, chunk: bytes):
+            writes.append(chunk)
+            # Exit the writer loop cleanly after the first `dashboard` frame.
+            if b"event: dashboard" in chunk:
+                raise ConnectionResetError
+
+    monkeypatch.setattr(updates_mod.web, "StreamResponse", lambda *a, **k: _FakeResp())
+
+    app = web.Application()
+    app["state"] = state
+    req = make_mocked_request("GET", "/api/stream", app=app)
+
+    await updates_mod.api_stream(req)
+
+    import json as _json
+
+    dashboard = None
+    for chunk in writes:
+        text = chunk.decode()
+        if text.startswith("event: dashboard"):
+            payload = text.split("data: ", 1)[1].strip()
+            dashboard = _json.loads(payload)
+            break
+
+    assert dashboard is not None, "the SSE writer must emit a dashboard frame"
+    assert dashboard["cron_jobs"] == 7
+    assert dashboard["lessons"] == 42
+    assert calls["count_lessons"] == 0, "the inline lesson count must not run on a warm cache"
+    assert calls["list_jobs"] == 0, "the inline cron count must not run on a warm cache"

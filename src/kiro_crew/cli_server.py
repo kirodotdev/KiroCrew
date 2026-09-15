@@ -2087,9 +2087,23 @@ def _status(args: argparse.Namespace) -> None:
     print(f"  Messages:    {data.get('messages', 0)}")
     print(f"  Tool calls:  {data.get('tool_calls', 0)}")
     print(f"  Subagents:   {data.get('subagents', 0)}")
-    print(f"  Cron jobs:   {data.get('crons', 0)}")
-    print(f"  Lessons:     {data.get('lessons', 0)}")
+    print(f"  Cron jobs:   {_format_count(data, 'cron_jobs')}")
+    print(f"  Lessons:     {_format_count(data, 'lessons')}")
     print(f"  Memory:      {_format_memory_line(data)}")
+
+
+def _format_count(data: dict, key: str) -> str:
+    """One of the two cached counts from a status payload, or a dash for unknown.
+
+    ``/api/status`` serves ``cron_jobs`` and ``lessons`` from the gateway-wide
+    count cache (``dashboard/status_counts.py``) and publishes ``null`` while
+    that cache has not refreshed yet or the store is failing — the same
+    unknown the dashboard renders as a loading skeleton. A dash keeps the CLI
+    from printing ``None`` or fabricating a zero for a count nobody measured;
+    an older gateway that omits the key prints the same dash.
+    """
+    value = data.get(key)
+    return "—" if value is None else str(value)
 
 
 def _format_memory_line(data: dict) -> str:

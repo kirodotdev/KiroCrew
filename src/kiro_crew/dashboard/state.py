@@ -4693,7 +4693,18 @@ class DashboardState:
         update_can_arm: bool = False,
         version_display: str = "",
     ) -> dict[str, Any]:
-        """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
+        """Core status fields shared by /api/status, SSE, and WebSocket pushes.
+
+        ``cron_jobs`` and ``lessons`` are supplied by the caller and never
+        computed here: the only production caller is
+        ``status_counts.cached_status_snapshot``, which loads both counts off
+        the event loop through the shared count cache. Computing them inline
+        would run ``_count_lessons`` (a JSONL read plus a SQLite ``COUNT(*)``)
+        and ``crons.count_enabled_from_disk`` (a ``crons.json`` parse) on the
+        loop thread -- the ``no-blocking-call-on-event-loop`` freeze class this
+        emitter path exists to avoid. ``None`` means the count is unknown and
+        renders as a loading skeleton, never an authoritative 0.
+        """
         uptime = int(time.time() - self.start_time)
         branch, commit = self._build_info
         return {
@@ -4705,8 +4716,8 @@ class DashboardState:
             "start_time": self.start_time,
             "sessions": self.sessions.count,
             "messages": self.messages_received,
-            "cron_jobs": cron_jobs if cron_jobs is not None else len(self.crons.list_jobs()),
-            "lessons": lessons if lessons is not None else self._count_lessons(),
+            "cron_jobs": cron_jobs,
+            "lessons": lessons,
             "subagents": self.subagents.count if self.subagents else 0,
             "update_available": update_available,
             # Can THIS install replace its own code without the user leaving the
