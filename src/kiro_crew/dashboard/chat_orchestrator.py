@@ -12,6 +12,7 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.sections import OrchestratorConfig
+from kiro_crew.constants import _RESERVED_PLAN_ACTIONS
 from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, append_and_surface
@@ -1178,7 +1179,7 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     action = (body.get("action") or "").strip().lower()
-    if action not in ("go", "go all", "cancel"):
+    if action not in _RESERVED_PLAN_ACTIONS:
         return web.json_response({"error": "action must be go, go all, or cancel"}, status=400)
     if getattr(slot, "mode", "") != "orchestrator":
         return web.json_response(
