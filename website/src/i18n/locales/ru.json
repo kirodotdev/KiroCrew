@@ -7348,7 +7348,10 @@
       "search_recent_projects": "Поиск по недавним проектам",
       "search_recent_projects_2": "Поиск по недавним проектам…",
       "select": "Выбрать",
-      "subdirectories": "Подкаталоги"
+      "subdirectories": "Подкаталоги",
+      "recent_unavailable": "Недавние проекты недоступны",
+      "retry": "Повторить",
+      "loading_recent": "Загрузка…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Я понимаю, опубликовать публично",
