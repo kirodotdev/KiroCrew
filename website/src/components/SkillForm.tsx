@@ -191,8 +191,13 @@ function backendFoldsLiteral(block: string, headerEnd: number, header: string): 
  *  to `'`. It never unescapes a double-quoted scalar's backslashes, and it never
  *  continues a plain scalar onto the next line. Block scalars are excluded here: the
  *  backend implements the same folding the parser does, so the two agree by
- *  construction. */
-function backendReadsValue(block: string, pair: Pair<unknown, unknown>): string | null {
+ *  construction.
+ *
+ *  Exported for the cross-language parity harness (test/test_skillform_frontmatter_parity.py),
+ *  which runs THIS function -- and `backendFoldsLiteral`, which it calls for the bare
+ *  `|` family -- against the Python read path so the simulation cannot drift from the
+ *  thing it simulates. */
+export function backendReadsValue(block: string, pair: Pair<unknown, unknown>): string | null {
   const keyRange = isScalar(pair.key) ? pair.key.range : null
   if (!keyRange) return null
   const lineStart = block.lastIndexOf('\n', keyRange[0] - 1) + 1
