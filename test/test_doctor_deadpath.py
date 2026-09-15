@@ -581,6 +581,18 @@ class TestDoctorRenderer:
         assert "\\x1b" in out  # rendered as a visible, inert token
         assert any("evil.json" in i for i in issues)
 
+    def test_newline_in_server_field_is_rendered_visibly(self, agents_dir: Path, capsys) -> None:
+        dead = str(agents_dir / "gone")
+        _write_spec(agents_dir, "evil.json", {"srv\nforged": {"command": dead}})
+
+        issues: list[str] = []
+        dp.doctor_dead_paths(issues)
+
+        out = capsys.readouterr().out
+        assert "srv\\x0aforged.command" in out
+        assert "srv\nforged.command" not in out
+        assert any("evil.json" in issue for issue in issues)
+
     @pytest.mark.skipif(
         sys.platform == "win32",
         reason="NTFS refuses control bytes in filenames at creation (EINVAL), "
@@ -609,6 +621,7 @@ class TestDoctorRenderer:
     def test_sanitizer_keeps_ordinary_text(self) -> None:
         assert dp._sanitize_for_terminal("/opt/tool/bin/x") == "/opt/tool/bin/x"
         assert dp._sanitize_for_terminal("a\tb") == "a\tb"  # tab is kept
+        assert dp._sanitize_for_terminal("a\nb\rc") == "a\\x0ab\\x0dc"
         assert dp._sanitize_for_terminal("x\x1by") == "x\\x1by"
 
 

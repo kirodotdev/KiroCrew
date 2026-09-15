@@ -584,12 +584,13 @@ it is unbounded third-party code and must not overlap the still-running startup
 hook against partially initialized state.
 
 Normal recovery is to retry after retained startup execution exits. If a startup
-hook is permanently wedged, the operator must **stop the gateway completely**,
-run `kirocrew app disable <name>` while no gateway process can execute app code,
-and then restart the gateway. The CLI command only writes `enabled=false` to
-installed-app metadata; it is not runtime teardown and must not be run against a
-live gateway as evidence that old app code stopped. The disabled app is skipped
-on the next startup, allowing the operator to repair or remove it without
+hook is permanently wedged, `kirocrew app disable <name>` performs runtime
+teardown when it reaches the running Gateway through its owner-only Unix socket;
+a retained hook can still make that live request return the retryable refusal
+above. If the CLI cannot reach that socket, it only records `enabled=false` for
+the next Gateway start. In that file-only case the operator must **stop the
+Gateway completely** before running the command, then restart it: the disabled
+app is skipped on startup, allowing the operator to repair or remove it without
 re-entering the wedged hook.
 
 Graceful gateway shutdown sweeps retained startup ownership for **every enabled

@@ -66,9 +66,15 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS, PROVIDER_LOCAL
-from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
+from kiro_crew.dashboard.token_auth import (
+    MAX_SESSION_TTL_SECS,
+    _unix_request_socket,
+    generate_token,
+    parse_duration,
+)
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.executors import discovery_executor
+from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
 from kiro_crew.session_workspace import is_valid_id
@@ -2422,6 +2428,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 # ── Local token bootstrap (Electron / local apps) ─────────────────────
 
 
+def _unix_peer_is_self(request: web.Request) -> bool:
+    """True iff the request's Unix peer is this process's own principal."""
+    sock = _unix_request_socket(request)
+    return sock is not None and check_peer_is_self(sock) is PeerCredResult.MATCH
+
+
 async def api_token_local(request: web.Request) -> web.Response:
     """GET /api/token/local — issue a token for local apps.
 
@@ -2429,10 +2441,15 @@ async def api_token_local(request: web.Request) -> web.Response:
     gateway startup. Only processes on the same machine can read the file.
     Secret passed via ``X-Local-Secret`` header (not query string, to avoid
     leaking in logs).
+
+    Reachable over loopback TCP or the dashboard's ``AF_UNIX`` socket; unix
+    peers are admitted only on a positive kernel same-principal check
+    (``_unix_peer_is_self``), which is stronger locality evidence than a
+    loopback address. The secret is required on both transports.
     """
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
 
-    if not _h.is_loopback(request.remote or ""):
+    if not _h.is_loopback(request.remote or "") and not _unix_peer_is_self(request):
         _sel().log_api_access(
             caller=request.remote or "unknown",
             operation="token.local",

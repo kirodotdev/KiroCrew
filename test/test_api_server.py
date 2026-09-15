@@ -7,11 +7,12 @@ crons, taskrunner, send-message, notifications).
 from __future__ import annotations
 
 import json
+import socket
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from kiro_crew.dashboard.server import _register_mcp_routes
 from kiro_crew.dashboard.state import DashboardState
@@ -48,6 +49,126 @@ def _make_api_app(state: DashboardState) -> web.Application:
     app["port"] = 5476
     _register_mcp_routes(app)
     return app
+
+
+def _local_mint_request(*, family: int, peer_host: str | None) -> tuple[web.Request, object]:
+    """Build a local-bootstrap request on a TCP or AF_UNIX transport."""
+    sock = MagicMock()
+    sock.family = family
+    peername = (peer_host, 43123) if peer_host is not None else None
+    transport = MagicMock()
+    transport.get_extra_info.side_effect = lambda key, default=None: {
+        "socket": sock,
+        "peername": peername,
+    }.get(key, default)
+    app = web.Application()
+    app["local_secret"] = "right"
+    app["state"] = MagicMock(owner_id="owner-1")
+    request = make_mocked_request(
+        "GET",
+        "/api/token/local?ttl=2m",
+        headers={"X-Local-Secret": "right"},
+        app=app,
+        transport=transport,
+    )
+    return request, sock
+
+
+class TestLocalTokenTransportAdmission:
+    """The local mint accepts only loopback TCP or verified owner Unix peers."""
+
+    @staticmethod
+    def _allow_owner_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.local_owner_bootstrap_allowed",
+            lambda _request: True,
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="AF_UNIX sockets only")
+    async def test_unix_same_principal_with_correct_secret_mints(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard.handlers import core
+        from kiro_crew.mcp_gateway import socketsec
+
+        self._allow_owner_bootstrap(monkeypatch)
+        request, sock = _local_mint_request(family=socket.AF_UNIX, peer_host=None)
+        check = MagicMock(return_value=socketsec.PeerCredResult.MATCH)
+        monkeypatch.setattr(core, "check_peer_is_self", check)
+        monkeypatch.setattr(core, "generate_token", lambda *_a, **_kw: "issued-value")
+
+        response = await core.api_token_local(request)
+
+        assert response.status == 200
+        assert _response_json(response)["token"] == "issued-value"
+        check.assert_called_once_with(sock)
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="AF_UNIX sockets only")
+    @pytest.mark.parametrize("verdict_name", ["MISMATCH", "UNVERIFIABLE"])
+    async def test_unix_nonmatching_or_unverifiable_peer_is_loopback_only(
+        self, monkeypatch: pytest.MonkeyPatch, verdict_name: str
+    ) -> None:
+        from kiro_crew.dashboard.handlers import core
+        from kiro_crew.mcp_gateway import socketsec
+
+        request, sock = _local_mint_request(family=socket.AF_UNIX, peer_host=None)
+        verdict = getattr(socketsec.PeerCredResult, verdict_name)
+        check = MagicMock(return_value=verdict)
+        monkeypatch.setattr(core, "check_peer_is_self", check)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+
+        response = await core.api_token_local(request)
+
+        assert response.status == 403
+        assert _response_json(response)["error"] == "loopback only"
+        check.assert_called_once_with(sock)
+
+    @pytest.mark.asyncio
+    async def test_tcp_loopback_with_correct_secret_still_mints(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard.handlers import core
+        from kiro_crew.mcp_gateway import socketsec
+
+        self._allow_owner_bootstrap(monkeypatch)
+        request, _sock = _local_mint_request(family=socket.AF_INET, peer_host="127.0.0.1")
+        check = MagicMock(return_value=socketsec.PeerCredResult.MISMATCH)
+        monkeypatch.setattr(core, "check_peer_is_self", check)
+        monkeypatch.setattr(core, "generate_token", lambda *_a, **_kw: "issued-value")
+
+        response = await core.api_token_local(request)
+
+        assert response.status == 200
+        assert _response_json(response)["token"] == "issued-value"
+        check.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_loopback_tcp_with_correct_secret_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard.handlers import core
+        from kiro_crew.mcp_gateway import socketsec
+
+        request, _sock = _local_mint_request(family=socket.AF_INET, peer_host="203.0.113.9")
+        check = MagicMock(return_value=socketsec.PeerCredResult.MATCH)
+        monkeypatch.setattr(core, "check_peer_is_self", check)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
+
+        response = await core.api_token_local(request)
+
+        assert response.status == 403
+        assert _response_json(response)["error"] == "loopback only"
+        check.assert_not_called()
+
+
+def _response_json(response: web.Response) -> dict:
+    """Decode a direct-handler JSON response."""
+    import json
+
+    return json.loads(response.body)
 
 
 class TestRegisterMcpRoutes:
@@ -194,9 +315,19 @@ class TestApiServerSpawn:
             lambda cwd, roots: ("", "root no longer allowed"),
         )
         old = MagicMock(
-            done=True, outcome="failed", agent="proj-agent", cwd="/was/allowed/repo",
-            _raw_task="t", task="t", parent_session_key="", max_turns=0, model="",
-            approval_mode="", silent=False, include_memory=True, include_lessons=True,
+            done=True,
+            outcome="failed",
+            agent="proj-agent",
+            cwd="/was/allowed/repo",
+            _raw_task="t",
+            task="t",
+            parent_session_key="",
+            max_turns=0,
+            model="",
+            approval_mode="",
+            silent=False,
+            include_memory=True,
+            include_lessons=True,
             include_project=True,
         )
         mock_mgr = MagicMock()
@@ -405,8 +536,7 @@ class TestStartApiServerWiring:
                 getattr(mw, "_is_token_auth", False) for mw in runner.app.middlewares
             ), "start_api_server must mount token_auth_middleware"
             routes = {
-                (route.method, route.resource.canonical)
-                for route in runner.app.router.routes()
+                (route.method, route.resource.canonical) for route in runner.app.router.routes()
             }
             for probe in ("/api/health", "/api/live", "/api/ready"):
                 assert ("GET", probe) in routes
@@ -781,8 +911,7 @@ class TestApiKirocrewConfig:
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text(
-            '{"agent": {"max_subagents": 8, "subagent_max_turns": 50, '
-            '"subagent_auto_max": 32}}'
+            '{"agent": {"max_subagents": 8, "subagent_max_turns": 50, ' '"subagent_auto_max": 32}}'
         )
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
             resp = await c.put(

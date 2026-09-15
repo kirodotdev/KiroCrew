@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import http.client
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,6 +72,13 @@ class _FakeResponse:
 
     def read(self) -> bytes:
         return self._raw
+
+
+class _IncompleteResponse(_FakeResponse):
+    """Response whose body terminates before the declared payload completes."""
+
+    def read(self) -> bytes:
+        raise http.client.IncompleteRead(self._raw)
 
 
 def _result(ok: bool, *, message: str = "done", error: str = "nope", name: str = "demo") -> Any:
@@ -408,7 +418,567 @@ class TestAppCli:
         ):
             cc._handle_app(_ns(app_action="enable", name="demo"))
         out = capsys.readouterr().out
+        assert "✅ Recorded demo as enabled." in out
+        assert "No running gateway was reached" in out
         assert "Agents registered: 2" in out and "Skills registered: 1" in out
+
+    def test_owner_socket_forwards_enable_without_local_edits(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        requests: list[urllib.request.Request] = []
+
+        def _open(
+            request: urllib.request.Request, *, timeout: int, socket_path: Path
+        ) -> _FakeResponse:
+            assert socket_path.name == "dashboard-8123.sock"
+            requests.append(request)
+            if request.full_url.endswith("/api/token/local?ttl=2m"):
+                assert request.get_header("X-local-secret") == "port-scoped-secret"
+                return _FakeResponse({"token": "dashboard-credential"})
+            return _FakeResponse(
+                {
+                    "ok": True,
+                    "message": "enabled demo",
+                    "registration": {
+                        "agents": ["a"],
+                        "skills": ["s", "t"],
+                        "errors": ["agent registration deferred"],
+                    },
+                    "warnings": ["backend health check pending"],
+                    "backend": {"port": 9100, "healthy": False},
+                }
+            )
+
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch(
+                "kiro_crew.app_lifecycle_client.read_local_secret",
+                return_value="port-scoped-secret",
+            ) as credential,
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen", side_effect=_open),
+            patch("kiro_crew.cli_commands.enable_app") as local_enable,
+            patch("kiro_crew.cli_commands.register_app") as local_register,
+        ):
+            cc._handle_app(_ns(app_action="enable", name="demo"))
+
+        assert len(requests) == 2
+        assert requests[1].get_method() == "POST"
+        assert "/api/apps/demo/enable?" in requests[1].full_url
+        local_enable.assert_not_called()
+        local_register.assert_not_called()
+        credential.assert_called_once_with(8123)
+        captured = capsys.readouterr()
+        out = captured.out
+        assert "✅ enabled demo" in out
+        assert "No running gateway was reached" not in out
+        assert "Agents registered: 1" in out
+        assert "Skills registered: 2" in out
+        assert "Backend: port 9100 (starting)" in out
+        assert "⚠️  backend health check pending" in captured.err
+        assert "⚠️  agent registration deferred" in captured.err
+
+    def test_gateway_output_sanitizes_terminal_control_sequences(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew import app_lifecycle_client
+
+        app_lifecycle_client.print_result(
+            "enable",
+            "demo",
+            {
+                "message": "enabled \x1b]0;evil\x07demo\x1b[2J!\x07",
+                "warnings": ["warning \x1b]0;evil\x07still\x1b[2J readable\x07"],
+                "registration": {
+                    "agents": [],
+                    "skills": [],
+                    "errors": ["registration \x1b]0;evil\x07safe\x1b[2J\x07"],
+                },
+            },
+        )
+
+        captured = capsys.readouterr()
+        assert captured.out.startswith("✅ enabled demo!")
+        assert "⚠️  warning still readable" in captured.err
+        assert "⚠️  registration safe" in captured.err
+        assert "\x1b" not in captured.out + captured.err
+        assert "\x07" not in captured.out + captured.err
+        assert "evil" not in captured.out + captured.err
+
+    def test_gateway_output_caps_each_gateway_string(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew import app_lifecycle_client
+
+        app_lifecycle_client.print_result("disable", "demo", {"message": "x" * 3000})
+
+        line = capsys.readouterr().out.removeprefix("✅ ").rstrip("\n")
+        assert len(line) == 2000
+        assert line.endswith("…")
+
+    def test_gateway_output_cannot_forge_an_unprefixed_result_line(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew import app_lifecycle_client
+
+        app_lifecycle_client.print_result(
+            "enable",
+            "demo",
+            {
+                "message": "enabled demo\n✅ also enabled evil",
+                "warnings": ["hook failed:\r\n✅ enabled evil\n   Agents registered: 9"],
+                "registration": {"agents": [], "skills": [], "errors": ["bad\nline"]},
+            },
+        )
+
+        captured = capsys.readouterr()
+        out_lines = captured.out.rstrip("\n").split("\n")
+        err_lines = captured.err.rstrip("\n").split("\n")
+        assert out_lines[0] == "✅ enabled demo\\x0a✅ also enabled evil"
+        assert all(line.startswith(("✅ ", "⚠️  ", "   ")) for line in out_lines + err_lines)
+        assert err_lines == [
+            "⚠️  hook failed:\\x0a✅ enabled evil\\x0a   Agents registered: 9",
+            "⚠️  bad\\x0aline",
+        ]
+        assert out_lines[1:] == ["   Agents registered: 0", "   Skills registered: 0"]
+
+    def test_gateway_error_message_is_confined_to_one_line(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew import app_lifecycle_client
+
+        error = app_lifecycle_client.AppGatewayError("denied\n✅ enabled demo")
+
+        assert str(error) == "denied\\x0a✅ enabled demo"
+
+    def test_gateway_action_timeout_is_a_gateway_error_without_file_edit(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        timeouts: list[int] = []
+
+        def _open(
+            request: urllib.request.Request, *, timeout: int, socket_path: Path
+        ) -> _FakeResponse:
+            assert socket_path.name == "dashboard-8123.sock"
+            timeouts.append(timeout)
+            if request.full_url.endswith("/api/token/local?ttl=2m"):
+                return _FakeResponse({"token": "dashboard-credential"})
+            raise TimeoutError("timed out")
+
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen", side_effect=_open),
+            patch("kiro_crew.cli_commands.enable_app") as local_enable,
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_app(_ns(app_action="enable", name="demo"))
+
+        assert exc.value.code == 1
+        assert timeouts == [5, 300]
+        err = capsys.readouterr().err
+        assert "… applying enable for demo through the running gateway" in err
+        assert "⏳ the gateway did not finish enable for demo within 300 s" in err
+        assert "may still be applying it" in err
+        assert "applies it twice" in err
+        assert "refused" not in err
+        local_enable.assert_not_called()
+
+    def test_gateway_route_error_sanitizes_terminal_controls(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        error = _http_error(
+            409,
+            json.dumps({"error": "busy\x1b]0;evil\x07 now\x1b[2J\x07"}).encode(),
+        )
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch(
+                "kiro_crew.app_lifecycle_client.unix_socket_urlopen",
+                side_effect=[_FakeResponse({"token": "dashboard-credential"}), error],
+            ),
+            pytest.raises(SystemExit),
+        ):
+            cc._handle_app(_ns(app_action="enable", name="demo"))
+
+        err = capsys.readouterr().err
+        assert "gateway refused: busy now" in err
+        assert "\x1b" not in err
+        assert "\x07" not in err
+        assert "evil" not in err
+
+    def test_disable_forwards_to_running_gateway_without_local_edits(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        requests: list[urllib.request.Request] = []
+
+        def _open(
+            request: urllib.request.Request, *, timeout: int, socket_path: Path
+        ) -> _FakeResponse:
+            assert socket_path.name == "dashboard-8123.sock"
+            requests.append(request)
+            if request.full_url.endswith("/api/token/local?ttl=2m"):
+                return _FakeResponse({"token": "dashboard-credential"})
+            return _FakeResponse(
+                {
+                    "ok": True,
+                    "message": "disabled demo",
+                    "warnings": ["backend still listening on port 9100"],
+                }
+            )
+
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen", side_effect=_open),
+            patch("kiro_crew.cli_commands.disable_app") as local_disable,
+            patch("kiro_crew.cli_commands.deregister_app") as local_deregister,
+            patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler") as local_cleanup,
+        ):
+            cc._handle_app(_ns(app_action="disable", name="demo"))
+
+        assert len(requests) == 2
+        assert requests[1].get_method() == "POST"
+        assert "/api/apps/demo/disable?" in requests[1].full_url
+        local_disable.assert_not_called()
+        local_deregister.assert_not_called()
+        local_cleanup.assert_not_called()
+        assert "⚠️  backend still listening on port 9100" in capsys.readouterr().err
+
+    def test_default_port_evidence_attempts_socket_then_reports_file_only(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(5476, False)
+            ),
+            patch(
+                "kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"
+            ) as credential,
+            patch(
+                "kiro_crew.app_lifecycle_client.unix_socket_urlopen",
+                side_effect=urllib.error.URLError(FileNotFoundError("no socket")),
+            ) as urlopen,
+            patch("kiro_crew.cli_commands.enable_app", return_value=_result(True)) as local_enable,
+            patch(
+                "kiro_crew.cli_commands.register_app", return_value=_registration()
+            ) as local_register,
+            patch("kiro_crew.cli_commands._register_app_crons_to_scheduler"),
+            patch("kiro_crew.cli_commands._warn_hooks_need_restart"),
+        ):
+            cc._handle_app(_ns(app_action="enable", name="demo"))
+
+        credential.assert_called_once_with(5476)
+        assert urlopen.call_args.kwargs["socket_path"].name == "dashboard-5476.sock"
+        local_enable.assert_called_once_with("demo")
+        local_register.assert_called_once_with("demo")
+        out = capsys.readouterr().out
+        assert "✅ Recorded demo as enabled." in out
+        assert "No running gateway was reached" in out
+        assert "next gateway start" in out
+        assert "apply it live from the dashboard" in out
+
+    def test_missing_local_secret_keeps_enable_file_only_behavior(self) -> None:
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value=""),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen") as urlopen,
+            patch("kiro_crew.cli_commands.enable_app", return_value=_result(True)) as local_enable,
+            patch(
+                "kiro_crew.cli_commands.register_app", return_value=_registration()
+            ) as local_register,
+            patch("kiro_crew.cli_commands._register_app_crons_to_scheduler"),
+            patch("kiro_crew.cli_commands._warn_hooks_need_restart"),
+        ):
+            cc._handle_app(_ns(app_action="enable", name="demo"))
+
+        urlopen.assert_not_called()
+        local_enable.assert_called_once_with("demo")
+        local_register.assert_called_once_with("demo")
+
+    def test_gateway_route_error_exits_without_file_edit(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        error = _http_error(409, json.dumps({"error": "app is busy"}).encode())
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch(
+                "kiro_crew.app_lifecycle_client.unix_socket_urlopen",
+                side_effect=[_FakeResponse({"token": "dashboard-credential"}), error],
+            ),
+            patch("kiro_crew.cli_commands.enable_app") as local_enable,
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_app(_ns(app_action="enable", name="demo"))
+
+        assert exc.value.code == 1
+        assert "gateway refused: app is busy" in capsys.readouterr().err
+        local_enable.assert_not_called()
+
+    def test_gateway_mint_error_exits_with_dashboard_hint(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        error = _http_error(403, json.dumps({"error": "local credential denied"}).encode())
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen", side_effect=error),
+            patch("kiro_crew.cli_commands.disable_app") as local_disable,
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_app(_ns(app_action="disable", name="demo"))
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "gateway refused: local credential denied" in err
+        assert "Toggle the app in the dashboard instead" in err
+        local_disable.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("failure", "expected"),
+        [
+            (http.client.BadStatusLine(""), "gateway"),
+            (http.client.RemoteDisconnected(""), "gateway"),
+            (http.client.LineTooLong("status line"), "gateway"),
+            (http.client.IncompleteRead(b""), "gateway"),
+            (ConnectionResetError(), "gateway"),
+            (TimeoutError(), "gateway"),
+            (socket.timeout(), "gateway"),
+            (urllib.error.URLError(ConnectionResetError()), "gateway"),
+            (ValueError("bad json"), "gateway"),
+            (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid"), "gateway"),
+            (RuntimeError("peer garbage"), "gateway"),
+            (urllib.error.HTTPError("http://localhost", 500, "broken", {}, None), "gateway"),
+            (FileNotFoundError("missing"), "file-only"),
+            (ConnectionRefusedError("stale"), "file-only"),
+            (urllib.error.URLError(FileNotFoundError("missing")), "file-only"),
+            (urllib.error.URLError(ConnectionRefusedError("stale")), "file-only"),
+            (OSError("AF_UNIX sockets are not available on this platform"), "file-only"),
+            (KeyboardInterrupt(), "interrupt"),
+        ],
+        ids=[
+            "bad-status-line",
+            "remote-disconnected",
+            "line-too-long",
+            "incomplete-read",
+            "connection-reset",
+            "timeout",
+            "socket-timeout",
+            "wrapped-reset",
+            "bad-json",
+            "bad-unicode",
+            "runtime-error",
+            "http-error",
+            "missing-direct",
+            "refused-direct",
+            "missing-wrapped",
+            "refused-wrapped",
+            "af-unix-unavailable",
+            "keyboard-interrupt",
+        ],
+    )
+    def test_mint_exception_surface_is_classified_by_outcome(
+        self, failure: BaseException, expected: str
+    ) -> None:
+        from kiro_crew import app_lifecycle_client
+
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, False)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen", side_effect=failure),
+            patch("kiro_crew.cli_commands.enable_app") as local_enable,
+        ):
+            if expected == "file-only":
+                assert app_lifecycle_client.toggle_app("demo", "enable") is None
+            elif expected == "interrupt":
+                with pytest.raises(KeyboardInterrupt):
+                    app_lifecycle_client.toggle_app("demo", "enable")
+            else:
+                with pytest.raises(app_lifecycle_client.AppGatewayError):
+                    app_lifecycle_client.toggle_app("demo", "enable")
+        local_enable.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("failure", "expected"),
+        [
+            (http.client.BadStatusLine(""), "gateway"),
+            (http.client.RemoteDisconnected(""), "gateway"),
+            (http.client.LineTooLong("status line"), "gateway"),
+            (http.client.IncompleteRead(b""), "gateway"),
+            (ConnectionResetError(), "gateway"),
+            (TimeoutError(), "gateway"),
+            (socket.timeout(), "gateway"),
+            (urllib.error.URLError(ConnectionResetError()), "gateway"),
+            (ValueError("bad json"), "gateway"),
+            (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid"), "gateway"),
+            (RuntimeError("peer garbage"), "gateway"),
+            (urllib.error.HTTPError("http://localhost", 500, "broken", {}, None), "gateway"),
+            (FileNotFoundError("missing"), "gateway"),
+            (ConnectionRefusedError("stale"), "gateway"),
+            (urllib.error.URLError(FileNotFoundError("missing")), "gateway"),
+            (urllib.error.URLError(ConnectionRefusedError("stale")), "gateway"),
+            (OSError("AF_UNIX sockets are not available on this platform"), "gateway"),
+            (KeyboardInterrupt(), "interrupt"),
+        ],
+        ids=[
+            "bad-status-line",
+            "remote-disconnected",
+            "line-too-long",
+            "incomplete-read",
+            "connection-reset",
+            "timeout",
+            "socket-timeout",
+            "wrapped-reset",
+            "bad-json",
+            "bad-unicode",
+            "runtime-error",
+            "http-error",
+            "missing-direct",
+            "refused-direct",
+            "missing-wrapped",
+            "refused-wrapped",
+            "af-unix-unavailable",
+            "keyboard-interrupt",
+        ],
+    )
+    def test_action_exception_surface_is_classified_by_outcome(
+        self, failure: BaseException, expected: str
+    ) -> None:
+        from kiro_crew import app_lifecycle_client
+
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch(
+                "kiro_crew.app_lifecycle_client.unix_socket_urlopen",
+                side_effect=[_FakeResponse({"token": "dashboard-credential"}), failure],
+            ),
+            patch("kiro_crew.cli_commands.enable_app") as local_enable,
+        ):
+            if expected == "interrupt":
+                with pytest.raises(KeyboardInterrupt):
+                    app_lifecycle_client.toggle_app("demo", "enable")
+            else:
+                with pytest.raises(app_lifecycle_client.AppGatewayError):
+                    app_lifecycle_client.toggle_app("demo", "enable")
+        local_enable.assert_not_called()
+
+    def test_post_mint_socket_refusal_is_gateway_error_without_file_edit(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        failure = urllib.error.URLError(ConnectionRefusedError("gateway restarted"))
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch(
+                "kiro_crew.app_lifecycle_client.unix_socket_urlopen",
+                side_effect=[_FakeResponse({"token": "dashboard-credential"}), failure],
+            ),
+            patch("kiro_crew.cli_commands.enable_app") as local_enable,
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_app(_ns(app_action="enable", name="demo"))
+
+        assert exc.value.code == 1
+        assert (
+            "gateway refused: gateway stopped answering before the action completed; "
+            "check the dashboard" in capsys.readouterr().err
+        )
+        local_enable.assert_not_called()
+
+    @pytest.mark.parametrize("stage", ["mint", "action"])
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            OSError("connection reset"),
+            urllib.error.URLError(OSError("broken transport")),
+            TimeoutError("timed out"),
+            urllib.error.URLError(TimeoutError("connect timed out")),
+        ],
+        ids=["direct", "wrapped", "timeout", "wrapped-timeout"],
+    )
+    def test_other_transport_failures_are_gateway_errors(
+        self, stage: str, failure: OSError
+    ) -> None:
+        from kiro_crew import app_lifecycle_client
+
+        side_effect: object
+        expected_type: type[Exception] = app_lifecycle_client.AppGatewayError
+        if stage == "mint":
+            side_effect = failure
+            expected = "could not mint local dashboard credential"
+        else:
+            side_effect = [_FakeResponse({"token": "dashboard-credential"}), failure]
+            reason = failure.reason if isinstance(failure, urllib.error.URLError) else failure
+            if isinstance(reason, TimeoutError):
+                # Our deadline passing means the outcome is unknown, never a refusal.
+                expected_type = app_lifecycle_client.AppGatewayTimeout
+                expected = "did not finish enable for demo within 300 s"
+            else:
+                expected = (
+                    "gateway stopped answering before the action completed; check the dashboard"
+                )
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen", side_effect=side_effect),
+            pytest.raises(expected_type, match=expected) as raised,
+        ):
+            app_lifecycle_client.toggle_app("demo", "enable")
+        if expected_type is app_lifecycle_client.AppGatewayError:
+            assert not isinstance(raised.value, app_lifecycle_client.AppGatewayTimeout)
+
+    @pytest.mark.parametrize("stage", ["mint", "action"])
+    @pytest.mark.parametrize(
+        "bad_response",
+        [_FakeResponse(b"{"), _IncompleteResponse(b'{"partial"')],
+        ids=["malformed", "truncated"],
+    )
+    def test_malformed_or_truncated_gateway_responses_are_gateway_errors(
+        self, stage: str, bad_response: _FakeResponse
+    ) -> None:
+        from kiro_crew import app_lifecycle_client
+
+        side_effect = (
+            [bad_response]
+            if stage == "mint"
+            else [_FakeResponse({"token": "dashboard-credential"}), bad_response]
+        )
+        with (
+            patch(
+                "kiro_crew.app_lifecycle_client.resolve_client_port_ex", return_value=(8123, True)
+            ),
+            patch("kiro_crew.app_lifecycle_client.read_local_secret", return_value="local-secret"),
+            patch("kiro_crew.app_lifecycle_client.unix_socket_urlopen", side_effect=side_effect),
+            pytest.raises(
+                app_lifecycle_client.AppGatewayError,
+                match="gateway returned a malformed response",
+            ),
+        ):
+            app_lifecycle_client.toggle_app("demo", "enable")
 
     def test_enable_failure_exits_1(self) -> None:
         with (
@@ -429,7 +999,9 @@ class TestAppCli:
             cc._handle_app(_ns(app_action="disable", name="demo"))
         cleanup.assert_called_once_with("demo")
         dereg.assert_called_once_with("demo")
-        assert "off" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "✅ Recorded demo as disabled." in out
+        assert "No running gateway was reached" in out
 
     def test_disable_flips_the_flag_before_deregistering(self) -> None:
         """Order is a security control, not cosmetics.

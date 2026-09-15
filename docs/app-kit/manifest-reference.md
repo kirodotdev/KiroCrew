@@ -616,13 +616,12 @@ Gateway** -- the dashboard's enable action (`on_app_enable`), also re-run at
 gateway startup (`on_gateway_startup`) -- so on that path they go live without
 waiting for a Gateway restart.
 
-`kirocrew app enable` is not that path. The CLI is a separate process with no
-handle on a running Gateway's imported modules, so it cannot load or replace
-hooks: a Gateway that is already up keeps executing the hook module it imported
-earlier, even though the command succeeds and `app info` reports the new
-version. Restart the Gateway, or disable and re-enable the app from the
-dashboard, for hook changes to take effect. The CLI prints this reminder after
-enabling any app that declares `backend.hooks`.
+`kirocrew app enable` and `kirocrew app disable` apply live when a running
+Gateway is reachable through the CLI's owner-only Unix socket (POSIX only),
+including starting or stopping the backend. Otherwise the CLI records the change
+for the next Gateway start. On that file-only path, enabling an app that declares
+`backend.hooks` also prints the hooks reminder so the delayed activation is
+explicit.
 
 **Importing your own modules.** Hook entry files are loaded from their file path
 into a synthetic package named after the app, never via `sys.path`, so use a

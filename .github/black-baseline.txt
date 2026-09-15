@@ -350,7 +350,6 @@ test/test_api_hook_test_stop_payload.py
 test/test_api_input_validation.py
 test/test_api_kiro_hooks.py
 test/test_api_models_retry.py
-test/test_api_server.py
 test/test_api_shutdown.py
 test/test_app_backend.py
 test/test_app_backend_stale_reap.py

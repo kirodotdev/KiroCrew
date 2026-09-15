@@ -39,6 +39,7 @@ from pathlib import Path
 
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE
 
 logger = logging.getLogger(__name__)
 
@@ -124,26 +125,29 @@ class DeadPathReport:
 
 
 def _sanitize_for_terminal(value: str) -> str:
-    """Neutralize control characters in an untrusted, spec-derived string.
+    """Render terminal controls visibly using the shared detection policy.
 
-    Spec files (foreign ones especially) are untrusted content. Their strings —
-    server names, paths, and the raw JSON error text that lands in the
-    ``unreadable`` reason — are printed to the operator's terminal by ``kirocrew
-    doctor``. A path or server name carrying ANSI/OSC escape bytes would let a
-    hostile spec drive the terminal (retitle the window, rewrite earlier output,
-    inject a pasteable command) the moment doctor renders it. Replace every C0
-    control (except tab) and the C1/DEL range with a visible ``\\xNN`` token so
-    the value is still readable but inert. ESC in particular cannot open
-    a control sequence.
+    Doctor keeps escape locations diagnosable instead of deleting them, so its
+    replacement semantics intentionally differ from :func:`safe_terminal_line`.
+    The control-sequence set itself is still single-sourced.
     """
-    out: list[str] = []
-    for ch in value:
-        codepoint = ord(ch)
-        if ch == "\t" or (0x20 <= codepoint <= 0x7E) or codepoint >= 0xA0:
-            out.append(ch)
-        else:
-            out.append(f"\\x{codepoint:02x}")
-    return "".join(out)
+
+    def _visible(match: object) -> str:
+        text = match.group(0)  # type: ignore[attr-defined]
+        return "".join(
+            (
+                ch
+                if ch == "\t" or (0x20 <= ord(ch) <= 0x7E) or ord(ch) >= 0xA0
+                else "\\x" + format(ord(ch), "02x")
+            )
+            for ch in text
+        )
+
+    rendered = _TERMINAL_CTRL_RE.sub(_visible, value)
+    # The shared CLI sanitizer deliberately preserves line structure, but doctor
+    # embeds untrusted fields inside its own lines, so a raw LF would let a field
+    # forge extra rows. Render it as the visible literal instead.
+    return rendered.replace("\n", "\\x0a")
 
 
 def _colon_scan_rejects(value: str) -> bool:

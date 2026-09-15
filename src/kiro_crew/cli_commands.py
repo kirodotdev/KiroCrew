@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from kiro_crew import __version__, beacon, platform_compat
+from kiro_crew import __version__, app_lifecycle_client, beacon, platform_compat
 from kiro_crew.agent import reset_agent_model
 from kiro_crew.apps.bridges import (
     deregister_app,
@@ -117,6 +117,7 @@ from kiro_crew.security import (
     scan_memory,
 )
 from kiro_crew.sel import sel
+from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
     CHANNEL_ID_RE,
@@ -133,14 +134,6 @@ from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore, _less
 _WS_DIR_OUTSIDE_HOME = (
     "Error: --dir must resolve inside the KiroCrew data home ({home}); got {given!r}. "
     "Pass a relative directory name (e.g. 'workspace-myproject')."
-)
-
-# Strip ANSI escape sequences and C0/C1 control characters from lesson text
-# before printing to the terminal, preventing OSC-based clipboard/title attacks.
-_TERMINAL_CTRL_RE = re.compile(
-    r"\x1b\[[0-9;?]*[ -/]*[@-~]"  # CSI sequences
-    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC sequences
-    r"|[\x00-\x08\x0b-\x1f\x7f-\x9f]"  # C0/C1 controls (keep \n \t)
 )
 
 
@@ -748,6 +741,38 @@ def _handle_workspace(args: argparse.Namespace) -> None:
         print("Usage: kirocrew workspace {list|create|update|delete}")
 
 
+def _run_app_action_through_gateway(action: str, app_name: str) -> bool:
+    """Return true when a live gateway handled an app lifecycle request."""
+    try:
+        result = app_lifecycle_client.toggle_app(app_name, action)
+    except app_lifecycle_client.AppGatewayTimeout as exc:
+        # The outcome is unknown, not negative: the gateway may still be applying
+        # the action, so this is neither a refusal nor an invitation to retry.
+        print(f"⏳ {exc}", file=sys.stderr)
+        sys.exit(1)
+    except app_lifecycle_client.AppGatewayError as exc:
+        print(
+            f"❌ gateway refused: {exc}. Toggle the app in the dashboard instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if result is None:
+        return False
+    app_lifecycle_client.print_result(action, app_name, result)
+    return True
+
+
+def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
+    """Report a persisted lifecycle change without claiming it is live."""
+    state = "enabled" if enabled else "disabled"
+    print(
+        f"✅ Recorded {app_name} as {state}. No running gateway was reached, so "
+        "this takes effect at the next gateway start (on Windows and in sandboxed "
+        "shells the CLI always uses this path). If a gateway is running now, apply "
+        "it live from the dashboard."
+    )
+
+
 def _cleanup_app_crons_from_scheduler(app_name: str) -> int:
     """Remove app-owned cron jobs from master scheduler before disable/uninstall.
 
@@ -944,10 +969,12 @@ def _handle_app(args: argparse.Namespace) -> None:
             )
 
     elif action == "enable":
+        if _run_app_action_through_gateway("enable", args.name):
+            return
         result = enable_app(args.name)
         if result.ok:
             reg = register_app(args.name)
-            print(f"✅ {result.message}")
+            _print_file_only_app_result(args.name, enabled=True)
             if reg.agents:
                 print(f"   Agents registered: {len(reg.agents)}")
             if reg.skills:
@@ -959,6 +986,8 @@ def _handle_app(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     elif action == "disable":
+        if _run_app_action_through_gateway("disable", args.name):
+            return
         _cleanup_app_crons_from_scheduler(args.name)
         # Flip the authoritative flag BEFORE tearing resources down. A running gateway
         # is a DIFFERENT process: it watches this app's backend and re-registers its MCP
@@ -977,7 +1006,7 @@ def _handle_app(args: argparse.Namespace) -> None:
         result = disable_app(args.name)
         deregister_app(args.name)
         if result.ok:
-            print(f"✅ {result.message}")
+            _print_file_only_app_result(args.name, enabled=False)
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
