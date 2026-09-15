@@ -578,18 +578,22 @@ def _sync_kill_provider(provider: object) -> None:
     acp.client through function-local imports.  ``test_agent_lifecycle_cycle.py``
     pins the absence; keep this leaf ignorant of the agent layer.
     """
-    # ACP provider: long-lived process via client._pid
+    # ACP provider: long-lived process via client._pid. The start id is
+    # captured at spawn and must travel with the PID; a bare deferred PID is not
+    # authorization to terminate whatever may own that number now.
     client = getattr(provider, "_client", None)
     pid = getattr(client, "_pid", None) if client else None
-    # CC provider: long-lived process via _proc.pid or ephemeral via _active_proc.pid
+    start_id = getattr(client, "_start_id", None) if client else None
     if pid is None:
         proc = getattr(provider, "_proc", None)
         if proc is not None and proc.returncode is None:
             pid = proc.pid
+            start_id = None
     if pid is None:
         proc = getattr(provider, "_active_proc", None)
         if proc is not None and proc.returncode is None:
             pid = proc.pid
+            start_id = None
     if pid is None:
         return
     # Only ever signal a real, positive, non-init PID. Test stand-ins are the
@@ -600,15 +604,22 @@ def _sync_kill_provider(provider: object) -> None:
     if not isinstance(pid, int) or pid <= 1:
         logger.debug("_sync_kill_provider: refusing to signal invalid pid %r", pid)
         return
-    # On Windows there is no SIGTERM/SIGKILL distinction (taskkill /F is a hard
-    # kill) and no os.waitpid for non-child PIDs, so a single kill suffices.
+    if not isinstance(start_id, str) or not start_id:
+        logger.debug(
+            "_sync_kill_provider: refusing unpinned provider PID %d",
+            pid,
+        )
+        return
+    # On Windows there is no SIGTERM/SIGKILL distinction (taskkill /T /F is a
+    # hard tree kill), so a single kill suffices.
     if platform_compat.IS_WINDOWS:
-        # kill_pid raises ProcessLookupError / PermissionError / OSError on a
-        # non-zero taskkill rc (same shape POSIX uses). Catch those so the
-        # audit log doesn't record a phantom "killed" when nothing was
-        # actually terminated.
+        # Keep the identity-verifying process handle open across taskkill. That
+        # prevents Windows from recycling the PID in the check-to-kill window
+        # while preserving taskkill /T process-tree semantics.
         try:
-            platform_compat.kill_pid(pid, platform_compat.SIGKILL)
+            killed = platform_compat.kill_process_tree_pinned(
+                pid, start_id, platform_compat.SIGKILL
+            )
         except (ProcessLookupError, PermissionError, OSError) as exc:
             logger.debug(
                 "_sync_kill_provider: taskkill did not terminate PID %d (%s)",
@@ -616,22 +627,54 @@ def _sync_kill_provider(provider: object) -> None:
                 exc,
             )
             return
-        logger.warning("_sync_kill_provider: killed PID %d for leaked provider", pid)
+        if not killed:
+            logger.debug(
+                "_sync_kill_provider: provider PID %d identity did not match",
+                pid,
+            )
+            return
+        logger.warning("_sync_kill_provider: killed PID %d tree for leaked provider", pid)
         return
+    # Confirm the recorded incarnation before resolving the process group. A
+    # provider may exit while cancellation defers this cleanup, and its PID may
+    # then name unrelated same-user work. Bracket group resolution so a recycle
+    # during that read also fails closed.
+    if platform_compat.get_process_start_id(pid) != start_id:
+        logger.debug(
+            "_sync_kill_provider: provider PID %d identity did not match",
+            pid,
+        )
+        return
+    pgid = platform_compat.pgroup_of_leader(pid)
+    if pgid is None or platform_compat.get_process_start_id(pid) != start_id:
+        logger.debug(
+            "_sync_kill_provider: provider PID %d identity changed during group resolution",
+            pid,
+        )
+        return
+    # Preserve this verified group id across SIGTERM -> SIGKILL. SIGTERM may
+    # reap the launcher, but surviving descendants keep the original group
+    # alive and must still receive the escalation.
     for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
         try:
-            platform_compat.kill_pid(pid, sig)
+            # Linux sandboxing inserts a launcher parent between the provider
+            # object and the real runtime. Killing only that PID reparents the
+            # kiro-cli + MCP tree to init and makes it unreachable by provider
+            # teardown, so escalation must target the launcher's process group.
+            platform_compat.kill_process_tree(pid, sig, pgid=pgid)
         except ProcessLookupError:
             return  # already dead
         except OSError:
             return
         if sig == platform_compat.SIGTERM:
-            # Brief wait for graceful exit before escalating (POSIX only)
+            # Brief wait for graceful exit before escalating (POSIX only). An
+            # already-reaped launcher does not prove its process group drained;
+            # surviving descendants still need the SIGKILL escalation.
             try:
                 os.waitpid(pid, os.WNOHANG)
             except ChildProcessError:
-                return
-    logger.warning("_sync_kill_provider: killed PID %d for leaked provider", pid)
+                pass
+    logger.warning("_sync_kill_provider: killed PID %d tree for leaked provider", pid)
 
 
 def _tracked_child_has_runtime_identity(child_pid: int) -> bool:

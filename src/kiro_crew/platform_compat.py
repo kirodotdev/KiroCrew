@@ -3977,11 +3977,13 @@ def kill_pid(pid: int, sig: int = SIGTERM) -> bool:
     return True
 
 
-def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
+def kill_process_tree(pid: int, sig: int = SIGTERM, *, pgid: int | None = None) -> bool:
     """Kill *pid* and all descendants. Returns True on success.
 
-    POSIX: ``os.killpg(os.getpgid(pid), sig)``; **lets exceptions
-    propagate** (``ProcessLookupError`` if already dead, etc.).
+    POSIX: ``os.killpg(pgid or os.getpgid(pid), sig)``; **lets exceptions
+    propagate** (``ProcessLookupError`` if already dead, etc.). Callers that
+    escalate across multiple signals may resolve and pass ``pgid`` once so a
+    reaped group leader cannot make the later signal lose its surviving group.
     Windows: ``taskkill /T /F`` and raises the same exception types on
     non-zero rc (via :func:`_raise_taskkill_error`) so ``except
     (ProcessLookupError, OSError)`` handlers written for POSIX fire
@@ -4001,7 +4003,8 @@ def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
     if IS_POSIX:
         if type(pid) is not int or pid <= 1:
             raise ValueError(f"kill_process_tree: refusing non-int/reserved pid {pid!r}")
-        pgid = os.getpgid(pid)
+        if pgid is None:
+            pgid = os.getpgid(pid)
         if pgid <= 1 or pgid == _OWN_PGID:
             logger.error(
                 "kill_process_tree: refusing broadcast/self pgid %d for pid %d; "

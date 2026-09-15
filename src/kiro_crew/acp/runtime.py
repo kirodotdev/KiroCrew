@@ -829,7 +829,8 @@ class AcpRuntime:
         # Process state
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
-        self._start_time: int | None = None
+        self._start_time: int | None = None  # POSIX escaped-child identity
+        self._start_id: str | None = None  # cross-platform root identity for deferred teardown
         self._spawn_monotonic: float | None = None
         self._child_pids: dict[int, int | None] = {}
         # Names THIS spawn of the shared child process (fresh per spawn, cleared
@@ -1595,6 +1596,9 @@ class AcpRuntime:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        # Record the process incarnation before cancellation can defer cleanup.
+        # A later bare PID may name unrelated work after OS reuse.
+        self._start_id = platform_compat.get_process_start_id(self._pid)
         # Minted with the process it names — random, not pid-derived, so it
         # cannot false-match a later spawn that the OS handed a recycled pid.
         self._process_instance = uuid.uuid4().hex[:16]

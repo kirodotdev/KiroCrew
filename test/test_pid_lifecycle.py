@@ -8,10 +8,12 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
@@ -1381,6 +1383,17 @@ class TestIsManagedAgentProcess:
 
 
 class TestSyncKillProvider:
+    @staticmethod
+    def _provider(pid: int, start_id: str | None = "recorded") -> MagicMock:
+        provider = MagicMock(spec=["_client", "_proc", "_active_proc"])
+        client = MagicMock(spec=["_pid", "_start_id"])
+        client._pid = pid
+        client._start_id = start_id
+        provider._client = client
+        provider._proc = None
+        provider._active_proc = None
+        return provider
+
     def test_no_pid_returns_early(self) -> None:
         """Provider with no client/_proc/_active_proc PID → early return."""
         from kiro_crew.session_pid import _sync_kill_provider
@@ -1390,50 +1403,229 @@ class TestSyncKillProvider:
         provider._proc = None
         provider._active_proc = None
 
-        with patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill:
+        with patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as mock_kill:
             _sync_kill_provider(provider)
 
         mock_kill.assert_not_called()
+
+    def test_unrecorded_identity_refuses_tree_kill(self) -> None:
+        """A bare deferred PID never authorizes destructive cleanup."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = self._provider(99999, start_id=None)
+        with (
+            patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as kill_tree,
+            patch("kiro_crew.session_pid.platform_compat.kill_process_tree_pinned") as pinned_tree,
+        ):
+            _sync_kill_provider(provider)
+
+        kill_tree.assert_not_called()
+        pinned_tree.assert_not_called()
+
+    @pytest.mark.parametrize("process_attr", ["_proc", "_active_proc"])
+    def test_legacy_process_without_identity_refuses_tree_kill(self, process_attr: str) -> None:
+        """Dormant legacy process fields do not bypass the spawn identity gate."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = MagicMock(spec=["_client", "_proc", "_active_proc"])
+        provider._client = SimpleNamespace(_pid=None, _start_id="unrelated-client")
+        provider._proc = None
+        provider._active_proc = None
+        setattr(provider, process_attr, SimpleNamespace(pid=99999, returncode=None))
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as kill_tree,
+            patch("kiro_crew.session_pid.platform_compat.kill_process_tree_pinned") as pinned_tree,
+        ):
+            _sync_kill_provider(provider)
+
+        kill_tree.assert_not_called()
+        pinned_tree.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group semantics")
+    def test_posix_recycled_pid_refuses_before_group_resolution(self) -> None:
+        """A PID whose live incarnation differs from the spawn record is unrelated."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = self._provider(99999, start_id="old")
+        with (
+            patch(
+                "kiro_crew.session_pid.platform_compat.get_process_start_id",
+                return_value="new",
+            ),
+            patch("kiro_crew.session_pid.platform_compat.pgroup_of_leader") as resolve_group,
+            patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as kill_tree,
+        ):
+            _sync_kill_provider(provider)
+
+        resolve_group.assert_not_called()
+        kill_tree.assert_not_called()
+
+    def test_windows_tree_kill_stays_identity_pinned(self) -> None:
+        """Windows retains taskkill /T but holds the verified process handle open."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = self._provider(99999, start_id="recorded")
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_process_tree_pinned",
+                return_value=True,
+            ) as pinned_tree,
+            patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as raw_tree,
+        ):
+            _sync_kill_provider(provider)
+
+        pinned_tree.assert_called_once_with(99999, "recorded", platform_compat.SIGKILL)
+        raw_tree.assert_not_called()
 
     @pytest.mark.skipif(
         sys.platform == "win32",
         reason="POSIX SIGTERM→SIGKILL escalation; Windows uses single SIGKILL",
     )
     def test_posix_sigterm_then_sigkill(self) -> None:
-        """POSIX path: real child reaped via SIGTERM→waitpid→SIGKILL loop.
-
-        Spawns a real short-lived sleep subprocess, drives _sync_kill_provider
-        through the POSIX escalation loop (kill_pid is recorded, not real, so
-        the loop runs both iterations deterministically), then reaps the child.
-        """
+        """POSIX path escalates the provider's whole process group."""
         from kiro_crew.session_pid import _sync_kill_provider
 
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
         try:
-            provider = MagicMock(spec=["_client", "_proc", "_active_proc"])
-            provider._client = None
-            provider._proc = MagicMock()
-            provider._proc.returncode = None
-            provider._proc.pid = proc.pid
-            provider._active_proc = None
+            start_id = platform_compat.get_process_start_id(proc.pid)
+            assert start_id is not None
+            provider = self._provider(proc.pid, start_id=start_id)
 
             sigs: list[int] = []
+            pgids: list[int | None] = []
 
-            def fake_kill(pid: int, sig: int) -> bool:
+            def fake_kill(pid: int, sig: int, *, pgid: int | None = None) -> bool:
                 sigs.append(sig)
+                pgids.append(pgid)
                 return True
 
             with patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
+                "kiro_crew.session_pid.platform_compat.kill_process_tree",
                 side_effect=fake_kill,
             ):
                 _sync_kill_provider(provider)
 
-            # POSIX loop hits both SIGTERM and SIGKILL for our child PID
             assert sigs == [platform_compat.SIGTERM, platform_compat.SIGKILL]
+            assert pgids == [proc.pid, proc.pid]
         finally:
             proc.kill()
             proc.wait(timeout=5)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+    def test_posix_reaped_launcher_still_escalates_group(self) -> None:
+        """A reaped group leader must not hide descendants from SIGKILL."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = self._provider(99999)
+
+        signalled: list[tuple[int, int, int | None]] = []
+
+        def fake_kill(pid: int, sig: int, *, pgid: int | None = None) -> bool:
+            signalled.append((pid, sig, pgid))
+            return True
+
+        with (
+            patch(
+                "kiro_crew.session_pid.platform_compat.get_process_start_id",
+                return_value="recorded",
+            ) as read_identity,
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_of_leader",
+                return_value=99999,
+            ) as resolve_group,
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_process_tree",
+                side_effect=fake_kill,
+            ),
+            patch("kiro_crew.session_pid.os.waitpid", side_effect=ChildProcessError),
+        ):
+            _sync_kill_provider(provider)
+
+        read_identity.assert_has_calls([call(99999), call(99999)])
+        resolve_group.assert_called_once_with(99999)
+        assert signalled == [
+            (99999, platform_compat.SIGTERM, 99999),
+            (99999, platform_compat.SIGKILL, 99999),
+        ]
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+    def test_posix_unresolvable_group_is_not_signalled(self) -> None:
+        """An unreadable group must fail closed without signalling a guessed id."""
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        provider = self._provider(99999)
+
+        with (
+            patch(
+                "kiro_crew.session_pid.platform_compat.get_process_start_id",
+                return_value="recorded",
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pgroup_of_leader",
+                return_value=None,
+            ),
+            patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as kill_tree,
+        ):
+            _sync_kill_provider(provider)
+
+        kill_tree.assert_not_called()
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+    def test_posix_kills_sandbox_launcher_descendants(self, tmp_path: Path) -> None:
+        """A launcher hard-kill must not orphan its runtime child.
+
+        Linux sandboxing makes the provider PID a launcher/process-group leader,
+        with the real runtime beneath it. The launcher exits on SIGTERM while
+        the runtime ignores it, so SIGKILL must still reach the original group;
+        a PID-only kill leaves the child alive.
+        """
+        from kiro_crew.session_pid import _sync_kill_provider
+
+        child_pid_file = tmp_path / "runtime.pid"
+        script = (
+            "import subprocess, sys, time; "
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)']); "
+            "open(sys.argv[1], 'w').write(str(child.pid)); "
+            "time.sleep(300)"
+        )
+        launcher = subprocess.Popen(
+            [sys.executable, "-c", script, str(child_pid_file)],
+            start_new_session=True,
+            cwd=tmp_path,
+        )
+        child_pid = 0
+        try:
+            deadline = time.monotonic() + 5
+            while not child_pid_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert child_pid_file.exists(), "launcher did not publish its child PID"
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+            start_id = platform_compat.get_process_start_id(launcher.pid)
+            assert start_id is not None, "launcher start identity was unreadable"
+            provider = self._provider(launcher.pid, start_id=start_id)
+
+            _sync_kill_provider(provider)
+            launcher.wait(timeout=5)
+
+            deadline = time.monotonic() + 5
+            while platform_compat.pid_exists(child_pid) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert not platform_compat.pid_exists(
+                child_pid
+            ), "provider teardown orphaned the sandbox runtime child"
+        finally:
+            if launcher.poll() is None:
+                os.killpg(launcher.pid, signal.SIGKILL)
+                launcher.wait(timeout=5)
+            if child_pid and platform_compat.pid_exists(child_pid):
+                os.kill(child_pid, signal.SIGKILL)
 
     @pytest.mark.skipif(
         sys.platform == "win32",
@@ -1443,22 +1635,24 @@ class TestSyncKillProvider:
         """ProcessLookupError on first signal → early return (already dead)."""
         from kiro_crew.session_pid import _sync_kill_provider
 
-        provider = MagicMock(spec=["_client", "_proc", "_active_proc"])
-        provider._client = None
-        provider._proc = None
-        provider._active_proc = MagicMock()
-        provider._active_proc.returncode = None
-        provider._active_proc.pid = 99999
+        provider = self._provider(99999)
 
         sigs: list[int] = []
 
-        def fake_kill(pid: int, sig: int) -> bool:
+        def fake_kill(pid: int, sig: int, *, pgid: int | None = None) -> bool:
             sigs.append(sig)
             raise ProcessLookupError()
 
-        with patch(
-            "kiro_crew.session_pid.platform_compat.kill_pid",
-            side_effect=fake_kill,
+        with (
+            patch(
+                "kiro_crew.session_pid.platform_compat.get_process_start_id",
+                return_value="recorded",
+            ),
+            patch("kiro_crew.session_pid.os.getpgid", return_value=99999),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_process_tree",
+                side_effect=fake_kill,
+            ),
         ):
             _sync_kill_provider(provider)
 
