@@ -19,6 +19,11 @@ const MCWIDGET_RE = /<mcwidget\b[^>]*>[\s\S]*?<\/mcwidget>/gi
  * highlighted marks all stay consistent. Searching raw content would surface
  * "phantom" matches (inside OPTIONS buttons or widget iframes) the user can
  * never see highlighted.
+ *
+ * `stripOptionMarkers` removes BOTH marker kinds. Stripping only the content
+ * marker left action-marker text searchable, which is precisely the phantom match
+ * the paragraph above forbids: a hit is counted and reported, then the highlighter's
+ * TreeWalker finds nothing to mark because the marker never rendered as body text.
  */
 export function searchableText(m: ChatMessage): string {
   if (m.role === 'assistant' || m.role === 'streaming') {

@@ -3,7 +3,7 @@ import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
-import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
+import { findLastOptionMarker, stripOptionMarkers, matchActionMarkers } from './optionMarker'
 
 // A plan is recognised by BOTH its header and at least one stage line, so ordinary
 // prose that happens to mention a plan is not mistaken for one.
@@ -29,7 +29,24 @@ export function parseOptions(content: string): ParsedOptions {
   // this cannot be done by halves. It also clones the regex per call, so the g-flag
   // `lastIndex` hazard is no longer a caller's problem to remember.
   const last = findLastOptionMarker(content)
-  if (!last || last.index === undefined) return { text: content, options: [], multi: true, isPlan: false }
+  // `matchActionMarkers`, never the raw pattern: it drops a match nested inside an
+  // unclosed head, so broken syntax stays visible instead of being silently deleted.
+  const actionMarkers = matchActionMarkers(content)
+  const isPlan = PLAN_HEADER_RE.test(content) && STAGE_RE.test(content)
+  // Strip ALL accepted markers from the displayed text (not just the last) so a stray
+  // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
+  // come from the LAST marker (computed below). A REFUSED candidate is deliberately
+  // left in place — it is prose the user should still see, and removing it is the
+  // defect the check exists to prevent.
+  //
+  // Both kinds are stripped whenever EITHER is present, and the no-marker case returns
+  // `content` untouched rather than trimmed: an action-only message used to take the
+  // early return below and render its own marker as raw text, while `searchableText`
+  // excluded that same span — text on screen that search could not find. Trimming
+  // unconditionally instead would break the older contract that marker-less prose comes
+  // back byte-identical, whitespace included.
+  const stripped = last || actionMarkers.length > 0 ? stripOptionMarkers(content).trim() : content
+  if (!last || last.index === undefined) return { text: stripped, options: [], multi: true, isPlan: false }
   // The marker pattern is a two-branch alternation (line-anchored-with-wrappers
   // vs mid-line): groups 1/2 belong to the first branch, 3/4 to the second, and
   // exactly one pair is defined per match. `??` (not `||`) so an empty label
@@ -38,14 +55,7 @@ export function parseOptions(content: string): ParsedOptions {
   const labels = (last[2] ?? last[4]) ?? ''
   const sep = labels.includes('|') ? '|' : ','
   const options = labels.split(sep).map(o => o.trim()).filter(Boolean)
-  const isPlan = PLAN_HEADER_RE.test(content) && STAGE_RE.test(content)
-  // Strip ALL accepted markers from the displayed text (not just the last) so a stray
-  // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
-  // come from the LAST marker (computed above). A REFUSED candidate is deliberately
-  // left in place — it is prose the user should still see, and removing it is the
-  // defect the check exists to prevent.
-  const text = stripOptionMarkers(content).trim()
-  return { text, options, multi, isPlan }
+  return { text: stripped, options, multi, isPlan }
 }
 
 export interface FollowUpDerivation {

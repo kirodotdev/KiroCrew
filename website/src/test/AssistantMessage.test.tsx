@@ -5,7 +5,13 @@ import { parseOptions } from '../app-sdk/protocol'
 // Imported from the defining module, not the `protocol` barrel, which deliberately
 // does not re-export a g-flagged regex. Only `.source` is read below — a string
 // copy — so the shared `lastIndex` this const's own docs warn about is untouched.
-import { OPTION_MARKER_PATTERN_SOURCE } from '../app-sdk/protocol/optionMarker'
+import { OPTION_MARKER_PATTERN_SOURCE, OPTION_ACTION_MARKER_PATTERN_SOURCE, MARKER_PATTERN_FLAGS, matchActionMarkers } from '../app-sdk/protocol/optionMarker'
+
+// Rebuilt locally from the exported SOURCE strings: the protocol module exports no
+// RegExp, so that a shared g-flagged instance cannot have its `lastIndex` left
+// mid-string by a probe. These instances are this file's own.
+const OPTION_MARKER_RE = new RegExp(OPTION_MARKER_PATTERN_SOURCE, MARKER_PATTERN_FLAGS)
+const OPTION_ACTION_MARKER_RE = new RegExp(OPTION_ACTION_MARKER_PATTERN_SOURCE, MARKER_PATTERN_FLAGS)
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -891,48 +897,55 @@ describe('parseOptions', () => {
   // reaching for, deterministically and in microseconds. The behavioural half — an
   // adversarial input still parses to no options — is asserted directly below.
   it('does not catastrophically backtrack on adversarial `[OPTIONS:` input', () => {
-    const src = OPTION_MARKER_PATTERN_SOURCE
-    // The label body: tempered alternation, NOT a nested quantifier. Spelled with
-    // `\uXXXX` escapes because that is how the SOURCE spells the closer class —
-    // `.source` is the literal pattern text, so a literal `】` here would not match.
-    const O = ['\\[', '\\u3010', '\\uFF3B', '\\u3014'] // openers `[ 【 ［ 〔`
-    const CL = ['\\]', '\\u3011', '\\uFF3D', '\\u3015'] // closers `] 】 ］ 〕`, paired positionally
-    const C = CL.join('')
-    const B = `[${O.slice(1).join('')}${C}` // every bracket, as the negated classes spell it
-    const CONT = `[ \\t]*[|,]|[${C}]`
-    // The alternatives are mutually exclusive at every position. The pair forms
-    // and the continuation form are each other's negation on what FOLLOWS the
-    // closer, so no span of input ever has two parses — that disjointness is what
-    // the linearity rests on, so it is pinned here character for character. EVERY
-    // opener carries `(?!OPTIONS?:)`: that is what keeps a nested head out of
-    // a label, and dropping it from a pair form is a widening, not a tidy-up.
+    // BOTH markers are pinned, because they share one tempered-body grammar. The
+    // body used to exclude only `[OPTIONS?:` — its own head. It was generalised to
+    // exclude EVERY head when the action marker was added, because a body that
+    // tempers against only its own head still matches ACROSS the other one:
+    // MEASURED on the backend TRAILER form, `[OPTIONS: a | b]` followed by
+    // `[OPTION-ACTIONS: close=X]` captured the action marker into the content
+    // marker's label list and shipped it as a channel button label.
     //
-    // Note what is NOT here: whether a candidate's terminating closer is really its
-    // own. That is bracket balance, which no pattern decides at unbounded depth, so
-    // `labelsHaveUnmatchedOpener` decides it and the pattern is module-private to stop the
-    // two being applied separately. Pinning the pattern's shape is still worth it:
-    // this is the half that has to stay linear.
-    // One matched-pair alternative PER opener/closer pair, each closing on its own
-    // pair's closer only; then the bare-opener form over the whole opener class.
-    // Every negated class excludes EVERY bracket (all four openers and all four
-    // closers), so an opener is never also an ordinary character and a failed
-    // pair attempt scans at most to the next bracket.
-    const pairs = O.map((o, i) => `${o}(?!OPTIONS?:)[^${B}\\n]*${CL[i]}(?!${CONT})`).join('|')
-    // The bare-opener alternative is a character class of every opener; inside a
-    // class the leading `[` is literal, so its members are spelled without the `\`.
-    const openerClass = `[[${O.slice(1).join('')}]`
-    expect(src).toContain(
-      `(?:${pairs}|${openerClass}(?!OPTIONS?:)|[${C}](?=${CONT})|[^${B}\\n])*`,
-    )
-    // No `(x+)+` / `(x*)*` anywhere: that is the shape that backtracks
-    // exponentially, and it is what the tempered body above replaced.
-    expect(src).not.toMatch(/\([^)]*[+*]\)[+*]/)
+    // So this asserts the PROPERTY (tempered against every head) rather than one
+    // literal substring. The previous spelling pinned the exact body text, and
+    // generalising the temper broke it while leaving the pattern strictly safer —
+    // a ratchet that fails on an improvement is one a future author is tempted to
+    // simply delete.
+    const heads = ['OPTION-ACTIONS:', 'OPTIONS?:']
+    const patterns: [string, RegExp][] = [
+      ['OPTION_MARKER_RE', OPTION_MARKER_RE],
+      ['OPTION_ACTION_MARKER_RE', OPTION_ACTION_MARKER_RE],
+    ]
+    for (const [name, re] of patterns) {
+      const src = re.source
+      // Tempered alternation, NOT a nested quantifier: the ordinary-character arm
+      // consumes text and the `\[(?!…)` arm admits a bracket only when it does not
+      // open a marker, so a failed match cannot re-partition the same run. Asserted
+      // for EVERY opener, not just ASCII `[`: each lookalike pair has its own arm
+      // (`【`<->`】`, `［`<->`］`, `〔`<->`〕`), and one missing its guard is a
+      // widening that readmits a nested head through that pair.
+      for (const opener of ['\\[', '\\u3010', '\\uFF3B', '\\u3014'])
+        expect(src, `${name} guards opener ${opener}`).toContain(`${opener}(?!`)
+      // #9284: a closer inside a label is admitted CONDITIONALLY, by two disjoint
+      // arms — the list CONTINUES after it, or its `[` is MATCHED here and no
+      // separator follows. Pinned as that pair of lookarounds rather than as the
+      // whole body text, so widening the temper cannot break this ratchet.
+      expect(src, `${name} admits a closer only when the list continues`).toContain(
+        '(?=[ \\t]*[|,]',
+      )
+      expect(src, `${name} keeps the pair arm disjoint`).toContain('(?![ \\t]*[|,]')
+      // Every head excluded, not just this pattern's own.
+      for (const head of heads) expect(src, `${name} tempers ${head}`).toContain(head)
+      // No `(x+)+` / `(x*)*` anywhere: that is the shape that backtracks
+      // exponentially, and it is what the tempered body replaced.
+      expect(src, name).not.toMatch(/\([^)]*[+*]\)[+*]/)
+    }
     // And the parse itself still terminates and yields nothing for 20k
-    // unterminated prefixes. Under the tempered body this returns in ~2ms; under
-    // a backtracking one it would never return, which is a wedge the reviewer
-    // reads in the log rather than an assertion failure — hence the shape checks
-    // above, which fail first and cheaply.
+    // unterminated prefixes of EITHER head. Under the tempered body this returns
+    // in ~2ms; under a backtracking one it would never return, which is a wedge
+    // the reviewer reads in the log rather than an assertion failure — hence the
+    // shape checks above, which fail first and cheaply.
     expect(parseOptions('[OPTIONS:'.repeat(20000)).options).toEqual([])
+    expect(matchActionMarkers('[OPTION-ACTIONS:'.repeat(20000))).toEqual([])
   })
 
   it('shows "Copy link to message" button when messageTs and slotKey are provided', () => {
