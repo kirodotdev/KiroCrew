@@ -269,6 +269,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # the spool write and the notice pass happen in the GATEWAY process, which
     # opens the paths directly.
     "inbound-spool",
+    # Canonical goal text returned by the owner-gated dashboard and executed by
+    # Start. The gateway opens it directly; no in-sandbox process needs access.
+    # Mask the whole directory so an agent cannot forge a prompt through the
+    # final JSON file, its lock, or an atomic-write sibling temp.
+    "goal-drafts",
     # The Notes state files below are OWNED by the md-notebook backend, which is itself
     # a sandboxed spawn (`apps/backend.py`), so the mask alone would break the app: the
     # registry write's final rename gets EPERM and attach/clone always fails.
@@ -830,6 +835,9 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
+    # Goal drafts are created on first editor use. Precreate the directory so a
+    # sandbox launched earlier cannot see the later-created canonical prompt store.
+    "goal-drafts",
     "appearance-library",
     "quarantined-clones",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
