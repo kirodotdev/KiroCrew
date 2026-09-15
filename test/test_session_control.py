@@ -2699,6 +2699,11 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
         "executor",
         "instance_id",
         "remote_slot",
+        # Adopt-time pointer: written only beside a complete remote binding and
+        # only when an adopted read observed a peer row id. A plain local newborn
+        # carries neither condition; the bound positive and half-binding negative
+        # are pinned in TestPeerWatermarkPersistence.
+        "peer_row_watermark",
         # In-flight relay marker: written ONLY while a relay is running and
         # omitted once the turn ends (absence = "not in flight"), so a plain
         # newborn never carries it. Its clear-on-completion behaviour is covered by

@@ -1100,6 +1100,14 @@ def _rehydrate_slot_from_history(
             # dispatched, so there is no in-flight tail to recover.
             if slot.is_remote:
                 _relay_was_in_flight = bool(meta.get("relay_in_flight"))
+                # Same guard as the marker above, for the same reason the save
+                # nests the write: a pointer into a peer transcript needs the peer
+                # and slot it points into, so an incomplete binding restores none.
+                # Re-clamped rather than trusted: history JSONL is a file on disk,
+                # so this value is as hand-editable as everything else on the line.
+                _watermark_meta = meta.get("peer_row_watermark")
+                if isinstance(_watermark_meta, str) and _watermark_meta:
+                    slot.peer_row_watermark = _watermark_meta[:128]
         if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):
             slot.mode = _mode
         if meta.get("created_by"):
@@ -3118,6 +3126,13 @@ def _save_slot_to_history(
                         # "crashed mid-turn" on reload. Nested under the binding
                         # because it is meaningless without one.
                         fields["relay_in_flight"] = True
+                    if getattr(slot, "peer_row_watermark", ""):
+                        # Nested for the same reason as the marker above: the
+                        # pointer names a row in the transcript of the peer session
+                        # named by the two fields beside it, so persisting it
+                        # without them would leave an identifier with no peer to
+                        # resolve it against.
+                        fields["peer_row_watermark"] = slot.peer_row_watermark
                 if getattr(slot, "_tab_id", None):
                     fields["tab_id"] = slot._tab_id
                 if getattr(slot, "_auto_tagged", False):
@@ -3409,6 +3424,11 @@ def _save_slot_to_history(
                     # in-flight, so a True read back on reload is the crash signal
                     # that triggers the interrupted-turn row.
                     meta_line["relay_in_flight"] = True
+                if getattr(slot, "peer_row_watermark", ""):
+                    # See the merge-save site: nested under the binding because a
+                    # pointer into a peer transcript is meaningless without the peer
+                    # and slot it points into.
+                    meta_line["peer_row_watermark"] = slot.peer_row_watermark
             if slot.folder_id:
                 meta_line["folder_id"] = slot.folder_id
             if slot._channel_folder_filed or existing_meta.get("channel_folder_filed"):

@@ -388,12 +388,17 @@ async def _read_peer_transcript(
 
 def prepare_backfill_rows(
     messages: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], int, bool]:
+) -> tuple[list[dict[str, Any]], int, bool, str]:
     """Map peer transcript rows to local append arguments. Pure, CPU-bound.
 
-    Returns ``(rows, dropped_older, in_flight)`` — the second is how many of the OLDEST rows
-    the row cap discarded, which the caller turns into a notice so a truncated
-    history is attributable instead of looking like the whole conversation.
+    Returns ``(rows, dropped_older, in_flight, watermark)`` — the second is how many
+    of the OLDEST rows the row cap discarded, which the caller turns into a notice
+    so a truncated history is attributable instead of looking like the whole
+    conversation; the fourth is the peer row id described in
+    :attr:`AdoptBackfill.peer_watermark`.
+
+    The watermark is threaded OUT through the return rather than stashed anywhere,
+    because this function is pure and runs in a worker thread — see below.
 
     Pure on purpose: it runs in a worker thread (see :func:`backfill_adopted_slot`)
     because the redaction battery over a whole history is exactly the loop-blocking
@@ -409,7 +414,24 @@ def prepare_backfill_rows(
     """
     kept: list[dict[str, Any]] = []
     in_flight = False
+    watermark = ""
     for row in messages:
+        # Read the peer's row id on the way past, BEFORE any role filter and
+        # before the strip below removes it. The strip stays exactly as it was —
+        # the per-row ``mid`` must not reach ``slot.append`` — and this only
+        # observes the value in transit.
+        #
+        # Every row is observed, including the ones the filters drop, because the
+        # watermark records how far into the peer's transcript THIS READ looked,
+        # not which rows it chose to copy. Reading it at the strip instead would
+        # skip every filtered row, so a transcript whose tail is a ``permission``
+        # or ``streaming`` row would watermark a position the read had already
+        # moved past.
+        _peer_meta = row.get("meta")
+        if isinstance(_peer_meta, dict):
+            _peer_mid = _peer_meta.get("mid")
+            if isinstance(_peer_mid, str) and _peer_mid:
+                watermark = _peer_mid[:128]
         role = row.get("role")
         if not isinstance(role, str) or not role:
             continue
@@ -456,7 +478,10 @@ def prepare_backfill_rows(
     dropped_older = max(0, len(kept) - PEER_TRANSCRIPT_MAX_ROWS)
     if dropped_older:
         kept = kept[dropped_older:]
-    return kept, dropped_older, in_flight
+    # Unaffected by the head drop above: the cap discards the OLDEST rows and the
+    # watermark names the newest one, so a truncated copy still points at the right
+    # end of the peer's transcript.
+    return kept, dropped_older, in_flight, watermark
 
 
 class AdoptBackfill(NamedTuple):
@@ -479,6 +504,41 @@ class AdoptBackfill(NamedTuple):
 
     rows: list[dict[str, Any]]
     notice: str
+    #: The peer's newest row id (``meta.mid``) seen in the read that produced
+    #: *rows*, clamped to 128 chars — ONE slot-level pointer, not per-row identity.
+    #: Copied historical rows remain id-less; the peer's mid is stripped.
+    #:
+    #: **Why a pointer at all.** Neither of the two obvious ways to answer "which
+    #: peer rows do I already have" survives contact with this path.
+    #: :func:`prepare_backfill_rows` pushes every row through
+    #: :func:`~kiro_crew.dashboard.remote_relay.redact_peer_text` (and ``meta``
+    #: through ``_redact_deep``) BEFORE storing it, so the local text is
+    #: deliberately not byte-identical to the peer's and content matching cannot
+    #: work. And the copy is capped at :data:`PEER_TRANSCRIPT_MAX_ROWS`, keeping the
+    #: TAIL, so a local row count is a lower bound on the peer's and comparing
+    #: counts cannot work either.
+    #:
+    #: **It is an identity marker, NOT a resume cursor.** Two properties make that
+    #: distinction load-bearing, and both are easy to assume away:
+    #:
+    #: * ``mid`` is RANDOM, not monotonic — ``history.mint_channel_mid`` returns
+    #:   ``m-<uuid4 hex>`` ("Random rather than a per-key counter", so a counter
+    #:   rebased after a restore cannot reissue a live id). So ``>`` and ``<`` mean
+    #:   nothing between two mids: this value can be compared for EQUALITY only.
+    #: * the peer's transcript ``before`` cursor is an INTEGER INDEX, not a mid
+    #:   (``api_chat_slot_detail``: "return messages before this index"). So this
+    #:   value cannot be handed to the peer as a pagination parameter at all.
+    #:
+    #: A future resumer must therefore RE-READ the peer's transcript and SCAN it for
+    #: a row whose ``mid`` equals this one, treating the rows after that position as
+    #: new. It must also fail closed when the scan finds nothing: a peer-side
+    #: compaction, rotation or window trim can retire the row this points at, and an
+    #: unlocatable watermark means "position unknown", never "import everything".
+    #:
+    #: Empty string whenever there is nothing to point at — every failure path (the
+    #: default below is what guarantees that, so a new failure path cannot forget),
+    #: an empty peer transcript, and a peer whose rows carry no ``mid``.
+    peer_watermark: str = ""
 
 
 async def _peer_display_name(state: "DashboardState", instance_id: str) -> str:
@@ -559,7 +619,9 @@ async def fetch_adopted_backfill(
         # the redaction battery over a whole history is loop-blocking on a
         # multi-MB session, and this one also runs ``_redact_deep`` over every
         # row's meta, which is where the tool payloads are.
-        rows, dropped_older, in_flight = await asyncio.to_thread(prepare_backfill_rows, messages)
+        rows, dropped_older, in_flight, watermark = await asyncio.to_thread(
+            prepare_backfill_rows, messages
+        )
     except Exception:
         logger.warning("Adopt backfill shaping for %s raised", remote_slot, exc_info=True)
         return AdoptBackfill([], _backfill_failure_notice(peer))
@@ -590,7 +652,7 @@ async def fetch_adopted_backfill(
         )
         if on
     ]
-    return AdoptBackfill(rows, " ".join(notices))
+    return AdoptBackfill(rows, " ".join(notices), watermark)
 
 
 def apply_adopted_backfill(slot: "_ChatSlot", backfill: AdoptBackfill) -> int:

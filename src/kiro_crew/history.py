@@ -192,6 +192,16 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "executor",
         "instance_id",
         "remote_slot",
+        # Adopt-time pointer at the newest peer row the birth backfill copied.
+        # Owned for the same reason the three above are, and the consequence of
+        # getting it wrong is worse than a stale marker: an unowned key is carried
+        # forward FOREVER by ``carry_unowned_metadata``, so nothing could ever
+        # CLEAR it. An unbind, a rebind to a different crew, or a re-adopt would
+        # resurrect the pointer from the previous link, and the session would claim
+        # a peer row it never imported -- from a transcript that may not even be the
+        # same conversation. Owned, absence retracts it, and every writer that
+        # clears the binding clears this with it.
+        "peer_row_watermark",
         # In-flight relay marker: the slot save writes it only while a relay is
         # running and omits it once the turn ends. Absence therefore means "not
         # in flight" and must clear the on-disk value — left unowned, the `true`

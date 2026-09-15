@@ -3600,6 +3600,7 @@ class _ChatSlot:
         "executor",
         "instance_id",
         "remote_slot",
+        "peer_row_watermark",
         "_relay_in_flight",
         "_active_turn_session_key",
         "_side",
@@ -3677,6 +3678,15 @@ class _ChatSlot:
         self.executor: str = "local"
         self.instance_id: str = ""
         self.remote_slot: str = ""
+        # Set only on the ADOPT path, where a pre-existing peer session's history
+        # was copied in at birth: the ``meta.mid`` of the newest peer row that copy
+        # saw. One pointer for the whole slot -- the copied rows carry locally
+        # minted mids, and the peer's per-row mid is stripped before storage. Empty
+        # for a minted peer slot (nothing existed to copy) and for every local slot.
+        # See :attr:`~kiro_crew.dashboard.remote_adopt.AdoptBackfill.peer_watermark`
+        # for the contract: an EQUALITY-only identity marker to scan a re-read for,
+        # never an ordering key and never a cursor to hand back to the peer.
+        self.peer_row_watermark: str = ""
         # True only while a remote turn is executing on the peer. Persisted (with
         # the binding) so a gateway crash mid-turn is detectable on reload: a slot
         # that comes back still carrying it lost its relay reader to the restart,
