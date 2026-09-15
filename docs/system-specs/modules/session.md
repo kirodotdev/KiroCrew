@@ -1752,7 +1752,18 @@ state a close compensates is not all scoped the same way.
   metadata, its flush stamps no id and its save retires nothing, so a
   downgrade-deliver-reupgrade cycle replays already-delivered notes as
   duplicates — bounded harm, and the chosen at-least-once direction, but the
-  invariant silently does not hold across versions.) The pre-save
+  invariant silently does not hold across versions.) A close carries a third shape of the
+  same durable hold: a close-time flush COMMITS a held note's visible row and, when that
+  note still owes a context half, leaves a context-only residual in `deferred_notes` under
+  a FRESH id, carrying `contextOnly: true` beside the usual
+  `content`/`cls`/`session`/`context`. The fresh id keeps the row-keyed retirement intact
+  — the delivered row retires the ORIGINAL entry while the residual survives it — and the
+  residual is reachable only from an `adopt_closed` rehydration (an auto-nudge fire,
+  session control), where it queues its context, appends no second row, and retires
+  through the row-less `_dropped_note_ids` channel. Same version-skew direction as
+  `meta.noteId` above: an older gateway does not read the marker, so it restores the
+  residual as an ordinary hold and replays the row its `content` still carries,
+  duplicating a row the close already committed. The pre-save
   exits need no store failure to reach it either; they return before the save is
   attempted, in a window that opens while a turn is in flight. So every hand-over
   exit routes through `_persist_handover_tail(state, name, slot)`, which flushes
