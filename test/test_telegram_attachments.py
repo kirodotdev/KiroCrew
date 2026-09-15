@@ -342,8 +342,11 @@ class TestProcessTelegramAttachments:
                 "file_size": len(ogg_data),
             }
         ]
-        with patch("kiro_crew.transcribe.is_available", return_value=True), \
-             patch("kiro_crew.transcribe.transcribe_audio", return_value="hello from voice"):
+        with (
+            patch("kiro_crew.transcribe.is_available", return_value=True),
+            patch("kiro_crew.transcribe.batch_duration_cap_secs", return_value=None),
+            patch("kiro_crew.transcribe.transcribe_audio", return_value="hello from voice"),
+        ):
             result = await process_telegram_attachments(client, attachments)
 
         assert len(result.text_blocks) == 1

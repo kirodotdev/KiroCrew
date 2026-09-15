@@ -1441,12 +1441,13 @@ class TestDiscordAttachmentAdapter:
         client.attachment_bodies[url] = b"OggS" + b"\x00" * 32
         transcribed: list[str] = []
 
-        async def _transcribe(path: str) -> str:
+        async def _transcribe(path: str, _cfg: object) -> str:
             assert os.path.exists(path)
             transcribed.append(path)
             return "spoken words"
 
         monkeypatch.setattr("kiro_crew.transcribe.is_available", lambda: True)
+        monkeypatch.setattr("kiro_crew.transcribe.batch_duration_cap_secs", lambda _cfg: None)
         monkeypatch.setattr("kiro_crew.transcribe.transcribe_audio", _transcribe)
 
         result = await process_discord_attachments(
