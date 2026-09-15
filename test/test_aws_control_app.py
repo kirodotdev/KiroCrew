@@ -58,6 +58,13 @@ P0_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/costs/{account}"),
     ("GET", "/library/{account}"),
     ("GET", "/backup/{account}"),
+    # The Crews pane. Read-only and consent-ungated (listing stacks and describing
+    # one service are free calls), but they belong in this table for the reason the
+    # header gives: the sibling gates below ITERATE it, so a route missing here
+    # ships without its disabled-app refusal and its non-owner refusal ever being
+    # proven. The inventory assertion catching this omission is that design working.
+    ("GET", "/crews/{account}"),
+    ("GET", "/crews/{account}/{crew}"),
     ("GET", "/shares"),
     ("GET", "/iam-policy"),
     ("POST", "/profiles/register"),
@@ -1864,6 +1871,61 @@ class TestStaleMappingGuard:
         assert resp.status == 409
         assert _payload(resp)["code"] == "account_mismatch"
         find_drive.assert_not_called()
+
+    def test_a_cached_identity_cannot_authorize_a_crews_read(self):
+        """The same guard, on the route this PR adds.
+
+        `main` proves it for ``/drive`` above. This one proves it for ``/crews``,
+        because the guard lives in ``_resolve_target`` but the disclosure happens
+        per route: a cached identity would let a caller read ANOTHER account's
+        deployed crews while the check reports the account they asked for. Both
+        tests are needed -- one route passing says nothing about the other.
+        """
+        handlers = _registered()
+        other = "444455556666"
+        answer = {"account": ACCOUNT}
+
+        def fake_run(args, profile, region):
+            return 0, json.dumps({"Account": answer["account"], "Arn": "arn:aws:iam::x:user/y"}), ""
+
+        async def drive():
+            # Prime the cache the way an ordinary earlier request would.
+            primed = await aws_consent.probe_identity("prof", "us-west-2")
+            assert primed.account == ACCOUNT
+            # The profile is now a different account. An operator switching a role
+            # or an SSO session does exactly this, and nothing tells the console.
+            answer["account"] = other
+            return await handlers[("GET", "/crews/{account}")](  # type: ignore[operator]
+                _request("GET", f"/crews/{ACCOUNT}", match_info={"account": ACCOUNT})
+            )
+
+        aws_consent._probe_cache.clear()
+        try:
+            with (
+                mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
+                mock.patch.object(
+                    routes_mod.accounts_mod,
+                    "resolve_account_profile",
+                    AsyncMock(return_value=("prof", "us-west-2")),
+                ),
+                mock.patch.object(aws_consent, "_aws_cli_resolvable", return_value=True),
+                mock.patch.object(aws_consent, "_run_aws", side_effect=fake_run),
+                mock.patch.object(
+                    routes_mod.crews_mod,
+                    "list_crews",
+                    side_effect=AssertionError(
+                        "list_crews ran: the identity was taken from the probe cache, "
+                        "so the account was never re-derived before the read"
+                    ),
+                ) as listed,
+            ):
+                resp = asyncio.run(drive())
+        finally:
+            aws_consent._probe_cache.clear()
+
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "account_mismatch"
+        listed.assert_not_called()
 
 
 class TestRound16Hardening:
