@@ -206,20 +206,25 @@ async def _sync_vault(vault: dict[str, Any]) -> None:
     unattended run, so a repointed remote would send the user's notes somewhere
     new with no step at which they could intervene.
     """
-    result = await git_ops.sync(
-        vault["localPath"],
-        branch=vault.get("branch"),
-        pat=await server.resolve_auth(),
-        subfolder=vault.get("subfolder"),
-        trusted_remote=vault.get("remoteUrl"),
-        trusted_gitdir=vault.get("gitDir"),
-        local_only=bool(vault.get("localOnly")),
-        # A timer chose this moment, not the user, so stage notes ONLY — a stray
-        # non-note file dropped in the vault must not be committed and pushed to
-        # the remote without the user deciding to send it. The manual Sync keeps
-        # staging the whole scope because the user pressed it.
-        notes_only=True,
-    )
+    # Shared with the note writers: the merge below rewrites the working tree,
+    # and a note must not be created through a folder it is replacing — see
+    # `server.vault_write_lock`.
+    async with server.vault_write_lock(vault["localPath"]):
+        result = await git_ops.sync(
+            vault["localPath"],
+            branch=vault.get("branch"),
+            pat=await server.resolve_auth(),
+            subfolder=vault.get("subfolder"),
+            trusted_remote=vault.get("remoteUrl"),
+            trusted_gitdir=vault.get("gitDir"),
+            local_only=bool(vault.get("localOnly")),
+            # A timer chose this moment, not the user, so stage notes ONLY — a
+            # stray non-note file dropped in the vault must not be committed and
+            # pushed to the remote without the user deciding to send it. The
+            # manual Sync keeps staging the whole scope because the user pressed
+            # it.
+            notes_only=True,
+        )
     await server.rebuild_cache(vault)
     if server.synced_cleanly(result):
         await server.record_last_sync(vault["id"])

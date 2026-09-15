@@ -11,6 +11,7 @@ exercised on each call rather than bypassed. The folder picker is disabled via
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import importlib
@@ -1592,6 +1593,227 @@ async def test_new_note_in_folder(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+async def test_new_note_through_a_symlinked_folder_is_refused(fixtures) -> None:
+    """A cloned `Projects -> .git/refs/heads` passes `safe_join` (its target is
+    inside the vault), so creating a note "in Projects" would write into `.git`.
+    The lexical folder path must be refused when any component is a link."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        heads = root / ".git" / "refs" / "heads"
+        assert heads.is_dir()
+        before = sorted(p.name for p in heads.iterdir())
+        try:
+            (root / "Projects").symlink_to(Path(".git") / "refs" / "heads", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform/filesystem")
+
+        # The link itself, a folder to be created UNDER the link, and the same
+        # path with a backslash separator — `safe_join` normalises it to two
+        # components, so the guard must see two components as well.
+        for folder in ("Projects", "Projects/Sub", "Projects\\Sub"):
+            status, body = await client.post("/api/note/new", {"folder": folder})
+            assert status == 400, (folder, body)
+            assert body["code"] == "folder_is_symlink"
+        assert sorted(p.name for p in heads.iterdir()) == before, ".git must be untouched"
+        assert not (heads / "Untitled.md").exists()
+        assert not (heads / "Sub").exists()
+
+
+@pytest.mark.asyncio
+async def test_save_and_move_through_a_symlinked_folder_are_refused(fixtures) -> None:
+    """Same hazard as the create path, on the other writes that mkdir, rename or
+    create through folder components: a save into `Projects/x.md`, a move to
+    `Projects/x.md` (or out of it) and a duplicate of `Projects/x.md` must not
+    follow `Projects -> .git/refs/heads`."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        heads = root / ".git" / "refs" / "heads"
+        before = sorted(p.name for p in heads.iterdir())
+        try:
+            (root / "Projects").symlink_to(Path(".git") / "refs" / "heads", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform/filesystem")
+
+        status, body = await client.put("/api/note", {"path": "Projects/Plan.md", "content": "x"})
+        assert status == 400, body
+        assert body["code"] == "folder_is_symlink"
+        status, body = await client.post("/api/note/move", {"from": "One.md", "to": "Projects/One.md"})
+        assert status == 400, body
+        assert body["code"] == "folder_is_symlink"
+        assert (root / "One.md").exists(), "the source must not have moved"
+        status, body = await client.post("/api/note/move", {"from": "Projects/Any.md", "to": "Leak.md"})
+        assert status == 400, body
+        assert body["code"] == "folder_is_symlink"
+        # The duplicate creates its copy THROUGH the source's folder too. A
+        # source under the link is read through it, so give the link a note to
+        # read: the copy would land beside it, inside `.git`.
+        (heads / "Any.md").write_text("x", encoding="utf-8")
+        try:
+            status, body = await client.post("/api/note/duplicate", {"path": "Projects/Any.md"})
+            assert status == 400, body
+            assert body["code"] == "folder_is_symlink"
+        finally:
+            (heads / "Any.md").unlink()
+        assert sorted(p.name for p in heads.iterdir()) == before, ".git must be untouched"
+
+
+@pytest.mark.asyncio
+async def test_new_note_in_a_symlinked_scope_is_refused(fixtures) -> None:
+    """A subfolder-scoped vault whose scope is itself a tracked
+    `Scope -> .git/refs/heads`: `content_root` returns the REALPATH, so a walk
+    started there would begin past the link. The scope's own components must be
+    walked from the vault root, and the root-level create (empty folder) too."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        # Scope the clone on a folder that does not exist yet, then plant the
+        # link in the checkout — planted locally like the other symlink tests,
+        # because a committed link checks out as a plain FILE on a Windows
+        # runner without `core.symlinks`, which is a different failure.
+        vault = await _clone(client, remote, subfolder="Scope")
+        root = Path(vault["localPath"])
+        try:
+            (root / "Scope").symlink_to(Path(".git") / "refs" / "heads", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform/filesystem")
+        heads = root / ".git" / "refs" / "heads"
+        before = sorted(p.name for p in heads.iterdir())
+        for folder in ("", "Sub"):
+            status, body = await client.post("/api/note/new", {"folder": folder})
+            assert status == 400, (folder, body)
+            assert body["code"] == "folder_is_symlink"
+        assert sorted(p.name for p in heads.iterdir()) == before, ".git must be untouched"
+
+
+@pytest.mark.asyncio
+async def test_creating_writes_wait_for_a_running_sync(fixtures, monkeypatch) -> None:
+    """The symlink walk and the write it guards are only meaningful if no
+    `git merge` can rewrite the tree between them. So every sync holds the
+    vault's write lock for its whole run, and every creating write takes the
+    same lock around its check-and-write (new, duplicate, move, save, and the
+    move into `.trash`): a note created while a sync is in flight is created
+    AFTER the merge, against the tree the merge produced."""
+    _mod, remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import syncer as syncer_mod
+
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        lock = _mod.vault_write_lock(vault["localPath"])
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        real_sync = _mod.git_ops.sync
+
+        async def slow_sync(*args, **kwargs):  # type: ignore[no-untyped-def]
+            # Observed from inside the merge: the lock is held by the sync.
+            assert lock.locked(), "sync ran without the vault write lock"
+            entered.set()
+            await release.wait()
+            return await real_sync(*args, **kwargs)
+
+        monkeypatch.setattr(_mod.git_ops, "sync", slow_sync)
+        monkeypatch.setattr(syncer_mod.git_ops, "sync", slow_sync)
+
+        # The manual sync, then the background one: both hold the lock.
+        for start in (
+            lambda: client.post("/api/sync"),
+            lambda: syncer_mod._sync_vault(vault),
+        ):
+            entered.clear()
+            release.clear()
+            syncing = asyncio.ensure_future(start())
+            await asyncio.wait_for(entered.wait(), 5)
+            for path, payload in (
+                ("/api/note/new", {"folder": "Projects"}),
+                ("/api/note/duplicate", {"path": "One.md"}),
+                ("/api/note/move", {"from": "One.md", "to": "Moved/One.md"}),
+                ("DELETE /api/note?path=One.md", None),
+            ):
+                if path.startswith("DELETE "):
+                    writing = asyncio.ensure_future(client.delete(path[len("DELETE ") :]))
+                else:
+                    writing = asyncio.ensure_future(client.post(path, payload))
+                await asyncio.sleep(0.05)
+                assert not writing.done(), f"{path} did not wait for the sync"
+                writing.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await writing
+            saving = asyncio.ensure_future(
+                client.put("/api/note", {"path": "Saved/New.md", "content": "x"})
+            )
+            await asyncio.sleep(0.05)
+            assert not saving.done(), "save did not wait for the sync"
+            release.set()
+            await syncing
+            status, body = await saving
+            assert status == 200, body
+        assert (Path(vault["localPath"]) / "Saved" / "New.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_every_save_publishes_under_the_vault_lock(fixtures) -> None:
+    """A sync's merge landing between a save's last check and its publish would
+    be replaced by the publish with a 200: the tokenless path checks nothing on
+    its first attempt, and the guarded path's freshness check has already
+    passed. So both publish under the vault write lock -- the tokenless
+    transaction holds it from staging through publication, the guarded one
+    re-takes it around each freshness-check-and-publish."""
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        lock = _mod.vault_write_lock(vault["localPath"])
+        held_at_publish: list[bool] = []
+        real_publish = _mod._publish_staged_sync
+
+        def observing_publish(tmp, path):  # type: ignore[no-untyped-def]
+            held_at_publish.append(lock.locked())
+            real_publish(tmp, path)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_mod, "_publish_staged_sync", observing_publish)
+            status, body = await client.put("/api/note", {"path": "One.md", "content": "tokenless"})
+            assert status == 200, body
+            _, read = await client.get("/api/note?path=One.md")
+            status, body = await client.put(
+                "/api/note",
+                {"path": "One.md", "content": "guarded", "baseMtime": read["mtime"]},
+            )
+            assert status == 200, body
+        # First publish: tokenless. Second: guarded. Both under the lock.
+        assert held_at_publish == [True, True], held_at_publish
+
+
+@pytest.mark.asyncio
+async def test_new_note_in_a_vault_reached_through_a_symlink_is_allowed(
+    fixtures, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A link ABOVE the vault is the user's filesystem, not the vault's content:
+    a crew home relocated to another disk (`~/.kiro/crew -> /Volumes/SSD/crew`)
+    puts every cloned vault behind a symlink. The guard walks only the typed
+    folder components under `content_root`, so a subfolder note is still created.
+    """
+    _mod, remote, _seed = fixtures
+    (tmp_path / "home").mkdir(exist_ok=True)
+    home_alias = tmp_path / "home-alias"
+    try:
+        home_alias.symlink_to(tmp_path / "home", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform/filesystem")
+    # Clone THROUGH the alias: the vault's `localPath` now carries a symlinked
+    # ancestor while every component under `content_root` is real.
+    monkeypatch.setenv("MD_NOTEBOOK_HOME", str(home_alias))
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        assert str(home_alias) in vault["localPath"]
+        status, body = await client.post("/api/note/new", {"folder": "sub/Deeper"})
+        assert status == 200, body
+        assert body["path"] == "sub/Deeper/Untitled.md"
+        assert (Path(vault["localPath"]) / "sub" / "Deeper" / "Untitled.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_delete_moves_the_note_into_the_local_trash(fixtures) -> None:
     """Delete is recoverable: the file lands in .trash, not the void."""
     _mod, remote, _seed = fixtures
@@ -3042,17 +3264,23 @@ async def test_a_sync_during_the_retry_window_never_commits_the_staged_temp(
 async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
     fixtures,
 ) -> None:
-    """Registration must precede the worker thread creating the temp.
+    """A Sync started while a note is still staging waits for the staging.
 
     The retry-window test above begins only after staging returns. A large note
     exposes an earlier window: ``open`` creates the untracked temp, then the
     worker can spend arbitrarily long writing and fsyncing it before returning
-    to the coroutine that registers it. A Sync in that interval could
-    commit a partial implementation detail.
+    to the coroutine that registers it. The staging call holds the vault write
+    lock (`vault_write_lock`) and every Sync takes the same lock for its whole
+    run, so a Sync arriving in that interval does not run beside the staging
+    worker: it parks until the staging call returns, and the tree it then
+    commits and merges is one the save has already moved on from. The
+    registration (`inflight_temp`) stays the guard for the retry window, where
+    the lock is released between attempts.
 
     Deterministic: the staging worker writes the real temp and parks BEFORE it
-    returns. Sync runs while the file is definitely present and the save caller
-    is definitely still awaiting staging.
+    returns. The Sync is requested while the file is definitely present and the
+    save caller is definitely still awaiting staging — and is shown NOT to
+    complete until the worker is released.
     """
     _mod, remote, _seed = fixtures
     real_asyncio = asyncio
@@ -3105,6 +3333,7 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
 
             save_status = 0
             save_body: dict[str, Any] = {}
+            sync: Optional[asyncio.Task[tuple[int, Any]]] = None
             try:
                 assert await real_asyncio.to_thread(temp_written.wait, 10), (
                     "the save never created its staged temp"
@@ -3118,14 +3347,23 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
                     f"{porcelain!r}"
                 )
 
-                sync_status, sync_body = await client.post("/api/sync")
-                assert sync_status == 200, sync_body
-                committed = [c["path"] for c in sync_body["result"]["committed"]]
+                # Requested while staging is parked: the Sync must wait on the
+                # vault write lock the staging call holds, not run beside it.
+                sync = real_asyncio.create_task(client.post("/api/sync"))
+                await real_asyncio.sleep(0.2)
+                assert not sync.done(), "the Sync ran while a note was still staging"
             finally:
                 release_stage.set()
                 save_status, save_body = await real_asyncio.wait_for(save, timeout=10)
+            assert sync is not None
+            sync_status, sync_body = await real_asyncio.wait_for(sync, timeout=30)
+            assert sync_status == 200, sync_body
+            committed = [c["path"] for c in sync_body["result"]["committed"]]
 
-    assert committed == ["attachment.png"], (
+    # The Sync ran AFTER the save published, so it commits the note the save
+    # wrote and the attachment — and never the temp, which the publish consumed.
+    assert "attachment.png" in committed, committed
+    assert staged[0].name not in committed, (
         f"a Sync while staging committed a generated temp: {committed}"
     )
     assert staged[0].name not in _git("ls-files", cwd=root), (
@@ -4239,7 +4477,9 @@ async def test_a_tokenless_retry_refuses_to_overwrite_an_external_edit(
         mp.setattr(_mod.asyncio, "sleep", external_write_during_backoff)
 
         with pytest.raises(_mod.ApiError) as excinfo:
-            await _mod._save_note_contents(target, "One.md", "my save" + NL, None)
+            await _mod._save_note_contents(
+                {"localPath": str(root)}, target, "One.md", "my save" + NL, None
+            )
 
     assert excinfo.value.status == 409, (
         "a tokenless retry answered %r instead of a conflict" % (excinfo.value.status,)
