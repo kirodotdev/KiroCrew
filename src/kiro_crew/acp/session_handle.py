@@ -422,6 +422,35 @@ def parse_advertised_models(resp: dict[str, Any]) -> list[dict[str, str]]:
     return []
 
 
+def _select_options(entries: object) -> list[dict[str, Any]]:
+    """Flatten one level of provider GROUPS out of a select's option list.
+
+    ACP lets a select group its options: an entry may carry no ``value`` of its own
+    and hold its real choices in a nested ``options`` list instead. A filter that
+    keeps only entries with a ``value`` therefore empties on a grouped select, and an
+    empty list reads as "this harness advertised no models" -- which for a harness
+    whose advertised list is the ONLY vocabulary its ``set_config_option`` accepts
+    means no model can ever be offered or resolved. ONE level, deliberately: a group
+    holding groups is not a shape any harness here serves, and recursing without
+    bound would let a malformed payload spin. Both levels are narrowed against
+    non-list wire data, so a malformed group is skipped rather than aborting the list.
+    """
+    flattened: list[dict[str, Any]] = []
+    if not isinstance(entries, list):
+        return flattened
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("value"):
+            flattened.append(entry)
+            continue
+        nested = entry.get("options")
+        if not isinstance(nested, list):
+            continue
+        flattened.extend(o for o in nested if isinstance(o, dict) and o.get("value"))
+    return flattened
+
+
 def models_from_config_options(resp: dict[str, Any], backend: str) -> dict[str, Any] | None:
     """A ``models`` envelope synthesized from a ``model`` select, or ``None``.
 
@@ -442,7 +471,7 @@ def models_from_config_options(resp: dict[str, Any], backend: str) -> dict[str, 
     for opt in resp.get("configOptions") or []:
         if not isinstance(opt, dict) or opt.get("id") != "model" or opt.get("type") != "select":
             continue
-        options = [o for o in opt.get("options") or [] if isinstance(o, dict) and o.get("value")]
+        options = _select_options(opt.get("options"))
         if not options:
             return None
         envelope: dict[str, Any] = {

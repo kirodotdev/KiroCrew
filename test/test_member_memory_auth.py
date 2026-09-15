@@ -373,6 +373,16 @@ def test_private_execution_requires_direct_mcp_tools(
         monkeypatch.setattr(backends, "_baseline", set(backends._baseline))
         monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
         monkeypatch.setattr(backends, "ACP_BACKENDS_KNOWN", backends.ACP_BACKENDS_KNOWN | {backend})
+        # A made-up backend has to say how it ROUTES, not just that it exists:
+        # ``register_selectable_backend`` refuses an id whose routing is unverified, and
+        # ``routing_for`` answers unverified for an id the table does not name. Declaring
+        # ``AGENT_SPEC`` also makes this test assert the stronger thing -- even a fully
+        # ROUTED selectable harness inherits no private-MCP authority.
+        monkeypatch.setattr(
+            backends,
+            "ACP_BACKEND_ROUTING",
+            {**backends.ACP_BACKEND_ROUTING, backend: backends.Routing.AGENT_SPEC},
+        )
         backends.register_selectable_backend(backend)
     monkeypatch.setattr(auth, "sys", SimpleNamespace(platform=platform))
     config = SimpleNamespace(
@@ -403,6 +413,13 @@ def test_selectable_backend_does_not_inherit_private_mcp_authority(monkeypatch):
     monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
     monkeypatch.setattr(
         backends, "ACP_BACKENDS_KNOWN", backends.ACP_BACKENDS_KNOWN | {"future-harness"}
+    )
+    # Declares its routing for the reason the sibling test above gives: a made-up
+    # backend says how it routes, and a routed one makes this assertion stronger.
+    monkeypatch.setattr(
+        backends,
+        "ACP_BACKEND_ROUTING",
+        {**backends.ACP_BACKEND_ROUTING, "future-harness": backends.Routing.AGENT_SPEC},
     )
     backends.register_selectable_backend("future-harness")
     assert "future-harness" in backends.selectable_backends()

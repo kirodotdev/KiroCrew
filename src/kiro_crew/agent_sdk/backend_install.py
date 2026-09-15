@@ -46,6 +46,7 @@ from typing import Callable, Dict, List, Tuple
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -91,6 +92,12 @@ COMPONENT_GOOSE = "goose"
 #: ``pi`` agent that adapter spawns in turn. Either can be absent on its own.
 COMPONENT_PI_ACP_ADAPTER = "pi-acp"
 COMPONENT_PI_CLI = "pi"
+
+#: The DeepSeek Harness binary. ONE component, and naming the HOST rather than the
+#: ACP plugin is the substance of it: the plugin has no executable, and the profile
+#: it lives in is shipped inside this package's own dependency closure, so this
+#: binary resolving is the whole precondition.
+COMPONENT_DEEPSEEK = "dsh"
 
 #: How long a verdict is reused. The Claude driver shells out to mise and globs
 #: the filesystem, and the dashboard polls this endpoint, so an uncached probe
@@ -280,6 +287,36 @@ def _probe_goose() -> BackendInstallState:
     )
 
 
+def _probe_deepseek() -> BackendInstallState:
+    """The DeepSeek backend needs one component, and names the installer for it.
+
+    Like the sibling harness there is no second thing to resolve, and here the reason
+    is worth stating: what an operator might expect to install is the ACP package,
+    and installing that alone would leave the backend unrunnable, because it is a
+    plugin rather than a server. So the component and the command both name the host
+    binary that boots the profile the plugin lives in.
+
+    ``restart_required`` is read from the spawn path's own cache, like every sibling:
+    the binary resolves NOW, but this process already cached its absence, so a session
+    started right now still fails until the gateway restarts.
+    """
+    policy_id = _policy_id(ACP_BACKEND_DEEPSEEK)
+    if acp_driver.deepseek_resolves():
+        return BackendInstallState(
+            ACP_BACKEND_DEEPSEEK,
+            policy_id,
+            INSTALLED,
+            restart_required=acp_driver.deepseek_cached_negative(),
+        )
+    return BackendInstallState(
+        ACP_BACKEND_DEEPSEEK,
+        policy_id,
+        MISSING,
+        (COMPONENT_DEEPSEEK,),
+        acp_driver.deepseek_install_command(),
+    )
+
+
 def _probe_codex() -> BackendInstallState:
     """The Codex backend needs one component, and names it when it is absent.
 
@@ -356,6 +393,7 @@ _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_OPENCODE: _probe_opencode,
     ACP_BACKEND_GOOSE: _probe_goose,
     ACP_BACKEND_PI: _probe_pi,
+    ACP_BACKEND_DEEPSEEK: _probe_deepseek,
 }
 
 

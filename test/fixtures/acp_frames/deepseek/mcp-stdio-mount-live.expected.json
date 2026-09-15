@@ -1,0 +1,97 @@
+[
+  {
+    "agent_capabilities": {
+      "mcpCapabilities": {
+        "http": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": false
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "0.0.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "session_id": "33333333-3333-4333-8333-333333333333"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      7567,
+      8192
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "mcp__crew-probe__crew_probe_echo",
+        "tool_call_id": "call_mniwhsrx",
+        "tool_kind": "other",
+        "wire_title": "mcp__crew-probe__crew_probe_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_mniwhsrx",
+        "tool_final": true,
+        "tool_output": "crew-stdio-mount-proved"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "The tool `crew_probe_echo` returned the following text:\n\n\"crew-stdio-mount-proved\"\n\nThis output indicates that the crew has mounted standard input."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The tool `crew_probe_echo` returned the following text:\n\n\"crew-stdio-mount-proved\"\n\nThis output indicates that the crew has mounted standard input.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      7630,
+      8192
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 99,
+    "stop_reason": "end_turn"
+  }
+]

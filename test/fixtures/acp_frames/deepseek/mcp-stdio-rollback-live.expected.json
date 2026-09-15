@@ -1,0 +1,34 @@
+[
+  {
+    "agent_capabilities": {
+      "mcpCapabilities": {
+        "http": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": false
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "0.0.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "error": {
+      "code": -32603,
+      "data": {
+        "details": "mcp-client(kirocrew-core): initial connection or tool synchronization failed"
+      },
+      "message": "Internal error"
+    },
+    "frame": "response",
+    "id": 2
+  }
+]

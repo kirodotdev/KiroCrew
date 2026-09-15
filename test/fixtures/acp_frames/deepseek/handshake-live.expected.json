@@ -1,0 +1,77 @@
+[
+  {
+    "agent_capabilities": {
+      "mcpCapabilities": {
+        "http": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": false
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "0.0.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "[\"deepseek-official\",\"deepseek-v4-flash\"]",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "group": "deepseek-official",
+            "name": "DeepSeek",
+            "options": [
+              {
+                "name": "DeepSeek-V4-Flash",
+                "value": "[\"deepseek-official\",\"deepseek-v4-flash\"]"
+              }
+            ]
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "id": "reasoning_effort",
+        "name": "Reasoning effort",
+        "options": [
+          {
+            "name": "High",
+            "value": "high"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3,
+    "session_id": "11111111-1111-4111-8111-111111111111"
+  },
+  {
+    "error": {
+      "code": -32601,
+      "data": {
+        "method": "session/load"
+      },
+      "message": "\"Method not found\": session/load"
+    },
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "frame": "response",
+    "id": 5
+  }
+]

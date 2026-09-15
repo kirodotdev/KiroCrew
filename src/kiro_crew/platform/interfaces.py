@@ -101,6 +101,16 @@ class ProviderRegistry(Protocol):
         allowlist and the config load path all derive from that registry, so an
         unregistered id is not offered in the dashboard at all and is coerced back
         to the default on load.
+
+        That call REFUSES a harness whose ``ACP_BACKEND_ROUTING`` entry is
+        ``Routing.UNVERIFIED``, and there is no way to override it. Being in
+        ``ACP_BACKENDS_KNOWN`` is not enough, and that is deliberate: known means a
+        build can spell the id, which is what lets a governance rule deny it, while
+        selectable means sessions start — and for an unverified harness nothing
+        establishes that its tool calls reach the host permission gate, its routing
+        verdict refuses no session, and its spawn path applies no compensating
+        credential mask. An edition offering a new harness therefore establishes how
+        it routes first, and declares that in ``ACP_BACKEND_ROUTING``.
         """
         ...
 

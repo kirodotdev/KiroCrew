@@ -1,0 +1,30 @@
+[
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Allow"
+          },
+          {
+            "id": "reject-once",
+            "label": "Reject"
+          }
+        ],
+        "request_id": 7,
+        "title": "bash",
+        "tool_call_id": "call_synthetic01",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject-once"
+    }
+  }
+]

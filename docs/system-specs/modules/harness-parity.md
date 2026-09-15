@@ -19,10 +19,15 @@ core can spell is an id an operator can choose unless something states the
 exception — pinned by
 `test_agent_backend_editable.py::test_baseline_ships_every_known_backend`, which
 guards against an undocumented NARROWING rather than a widening.
-There is no exception today: `NOT_SHIPPED_SELECTABLE` is empty, which is the
-healthy state. `ACP_BACKEND_CODEX` was the last member and left it once both
-halves landed — `backend_install.py` gained its probe, so the install row names
-the missing component and its command instead of reading `unknown`, and
+There is one exception today: `ACP_BACKEND_DEEPSEEK`. It passes the install-probe
+half of the bar and fails the routing half — its own sandbox decides its tool calls, so
+Crew's PreToolUse gate would not run for what a session actually does — and it is named
+in `NOT_SHIPPED_SELECTABLE` with that reason. Empty remains the state to return to, and
+the way back is the routing half rather than a relaxed assertion.
+
+`ACP_BACKEND_CODEX` is how that return looks: it was the previous member and left the
+set once both halves landed — `backend_install.py` gained its probe, so the install row
+names the missing component and its command instead of reading `unknown`, and
 `acp_tool_gate` established that its tool calls reach the PreToolUse gate.
 
 Read the invariants below against that tree: four harnesses can serve a real
