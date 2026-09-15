@@ -1472,6 +1472,12 @@ fails with its name instead of silently substituting a different persona.
 Template resources cannot import Global V1 memory or another member's state;
 the owner's preferences/projects use the separately validated private reader.
 Declared globs have bounded enumeration and do not follow linked directories.
+Wildcard-matched entries classified by the existing managed-source check are
+excluded before descent or content reads. A broad `*/AGENTS.md` resource therefore
+keeps ordinary project guides without scanning the workspace's managed memory or
+lessons. Literal managed prefixes and explicitly named managed files still refuse;
+other admission and read failures are not swallowed. Directory names alone do
+not exclude an ordinary project outside the configured managed workspaces.
 Containment is judged on resolved paths on both sides: a declared root (the
 project root, or the owner's home for a resource outside it) is normalized the
 same way an admitted document is, so a root reached through a symlink -- a
