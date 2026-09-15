@@ -17,6 +17,8 @@ import os
 import re
 import shutil
 import stat
+import subprocess
+import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -51,6 +53,8 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -574,6 +578,263 @@ def app_lifecycle_lock(name: str) -> LoopBoundLock:
 # Install
 # ---------------------------------------------------------------------------
 
+#: Seconds a local-directory install's ``setup.onInstall`` script may run before
+#: it is killed and the install fails. Mirrors the registry path's
+#: ``registry._SCRIPT_TIMEOUT`` so both install surfaces behave the same.
+_INSTALL_SCRIPT_TIMEOUT = 300
+
+#: Most captured install-script output this process will ever hold. Only the
+#: tail matters — the surfaced output is the last 20 lines — so the reader
+#: thread keeps a rolling window instead of buffering the child's whole stream.
+_OUTPUT_TAIL_CAP = 64 * 1024
+
+#: Terminal control sequences an app's own script output could carry. Lifecycle
+#: output is captured stdout/stderr of THIRD-PARTY shell code; printing it to an
+#: operator terminal would let a gate-passed app inject OSC (title overwrite,
+#: clipboard writes, hyperlink spoofs) or raw ANSI escapes. CSI (``ESC [``),
+#: OSC (``ESC ]`` ... BEL/ST), and bare C0 controls are covered; newline is the
+#: one control kept so multi-line tails stay readable. Lives HERE rather than in
+#: lifecycle_scripts because manager is the lower layer (lifecycle_scripts
+#: imports from this module; the reverse import would cycle).
+_TERMINAL_CONTROL_RE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI ... final byte
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC ... BEL or ST
+    r"|\x1b[@-Z\\-_]"  # other single-character ESC sequences
+    r"|[\x00-\x08\x0b-\x1f\x7f]"  # remaining C0 controls + DEL (keep \n)
+)
+
+
+def sanitize_script_output(output: str) -> str:
+    """Strip terminal control sequences from captured lifecycle-script output.
+
+    Every surface that ECHOES captured script output to a human (install/update
+    failure tails, the CLI's enable feedback) runs output through this before
+    printing, so an app cannot use its own script's stdout to drive the
+    operator's terminal. Redaction of credentials/URLs is a separate,
+    caller-chained step (``redact_credentials`` / ``redact_exfiltration_urls``)
+    because only the caller knows the destination.
+    """
+    return _TERMINAL_CONTROL_RE.sub("", output)
+
+
+def _read_output_tail(stream, buf: "bytearray", cap: int) -> None:
+    """Drain ``stream`` into ``buf``, keeping only the most recent ``cap`` bytes."""
+    while True:
+        chunk = stream.read(8192)
+        if not chunk:
+            return
+        buf.extend(chunk)
+        if len(buf) > cap:
+            del buf[: len(buf) - cap]
+
+
+def _run_install_script(name: str, script: str, app_root: Path) -> tuple[bool, str]:
+    """Run an app's ``setup.onInstall`` for a local-directory install.
+
+    Mirrors the registry path's sandboxing (``wrap_argv`` + cgroup scope,
+    ``set -euo pipefail``, minimal non-interactive env) but runs synchronously —
+    ``install_app`` is a sync function invoked through executors. The script
+    executes with ``cwd`` set to the COPIED app directory, so it can never
+    mutate the developer's source tree.
+
+    Returns ``(ok, output_tail)`` where ``output_tail`` is the last 20 lines of
+    combined stdout/stderr (registry keeps 50; the local path surfaces less
+    because the result travels inside ``AppResult.error``).
+    """
+    # Function-local like the token_auth import below: registry is a
+    # higher-level module and a top-level import here would be a cycle.
+    from kiro_crew.apps.registry import minimal_env
+
+    safe_script = f"set -euo pipefail\n{script}"
+    base_cmd = ["/bin/bash", "-c", safe_script]
+    # wrap_argv RAISES RuntimeError (not returns a fallback) when no sandbox
+    # backend exists and unsandboxed exec is not allowed — convert that to the
+    # script-failure shape instead of escaping the AppResult contract.
+    try:
+        sandboxed_cmd, cleanup_path = wrap_argv(base_cmd, mode="standard")
+    except RuntimeError as exc:
+        return False, f"sandbox unavailable: {exc}"
+    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)
+    # Process-group isolation so a timed-out script can be tree-killed (the
+    # sync twin of the registry path's start_new_session / creationflags pair).
+    popen_kwargs: dict[str, Any] = {"start_new_session": platform_compat.IS_POSIX}
+    if not platform_compat.IS_POSIX:
+        popen_kwargs["creationflags"] = platform_compat.CREATE_NEW_PROCESS_GROUP
+    try:
+        # popen_limited, not a bare Popen: the sandbox confines the child's
+        # filesystem and credentials, the limited spawn adds the kernel
+        # resource ceiling (fork-bomb / fd / CPU guard) after exec.
+        proc = popen_limited(
+            sandboxed_cmd,
+            cwd=str(app_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=minimal_env(NONINTERACTIVE="1"),
+            **popen_kwargs,
+        )
+    except OSError as exc:
+        return False, f"failed to launch install script: {exc}"
+    # Capture the kill authority BEFORE any wait: once proc.wait() reaps the
+    # bash wrapper, the leader's PID stops resolving — os.getpgid raises
+    # ProcessLookupError and a leader-addressed tree kill silently becomes a
+    # no-op, leaving a backgrounded descendant alive to rewrite the copied
+    # tree behind the post-script re-admission check. POSIX: pin the process
+    # group id while the leader lives (start_new_session above makes the
+    # wrapper its own group leader). Windows: pin the leader's creation time
+    # so kill_process_tree_pinned can verify identity at kill time.
+    leader_pgid: int | None = None
+    leader_start: str | None = None
+    if platform_compat.IS_POSIX:
+        with contextlib.suppress(OSError):
+            pgid = os.getpgid(proc.pid)
+            if pgid == os.getpgid(0):
+                # Fork race: setsid() has not landed in the child yet, so it
+                # still sits in OUR group. start_new_session above makes the
+                # child its own session+group leader, so the group id IS the
+                # child's pid — never our own group.
+                pgid = proc.pid
+            leader_pgid = pgid
+    else:
+        leader_start = platform_compat.process_start_time(proc.pid)
+    # Bounded tail capture via a reader thread. communicate() buffers the
+    # child's ENTIRE output in this process — the cgroup ceiling bounds the
+    # child, not this buffer, so a chatty script could OOM the gateway inside
+    # the timeout window. Only the last _OUTPUT_TAIL_CAP bytes are ever held.
+    tail_buf = bytearray()
+    reader = threading.Thread(
+        target=_read_output_tail,
+        args=(proc.stdout, tail_buf, _OUTPUT_TAIL_CAP),
+        daemon=True,
+    )
+    reader.start()
+    timed_out: str | None = None
+    try:
+        try:
+            proc.wait(timeout=_INSTALL_SCRIPT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            # Tree-kill through platform_compat: a bare proc.kill() only takes
+            # the bash wrapper, and surviving grandchildren keep the inherited
+            # stdout pipe open so the reader thread would never see EOF.
+            # suppress: a failed kill must not escape the AppResult contract;
+            # the reader still drains whatever was written.
+            timed_out = f"install script timed out after {_INSTALL_SCRIPT_TIMEOUT}s"
+            with contextlib.suppress(OSError, ProcessLookupError, ValueError):
+                _reap_install_script_tree(
+                    proc, leader_pgid=leader_pgid, leader_start=leader_start
+                )
+            # Bounded reap: if the kill itself failed (suppressed above) the
+            # wrapper may still be alive, and waiting unbounded here would
+            # hang the install past its own timeout. Give the SIGKILL a short
+            # window, then give up and report from whatever the reader caught.
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                pass
+        # Only decode the tail once the reader has seen EOF (or its join gave
+        # up) — bytes(tail_buf) while the thread is mid-append would race it.
+        reader.join(timeout=5)
+        reader_join_ok = not reader.is_alive()
+        # Reap stragglers. The bash wrapper exited, but a background descendant
+        # it spawned inherits the same process group and the same cwd — left
+        # alive it could keep writing into the copied tree AFTER this install
+        # succeeds (e.g. rewriting app.json behind the re-admission check).
+        # Same suppress rationale as the timeout kill above. The kill goes
+        # through the PRE-WAIT captured authority (group id on POSIX, pinned
+        # creation time on Windows): the leader may already be reaped here,
+        # so a leader-addressed lookup would raise and silently skip the
+        # survivors.
+        with contextlib.suppress(OSError, ProcessLookupError, ValueError):
+            _reap_install_script_tree(
+                proc, leader_pgid=leader_pgid, leader_start=leader_start
+            )
+        # The kill takes away the pipe holders, so give the reader a short
+        # second window to observe EOF before its buffer is decoded.
+        if not reader_join_ok:
+            reader.join(timeout=2)
+            reader_join_ok = not reader.is_alive()
+    finally:
+        # wrap_argv stages a seatbelt profile / launcher script in TMPDIR;
+        # unlink it or one orphan file leaks per scripted install.
+        if cleanup_path:
+            with contextlib.suppress(OSError):
+                os.unlink(cleanup_path)
+    if not reader_join_ok:
+        logger.warning(
+            "Install script output reader for %s did not finish; tail may be partial",
+            name,
+        )
+    output = bytes(tail_buf).decode(errors="replace").strip()
+    if timed_out is not None:
+        if output:
+            tail = output.split("\n")[-20:]
+            return False, "\n".join([timed_out, *tail])
+        return False, timed_out
+    if proc.returncode != 0 and not output:
+        return False, f"exit code {proc.returncode}"
+    if not output:
+        return True, ""
+    return proc.returncode == 0, "\n".join(output.split("\n")[-20:])
+
+
+def _reap_install_script_tree(
+    proc: subprocess.Popen[bytes],
+    *,
+    leader_pgid: int | None,
+    leader_start: str | None,
+) -> None:
+    """Tree-kill an install script's survivors through pre-wait kill authority.
+
+    POSIX signals the CAPTURED process group: the bash wrapper may already be
+    reaped by the time this runs, so resolving the group through its PID would
+    raise and silently skip the backgrounded descendants that still hold the
+    group. Windows uses the creation time captured before the wait so the
+    pinned kill can verify the leader's identity. Falls back to the
+    leader-addressed tree kill only when the pre-wait capture itself failed
+    (and then only while the leader is still resolvable — the caller's
+    ``suppress`` treats a dead leader as nothing left to reap).
+    """
+    if platform_compat.IS_POSIX:
+        if leader_pgid is None:
+            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+            return
+        platform_compat.kill_pgid(leader_pgid, platform_compat.SIGKILL)
+        return
+    if leader_start is not None and platform_compat.kill_process_tree_pinned(
+        proc.pid, leader_start, platform_compat.SIGKILL
+    ):
+        return
+    platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+
+
+def _remove_installed_tree_except_data(dest: Path, *, preserve_data: bool) -> None:
+    """Remove a failed partial install, optionally keeping a ``data/`` directory.
+
+    ``preserve_data`` must be true only when a ``data/`` directory existed
+    BEFORE this install attempt (a prior uninstall's leave-behind). A fresh
+    install preserves nothing: whatever sits in ``data/`` after the copy was
+    written by the source package or by the failed ``onInstall`` script itself,
+    and keeping it would let the NEXT attempt silently restore that partial,
+    unverified state as if it were established user data.
+    """
+    if not dest.is_dir():
+        return
+    # The failed script ran with WRITE access to dest, so dest itself may have
+    # been replaced by a symlink — iterating one would traverse wherever it
+    # points (e.g. the apps/ parent) and delete sibling installs. A link is
+    # unlinked, never followed.
+    if dest.is_symlink() or is_link_or_junction(dest):
+        with contextlib.suppress(OSError):
+            dest.unlink()
+        return
+    for child in dest.iterdir():
+        if child.name == "data" and preserve_data:
+            continue
+        if child.is_dir() and not is_link_or_junction(child):
+            shutil.rmtree(str(child), ignore_errors=True)
+        else:
+            with contextlib.suppress(OSError):
+                child.unlink()
+
 
 def install_app(
     source: str | Path,
@@ -701,6 +962,13 @@ def install_app(
     # Use same temp name as uninstall_app/update_app so data stranded by a
     # crashed sibling operation is reclaimable by whichever lifecycle runs next.
     tmp_data = dest.parent / f".{name}-data-tmp"
+    # Whether the attempt is responsible for PRE-EXISTING user data: either a
+    # live data/ dir or the sole-survivor tmp copy from a crashed sibling. Only
+    # then may a failed install leave a data/ directory behind (see
+    # _remove_installed_tree_except_data).
+    preserved_prior_data = bool(
+        (existing_data and existing_data.is_dir()) or tmp_data.is_dir()
+    )
 
     # Clean stale tmp from a previous failed install/uninstall.
     # Only remove tmp_data if the original data/ also exists (proving tmp is
@@ -775,6 +1043,138 @@ def install_app(
             error=f"copy failed: {exc}",
         )
         return AppResult(ok=False, name=name, error=f"failed to copy app files: {exc}")
+
+    # Run the manifest's setup.onInstall, if declared. The registry path has
+    # always executed this hook (sandboxed, in its checkout before the copy);
+    # the local-directory path never did, so a Node app installed from a folder
+    # shipped without node_modules and its backend could never start. A local
+    # app.json is still third-party shell code, so the same execution-policy
+    # gate that guards every other manifest-script surface runs first, and the
+    # script executes in the COPIED app dir rather than the source tree.
+    install_script = manifest.setup.onInstall
+    # The registry path already executed this hook in its own checkout (before
+    # calling install_app inside the registry_source_repository scope) and the
+    # copied tree carries its effects — running it again here would double
+    # every non-idempotent side effect (repeated package installs, migrations,
+    # generated files). Only a source arriving OUTSIDE the registry scope — a
+    # local-directory install — still needs the hook.
+    if install_script and _REGISTRY_SOURCE_REPOSITORY.get() is None:
+        execution_denied = app_execution_denied(
+            name,
+            action="install",
+            app_root=dest,
+            caller="app_install",
+            # Pass the caller-supplied source coordinate: mid-install there is
+            # no installed record yet, so a repository-bound grant could not
+            # otherwise be matched and would be spuriously denied.
+            repository=source_repository,
+        )
+        if execution_denied:
+            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            sel().log_api_access(
+                caller="app_install",
+                operation="app_execution_admission",
+                outcome="denied",
+                resources=f"name={name!r} action='install'",
+                error=execution_denied,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"blocked by execution policy: {execution_denied}",
+                error_code="app_execution_denied",
+            )
+        sel().log_api_access(
+            caller="app_install",
+            operation="app_install_script",
+            outcome="started",
+            resources=f"name={name!r} source={source!s}",
+        )
+        logger.info("Executing sandboxed install script for app %s from %s", name, source)
+        script_ok, script_output = _run_install_script(name, install_script, dest)
+        if not script_ok:
+            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            # Full shared chain: the text is the app's own stdout/stderr and
+            # reaches both the SEL audit record and the human-visible error.
+            # Terminal control sequences are stripped FIRST — redaction does
+            # not remove them, and this text is printed to operator terminals.
+            cleaned, _ = redact_credentials(sanitize_script_output(script_output))
+            cleaned, _ = redact_exfiltration_urls(cleaned)
+            sel().log_api_access(
+                caller="app_install",
+                operation="app_install_script",
+                outcome="failed",
+                resources=f"name={name!r} source={source!s}",
+                error=cleaned,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"install script failed: {cleaned}",
+                error_code="on_install_failed",
+            )
+        # The script ran with WRITE access to the copied tree, so the app.json
+        # on disk may not match the manifest that was admitted. Re-read it and
+        # re-check identity and admission before this install registers
+        # anything from the rewritten manifest.
+        try:
+            post_script_manifest = AppManifest.from_json_file(dest / APP_MANIFEST_FILENAME)
+        except (OSError, ValueError) as exc:
+            # The script destroyed or corrupted its own manifest — the same
+            # tampering case this re-read exists to catch. Fail closed through
+            # the ordinary script-failure cleanup instead of raising past the
+            # AppResult contract.
+            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            detail = f"install script corrupted the app manifest: {exc}"
+            sel().log_api_access(
+                caller="app_install",
+                operation="app_install_script",
+                outcome="denied",
+                resources=f"name={name!r}",
+                error=detail,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=detail,
+                error_code="on_install_failed",
+            )
+        if post_script_manifest.name != name or post_script_manifest.version != manifest.version:
+            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            detail = (
+                f"app manifest changed during install script: expected "
+                f"{name!r} v{manifest.version}, found "
+                f"{post_script_manifest.name!r} v{post_script_manifest.version}"
+            )
+            sel().log_api_access(
+                caller="app_install",
+                operation="app_install_script",
+                outcome="denied",
+                resources=f"name={name!r}",
+                error=detail,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=detail,
+                error_code="app_identity_changed",
+            )
+        post_denied = app_admission_denied(name, manifest=post_script_manifest, action="install")
+        if post_denied:
+            _remove_installed_tree_except_data(dest, preserve_data=preserved_prior_data)
+            sel().log_api_access(
+                caller="app_install",
+                operation="admission",
+                outcome="rejected",
+                resources=f"name={name!r}",
+                error=post_denied,
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"blocked by admission policy: {post_denied}",
+            )
+        manifest = post_script_manifest
 
     # Write installed metadata
     meta = InstalledApp(

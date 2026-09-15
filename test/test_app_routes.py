@@ -517,3 +517,218 @@ async def test_install_route_registers_off_loop(tmp_path, monkeypatch):
         assert data["ok"] is True
         assert "registration" in data  # helper's return value still surfaces
     assert seen["thread"] is not loop_thread
+
+
+@pytest.mark.asyncio
+async def test_on_enable_gates_backend_start(tmp_path, monkeypatch):
+    """onEnable must finish BEFORE the backend is spawned.
+
+    An app whose onEnable installs its backend dependencies (npm install)
+    loses any race with the backend's first boot — the backend exits on
+    missing node_modules.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": "true"}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+    order: list[str] = []
+
+    async def _fake_script(name, script, *, timeout=30, action="lifecycle_script"):
+        order.append(f"onEnable:{name}")
+        return {"output": "", "failed": False}
+
+    def _fake_backend(app_name):
+        order.append(f"backend:{app_name}")
+        return None
+
+    monkeypatch.setattr("kiro_crew.apps.routes._run_lifecycle_script", _fake_script)
+    monkeypatch.setattr("kiro_crew.apps.routes.start_app_backend", _fake_backend)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["ok"] is True
+
+    assert order == ["onEnable:api-test-app", "backend:api-test-app"], (
+        f"onEnable must complete before start_app_backend, saw {order}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_enable_failure_before_backend_start_leaves_no_backend(
+    tmp_path, monkeypatch
+):
+    """A failing onEnable rolls back before any backend process exists."""
+    _setup_env(tmp_path, monkeypatch)
+    # The failing script is a REAL bash child; allow it regardless of whether
+    # this host can build a namespace sandbox (same convention as
+    # test_apps_registry.py's unsandboxed_spawn fixture). Sandbox construction
+    # itself is covered by test_sandbox_*.py.
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": "exit 1"}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+    backend_started: list[str] = []
+
+    def _fail_backend(app_name):
+        backend_started.append(app_name)
+        return None
+
+    monkeypatch.setattr("kiro_crew.apps.routes.start_app_backend", _fail_backend)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["code"] == "on_enable_failed"
+
+    assert backend_started == [], "backend must not start when onEnable fails"
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is False
+
+
+def _on_enable_rewritten_app(tmp_path, monkeypatch, on_enable_body):
+    """Install an app whose onEnable runs *on_enable_body* as real bash.
+
+    Same unsandboxed convention as the scripted-install tests: these tests
+    assert real bash semantics and must not depend on the host's sandbox
+    backend.
+    """
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+    src = _make_app_source(tmp_path)
+    manifest = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+    manifest["setup"] = {"onEnable": on_enable_body}
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
+    install_app(src)
+
+
+@pytest.mark.asyncio
+async def test_on_enable_cannot_swap_manifest_identity(tmp_path, monkeypatch):
+    """onEnable rewrites app.json → registration must be re-admitted first.
+
+    A compromised hook with write access to the app directory could swap the
+    admitted manifest (e.g. inject cron declarations) between admission and
+    registration. The enable route must re-read the manifest, detect the
+    identity change, and roll back before anything from the rewritten
+    manifest is registered or booted.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    _on_enable_rewritten_app(
+        tmp_path,
+        monkeypatch,
+        on_enable_body=(
+            'printf \'{"name":"api-test-app","version":"9.9.9",'
+            '"displayName":"Evil"}\' > app.json'
+        ),
+    )
+
+    registered: list[str] = []
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.register_app",
+        lambda name: registered.append(name),
+    )
+    backend_started: list[str] = []
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.start_app_backend",
+        lambda app_name: backend_started.append(app_name),
+    )
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["code"] == "on_enable_admission_denied"
+        assert "9.9.9" in data["error"] or "manifest changed" in data["error"]
+
+    assert registered == [], "nothing from the rewritten manifest may register"
+    assert backend_started == [], "no backend may boot from a rewritten manifest"
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_on_enable_cannot_destroy_the_manifest(tmp_path, monkeypatch):
+    """onEnable removes app.json → fail closed, not register from cache."""
+    _setup_env(tmp_path, monkeypatch)
+    _on_enable_rewritten_app(tmp_path, monkeypatch, on_enable_body="rm -f app.json")
+
+    monkeypatch.setattr("kiro_crew.apps.routes.register_app", lambda name: None)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["code"] == "on_enable_admission_denied"
+        assert "manifest" in data["error"]
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_on_enable_admission_policy_denial_rolls_back(tmp_path, monkeypatch):
+    """A post-onEnable admission denial rolls the enable back cleanly."""
+    _setup_env(tmp_path, monkeypatch)
+    _on_enable_rewritten_app(tmp_path, monkeypatch, on_enable_body="true")
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.app_admission_denied",
+        lambda name, manifest=None, action="install": "unsigned app",
+    )
+    monkeypatch.setattr("kiro_crew.apps.routes.register_app", lambda name: None)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["code"] == "on_enable_admission_denied"
+        assert "unsigned app" in data["error"]
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_benign_on_enable_passes_readmission(tmp_path, monkeypatch):
+    """A well-behaved onEnable leaves the manifest alone → enable succeeds."""
+    _setup_env(tmp_path, monkeypatch)
+    _on_enable_rewritten_app(tmp_path, monkeypatch, on_enable_body="true")
+    monkeypatch.setattr(
+        "kiro_crew.apps.routes.start_app_backend", lambda app_name: None
+    )
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/api-test-app/enable")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["ok"] is True
+
+    from kiro_crew.apps.manager import _read_installed
+
+    meta = _read_installed("api-test-app")
+    assert meta is not None
+    assert meta.enabled is True

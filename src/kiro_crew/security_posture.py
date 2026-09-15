@@ -134,6 +134,16 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "through the shared credential + exfiltration-URL chain before serialization.",
     ),
     (
+        "App install-script failures",
+        "apps/manager.py",
+        "The captured output of a third-party app's failed ``setup.onInstall`` "
+        "script. It reaches TWO surfaces: the SEL audit record for the failed "
+        "install and the human-visible ``AppResult.error`` returned by the CLI "
+        "and the dashboard install routes. The bytes are the app's own "
+        "stdout/stderr, so both surfaces run the shared credential + "
+        "exfiltration-URL chain before the text is stored or shown.",
+    ),
+    (
         "CLI wheel-update failures",
         "cli_server.py",
         "The failure text `kirocrew update` prints when a managed-venv shadow "

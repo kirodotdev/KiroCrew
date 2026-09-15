@@ -30,6 +30,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
+from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.backend import (
     get_app_backend_port,
     list_app_processes,
@@ -76,6 +77,7 @@ from kiro_crew.apps.manager import (
     list_apps,
     register_external_app,
     resolve_mcp_backend_url,
+    sanitize_script_output,
     trust_grant_removal_blocked,
     uninstall_app,
     update_app,
@@ -140,6 +142,7 @@ from kiro_crew.sandbox import (
     wrap_argv,
     wrap_argv_async,
 )
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -1407,7 +1410,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/enable — enable an app.
 
     Behavior depends on ``resources`` field:
-    - ``gateway``: register_app() + start_backend() + run onEnable
+    - ``gateway``: register_app() + start_backend(), gated on a successful onEnable
     - ``app``: run onEnable only
 
     If onEnable fails, the enable is rolled back (app stays disabled) — EXCEPT
@@ -1434,6 +1437,13 @@ async def handle_enable_app(request: web.Request) -> web.Response:
 
     resources = info.get("resources", "gateway")
     manifest = info.get("manifest", {})
+    # Snapshot the state THIS enable is allowed to roll back to. A re-enable
+    # of an already-enabled gateway app may reach the failure path with its
+    # backend still running (enable_app returns ok for an enabled app), and a
+    # self-managed app owns registrations this route never created — so the
+    # rollback must be scoped to what the enable path actually manages.
+    # Taken inside the lifecycle lock below: a concurrent disable landing
+    # between the snapshot and enable_app would otherwise make it stale.
     on_enable = (manifest.get("setup") or {}).get("onEnable", "")
     enable_timeout = int((manifest.get("setup") or {}).get("onEnableTimeout", 30))
 
@@ -1442,6 +1452,17 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     # install/update/uninstall of the same app (e.g. enabling while an
     # off-loop uninstall is deleting the app directory).
     async with app_lifecycle_lock(name):
+        # Reload INSIDE the lock: the `info` fetched above predates it, so a
+        # concurrent enable/disable could land between the fetch and this
+        # lock — deriving the rollback state from the stale snapshot would
+        # disable an app another request just enabled, or skip stopping a
+        # backend it just started.
+        current = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), get_app, name
+        )
+        snapshot = current if current is not None else info
+        was_enabled = bool(snapshot.get("enabled"))
+        is_gateway_app = snapshot.get("resources", "gateway") == "gateway"
         result = enable_app(name)
         if not result.ok:
             sel().log_api_access(
@@ -1454,26 +1475,6 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             return web.json_response(result.to_dict(), status=400)
 
         resp: dict[str, Any] = result.to_dict()
-
-        # Register resources if gateway-managed
-        if resources == "gateway":
-            reg = await _register_app_off_loop(name)
-            backend = await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), start_app_backend, name
-            )
-            # MCP re-registration is HEALTH-GATED and happens inside start_app_backend,
-            # not here. register_app ran before the backend was up, so an HTTP MCP server
-            # with backend.port:"auto" still carries the manifest's illustrative port; the
-            # health-check loop rewrites it to the real allocated port once /health passes
-            # (and scrubs it if the backend never becomes healthy — the dead-url shape
-            # that broke kiro-cli). An ADOPTED instance runs no health loop, so the
-            # adoption path registers it through the same serialized transition before
-            # arming its watch. Re-registering here instead would race that watch: the
-            # call is queued after this handler returns, so a demotion could scrub in
-            # between and the queued write would restore the dead url.
-            resp["registration"] = reg.to_dict()
-            if backend:
-                resp["backend"] = backend.to_dict()
 
         # Resolve declared dependencies (if any)
         deps_data = manifest.get("dependencies")
@@ -1516,13 +1517,24 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 name, on_enable, timeout=enable_timeout, action="on_enable"
             )
             if script_output.get("failed") and client_platform is None:
-                # Rollback: disable the app again
-                if resources == "gateway":
+                # Rollback: disable the app unconditionally — including a
+                # re-enable of an already-enabled app, which therefore also
+                # ends disabled; this is not a full restore of the prior
+                # state. The backend this route would have started does not
+                # exist — onEnable gates start_app_backend below — but a
+                # RE-enabled gateway app still has its PREVIOUS backend
+                # running, so that one must be stopped before the metadata is
+                # flipped to disabled, or the running process outlives its
+                # enabled flag. Deregistration is gateway-only: a self-managed
+                # (resources=="app") app's registrations are not this route's
+                # to remove.
+                if is_gateway_app and was_enabled:
                     await asyncio.get_running_loop().run_in_executor(
                         subprocess_executor(), stop_app_backend, name
                     )
-                    await _deregister_app_off_loop(name)
                 disable_app(name)
+                if is_gateway_app:
+                    await _deregister_app_off_loop(name)
                 sel().log_api_access(
                     caller="dashboard",
                     operation="app_enable",
@@ -1530,9 +1542,10 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                     resources=name,
                     error="onEnable script failed",
                 )
-                from kiro_crew.security import redact_credentials
-
-                cleaned, _ = redact_credentials(script_output.get("output", ""))
+                cleaned, _ = redact_credentials(
+                    sanitize_script_output(str(script_output.get("output", "")))
+                )
+                cleaned, _ = redact_exfiltration_urls(cleaned)
                 return web.json_response(
                     {
                         "ok": False,
@@ -1548,11 +1561,89 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 "failed": False,
             }
             if script_output.get("output"):
-                from kiro_crew.security import redact_credentials
-
-                cleaned, _ = redact_credentials(script_output.get("output", ""))
+                cleaned, _ = redact_credentials(
+                    sanitize_script_output(str(script_output.get("output", "")))
+                )
+                cleaned, _ = redact_exfiltration_urls(cleaned)
                 resp["onEnable"]["output"] = cleaned
             resp["onEnable"]["failed"] = script_output.get("failed", False)
+
+        # A successful onEnable ran THIRD-PARTY shell with write access to the
+        # app directory, so the app.json on disk may disagree with the
+        # manifest this enable was admitted under — the same tamper window the
+        # install path closes with its post-script re-admission. Re-read,
+        # re-verify identity, and re-run admission BEFORE registration reads
+        # the rewritten manifest (scheduling its crons, exposing its MCP
+        # tools) or the backend boots from it.
+        if is_gateway_app and on_enable:
+            post_enable_manifest = get_app_manifest(name)
+            if post_enable_manifest is None:
+                denied_reason = "onEnable removed or corrupted the app manifest"
+            elif (
+                post_enable_manifest.name != name
+                or post_enable_manifest.version != manifest.get("version")
+            ):
+                denied_reason = (
+                    f"app manifest changed during onEnable: expected "
+                    f"{name!r} v{manifest.get('version')}, found "
+                    f"{post_enable_manifest.name!r} v{post_enable_manifest.version}"
+                )
+            else:
+                denied_reason = (
+                    app_admission_denied(
+                        name, manifest=post_enable_manifest, action="enable"
+                    )
+                    or ""
+                )
+            if denied_reason:
+                if was_enabled:
+                    await asyncio.get_running_loop().run_in_executor(
+                        subprocess_executor(), stop_app_backend, name
+                    )
+                disable_app(name)
+                await _deregister_app_off_loop(name)
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_enable",
+                    outcome="denied",
+                    resources=name,
+                    error=denied_reason,
+                )
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "name": name,
+                        "error": f"blocked after onEnable: {denied_reason}",
+                        "code": "on_enable_admission_denied",
+                    },
+                    status=400,
+                )
+
+        # Register resources and start the backend only AFTER onEnable has
+        # finished. The previous order (start_backend first, onEnable after)
+        # raced apps whose onEnable is a package install (e.g. `npm install`
+        # into backend/): the backend spawned immediately, hit a missing
+        # node_modules, and exited before the script finished — the user had
+        # to disable and re-enable to recover. A failing onEnable for a
+        # gateway app now rolls back before any backend process exists.
+        if resources == "gateway":
+            reg = await _register_app_off_loop(name)
+            backend = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), start_app_backend, name
+            )
+            # MCP re-registration is HEALTH-GATED and happens inside start_app_backend,
+            # not here. register_app ran before the backend was up, so an HTTP MCP server
+            # with backend.port:"auto" still carries the manifest's illustrative port; the
+            # health-check loop rewrites it to the real allocated port once /health passes
+            # (and scrubs it if the backend never becomes healthy — the dead-url shape
+            # that broke kiro-cli). An ADOPTED instance runs no health loop, so the
+            # adoption path registers it through the same serialized transition before
+            # arming its watch. Re-registering here instead would race that watch: the
+            # call is queued after this handler returns, so a demotion could scrub in
+            # between and the queued write would restore the dead url.
+            resp["registration"] = reg.to_dict()
+            if backend:
+                resp["backend"] = backend.to_dict()
 
         # Invoke Python lifecycle hooks (routes + on_startup) — runs AFTER shell scripts
         try:
