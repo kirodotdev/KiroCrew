@@ -190,6 +190,78 @@ The cron editor sends empty channel and approval overrides on edit to clear stor
 - Chokepoint string-field gate: `_build_job`/`_update_job_locked` type/length-validate **every** caller-supplied string field through one table (`_CRON_STRING_FIELD_CAPS` — name, message, channel, thread_ts, agent_id, created_by, folder_id, session_key, model, command, script, timezone), with caps matching the REST/MCP boundary schemas. Non-string truthy values and over-cap strings raise `ValueError` at the persistence owner regardless of caller; `None`/`""` keep their "not set"/no-op semantics while any other falsy non-string is rejected. An anti-drift test (`test/test_cron_string_field_validation.py`) asserts every persisted str field on `CronJob` is either in the table or in a documented runtime-only exclusion set
 - Async stop: `stop()` is now async, cancels and awaits `_running_tasks` before returning
 
+### Operating folder (`project_path`) and the project-bound job owner gate
+
+A job's `project_path` (optional, default `""`) binds it to a project directory so
+its agent runs with that folder's own `.kiro/agents/*.json` definitions merged
+into the global roster, exactly as a chat session opened in that folder would.
+Validation (`CronService._validate_project_path`, shared with the frontend's
+resolver via `security.resolve_project_path`) requires an absolute path (or
+`~`-prefixed), not a sensitive path, and an existing directory; an invalid value
+raises `ValueError` at `add_job`/`update_job` and nothing is persisted (same
+create-path-owner contract as `timezone`/`skip_dates` above). `GET /api/agents`
+gained a `project_path` query-param fallback (`dashboard/handlers/agents.py`) for
+the Schedule page's job form, which has no live chat session to key project scope
+off of.
+
+At fire time, `slack/gateway.py` resolves `job.project_path` through the existing
+project-agent-discovery path (`resolve_agent_bindings`) before launching, and
+re-checks the folder's canonical path (`_project_path_still_canonical`, an exact
+`realpath` string match) on every fire — a folder that existed at save time but
+is gone, or whose canonical form changed, by fire time is a normal failure, not a
+run against the wrong (global) agent: the job is skipped, `last_status="error"`
+names the missing/changed folder, and no auto-pause strike is spent (mirrors the
+"overlapping run" refusal elsewhere in this file). Editing a bound job's folder
+or agent takes effect on the very next fire via a session-binding reset
+(`_cron_session_binding`), rather than waiting for an idle eviction or gateway
+restart.
+
+**Owner-only authorization gate.** A project-bound job carries a filesystem-read
+capability (its agent runs with that folder's contents and any project-scoped
+agent definitions visible), so an arbitrary allow-listed dashboard token must not
+inherit it for free. `dashboard/handlers/cron.py` gates every route that creates,
+edits, manually runs, or re-enables a project-bound job behind
+`is_owner_dashboard_request(request)`, refusing a non-owner with 403 and a
+machine-readable `code`:
+
+| Gate | Route | `code` |
+|---|---|---|
+| Create-path `project_path` | `POST /api/crons` | `project_path_owner_required` |
+| Update job-level (any field on an already-bound job) | `PATCH /api/crons/{id}` | `project_bound_job_owner_required` |
+| Update field-level (`project_path` itself) | `PATCH /api/crons/{id}` | `project_path_owner_required` |
+| Manual run | `POST /api/crons/{id}/run` | `project_bound_job_owner_required` |
+| Re-enable | `POST /api/crons/{id}/enable` | `project_bound_job_owner_required` |
+
+The **PATCH job-level gate is deliberately broader than the field it protects**:
+it refuses EVERY field of an already-bound job to a non-owner, not just
+`project_path` — renaming, re-scheduling, or editing the message of a bound job
+is also owner-only, since any of those changes what fires or how, on a job that
+already carries the folder capability. Clearing `project_path` back to `""`
+(un-binding) is not itself owner-gated on an already-UNBOUND job (the field-level
+check short-circuits when `existing_job.project_path` is falsy — the job never
+had the capability to protect), but re-binding or editing a job that already has
+one always is.
+
+**TOCTOU precondition (`expect_project_path`).** The owner-authorization decision
+above is made against a SNAPSHOT read outside any lock. Between that read and the
+write, a concurrent request could change `project_path` — a non-owner's PATCH,
+authorized against a snapshot showing the job unbound, must not land against a
+job a concurrent request just bound. `api_cron_update`/`api_cron_enable` pass
+`expect_project_path` (the exact snapshot value, or the `_UNSET` sentinel when
+the enable-path never fetched the job) into the persistence layer as a
+compare-and-swap precondition: the write is rejected with 409 if the job's
+`project_path` no longer matches what the authorization decision was made
+against. Every response the gate returns includes the corresponding error `code`
+above so a client can distinguish "you are not the owner" from "the job changed
+under you, retry."
+
+Tests: `test/test_cron_project_path_owner_gate.py` (create/update field-level
+gate, including the empty-string-clearing edge case),
+`test/test_cron_project_bound_job_owner_gate.py` (job-level gate on
+update/run/enable), `test/test_cron_project_bound_job_toctou.py` (the
+compare-and-swap race simulation), `test/test_agents_project_path_owner_gate.py`
+(the `GET /api/agents?project_path=` read-path owner gate).
+
 ### Result delivery order, and the delivery-agnostic dedup anchor
 
 A finished `message` cron fans out to three surfaces, in this order:

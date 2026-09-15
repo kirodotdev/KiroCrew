@@ -129,7 +129,15 @@ class TestList:
 class TestUpdate:
     async def test_the_field_is_forwarded(self) -> None:
         update = AsyncMock(return_value=_job(minimal_context=True))
-        app = _app(api_cron_update, "/api/crons/{job_id}", update_job_async=update)
+        # The job-level owner gate fetches the job first via get_job_async;
+        # the real CronJob's default project_path="" makes it pass through.
+        get_job = AsyncMock(return_value=_job())
+        app = _app(
+            api_cron_update,
+            "/api/crons/{job_id}",
+            update_job_async=update,
+            get_job_async=get_job,
+        )
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch("/api/crons/j1", json={"minimal_context": True})
             assert resp.status == 200
@@ -137,7 +145,13 @@ class TestUpdate:
 
     async def test_turning_it_back_off_is_forwarded_rather_than_read_as_absent(self) -> None:
         update = AsyncMock(return_value=_job(minimal_context=False))
-        app = _app(api_cron_update, "/api/crons/{job_id}", update_job_async=update)
+        get_job = AsyncMock(return_value=_job())
+        app = _app(
+            api_cron_update,
+            "/api/crons/{job_id}",
+            update_job_async=update,
+            get_job_async=get_job,
+        )
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch("/api/crons/j1", json={"minimal_context": False})
             assert resp.status == 200
@@ -145,7 +159,13 @@ class TestUpdate:
 
     async def test_an_unrelated_patch_leaves_the_flag_alone(self) -> None:
         update = AsyncMock(return_value=_job(minimal_context=True))
-        app = _app(api_cron_update, "/api/crons/{job_id}", update_job_async=update)
+        get_job = AsyncMock(return_value=_job())
+        app = _app(
+            api_cron_update,
+            "/api/crons/{job_id}",
+            update_job_async=update,
+            get_job_async=get_job,
+        )
         async with TestClient(TestServer(app)) as client:
             resp = await client.patch("/api/crons/j1", json={"name": "renamed"})
             assert resp.status == 200
