@@ -53,7 +53,9 @@ class FakeEngine:
     def preflight(self, profile, region):
         pass
 
-    def provision(self, *, tag, size_key, profile, region):
+    def provision(
+        self, *, tag, size_key, profile, region, agentcore_posture="none", agentcore_gateway_url=""
+    ):
         return "i-0abc123456789def0"
 
     def begin_signin(self, *, instance_id, profile, region):
@@ -146,7 +148,9 @@ class TestGuards:
         # Provisioning itself stays refused — the deploy engine needs bash/aws.
         created = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
@@ -177,7 +181,9 @@ class TestGuards:
         (`!dashboard`): request["user"] is set to THEIR subject with an empty app,
         so the old app-only check cleared them into the owner's billable AWS control
         plane. Only the configured owner may pass."""
-        req = _req("GET", "/api/cloud/iam-policy", state=_state(tmp_path), user="allowed-slack-user")
+        req = _req(
+            "GET", "/api/cloud/iam-policy", state=_state(tmp_path), user="allowed-slack-user"
+        )
         resp = await hc.api_cloud_iam_policy(req)
         assert resp.status == 403
         assert _body(resp)["code"] == "cloud_owner_only"
@@ -270,9 +276,7 @@ class TestPluginInstallCommand:
         assert "linux_arm64/session-manager-plugin.rpm" in cmd
         assert cmd.startswith("sudo dnf install -y")
 
-    def test_an_unsupported_platform_returns_nothing_rather_than_a_wrong_command(
-        self, monkeypatch
-    ):
+    def test_an_unsupported_platform_returns_nothing_rather_than_a_wrong_command(self, monkeypatch):
         assert self._cmd(monkeypatch, "Windows", "x86_64", set()) == ""
 
 
@@ -281,7 +285,9 @@ class TestLaunch:
         state = _state(tmp_path)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
@@ -311,17 +317,59 @@ class TestLaunch:
         state.cloud_launch_store.create = _record  # type: ignore[method-assign]
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
         assert resp.status == 202
         assert seen["tid"] != loop_tid, "create() ran on the event loop thread"
 
+    async def test_create_rejects_dashboard_agentcore_posture(self, tmp_path):
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
+                body={
+                    "profile": "dev",
+                    "region": "us-east-1",
+                    "size_key": "balanced",
+                    "agentcore_posture": "workload",
+                },
+            )
+        )
+        assert resp.status == 400
+        assert _body(resp)["code"] == "dashboard_agentcore_posture_forbidden"
+
+    async def test_create_gateway_url_400(self, tmp_path):
+        """Dashboard launches carry no posture, so a Gateway URL -- valid or not --
+        is refused rather than persisted onto a job that would hand a provisioner
+        engine a kwarg it never declared."""
+        for url in ("http://insecure.example/mcp", "https://gw.example.test/mcp"):
+            resp = await hc.api_cloud_launch_create(
+                _req(
+                    "POST",
+                    "/api/cloud/launch",
+                    state=_state(tmp_path),
+                    body={
+                        "profile": "dev",
+                        "region": "us-east-1",
+                        "size_key": "balanced",
+                        "agentcore_gateway_url": url,
+                    },
+                )
+            )
+            assert resp.status == 400
+            assert _body(resp)["code"] == "dashboard_agentcore_gateway_url_forbidden"
+
     async def test_create_bad_size_400(self, tmp_path):
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=_state(tmp_path),
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
                 body={"profile": "dev", "region": "us-east-1", "size_key": "nope"},
             )
         )
@@ -339,15 +387,23 @@ class TestLaunch:
 
     async def test_get_unknown_404(self, tmp_path):
         resp = await hc.api_cloud_launch_get(
-            _req("GET", "/api/cloud/launch/deadbeef", state=_state(tmp_path),
-                 match_info={"id": "deadbeef"})
+            _req(
+                "GET",
+                "/api/cloud/launch/deadbeef",
+                state=_state(tmp_path),
+                match_info={"id": "deadbeef"},
+            )
         )
         assert resp.status == 404
 
     async def test_cancel_unknown_404(self, tmp_path):
         resp = await hc.api_cloud_launch_cancel(
-            _req("POST", "/api/cloud/launch/deadbeef/cancel", state=_state(tmp_path),
-                 match_info={"id": "deadbeef"})
+            _req(
+                "POST",
+                "/api/cloud/launch/deadbeef/cancel",
+                state=_state(tmp_path),
+                match_info={"id": "deadbeef"},
+            )
         )
         assert resp.status == 404
 
@@ -357,8 +413,9 @@ class TestLaunch:
         ev = threading.Event()
         hc._cancels(state)[job.id] = ev
         resp = await hc.api_cloud_launch_cancel(
-            _req("POST", f"/api/cloud/launch/{job.id}/cancel", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/cancel", state=state, match_info={"id": job.id}
+            )
         )
         assert resp.status == 200
         assert ev.is_set() is True
@@ -380,8 +437,9 @@ class TestLaunch:
         assert hc._cancels(state).get(job.id) is None  # no worker owns it
 
         resp = await hc.api_cloud_launch_cancel(
-            _req("POST", f"/api/cloud/launch/{job.id}/cancel", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/cancel", state=state, match_info={"id": job.id}
+            )
         )
 
         assert resp.status == 200
@@ -402,8 +460,9 @@ class TestLaunch:
         assert hc._cancels(state).get(job.id) is None
 
         resp = await hc.api_cloud_launch_cancel(
-            _req("POST", f"/api/cloud/launch/{job.id}/cancel", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/cancel", state=state, match_info={"id": job.id}
+            )
         )
 
         assert resp.status == 200
@@ -426,8 +485,12 @@ class TestLaunchConcurrency:
         state.cloud_launch_store.adopt(running.id)  # a worker here owns it
 
         resp = await hc.api_cloud_launch_create(
-            _req("POST", "/api/cloud/launch", state=state,
-                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"})
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
+            )
         )
 
         assert resp.status == 409
@@ -453,8 +516,12 @@ class TestLaunchConcurrency:
 
         def _post():
             return hc.api_cloud_launch_create(
-                _req("POST", "/api/cloud/launch", state=state,
-                     body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"})
+                _req(
+                    "POST",
+                    "/api/cloud/launch",
+                    state=state,
+                    body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
+                )
             )
 
         try:
@@ -473,8 +540,12 @@ class TestLaunchConcurrency:
         state.cloud_launch_store.save(old)
 
         resp = await hc.api_cloud_launch_create(
-            _req("POST", "/api/cloud/launch", state=state,
-                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"})
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
+            )
         )
 
         assert resp.status == 202
@@ -494,8 +565,9 @@ class TestSignin:
         # adopt), which is what keeps the orphan reaper off it.
         state.cloud_launch_store.adopt(job.id)
         resp = await hc.api_cloud_launch_signin(
-            _req("POST", f"/api/cloud/launch/{job.id}/signin", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/signin", state=state, match_info={"id": job.id}
+            )
         )
         assert resp.status == 200
         assert _body(resp)["signin"]["code"] == "BQTZ-XKFD"
@@ -506,8 +578,9 @@ class TestSignin:
             profile="dev", region="us-east-1", size_key="balanced"
         )
         resp = await hc.api_cloud_launch_signin(
-            _req("POST", f"/api/cloud/launch/{job.id}/signin", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/signin", state=state, match_info={"id": job.id}
+            )
         )
         assert resp.status == 409
 
@@ -533,22 +606,34 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
         monkeypatch.setattr(hc.ec2, "describe", lambda *a, **k: {"instance_id": "i-0abc"})
 
-        st = _req("POST", "/api/cloud/kc-3f9a/stop?profile=dev&region=us-east-1",
-                  state=_state(tmp_path), match_info={"tag": "kc-3f9a"})
+        st = _req(
+            "POST",
+            "/api/cloud/kc-3f9a/stop?profile=dev&region=us-east-1",
+            state=_state(tmp_path),
+            match_info={"tag": "kc-3f9a"},
+        )
         r1 = await hc.api_cloud_stop(st)
         assert r1.status == 200
         assert seen["stop"] == {"tag": "kc-3f9a", "profile": "dev", "region": "us-east-1", "kw": {}}
 
         r2 = await hc.api_cloud_start(
-            _req("POST", "/api/cloud/kc-7b21/start", state=_state(tmp_path),
-                 match_info={"tag": "kc-7b21"})
+            _req(
+                "POST",
+                "/api/cloud/kc-7b21/start",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-7b21"},
+            )
         )
         assert r2.status == 200
         assert seen["start"]["tag"] == "kc-7b21"
 
         r3 = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-7b21", state=_state(tmp_path),
-                 match_info={"tag": "kc-7b21"})
+            _req(
+                "DELETE",
+                "/api/cloud/kc-7b21",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-7b21"},
+            )
         )
         assert r3.status == 200
         assert seen["destroy"]["tag"] == "kc-7b21"
@@ -579,8 +664,12 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.source_mod, "delete_source", _delete_source)
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-3f9a?instance_id=i-0abc123456789def0",
-                 state=_state(tmp_path), match_info={"tag": "kc-3f9a"})
+            _req(
+                "DELETE",
+                "/api/cloud/kc-3f9a?instance_id=i-0abc123456789def0",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )
         )
 
         assert resp.status == 200
@@ -599,17 +688,23 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": False})
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda tag, p, r: False)
         monkeypatch.setattr(
-            hc.connect_mod, "unregister_instance",
+            hc.connect_mod,
+            "unregister_instance",
             lambda iid: calls.setdefault("unregistered", True),
         )
         monkeypatch.setattr(
-            hc.source_mod, "delete_source",
+            hc.source_mod,
+            "delete_source",
             lambda *a, **k: calls.setdefault("source", True) or {"removed": True},
         )
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-3f9a?instance_id=i-0abc", state=_state(tmp_path),
-                 match_info={"tag": "kc-3f9a"})
+            _req(
+                "DELETE",
+                "/api/cloud/kc-3f9a?instance_id=i-0abc",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )
         )
 
         assert resp.status == 200
@@ -623,28 +718,29 @@ class TestInstanceMutations:
         resolves it from the stack itself — before the delete, since the outputs
         are unreadable once the stack is gone."""
         calls = {}
-        monkeypatch.setattr(
-            hc.ec2, "describe", lambda tag, p, r: {"instance_id": "i-resolved123"}
-        )
+        monkeypatch.setattr(hc.ec2, "describe", lambda tag, p, r: {"instance_id": "i-resolved123"})
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": False})
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
         monkeypatch.setattr(
-            hc.connect_mod, "unregister_instance",
+            hc.connect_mod,
+            "unregister_instance",
             lambda iid: calls.setdefault("unregistered", iid) is None or True,
         )
         monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-3f9a", state=_state(tmp_path),
-                 match_info={"tag": "kc-3f9a"})  # no instance_id
+            _req(
+                "DELETE",
+                "/api/cloud/kc-3f9a",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )  # no instance_id
         )
 
         assert resp.status == 200
         assert calls["unregistered"] == "i-resolved123"
 
-    async def test_invalid_cloud_parameter_is_a_coded_400_not_a_500(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_invalid_cloud_parameter_is_a_coded_400_not_a_500(self, tmp_path, monkeypatch):
         """ec2.* validates tag/profile/region and raises ValidationError, which is
         NOT an AWSError — without its own arm a malformed tag becomes a 500."""
         from kiro_crew.validation import ValidationError
@@ -655,8 +751,7 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "stop", _boom)
 
         resp = await hc.api_cloud_stop(
-            _req("POST", "/api/cloud/%20/stop", state=_state(tmp_path),
-                 match_info={"tag": " "})
+            _req("POST", "/api/cloud/%20/stop", state=_state(tmp_path), match_info={"tag": " "})
         )
 
         assert resp.status == 400
@@ -674,14 +769,19 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": False})
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
         monkeypatch.setattr(
-            hc.connect_mod, "unregister_instance",
+            hc.connect_mod,
+            "unregister_instance",
             lambda iid: calls.setdefault("unregistered", iid) is None or True,
         )
         monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-3f9a?instance_id=i-someone-elses",
-                 state=_state(tmp_path), match_info={"tag": "kc-3f9a"})
+            _req(
+                "DELETE",
+                "/api/cloud/kc-3f9a?instance_id=i-someone-elses",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )
         )
 
         assert resp.status == 200
@@ -692,6 +792,7 @@ class TestInstanceMutations:
         """The id lookup shells out to AWS. If it throws — including non-AWSError
         types like a sandbox/exec failure — the delete must still go through, or the
         user is stranded with a crew they cannot remove."""
+
         def _explode(*a, **k):
             raise RuntimeError("no sandbox backend available")
 
@@ -702,8 +803,9 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-9", state=_state(tmp_path),
-                 match_info={"tag": "kc-9"})  # no instance_id -> forces the lookup
+            _req(
+                "DELETE", "/api/cloud/kc-9", state=_state(tmp_path), match_info={"tag": "kc-9"}
+            )  # no instance_id -> forces the lookup
         )
 
         assert resp.status == 200
@@ -729,7 +831,8 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": True})
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
         monkeypatch.setattr(
-            hc.connect_mod, "unregister_instance",
+            hc.connect_mod,
+            "unregister_instance",
             lambda iid: calls.setdefault("unregistered", iid) is None or True,
         )
         monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
@@ -811,7 +914,10 @@ class TestProvisionerSeam:
         assert rows[0]["kind"] == "aws_ec2"
         assert rows[0]["posix_only"] is True
         assert [s["key"] for s in rows[0]["steps"]] == [
-            lj.STEP_PREFLIGHT, lj.STEP_PROVISION, lj.STEP_SIGNIN, lj.STEP_CONNECT,
+            lj.STEP_PREFLIGHT,
+            lj.STEP_PROVISION,
+            lj.STEP_SIGNIN,
+            lj.STEP_CONNECT,
         ]
 
     async def test_listing_answers_on_windows(self, tmp_path, monkeypatch):
@@ -834,7 +940,9 @@ class TestProvisionerSeam:
             [
                 _Provisioner("aws_ec2"),
                 _Provisioner(
-                    "devspace", kind="amazon_devspace", label="Amazon DevSpace",
+                    "devspace",
+                    kind="amazon_devspace",
+                    label="Amazon DevSpace",
                     posix_only=False,
                     step_labels=((lj.STEP_PROVISION, "Create the DevSpace"), ("bogus", "x")),
                 ),
@@ -874,7 +982,9 @@ class TestProvisionerSeam:
         state = _state(tmp_path)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
@@ -887,7 +997,9 @@ class TestProvisionerSeam:
         state = _state(tmp_path)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"provider_id": "nope", "profile": "", "region": "", "size_key": "x"},
             )
         )
@@ -901,10 +1013,14 @@ class TestProvisionerSeam:
         ladder, and the job's steps carry the provisioner's labels."""
         engine = RecordingEngine()
         provider = _Provider(
-            [_Provisioner("aws_ec2"), _Provisioner(
-                "devspace", kind="amazon_devspace",
-                step_labels=((lj.STEP_PROVISION, "Create the DevSpace"),),
-            )],
+            [
+                _Provisioner("aws_ec2"),
+                _Provisioner(
+                    "devspace",
+                    kind="amazon_devspace",
+                    step_labels=((lj.STEP_PROVISION, "Create the DevSpace"),),
+                ),
+            ],
             engines={"devspace": engine},
         )
         _compose(monkeypatch, provider)
@@ -912,9 +1028,13 @@ class TestProvisionerSeam:
         state.cloud_launch_engine = None  # let the seam, not the test hook, answer
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={
-                    "provider_id": "devspace", "profile": "", "region": "us-west-2",
+                    "provider_id": "devspace",
+                    "profile": "",
+                    "region": "us-west-2",
                     "size_key": "dev.standard1.large",
                 },
             )
@@ -924,7 +1044,9 @@ class TestProvisionerSeam:
         assert job["provider_id"] == "devspace"
         assert job["status"] == lj.DONE
         assert job["instance_id"] == "ds-devspace-0001"
-        assert {s["key"]: s["label"] for s in job["steps"]}[lj.STEP_PROVISION] == "Create the DevSpace"
+        assert {s["key"]: s["label"] for s in job["steps"]}[
+            lj.STEP_PROVISION
+        ] == "Create the DevSpace"
         assert provider.asked == ["devspace"]
         assert engine.calls == [("provision", job["tag"], "dev.standard1.large", "", "us-west-2")]
 
@@ -935,7 +1057,9 @@ class TestProvisionerSeam:
         _compose(monkeypatch, provider)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=_state(tmp_path),
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
                 body={"provider_id": "aws_ec2", "profile": "", "region": "", "size_key": "nope"},
             )
         )
@@ -949,7 +1073,9 @@ class TestProvisionerSeam:
         state.cloud_launch_engine = None
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"provider_id": "ghost", "profile": "", "region": "", "size_key": "x"},
             )
         )
@@ -971,15 +1097,24 @@ class TestProvisionerSeam:
         state.cloud_launch_engine = None
         ok = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"provider_id": "devspace", "profile": "", "region": "", "size_key": "s"},
             )
         )
         assert ok.status == 202, _body(ok)
         refused = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=_state(tmp_path),
-                body={"provider_id": "aws_ec2", "profile": "", "region": "", "size_key": "balanced"},
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
+                body={
+                    "provider_id": "aws_ec2",
+                    "profile": "",
+                    "region": "",
+                    "size_key": "balanced",
+                },
             )
         )
         assert refused.status == 400
@@ -993,7 +1128,9 @@ class TestProvisionerSeam:
         state = _state(tmp_path)  # carries FakeEngine via the hook
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "", "region": "", "size_key": "balanced"},
             )
         )

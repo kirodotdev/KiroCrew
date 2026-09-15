@@ -15,11 +15,15 @@ right stack without relying on a local cache that could drift.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from kiro_crew.cloud import aws, sizes
 from kiro_crew.deploy import profiles as profiles_mod
@@ -142,8 +146,105 @@ def _template_path() -> Path:
 
 
 def load_template() -> str:
-    """Read the bundled CloudFormation template text."""
+    """Read the bundled CloudFormation template text (the full, posture-capable one)."""
     return _template_path().read_text(encoding="utf-8")
+
+
+#: Markers around every block the bundled template ships ONLY for a posture
+#: launch (the ``AWS::BedrockAgentCore::WorkloadIdentity`` resource, the two
+#: posture policies that ``!GetAtt`` it, and the two outputs that name it).
+_AGENTCORE_BLOCK_BEGIN = "# >>> agentcore-only"
+_AGENTCORE_BLOCK_END = "# <<< agentcore-only"
+
+
+def base_template_text(full: Optional[str] = None) -> str:
+    """The template a ``none``-posture launch deploys: the bundled one with every
+    ``agentcore-only`` block removed.
+
+    CloudFormation validates resource TYPES against the region's registry before
+    it evaluates ``Condition``s, so a conditional ``AWS::BedrockAgentCore::``
+    resource is not inert -- in a region without Bedrock AgentCore, change-set
+    creation for the whole stack fails on the unrecognized type. The default
+    launch therefore carries no such type at all; only a posture launch, which
+    needs the service anyway, deploys the full template. The AgentCore
+    *parameters* stay (the launcher always passes them), as do the conditions
+    and the boundary-class tag they drive.
+    """
+    text = load_template() if full is None else full
+    out: list[str] = []
+    depth = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped == _AGENTCORE_BLOCK_BEGIN:
+            depth += 1
+            continue
+        if stripped == _AGENTCORE_BLOCK_END:
+            if depth == 0:
+                raise ValueError("kirocrew-ec2.yaml: agentcore-only end marker without a begin")
+            depth -= 1
+            continue
+        if depth == 0:
+            out.append(line)
+    if depth != 0:
+        raise ValueError("kirocrew-ec2.yaml: unterminated agentcore-only block")
+    return "".join(out)
+
+
+def _variant_file_name(posture: str) -> str:
+    """The staged file name for *posture*: the full template for a posture launch,
+    the base variant for ``none``."""
+    return "kirocrew-ec2.yaml" if posture in ("workload", "login") else "kirocrew-ec2-base.yaml"
+
+
+def template_text_for_posture(posture: str) -> str:
+    """The template text a launch with *posture* deploys."""
+    return load_template() if posture in ("workload", "login") else base_template_text()
+
+
+@contextlib.contextmanager
+def staged_template(posture: str) -> Iterator[Path]:
+    """Yield the ``--template-file`` for *posture* for the duration of ONE deploy.
+
+    Whatever ``run_aws`` reads executes with the launcher's credentials, so a
+    template at a fixed path an in-sandbox agent could write would let a
+    prompt-injected agent hand CloudFormation an arbitrary stack. That includes
+    the bundled file itself: the package directory is not one of the trees the
+    agent sandbox masks, and in the ordinary personal install (``pip --user``, a
+    home venv, an editable checkout) it is writable by the very uid the sandbox
+    runs under. So EVERY posture deploys a snapshot, never the bundled path: the
+    text is read once here, in the gateway, and written under
+    ``<config_dir>/run/`` -- the runtime exec dir the agent sandbox denies read
+    AND write on (see ``security/paths.py``; the sandbox launcher scripts and run
+    markers live there for the same reason) -- in a fresh 0700 directory whose
+    name is not predictable, with ``O_NOFOLLOW|O_EXCL`` so a pre-planted link
+    cannot redirect it, and removed once the deployment child has exited.
+    Nothing outside the child ever sees the path. A posture launch snapshots the
+    full template; ``none`` snapshots the base variant (see
+    :func:`base_template_text`).
+    """
+    text = template_text_for_posture(posture)
+    from kiro_crew.config.paths import config_dir
+
+    run_dir = config_dir() / "run"
+    run_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(run_dir, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
+    stage = Path(tempfile.mkdtemp(prefix="cfn-stage-", dir=run_dir))  # 0700 by construction
+    path = stage / _variant_file_name(posture)
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        yield path
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def template_path_for_posture(posture: str) -> Path:
+    """The ``--template-file`` a DRY RUN shows for *posture*: a placeholder naming
+    the variant, since the real path exists only inside :func:`staged_template`
+    for one deploy."""
+    return Path(f"<staged {_variant_file_name(posture)}>")
 
 
 def stack_name(tag: str) -> str:
@@ -235,9 +336,7 @@ def _zone_shadows_host(zone: str, host: str) -> bool:
     return host == zone or host.endswith("." + zone)
 
 
-def shadowed_download_hosts(
-    vpc_id: str, profile: str, region: str
-) -> list[tuple[str, str]]:
+def shadowed_download_hosts(vpc_id: str, profile: str, region: str) -> list[tuple[str, str]]:
     """``(host, zone)`` pairs where a private hosted zone hides a download host.
 
     An interface VPC endpoint with private DNS enabled creates a private hosted
@@ -309,9 +408,7 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
     )
 
 
-def discover_network(
-    profile: str, region: str, instance_type: str = ""
-) -> tuple[str, str, str]:
+def discover_network(profile: str, region: str, instance_type: str = "") -> tuple[str, str, str]:
     """Resolve a (vpc_id, subnet_id, egress_kind) to launch into.
 
     ``egress_kind`` is ``"nat"`` or ``"igw"`` — the caller uses it to decide
@@ -535,13 +632,23 @@ def build_deploy_argv(
     allow_ssh_cidr: str = "",
     source_bucket: str = "",
     source_key: str = "",
+    agentcore_posture: str = "none",
+    agentcore_workload_name: str = "",
+    agentcore_gateway_url: str = "",
+    template_file: Optional[Path] = None,
 ) -> list[str]:
     """Assemble the exact ``aws cloudformation deploy`` argv (also the dry-run output).
+
+    ``template_file`` is the path the deploy hands to the child -- the snapshot
+    :func:`staged_template` yields for exactly one deploy (every posture).
+    Omitted, it is the dry-run view (:func:`template_path_for_posture`).
 
     ``permissions_boundary_arn`` is the ARN of the SHARED, pre-created immutable
     instance permissions boundary (``source.ensure_instance_boundary`` creates it
     once); it fills the template's ``PermissionsBoundaryArn`` parameter so the
     InstanceRole is capped by it instead of a per-launch CFN-authored boundary.
+    ``agentcore_posture`` / ``agentcore_workload_name`` opt the stack into
+    creating ``AWS::BedrockAgentCore::WorkloadIdentity``.
     """
     overrides = [
         f"InstanceType={tier.instance_type}",
@@ -552,6 +659,9 @@ def build_deploy_argv(
         f"AssociatePublicIp={associate_public_ip}",
         f"StackTag={tag}",
         f"PermissionsBoundaryArn={permissions_boundary_arn}",
+        f"AgentCorePosture={agentcore_posture}",
+        f"AgentCoreWorkloadName={agentcore_workload_name}",
+        f"AgentCoreGatewayUrl={agentcore_gateway_url}",
     ]
     # Prefer the S3 source (private-repo safe); else pass git repo/ref fallback.
     if source_bucket:
@@ -569,7 +679,13 @@ def build_deploy_argv(
         "--stack-name",
         stack_name(tag),
         "--template-file",
-        str(_template_path()),
+        # A none launch deploys the base variant (no AgentCore resource type in
+        # it); only a posture launch ships the full template.
+        str(
+            template_file
+            if template_file is not None
+            else template_path_for_posture(agentcore_posture)
+        ),
         "--capabilities",
         "CAPABILITY_NAMED_IAM",
         "--tags",
@@ -594,6 +710,8 @@ def deploy(
     disable_rollback: bool = False,
     dry_run: bool = False,
     proc_sink: Optional[Any] = None,
+    agentcore_posture: str = "none",
+    agentcore_gateway_url: str = "",
 ) -> DeployResult:
     """Provision (or update) the KiroCrew stack. Idempotent by stack name.
 
@@ -605,6 +723,11 @@ def deploy(
     returns the exact argv without calling AWS. ``proc_sink`` is forwarded to
     :func:`aws.run_aws` for the (long) deploy call so a caller running deploy on
     a background thread can terminate the child on Ctrl+C.
+    ``agentcore_posture`` of ``workload`` or ``login`` creates an Amazon
+    Bedrock AgentCore standalone WorkloadIdentity and CreateRole's the
+    instance under the successor boundary. That policy must already
+    exist (``iam-boundary --agentcore``); the generated launcher cannot
+    CreateRole it, so AgentCore launches need admin credentials.
     """
     if not dry_run:
         aws.assert_human_action("cloudformation:CreateStack")
@@ -620,7 +743,12 @@ def deploy(
     if ref:
         ref = validate_field(ref, _REF_SPEC) or ""
 
+    from kiro_crew.cloud import iam
     from kiro_crew.cloud import source as source_mod
+
+    posture = iam.normalize_agentcore_posture(agentcore_posture)
+    workload_name = iam.agentcore_workload_name(tag, posture)
+    agentcore_gateway_url = iam.normalize_agentcore_gateway_url(agentcore_gateway_url)
 
     if ship_source is None:
         ship_source = source_mod.find_repo_root() is not None
@@ -643,6 +771,9 @@ def deploy(
             allow_ssh_cidr=allow_ssh_cidr,
             source_bucket="<auto>" if ship_source else "",
             source_key=f"{tag}/kirocrew-src.tar.gz" if ship_source else "",
+            agentcore_posture=posture,
+            agentcore_workload_name=workload_name,
+            agentcore_gateway_url=agentcore_gateway_url,
         )
         return DeployResult(
             tag=tag,
@@ -662,7 +793,14 @@ def deploy(
     # InstanceRole is capped by it. Done before the source upload so a
     # boundary-create failure (e.g. missing iam:CreatePolicy) surfaces before we
     # ship anything to S3.
-    boundary_arn = source_mod.ensure_instance_boundary(profile, region)
+    # none-posture CreateRole uses the original boundary (generated
+    # launcher grant). AgentCore posture GetPolicy's the admin-pre-created
+    # successor and passes that ARN — the CreateRole IAM gate then
+    # requires admin credentials. Do not CreatePolicy the successor here.
+    if posture in ("workload", "login"):
+        boundary_arn = source_mod.require_agentcore_boundary(profile, region)
+    else:
+        boundary_arn = source_mod.ensure_instance_boundary(profile, region)
 
     # Package + upload the local source so the box installs from S3 (no GitHub
     # access needed). Fall back to a git clone only if source shipping is off.
@@ -689,9 +827,7 @@ def deploy(
                 subnet_id, profile, region, tier.instance_type
             )
         else:
-            vpc_id, subnet_id, egress_kind = discover_network(
-                profile, region, tier.instance_type
-            )
+            vpc_id, subnet_id, egress_kind = discover_network(profile, region, tier.instance_type)
         # Both paths above settle on a VPC; check the resolver BEFORE provisioning
         # anything. A private hosted zone that shadows a download host makes the
         # bootstrap fail deterministically minutes later, blaming the wrong layer.
@@ -699,27 +835,36 @@ def deploy(
     except Exception:
         _cleanup_uploaded_source()
         raise
-    argv = build_deploy_argv(
-        tag=tag,
-        tier=tier,
-        vpc_id=vpc_id,
-        subnet_id=subnet_id,
-        # A NAT-routed (private) subnet must NOT get a public IP — it is unused
-        # surface and can violate SCPs that deny RunInstances-with-public-IP.
-        # An IGW subnet REQUIRES one for egress.
-        associate_public_ip="false" if egress_kind == "nat" else "true",
-        permissions_boundary_arn=boundary_arn,
-        repo="" if ship_source else repo,
-        ref="" if ship_source else ref,
-        allow_ssh_cidr=allow_ssh_cidr,
-        source_bucket=source_bucket,
-        source_key=source_key,
-    )
-    # `cloudformation deploy` blocks until the stack settles (WaitCondition gates
-    # on the gateway being healthy). "No changes" exits 0 with a message on reuse.
-    if disable_rollback:
-        argv = [*argv, "--disable-rollback"]
-    rc, out, err = aws.run_aws(argv, profile, region, timeout=_DEPLOY_TIMEOUT, proc_sink=proc_sink)
+    # The template stays staged only while the deployment child runs (see
+    # staged_template): nothing else ever sees the path.
+    with staged_template(posture) as template_file:
+        argv = build_deploy_argv(
+            tag=tag,
+            tier=tier,
+            vpc_id=vpc_id,
+            subnet_id=subnet_id,
+            # A NAT-routed (private) subnet must NOT get a public IP — it is unused
+            # surface and can violate SCPs that deny RunInstances-with-public-IP.
+            # An IGW subnet REQUIRES one for egress.
+            associate_public_ip="false" if egress_kind == "nat" else "true",
+            permissions_boundary_arn=boundary_arn,
+            repo="" if ship_source else repo,
+            ref="" if ship_source else ref,
+            allow_ssh_cidr=allow_ssh_cidr,
+            source_bucket=source_bucket,
+            source_key=source_key,
+            agentcore_posture=posture,
+            agentcore_workload_name=workload_name,
+            agentcore_gateway_url=agentcore_gateway_url,
+            template_file=template_file,
+        )
+        # `cloudformation deploy` blocks until the stack settles (WaitCondition gates
+        # on the gateway being healthy). "No changes" exits 0 with a message on reuse.
+        if disable_rollback:
+            argv = [*argv, "--disable-rollback"]
+        rc, out, err = aws.run_aws(
+            argv, profile, region, timeout=_DEPLOY_TIMEOUT, proc_sink=proc_sink
+        )
     if rc != 0 and "No changes to deploy" not in (out + err):
         missing = aws.map_missing_action(err)
         hint = f" — grant `{missing}` and retry" if missing else ""

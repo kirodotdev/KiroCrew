@@ -465,7 +465,9 @@ class LaunchEngine(Protocol):
     """The AWS-touching operations a launch needs, injected for testability."""
 
     def preflight(self, profile: str, region: str) -> None: ...
+
     def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str: ...
+
     def begin_signin(self, *, instance_id: str, profile: str, region: str) -> SigninHandle: ...
     def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None: ...
     def teardown(self, *, tag: str, profile: str, region: str) -> bool: ...
@@ -643,9 +645,7 @@ def run_launch(
                 job.status = RUNNING
                 s.state = STEP_DONE if signed else STEP_SKIPPED
                 s.detail = (
-                    "Signed in."
-                    if signed
-                    else "Not signed in yet — finish it from the dashboard."
+                    "Signed in." if signed else "Not signed in yet — finish it from the dashboard."
                 )
                 store.save(job)
             else:

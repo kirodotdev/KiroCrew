@@ -32,9 +32,7 @@ class _RealSigninHandle:
         self._profile = profile
         self._region = region
         try:
-            prompt = login.start_device_login(
-                instance_id, profile, region, open_browser=False
-            )
+            prompt = login.start_device_login(instance_id, profile, region, open_browser=False)
         except Exception:  # noqa: BLE001 - see below
             # start_device_login shells out to SSM. A transient failure here must not
             # raise straight out of this constructor -> begin_signin -> the launch
@@ -49,7 +47,8 @@ class _RealSigninHandle:
             # as an unrelated exception type, and every mode means the same thing here.
             logger.info(
                 "could not start Kiro sign-in for %s; continuing unconfirmed",
-                instance_id, exc_info=True,
+                instance_id,
+                exc_info=True,
             )
             prompt = None
         self._prompt = prompt
@@ -77,9 +76,7 @@ class _RealSigninHandle:
             for _ in range(_SIGNIN_ATTEMPTS):
                 if cancel.is_set():
                     return False
-                if login.wait_until_logged_in(
-                    self._iid, self._profile, self._region, attempts=1
-                ):
+                if login.wait_until_logged_in(self._iid, self._profile, self._region, attempts=1):
                     return True
             return False
         except Exception:  # noqa: BLE001 - see below
@@ -132,7 +129,10 @@ class RealLaunchEngine:
         # the stack's DashboardPort default bound above — the two ends of one
         # crew must name the same port or the tunnel forwards to nothing.
         registered = connect_mod.register_instance(
-            instance_id, name=f"Kiro Crew Cloud ({tag})", profile=profile, region=region,
+            instance_id,
+            name=f"Kiro Crew Cloud ({tag})",
+            profile=profile,
+            region=region,
         )
         if registered is None:
             # register_instance is best-effort BY CONTRACT: it returns None both when the

@@ -103,6 +103,60 @@ class TestLaunchSubnetFlag:
         assert rc == 1
         assert "--subnet cannot apply" in capsys.readouterr().out
 
+    def test_agentcore_flags_with_existing_stack_fail(self, monkeypatch, capsys):
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="kc-old")
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(
+            wizard.iam,
+            "reachability_check",
+            lambda *a, **k: {
+                "reachable": True,
+                "account": "1",
+                "ec2_reachable": True,
+                "cloudformation_reachable": True,
+                "ssm_reachable": True,
+            },
+        )
+        monkeypatch.setattr(wizard, "_ensure_session_manager_plugin", lambda **k: True)
+        monkeypatch.setattr(wizard, "_select_existing_launch", lambda *a, **k: object())
+
+        rc = wizard.launch(
+            profile="dev",
+            region="us-west-2",
+            assume_yes=True,
+            agentcore_posture="workload",
+        )
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "--agentcore-posture" in out
+        assert "--new" in out
+
+    def test_agentcore_gateway_url_with_existing_stack_fail(self, monkeypatch, capsys):
+        cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="kc-old")
+        monkeypatch.setattr(wizard.CloudConfig, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(
+            wizard.iam,
+            "reachability_check",
+            lambda *a, **k: {
+                "reachable": True,
+                "account": "1",
+                "ec2_reachable": True,
+                "cloudformation_reachable": True,
+                "ssm_reachable": True,
+            },
+        )
+        monkeypatch.setattr(wizard, "_ensure_session_manager_plugin", lambda **k: True)
+        monkeypatch.setattr(wizard, "_select_existing_launch", lambda *a, **k: object())
+
+        rc = wizard.launch(
+            profile="dev",
+            region="us-west-2",
+            assume_yes=True,
+            agentcore_gateway_url="https://gateway.example.test/mcp",
+        )
+        assert rc == 1
+        assert "--agentcore-gateway-url" in capsys.readouterr().out
+
     def test_subnet_threads_through_to_deploy(self, monkeypatch):
         cfg = CloudConfig(profile="dev", region="us-west-2", last_tag="")
         _patch_post_launch(monkeypatch)

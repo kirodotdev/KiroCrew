@@ -37,8 +37,16 @@ class FakeHandle:
 class FakeEngine:
     """Records calls; each step is individually configurable to raise/return."""
 
-    def __init__(self, *, handle=None, preflight_exc=None, provision_exc=None, register_exc=None,
-                 teardown_exc=None, teardown_confirms=True):
+    def __init__(
+        self,
+        *,
+        handle=None,
+        preflight_exc=None,
+        provision_exc=None,
+        register_exc=None,
+        teardown_exc=None,
+        teardown_confirms=True,
+    ):
         self.handle = handle or FakeHandle(already=True)
         self.preflight_exc = preflight_exc
         self.provision_exc = provision_exc
@@ -183,8 +191,13 @@ class TestRunLaunch:
             seen["code"] = mid.signin.code if mid.signin else None
 
         eng = FakeEngine(
-            handle=FakeHandle(url="https://x/verify", code="BQTZ-XKFD", ports=[54123], signed=True,
-                              on_wait=on_wait)
+            handle=FakeHandle(
+                url="https://x/verify",
+                code="BQTZ-XKFD",
+                ports=[54123],
+                signed=True,
+                on_wait=on_wait,
+            )
         )
         out = lj.run_launch(job, s, eng)
         assert seen["status"] == lj.AWAITING_SIGNIN
@@ -323,7 +336,8 @@ class TestRealSigninHandleFailures:
         from kiro_crew.cloud import launch_engine as le
 
         monkeypatch.setattr(
-            le.login, "start_device_login",
+            le.login,
+            "start_device_login",
             lambda *a, **k: SimpleNamespace(
                 already_logged_in=False, url="u", code="c", ports=[], close=lambda: None
             ),
@@ -384,11 +398,15 @@ class TestRealEngineGatewayPort:
         from kiro_crew.cloud import launch_engine as le
 
         seen = {}
-        monkeypatch.setattr(le.ec2, "deploy", lambda **kw: (
-            seen.update(kw) or SimpleNamespace(instance_id="i-0abc")))
+        monkeypatch.setattr(
+            le.ec2,
+            "deploy",
+            lambda **kw: (seen.update(kw) or SimpleNamespace(instance_id="i-0abc")),
+        )
         monkeypatch.setattr(le.sizes, "get_tier", lambda k: SimpleNamespace(key=k))
         monkeypatch.setattr(
-            le.connect_mod, "register_instance",
+            le.connect_mod,
+            "register_instance",
             lambda iid, **kw: seen.update({"reg": kw}) or "inst-1",
         )
         return le, seen
@@ -665,7 +683,9 @@ class TestProvisionerOnTheJob:
         """Another provisioner's ``size_key`` is its own vocabulary; refusing it here
         against ``sizes.py`` would refuse every non-EC2 launch."""
         job = _store(tmp_path).create(
-            profile="", region="us-west-2", size_key="dev.standard1.large",
+            profile="",
+            region="us-west-2",
+            size_key="dev.standard1.large",
             provider_id="devspace",
         )
         assert job.provider_id == "devspace"
@@ -673,14 +693,20 @@ class TestProvisionerOnTheJob:
 
     def test_step_labels_override_only_known_keys(self, tmp_path):
         job = _store(tmp_path).create(
-            profile="", region="", size_key="s", provider_id="devspace",
+            profile="",
+            region="",
+            size_key="s",
+            provider_id="devspace",
             step_labels={lj.STEP_PROVISION: "Create the DevSpace", "bogus": "ignored"},
         )
         labels = {st.key: st.label for st in job.steps}
         assert labels[lj.STEP_PROVISION] == "Create the DevSpace"
         assert labels[lj.STEP_PREFLIGHT] == "Check your AWS setup"  # untouched core label
         assert [st.key for st in job.steps] == [
-            lj.STEP_PREFLIGHT, lj.STEP_PROVISION, lj.STEP_SIGNIN, lj.STEP_CONNECT,
+            lj.STEP_PREFLIGHT,
+            lj.STEP_PROVISION,
+            lj.STEP_SIGNIN,
+            lj.STEP_CONNECT,
         ]
 
     def test_default_steps_with_no_overrides_are_the_core_labels(self):
