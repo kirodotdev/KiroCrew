@@ -26,7 +26,7 @@ SHIPPED_SMOKE = {
     "settings-theme-toggle",
     "sidebar-folders-and-older-sessions",
 }
-SHIPPED = SHIPPED_SMOKE | {"members-dm-hello"}
+SHIPPED = SHIPPED_SMOKE | {"members-dm-hello", "members-private-memory-keeps-thread"}
 
 
 class TestShippedScenarios:
@@ -82,7 +82,7 @@ class TestShippedScenarios:
             "chat": ["chat-switch-seeded-sessions", "sessions-new-chat"],
             "sidebar": ["sidebar-folders-and-older-sessions"],
             "search": ["search-everywhere-jump-to-setting"],
-            "members": ["members-dm-hello"],
+            "members": ["members-dm-hello", "members-private-memory-keeps-thread"],
             "auth": ["auth-sign-in-card-signed-out"],
             "settings": ["settings-search-jump-to-theme", "settings-theme-toggle"],
         }
@@ -433,7 +433,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_6 of {len(scenarios.FEATURES)} features covered · 8 scenarios (7 smoke / 1 nightly)._"
+            f"_6 of {len(scenarios.FEATURES)} features covered · 9 scenarios (7 smoke / 2 nightly)._"
             in md
         )
         assert (

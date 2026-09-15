@@ -3,11 +3,11 @@
   "raw_record_count": 387,
   "counts": {
     "smoke": 42,
-    "nightly": 165,
+    "nightly": 166,
     "native-only": 12,
     "needs-secret": 27,
     "excluded": 22,
-    "total": 268
+    "total": 269
   },
   "priorities": {
     "P0": 10,
@@ -67,7 +67,7 @@
     },
     "members": {
       "smoke": 0,
-      "nightly": 2,
+      "nightly": 3,
       "native-only": 0,
       "needs-secret": 0,
       "excluded": 0
@@ -1976,6 +1976,38 @@
         "members-crew-members",
         "members-page-roster-and-thread",
         "members-roster-filter"
+      ],
+      "component": "website/src/pages/members/MembersPage.tsx"
+    },
+    {
+      "id": "members-private-memory-keeps-thread",
+      "feature": "members",
+      "title": "Switch a member to private memory after chatting; the DM thread keeps its history and still answers",
+      "user_story": "As a crew operator, I want to give one member its own private memory after we have already been talking, so that its recall is isolated without losing the conversation we had or the member's ability to answer.",
+      "start_url": "/settings",
+      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Rail > Crew Members > member row > DM thread (send a message, get a reply) > member edit panel > Memory store field > Create private memory > confirm dialog > back to the DM thread > send again",
+      "preconditions": {
+        "seed": "rich",
+        "members": [
+          "nova-sky"
+        ],
+        "feature_flags": [
+          "mc-preview-crew"
+        ],
+        "notes": "The member starts on the shared default store so the Memory store field offers Create private memory. The member's project is the seeded workspace root, which contains a memory/ directory: the second message exercises the private-memory essential-context path against that layout. Fake ACP backend answers both messages."
+      },
+      "runnable": "nightly",
+      "estimated_steps": 12,
+      "rationale": "Two-surface flow (DM thread, member edit panel) with a confirm dialog and two model turns; the assertions that matter are pixel-level: the earlier bubble is still on screen after the switch and no error bubble replaced the reply.",
+      "source": [
+        "website/src/pages/members/MembersPage.tsx",
+        "website/src/pages/KiroCrewAgentsPage.tsx",
+        "src/kiro_crew/member_essential_context.py",
+        "src/kiro_crew/members.py"
+      ],
+      "priority": "P1",
+      "merged_from": [
+        "members-private-memory-keeps-thread"
       ],
       "component": "website/src/pages/members/MembersPage.tsx"
     },
