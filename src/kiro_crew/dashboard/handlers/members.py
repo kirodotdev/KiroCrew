@@ -33,8 +33,7 @@ from kiro_crew.dashboard.chat_persistence import (
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
-from kiro_crew.members import MemberSlugError
-from kiro_crew.validation import _AGENT_NAME_RE
+from kiro_crew.members import MemberNameError, MemberSlugError
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +41,14 @@ logger = logging.getLogger(__name__)
 #: scan alike; the log itself rotates at ~256KiB so this is a display cap,
 #: not a durability boundary.
 _ACTIVITY_LIMIT = 50
+
+
+def _valid_member_name(value: object) -> bool:
+    try:
+        members_mod.validate_member_name(value)
+    except MemberNameError:
+        return False
+    return True
 
 
 def _parse_activity_ts(raw: str) -> float:
@@ -102,16 +109,10 @@ async def _deny_app_caller(request: web.Request, operation: str) -> web.Response
 
 
 def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
-    """Crew names whose derived slug equals *slug*, in config order.
-
-    Config order is insertion order, so "first name wins" is deterministic for
-    a colliding slug. Names failing the agent-name grammar are skipped rather
-    than matched: they cannot have been created through the validated CRUD
-    surface, so a hand-edited config row never becomes addressable here.
-    """
+    """Crew names whose derived slug equals *slug*, in config order."""
     out: list[str] = []
     for name in cfg.agents:
-        if not _AGENT_NAME_RE.match(name):
+        if not _valid_member_name(name):
             continue
         try:
             if members_mod.slug_for_name(name) == slug:
@@ -158,7 +159,7 @@ async def api_members(request: web.Request) -> web.Response:
 
     rows: list[dict] = []
     for name, agent_cfg in cfg.agents.items():
-        if not _AGENT_NAME_RE.match(name):
+        if not _valid_member_name(name):
             continue
         try:
             slug = members_mod.slug_for_name(name)
@@ -618,7 +619,7 @@ async def api_member_activity(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     member = request.query.get("member", "")
-    if not member or not _AGENT_NAME_RE.match(member):
+    if not _valid_member_name(member):
         return web.json_response(
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
@@ -711,7 +712,7 @@ async def api_member_rules_get(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     member = request.query.get("member", "")
-    if not member or not _AGENT_NAME_RE.match(member):
+    if not _valid_member_name(member):
         return web.json_response(
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
@@ -805,7 +806,7 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
             {"error": "rules field required", "code": "missing_rules"}, status=400
         )
     rules = body.get("rules", "")
-    if not isinstance(member, str) or not member or not _AGENT_NAME_RE.match(member):
+    if not _valid_member_name(member):
         return web.json_response(
             {"error": "member field required", "code": "missing_member"}, status=400
         )
@@ -842,10 +843,6 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
         )
-    # Same collision scan the roster/thread paths use — the central helper
-    # applies the agent-name grammar filter and tolerates MemberSlugError, so
-    # a hand-edited config key that is not a valid agent name can neither
-    # crash this scan nor manufacture a phantom collision.
     colliding = _member_names_for_slug(cfg, slug)
     if colliding != [member]:
         return web.json_response(

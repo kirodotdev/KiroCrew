@@ -116,6 +116,7 @@ from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.member_memory_auth import require_member_memory_creation
+from kiro_crew.members import MemberNameError, validate_member_name
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     MemberAlreadyExists,
@@ -4475,9 +4476,21 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
         )
-    name = body.get("name", "").strip()
+    raw_name = body.get("name", "")
+    if not isinstance(raw_name, str):
+        return web.json_response(
+            {"error": "Agent name must be text", "code": "invalid_member_name"}, status=400
+        )
+    name = raw_name.strip()
     if not name:
         return web.json_response({"error": "Agent name is required"}, status=400)
+    try:
+        validate_member_name(name)
+    except MemberNameError as exc:
+        return web.json_response(
+            {"error": f"Invalid Crew Member name: {exc}", "code": "invalid_member_name"},
+            status=400,
+        )
     # Refused at the SOURCE, not masked at one read site. Once such a name is
     # stored it reaches logs, error messages, telemetry and every other surface
     # that prints a crew name -- none of which this module controls -- so closing
@@ -4527,7 +4540,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # This is the one shared agent-name grammar every other boundary uses, so a
     # value that cannot name an agent (path separators, traversal, wildcards,
     # over-length) is refused here rather than stored as a dangling pointer.
-    if not _AGENT_NAME_RE.match(kiro_agent):
+    if not _AGENT_NAME_RE.fullmatch(kiro_agent):
         return web.json_response(
             {"error": "invalid kiro_agent name", "code": "invalid_kiro_agent_name"},
             status=400,
@@ -4788,6 +4801,13 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     # by recomputing the redaction of `agent` would have to wait for the config
     # load inside the lock, and would therefore sit after these validations.
     body = {key: val for key, val in body.items() if not _carries_mask(val)}
+    if "kiro_agent" in body and (
+        not isinstance(body["kiro_agent"], str) or not _AGENT_NAME_RE.fullmatch(body["kiro_agent"])
+    ):
+        return web.json_response(
+            {"error": "invalid kiro_agent name", "code": "invalid_kiro_agent_name"},
+            status=400,
+        )
     # Binding-only fast path (the template pane's saved-as-you-go switch). The
     # generic path below writes a full ``cfg.save()`` snapshot, which races
     # every other config writer (CLI, settings PUTs) and silently reverts
@@ -4796,11 +4816,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     # the caller's expected prior binding when it supplies one.
     if "kiro_agent" in body and set(body) <= {"kiro_agent", "expected_kiro_agent"}:
         new_target = body["kiro_agent"]
-        if not isinstance(new_target, str) or not new_target:
-            return web.json_response(
-                {"error": "kiro_agent must be a non-empty string", "code": "invalid_kiro_agent"},
-                status=400,
-            )
         expected_raw = body.get("expected_kiro_agent")
         if expected_raw is not None and not isinstance(expected_raw, str):
             return web.json_response(

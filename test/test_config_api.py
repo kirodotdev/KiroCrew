@@ -491,6 +491,20 @@ class TestAgentCrudEdgeCases:
                 assert "not found" in data["error"]
 
     @pytest.mark.asyncio
+    async def test_update_rejects_free_form_template_identifier(self, tmp_path: Path) -> None:
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
+
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            async with TestClient(TestServer(_make_crud_app())) as client:
+                resp = await client.put(
+                    "/api/agents/default",
+                    json={"kiro_agent": "dr. eggbot"},
+                )
+                assert resp.status == 400
+                assert (await resp.json())["code"] == "invalid_kiro_agent_name"
+
+    @pytest.mark.asyncio
     async def test_delete_default_agent_returns_409(self, tmp_path: Path) -> None:
         """DELETE /api/agents/{name} targeting default_agent returns 409."""
         tmp = tmp_path / "config.json"

@@ -233,13 +233,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     status=400,
                 )
 
-    # model maps to agent name — validate
     agent = model
-    if not _AGENT_NAME_RE.match(agent):
-        return web.json_response(
-            {"error": {"message": "invalid model/agent name", "type": "invalid_request_error"}},
-            status=400,
-        )
 
     prompt = _flatten_messages(messages)
     if not prompt:
@@ -260,9 +254,20 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             {"error": {"message": "id must be a string", "type": "invalid_request_error"}},
             status=400,
         )
-    if slot_id and not _AGENT_NAME_RE.match(slot_id):
+    existing_member_slot = None
+    if slot_id:
+        existing = state._slots.get(_normalize_slot_key(slot_id))
+        if existing and existing.mode == members_mod.DM_SLOT_MODE:
+            existing_member_slot = existing
+    if slot_id and not _AGENT_NAME_RE.fullmatch(slot_id) and existing_member_slot is None:
         return web.json_response(
             {"error": {"message": "invalid id (slot name)", "type": "invalid_request_error"}},
+            status=400,
+        )
+    member_pin_match = bool(existing_member_slot and agent == existing_member_slot.agent)
+    if not _AGENT_NAME_RE.fullmatch(agent) and not member_pin_match:
+        return web.json_response(
+            {"error": {"message": "invalid model/agent name", "type": "invalid_request_error"}},
             status=400,
         )
     completion_id = _make_id()
