@@ -38,6 +38,7 @@ import {
   Pencil,
   Play,
   Cloud,
+  X,
 } from 'lucide-react'
 import {
   api,
@@ -808,7 +809,12 @@ export function RemoteCrewPanel() {
   // row disappears on its own when the teardown finishes.
   const [deletingTags, setDeletingTags] = useState<Set<string>>(new Set())
   const [actionErr, setActionErr] = useState<string | null>(null)
-  const [diagNote, setDiagNote] = useState<string | null>(null)
+  // `kind` decides the surface: only `warn` (a negative ladder verdict, or the
+  // tunnel's own `status.error`) is an error. `ok` / `info` describe a state that
+  // has not gone wrong — healthy, or simply not connected yet — and render as a
+  // status note, never as a red ErrorNotice with an agent hand-off. Mirrors
+  // InstancesPanel's classification.
+  const [diagNote, setDiagNote] = useState<{ kind: 'ok' | 'info' | 'warn'; text: string } | null>(null)
   // The diagnosis note's own report, so the hand-off carries the ladder's verdict
   // code and probe chain rather than the `id: reason` string on screen. Held as an
   // object because message text is not an identity: two crews unreachable the same
@@ -1072,12 +1078,22 @@ export function RemoteCrewPanel() {
     mutationFn: (id: string) => api.instanceStatus(id, true),
     onMutate: () => { setActionErr(null); setDiagNote(null); setDiagReport(null) },
     onSuccess: (st, id) => {
+      const code = st.diagnosis?.code
       const reason = st.diagnosis?.reason || st.error
-      if (reason) setDiagNote(`${id}: ${reason}`)
+      // A healthy verdict is only healthy when the tunnel has no error of its own:
+      // `status.error` is the tunnel's live failure, and the ladder result is the
+      // last RUN, so an `ok` beside a set `error` is stale and must not win.
+      const kind: 'ok' | 'info' | 'warn' =
+        code === 'ok' && !st.error ? 'ok' : code === 'not_connected' && !st.error ? 'info' : 'warn'
+      if (reason) setDiagNote({ kind, text: `${id}: ${reason}` })
       // Journal unconditionally, healthy verdict included: the recorder's
       // no-failure path is what clears its de-dup signature, so skipping the call
       // on a healthy diagnose would leave the signature standing and suppress the
       // next identical failure. It returns null when there is nothing to describe.
+      // The reason is only offered as the fallback message when it describes a
+      // failure — the recorder already refuses an `ok` diagnosis.reason, and
+      // handing it back through `fallbackMessage` would defeat that guard and
+      // journal "All checks passed" as an error (#11110).
       const inst = instances.find(i => i.id === id)
       setDiagReport(reportInstanceFailure({
         id,
@@ -1085,7 +1101,7 @@ export function RemoteCrewPanel() {
         transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
         status: st,
         stage: 'connect',
-        fallbackMessage: reason || '',
+        fallbackMessage: kind === 'warn' ? reason || '' : '',
       }))
     },
     onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.diagnose_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
@@ -1310,19 +1326,44 @@ export function RemoteCrewPanel() {
           message here (a refused connect, a failed diagnose, a rejected launch)
           is a gateway-side failure the agent can look into. */}
       {actionErr && <ErrorNotice message={actionErr} onDismiss={() => setActionErr(null)} className="mb-3" askAgent />}
-      {/* A diagnosis names the broken link (`diagnosis.reason`, or the tunnel's
-          own `status.error`), so it is an error surface, not a status line. The
-          structured `report` is passed when the journal produced one, so the
-          hand-off carries the transport and stage rather than a message match. */}
-      {diagNote && (
+      {/* A `warn` diagnosis names the broken link (`diagnosis.reason`, or the
+          tunnel's own `status.error`), so it is an error surface. The structured
+          `report` is passed when the journal produced one, so the hand-off carries
+          the transport and stage rather than a message match. `ok` / `info`
+          describe a state that has not gone wrong and stay a status note — a
+          healthy "All checks passed" must not paint red or offer an agent hand-off. */}
+      {diagNote?.kind === 'warn' && (
         <ErrorNotice
-          message={diagNote}
+          message={diagNote.text}
           report={diagReport ?? undefined}
           askAgent
           onDismiss={() => { setDiagNote(null); setDiagReport(null) }}
           className="mb-3"
           testId="remote-crew-diagnosis"
         />
+      )}
+      {diagNote && diagNote.kind !== 'warn' && (
+        <div
+          role="status"
+          data-testid="remote-crew-diagnosis-status"
+          className={
+            'mb-3 flex items-start gap-2 px-3 py-2 text-[13px] rounded-md border ' +
+            (diagNote.kind === 'ok'
+              ? 'bg-ok/10 text-ok border-ok/30'
+              : 'bg-accent/10 text-accent border-accent/30')
+          }
+        >
+          <Stethoscope size={14} className="lucide-inline mt-0.5 shrink-0" />
+          <span className="flex-1 break-words">{diagNote.text}</span>
+          <button
+            type="button"
+            aria-label={i18nT('pages.settings.instancesPanel.dismiss_diagnosis')}
+            className="shrink-0 opacity-70 hover:opacity-100"
+            onClick={() => { setDiagNote(null); setDiagReport(null) }}
+          >
+            <X size={12} />
+          </button>
+        </div>
       )}
     </>
   )

@@ -19,6 +19,8 @@ import type {
   LaunchJob,
 } from '../api/client'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
+import { recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
+import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 
 vi.mock('../api/client', () => {
   class ApiError extends Error {
@@ -346,6 +348,64 @@ describe('RemoteCrewPanel — instance actions', () => {
     await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
     await waitFor(() => expect(api.instanceStatus).toHaveBeenCalledWith('m1', true))
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('shows a healthy verdict as a status note, not a red error, and journals nothing (#11110)', async () => {
+    // The gateway's real healthy shape carries a REASON — "All checks passed —
+    // SSH, remote dashboard, and local forward are healthy." — with `ok: true`.
+    // The panel used to feed that reason back to the recorder as its fallback
+    // message, defeating the recorder's own refusal of an `ok` verdict, so the
+    // success sentence painted red with an agent hand-off and landed in the error
+    // journal as a failure.
+    __resetErrorJournalForTests()
+    __resetInstanceFailuresForTests()
+    vi.mocked(api.listInstances).mockResolvedValue(list([MANUAL_INSTANCE]))
+    vi.mocked(api.instanceStatus).mockResolvedValue({
+      instance_id: 'm1',
+      state: 'connected',
+      diagnosis: {
+        code: 'ok',
+        ok: true,
+        reason: 'All checks passed — SSH, remote dashboard, and local forward are healthy.',
+        probes: [{ name: 'ssh', ok: true }, { name: 'remote_dashboard', ok: true }, { name: 'local_forward', ok: true }],
+      },
+    } as never)
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await openRowMenu(u)
+    await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
+    const note = await screen.findByTestId('remote-crew-diagnosis-status', undefined, { timeout: 5_000 })
+    expect(note).toHaveAttribute('role', 'status')
+    expect(note).toHaveTextContent(/m1: All checks passed/)
+    // Not an error surface: no ErrorNotice, no agent hand-off.
+    expect(screen.queryByTestId('remote-crew-diagnosis')).not.toBeInTheDocument()
+    expect(within(note).queryByRole('button', { name: /agent/i })).not.toBeInTheDocument()
+    // And nothing was journaled as a failure.
+    expect(recentErrors()).toHaveLength(0)
+
+    await u.click(within(note).getByRole('button', { name: 'Dismiss diagnosis' }))
+    expect(screen.queryByText(/m1: All checks passed/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a stale healthy verdict from masking a live tunnel error', async () => {
+    // `status.diagnosis` is the last ladder RUN; `status.error` is the tunnel's
+    // live failure. An `ok` verdict next to a set `error` is stale and must still
+    // route through the error surface.
+    vi.mocked(api.listInstances).mockResolvedValue(list([MANUAL_INSTANCE]))
+    vi.mocked(api.instanceStatus).mockResolvedValue({
+      instance_id: 'm1',
+      state: 'error',
+      error: 'tunnel process exited',
+      diagnosis: { code: 'ok', ok: true, reason: 'All checks passed', probes: [] },
+    } as never)
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await openRowMenu(u)
+    await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
+    expect(await screen.findByTestId('remote-crew-diagnosis', undefined, { timeout: 5_000 })).toBeInTheDocument()
+    expect(screen.queryByTestId('remote-crew-diagnosis-status')).not.toBeInTheDocument()
   })
 
   it('surfaces a failed diagnose', async () => {
