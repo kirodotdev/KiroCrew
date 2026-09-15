@@ -1633,6 +1633,7 @@ async def test_stop_clears_recovered_dispatched_claim_and_allows_replacement(tmp
 def test_monitor_wake_is_redacted_capped_and_canonical():
     envelope = format_monitor_wake(
         monitor_id="mon-1",
+        kind="github_pull_request",
         target="https://github.com/acme/widgets/pull/7",
         objective="review_ready",
         fingerprint="fp-1",
@@ -1665,6 +1666,7 @@ def test_monitor_wake_reports_check_counts_without_provider_labels():
 
     envelope = format_monitor_wake(
         monitor_id="mon-1",
+        kind="github_pull_request",
         target="https://github.com/acme/widgets/pull/7",
         objective="review_ready",
         fingerprint="fp-1",
@@ -1677,6 +1679,87 @@ def test_monitor_wake_reports_check_counts_without_provider_labels():
     assert "unknown checks: 1" in envelope
     assert "upload secrets" not in envelope
     assert "provider.example" not in envelope
+
+
+def test_monitor_wake_describes_a_workflow_run_by_its_own_facts():
+    canonical = {
+        "conclusion": "failure",
+        "event": "push",
+        "head_revision": "def456",
+        "kind": "github_workflow_run",
+        "status": "completed",
+        "target": "github.com/acme/widgets/actions/runs/42",
+        "workflow_name": "CI",
+    }
+
+    envelope = format_monitor_wake(
+        monitor_id="mon-1",
+        kind="github_workflow_run",
+        target="https://github.com/acme/widgets/actions/runs/42",
+        objective="run_complete",
+        fingerprint="fp-1",
+        reason_code="run_failed",
+        canonical=canonical,
+    )
+
+    assert "workflow run https://github.com/acme/widgets/actions/runs/42" in envelope
+    assert "pull request" not in envelope
+    assert "status=completed" in envelope
+    assert "conclusion=failure" in envelope
+    assert "workflow_name=CI" in envelope
+    assert "event=push" in envelope
+    # A run carries none of the pull-request canonical, so none of it leaks in.
+    for name in ("blocking_review", "mergeability", "review_decision"):
+        assert name not in envelope
+
+
+def test_monitor_wake_fails_closed_on_an_unregistered_kind():
+    """A kind the registry has no entry for gets a neutral envelope, not a review one."""
+    envelope = format_monitor_wake(
+        monitor_id="mon-1",
+        kind="unregistered_kind",
+        target="opaque-subject",
+        objective="some_objective",
+        fingerprint="fp-1",
+        reason_code="changed",
+        canonical={
+            "blocking_review": "changes_requested",
+            "state": "open",
+        },
+    )
+
+    assert "unregistered_kind subject opaque-subject" in envelope
+    assert "pull request" not in envelope
+    assert "canonical fields undeclared for this kind" in envelope
+    # Even pull-request-shaped canonical keys are NOT rendered under an unknown
+    # kind: an unidentifiable subject renders no field, rather than inheriting a
+    # review shape.
+    assert "blocking_review=changes_requested" not in envelope
+    assert "state=open" not in envelope
+
+
+def test_monitor_wake_names_a_known_kind_even_when_the_observation_is_thin():
+    """A registered kind with an empty canonical still knows its noun and fields.
+
+    A thin ``last_observation`` -- empty, or from an older release -- is not an
+    unidentifiable subject: the kind was armed, so its noun comes from the entry
+    and it simply reports its state changed, distinct from the undeclared-fields
+    envelope an unregistered kind gets.
+    """
+    envelope = format_monitor_wake(
+        monitor_id="mon-1",
+        kind="github_workflow_run",
+        target="https://github.com/acme/widgets/actions/runs/42",
+        objective="run_complete",
+        fingerprint="fp-1",
+        reason_code="actionable",
+        canonical={},
+    )
+
+    assert "workflow run https://github.com/acme/widgets/actions/runs/42" in envelope
+    assert "canonical state changed" in envelope
+    assert "fields undeclared" not in envelope
+    assert "pull request" not in envelope
 
 
 @pytest.mark.asyncio

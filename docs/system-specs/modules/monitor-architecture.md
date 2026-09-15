@@ -53,9 +53,13 @@ evidence no longer requires changing the return type.
 
 The live decision places exactly one `MonitorObservation` in that tuple, reduces
 the subject to one fingerprint, and lets `format_monitor_wake` compose operator
-text from `MonitorState.last_observation` and `wake_instructions`. The
-return-type prerequisite is complete; the engine coalesces successive changes to
-that one subject over time and re-asserts an unresolved change on a re-alert
+text from `MonitorState.last_observation` and `wake_instructions`. That text is
+kind-dispatched: `format_monitor_wake` takes the subject's `kind` from
+`MonitorState.kind` -- the authoritative armed record, not the provider-supplied
+canonical -- reads that kind's registry entry for its subject noun and field
+list, and renders those fields, so a non-pull-request kind reads as what it is.
+The return-type prerequisite is complete; the engine coalesces successive changes
+to that one subject over time and re-asserts an unresolved change on a re-alert
 interval, both through a window on `MonitorState`. Per-condition entries and the
 multi-signal fold across simultaneous conditions remain target work in layers 3
 and 4, since one fingerprint per subject has no second condition to fold.
@@ -77,10 +81,14 @@ make those two drivers consume one extension point.
 ### A kind and objective vocabulary that is not one shared list
 
 **Status: implemented for structured monitors.** `monitoring/registry.py` owns
-one `MonitorKind` data row per kind. Each row declares its own objectives and
-capabilities; `kind_supports_objective` enforces the pairing. The MCP schema,
-validation schema, REST handler, arming path, and shadow path derive their
-answers from that registry instead of maintaining independent allowlists.
+one `MonitorKind` data row per kind. Each row declares its own objectives, its
+capabilities, and how it describes itself when it wakes a session -- a subject
+noun and an ordered `wake_fields` list, held as strings; `kind_supports_objective`
+enforces the objective pairing and delivery reads the entry's noun and fields
+through `monitor_kind`. The MCP schema, validation schema, REST handler, arming
+path, and shadow path derive their answers from that registry instead of
+maintaining independent allowlists, and delivery reads the same table for the
+noun and fields rather than hardcoding one kind's shape.
 
 Four pull-request kinds are publicly armable with `review_ready`. The internal
 `gh-pr` kind and the `github_workflow_run` acceptance kind are registered but

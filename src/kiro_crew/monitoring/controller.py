@@ -30,6 +30,7 @@ from kiro_crew.monitoring.models import (
     transient_probe_failure,
 )
 from kiro_crew.monitoring.pull_request import provider_error_result
+from kiro_crew.monitoring.registry import monitor_kind
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 MONITOR_WAKE_MAX_CHARS = 4096
@@ -268,6 +269,7 @@ class MonitorController:
         """
         envelope = format_monitor_wake(
             monitor_id=loop.id,
+            kind=state.kind,
             target=state.target,
             objective=state.objective,
             fingerprint=state.last_wake_fingerprint,
@@ -319,6 +321,7 @@ class MonitorController:
 def format_monitor_wake(
     *,
     monitor_id: str,
+    kind: str,
     target: str,
     objective: str,
     fingerprint: str,
@@ -326,26 +329,51 @@ def format_monitor_wake(
     canonical: Mapping[str, object],
     wake_instructions: str = "",
 ) -> str:
-    """Render only allowlisted canonical facts, redacted before the hard cap."""
-    checks = canonical.get("checks")
+    """Render only allowlisted canonical facts, redacted before the hard cap.
+
+    The subject noun and the fields to render come from the registry entry for
+    *kind*, so each subject describes itself to the agent it wakes. *kind* is the
+    monitor's armed kind (``MonitorState.kind``), the authoritative record of what
+    is being watched -- not a value read out of the provider-supplied canonical,
+    which is versioned and may be thin.
+
+    Two absences read differently. A kind the registry has no entry for is an
+    unidentifiable subject: it yields a neutral envelope that names the kind and
+    says its fields are undeclared, never one subject's shape stamped over
+    another's facts. A registered kind whose canonical is thin -- an empty or older
+    ``last_observation`` -- still knows its noun and field list from the entry, and
+    simply reports its state changed. Everything rendered here passes through the
+    redaction and the hard cap below, so a canonical field a provider fills reaches
+    the woken agent scrubbed, not raw.
+    """
+    entry = monitor_kind(kind)
     changed: list[str] = []
-    if isinstance(checks, Mapping):
-        for state in ("failed", "pending", "unknown"):
-            values = checks.get(state)
-            if isinstance(values, list) and values:
-                changed.append(f"{state} checks: {len(values)}")
-    for name in ("blocking_review", "mergeability", "review_decision", "state"):
-        value = canonical.get(name)
-        if isinstance(value, (str, int, bool)):
-            changed.append(f"{name}={value}")
+    if entry is None:
+        subject_noun = f"{kind} subject" if kind else "monitored subject"
+        changed_line = "canonical fields undeclared for this kind"
+    else:
+        subject_noun = entry.subject_noun
+        for name in entry.wake_fields:
+            if name == "checks":
+                checks = canonical.get("checks")
+                if isinstance(checks, Mapping):
+                    for check_state in ("failed", "pending", "unknown"):
+                        values = checks.get(check_state)
+                        if isinstance(values, list) and values:
+                            changed.append(f"{check_state} checks: {len(values)}")
+                continue
+            value = canonical.get(name)
+            if isinstance(value, (str, int, bool)):
+                changed.append(f"{name}={value}")
+        changed_line = "; ".join(changed) or "canonical state changed"
     head = canonical.get("head_revision")
     action = wake_instructions.strip() or "Inspect the changed facts and take the next safe action."
     envelope = (
         f"{MONITOR_WAKE_PREFIX}\n"
-        f"Monitor {monitor_id}: pull request {target}; objective: {objective}.\n"
+        f"Monitor {monitor_id}: {subject_noun} {target}; objective: {objective}.\n"
         f"Fingerprint: {fingerprint}. Classification: {reason_code or 'actionable'}.\n"
         f"Head: {head if isinstance(head, str) else 'unknown'}. "
-        f"Changed: {'; '.join(changed) or 'canonical state changed'}.\n"
+        f"Changed: {changed_line}.\n"
         f"Next action: {action}"
     )
     envelope, _ = redact_exfiltration_urls(envelope)

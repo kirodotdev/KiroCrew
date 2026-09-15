@@ -55,6 +55,8 @@ class TestAKindDeclaresItsOwnObjectives:
             objectives=frozenset({"free_slot"}),
             publicly_armable=True,
             supports_shadow=False,
+            subject_noun="calendar slot",
+            wake_fields=("start", "end"),
         )
 
         assert newcomer.objectives == frozenset({"free_slot"})
@@ -102,6 +104,8 @@ class TestShadowSupportIsADeclaredCapability:
             objectives=frozenset({"triaged"}),
             publicly_armable=False,
             supports_shadow=True,
+            subject_noun="ticket",
+            wake_fields=("priority",),
         )
 
         assert not entry.publicly_armable
@@ -150,6 +154,89 @@ class TestEveryRegisteredEntryIsWellFormed:
     def test_no_declared_objective_is_empty(self) -> None:
         for entry in registry._KINDS.values():
             assert all(entry.objectives), entry.name
+
+    def test_each_entry_declares_a_non_empty_subject_noun(self) -> None:
+        """A kind with no noun would wake an agent with no word for what it sees."""
+        for entry in registry._KINDS.values():
+            assert entry.subject_noun, entry.name
+
+    def test_each_entry_declares_a_non_empty_wake_field(self) -> None:
+        """A kind rendering nothing would wake an agent with a factless envelope."""
+        for entry in registry._KINDS.values():
+            assert entry.wake_fields, entry.name
+            assert all(entry.wake_fields), entry.name
+
+
+class TestTheWakeDescriptorMatchesWhatTheProviderEmits:
+    """``wake_fields`` is a CLAIM about a provider's canonical dict, so pin it.
+
+    An allowlist that silently skips a renamed field would make a wake quieter with
+    no error and no failing test. These tests read the keys each provider actually
+    produces and assert every one is either rendered by the descriptor or named in
+    that kind's deliberately-omitted set, so a rename lands in neither and fails
+    here rather than going unnoticed at delivery.
+    """
+
+    #: Canonical keys the envelope carries in its own lines (the subject noun's
+    #: target, the head) or that a kind keeps for the decision engine but does not
+    #: surface to a woken agent. A key here is a deliberate omission; a key in
+    #: neither this set nor ``wake_fields`` is a drift.
+    _PULL_REQUEST_OMITTED = frozenset(
+        {
+            "kind",
+            "target",
+            "head_revision",
+            "draft",
+            "checks_complete",
+            "review_threads_complete",
+            "unresolved_review_threads",
+        }
+    )
+    _WORKFLOW_RUN_OMITTED = frozenset({"kind", "target", "head_revision"})
+
+    def _assert_covers(self, kind: str, emitted: frozenset[str], omitted: frozenset[str]) -> None:
+        entry = registry.monitor_kind(kind)
+        assert entry is not None, kind
+        rendered = frozenset(entry.wake_fields)
+        # Every rendered field is really something the provider emits (except the
+        # synthetic ``checks`` name, which stands for the check buckets).
+        assert (
+            rendered - {"checks"}
+        ) <= emitted, (
+            f"{kind} renders {sorted(rendered - {'checks'} - emitted)} the provider does not emit"
+        )
+        accounted = rendered | omitted | {"checks"}
+        drifted = emitted - accounted
+        assert not drifted, (
+            f"{kind} emits {sorted(drifted)} that is neither rendered nor deliberately omitted -- "
+            "a field was renamed or added without updating the wake descriptor"
+        )
+
+    def test_pull_request_kinds_render_every_emitted_field_or_omit_it_on_purpose(self) -> None:
+        from kiro_crew.monitoring.models import PULL_REQUEST_OBSERVATION_FIELDS
+
+        emitted = frozenset(PULL_REQUEST_OBSERVATION_FIELDS)
+        for kind in PULL_REQUEST_MONITOR_KINDS | {GH_PR}:
+            self._assert_covers(kind, emitted, self._PULL_REQUEST_OMITTED)
+
+    def test_the_workflow_run_kind_renders_every_emitted_field_or_omits_it_on_purpose(self) -> None:
+        from kiro_crew.monitoring.github_workflow_run import (
+            GitHubWorkflowRunResponse,
+            GitHubWorkflowRunTarget,
+            _canonical_response,
+        )
+        from kiro_crew.monitoring.registry import GITHUB_WORKFLOW_RUN
+
+        response = GitHubWorkflowRunResponse(
+            target=GitHubWorkflowRunTarget("github.com", "owner", "repo", 42),
+            status="completed",
+            conclusion="success",
+            head_revision="a" * 40,
+            workflow_name="CI",
+            event="push",
+        )
+        emitted = frozenset(_canonical_response(response))
+        self._assert_covers(GITHUB_WORKFLOW_RUN, emitted, self._WORKFLOW_RUN_OMITTED)
 
 
 class TestTheTwoKindVocabulariesAgree:

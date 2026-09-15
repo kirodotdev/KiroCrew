@@ -3,13 +3,15 @@
 The four boundaries that gate a kind read this table instead of naming a kind
 themselves: an enum in the tool schema, a frozenset in the validator, an ``if`` in
 the HTTP handler, and the ``if`` on the persistence-only path. Without it, adding a
-kind means finding all four, every one of them a place to forget.
+kind means finding all four, every one of them a place to forget. Delivery reads it
+too, for a different reason -- see the describer property below -- so the table has
+five readers, four that gate and one that renders.
 
-The claim is scoped to those four deliberately. Other spellings of a kind or an
-objective survive elsewhere -- a reason code in the GitHub observation, the irq
+The gating claim is scoped to those four deliberately. Other spellings of a kind or
+an objective survive elsewhere -- a reason code in the GitHub observation, the irq
 subsystem's own dispatch -- and this module does not reach them.
 
-This module holds one entry per kind and the boundaries ask it. Two properties are
+This module holds one entry per kind and the boundaries ask it. Three properties are
 worth separating carefully, because collapsing them is how a new kind acquires a
 claim nobody checked:
 
@@ -24,6 +26,14 @@ dispatch branch, moved to a different file.
 is a statement about what code exists, not about what a caller may ask for, so it
 belongs to the kind. Modelled as an allowlist instead, a kind added later would
 silently inherit a claim about a path it has never run.
+
+**A kind describes ITSELF when it wakes someone.** ``subject_noun`` and
+``wake_fields`` are the noun and the ordered canonical fields the wake envelope
+renders for this kind, held as strings so delivery reads them without the registry
+importing a provider. Both are required, so every registered kind carries them; an
+unregistered kind has no entry to read and delivery falls closed to a neutral
+envelope rather than borrowing another kind's shape, the same posture as
+``supports_shadow``.
 
 Deliberately DATA only: no probe factories and no imports of any kind's
 implementation. ``kiro_crew.validation`` imports this module, and it is imported by
@@ -90,6 +100,18 @@ class MonitorKind:
     publicly_armable: bool
     #: Whether the persistence-only probe path is implemented for this kind.
     supports_shadow: bool
+    #: The common noun the wake envelope uses for this subject -- "pull request"
+    #: for a review kind, "workflow run" for a run kind. Held here so a woken
+    #: agent is told what it is looking at by the kind, not by a word the delivery
+    #: code hardcodes for one subject and misapplies to every other.
+    subject_noun: str
+    #: The canonical field names the wake envelope renders as ``name=value``, in
+    #: order. A CLAIM about the dict this kind's probe emits: a name absent from
+    #: the probe's canonical is silently skipped, so a test pins each kind's list
+    #: against the keys its provider actually produces. The special name
+    #: ``checks`` renders the failed/pending/unknown bucket counts a review
+    #: subject carries, so a run kind that has no such buckets simply omits it.
+    wake_fields: tuple[str, ...]
 
 
 _KINDS: dict[str, MonitorKind] = {
@@ -98,36 +120,48 @@ _KINDS: dict[str, MonitorKind] = {
         objectives=frozenset({REVIEW_READY}),
         publicly_armable=True,
         supports_shadow=True,
+        subject_noun="pull request",
+        wake_fields=("checks", "blocking_review", "mergeability", "review_decision", "state"),
     ),
     GITLAB_MERGE_REQUEST: MonitorKind(
         name=GITLAB_MERGE_REQUEST,
         objectives=frozenset({REVIEW_READY}),
         publicly_armable=True,
         supports_shadow=True,
+        subject_noun="merge request",
+        wake_fields=("checks", "blocking_review", "mergeability", "review_decision", "state"),
     ),
     AZURE_DEVOPS_PULL_REQUEST: MonitorKind(
         name=AZURE_DEVOPS_PULL_REQUEST,
         objectives=frozenset({REVIEW_READY}),
         publicly_armable=True,
         supports_shadow=True,
+        subject_noun="pull request",
+        wake_fields=("checks", "blocking_review", "mergeability", "review_decision", "state"),
     ),
     BITBUCKET_PULL_REQUEST: MonitorKind(
         name=BITBUCKET_PULL_REQUEST,
         objectives=frozenset({REVIEW_READY}),
         publicly_armable=True,
         supports_shadow=True,
+        subject_noun="pull request",
+        wake_fields=("checks", "blocking_review", "mergeability", "review_decision", "state"),
     ),
     GH_PR: MonitorKind(
         name=GH_PR,
         objectives=frozenset({REVIEW_READY}),
         publicly_armable=False,
         supports_shadow=False,
+        subject_noun="pull request",
+        wake_fields=("checks", "blocking_review", "mergeability", "review_decision", "state"),
     ),
     GITHUB_WORKFLOW_RUN: MonitorKind(
         name=GITHUB_WORKFLOW_RUN,
         objectives=frozenset({RUN_COMPLETE}),
         publicly_armable=False,
         supports_shadow=True,
+        subject_noun="workflow run",
+        wake_fields=("status", "conclusion", "workflow_name", "event"),
     ),
 }
 
