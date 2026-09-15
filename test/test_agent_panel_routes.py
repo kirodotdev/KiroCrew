@@ -873,54 +873,59 @@ async def test_a_degraded_roster_refuses_takeover_rather_than_granting_it(vetted
     assert kept["data"] == {"cycle": 47}
 
 
-async def test_a_name_the_grammar_rejects_still_holds_its_panel(vetted, monkeypatch):
-    """Existing is not the same question as addressable.
+async def test_a_free_form_name_can_read_its_panel(vetted):
+    name = "dr. eggbot"
+    slug = members_mod.slug_for_name(name)
+    async with _client(name) as owner:
+        response = await owner.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 47}},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert response.status == 200, await response.text()
+        read_response = await owner.get(f"/api/members/{slug}/panel", params={"member": name})
+        assert read_response.status == 200
+        assert (await read_response.json())["panel"]["crew"] == name
 
-    The create route validates a crew name only against the credential-shape
-    check, so ``"On call"`` -- a space, which the agent-name grammar rejects -- is
-    a real crew that derives the slug ``on-call``. The liveness check asks whether
-    the recorded owner is still there, and enumerating only the ADDRESSABLE names
-    drops that crew, reports its owner as gone, and hands the colliding publisher
-    its record.
-    """
-    spaced = "On call"
-    spaced_slug = members_mod.slug_for_name(spaced)
-    async with _client(spaced) as owner:
-        assert (
-            await owner.post(
-                "/api/agent-panel/publish",
-                json={"data": {"cycle": 47}},
-                headers={"X-Session-Key": "dashboard:chat-1"},
-            )
-        ).status == 200, "the space-named crew could not publish at all"
-    kept = agent_panel.read(spaced_slug)
-    assert kept is not None and kept["crew"] == spaced
 
-    # The roster holds the space-named crew and nothing else, so the ONLY reason
-    # the enumeration could miss it is the grammar filter.
+async def test_an_invalid_legacy_name_still_holds_its_panel(vetted, monkeypatch):
+    legacy_name = "Cafe\u0301"
+    legacy_slug = members_mod.slug_for_name(legacy_name)
+    async with _client(legacy_name) as owner:
+        response = await owner.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 47}},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert response.status == 200, await response.text()
+    kept = agent_panel.read(legacy_slug)
+    assert kept is not None
+    assert kept["crew_key"] == agent_panel.crew_key(legacy_name)
+    assert kept["data"] == {"cycle": 47}
+
     real_load = routes.KiroCrewConfig.load
 
-    def _roster_with_the_spaced_crew(*a, **kw):
+    def _roster_with_the_legacy_crew(*a, **kw):
         cfg = real_load(*a, **kw)
         cfg.agents.clear()
-        cfg.agents[spaced] = SimpleNamespace(name=spaced)
+        cfg.agents[legacy_name] = SimpleNamespace(name=legacy_name)
         return cfg
 
-    monkeypatch.setattr(routes.KiroCrewConfig, "load", staticmethod(_roster_with_the_spaced_crew))
+    monkeypatch.setattr(routes.KiroCrewConfig, "load", staticmethod(_roster_with_the_legacy_crew))
 
-    colliding = "on-call"
-    assert members_mod.slug_for_name(colliding) == spaced_slug, "fixture no longer collides"
+    colliding = "cafe"
+    assert members_mod.slug_for_name(colliding) == legacy_slug, "fixture no longer collides"
     async with _client(colliding) as impostor:
-        resp = await impostor.post(
+        response = await impostor.post(
             "/api/agent-panel/publish",
             json={"data": {"cycle": 999}},
             headers={"X-Session-Key": "dashboard:chat-2"},
         )
-        assert resp.status == 400, await resp.text()
+        assert response.status == 400, await response.text()
 
-    after = agent_panel.read(spaced_slug)
+    after = agent_panel.read(legacy_slug)
     assert after is not None
-    assert after["crew"] == spaced
+    assert after["crew_key"] == agent_panel.crew_key(legacy_name)
     assert after["data"] == {"cycle": 47}
 
 
@@ -1118,48 +1123,41 @@ async def test_the_read_requires_the_exact_crew_name(vetted):
 async def test_a_hostile_member_name_is_refused_on_the_read(vetted):
     """The name is validated, not just compared."""
     async with _client() as c:
-        for hostile in ("../../etc/passwd", "a\nb", "x" * 300, "a;b"):
+        for hostile in (
+            "a\nb",
+            " leading",
+            "hidden\u200bname",
+            "x" * (members_mod.MEMBER_NAME_MAX_CHARS + 1),
+        ):
             resp = await c.get(
                 f"/api/members/{SLUG}/panel?member={quote(hostile, safe='')}",
             )
             assert resp.status == 400, f"{hostile!r} was accepted"
 
 
-async def test_a_credential_shaped_crew_name_can_still_read_its_own_panel(vetted):
-    """Two of our own guards collided, and only this shape shows it.
-
-    Redaction scrubs the stored ``crew`` because a crew name is untrusted text
-    rendered to the operator. The read check compares the EXACT name because
-    slugification is lossy. Together they locked out any crew whose name happens to
-    look credential-shaped: the stored owner became ``[REDACTED: credential]``,
-    which equals no exact name, so that crew could never read its own panel.
-
-    Ownership is decided on a digest of the exact name; the display text stays
-    redacted. Nobody would think to try this name, which is exactly why it is
-    pinned.
-    """
-    # An AKIA-prefixed 20-character name is enough to trip the credential detector.
-    # Assembled rather than written literally; see test_mcp_panel_runtime.py.
+async def test_a_credential_shaped_legacy_crew_can_read_its_redacted_panel(vetted):
     shaped = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
     assert agent_panel._scrub(shaped) != shaped, "fixture is no longer redacted"
 
     slug = members_mod.slug_for_name(shaped)
-    async with _client(agent=shaped) as c:
-        pub = await c.post(
+    async with _client(agent=shaped) as client:
+        publish_response = await client.post(
             "/api/agent-panel/publish",
             json={"data": {"cycle": 47}},
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
-        assert pub.status == 200, await pub.text()
+        assert publish_response.status == 200, await publish_response.text()
 
-        body = await (await c.get(f"/api/members/{slug}/panel?member={shaped}")).json()
-        assert body["panel"] is not None, "the crew was locked out of its own panel"
-        assert body["html"], "no document returned to the owning crew"
+        read_response = await client.get(f"/api/members/{slug}/panel", params={"member": shaped})
+        assert read_response.status == 200
+        body = await read_response.json()
         assert body["panel"]["data"] == {"cycle": 47}
-        # The DISPLAY text is still redacted -- the fix must not have simply stopped
-        # scrubbing the name to make the comparison work.
-        assert shaped not in json.dumps(body), "an unredacted credential-shaped name was served"
+        assert shaped not in json.dumps(body)
         assert "REDACTED" in body["panel"]["crew"]
+
+    stored = agent_panel.read(slug)
+    assert stored is not None
+    assert stored["crew_key"] == agent_panel.crew_key(shaped)
 
 
 async def test_a_linked_record_is_a_coded_refusal_not_a_500(vetted):

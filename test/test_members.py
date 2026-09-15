@@ -15,14 +15,20 @@ from kiro_crew.crew_log.schema import KIND_MEMBER
 from kiro_crew.crew_log.store import crew_log_path
 from kiro_crew.members import (
     ACTIVITY_FILE_NAME,
+    DM_SLOT_MODE,
+    MEMBER_NAME_MAX_CHARS,
+    MemberNameError,
     MemberSlugError,
     member_dir,
+    member_pin_matches,
     members_root,
     read_activity,
     record_activity,
     slug_for_name,
+    validate_member_name,
     validate_slug,
 )
+from kiro_crew.validation import _AGENT_NAME_RE, TEMPLATE_NAME_RE, WORKSPACE_NAME_RE
 
 
 def _log_path(slug: str):
@@ -56,6 +62,11 @@ class TestSlugForName:
         # addressable.
         assert slug_for_name("\u4f1a\u8bae\u7eaa\u8981") == "member"
 
+    def test_traversal_shaped_display_name_is_derived_not_interpreted(self):
+        slug = slug_for_name("../../etc/passwd")
+        assert slug == "etc-passwd"
+        assert member_dir(slug).parent == members_root().resolve()
+
     def test_result_always_satisfies_the_slug_pattern(self):
         for name in ("Code Review", "Café Crew", "!!!", "a" * 200, "-leading", "trailing-"):
             validate_slug(slug_for_name(name))
@@ -64,6 +75,69 @@ class TestSlugForName:
         slug = slug_for_name("x" * 100)
         assert len(slug) <= 80
         assert not slug.endswith("-")
+
+
+class TestMemberName:
+    @pytest.mark.parametrize(
+        "name",
+        ["dr. eggbot", "Review & QA", "アシスタント", "family 👨\u200d👩\u200d👧"],
+    )
+    def test_accepts_bounded_display_text(self, name):
+        assert validate_member_name(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            " leading",
+            "trailing ",
+            "line\nbreak",
+            "tab\tname",
+            "nul\x00name",
+            "hidden\u200bname",
+            "bidi\u202ename",
+            "line\u2028separator",
+            "bad\ud800text",
+            "x" * (MEMBER_NAME_MAX_CHARS + 1),
+            # URL path segments a browser normalizes away: unaddressable once created.
+            ".",
+            "..",
+            "...",
+        ],
+    )
+    def test_rejects_unsafe_or_unbounded_text(self, name):
+        with pytest.raises(MemberNameError):
+            validate_member_name(name)
+
+
+class TestMemberPinMatches:
+    @pytest.mark.parametrize(
+        ("mode", "current", "requested", "expected"),
+        [
+            (DM_SLOT_MODE, "dr. eggbot", "dr. eggbot", True),
+            (DM_SLOT_MODE, "AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE", False),
+            (DM_SLOT_MODE, "crew password=shortvalue", "crew password=shortvalue", False),
+            (DM_SLOT_MODE, "dr. eggbot", "other", False),
+            ("", "dr. eggbot", "dr. eggbot", False),
+            (DM_SLOT_MODE, None, "dr. eggbot", False),
+            (DM_SLOT_MODE, "dr. eggbot", None, False),
+        ],
+    )
+    def test_accepts_only_the_exact_existing_member_pin(self, mode, current, requested, expected):
+        assert member_pin_matches(mode, current, requested) is expected
+
+
+class TestStrictIdentifierPatterns:
+    def test_workspace_names_share_the_agent_name_grammar(self):
+        assert WORKSPACE_NAME_RE is _AGENT_NAME_RE
+
+    def test_rejects_a_trailing_newline(self):
+        assert _AGENT_NAME_RE.match("valid-name") is not None
+        assert _AGENT_NAME_RE.match("valid-name\n") is None
+
+    def test_template_names_allow_dots_but_not_display_name_spaces(self):
+        assert TEMPLATE_NAME_RE.fullmatch("reviewer.v2") is not None
+        assert TEMPLATE_NAME_RE.fullmatch("dr. eggbot") is None
 
 
 class TestValidateSlug:

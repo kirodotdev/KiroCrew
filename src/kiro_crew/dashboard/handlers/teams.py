@@ -32,8 +32,7 @@ from aiohttp import web
 from kiro_crew import crew_teams as teams_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.members import _deny_app_caller
-from kiro_crew.validation import _AGENT_NAME_RE
+from kiro_crew.dashboard.handlers.members import _deny_app_caller, _member_name_is_addressable
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +101,12 @@ def _config_lock():
 
 
 def _known_crews(cfg: KiroCrewConfig) -> set[str]:
-    # The same grammar filter the roster applies: a hand-edited config key that
-    # is not a valid agent name has no roster row and cannot be on a team.
-    # ``fullmatch``: ``$`` alone still admits a trailing newline, which would
-    # make a 65-character key "known".
-    return {name for name in cfg.agents if _AGENT_NAME_RE.fullmatch(name)}
+    # The same filter the roster applies (``GET /api/members``): a config key
+    # that is not a dispatchable Crew Member display name has no roster row and
+    # cannot be on a team. Crew names are display text (``dr. eggbot`` is a
+    # crew), so the identifier grammar is not the test; the store's own
+    # ``MEMBER_NAME_MAX_CHARS`` -- the same display-name cap -- bounds the write.
+    return {name for name in cfg.agents if _member_name_is_addressable(name)}
 
 
 def _registered_crews() -> set[str]:

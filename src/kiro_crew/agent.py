@@ -142,7 +142,7 @@ from kiro_crew.sel import (  # circular import: sel imports config which imports
     SecurityEvent,
     sel,
 )
-from kiro_crew.validation import _AGENT_NAME_RE
+from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
 
@@ -4427,14 +4427,9 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     resolution, and every writer that receives one refuses rather than
     serializing JSON over a markdown file.
 
-    *name* is validated against the shared agent-name grammar BEFORE it reaches
-    the path join, so a caller passing a traversal (``../../something``) gets
-    ``None`` rather than a path outside the agents directory. The check lives
-    here, at the resolver, so every caller inherits it instead of each one
-    remembering: this function returns a path that :func:`reset_agent_model`
-    then WRITES, and the CLI takes the name from a user-supplied ``--agent``.
-    A symlinked or otherwise unsafe candidate is refused for the same reason --
-    see :func:`_spec_path_is_safe`.
+    A malformed or path-shaped *name* returns ``None``, so a traversal such as
+    ``../../something`` cannot escape the agents directory. Symlinked and other
+    unsafe candidates are also refused; see :func:`_spec_path_is_safe`.
 
     A DECLARED ``name`` wins over a matching filename, which is the order the
     other two resolvers already use (``_resolve_named_agent_model`` and the
@@ -4449,7 +4444,7 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     iterates the directory unordered, so which of them is live is undefined, and
     a writer cannot pick without risking clearing the pin nothing is reading.
     """
-    if not _AGENT_NAME_RE.match(name or ""):
+    if not is_registered_agent_name(name):
         return None
     agents_dir = agents_dir if agents_dir is not None else kiro_agents_dir_path()
     if not agents_dir.is_dir():

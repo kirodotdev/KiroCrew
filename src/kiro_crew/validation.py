@@ -172,8 +172,17 @@ ALLOWED_HOOK_EVENTS = frozenset(
     {"AgentSpawn", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
 )
 
-# Valid agent name pattern (alphanumeric, hyphens, underscores)
-_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$")
+_AGENT_NAME_RE = re.compile(r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]|[a-zA-Z0-9])\Z")
+
+TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])\Z")
+
+
+def is_registered_agent_name(value: object) -> bool:
+    """Return whether *value* can name a registered agent spec."""
+    return isinstance(value, str) and bool(
+        _AGENT_NAME_RE.fullmatch(value) or TEMPLATE_NAME_RE.fullmatch(value)
+    )
+
 
 # Artifact slug grammar — mirrors kiro_crew.artifacts._SLUG_RE (kept here so
 # consumers outside the store module share one public definition). Used to

@@ -17,7 +17,6 @@ import re
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.handlers.mcp import (
     _find_server_spec_anywhere,
     _get_mcp_lock,
@@ -25,6 +24,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _offload_config_write,
     _set_kirocrew_entry,
 )
+from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.mcp_providers.base import ProviderRegistry, ProviderUnavailableError
 from kiro_crew.mcp_providers.capability import CapabilityProvider
 from kiro_crew.mcp_providers.official import OfficialRegistryProvider

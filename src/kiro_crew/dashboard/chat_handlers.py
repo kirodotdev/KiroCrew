@@ -201,10 +201,10 @@ from kiro_crew.trust_patterns import (
     exact_trust_pattern,
 )
 from kiro_crew.validation import (
-    _AGENT_NAME_RE,
     ARTIFACT_SLUG_RE,
     SUGGEST_FOLLOWUP_SCHEMA,
     ValidationError,
+    is_registered_agent_name,
     normalize_theme_consent_sha,
     validate_tool_args,
 )
@@ -434,11 +434,56 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         color_theme == "" or color_theme.startswith("custom-")
     ):
         color_theme = ""
-    if not isinstance(agent, str) or not (agent == "" or _AGENT_NAME_RE.match(agent)):
-        _emit_agent_assignment(str(slot_name or ""), str(agent), outcome="denied_invalid")
-        return web.json_response({"error": "invalid agent name"}, status=400)
     if not isinstance(slot_name, str) and slot_name is not None:
         slot_name = None  # coerce non-string slot to auto-generate
+    _requested_key = _normalize_slot_key(slot_name) if slot_name else ""
+    if request.get("app", "") and _requested_key.casefold().startswith(
+        members_mod.DM_SLOT_KEY_PREFIX
+    ):
+        sel().log_api_access(
+            caller=request.get("app", ""),
+            operation="chat_send",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={_requested_key}",
+            error="app cannot access member slots",
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    existing = state._slots.get(_requested_key) if _requested_key else None
+    if (
+        existing is not None
+        and existing.mode == members_mod.DM_SLOT_MODE
+        and not members_mod.is_dispatchable_member_name(existing.agent)
+    ):
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="chat_send",
+            outcome="denied",
+            source="member_pin",
+            resources=f"slot={existing.key}",
+            error="stored member pin is not dispatchable",
+        )
+        return web.json_response(
+            {
+                "error": "this thread's crew name cannot be dispatched",
+                "code": "member_pin_mismatch",
+            },
+            status=409,
+        )
+    member_pin_match = members_mod.member_pin_matches(
+        getattr(existing, "mode", None), getattr(existing, "agent", None), agent
+    )
+    if not isinstance(agent, str) or not (
+        agent == ""
+        or is_registered_agent_name(agent)
+        or member_pin_match
+        # A free-form display name is admitted only as the configured member it
+        # names (config read off-loop, on this miss path alone); a non-member
+        # string that fails the grammar is not a template and stays refused.
+        or await asyncio.to_thread(members_mod.is_configured_dispatchable_member, agent)
+    ):
+        _emit_agent_assignment(str(slot_name or ""), str(agent), outcome="denied_invalid")
+        return web.json_response({"error": "invalid agent name"}, status=400)
 
     # Honor memory_mode from the body when auto-creating a slot (e.g. AgentRock
     # skill dispatch defaults to "temporary"). Only validated values are passed
@@ -468,27 +513,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # member key — every pin guard is conditioned on mode=="member", so the
     # squatter bypasses all of them AND 409s the real thread opener forever.
     # Refused, not dropped: the caller must re-open through the member route.
-    if slot_name:
-        _requested_key = _normalize_slot_key(slot_name)
+    if _requested_key:
         if _requested_key.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX):
-            # App tokens get ONE uniform answer for the whole member-* space,
-            # BEFORE any existence check: an app can never own a member slot
-            # (they are born only through the member-thread endpoint), so a
-            # member-specific 409 here for a missing key next to the
-            # ownership 404 for an existing one would let an unauthorized
-            # caller enumerate which member threads exist.
-            if request.get("app", ""):
-                sel().log_api_access(
-                    caller=request.get("app", ""),
-                    operation="chat_send",
-                    outcome="denied",
-                    source="app_isolation",
-                    resources=f"slot={_requested_key}",
-                    error="app cannot access member slots",
-                )
-                return web.json_response(
-                    {"error": "not found", "code": "slot_not_found"}, status=404
-                )
             if _requested_key not in state._slots:
                 return web.json_response(
                     {
@@ -587,12 +613,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             status=409,
         )
     if slot.mode == "member":
-        # The pin also fails closed against REGISTRY drift, not just against
-        # the request: an agentless send on a thread whose crew was deleted
-        # would otherwise dispatch with a name the resolver no longer knows,
-        # and the fallback agent's reply would land under the deleted
-        # member's identity. Config load is file IO, so it rides a thread
-        # and only on member slots (rare sends), never the ordinary path.
         _member_cfg = await asyncio.to_thread(KiroCrewConfig.load)
         if slot.agent not in _member_cfg.agents:
             sel().log_api_access(
@@ -610,13 +630,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
-        # And against BINDING drift: a live slot outlives its on-disk binding
-        # (deleted or corrupted while the tab stayed open). Accepting the send
-        # would persist history that restore and thread-open both refuse —
-        # a transcript stranded the moment the slot dies. Refuse the write
-        # while the read surfaces still work, so the user learns NOW rather
-        # than after the message is composed into an unreachable thread.
-        # Same rare-send IO budget as the registry check above.
         if slot.key.startswith(members_mod.DM_SLOT_KEY_PREFIX):
             _send_binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, slot.key)
             if _send_binding is None or _send_binding.get("member", "") != slot.agent:
@@ -7268,8 +7281,35 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    if slot.mode == members_mod.DM_SLOT_MODE and not members_mod.is_dispatchable_member_name(
+        slot.agent
+    ):
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="chat.slot_agent",
+            outcome="denied",
+            source="member_pin",
+            resources=f"slot={slot.key}",
+            error="stored member pin is not dispatchable",
+        )
+        return web.json_response(
+            {
+                "error": "this thread's crew name cannot be dispatched",
+                "code": "member_pin_mismatch",
+            },
+            status=409,
+        )
     agent_name = body.get("agent", "")
-    if agent_name and not _AGENT_NAME_RE.match(agent_name):
+    member_pin_match = members_mod.member_pin_matches(slot.mode, slot.agent, agent_name)
+    if not isinstance(agent_name, str) or (
+        agent_name
+        and not is_registered_agent_name(agent_name)
+        and not member_pin_match
+        # Same widening as the send guard: a configured free-form member (the
+        # catalog lists it, the agent cycle sends its bare name) is admissible on
+        # an ordinary slot; anything else off-grammar is refused.
+        and not await asyncio.to_thread(members_mod.is_configured_dispatchable_member, agent_name)
+    ):
         return web.json_response({"error": "invalid agent name"}, status=400)
     # Same contract as the create route: an optional namespace for the name.
     agent_kind = body.get("agent_kind", "")
@@ -10745,6 +10785,25 @@ async def _live_slot_resume_response(
                     error="app does not own this slot",
                 )
                 return web.json_response({"error": "not found"}, status=404)
+        if (
+            existing.mode == members_mod.DM_SLOT_MODE
+            and not members_mod.is_dispatchable_member_name(existing.agent)
+        ):
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="chat_resume",
+                outcome="denied",
+                source="member_pin",
+                resources=f"slot={existing.key}",
+                error="stored member pin is not dispatchable",
+            )
+            return web.json_response(
+                {
+                    "error": "this thread's crew name cannot be dispatched",
+                    "code": "member_pin_mismatch",
+                },
+                status=409,
+            )
         # Reconcile: if disk grew beyond what the in-memory window covers,
         # append the missing tail so a page refresh self-heals.
         await _reconcile_slot_window(state, existing)
@@ -11406,6 +11465,24 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # constructor's own casefolded reservation is never reached with an
         # uncaught ValueError.
         _early_binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, name)
+        if _early_binding is not None and not members_mod.is_dispatchable_member_name(
+            _early_binding.get("member")
+        ):
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="chat_resume",
+                outcome="denied",
+                source="member_pin",
+                resources=f"slot={name} key={history_key}",
+                error="stored member pin is not dispatchable",
+            )
+            return web.json_response(
+                {
+                    "error": "this thread's crew name cannot be dispatched",
+                    "code": "member_pin_mismatch",
+                },
+                status=409,
+            )
         if _early_binding is None or history_key != _history_key_for(name):
             sel().log_api_access(
                 caller=request.remote or "",
@@ -11636,6 +11713,24 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX):
         # Same casefold-to-match / original-bytes-slice as the early guard.
         _member_binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, name)
+        if _member_binding is not None and not members_mod.is_dispatchable_member_name(
+            _member_binding.get("member")
+        ):
+            sel().log_api_access(
+                caller=request.remote or "",
+                operation="chat_resume",
+                outcome="denied",
+                source="member_pin",
+                resources=f"slot={name} key={history_key}",
+                error="stored member pin is not dispatchable",
+            )
+            return web.json_response(
+                {
+                    "error": "this thread's crew name cannot be dispatched",
+                    "code": "member_pin_mismatch",
+                },
+                status=409,
+            )
         # Re-check the LIVE slot after this await: it is the one suspension
         # point between the earlier ownership re-checks and the publish
         # below. A concurrent resume that published during it would otherwise

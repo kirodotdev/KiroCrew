@@ -463,7 +463,9 @@ def _slot_is_still_open_at(slot_key: str, values: dict, observed: dict) -> bool:
 def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
     """Reconcile every crew member's log against live state at gateway boot.
 
-    For each global crew member:
+    For each dispatchable global crew member whose resolved slug has exactly
+    one configured claimant and whose existing log header is not owned by
+    another member:
 
     * ``ensure`` its log exists;
     * config-reconcile it (see :func:`reconcile_member_config`), so a config
@@ -484,7 +486,6 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
         from kiro_crew import members as members_mod
         from kiro_crew.eventlog import types
         from kiro_crew.eventlog.service import get_service
-        from kiro_crew.validation import _AGENT_NAME_RE
 
         svc = get_service()
         agents = getattr(cfg, "agents", {}) or {}
@@ -502,17 +503,58 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
 
             return _still_open
 
+        members_by_slug: dict[str, list[tuple[str, object]]] = {}
+        claimant_count_by_slug: dict[str, int] = {}
+        non_dispatchable_name_count = 0
+        unresolved_slug_count = 0
         for name, agent_cfg in agents.items():
-            if not _AGENT_NAME_RE.match(name):
-                continue
             try:
-                # member_slug, not slug_for_name: a member with an explicit
-                # member_id keeps that identity, so reconciling by the folded
-                # name would read a different log and leave the real one stale.
                 slug = members_mod.member_slug(name, cfg)
             except Exception:
+                unresolved_slug_count += 1
                 continue
+            claimant_count_by_slug[slug] = claimant_count_by_slug.get(slug, 0) + 1
+            if not members_mod.is_dispatchable_member_name(name):
+                non_dispatchable_name_count += 1
+                continue
+            members_by_slug.setdefault(slug, []).append((name, agent_cfg))
+
+        if non_dispatchable_name_count or unresolved_slug_count:
+            logger.warning(
+                "member event-log startup reconcile skipped %d non-dispatchable name(s) and %d unresolved slug(s)",
+                non_dispatchable_name_count,
+                unresolved_slug_count,
+            )
+
+        for slug, resolved_members in members_by_slug.items():
+            claimant_count = claimant_count_by_slug[slug]
+            if claimant_count != 1:
+                logger.warning(
+                    "member event-log startup reconcile skipped ambiguous slug=%r (%d members)",
+                    slug,
+                    claimant_count,
+                )
+                continue
+            name, agent_cfg = resolved_members[0]
             try:
+                logged_name = svc.logged_name(slug)
+                if logged_name is not None and logged_name != name:
+                    # Only the EXACT name proves ownership. A header equal to the
+                    # slug is the nameless-writer placeholder, and it is ambiguous
+                    # rather than harmless: a retired member with no ``member_id``
+                    # whose name folded onto itself leaves nothing reserving the
+                    # slug once its row is pruned, so a recreated display-name
+                    # member is handed the identical identity and ``member_slug``
+                    # resolves it here. Writing this member's configuration and
+                    # closers into that log is append-only and unrecoverable, so
+                    # both shapes skip; the diagnostic names the slug only.
+                    kind = "placeholder" if logged_name == slug else "foreign"
+                    logger.warning(
+                        "member event-log startup reconcile skipped slug=%r with %s header",
+                        slug,
+                        kind,
+                    )
+                    continue
                 svc.ensure(slug, name)
                 snap = svc.snapshot(slug)
                 values = snap.get("values", {}) if isinstance(snap, dict) else {}
@@ -557,9 +599,9 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
                         ):
                             closers += 1
             except Exception:
-                logger.debug("startup reconcile failed for slug=%r", slug, exc_info=True)
+                logger.warning("member event-log startup reconcile failed for slug=%r", slug)
     except Exception:
-        logger.debug("reconcile_members_at_startup failed", exc_info=True)
+        logger.warning("member event-log startup reconcile failed before processing members")
     logger.info("member event-log startup reconcile wrote %d closer event(s)", closers)
     return closers
 

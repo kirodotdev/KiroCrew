@@ -133,7 +133,7 @@ from kiro_crew.session_pid_sig import signing_health
 from kiro_crew.stall_attribution import attribute_dump, describe
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.transcribe import _find_ffmpeg, availability_detail, ensure_ffmpeg_in_path
-from kiro_crew.validation import _AGENT_NAME_RE
+from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
 
@@ -294,15 +294,9 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         bound = "kirocrew"
     # kiro_agent is free text in config.json and this name reaches a path join.
     # An ABSOLUTE value would make pathlib discard the directory on the left
-    # (`base / "/etc/passwd.json"` is `/etc/passwd.json`), so an unvalidated
-    # binding turns a spec lookup into an arbitrary read. The type check is not
-    # redundant with the grammar: the config loader deliberately KEEPS a
-    # type-mismatched value ("validated by its consumer"), so a hand-edited
-    # non-string reaches here intact and `re.match` would raise TypeError --
-    # aborting the one command a user runs BECAUSE their config is broken.
-    # Anything outside a plain string in the shared grammar is reported and then
-    # treated as unbound.
-    if not isinstance(bound, str) or not _AGENT_NAME_RE.match(bound):
+    # (`base / "/etc/passwd.json"` is `/etc/passwd.json`), so anything outside
+    # the registered agent grammar is reported and treated as unbound.
+    if not is_registered_agent_name(bound):
         print(f"  bound agent: ⚠️  {_safe_display(bound)} is not a valid agent name")
         issues.append("configured kiro_agent is not a valid agent name")
         bound = "kirocrew"

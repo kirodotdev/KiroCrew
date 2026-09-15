@@ -270,7 +270,12 @@ from kiro_crew.llm_helpers import (
     usage_has_billing,
 )
 from kiro_crew.mcp_discovery import kirocrew_managed_names
-from kiro_crew.members import member_lifecycle, record_activity
+from kiro_crew.members import (
+    DM_SLOT_MODE,
+    is_dispatchable_member_name,
+    member_lifecycle,
+    record_activity,
+)
 from kiro_crew.messaging.commands import compact_unsupported_reply
 from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -10140,6 +10145,15 @@ async def _run_chat(
         # the same finally, which compare-and-clears only an identity this
         # turn actually published, so a successor's key is never wiped.
         slot._active_turn_session_key = session_key
+
+        if slot.mode == DM_SLOT_MODE and not is_dispatchable_member_name(slot.agent):
+            logger.warning("refusing to run member slot %s with a non-dispatchable pin", slot.key)
+            slot.append(
+                "error",
+                "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
+                "msg msg-err",
+            )
+            return
 
         # The gateway publishes this shared task before READY, then performs the
         # restore/open/rebuild work after READY. Wait at the one dashboard turn

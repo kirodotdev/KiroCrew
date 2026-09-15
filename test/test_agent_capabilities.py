@@ -124,6 +124,23 @@ def test_enrollment_is_explicit_and_keeps_other_bindings(editor):
     assert prepared["revision"]
 
 
+def test_a_dotted_parent_template_can_be_enrolled(editor):
+    service, home, specs, parent = editor
+    parent["name"] = "reviewer.v2"
+    (specs / "parent.json").unlink()
+    (specs / "reviewer.v2.json").write_text(json.dumps(parent), encoding="utf-8")
+    config = json.loads((home / "config.json").read_text())
+    config["agents"]["A"]["kiro_agent"] = "reviewer.v2"
+    (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    loader._invalidate_config_cache()
+
+    result = save(service, enroll=True)
+
+    assert result["runtime"]["status"] == "pending"
+    assert result["template"]["name"] == "reviewer.v2"
+    assert spec_for(home, specs)["tools"] == ["read"]
+
+
 def test_whole_transport_replacement_and_custom_resources_survive(editor):
     service, home, specs, _ = editor
     save(

@@ -72,9 +72,9 @@ def _read_spec(path: Path) -> dict:
 def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Path, dict, dict]:
     """Project scope wins exactly as it does for the provider's cwd."""
     from kiro_crew.agent import OWNED_KIRO_AGENT_FILES, _conflicting_spec_for, agent_spec_path
-    from kiro_crew.validation import _AGENT_NAME_RE
+    from kiro_crew.validation import is_registered_agent_name
 
-    if not isinstance(name, str) or not _AGENT_NAME_RE.fullmatch(name):
+    if not is_registered_agent_name(name):
         raise CapabilityError("invalid_template_name")
     roots = [(project_agents_dir(project), "project")] if project else []
     roots.append((kiro_agents_dir_path(), "global"))

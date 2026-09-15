@@ -78,6 +78,7 @@ from kiro_crew.history import (
 )
 from kiro_crew.memory_stores import UnknownMemoryStore, named_store_or_empty
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_agent_selection import session_agent_selection_name
@@ -1276,11 +1277,11 @@ def _member_restore_identity(slot_name: str) -> tuple[str, str] | None:
     """Resolve a member slot's restore identity from its binding.
 
     Returns ``None`` for ordinary keys (caller restores normally),
-    ``(member, "member")`` when ``dm.json`` names the thread's crew, and
-    :data:`_SKIP_MEMBER_RESTORE` when the key is a member key without a
-    usable binding. The BINDING is the authority — transcript metadata lives
-    in the same operator-editable JSONL it would otherwise re-pin from, so it
-    is never consulted for a member key's agent or mode.
+    ``(member, "member")`` when ``dm.json`` names a dispatchable crew, and
+    :data:`_SKIP_MEMBER_RESTORE` when the key has no binding or its stored
+    member name cannot be dispatched. The BINDING is the authority — transcript
+    metadata lives in the same operator-editable JSONL it would otherwise re-pin
+    from, so it is never consulted for a member key's agent or mode.
     """
     # Function-local ON PURPOSE: kiro_crew.members imports kiro_crew.artifacts
     # (slugify), and importing that at module scope closes the
@@ -1293,11 +1294,11 @@ def _member_restore_identity(slot_name: str) -> tuple[str, str] | None:
         return None
     binding = members_mod.read_dm_binding_for_slot(slot_name)
     member = (binding or {}).get("member", "")
-    if not member:
+    if not members_mod.is_dispatchable_member_name(member):
         logger.warning(
-            "restore: member slot %r has no usable dm binding; leaving it "
-            "unpublished (the member-thread endpoint re-creates it on open)",
-            slot_name,
+            "restore: member slot %r has no dispatchable dm binding; leaving it "
+            "unpublished until the Crew Member config or binding is repaired",
+            redact_log_via_context(slot_name),
         )
         return _SKIP_MEMBER_RESTORE
     return member, members_mod.DM_SLOT_MODE
