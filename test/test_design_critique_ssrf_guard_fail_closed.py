@@ -26,6 +26,11 @@ SCRIPTS = REPO_ROOT / "src/kiro_crew/apps/builtins/design_critique/skills/design
 SSRF_GUARD = SCRIPTS / "ssrf-guard.mjs"
 ENSURE_PW = SCRIPTS / "ensure-playwright.mjs"
 
+# Budget for one Node subprocess in _run_node. It covers a cold Node ESM
+# start on a hosted Windows runner that falls back to full file copies,
+# which can exceed a minute.
+NODE_TIMEOUT_SECS = 120
+
 
 def _run_node(script: str, tmp_path: Path, env: dict[str, str] | None = None):
     node = shutil.which("node")
@@ -41,7 +46,7 @@ def _run_node(script: str, tmp_path: Path, env: dict[str, str] | None = None):
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=20,
+        timeout=NODE_TIMEOUT_SECS,
         cwd=tmp_path,
         env=full_env,
     )
@@ -149,3 +154,24 @@ class TestGetPlaywrightVersionGate:
         """
         proc = _run_node(script, tmp_path, env={"DC_PW_DIR": str(cache)})
         assert proc.returncode == 0, proc.stderr
+
+
+class TestNodeBudget:
+    def test_cold_start_budget_covers_a_slow_windows_runner(self, tmp_path, monkeypatch):
+        """_run_node passes NODE_TIMEOUT_SECS, sized for a slow Windows runner."""
+        assert NODE_TIMEOUT_SECS >= 120
+        captured: dict = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return _Proc()
+
+        monkeypatch.setattr(shutil, "which", lambda _cmd: "/usr/bin/node")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _run_node("process.exit(0)", tmp_path)
+        assert captured["timeout"] == NODE_TIMEOUT_SECS
