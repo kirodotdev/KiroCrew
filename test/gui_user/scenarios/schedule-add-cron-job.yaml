@@ -1,0 +1,33 @@
+# Smoke: the core daily path of the Schedule page -- read the seeded jobs and
+# create one. The `rich` fixture ships two jobs (`daily rich fixture ping`,
+# enabled; `paused weekly recap`, disabled) so the list assertion is
+# deterministic, and the gateway runs with --no-crons so nothing ever fires:
+# the create only writes a row into the throwaway home. Cron expressions are
+# rendered as clock times in the Schedule column (`0 9 * * *` reads "9:00 AM"),
+# so the expectations name the rendered form, not the expression.
+name: schedule-add-cron-job
+tier: smoke
+feature: schedule
+user_story: >-
+  As a user, I want to see my scheduled jobs with their status and add a new
+  cron job from the Schedule page, so that routine work runs on time without
+  me remembering to start it.
+docs_url: docs/system-specs/modules/learn-cron-dashboard.md
+summary: Read the two seeded jobs on the Schedule page and create a third with a cron expression
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /schedule
+steps:
+  - You are on the Schedule page. It has a List / Calendar / Executions switcher in the header and a table of jobs. Make sure the List view is showing and read the two rows already there ("daily rich fixture ping" and "paused weekly recap").
+  - Click the "Add Job" button (it has a plus icon) above the table. A dialog titled "New Job" opens.
+  - In the Name field type exactly "gui smoke digest". In the Message box type exactly "summarize open pull requests".
+  - Under Schedule, change the dropdown from "Every interval" to "Cron expression", then type exactly "30 8 * * 1-5" into the cron field (the one whose placeholder reads "0 9 * * 1-5"). Leave Agent, Model, Channel ID, Approval and every toggle as they are.
+  - Click "Create" at the bottom of the dialog and wait a second for the list to refresh.
+expectations:
+  - The "New Job" dialog is closed and no red error message is visible.
+  - The table lists three jobs -- "daily rich fixture ping", "paused weekly recap" and the new "gui smoke digest".
+  - The "gui smoke digest" row shows the status "Ready" and a schedule of 8:30 AM on Mon-Fri (rendered as a time, not as the raw cron expression).
+  - The "paused weekly recap" row still shows the status "Paused".
+max_steps: 14
+max_seconds: 360

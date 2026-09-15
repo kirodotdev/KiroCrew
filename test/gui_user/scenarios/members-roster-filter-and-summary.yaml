@@ -1,0 +1,37 @@
+# Nightly: the Crew Members page beyond the DM that `members-dm-hello` sends --
+# the roster filter and the docked side panel. Same preview switch as the DM
+# scenario (the Feature Previews card whose title starts with "Crew Members").
+# The target boots with one member, Nova Sky, so the roster reads "1 member",
+# a filter that matches keeps the row and one that does not empties the list.
+# The harness window is wide, so the side panel is permanently docked as a
+# third column with its "Crew summary" tab already open: there is no control
+# to open it and no Details / Configuration tabs -- "Configuration" is a
+# section inside the summary.
+name: members-roster-filter-and-summary
+tier: nightly
+feature: members
+user_story: >-
+  As a crew operator, I want a filterable roster and a side panel that
+  summarises each member's activity, so that I can supervise my crew from one
+  page instead of opening each conversation.
+docs_url: docs/system-specs/modules/crew-mode.md
+summary: Enable the Crew Members preview, filter the roster, open Nova Sky and read the Crew summary panel
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings
+steps:
+  - You are on the Settings page. Open the Developer section and find the Feature Previews list.
+  - Turn on the preview whose title starts with "Crew Members". Ignore the Webhooks preview.
+  - Click the "Crew Members" item that now appears in the left rail, directly under Sessions.
+  - In the roster's search box (placeholder "Search members…") type exactly "zzz" and look at the roster.
+  - Clear the search box and type exactly "nova" instead.
+  - Click the "Nova Sky" roster row to open the conversation with that member.
+  - Look to the right of the conversation. A side panel is already docked there as a third column; its first tab shows Nova Sky's avatar and the label "Crew summary" and is already selected. Do not look for a button to open it. Read the panel from top to bottom.
+expectations:
+  - The page heading reads "Crew Members" and the roster shows the single member "Nova Sky" (the count reads "1 member" or "1 of 1 members").
+  - A conversation with Nova Sky is open, with the member's name in its header.
+  - The docked side panel shows the "Crew summary" tab as selected, and its body has section headings "Auto patrol", "Recent activity" and "Configuration", plus an "Edit in crew manager" button at the bottom.
+  - Nothing is clipped or overlapping between the roster, the conversation and the side panel.
+max_steps: 20
+max_seconds: 480
