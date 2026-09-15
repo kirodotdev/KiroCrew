@@ -89,9 +89,30 @@ test("win/linux: File menu is first with Settings… and quit", () => {
   assert.strictEqual(template[0].label, "File");
   const [settings, sep, quit] = template[0].submenu;
   assert.strictEqual(settings.label, "Settings…");
-  assert.strictEqual(settings.accelerator, "CmdOrCtrl+,");
   assert.strictEqual(sep.type, "separator");
   assert.strictEqual(quit.role, "quit");
+});
+
+// Regression pin for #9824: on Windows/Linux, Ctrl is the comma key for
+// Chinese/Japanese IMEs, so a global Settings menu accelerator on Ctrl+, eats
+// the comma before the IME sees it and CJK users cannot type one at all. The
+// item must ship NO accelerator off macOS. A prose comment saying so is exactly
+// the guarantee that failed once already (#9555 swept the in-page binding to
+// Ctrl+, over #783's deliberate Alt+,); this test is the guarantee. macOS keeps
+// Cmd+, — a mac comma is not a Ctrl chord, so it is unaffected.
+test("win/linux: Settings… ships NO Ctrl+, accelerator (CJK IME comma, #9824)", () => {
+  const { deps } = makeDeps({ isMac: false });
+  const settings = findItem(buildMenuTemplate(deps), (i) => i.label === "Settings…");
+  assert.ok(settings, "Settings… present off macOS");
+  assert.strictEqual(settings.accelerator, undefined, "no accelerator off macOS");
+  assert.notStrictEqual(settings.accelerator, "CmdOrCtrl+,");
+  assert.notStrictEqual(settings.accelerator, "Ctrl+,");
+});
+
+test("mac: Settings… keeps the Cmd+, accelerator (a mac comma is not a Ctrl chord)", () => {
+  const { deps } = makeDeps({ isMac: true });
+  const settings = findItem(buildMenuTemplate(deps), (i) => i.label === "Settings…");
+  assert.strictEqual(settings.accelerator, "CmdOrCtrl+,");
 });
 
 test("win/linux: Help menu is last with About", () => {
