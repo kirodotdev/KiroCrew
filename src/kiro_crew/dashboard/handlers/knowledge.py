@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.files import (
     _ZIP_CONTAINER_EXTS,
     _content_matches_ext,
 )
+from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
 from kiro_crew.knowledge.agent_source import add_agent_document
@@ -1169,7 +1170,19 @@ def _folder_picker_available(request: web.Request) -> bool:
     """The native folder picker is offered only on macOS (via osascript) and
     only when the dashboard is local -- a dialog on a remote gateway would open
     on the wrong screen."""
-    return sys.platform == "darwin" and bool(request.app.get("local_only", False))
+    if sys.platform != "darwin" or not bool(request.app.get("local_only", False)):
+        return False
+    # `local_only` is necessary but not sufficient: it describes how the GATEWAY
+    # was started, not where THIS request came from. The gateway binds loopback
+    # and remote access is delivered by a same-host tunnel or reverse proxy, so a
+    # remote user's request arrives from a loopback peer with `local_only` still
+    # True. A host-side native dialog must never open for such a request -- it
+    # would appear on the gateway operator's screen, not the requester's, and
+    # block there for up to `_FOLDER_DIALOG_TIMEOUT`. Require a DIRECT local
+    # request too, so a proxied one fails the gate and falls back to the
+    # typed-path route. The sibling project picker in `handlers/files.py`
+    # gates on the same helper for the same reason.
+    return is_direct_local_request(request)
 
 
 def _run_folder_dialog() -> str | None:
