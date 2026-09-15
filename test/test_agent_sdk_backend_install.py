@@ -64,6 +64,7 @@ def _stub_resolvers(
     opencode=("/usr/local/bin/opencode", "/usr/bin"),
     pi_acp=(["node", "/n/pi-acp.js"], "/usr/bin"),
     pi_cli=("/usr/local/bin/pi", "/usr/bin"),
+    codex_acp=(["node", "/n/codex-acp.js"], "/usr/bin"),
 ):
     """Patch the four spawn resolvers on the module the driver imports from.
 
@@ -85,6 +86,11 @@ def _stub_resolvers(
     # on the recording host.
     monkeypatch.setattr(client, "_resolve_pi_acp_bin", lambda: pi_acp)
     monkeypatch.setattr(client, "_resolve_pi_bin", lambda: pi_cli)
+    # codex, stubbed for the same reason as the three above and missed when they were
+    # added: the payload assertion below pins its row as ``missing``, so on a host that
+    # HAS the codex adapter installed the real resolver answers ``installed`` and the
+    # test fails for a property of the machine rather than of the code.
+    monkeypatch.setattr(client, "_resolve_codex_acp_bin", lambda: codex_acp)
 
 
 # ── The opencode driver seams ──
@@ -730,7 +736,16 @@ class TestEndpointPayloadShape:
     def test_owner_gets_one_row_per_backend_in_the_pinned_shape(self, monkeypatch):
         from kiro_crew.dashboard.handlers import acp_backend_status as handler
 
-        _stub_resolvers(monkeypatch, adapter=(None, "/usr/bin"), claude_cli=None)
+        # codex's resolver is stubbed NOT-FOUND alongside claude's, because the row
+        # assertion below pins it as ``missing``: reaching the real resolver would read
+        # ``installed`` on any host that has the adapter and ``missing`` in CI, so the
+        # test would answer a question about the machine rather than about the payload.
+        _stub_resolvers(
+            monkeypatch,
+            adapter=(None, "/usr/bin"),
+            claude_cli=None,
+            codex_acp=(None, "/usr/bin"),
+        )
         # ``selectable`` is pinned rather than read live: this assertion is about
         # the payload carrying the governance answer, not about what this
         # deployment's policy happens to permit today.
