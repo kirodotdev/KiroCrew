@@ -81,7 +81,7 @@ from kiro_crew.messaging.renderer import (
     session_provenance_tag,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.split import split_markdown_safe, split_markdown_safe_with_tier
 from kiro_crew.messaging.status_reactions import (
     PHASE_QUEUED,
     PHASE_THINKING,
@@ -94,6 +94,7 @@ from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.widget_parse import mask_inline_code
 
 if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient
@@ -804,14 +805,46 @@ class DiscordRenderer(Renderer):
             sealed = chunks
         else:
             split_source = raw
-            chunks = await asyncio.to_thread(split_markdown_safe, split_source, limit)
+            chunks, degraded = await asyncio.to_thread(
+                split_markdown_safe_with_tier, split_source, limit
+            )
             sealed, tail = chunks[:-1], chunks[-1] if chunks else ""
-            probe_at = len(prefix := raw.removesuffix(tail))
-            probe = prefix + "![x](/tmp/x.png)" + " ".join(re.findall(r"`+", prefix)) + tail
-            spans = await asyncio.to_thread(protected_ref_spans, probe) if sealed else []
-            lost = bool(sealed) and raw.endswith(tail) and probe_at not in dict(spans)
-            dirty_cut = any(len(line) > limit for line in split_source.splitlines(True))
-            if dirty_cut or lost:
+            if not degraded and len(chunks) > 1:
+                # No synthetic probe: re-derive the split-tier signal from the
+                # split output. A clean line cut still moves a
+                # reference across a literalness boundary two ways: a chunk
+                # scanned alone carries a span the full text never had (an
+                # opener orphaned into the tail), or the sealed prefix leaves
+                # delimiter debt — an unbalanced backtick run before the live
+                # tail boundary that later (or already sealed away) text
+                # re-pairs, flipping a literal reference to a real one at
+                # the tail seal. A surviving backtick in the masked prefix
+                # is exactly that debt.
+                for chunk in chunks:
+                    if await asyncio.to_thread(protected_ref_spans, chunk):
+                        degraded = True
+                        break
+                if not degraded:
+                    cut = len(split_source) - len(tail)
+                    masked_head = await asyncio.to_thread(mask_inline_code, split_source[:cut])
+                    if "`" in masked_head:
+                        degraded = True
+                if not degraded:
+                    # Escape debt across the seal boundary: the sealed text
+                    # ends with an odd backslash run, so whatever the live
+                    # tail opens with is escaped in the full text. A tail that
+                    # scans markup-bearing alone -- e.g. a `[x](...)` whose
+                    # guarding `\` sealed away -- would then upload a
+                    # source-literal file at the semantic seal. The per-chunk
+                    # scans above cannot see this: the escape lives in a chunk
+                    # that never extracts. Fail closed. (The spans branch
+                    # above needs no equivalent: its boundary is a verified
+                    # unescaped `!`, so no escape can straddle it.)
+                    sealed_text = "".join(sealed)
+                    run = len(sealed_text) - len(sealed_text.rstrip("\\"))
+                    if run % 2 == 1:
+                        degraded = True
+            if degraded:
                 self._segment_uploads_safe = False
         for ch in sealed:
             self._buf = [ch]
