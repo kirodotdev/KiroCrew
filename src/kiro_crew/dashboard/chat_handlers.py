@@ -119,12 +119,16 @@ from kiro_crew.dashboard.remote_adopt import (
 from kiro_crew.dashboard.remote_relay import (
     RemoteTurnError,
     create_peer_slot,
+    forward_peer_approval,
+    forward_peer_approval_mode,
     forward_peer_selection,
     forward_peer_stop,
     peer_is_connected,
     redact_peer_text,
     relay_remote_turn,
     remote_bound_refusal,
+    restore_peer_approval_mode,
+    valid_peer_approval_mode_rollback_token,
 )
 from kiro_crew.dashboard.slot_buffers import (
     MAX_DEFERRED_NOTE_CHARS,
@@ -9745,6 +9749,127 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     )
 
 
+_REMOTE_MODE_ROLLBACK_TTL_SECS = 60.0
+_MAX_REMOTE_MODE_ROLLBACKS = 64
+
+
+def _slot_approval_mode(slot: _ChatSlot) -> str:
+    if slot._trust:
+        return "trust"
+    if slot._trust_reads:
+        return "trust_reads"
+    return "normal"
+
+
+def _capture_approval_mode_rollback(state: DashboardState) -> str:
+    """Store one authoritative, short-lived peer mode snapshot."""
+    now = time.monotonic()
+    for token, (created, _snapshot) in list(state._approval_mode_rollbacks.items()):
+        if now - created > _REMOTE_MODE_ROLLBACK_TTL_SECS:
+            state._approval_mode_rollbacks.pop(token, None)
+    while len(state._approval_mode_rollbacks) >= _MAX_REMOTE_MODE_ROLLBACKS:
+        state._approval_mode_rollbacks.pop(next(iter(state._approval_mode_rollbacks)))
+    manager = getattr(state, "channel_manager", None)
+    channels = (
+        {channel_id: bool(channel.trusted) for channel_id, channel in manager._channels.items()}
+        if manager
+        else {}
+    )
+    override = safety_override()
+    yolo_status = override.status()
+    snapshot: dict[str, Any] = {
+        "yolo": {
+            "active": bool(yolo_status.active),
+            "source": str(yolo_status.source),
+            "remaining_secs": int(yolo_status.remaining_secs),
+            "permanent": bool(yolo_status.permanent),
+            "declared": bool(override.is_declared),
+        },
+        "slots": {key: _slot_approval_mode(slot) for key, slot in state._slots.items()},
+        "channels": channels,
+    }
+    token = uuid.uuid4().hex
+    state._approval_mode_rollbacks[token] = (now, snapshot)
+    return token
+
+
+async def _restore_approval_mode_rollback(state: DashboardState, token: str) -> bool:
+    """Consume and restore one peer-authoritative mode snapshot."""
+    record = state._approval_mode_rollbacks.pop(token, None)
+    if record is None:
+        return False
+    created, snapshot = record
+    if time.monotonic() - created > _REMOTE_MODE_ROLLBACK_TTL_SECS:
+        return False
+    yolo_snapshot = snapshot.get("yolo")
+    slot_modes = snapshot.get("slots")
+    channel_modes = snapshot.get("channels")
+    if (
+        not isinstance(yolo_snapshot, dict)
+        or not isinstance(yolo_snapshot.get("active"), bool)
+        or not isinstance(yolo_snapshot.get("source"), str)
+        or not isinstance(yolo_snapshot.get("remaining_secs"), int)
+        or not isinstance(yolo_snapshot.get("permanent"), bool)
+        or not isinstance(yolo_snapshot.get("declared"), bool)
+        or not isinstance(slot_modes, dict)
+        or not isinstance(channel_modes, dict)
+        or any(
+            not isinstance(key, str) or mode not in ("normal", "trust_reads", "trust")
+            for key, mode in slot_modes.items()
+        )
+        or any(
+            not isinstance(key, str) or not isinstance(value, bool)
+            for key, value in channel_modes.items()
+        )
+    ):
+        return False
+
+    override = safety_override()
+    want_yolo = yolo_snapshot["active"]
+    if want_yolo:
+        source = yolo_snapshot["source"] or "dashboard:rollback"
+        if yolo_snapshot["permanent"]:
+            result = await asyncio.to_thread(override.activate_declared, source)
+        else:
+            elapsed = max(0, int(time.monotonic() - created))
+            remaining = max(0, yolo_snapshot["remaining_secs"] - elapsed)
+            if remaining <= 0:
+                await asyncio.to_thread(override.deactivate, "dashboard:rollback")
+                want_yolo = False
+                result = None
+            else:
+                result = await asyncio.to_thread(override.activate, source, remaining)
+        if result is not None and not result.active:
+            return False
+    else:
+        await asyncio.to_thread(override.deactivate, "dashboard:rollback")
+
+    for key, slot in state._slots.items():
+        mode = slot_modes.get(key, "normal")
+        slot._trust = mode == "trust"
+        slot._trust_reads = mode == "trust_reads"
+        state.sessions.set_approval_policy(
+            effective_session_key(slot),
+            "auto" if want_yolo or slot._trust else "",
+        )
+    manager = getattr(state, "channel_manager", None)
+    if manager:
+        for channel_id, channel in manager._channels.items():
+            channel.trusted = channel_modes.get(channel_id, False)
+            await asyncio.to_thread(channel._save)
+    try:
+        sel().log_api_access(
+            caller="dashboard:mode",
+            operation="mode_change:rollback",
+            outcome="restored",
+            resources=token,
+        )
+    except Exception:
+        logger.warning("SEL audit failed for approval mode rollback", exc_info=True)
+    state.push_slots_update()
+    return True
+
+
 async def api_chat_mode(request: web.Request) -> web.Response:
     """POST /api/chat/mode — set global tool approval mode.
 
@@ -9764,6 +9889,29 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    raw_rollback_token = body.get("rollback_token")
+    if raw_rollback_token is not None:
+        if not valid_peer_approval_mode_rollback_token(raw_rollback_token):
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "invalid approval mode rollback token",
+                    "code": "invalid_approval_mode_rollback",
+                },
+                status=400,
+            )
+        restored = await _restore_approval_mode_rollback(state, raw_rollback_token)
+        if not restored:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "approval mode rollback expired or was refused",
+                    "code": "approval_mode_rollback_failed",
+                },
+                status=409,
+            )
+        return web.json_response({"ok": True, "restored": True})
+    capture_rollback = body.get("capture_rollback") is True
     mode = body.get("mode", "normal")
     # Governance gate: the ``approval_modes`` policy scope governs ``yolo`` and
     # only ``yolo``. Refuse a denied mode here, before any mutation, so it is
@@ -9807,9 +9955,10 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     # documented all-slots request. The resolved slot reference is what every
     # branch writes through — nothing below re-indexes state._slots[slot_key]
     # after the offloaded deactivate await, so a concurrent slot deletion
-    # cannot open a check/use gap. ``yolo`` is global and ignores ``slot``
-    # entirely (a stale key must not refuse it).
-    slot, denied = None, None
+    # cannot open a check/use gap. ``yolo`` remains global on this gateway and
+    # still ignores a stale slot key; a live remote slot is resolved only so the
+    # same mode can be applied on the peer that executes its turns.
+    slot, remote_slot, denied = None, None, None
     if mode != "yolo":
         if raw_slot is not None and not isinstance(raw_slot, str):
             denied = web.json_response({"ok": False, "error": "unknown slot"}, status=400)
@@ -9820,8 +9969,95 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             slot = state._slots.get(slot_key)
             if slot is None:
                 denied = web.json_response({"ok": False, "error": "unknown slot"}, status=400)
+    elif isinstance(raw_slot, str) and slot_key is not None:
+        candidate = state._slots.get(slot_key)
+        if candidate is not None and candidate.is_remote:
+            remote_slot = candidate
     if denied is not None:
         return denied
+    if slot is not None and slot.is_remote:
+        remote_slot = slot
+
+    # A request with no slot is the documented all-slots transition. Forward it
+    # once to each execution peer without a slot field; a slot-bearing payload
+    # would preserve peer YOLO for trust/trust_reads and invert the requested
+    # downgrade.
+    mode_is_scoped = slot_key is not None
+    remote_targets: list[_ChatSlot] = []
+    if remote_slot is not None:
+        remote_targets.append(remote_slot)
+    elif not mode_is_scoped:
+        seen_instances: set[str] = set()
+        for candidate in state._slots.values():
+            if not candidate.is_remote or candidate.instance_id in seen_instances:
+                continue
+            seen_instances.add(candidate.instance_id)
+            remote_targets.append(candidate)
+
+    for target in remote_targets:
+        remote_denied = deny_non_owner_remote_operation(request, target, "chat_mode")
+        if remote_denied is not None:
+            return remote_denied
+
+    remote_mode_fences: list[tuple[_ChatSlot, asyncio.Future[str]]] = []
+    fenced_futures: set[asyncio.Future[str]] = set()
+    for target in remote_targets:
+        fence_slots = [
+            candidate
+            for candidate in state._slots.values()
+            if candidate.is_remote
+            and candidate.instance_id == target.instance_id
+            and (
+                not mode_is_scoped or mode == "yolo" or candidate.remote_slot == target.remote_slot
+            )
+        ]
+        for fence_slot in fence_slots:
+            for future in fence_slot._approval_futures.values():
+                if future.done() or future in fenced_futures:
+                    continue
+                fenced_futures.add(future)
+                fence_slot._remote_approval_forwards.add(future)
+                remote_mode_fences.append((fence_slot, future))
+
+    accepted_remote_modes: list[tuple[_ChatSlot, str]] = []
+
+    async def _rollback_remote_modes() -> None:
+        for target, rollback_token in reversed(accepted_remote_modes):
+            try:
+                await restore_peer_approval_mode(state, target, rollback_token)
+            except RemoteTurnError:
+                logger.warning(
+                    "Could not roll back approval mode on peer %s after a partial transition",
+                    target.instance_id,
+                )
+
+    if remote_targets and mode in ("normal", "trust_reads", "trust", "yolo"):
+        try:
+            # The execution peers own the real tool gates. Every target returns
+            # an authoritative one-use rollback token before this gateway mirrors
+            # the selection locally.
+            for target in remote_targets:
+                rollback_token = await forward_peer_approval_mode(
+                    state,
+                    target,
+                    mode,
+                    scoped=mode_is_scoped,
+                    capture_rollback=True,
+                )
+                accepted_remote_modes.append((target, rollback_token))
+        except RemoteTurnError as exc:
+            await _rollback_remote_modes()
+            for fence_slot, future in remote_mode_fences:
+                fence_slot._remote_approval_forwards.discard(future)
+            return web.json_response(
+                {"ok": False, "error": str(exc), "code": "remote_approval_mode_failed"},
+                status=502,
+            )
+        if mode not in ("trust", "yolo"):
+            for fence_slot, future in remote_mode_fences:
+                fence_slot._remote_approval_forwards.discard(future)
+
+    rollback_token = _capture_approval_mode_rollback(state) if capture_rollback else ""
 
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
     # per-slot, so revoking it on behalf of a request that named ONE slot drops
@@ -9850,6 +10086,9 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     if mode == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
         if not result.active:
+            await _rollback_remote_modes()
+            for fence_slot, future in remote_mode_fences:
+                fence_slot._remote_approval_forwards.discard(future)
             # Arming can be refused for two reasons and the client needs to tell
             # them apart: an ``approval_modes`` deny of ``yolo`` is a permanent
             # policy answer (403, same code the picker already understands),
@@ -9985,6 +10224,13 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         for _slot in state._slots.values():
             if scoped and effective_session_key(_slot) != _target_key:
                 continue
+            if _slot.is_remote and not any(
+                _slot.instance_id == target.instance_id for target in remote_targets
+            ):
+                # A local process grant cannot answer a peer-owned future. Only
+                # peers that accepted this transition participate in the mirror
+                # sweep; every other remote card stays actionable.
+                continue
             for aid, fut in list(_slot._approval_futures.items()):
                 if not fut.done():
                     fut.set_result("approved")
@@ -9999,6 +10245,10 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                         "approval_resolved",
                         {"id": aid, "approved": True, "slot": _slot.key},
                     )
+                    if _slot.is_remote:
+                        _slot._remote_approval_forwards.discard(fut)
+                        if _slot._approval_futures.get(aid) is fut:
+                            _slot._approval_futures.pop(aid, None)
                     try:
                         sel().log_api_access(
                             caller=f"dashboard:{_slot.key}",
@@ -10047,6 +10297,9 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                                     exc_info=True,
                                 )
 
+        for fence_slot, future in remote_mode_fences:
+            fence_slot._remote_approval_forwards.discard(future)
+
     # Propagate trust/yolo to session approval policies so subagents inherit.
     #
     # Keyed by ``effective_session_key`` — the SAME derivation every grant above
@@ -10064,7 +10317,10 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         state.sessions.set_approval_policy(effective_session_key(slot), policy)
 
     state.push_slots_update()
-    return web.json_response({"ok": True, "mode": mode})
+    response = {"ok": True, "mode": mode}
+    if rollback_token:
+        response["rollback_token"] = rollback_token
+    return web.json_response(response)
 
 
 def _get_pattern_from_pending(slot: _ChatSlot, request_id: str, field: str) -> str:
@@ -10118,6 +10374,66 @@ def _deny_approval_mode(
         },
         status=403,
     )
+
+
+def _permission_row(
+    messages: list[dict], request_id: str, *, pending_only: bool = False
+) -> dict | None:
+    """Return the newest exact permission row for one connection-scoped id."""
+    for message in reversed(messages):
+        if message.get("role") != "permission":
+            continue
+        try:
+            meta = json.loads(message.get("cls", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(meta, dict) or meta.get("request_id") != request_id:
+            continue
+        if pending_only and "resolved" in meta:
+            continue
+        return message
+    return None
+
+
+def _permission_row_decision(message: dict | None, request_id: str) -> str:
+    """Read a bounded durable decision from a captured permission row."""
+    if message is None:
+        return ""
+    try:
+        meta = json.loads(message.get("cls", "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(meta, dict) or meta.get("request_id") != request_id:
+        return ""
+    decision = meta.get("resolved")
+    return decision if isinstance(decision, str) else ""
+
+
+def _mark_captured_permission(message: dict | None, request_id: str, decision: str) -> bool:
+    """Resolve one captured row without touching a same-id successor generation."""
+    if message is None:
+        return False
+    try:
+        meta = json.loads(message.get("cls", "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(meta, dict) or meta.get("request_id") != request_id:
+        return False
+    meta["resolved"] = decision
+    message["cls"] = json.dumps(meta)
+    return True
+
+
+def _decision_replays_action(decision: str, action: str) -> bool:
+    """Whether a completed peer decision makes this retry idempotent."""
+    expected = {
+        "approved": {"approved", "trust_command", "trust_base"},
+        "rejected": {"rejected"},
+        "rejected_once": {"rejected_once"},
+        "trust": {"trust"},
+        "trust_reads": {"trust_reads"},
+    }
+    return action in expected.get(decision, set())
 
 
 def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> web.Response:
@@ -10193,6 +10509,89 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             request_id, fut = pending[0]
         else:
             fut = None
+    permission_row = (
+        _permission_row(owner.messages, str(request_id), pending_only=True) if request_id else None
+    )
+    if request_id and (not fut or fut.done()):
+        completed_row = _permission_row(owner.messages, str(request_id))
+        completed_decision = _permission_row_decision(completed_row, str(request_id))
+        replay_action = action if isinstance(action, str) else "rejected"
+        if completed_decision:
+            if _decision_replays_action(completed_decision, replay_action):
+                return web.json_response(
+                    {"ok": True, "replayed": True, "decision": completed_decision}
+                )
+            return web.json_response(
+                {
+                    "error": "approval already resolved with a different decision",
+                    "code": "approval_already_resolved",
+                },
+                status=409,
+            )
+    remote_yolo = False
+    remote_yolo_was_active = False
+    remote_yolo_activation = None
+    remote_mode_error: RemoteTurnError | None = None
+    if owner.is_remote and fut and not fut.done():
+        remote_denied = deny_non_owner_remote_operation(request, owner, "chat_slot_approve")
+        if remote_denied is not None:
+            return remote_denied
+        remote_action = action if isinstance(action, str) else "rejected"
+        if remote_action == "yolo":
+            if not yolo_policy_permits():
+                return _deny_approval_mode(
+                    caller=f"dashboard:{name}",
+                    operation="tool_approval:yolo",
+                    mode="yolo",
+                    resource=str(request_id),
+                )
+            remote_yolo_was_active = safety_override().is_active()
+            remote_yolo_activation = await asyncio.to_thread(
+                safety_override().activate, "dashboard"
+            )
+            if not remote_yolo_activation.active:
+                if not yolo_policy_permits():
+                    return _deny_approval_mode(
+                        caller=f"dashboard:{name}",
+                        operation="tool_approval:yolo",
+                        mode="yolo",
+                        resource=str(request_id),
+                    )
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "error": "safety override activation refused",
+                        "code": "safety_override_activation_refused",
+                    },
+                    status=503,
+                )
+        raw_pattern = body.get("pattern", "")
+        pattern = raw_pattern if isinstance(raw_pattern, str) else ""
+        remote_request_id = str(request_id)
+        owner._remote_approval_forwards.add(fut)
+        try:
+            # A card-level YOLO has two peer commits. The hub's critical
+            # governance/audit activation above succeeds first. Then approve
+            # this exact peer tool, and finally enable peer-wide YOLO below.
+            await forward_peer_approval(
+                state,
+                owner,
+                remote_request_id,
+                "approved" if remote_action == "yolo" else remote_action,
+                pattern=pattern,
+            )
+            remote_yolo = remote_action == "yolo"
+        except RemoteTurnError as exc:
+            owner._remote_approval_forwards.discard(fut)
+            if remote_action == "yolo" and not remote_yolo_was_active:
+                await asyncio.to_thread(safety_override().deactivate, "dashboard")
+                for candidate in state._slots.values():
+                    if not (candidate._trust or candidate._trust_reads):
+                        state.sessions.set_approval_policy(effective_session_key(candidate), "")
+                state.push_slots_update()
+            return web.json_response(
+                {"error": str(exc), "code": "remote_approval_failed"}, status=502
+            )
     # A state-level approval carries only a boolean decision and has no owning
     # slot, canonical command card, or scoped-pattern store.  Do not let a
     # durable-trust action fall through to ``resolve_state_approval`` as ``True``:
@@ -10271,8 +10670,15 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         action = "approved"
     # YOLO: auto-approve all tools globally (all slots)
     elif action == "yolo":
-        result = await asyncio.to_thread(safety_override().activate, "dashboard")
+        if remote_yolo_activation is not None:
+            override_was_active = remote_yolo_was_active
+            result = remote_yolo_activation
+        else:
+            override_was_active = safety_override().is_active()
+            result = await asyncio.to_thread(safety_override().activate, "dashboard")
         if not result.active:
+            if remote_yolo and fut:
+                owner._remote_approval_forwards.discard(fut)
             # Same two-reason split as ``api_chat_mode``: an ``approval_modes``
             # deny of ``yolo`` is a permanent policy answer the client can render
             # (403 + the code the picker already understands), while anything else
@@ -10313,8 +10719,24 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 if not (s._trust or s._trust_reads):
                     state.sessions.set_approval_policy(effective_session_key(s), "")
             state.push_slots_update()
+        elif remote_yolo:
+            try:
+                await forward_peer_approval_mode(state, owner, "yolo")
+            except RemoteTurnError as exc:
+                if not override_was_active:
+                    await asyncio.to_thread(safety_override().deactivate, "dashboard")
+                    for s in state._slots.values():
+                        if not (s._trust or s._trust_reads):
+                            state.sessions.set_approval_policy(effective_session_key(s), "")
+                    state.push_slots_update()
+                if fut:
+                    owner._remote_approval_forwards.discard(fut)
+                remote_mode_error = exc
         action = "approved"
-    resolved = action if action in ("approved", "approved_trust_reads") else "rejected"
+    resolved = (
+        action if action in ("approved", "approved_trust_reads", "rejected_once") else "rejected"
+    )
+    approved = resolved in ("approved", "approved_trust_reads")
     if not fut or fut.done():
         # Distinguish ambiguous (multiple pending) from truly empty
         if not request_id and slot._approval_futures:
@@ -10335,20 +10757,24 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         # the cross-slot approval the session-identity owner scan above prevents.
         # State-level futures have no per-slot trust semantics, so the bool
         # coercion loses nothing.
-        if request_id and state.resolve_state_approval(request_id, resolved != "rejected"):
+        if request_id and state.resolve_state_approval(request_id, approved):
             return web.json_response({"ok": True})
         return web.json_response({"error": "no pending approval"}, status=404)
     fut.set_result(resolved)
+    if owner.is_remote and original_action == "trust_reads":
+        owner._trust_reads = True
     # Persist resolved state into the permission message so it survives tab
     # switches — on the owner slot, whose messages hold the permission card.
     # Flagging the slot dirty is required for it to survive a RESTART too: the
     # periodic flush skips non-dirty slots.
     if request_id:
-        if _mark_permission_resolved(
-            owner.messages,
-            request_id,
-            original_action if original_action in ("trust", "trust_reads") else resolved,
-        ):
+        durable_decision = (
+            original_action if original_action in ("trust", "trust_reads") else resolved
+        )
+        marked = _mark_captured_permission(permission_row, str(request_id), durable_decision)
+        if permission_row is None:
+            marked = _mark_permission_resolved(owner.messages, str(request_id), durable_decision)
+        if marked:
             owner._dirty = True
     # Broadcast first to ensure frontend is unblocked
     if request_id:
@@ -10356,12 +10782,17 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             "approval_resolved",
             {
                 "id": request_id,
-                "approved": resolved != "rejected",
+                "approved": approved,
+                "decision": durable_decision,
                 # Keys the frame for the slot-scoped WS gate (see
                 # ws_event_scope._SLOT_SCOPED_EVENTS).
                 "slot": owner.key,
             },
         )
+    if owner.is_remote and request_id:
+        owner._remote_approval_forwards.discard(fut)
+        if owner._approval_futures.get(str(request_id)) is fut:
+            owner._approval_futures.pop(str(request_id), None)
     state.push_slots_update()
     # SEL audit (best-effort — must not block the UI-unblocking path above)
     try:
@@ -10373,6 +10804,15 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         )
     except Exception:
         logger.warning("SEL audit failed for approval %s", request_id, exc_info=True)
+    if remote_mode_error is not None:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": str(remote_mode_error),
+                "code": "remote_approval_mode_failed",
+            },
+            status=502,
+        )
     return web.json_response({"ok": True})
 
 

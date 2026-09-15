@@ -80,6 +80,8 @@ class ApprovalCoordinator:
             state._log.warning("SEL audit failed for approval resolution", exc_info=True)
         try:
             payload: dict = {"id": approval_id, "approved": approved}
+            if decision:
+                payload["decision"] = decision
             if session_key and session_key != "state":
                 payload["slot"] = session_key
             state.broadcast_ws("approval_resolved", payload)

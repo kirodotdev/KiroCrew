@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import threading
 from types import SimpleNamespace
 from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
@@ -88,6 +89,74 @@ async def _stream(*records: bytes) -> AsyncIterator[bytes]:
 
 def _sse(row: dict) -> bytes:
     return f"data: {json.dumps(row)}\n\n".encode()
+
+
+class _PeerControlManager:
+    """Connected peer carrier for approval-control tests.
+
+    The real manager owns the dashboard credential and returns an aiohttp response
+    context.  This double records the exact peer write while keeping the tests free
+    of sockets, SSH and a second gateway.
+    """
+
+    def __init__(
+        self,
+        *,
+        status: int = 200,
+        body: bytes = b'{"ok": true, "rollback_token":"00000000000000000000000000000000"}',
+        body_chunks: tuple[bytes, ...] | None = None,
+        response_gate: asyncio.Event | None = None,
+        order: list[str] | None = None,
+    ) -> None:
+        self.calls: list[tuple[str, str, str, dict]] = []
+        self.called = asyncio.Event()
+        self.status = status
+        self.body = body
+        self.body_chunks = body_chunks
+        self.response_gate = response_gate
+        self.order = order
+
+    async def peer_version(self, _instance_id: str) -> tuple[bool, str]:
+        return True, kiro_crew.__version__
+
+    @contextlib.asynccontextmanager
+    async def proxy_request(
+        self, instance_id: str, method: str, path: str, **kwargs
+    ) -> AsyncIterator[SimpleNamespace]:
+        self.calls.append((instance_id, method, path, kwargs))
+        if self.order is not None:
+            self.order.append(f"peer:{path}")
+        self.called.set()
+        body_chunks = iter(self.body_chunks if self.body_chunks is not None else (self.body,))
+
+        async def _read(_limit: int) -> bytes:
+            if self.response_gate is not None:
+                await self.response_gate.wait()
+            return next(body_chunks, b"")
+
+        content = SimpleNamespace(read=_read)
+        yield SimpleNamespace(status=self.status, content=content)
+
+
+def _approval_control_app(state, *, user: str = "local-app", app_name: str = ""):
+    """The real approval and mode handlers behind authenticated routes."""
+    from aiohttp import web
+
+    from kiro_crew.dashboard.chat import api_chat_mode, api_chat_slot_approve
+    from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
+
+    @web.middleware
+    async def _owner(request: web.Request, handler):
+        request["app"] = app_name
+        request["user"] = user
+        return await handler(request)
+
+    app = web.Application(middlewares=[_owner])
+    app["state"] = state
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    app.router.add_post("/api/chat/mode", api_chat_mode)
+    return app
 
 
 # ── The binding ────────────────────────────────────────────────────────────────
@@ -496,6 +565,1112 @@ class TestRelayReplay:
         slot = _remote_slot()
         await relay_remote_turn(state, slot, "hi", chunks=_stream(b"data: [DONE]\n\n"))
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
+
+    @pytest.mark.asyncio
+    async def test_a_peer_permission_is_actionable_and_forwarded_to_its_owner(self, tmp_path):
+        """A peer approval must become a local card whose decision travels back.
+
+        The peer stream pauses after the permission row until its own approval
+        endpoint is called.  Every test await is bounded so removing either half
+        fails at the missing state transition instead of hanging the worker.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        manager = _PeerControlManager()
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-request-1"
+
+        async def _permission_then_finish() -> AsyncIterator[bytes]:
+            yield _sse(
+                {
+                    "type": "permission",
+                    "content": "Run pwd",
+                    "cls": json.dumps(
+                        {
+                            "request_id": request_id,
+                            "tool_call_id": "tool-1",
+                            "tool_input": '{"command":"pwd"}',
+                            "is_read_only": "1",
+                            "trust_grantable": "1",
+                        }
+                    ),
+                }
+            )
+            await asyncio.wait_for(manager.called.wait(), timeout=1)
+            yield b"data: [DONE]\n\n"
+
+        async def _wait_for_local_card() -> None:
+            while request_id not in slot._approval_futures:
+                await asyncio.sleep(0)
+
+        relay = asyncio.create_task(
+            relay_remote_turn(state, slot, "inspect", chunks=_permission_then_finish())
+        )
+        try:
+            await asyncio.wait_for(_wait_for_local_card(), timeout=1)
+            projection = slot.to_dict()
+            assert projection["pending_approval"] is True
+            assert projection["pending_approval_info"]["request_id"] == request_id
+
+            async with TestClient(TestServer(_approval_control_app(state))) as client:
+                response = await client.post(f"/api/approvals/{request_id}/approve")
+                assert response.status == 200
+            await asyncio.wait_for(relay, timeout=1)
+        finally:
+            manager.called.set()
+            if not relay.done():
+                await asyncio.wait_for(relay, timeout=1)
+
+        assert len(manager.calls) == 1
+        instance_id, method, path, kwargs = manager.calls[0]
+        assert (instance_id, method, path) == (
+            "nobita",
+            "POST",
+            "api/chat/slots/peer-chat-9/approve",
+        )
+        assert json.loads(kwargs["data"]) == {
+            "action": "approved",
+            "request_id": request_id,
+        }
+        assert slot.to_dict()["pending_approval"] is False
+
+    @pytest.mark.asyncio
+    async def test_peer_completion_cannot_reject_an_approval_still_being_forwarded(self, tmp_path):
+        """The peer may finish before its approval endpoint response is read."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        response_gate = asyncio.Event()
+        manager = _PeerControlManager(response_gate=response_gate)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-request-race"
+
+        async def _permission_then_peer_done() -> AsyncIterator[bytes]:
+            yield _sse(
+                {
+                    "type": "permission",
+                    "content": "Run pwd",
+                    "cls": json.dumps({"request_id": request_id}),
+                }
+            )
+            await asyncio.wait_for(manager.called.wait(), timeout=1)
+            yield _sse(
+                {
+                    "type": "relay:approval_resolved",
+                    "content": json.dumps(
+                        {
+                            "id": request_id,
+                            "approved": True,
+                            "decision": "approved",
+                            "slot": "peer-chat-9",
+                        }
+                    ),
+                }
+            )
+            yield b"data: [DONE]\n\n"
+
+        async def _wait_for_local_card() -> None:
+            while request_id not in slot._approval_futures:
+                await asyncio.sleep(0)
+
+        relay = asyncio.create_task(
+            relay_remote_turn(state, slot, "inspect", chunks=_permission_then_peer_done())
+        )
+        await asyncio.wait_for(_wait_for_local_card(), timeout=1)
+        try:
+            async with TestClient(TestServer(_approval_control_app(state))) as client:
+                request = asyncio.create_task(
+                    client.post(
+                        f"/api/chat/slots/{slot.key}/approve",
+                        json={"action": "approved", "request_id": request_id},
+                    )
+                )
+                await asyncio.wait_for(manager.called.wait(), timeout=1)
+                await asyncio.wait_for(relay, timeout=1)
+
+                # Teardown saw an in-flight peer write and left its mirror alone.
+                assert request_id in slot._approval_futures
+                assert slot._approval_futures[request_id].done() is False
+                assert "resolved" not in json.loads(slot.messages[-1]["cls"])
+
+                response_gate.set()
+                response = await asyncio.wait_for(request, timeout=1)
+                assert response.status == 200
+        finally:
+            response_gate.set()
+            if not relay.done():
+                await asyncio.wait_for(relay, timeout=1)
+
+        assert request_id not in slot._approval_futures
+        assert not slot._remote_approval_forwards
+        assert json.loads(slot.messages[-1]["cls"])["resolved"] == "approved"
+
+    @pytest.mark.parametrize("mode", ["normal", "trust_reads", "trust", "yolo"])
+    @pytest.mark.asyncio
+    async def test_every_mode_for_a_remote_slot_is_applied_on_the_execution_peer(
+        self, tmp_path, monkeypatch, mode
+    ):
+        """The jump-host mode is not evidence that the final remote changed too."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        override = MagicMock(is_declared=False)
+        override.activate.return_value = SimpleNamespace(active=True)
+        override.is_active.return_value = mode == "yolo"
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: True)
+        monkeypatch.setattr(chat_handlers, "sel", lambda: MagicMock())
+
+        state = _make_state(tmp_path)
+        manager = _PeerControlManager()
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post("/api/chat/mode", json={"mode": mode, "slot": slot.key})
+            assert response.status == 200
+
+        assert len(manager.calls) == 1
+        instance_id, method, path, kwargs = manager.calls[0]
+        assert (instance_id, method, path) == ("nobita", "POST", "api/chat/mode")
+        assert json.loads(kwargs["data"]) == {
+            "mode": mode,
+            "slot": "peer-chat-9",
+            "capture_rollback": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_peer_completion_cannot_outrun_the_local_mode_sweep(self, tmp_path, monkeypatch):
+        """A peer Trust response can trail the turn it just unblocked."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        response_gate = asyncio.Event()
+        manager = _PeerControlManager(response_gate=response_gate)
+        override = MagicMock(is_declared=False)
+        override.is_active.return_value = False
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "sel", lambda: MagicMock())
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-mode-race"
+
+        async def _permission_then_peer_done() -> AsyncIterator[bytes]:
+            yield _sse(
+                {
+                    "type": "permission",
+                    "content": "Run pwd",
+                    "cls": json.dumps({"request_id": request_id, "trust_grantable": "1"}),
+                }
+            )
+            await asyncio.wait_for(manager.called.wait(), timeout=1)
+            yield b"data: [DONE]\n\n"
+
+        async def _wait_for_local_card() -> None:
+            while request_id not in slot._approval_futures:
+                await asyncio.sleep(0)
+
+        relay = asyncio.create_task(
+            relay_remote_turn(state, slot, "inspect", chunks=_permission_then_peer_done())
+        )
+        await asyncio.wait_for(_wait_for_local_card(), timeout=1)
+        try:
+            async with TestClient(TestServer(_approval_control_app(state))) as client:
+                request = asyncio.create_task(
+                    client.post(
+                        "/api/chat/mode",
+                        json={"mode": "trust", "slot": slot.key},
+                    )
+                )
+                await asyncio.wait_for(manager.called.wait(), timeout=1)
+                await asyncio.wait_for(relay, timeout=1)
+                assert request_id in slot._approval_futures
+                assert slot._approval_futures[request_id].done() is False
+
+                response_gate.set()
+                response = await asyncio.wait_for(request, timeout=1)
+                assert response.status == 200
+        finally:
+            response_gate.set()
+            if not relay.done():
+                await asyncio.wait_for(relay, timeout=1)
+
+        assert request_id not in slot._approval_futures
+        assert not slot._remote_approval_forwards
+        assert json.loads(slot.messages[-1]["cls"])["resolved"] == "trust"
+        assert slot._trust is True
+
+    @pytest.mark.asyncio
+    async def test_a_peer_mode_refusal_does_not_mutate_the_jump_host(self, tmp_path, monkeypatch):
+        """Peer governance wins before the hub claims that YOLO was selected."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        override = MagicMock(is_declared=False)
+        override.activate.return_value = SimpleNamespace(active=True)
+        override.is_active.return_value = False
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: True)
+
+        state = _make_state(tmp_path)
+        state.instances_manager = _PeerControlManager(
+            status=403,
+            body=b'{"error":"YOLO is disabled by the remote policy"}',
+        )
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post("/api/chat/mode", json={"mode": "yolo", "slot": slot.key})
+            body = await response.json()
+
+        assert response.status == 502
+        assert body["code"] == "remote_approval_mode_failed"
+        assert "remote policy" in body["error"]
+        override.activate.assert_not_called()
+        assert slot._trust is False
+        assert slot._trust_reads is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_peer_approval_leaves_the_local_card_retryable(self, tmp_path):
+        """A tunnel failure must not paint a decision the executing peer never got."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        state.instances_manager = _PeerControlManager(
+            status=503,
+            body=b'{"error":"peer approval temporarily unavailable"}',
+        )
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-request-retry"
+        slot.append(
+            "permission",
+            "Run pwd",
+            json.dumps({"request_id": request_id, "trust_grantable": "1"}),
+        )
+        future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = future
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "approved", "request_id": request_id},
+            )
+            body = await response.json()
+
+        assert response.status == 502
+        assert body["code"] == "remote_approval_failed"
+        assert future.done() is False
+        assert slot.to_dict()["pending_approval"] is True
+        assert "resolved" not in json.loads(slot.messages[-1]["cls"])
+
+    @pytest.mark.parametrize(
+        "route_action,peer_action,decision",
+        [
+            ("approve", "approved", "approved"),
+            ("reject", "rejected", "rejected"),
+            ("reject_once", "rejected_once", "rejected_once"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_generic_approval_actions_keep_their_peer_semantics(
+        self, tmp_path, route_action, peer_action, decision
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        manager = _PeerControlManager()
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = f"peer-{route_action}"
+        slot.append("permission", "Run pwd", json.dumps({"request_id": request_id}))
+        future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = future
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(f"/api/approvals/{request_id}/{route_action}")
+            assert response.status == 200
+
+        assert json.loads(manager.calls[0][3]["data"]) == {
+            "action": peer_action,
+            "request_id": request_id,
+        }
+        assert future.result() == decision
+        assert request_id not in slot._approval_futures
+        assert json.loads(slot.messages[-1]["cls"])["resolved"] == decision
+
+    @pytest.mark.asyncio
+    async def test_the_peer_slot_endpoint_preserves_reject_once(self, tmp_path):
+        """On the final remote, the relay target is an ordinary local slot."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("peer-chat-9")
+        state._slots[slot.key] = slot
+        request_id = "peer-reject-once"
+        slot.append("permission", "Run pwd", json.dumps({"request_id": request_id}))
+        future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = future
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "rejected_once", "request_id": request_id},
+            )
+            assert response.status == 200
+
+        assert future.result() == "rejected_once"
+        assert json.loads(slot.messages[-1]["cls"])["resolved"] == "rejected_once"
+
+    @pytest.mark.asyncio
+    async def test_state_level_id_collision_still_outranks_a_remote_slot(self, tmp_path):
+        """A generic click keeps the coordinator's state-first collision rule."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        manager = _PeerControlManager()
+        state.instances_manager = manager
+        request_id = "colliding-request"
+        state_future = asyncio.get_running_loop().create_future()
+        state._approval_futures[request_id] = state_future
+        slot = _remote_slot()
+        slot_future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = slot_future
+        state._slots[slot.key] = slot
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(f"/api/approvals/{request_id}/approve")
+            assert response.status == 200
+
+        assert state_future.result() is True
+        assert slot_future.done() is False
+        assert manager.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_non_owner_cannot_forward_a_generic_remote_approval(self, tmp_path):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        manager = _PeerControlManager()
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-owner-only"
+        future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = future
+
+        app = _approval_control_app(state, user="slack:U123")
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(f"/api/approvals/{request_id}/approve")
+            assert response.status == 403
+
+        assert future.done() is False
+        assert manager.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_generic_id_shared_by_two_slots_is_refused(self, tmp_path):
+        """A connection-scoped id alone cannot select between two live owners."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        manager = _PeerControlManager()
+        state.instances_manager = manager
+        request_id = "shared-connection-id"
+        slots = [_remote_slot("chat-1"), _remote_slot("chat-2")]
+        slots[1].remote_slot = "peer-chat-10"
+        for slot in slots:
+            state._slots[slot.key] = slot
+            slot._approval_futures[request_id] = asyncio.get_running_loop().create_future()
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(f"/api/approvals/{request_id}/approve")
+            body = await response.json()
+
+        assert response.status == 409
+        assert body["code"] == "approval_id_ambiguous"
+        assert all(
+            not future.done() for slot in slots for future in slot._approval_futures.values()
+        )
+        assert manager.calls == []
+
+    @pytest.mark.parametrize("mode", ["normal", "trust_reads", "trust", "yolo"])
+    @pytest.mark.asyncio
+    async def test_an_unscoped_mode_reaches_every_execution_peer(self, tmp_path, monkeypatch, mode):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        override = MagicMock(is_declared=False)
+        override.activate.return_value = SimpleNamespace(active=True)
+        override.is_active.return_value = False
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: True)
+        monkeypatch.setattr(chat_handlers, "sel", lambda: MagicMock())
+
+        state = _make_state(tmp_path)
+        manager = _PeerControlManager()
+        state.instances_manager = manager
+        first = _remote_slot("chat-1")
+        second = _remote_slot("chat-2")
+        second.instance_id = "dekisugi"
+        second.remote_slot = "peer-chat-10"
+        state._slots = {first.key: first, second.key: second}
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post("/api/chat/mode", json={"mode": mode})
+            assert response.status == 200
+
+        assert [call[:3] for call in manager.calls] == [
+            ("nobita", "POST", "api/chat/mode"),
+            ("dekisugi", "POST", "api/chat/mode"),
+        ]
+        assert [json.loads(call[3]["data"]) for call in manager.calls] == [
+            {"mode": mode, "capture_rollback": True},
+            {"mode": mode, "capture_rollback": True},
+        ]
+
+    @pytest.mark.parametrize("mode", ["trust", "trust_reads"])
+    @pytest.mark.asyncio
+    async def test_unscoped_trust_payload_revokes_peer_yolo_for_all_slots(
+        self, tmp_path, monkeypatch, mode
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        active = [True]
+        override = MagicMock(is_declared=False)
+        override.is_active.side_effect = lambda: active[0]
+        override.deactivate.side_effect = lambda _source: active.__setitem__(0, False)
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: True)
+        monkeypatch.setattr(chat_handlers, "sel", lambda: MagicMock())
+
+        hub = _make_state(tmp_path / "hub")
+        manager = _PeerControlManager()
+        hub.instances_manager = manager
+        remote = _remote_slot()
+        hub._slots[remote.key] = remote
+        async with TestClient(TestServer(_approval_control_app(hub))) as client:
+            response = await client.post("/api/chat/mode", json={"mode": mode})
+            assert response.status == 200
+
+        peer_payload = json.loads(manager.calls[0][3]["data"])
+        assert peer_payload == {"mode": mode, "capture_rollback": True}
+
+        active[0] = True
+        peer = _make_state(tmp_path / "peer")
+        first = _ChatSlot("peer-chat-9")
+        second = _ChatSlot("peer-chat-10")
+        first._trust = True
+        second._trust = True
+        peer._slots = {first.key: first, second.key: second}
+        async with TestClient(TestServer(_approval_control_app(peer))) as client:
+            response = await client.post("/api/chat/mode", json=peer_payload)
+            assert response.status == 200
+
+        assert active[0] is False
+        if mode == "trust":
+            assert first._trust is True and second._trust is True
+        else:
+            assert first._trust_reads is True and second._trust_reads is True
+            assert first._trust is False and second._trust is False
+
+    @pytest.mark.asyncio
+    async def test_peer_rollback_token_restores_authoritative_global_and_slot_modes(
+        self, tmp_path, monkeypatch
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        active = [True]
+        override = MagicMock(is_declared=False)
+        override.is_active.side_effect = lambda: active[0]
+        override.status.return_value = SimpleNamespace(
+            active=True,
+            source="dashboard",
+            remaining_secs=300,
+            permanent=False,
+        )
+        override.activate.side_effect = lambda _source, _ttl=None: (
+            active.__setitem__(0, True) or SimpleNamespace(active=True)
+        )
+        override.deactivate.side_effect = lambda _source: active.__setitem__(0, False)
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: True)
+        monkeypatch.setattr(chat_handlers, "sel", lambda: MagicMock())
+
+        peer = _make_state(tmp_path)
+        first = _ChatSlot("peer-chat-9")
+        second = _ChatSlot("peer-chat-10")
+        first._trust = True
+        second._trust_reads = True
+        peer._slots = {first.key: first, second.key: second}
+
+        async with TestClient(TestServer(_approval_control_app(peer))) as client:
+            changed = await client.post(
+                "/api/chat/mode",
+                json={"mode": "normal", "capture_rollback": True},
+            )
+            assert changed.status == 200
+            rollback_token = (await changed.json())["rollback_token"]
+            assert active[0] is False
+            assert not first._trust and not first._trust_reads
+            assert not second._trust and not second._trust_reads
+
+            restored = await client.post("/api/chat/mode", json={"rollback_token": rollback_token})
+            assert restored.status == 200
+
+        assert active[0] is True
+        restored_ttl = override.activate.call_args.args[1]
+        assert 0 < restored_ttl <= 300
+        assert first._trust is True and first._trust_reads is False
+        assert second._trust is False and second._trust_reads is True
+        assert peer._approval_mode_rollbacks == {}
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_peer_rollback_token_refuses_the_transition(
+        self, tmp_path, monkeypatch
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        override = MagicMock(is_declared=False)
+        override.is_active.return_value = False
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+
+        state = _make_state(tmp_path)
+        state.instances_manager = _PeerControlManager(
+            body=b'{"ok":true,"rollback_token":"NOT-HEX"}'
+        )
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post("/api/chat/mode", json={"mode": "trust", "slot": slot.key})
+            body = await response.json()
+
+        assert response.status == 502
+        assert body["code"] == "remote_approval_mode_failed"
+        assert slot._trust is False
+        assert slot._trust_reads is False
+
+    @pytest.mark.asyncio
+    async def test_a_fragmented_peer_mode_success_waits_for_its_rollback_token(
+        self, tmp_path, monkeypatch
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        override = MagicMock(is_declared=False)
+        override.is_active.return_value = False
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+
+        token = "0" * 32
+        state = _make_state(tmp_path)
+        state.instances_manager = _PeerControlManager(
+            body_chunks=(
+                b'{"ok":true,',
+                f'"rollback_token":"{token}"'.encode(),
+                b"}",
+            )
+        )
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post("/api/chat/mode", json={"mode": "trust", "slot": slot.key})
+
+        assert response.status == 200
+        assert slot._trust is True
+        assert slot._trust_reads is False
+
+    @pytest.mark.asyncio
+    async def test_a_rollback_token_is_consumed_before_its_first_await(self, tmp_path, monkeypatch):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        override = MagicMock(is_declared=False)
+        override.is_active.return_value = False
+        override.status.return_value = SimpleNamespace(
+            active=False,
+            source="",
+            remaining_secs=0,
+            permanent=False,
+        )
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "sel", lambda: MagicMock())
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("peer-chat-9")
+        state._slots[slot.key] = slot
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            changed = await client.post(
+                "/api/chat/mode",
+                json={"mode": "trust", "capture_rollback": True},
+            )
+            rollback_token = (await changed.json())["rollback_token"]
+
+            entered = threading.Event()
+            release = threading.Event()
+
+            def _blocking_deactivate(_source: str) -> None:
+                entered.set()
+                assert release.wait(timeout=1)
+
+            override.deactivate.side_effect = _blocking_deactivate
+            first_request = asyncio.create_task(
+                client.post("/api/chat/mode", json={"rollback_token": rollback_token})
+            )
+            assert await asyncio.to_thread(entered.wait, 1)
+            replay = await client.post("/api/chat/mode", json={"rollback_token": rollback_token})
+            release.set()
+            first = await asyncio.wait_for(first_request, timeout=1)
+
+        assert first.status == 200
+        assert replay.status == 409
+        assert state._approval_mode_rollbacks == {}
+
+    @pytest.mark.asyncio
+    async def test_a_local_yolo_activation_failure_rolls_the_peer_back(self, tmp_path, monkeypatch):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        override = MagicMock(is_declared=False)
+        override.activate.return_value = SimpleNamespace(active=False)
+        override.is_active.return_value = False
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: True)
+
+        state = _make_state(tmp_path)
+        manager = _PeerControlManager()
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post("/api/chat/mode", json={"mode": "yolo", "slot": slot.key})
+
+        assert response.status == 503
+        assert [json.loads(call[3]["data"]) for call in manager.calls] == [
+            {
+                "mode": "yolo",
+                "slot": "peer-chat-9",
+                "capture_rollback": True,
+            },
+            {"rollback_token": "00000000000000000000000000000000"},
+        ]
+        assert slot._trust is False
+        assert slot._trust_reads is False
+
+    @pytest.mark.asyncio
+    async def test_a_hub_yolo_deny_never_approves_the_peer_tool(self, tmp_path, monkeypatch):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: False)
+        state = _make_state(tmp_path)
+        manager = _PeerControlManager()
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-yolo-denied"
+        future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = future
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "yolo", "request_id": request_id},
+            )
+
+        assert response.status == 403
+        assert future.done() is False
+        assert manager.calls == []
+
+    @pytest.mark.asyncio
+    async def test_remote_card_yolo_approves_then_changes_peer_mode(self, tmp_path, monkeypatch):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        order: list[str] = []
+        override = MagicMock(is_declared=False)
+        override.activate.side_effect = lambda _source: (
+            order.append("hub:activate") or SimpleNamespace(active=True)
+        )
+        override.is_active.return_value = False
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: True)
+        monkeypatch.setattr(chat_handlers, "sel", lambda: MagicMock())
+
+        state = _make_state(tmp_path)
+        manager = _PeerControlManager(order=order)
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-yolo-card"
+        slot.append("permission", "Run pwd", json.dumps({"request_id": request_id}))
+        future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = future
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "yolo", "request_id": request_id},
+            )
+            assert response.status == 200
+
+        assert order == [
+            "hub:activate",
+            "peer:api/chat/slots/peer-chat-9/approve",
+            "peer:api/chat/mode",
+        ]
+        assert [call[2] for call in manager.calls] == [
+            "api/chat/slots/peer-chat-9/approve",
+            "api/chat/mode",
+        ]
+        assert json.loads(manager.calls[0][3]["data"])["action"] == "approved"
+        assert json.loads(manager.calls[1][3]["data"]) == {
+            "mode": "yolo",
+            "slot": "peer-chat-9",
+        }
+
+    @pytest.mark.asyncio
+    async def test_peer_yolo_mode_failure_settles_the_already_approved_mirror(
+        self, tmp_path, monkeypatch
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard import chat_handlers
+
+        override = MagicMock(is_declared=False)
+        override.is_active.return_value = False
+        override.activate.return_value = SimpleNamespace(active=True)
+        monkeypatch.setattr(chat_handlers, "safety_override", lambda: override)
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: True)
+        monkeypatch.setattr(chat_handlers, "sel", lambda: MagicMock())
+        monkeypatch.setattr(
+            chat_handlers,
+            "forward_peer_approval_mode",
+            AsyncMock(side_effect=RemoteTurnError("peer mode failed")),
+        )
+
+        state = _make_state(tmp_path)
+        state.instances_manager = _PeerControlManager()
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-yolo-mode-failed"
+        slot.append("permission", "Run pwd", json.dumps({"request_id": request_id}))
+        future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = future
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "yolo", "request_id": request_id},
+            )
+
+        assert response.status == 502
+        assert future.result() == "approved"
+        assert request_id not in slot._approval_futures
+        assert not slot._remote_approval_forwards
+        assert json.loads(slot.messages[-1]["cls"])["resolved"] == "approved"
+        override.deactivate.assert_called_once_with("dashboard")
+
+    @pytest.mark.asyncio
+    async def test_remote_trust_reads_updates_the_hub_mode(self, tmp_path):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        state.instances_manager = _PeerControlManager()
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-trust-reads"
+        slot.append("permission", "Read file", json.dumps({"request_id": request_id}))
+        future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = future
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "trust_reads", "request_id": request_id},
+            )
+
+        assert response.status == 200
+        assert future.result() == "approved_trust_reads"
+        assert slot._trust_reads is True
+        assert request_id not in slot._approval_futures
+
+    @pytest.mark.asyncio
+    async def test_a_completed_peer_decision_is_idempotently_replayed(self, tmp_path):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("peer-chat-9")
+        state._slots[slot.key] = slot
+        request_id = "peer-lost-success"
+        slot.append("permission", "Run pwd", json.dumps({"request_id": request_id}))
+        future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[request_id] = future
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            first = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "approved", "request_id": request_id},
+            )
+            assert first.status == 200
+            slot._approval_futures.pop(request_id, None)
+            retry = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "approved", "request_id": request_id},
+            )
+            body = await retry.json()
+
+        assert retry.status == 200
+        assert body == {"ok": True, "replayed": True, "decision": "approved"}
+
+    @pytest.mark.asyncio
+    async def test_a_same_id_reprompt_replaces_only_the_fenced_generation(self, tmp_path):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        response_gate = asyncio.Event()
+        second_registered = asyncio.Event()
+        finish_stream = asyncio.Event()
+        manager = _PeerControlManager(response_gate=response_gate)
+        state = _make_state(tmp_path)
+        state.instances_manager = manager
+        slot = _remote_slot()
+        state._slots[slot.key] = slot
+        request_id = "peer-reused-id"
+
+        async def _two_generations() -> AsyncIterator[bytes]:
+            yield _sse(
+                {
+                    "type": "permission",
+                    "content": "Run first",
+                    "cls": json.dumps({"request_id": request_id}),
+                }
+            )
+            await asyncio.wait_for(manager.called.wait(), timeout=1)
+            yield _sse(
+                {
+                    "type": "permission",
+                    "content": "Run second",
+                    "cls": json.dumps({"request_id": request_id}),
+                }
+            )
+            second_registered.set()
+            await asyncio.wait_for(finish_stream.wait(), timeout=1)
+            yield b"data: [DONE]\n\n"
+
+        relay = asyncio.create_task(
+            relay_remote_turn(state, slot, "inspect", chunks=_two_generations())
+        )
+        while request_id not in slot._approval_futures:
+            await asyncio.sleep(0)
+        first_future = slot._approval_futures[request_id]
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            request = asyncio.create_task(
+                client.post(
+                    f"/api/chat/slots/{slot.key}/approve",
+                    json={"action": "rejected_once", "request_id": request_id},
+                )
+            )
+            await asyncio.wait_for(second_registered.wait(), timeout=1)
+            second_future = slot._approval_futures[request_id]
+            assert second_future is not first_future
+            response_gate.set()
+            response = await asyncio.wait_for(request, timeout=1)
+            assert response.status == 200
+            assert slot._approval_futures[request_id] is second_future
+            assert second_future.done() is False
+            assert json.loads(slot.messages[-1]["cls"]).get("resolved") is None
+
+        finish_stream.set()
+        await asyncio.wait_for(relay, timeout=1)
+        assert not any(message["role"] == "error" for message in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_a_peer_side_decision_settles_the_local_mirror(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        request_id = "peer-direct-decision"
+
+        await relay_remote_turn(
+            state,
+            slot,
+            "inspect",
+            chunks=_stream(
+                _sse(
+                    {
+                        "type": "permission",
+                        "content": "Run pwd",
+                        "cls": json.dumps({"request_id": request_id}),
+                    }
+                ),
+                _sse(
+                    {
+                        "type": "relay:approval_resolved",
+                        "content": json.dumps(
+                            {
+                                "id": request_id,
+                                "approved": True,
+                                "decision": "approved",
+                                "slot": "peer-chat-9",
+                            }
+                        ),
+                    }
+                ),
+                b"data: [DONE]\n\n",
+            ),
+        )
+
+        assert request_id not in slot._approval_futures
+        assert json.loads(slot.messages[-1]["cls"])["resolved"] == "approved"
+        resolutions = [
+            call.args[1]
+            for call in state.broadcast_ws.call_args_list
+            if call.args[0] == "approval_resolved"
+        ]
+        assert resolutions == [
+            {
+                "id": request_id,
+                "approved": True,
+                "decision": "approved",
+                "slot": slot.key,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_reject_once_is_false_in_state_fallback_and_broadcast(self, tmp_path):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _ChatSlot("peer-chat-9")
+        state._slots[slot.key] = slot
+        request_id = "reject-once-boolean"
+        state_future = asyncio.get_running_loop().create_future()
+        state._approval_futures[request_id] = state_future
+
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "rejected_once", "request_id": request_id},
+            )
+            assert response.status == 200
+        assert state_future.result() is False
+
+        slot_request_id = "reject-once-broadcast"
+        slot.append("permission", "Run pwd", json.dumps({"request_id": slot_request_id}))
+        slot_future = asyncio.get_running_loop().create_future()
+        slot._approval_futures[slot_request_id] = slot_future
+        async with TestClient(TestServer(_approval_control_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{slot.key}/approve",
+                json={"action": "rejected_once", "request_id": slot_request_id},
+            )
+            assert response.status == 200
+
+        assert state.broadcast_ws.call_args_list[-1].args == (
+            "approval_resolved",
+            {
+                "id": slot_request_id,
+                "approved": False,
+                "decision": "rejected_once",
+                "slot": slot.key,
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_turn_end_retires_a_peer_approval_that_never_resolved(self, tmp_path):
+        """A peer timeout cannot leave an actionable-looking ghost card behind."""
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        request_id = "peer-request-expired"
+
+        await relay_remote_turn(
+            state,
+            slot,
+            "inspect",
+            chunks=_stream(
+                _sse(
+                    {
+                        "type": "permission",
+                        "content": "Run pwd",
+                        "cls": json.dumps({"request_id": request_id}),
+                    }
+                ),
+                b"data: [DONE]\n\n",
+            ),
+        )
+
+        assert request_id not in slot._approval_futures
+        assert json.loads(slot.messages[-1]["cls"])["resolved"] == "rejected"
+        resolutions = [
+            call.args[1]
+            for call in state.broadcast_ws.call_args_list
+            if call.args[0] == "approval_resolved"
+        ]
+        assert resolutions == [
+            {
+                "id": request_id,
+                "approved": False,
+                "decision": "rejected",
+                "slot": slot.key,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_permission_without_a_bounded_string_id_fails_closed(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = _remote_slot()
+
+        await relay_remote_turn(
+            state,
+            slot,
+            "inspect",
+            chunks=_stream(
+                _sse(
+                    {
+                        "type": "permission",
+                        "content": "Run pwd",
+                        "cls": json.dumps({"request_id": "x" * 513}),
+                    }
+                ),
+                b"data: [DONE]\n\n",
+            ),
+        )
+
+        assert slot._approval_futures == {}
+        assert slot.messages[-1]["role"] == "error"
+        assert "usable identifier" in slot.messages[-1]["content"]
 
     @pytest.mark.parametrize(
         "chunks_factory",
@@ -2714,7 +3889,15 @@ class TestRemotePicksAreSerialised:
 #: The three functions in this diff that actually reach the bound peer. Anything
 #: that can call one of them can spend the owner's tunnel credential on the
 #: owner's connected machine, so each needs an owner identity behind it.
-_PEER_SINKS = frozenset({"relay_remote_turn", "forward_peer_stop", "forward_peer_selection"})
+_PEER_SINKS = frozenset(
+    {
+        "relay_remote_turn",
+        "forward_peer_stop",
+        "forward_peer_selection",
+        "forward_peer_approval",
+        "forward_peer_approval_mode",
+    }
+)
 
 _OWNER_GATE = "deny_non_owner_remote_operation"
 

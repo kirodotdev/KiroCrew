@@ -41,6 +41,24 @@ the peer's `POST /api/chat/slots` payload, while agent and model remain sparse
 explicit picks. Omitting the mode would let a local Incognito or Temporary row
 execute as Persistent on the peer and read or write memory the user disabled.
 
+The same slot keeps approval presentation locally while execution authority
+stays on the peer. A relayed permission row creates a bounded, turn-owned mirror
+in the local slot's `_approval_futures`, which drives the ordinary
+`pending_approval` projection. In-flight ownership is tied to the exact future
+generation because Reject once can produce a successor with the same
+connection-scoped request id. Peer decisions carry their exact outcome back;
+matching retries are idempotent, direct peer answers settle the mirror, and a
+generic id shared by multiple slots is refused rather than guessed. Decisions
+and all four approval-mode transitions are owner-gated. Scoped modes carry their
+execution slot; unscoped modes are sent once per execution peer without a slot.
+Local mode state changes only after those peers accept. Each accepted peer keeps
+an authoritative, short-lived rollback snapshot behind a one-use token. It
+preserves the original YOLO source, remaining lifetime and permanence without
+renewing a timed grant; channel persistence is off-loop. Partial failure restores
+from those tokens rather than from incomplete hub mirrors. Turn
+teardown retires only unresolved future generations so no future outlives the
+relay that created it and no same-id successor is removed with its predecessor.
+
 Cross-boundary calls that were observable on `SessionManager` route back through
 the facade, and patchable module dependencies are resolved through injected
 call-time functions. Persistence remains owned by the existing `SessionMap`
