@@ -3265,7 +3265,13 @@ class TestProcessAutoSkillsIntegration:
         assert "grep -n pattern file" in content
 
     @pytest.mark.asyncio
-    async def test_sensitive_session_skipped_even_when_enabled(self, tmp_path):
+    async def test_sensitive_session_is_never_sent_to_the_provider(self, tmp_path):
+        """A sensitive transcript is refused before the prompt, not after it.
+
+        Suppressing only skill detection still ships the credential-touching
+        transcript to the provider. The guard belongs at the dispatch, so it
+        holds for a caller whose own pre-check cleared an earlier tail.
+        """
         from kiro_crew.memory import MemoryStore
         from kiro_crew.skills import SkillsLoader
 
@@ -3297,16 +3303,16 @@ class TestProcessAutoSkillsIntegration:
         async def fake_llm(_prompt):
             nonlocal llm_called
             llm_called = True
-            # The prompt built for this session should NOT include new_skill
-            # because eligibility check failed.  Return basic keys only.
             return {"history_entry": "sensitive session"}
 
         with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
             await consolidator._consolidate("dashboard:chat-3", include_history=True)
 
-        assert llm_called  # consolidation still happened for memory
-        # But no auto skill written
+        assert not llm_called, "a sensitive transcript reached the provider"
         assert skills.list_auto_skills() == []
+        assert conv_log.unconsolidated_count("dashboard:chat-3") == 5, (
+            "a refused span must stay unmarked, or the guard costs the messages"
+        )
 
     @pytest.mark.asyncio
     async def test_credentials_in_llm_output_are_redacted_before_write(self, tmp_path):

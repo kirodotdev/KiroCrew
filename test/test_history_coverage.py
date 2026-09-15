@@ -807,7 +807,7 @@ class TestRetryEligible:
         log.consolidation_retry_state.assert_called_once_with("k", 12)
 
 
-_SPAN = AttemptedSpan(total=10, generation=2, offset=4)
+_SPAN = AttemptedSpan(total=10, generation=2, offset=4, prompted=10)
 
 
 class TestNoteFailedAttempt:

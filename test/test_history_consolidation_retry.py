@@ -158,18 +158,25 @@ def _total(log: ConversationLog, key: str = KEY) -> int:
 
 
 def _span(
-    log: ConversationLog, total: int | None = None, key: str = KEY
+    log: ConversationLog,
+    total: int | None = None,
+    key: str = KEY,
+    prompted: int | None = None,
 ) -> history_mod.AttemptedSpan:
     """The span identity a turn over the CURRENT transcript would attempt.
 
     Mirrors what ``_consolidate`` freezes from its pre-turn snapshot, so a test
     charging a failure by hand stamps the same identity production would.
+    *prompted* defaults to the whole tail — the unsplit case, where one prompt
+    carried every unconsolidated message.
     """
     meta = log.get_metadata(key)
+    extent = _total(log, key) if total is None else total
     return history_mod.AttemptedSpan(
-        total=_total(log, key) if total is None else total,
+        total=extent,
         generation=int(meta.get("rotation_generation", 0) or 0),
         offset=int(meta.get("last_consolidated", 0) or 0),
+        prompted=extent if prompted is None else prompted,
     )
 
 
@@ -996,10 +1003,20 @@ class TestRotationReleasesTheBudgetForNewContent:
             "a rotation left the session permanently unable to consolidate"
         )
 
+        # Each of these rows is megabytes wide, so the prompt budget puts one
+        # message in front of the model per pass. Drive the passes to a fixed
+        # point rather than asserting on one: what the rotation released is that
+        # the tail CAN be consolidated, and a bounded pass reaches that over
+        # successive turns. The pass cap is what proves it terminates.
+        passes = 0
         with patch.object(
             c, "_call_llm", AsyncMock(return_value={"history_entry": "after rotation"})
         ):
-            await c._consolidate(KEY, include_history=True)
+            while log.unconsolidated_count(KEY) and passes < 20:
+                before = log.unconsolidated_count(KEY)
+                await c._consolidate(KEY, include_history=True)
+                assert log.unconsolidated_count(KEY) < before, "a pass consolidated nothing"
+                passes += 1
 
         assert log.unconsolidated_count(KEY) == 0, (
             "post-rotation content never consolidated"
