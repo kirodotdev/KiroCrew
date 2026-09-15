@@ -37,6 +37,14 @@ if [ ! -d "$PKG_DIR" ]; then
   exit 1
 fi
 
+# Full commit SHA of the tree being packaged. Baked alongside DISTRIBUTION so
+# the dashboard bundle-freshness guard can compare it against the build-id
+# stamped into dist/ (see src/kiro_crew/dashboard/stale_bundle_guard.py).
+# Empty-safe: git may be unavailable in some packaging sandboxes (a staged copy
+# is not a git repo), in which case COMMIT stays "" and the guard skips
+# silently rather than false-warning.
+COMMIT="$(git -C "$PKG_DIR" rev-parse HEAD 2>/dev/null || true)"
+
 cat > "$PKG_DIR/_build_info.py" <<EOF
 """Build-time provenance. GENERATED - do not edit and do not commit.
 
@@ -48,6 +56,7 @@ normal case and reports "source".
 from __future__ import annotations
 
 DISTRIBUTION = "$DIST"
+COMMIT = "$COMMIT"
 EOF
 
-echo "Stamped distribution=$DIST -> $PKG_DIR/_build_info.py"
+echo "Stamped distribution=$DIST commit=${COMMIT:-<none>} -> $PKG_DIR/_build_info.py"
