@@ -429,9 +429,14 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
         raise ValueError("file is not executable")
 
     if not strict:
+        # Relaxed mode returns ``original`` (see the return below), so the
+        # agent-writable-tree check must reject a match on EITHER the invoked
+        # path or its resolved target: a repo-planted symlink pointing out to a
+        # trusted binary must not become runnable by its in-tree name.
         for root in agent_writable_roots():
-            if resolved == root or root in resolved.parents:
-                raise ValueError(f"executable is inside the agent-writable tree {root}")
+            for target in (resolved, original):
+                if target == root or root in target.parents:
+                    raise ValueError(f"executable is inside the agent-writable tree {root}")
 
     _check(resolved, label="executable")
     # A symlink's own directory chain is part of the provenance too (relaxed
@@ -446,7 +451,13 @@ def validate_provider_executable(candidate: str, *, require_protected: bool = Fa
         except OSError as exc:
             raise ValueError("executable hierarchy is not accessible") from exc
         _check(parent, label="executable parent")
-    return str(resolved)
+    # In strict mode ``original`` == ``resolved`` (symlinks are refused above).
+    # In relaxed mode, return ``original`` rather than ``resolved``: both paths
+    # are fully ownership-checked, so trust is unchanged, but the invoked name
+    # is preserved. A dispatcher-shim CLI (one multiplexer binary behind a
+    # per-tool symlink) selects its tool from ``argv[0]``; canonicalising the
+    # symlink erases that name and the dispatcher cannot run.
+    return str(resolved if strict else original)
 
 
 def _wellknown_windows_dirs(executable: str) -> tuple[str, ...]:
