@@ -624,6 +624,21 @@ def test_reveal_prefixes_never_split_a_combining_mark():
         assert not unicodedata.combining(title[len(p)])
 
 
+def test_reveal_prefixes_never_split_a_grapheme_cluster():
+    """Cuts use grapheme boundaries, not code points: a ZWJ family, flag,
+    skin-tone, keycap or accented sequence is never left dangling (#10380)."""
+    from kiro_crew.imessage.plaintext import _joins_previous
+
+    title = "季度报告👨\u200d👩\u200d👧完成"
+    prefixes = chat_title._title_reveal_prefixes(title)
+    assert prefixes, "expected an animated reveal"
+    for p in prefixes:
+        assert title.startswith(p)
+        assert p != title
+        # The next character must not join onto the revealed prefix.
+        assert not _joins_previous(title, len(p)), f"split cluster in {p!r}"
+
+
 # --- Per-line excerpt bounding (_bounded_prompt_line) ------------------------
 #
 # A blind slice at the per-line budget lands mid-word, and the titling model

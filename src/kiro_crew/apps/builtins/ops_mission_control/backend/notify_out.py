@@ -75,6 +75,7 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
 # notifications" depending only on test order. Binding here makes the gate patchable by
 # identity (``mock.patch.object(notify_out, ...)``) and immune to that.
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
+from kiro_crew.imessage.plaintext import _grapheme_boundary, _grapheme_end
 from kiro_crew.notifications.bus import NotificationPayload, NotificationValidationError
 
 logger = logging.getLogger(__name__)
@@ -232,7 +233,14 @@ def _redacted(text: str) -> str:
 
 def _clip(text: str, limit: int) -> str:
     text = text.strip()
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+    if len(text) <= limit:
+        return text
+    # Pull the cut back to a grapheme-cluster boundary so a ZWJ family, flag,
+    # skin-tone, keycap or accented sequence is never split (a lone regional
+    # indicator renders as a boxed letter, not a flag). A leading cluster
+    # wider than the limit is emitted whole rather than as an empty cut.
+    cut = _grapheme_boundary(text, limit - 1) or _grapheme_end(text, limit - 1)
+    return text[:cut].rstrip() + "…"
 
 
 def _push(
