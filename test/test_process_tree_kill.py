@@ -5,8 +5,12 @@ kiro-cli sessions.
 """
 from __future__ import annotations
 
+import os
 import signal
-from unittest.mock import AsyncMock, MagicMock, patch
+from contextlib import contextmanager
+from threading import Thread
+from types import FunctionType, SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -15,6 +19,55 @@ from kiro_crew.session import SessionManager
 from kiro_crew.subagent import SubagentManager
 
 # ── Helpers ──
+
+
+@contextmanager
+def _private_process_api():
+    """Run the real POSIX functions with private syscall bindings.
+
+    Patching ``session.os.kill`` changes stdlib os for EVERY thread, including
+    unrelated liveness probes. Rebinding platform_compat.os alone still catches
+    those probes. Copy only this call's function globals instead: the original
+    bytecode (including the broadcast guard) runs, but cannot reach host signals.
+    """
+    from kiro_crew import platform_compat as pc
+
+    names = (
+        "pid_exists",
+        "kill_pid",
+        "kill_process_tree",
+        "kill_pid_async",
+        "kill_process_tree_async",
+    )
+    shared = {name: getattr(os, name, None) for name in ("kill", "killpg", "getpgid")}
+    syscalls = SimpleNamespace(
+        kill=MagicMock(name="kill"),
+        killpg=MagicMock(name="killpg"),
+        getpgid=MagicMock(name="getpgid", side_effect=lambda pid: pid),
+    )
+    namespace = dict(vars(pc), os=syscalls, IS_POSIX=True)
+    for name in names:
+        original = getattr(pc, name)
+        function = FunctionType(
+            original.__code__,
+            namespace,
+            original.__name__,
+            original.__defaults__,
+            original.__closure__,
+        )
+        function.__kwdefaults__ = original.__kwdefaults__
+        namespace[name] = function
+    api = SimpleNamespace(**namespace)
+    try:
+        with (
+            patch("kiro_crew.session.platform_compat", api),
+            patch("kiro_crew.subagent.platform_compat", api),
+        ):
+            yield api
+    finally:
+        for name, original in shared.items():
+            assert getattr(os, name, None) is original, f"shared os.{name} was modified"
+        assert pc.os is os
 
 
 def _make_provider(
@@ -153,10 +206,12 @@ class TestResetProcessTreeKill:
         mgr = SessionManager(cfg, provider_factory=_provider_factory(provider))
         await mgr.get_or_create("t1")
 
-        with patch("kiro_crew.session.os.kill") as mock_kill:
+        with _private_process_api() as api:
             await mgr.reset("t1")
 
-        mock_kill.assert_not_called()
+        api.os.kill.assert_not_called()
+        api.os.killpg.assert_not_called()
+        api.os.getpgid.assert_not_called()
         provider.shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -166,10 +221,12 @@ class TestResetProcessTreeKill:
         mgr = SessionManager(cfg, provider_factory=_provider_factory(provider))
         await mgr.get_or_create("t1")
 
-        with patch("kiro_crew.session.os.kill") as mock_kill:
+        with _private_process_api() as api:
             await mgr.reset("t1")
 
-        mock_kill.assert_not_called()
+        api.os.kill.assert_not_called()
+        api.os.killpg.assert_not_called()
+        api.os.getpgid.assert_not_called()
         provider.shutdown.assert_awaited_once()
 
 
@@ -226,9 +283,8 @@ class TestSigkillSessionProcessTree:
         mgr = self._make_manager(pid=54321)
 
         with (
-            patch("kiro_crew.subagent.os.killpg", side_effect=ProcessLookupError),
-            patch("kiro_crew.subagent.os.kill") as mock_kill,
-            patch("kiro_crew.subagent.os.getpgid", return_value=54321),
+            _private_process_api() as api,
+            patch.object(api.os, "killpg", side_effect=ProcessLookupError) as mock_killpg,
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
             patch("kiro_crew.acp.client._kill_escaped_children"),
             patch("kiro_crew.acp.client._get_start_time", return_value=100),
@@ -236,7 +292,9 @@ class TestSigkillSessionProcessTree:
         ):
             await mgr._sigkill_session("subagent:test1")
 
-        mock_kill.assert_called_once_with(54321, signal.SIGKILL)
+        api.os.getpgid.assert_called_once_with(54321)
+        mock_killpg.assert_called_once_with(54321, signal.SIGKILL)
+        api.os.kill.assert_called_once_with(54321, signal.SIGKILL)
 
     @pytest.mark.asyncio
     async def test_sigkill_merges_child_pids(self):
@@ -333,3 +391,67 @@ class TestSigkillSessionProcessTree:
             await mgr._sigkill_session("subagent:test1")
 
         mock_killpg.assert_not_called()
+
+
+@pytest.mark.parametrize("sig", [0, signal.SIGKILL])
+def test_private_process_api_records_every_signal_without_changing_shared_os(sig):
+    """An unrelated probe uses its own inert backend while this call is active."""
+    from kiro_crew import platform_compat as pc
+
+    original_kill = os.kill
+    original_probe = pc.pid_exists
+    background_kill = MagicMock(name="background_kill")
+    observed = []
+    background_probe = FunctionType(
+        pc.pid_exists.__code__,
+        dict(vars(pc), IS_POSIX=True, os=SimpleNamespace(kill=background_kill)),
+    )
+
+    def probe():
+        observed.append((os.kill is original_kill, pc.os is os, pc.pid_exists is original_probe))
+        observed.append(background_probe(987654321))
+
+    with _private_process_api() as api:
+        for name in (
+            "pid_exists",
+            "kill_pid",
+            "kill_process_tree",
+            "kill_pid_async",
+            "kill_process_tree_async",
+        ):
+            assert getattr(api, name).__code__ is getattr(pc, name).__code__
+        worker = Thread(target=probe)
+        worker.start()
+        try:
+            api.kill_pid(54321, sig)
+        finally:
+            worker.join(5)
+        assert not worker.is_alive()
+        assert observed == [(True, True, True), True]
+        background_kill.assert_called_once_with(987654321, 0)
+        # No signal filtering: even signal 0 in the SUBJECT is fully observable.
+        assert api.os.kill.call_args_list == [call(54321, sig)]
+        api.os.killpg.assert_not_called()
+
+    assert os.kill is original_kill
+    assert pc.pid_exists is original_probe
+
+
+def test_private_process_api_keeps_the_real_broadcast_guard():
+    with _private_process_api() as api:
+        for pid in (0, 1, -1, "54321", MagicMock()):
+            with pytest.raises(ValueError, match="refusing non-int/reserved pid"):
+                api.kill_process_tree(pid, signal.SIGKILL)
+        api.os.kill.assert_not_called()
+        api.os.killpg.assert_not_called()
+        api.os.getpgid.assert_not_called()
+
+
+def test_private_process_api_detects_a_shared_os_patch():
+    """Negative control: the old patch shape must fail the isolation assertion."""
+    original_kill = os.kill
+    with pytest.MonkeyPatch.context() as patched:
+        with pytest.raises(AssertionError, match="shared os.kill was modified"):
+            with _private_process_api():
+                patched.setattr(os, "kill", MagicMock(name="incorrect_shared_patch"))
+    assert os.kill is original_kill

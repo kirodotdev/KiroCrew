@@ -346,6 +346,8 @@ def test_cold_sel_decline_keeps_default_home_synthetic(
     assert paths._resolved_home is None
     # The real synchronous mode avoids leaving a new daemon writer behind.
     audit = SecurityEventLog(base_dir=audit_root, sync=True)
+    # This case exercises the real writer, not the module's capture-only sink.
+    monkeypatch.setattr(agent, "sel", lambda: audit)
     home = _isolate_default_home
     assert paths._resolved_home == home / ".kiro" / "crew"
     assert (home / paths.RECOVERY_BREADCRUMB_NAME).is_file()
@@ -384,6 +386,7 @@ def test_declines_from_a_clone_under_the_temp_dir(monkeypatch, tmp_path):
 
     from kiro_crew import agent
 
+    events = _capture_sel(monkeypatch, agent)
     monkeypatch.delenv("KIRO_HOME", raising=False)
     monkeypatch.delenv("KIROCREW_HOME", raising=False)
     shared = tmp_path / "agents"
@@ -399,6 +402,9 @@ def test_declines_from_a_clone_under_the_temp_dir(monkeypatch, tmp_path):
         assert (
             agent._decline_shared_agent_home() is not None
         ), "a temp-dir clone was allowed to rewrite the shared agent home"
+        assert [event["outcome"] for event in events] == ["denied"]
+        assert events[0]["operation"] == "agent_home_write"
+        assert (shared / agent.AGENT_FILENAME).read_text(encoding="utf-8") == "{}"
 
 
 def test_does_not_decline_from_a_temp_clone_when_no_spec_exists(monkeypatch, tmp_path):
@@ -533,7 +539,7 @@ def test_under_system_tmp_still_answers_yes_for_an_appimage_mount():
     assert _in_ephemeral_tree(mount, env={}) is True
 
 
-def test_does_not_decline_from_a_durable_clone(monkeypatch, tmp_path):
+def test_does_not_decline_from_a_durable_clone(monkeypatch, tmp_path, _shared_home_audit):
     """An ordinary install outside the temp dir still owns its shared specs.
 
     The path is fabricated (never created) precisely because a real path a test
@@ -550,6 +556,8 @@ def test_does_not_decline_from_a_durable_clone(monkeypatch, tmp_path):
     _pretend_target_is_shared(monkeypatch, agent, tmp_path / "agents")
 
     assert agent._decline_shared_agent_home() is None
+    assert [event["outcome"] for event in _shared_home_audit] == ["allowed"]
+    assert _shared_home_audit[0]["operation"] == "agent_home_write"
 
 
 def test_rebuild_agent_config_writes_nothing_when_declined(monkeypatch, tmp_path):
@@ -603,6 +611,14 @@ def _capture_sel(monkeypatch, agent_mod) -> list[dict]:
 
     monkeypatch.setattr(agent_mod, "sel", lambda: _Sel())
     return events
+
+
+@pytest.fixture(autouse=True)
+def _shared_home_audit(monkeypatch) -> list[dict]:
+    """Keep audit side effects local even when a test removes home overrides."""
+    from kiro_crew import agent
+
+    return _capture_sel(monkeypatch, agent)
 
 
 def test_allowed_shared_home_write_is_audited(monkeypatch, tmp_path):

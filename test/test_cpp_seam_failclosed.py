@@ -18,6 +18,7 @@ import dataclasses
 from typing import Any, List, Optional
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from kiro_crew import cli
 from kiro_crew.config.loader import KiroCrewConfig, build_provider_factory

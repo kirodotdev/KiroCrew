@@ -64,7 +64,7 @@ from kiro_crew.sandbox import (
     wrap_argv,
     wrap_argv_async,
 )
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls, redact_local_paths
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from ._shared import (
     _get_memory,
@@ -245,11 +245,25 @@ async def _memory_write_gate(
 
 
 def _store_unavailable_response(store: str, error: Exception | None = None) -> web.Response:
-    """A redacted, named 503 for unavailable memory, including startup recovery."""
+    """A named 503 with fixed guidance, never internal exception text."""
+    from kiro_crew.memory_startup import MemoryStartupUnavailable
+
     message = f"the vector store for memory store {store!r} is unavailable"
-    if error is not None:
-        message = f"memory store {store or 'default'!r} is unavailable: {error}"
-    message, _ = redact_local_paths(message)
+    if isinstance(error, MemoryStartupUnavailable):
+        message = (
+            f"memory store {store or 'default'!r} is being restored and prepared. "
+            "Wait for gateway startup to finish, then retry."
+        )
+    elif isinstance(error, OSError):
+        message = (
+            f"memory store {store or 'default'!r} is unavailable. "
+            "Check file permissions, symbolic or hard links, and database access, then retry."
+        )
+    elif error is not None:
+        message = (
+            f"memory store {store or 'default'!r} is unavailable. "
+            "Check its configuration and database access, then retry."
+        )
     return web.json_response(
         {
             "error": _redact_memory_field(message),

@@ -2602,7 +2602,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         ),
         subagent_result_ttl_secs=_safe_int(agent_data.get("subagent_result_ttl_secs", 3600), 3600),
         workflow_run_timeout_secs=_safe_int(
-            agent_data.get("workflow_run_timeout_secs", 3600), 3600
+            agent_data.get("workflow_run_timeout_secs", 3600), 3600, 60, 21600
         ),
         subagent_cwd_allowed_roots=(
             [r for r in _roots if isinstance(r, str)]

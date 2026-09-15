@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from kiro_crew.cli import main
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig

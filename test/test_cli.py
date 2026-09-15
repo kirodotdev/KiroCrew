@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from kiro_crew.cli_commands import _cron
 from kiro_crew.cli_doctor import _doctor
@@ -1174,7 +1175,7 @@ class TestCronCli:
             _cron(args)
             mock_svc.update_job.assert_called_once_with("abc123", agent_id="oncall-agent")
 
-    def test_cli_argparse_cron_add_agent_flag(self) -> None:
+    def test_cli_argparse_cron_add_agent_flag(self, monkeypatch) -> None:
         """`kirocrew cron add ... --agent NAME` parses into args.agent."""
         import sys
 
@@ -1199,7 +1200,7 @@ class TestCronCli:
             assert ns.name == "daily-briefing"
             assert ns.agent == "ea-briefing"
 
-    def test_cli_argparse_cron_add_no_agent_default_empty(self) -> None:
+    def test_cli_argparse_cron_add_no_agent_default_empty(self, monkeypatch) -> None:
         """Omitting --agent on `cron add` leaves args.agent as empty string."""
         import sys
 
@@ -1219,7 +1220,7 @@ class TestCronCli:
             ns = mock_cron.call_args[0][0]
             assert ns.agent == ""
 
-    def test_cli_argparse_cron_update_agent_flag(self) -> None:
+    def test_cli_argparse_cron_update_agent_flag(self, monkeypatch) -> None:
         """`kirocrew cron update <id> --agent NAME` parses into args.agent."""
         import sys
 
@@ -1240,7 +1241,7 @@ class TestCronCli:
             assert ns.job_id == "abc123"
             assert ns.agent == "oncall-agent"
 
-    def test_cli_argparse_cron_update_no_agent_default_none(self) -> None:
+    def test_cli_argparse_cron_update_no_agent_default_none(self, monkeypatch) -> None:
         """Omitting --agent on `cron update` leaves args.agent as None (skip)."""
         import sys
 

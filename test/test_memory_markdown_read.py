@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 from member_memory_helpers import env as _member_env
 from member_memory_helpers import request
 
@@ -1424,6 +1425,63 @@ async def test_private_anchor_get_returns_scoped_unavailable_reason_without_cont
     assert body["code"] == "store_unavailable"
     assert "member-alice" in body["error"] and "hard links" in body["error"]
     assert "DO-NOT-EXPOSE-THIS-PRIVATE-CONTENT" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("document", ["preferences", "projects"])
+async def test_private_anchor_get_returns_scoped_unavailable_reason_for_a_symlink(env, document):
+    """Same contract as the hard-link case above, for a real symlink leaf.
+
+    A symlinked anchor is refused at the leaf-level ``is_link_or_junction``
+    check in ``MemoryStore._guarded_entry`` before any open — an earlier and
+    distinct refusal reason from the hard-link case's opened-fd check, so it
+    must be covered as its own scenario rather than assumed identical.
+    """
+    from kiro_crew.dashboard.handlers import memory as memory_handlers
+    from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
+
+    memory = await markdown_memory_for_store(env.state, "member-alice")
+    path = memory._memory_dir / f"{document}.md"
+    other = env.home / "memory_stores" / "member-bob" / "private-evidence.txt"
+    other.write_text("DO-NOT-EXPOSE-THIS-PRIVATE-CONTENT", encoding="utf-8")
+    path.unlink()
+    path.symlink_to(other)
+    handler = getattr(memory_handlers, f"api_memory_{document}")
+    response = await handler(request(env, query={"store": "member-alice"}, owner=True))
+    assert response.status == 503
+    body = json.loads(response.text)
+    assert body["code"] == "store_unavailable"
+    assert "member-alice" in body["error"] and "links" in body["error"]
+    assert "DO-NOT-EXPOSE-THIS-PRIVATE-CONTENT" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_private_anchor_get_refusal_is_scoped_to_the_linked_document_only(env):
+    """A hard-linked ``preferences.md`` must not surface as a refusal on the
+    same store's independent, ordinary ``projects.md`` — the fixed guidance
+    is per-request, not a whole-store latch."""
+    from kiro_crew.dashboard.handlers import memory as memory_handlers
+    from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
+
+    memory = await markdown_memory_for_store(env.state, "member-alice")
+    memory.write_projects("# Active Projects\nOrdinary, unaffected document.")
+    prefs_path = memory._memory_dir / "preferences.md"
+    other = env.home / "memory_stores" / "member-bob" / "private-evidence.txt"
+    other.write_text("DO-NOT-EXPOSE-THIS-PRIVATE-CONTENT", encoding="utf-8")
+    prefs_path.unlink()
+    os.link(other, prefs_path)
+
+    prefs_response = await memory_handlers.api_memory_preferences(
+        request(env, query={"store": "member-alice"}, owner=True)
+    )
+    assert prefs_response.status == 503
+    assert json.loads(prefs_response.text)["code"] == "store_unavailable"
+
+    projects_response = await memory_handlers.api_memory_projects(
+        request(env, query={"store": "member-alice"}, owner=True)
+    )
+    assert projects_response.status == 200
+    assert "Ordinary, unaffected document" in projects_response.text
 
 
 @pytest.mark.asyncio

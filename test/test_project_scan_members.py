@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.project_scan import (
+    _MAX_WARNING_REASON,
     MAX_DECLARATION_BYTES,
     Candidate,
     CandidateTree,
@@ -483,8 +484,38 @@ class TestDeclarationFailures:
         tree = scan(tmp_path)
 
         assert len(tree.warnings) == 1
-        assert "\n" not in tree.warnings[0]
-        assert len(tree.warnings[0]) < 400
+        warning = tree.warnings[0]
+        prefix = f"skipped workspace declaration {tmp_path / 'pnpm-workspace.yaml'}: "
+        assert warning.startswith(prefix), (warning, prefix)
+        reason = warning[len(prefix) :]
+        assert "\n" not in reason
+        # Bounded by the renderer's own _MAX_WARNING_REASON contract (truncated
+        # to that many characters, plus at most one ellipsis character), not by
+        # an arbitrary whole-message cap sensitive to the approved root's length.
+        assert len(reason) <= _MAX_WARNING_REASON + 1
+
+    def test_the_rendered_reason_bound_covers_its_own_boundary(self) -> None:
+        """``_warning_reason`` at 199/200/201/far-larger raw input lengths.
+
+        Pins the exact truncation contract directly against the renderer
+        (whitespace already collapsed to isolate the length boundary, since
+        collapsing itself is covered by the redaction tests): a raw reason at
+        or below the cap passes through untouched and gets no ellipsis; one
+        character over truncates to exactly the cap and appends exactly one
+        ellipsis character, and a far larger input hits the same fixed output
+        shape rather than scaling with input size.
+        """
+        for raw_length in (_MAX_WARNING_REASON - 1, _MAX_WARNING_REASON):
+            reason = _warning_reason(ValueError("x" * raw_length))
+            assert reason == "x" * raw_length
+            assert not reason.endswith("…")
+            assert len(reason) == raw_length
+
+        for raw_length in (_MAX_WARNING_REASON + 1, _MAX_WARNING_REASON + 800):
+            reason = _warning_reason(ValueError("x" * raw_length))
+            assert reason == ("x" * _MAX_WARNING_REASON) + "…"
+            assert len(reason) == _MAX_WARNING_REASON + 1
+            assert "\n" not in reason
 
     def test_scanning_a_declaring_tree_still_writes_nothing(self, tmp_path: Path) -> None:
         _npm_root(tmp_path, "packages/*")

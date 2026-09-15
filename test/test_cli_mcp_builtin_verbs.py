@@ -11,6 +11,7 @@ import sys
 import types
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from kiro_crew import cli
 from kiro_crew.apps.builtins import BUILTIN_NAMES

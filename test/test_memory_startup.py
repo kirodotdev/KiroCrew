@@ -782,8 +782,20 @@ async def test_recovery_starting_after_tier_lookup_is_still_a_structured_503(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("document", ["preferences", "projects"])
+@pytest.mark.parametrize("failure", ["identity", "io"])
+@pytest.mark.parametrize(
+    "error_path",
+    [
+        None,
+        "/local/home/example/private-workspace",
+        "/mnt/private-workspace",
+        r"C:\Users\example\private-workspace",
+        r"\\server\share\private-workspace",
+        "relative/private-workspace",
+    ],
+)
 async def test_profile_identity_failure_is_503_instead_of_invalid_content_400(
-    env, monkeypatch, document
+    env, monkeypatch, document, failure, error_path
 ):
     from kiro_crew.dashboard.handlers import memory as handlers
     from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
@@ -791,9 +803,13 @@ async def test_profile_identity_failure_is_503_instead_of_invalid_content_400(
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
     before = memory.read_preferences(), memory.read_projects()
+    private_path = error_path or str(memory._workspace)
+    calls = []
 
     def ownership_lost(*args):
-        raise UnknownMemoryStore(f"Member identity changed at {memory._workspace}")
+        calls.append(args)
+        error_type = UnknownMemoryStore if failure == "identity" else OSError
+        raise error_type(f"Member identity changed at {private_path}")
 
     monkeypatch.setattr(memory, "write_private_profile_validated", ownership_lost)
     req = request(
@@ -803,8 +819,81 @@ async def test_profile_identity_failure_is_503_instead_of_invalid_content_400(
         query={"store": "member-alice"},
         body={"content": "Valid ordinary guidance"},
     ).clone(method="PUT")
+    private_reply = MagicMock(wraps=handlers._private_profile_unavailable_response)
+    monkeypatch.setattr(handlers, "_private_profile_unavailable_response", private_reply)
     response = await getattr(handlers, f"api_memory_{document}")(req)
     assert response.status == 503
-    assert json.loads(response.text)["code"] == "store_unavailable"
+    assert json.loads(response.text) == {
+        "code": "store_unavailable",
+        "error": "Private memory profile is unavailable. Check the gateway log before retrying.",
+    }
+    private_reply.assert_called_once()
+    assert private_reply.call_args.args[0] == "member-alice"
+    assert "member-alice" not in response.text
+    assert len(calls) == 1
+    assert private_path not in json.loads(response.text)["error"]
     assert str(memory._workspace) not in response.text
     assert (memory.read_preferences(), memory.read_projects()) == before
+
+
+@pytest.mark.parametrize("error_base", [OSError, RuntimeError])
+def test_store_unavailable_guidance_does_not_format_internal_exception(error_base):
+    from kiro_crew.dashboard.handlers import memory as handlers
+
+    class PrivateError(error_base):
+        def __str__(self):
+            raise AssertionError("public guidance must not inspect internal exception text")
+
+    response = handlers._store_unavailable_response("member-alice", PrivateError())
+    body = json.loads(response.text)
+    assert response.status == 503
+    assert body["code"] == "store_unavailable"
+    assert "member-alice" in body["error"]
+    if error_base is OSError:
+        assert "hard links" in body["error"]
+    else:
+        assert "configuration and database access" in body["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("document", ["preferences", "projects"])
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+@pytest.mark.parametrize("failure", ["startup", "io", "identity"])
+async def test_profile_preparation_keeps_typed_guidance_without_formatting_error(
+    env, monkeypatch, document, method, failure
+):
+    from kiro_crew.dashboard.handlers import memory as handlers
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    error_base = {
+        "startup": MemoryStartupUnavailable,
+        "io": OSError,
+        "identity": UnknownMemoryStore,
+    }[failure]
+
+    class PrivateError(error_base):
+        def __str__(self):
+            raise AssertionError("shared preparation must not inspect exception text")
+
+    preparation = AsyncMock(side_effect=PrivateError("private details must remain unread"))
+    monkeypatch.setattr(handlers, "markdown_memory_for_store", preparation)
+    private_writer_reply = MagicMock(side_effect=AssertionError("wrong error boundary"))
+    monkeypatch.setattr(handlers, "_private_profile_unavailable_response", private_writer_reply)
+    req = request(
+        env,
+        owner=True,
+        session="dashboard:ui",
+        query={"store": "member-alice"},
+        body={"content": "Ordinary guidance"},
+    ).clone(method=method)
+    response = await getattr(handlers, f"api_memory_{document}")(req)
+    prefix = "memory store 'member-alice' "
+    suffix = {
+        "startup": "is being restored and prepared. Wait for gateway startup to finish, then retry.",
+        "io": "is unavailable. Check file permissions, symbolic or hard links, and database access, then retry.",
+        "identity": "is unavailable. Check its configuration and database access, then retry.",
+    }[failure]
+    assert response.status == 503
+    assert json.loads(response.text) == {"code": "store_unavailable", "error": prefix + suffix}
+    preparation.assert_awaited_once_with(env.state, "member-alice")
+    private_writer_reply.assert_not_called()

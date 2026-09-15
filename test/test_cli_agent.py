@@ -11,6 +11,7 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 from member_memory_helpers import PRIVATE_EXECUTION_GATE
 
 from kiro_crew.cli import main

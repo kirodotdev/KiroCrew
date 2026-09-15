@@ -13,6 +13,7 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from kiro_crew.cli import main
 

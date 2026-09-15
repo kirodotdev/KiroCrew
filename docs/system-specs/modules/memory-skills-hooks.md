@@ -1527,7 +1527,22 @@ the member persona and configured workspace guides before replacing a file.
 Both profile documents share a save lock, preventing concurrent saves from each
 assuming the other's old size. An invalid save keeps the current files intact.
 If the store disappears from configuration during validation, the save returns
-`503 store_unavailable` and preserves the current document.
+`503 store_unavailable` and preserves the current document. Private validated
+PUT failures use `_private_profile_unavailable_response`: a fixed private-profile
+message without the store identity or path; redacted operational diagnostics stay
+in the gateway log. GET failures and GET/PUT store-preparation failures use the
+shared `_store_unavailable_response`, which names the selected store and gives
+fixed configuration/database access guidance; this shared helper never formats
+internal exception text. Startup-recovery exceptions receive
+fixed wait-for-startup-and-retry guidance. I/O failures receive fixed guidance to
+check permissions, symbolic or hard links, and database access; this is a checklist,
+not a diagnosis inferred from exception wording. Identity and I/O failures remain
+failed saves, not invalid-content responses or successful writes. A GET on a
+private anchor whose file is refused by `MemoryStore._guarded_entry` answers the
+same `503 store_unavailable`, naming the store without reflecting the refusal's
+path-bearing message or the linked file's contents. The refusal is scoped to the
+one document requested; an unaffected sibling document in the same store still
+reads normally.
 Turn-time validation still catches subsequently edited project files and names
 the three largest sources when the complete envelope is too large.
 Current private preferences/projects are included when memory context is

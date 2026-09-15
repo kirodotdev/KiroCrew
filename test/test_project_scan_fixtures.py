@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.project_scan import (
+    _MAX_WARNING_REASON,
     MAX_DECLARATION_BYTES,
     SIGNAL_GIT,
     SIGNAL_KIRO,
@@ -481,18 +482,67 @@ class TestMalformedDeclarations:
         warnings = scan(broken_declarations).warnings
 
         # Warnings are reported in the order the walk produced them, which is the
-        # order a user reads the tree in.
-        assert [warning.split(": ", 1)[0] for warning in warnings] == [
-            f"skipped workspace declaration {broken_declarations / 'package.json'}",
-            f"skipped workspace declaration "
-            f"{broken_declarations / 'apps' / 'web' / 'pnpm-workspace.yaml'}",
-            f"skipped workspace declaration "
-            f"{broken_declarations / 'vendor' / 'sdk' / 'Cargo.toml'}",
+        # order a user reads the tree in. Each prefix is the FULL source path —
+        # required identity, never truncated — verified as an exact match before
+        # the reason (the part actually bounded for preview) is inspected on its
+        # own, independent of how long the approved root happens to be.
+        expected_paths = [
+            broken_declarations / "package.json",
+            broken_declarations / "apps" / "web" / "pnpm-workspace.yaml",
+            broken_declarations / "vendor" / "sdk" / "Cargo.toml",
         ]
-        # A reason is rendered in a preview, so it stays short and on one line.
-        for warning in warnings:
-            assert "\n" not in warning
-            assert len(warning) < 400
+        assert len(warnings) == len(expected_paths)
+        for warning, path in zip(warnings, expected_paths, strict=True):
+            prefix = f"skipped workspace declaration {path}: "
+            assert warning.startswith(prefix), (warning, prefix)
+            reason = warning[len(prefix) :]
+            # The reason is rendered in a preview, so it stays short and on one
+            # line — bounded by the renderer's own _MAX_WARNING_REASON contract
+            # (_warning_reason truncates to that many characters and may append
+            # a single ellipsis character), not by an arbitrary whole-message
+            # cap that a long approved TMPDIR would trip for no reason related
+            # to the reason text itself.
+            assert "\n" not in reason
+            assert len(reason) <= _MAX_WARNING_REASON + 1
+
+    def test_a_warning_reason_stays_bounded_on_a_long_approved_root(self, tmp_path: Path) -> None:
+        """The reason bound holds however long the (approved) tmp root is.
+
+        Same declaration content as ``broken_declarations``, mounted under a
+        deliberately long child path, so a fullpath-inclusive whole-message
+        length assertion would trip here even though the reason itself is
+        unchanged — which is exactly the failure mode this test exists to
+        catch without raising the renderer's own bound or truncating path
+        identity to dodge it.
+        """
+        long_root = tmp_path
+        for _ in range(12):
+            long_root = long_root / ("segment-" + "p" * 16)
+        long_root = long_root / "tangle"
+        _write(long_root / "package.json", "{ not json\n")
+        _write(long_root / "apps" / "web" / "pnpm-workspace.yaml", "packages: [unclosed\n")
+        _write(long_root / "vendor" / "sdk" / "Cargo.toml", " " * (MAX_DECLARATION_BYTES + 1))
+        _pkg(long_root / "apps" / "api" / "package.json", "api", workspaces=["libs/*"])
+        _pkg(long_root / "apps" / "web" / "package.json", "web")
+        _make(long_root, "apps/api/libs/core/src/index.ts")
+
+        warnings = scan(long_root).warnings
+
+        expected_paths = [
+            long_root / "package.json",
+            long_root / "apps" / "web" / "pnpm-workspace.yaml",
+            long_root / "vendor" / "sdk" / "Cargo.toml",
+        ]
+        assert len(warnings) == len(expected_paths)
+        for warning, path in zip(warnings, expected_paths, strict=True):
+            prefix = f"skipped workspace declaration {path}: "
+            assert warning.startswith(prefix), (warning, prefix)
+            reason = warning[len(prefix) :]
+            assert "\n" not in reason
+            assert len(reason) <= _MAX_WARNING_REASON + 1
+            # The FULL warning (path + reason) is expected to exceed 400 here —
+            # that is the point: a long approved root must not make this fail.
+            assert len(warning) >= len(str(path))
 
     def test_a_tree_with_broken_declarations_still_scans_identically_twice(
         self, broken_declarations: Path

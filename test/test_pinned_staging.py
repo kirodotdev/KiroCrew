@@ -20,6 +20,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from kiro_crew import pinned_fs, snapshot
 

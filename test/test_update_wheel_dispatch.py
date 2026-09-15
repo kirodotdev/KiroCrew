@@ -13,6 +13,7 @@ import subprocess  # noqa: F401 -- used via monkeypatch.setattr
 from unittest.mock import MagicMock, patch
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 
 def _init_repo(path) -> None:

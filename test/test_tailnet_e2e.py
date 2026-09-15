@@ -47,6 +47,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from kiro_crew.dashboard import tailnet, tailnet_serve
 

@@ -41,6 +41,7 @@ import types
 from pathlib import Path
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from kiro_crew import cli
 from kiro_crew.platform import PlatformCompositionError

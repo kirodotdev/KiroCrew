@@ -30,6 +30,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 from member_memory_helpers import PRIVATE_EXECUTION_GATE
 
 from kiro_crew import cli_commands as cc

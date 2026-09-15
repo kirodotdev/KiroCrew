@@ -10,7 +10,6 @@ Three layers, mirroring the module's structure:
     registration blow-up does not take telemetry down with it.
 """
 
-import gc
 import os
 import threading
 from unittest.mock import patch
@@ -187,26 +186,38 @@ def test_collection_includes_os_views_on_linux():
     assert metrics[pg.GAUGE_OPEN_FDS][0].value >= 3
 
 
-def test_peak_rss_at_least_current_rss():
-    """The high-water mark can never sit below the live reading it bounds.
+def test_rss_gauges_preserve_each_real_probe_reading(monkeypatch):
+    """Publish each source's bytes, not a fabricated current/peak ordering.
 
-    The two readings come from different kernel accounting sources on Linux
-    (``/proc/self/statm`` resident pages vs ``getrusage`` ``ru_maxrss``), and
-    the kernel folds per-thread RSS deltas into the high-water mark lazily —
-    a freshly grown process can read current a few MB above peak. Force a
-    transient spike that dwarfs that lag, release it, and the invariant must
-    hold: the spike lives on in the high-water mark while the live reading
-    has already fallen back.
+    These are separate callbacks, not an atomic snapshot. Linux statm can
+    sum per-CPU RSS deltas that getrusage's approximate high-water accounting
+    has not included, so even current-then-peak can report current > peak.
+    A freed Python allocation need not release resident allocator pages.
+    Capture the actual calls: re-reading either source for the assertion
+    would introduce another measurement with no stable-process guarantee.
     """
-    spike = bytearray(32 * 1024 * 1024)
-    for i in range(0, len(spike), 4096):  # touch every page so it is resident
-        spike[i] = 1
-    del spike
-    gc.collect()
+    readings: dict[str, list[int]] = {pg.GAUGE_RSS: [], pg.GAUGE_PEAK_RSS: []}
+
+    def recording(name, probe):
+        def read():
+            value = probe()
+            readings[name].append(value)
+            return value
+
+        return read
+
+    for name, helper in (
+        (pg.GAUGE_RSS, "proc_rss_bytes"),
+        (pg.GAUGE_PEAK_RSS, "proc_peak_rss_bytes"),
+    ):
+        probe = getattr(pg.platform_compat, helper)
+        monkeypatch.setattr(pg.platform_compat, helper, recording(name, probe))
+
     metrics = _collect()
-    (cur,) = metrics[pg.GAUGE_RSS]
-    (peak,) = metrics[pg.GAUGE_PEAK_RSS]
-    assert peak.value >= cur.value
+    for name in readings:
+        (point,) = metrics[name]
+        assert readings[name] == [point.value], f"{name} did not preserve its own probe reading"
+        assert point.value > 1 << 20
 
 
 def test_raising_reader_yields_gap_not_failure():

@@ -33,6 +33,7 @@ from unittest import mock
 
 import pytest
 from aiohttp import web
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from kiro_crew import memory_schema
 from kiro_crew.config import loader as loader_mod

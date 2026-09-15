@@ -5805,8 +5805,32 @@ def test_trusted_bin_pins_the_resolved_target_not_the_symlink(monkeypatch, tmp_p
     (bin_dir / "gh").symlink_to(target)
     monkeypatch.setattr(runtime_mod, "_TRUSTED_BIN_DIRS", (str(bin_dir),))
 
-    assert mod._trusted_bin("gh") == str(target.resolve())
+    # A temp root can itself live below the real HOME. Model a separate home
+    # only during resolution, without changing the process HOME or the files.
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+        assert mod._trusted_bin("gh") == str(target.resolve())
+        assert mod._TRUSTED_BIN_CACHE["gh"] == str(target.resolve())
     mod._TRUSTED_BIN_CACHE.clear()
+
+
+@pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="POSIX symlink layout")
+def test_trusted_bin_rejects_readonly_target_inside_real_home(monkeypatch, tmp_path):
+    """A read-only target below the actual HOME is still not a system binary."""
+    if not tmp_path.resolve().is_relative_to(Path.home().resolve()):
+        pytest.skip("the test temp root is not inside the actual HOME")
+    target = tmp_path / "gh"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o555)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").symlink_to(target)
+    monkeypatch.setattr(runtime_mod, "_TRUSTED_BIN_DIRS", (str(bin_dir),))
+    mod._TRUSTED_BIN_CACHE.clear()
+    try:
+        assert mod._trusted_bin("gh") is None
+    finally:
+        mod._TRUSTED_BIN_CACHE.clear()
 
 
 @pytest.mark.asyncio

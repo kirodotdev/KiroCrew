@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from cli_test_helpers import cli_sandbox_environment  # noqa: F401
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import cli, pinned_fs

@@ -2482,3 +2482,11 @@ When `agent.model` is `"auto"` (default):
 - Missing file → defaults
 - Invalid JSON → defaults (warning logged)
 - Missing fields → individual defaults
+
+## Workflow run timeout bounds
+
+`agent.workflow_run_timeout_secs` bounds one dynamic-workflow run. The loader
+clamps valid integers to the declared `60..21600` seconds. An absent or invalid
+value uses the declared 3600-second default. Numeric strings and integral floats
+follow the loader's integer coercion; booleans, fractional and non-finite values
+are invalid. The runtime receives the bounded value from the loaded config.
