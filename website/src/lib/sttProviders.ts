@@ -115,6 +115,42 @@ export function unavailableMessage(code: string, detail = ''): string {
 }
 
 /**
+ * Per-code reason for a surface — the chat mic modal — that can only offer an
+ * "Open settings" button, never a provider menu, an enable toggle or a download
+ * control.
+ *
+ * The availability catalog is written for Settings → Voice and several of its
+ * sentences point "above"/"below" at a control that lives only there:
+ * `stt_disabled` ("Switch it on above"), `stt_provider_off` ("Pick another
+ * provider from the Provider menu below"), `stt_unsupported_cpu` /
+ * `stt_load_crashed` / `stt_native_probe_crashed` ("Turn speech-to-text off
+ * above") and `stt_model_missing` ("Download it below"). Pointing the modal user
+ * at a control that is not on screen is the dead end this surface removes, so:
+ *
+ *   - a code whose sentence is self-contained (extra missing, no wheel, import
+ *     failed, the Apple codes) renders that sentence unchanged;
+ *   - `stt_model_missing` gets a modal-specific sentence — its generic fallback
+ *     would wrongly say "provider isn't installed" when only the model is absent —
+ *     naming the real cause and pointing at the modal's own Open settings button;
+ *   - everything else returns '' so the caller shows its generic, button-backed
+ *     fallback rather than a "below" the modal does not have.
+ */
+const MODAL_SAFE_UNAVAILABLE_CODES = new Set([
+  'stt_extra_missing',
+  'stt_no_wheel_for_platform',
+  'stt_import_failed',
+  'stt_apple_unsupported',
+  'stt_apple_needs_toolchain',
+])
+
+export function modalUnavailableMessage(code: string): string {
+  if (code === 'stt_model_missing') {
+    return i18nT('components.voiceDisabledModal.model_not_downloaded_open_settings')
+  }
+  return MODAL_SAFE_UNAVAILABLE_CODES.has(code) ? unavailableMessage(code) : ''
+}
+
+/**
  * Catalog KEY for each machine-readable reason a live dictation STREAM failed.
  *
  * The `error` frame's `code` is the contract and its `message` is advisory English,

@@ -8725,15 +8725,17 @@
     },
     "voiceDisabledModal": {
       "enable_it_under": "Activez-la dans",
+      "model_not_downloaded_open_settings": "Le modèle de reconnaissance vocale n'est pas encore téléchargé sur cette machine. Ouvre les paramètres pour le télécharger.",
       "not_now": "Pas maintenant",
       "open_settings": "Ouvrir les paramètres",
       "pick_an_installed_provider_under_settings_voice": "Choisissez un fournisseur installé dans Paramètres → Voix, ou installez celui en cours.",
       "provider_is_not_installed_on_this_machine": "La reconnaissance vocale est activée, mais le fournisseur « {{provider}} » n'est pas installé sur cette machine : les enregistrements ne peuvent pas être transcrits.",
+      "run_the_command_below_in_a_terminal_to_install_v": "Exécute la commande ci-dessous dans un terminal pour installer la prise en charge vocale, puis recharge la page.",
       "settings_voice": "Paramètres → Voix",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "La reconnaissance vocale n'est pas encore activée, le microphone ne peut donc pas transformer votre voix en texte.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", puis cliquez sur le micro pour dicter dans la zone de message.",
       "turn_on_voice_input": "Activer la saisie vocale",
-      "voice_provider_not_installed": "Fournisseur vocal non installé"
+      "voice_input_cannot_run": "La saisie vocale ne peut pas démarrer"
     },
     "voiceStatusBar": {
       "default_microphone": "Micro par défaut",
