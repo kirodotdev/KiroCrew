@@ -1568,14 +1568,10 @@ def _stop_pod_launchd(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
 def _stop_pod_windows(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     """The Windows half of :func:`stop_pod` — called with the name mutex held.
 
-    Structurally the launchd path, because the two platforms have the same shape
-    of problem: no cgroup to drain, so the surviving-writer hazard is handled by
-    sweeping a grace window rather than by observing a container empty. What
-    differs is only what "confirmed stopped" means —
-    :func:`kiro_crew.pod.windows.stop` proves it by watching the SUPERVISED PID
-    die (and escalating to a pinned tree kill if it will not), because Task
-    Scheduler's own status output is localized and its ``/End`` reaches only the
-    task's own process.
+    A boot-contained Job proves the gateway descendants empty after the exact
+    publisher retires. The seven filesystem sweeps accommodate delayed Windows
+    handle release; they are not a substitute for process retirement. A durable
+    receipt remains until every sweep and the final absence check succeed.
     """
     # windows.stop() is authoritative: rc 0 means the gateway is confirmed gone
     # AND the task is deleted. A non-zero rc means one of those could not be
@@ -1609,8 +1605,14 @@ def _stop_pod_windows(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     # this name read as already-failed before its own boot recorded anything.
     try:
         win_backend.result_path(cfg, name).unlink(missing_ok=True)
-    except OSError:
-        pass
+    except OSError as exc:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=cp.stdout or "",
+            stderr=f"pod result sidecar {win_backend.result_path(cfg, name)} could not "
+            f"be deleted; its retirement receipt was preserved for retry: {exc}",
+        )
     if leftover.exists():
         return subprocess.CompletedProcess(
             args=[],
@@ -1621,6 +1623,15 @@ def _stop_pod_windows(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
                 f"{leftover} — a process is still writing there, so teardown "
                 "is incomplete. Remove it by hand and report this."
             ),
+        )
+    try:
+        win_backend.runs.finish(cfg, name)
+    except (OSError, ValueError) as exc:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=cp.stdout or "",
+            stderr=f"pod HOME is gone but its retirement receipt was preserved: {exc}",
         )
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=cp.stdout or "", stderr="")
 
@@ -4443,6 +4454,10 @@ def boot(cfg: PodConfig, name: str) -> int:
         return EXIT_PROVISIONING
     try:
         return _boot_unguarded(cfg, name)
+    except OSError as exc:
+        if not IS_WINDOWS:
+            raise
+        return _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
     except PodError as exc:
         # Already-recorded refusals return through _refuse and never arrive here;
         # this is the escape hatch closing, so record and give it a terminal code.

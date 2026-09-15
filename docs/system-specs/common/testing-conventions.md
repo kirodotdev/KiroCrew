@@ -349,6 +349,15 @@ which testpath asked for the workers.
   invoking an unprotected filesystem or process operation.
 
 - Tests MUST NOT spawn real kiro-cli processes
+- In-process calls to `cli.main()` clear the inherited sandbox-active and tier
+  markers as part of CLI startup hardening, and its real console initializer
+  publishes the UTF-8 process contract. The root isolation floor snapshots
+  `KIROCREW_SANDBOX_ACTIVE`, `KIROCREW_SANDBOX_LEVEL`, `PYTHONUTF8` and
+  `PYTHONIOENCODING`, then restores all four to their exact prior values
+  (including absence and explicit emptiness) after the test's monkeypatches are
+  undone. The CLI still performs both mutations during the call; tests must not
+  disable either guard. The floor regression uses test-owned streams so Windows
+  stream reconfiguration is observed without changing pytest's capture streams.
 - Tests MUST NOT depend on `~/.kiro/crew/` existing
 - Tests MUST NOT write into the operator's real data dir. `KIROCREW_HOME` is pinned
   per test by the rootdir conftest, which is what makes `config_dir()` safe — and it

@@ -91,26 +91,23 @@ from collections.abc import Callable
 from pathlib import Path
 
 from kiro_crew.instances import run_marker
-from kiro_crew.platform_compat import (
+from kiro_crew.platform_compat import (  # noqa: F401 - compatibility exports for pod callers
     CREATE_NEW_PROCESS_GROUP,
     CREATE_SUSPENDED,
     IS_WINDOWS,
     SIGTERM,
     attributed_descendants,
-    close_process_handle,
 )
 from kiro_crew.platform_compat import created_after as _created_after_impl
-from kiro_crew.platform_compat import (
-    descendant_termination_handles,
+from kiro_crew.platform_compat import (  # noqa: F401 - compatibility exports for pod callers
     kill_process_tree_pinned,
-    open_process_termination_handle,
     pid_exists,
-    process_handle_active,
     process_start_time,
     resume_process_main_thread,
-    terminate_process_handle,
     trusted_system_bin,
 )
+from kiro_crew.pod import _windows_job as jobs
+from kiro_crew.pod import _windows_run as runs
 from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig, environment_vars
 from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
 from kiro_crew.sandbox import apply_windows_resource_ceiling
@@ -122,22 +119,11 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 # backends.
 TASK_FOLDER_ROOT = r"\KiroCrew\pods"
 
-# How long stop() waits for the supervised gateway to go away before escalating
-# to a pinned tree kill. Named so the wait and the message reporting it expiring
-# cannot drift apart.
+# Shared bound for publisher retirement and contained-Job draining.
 STOP_TIMEOUT_SECS = 15.0
 
-# A predecessor can exit one Python statement before the supervisor publishes
-# its handoff marker. Settle a missing pid briefly so teardown sees that marker
-# or the successor's pid record instead of spending the transient empty state.
-_HANDOFF_SETTLE_TIMEOUT_SECS = 1.0
-_HANDOFF_SETTLE_POLL_SECS = 0.05
-
-#: Margin added to :data:`SUCCESSOR_ADOPT_TIMEOUT_SECS` when judging a handoff
-#: marker's freshness, and the same bound teardown waits for one to resolve. Named
-#: once so the writer's ceiling, the reader's bound and the wait cannot drift.
+#: Margin used only by compatibility marker inspection and producer refresh.
 _HANDOFF_FRESHNESS_MARGIN_SECS = 5.0
-_HANDOFF_OUTCOME_POLL_SECS = 0.2
 
 #: How long :func:`supervise_gateway` waits for a restart successor to claim the
 #: pod's gateway sidecar after the process it supervised exits. Bounds how long a
@@ -279,57 +265,22 @@ def task_script_path(cfg: PodConfig, name: str) -> Path:
 
 
 def handoff_marker_path(cfg: PodConfig, name: str) -> Path:
-    """Where the supervisor records that a restart HANDOFF is in progress.
+    """Compatibility sidecar for supervisor handoff visibility, not drain proof.
 
-    Exists because the pid record cannot express "alive, pid not known yet". When
-    ``proc.wait()`` returns, the predecessor is reaped and ``supervised_pid`` fails
-    closed on a dead pid, so the pod reads STOPPED for as long as it takes the
-    successor to claim its sidecar. The stop path settles that transient reading
-    before acting, and where it finds a marker it WAITS, bounded, for the supervisor
-    to decide rather than refusing on sight -- the marker is published on every reap,
-    including the one teardown itself causes.
-
-    A separate marker rather than a stale pid record, because every reader of the
-    record wants "which process", and answering that with a corpse is the fail-OPEN
-    direction this whole module exists to remove. This file answers a different
-    question -- "is a handoff underway" -- and only teardown asks it.
+    PID identity names a gateway; this marker names a handoff publisher. Neither
+    replaces the durable run descriptor and retained Job used by teardown.
     """
     return _plane_file(cfg, name, ".handoff")
 
 
 def handoff_in_progress(cfg: PodConfig, name: str) -> bool:
-    """Whether a restart handoff is underway: judged by its PUBLISHER first.
+    """Read-only compatibility probe; never authorizes runtime reclamation.
 
-    A handoff is something a supervisor is *doing*, so the honest question is
-    whether the supervisor that published this marker is still running -- which
-    the marker answers directly, because it names its writer by pid and
-    creation-time token (:func:`_begin_handoff`), the same identity proof every
-    other reading in this module uses instead of a bare pid.
-
-    * **Publisher alive** (pid live and token matches): a handoff, whatever the
-      marker's age. Age is wall-clock, and a suspended machine keeps a marker
-      ageing while its handoff stands still, so a ``pod down`` run first thing
-      after a long sleep must not read a live handoff as expired and delete the
-      task and HOME beneath the successor.
-    * **Publisher named but gone**: NOT a handoff. ``/End`` reaps the supervisor,
-      and it can do so between the reap of its gateway (which publishes this
-      marker as its very next statement) and the ``finally`` that retracts it.
-      The marker is then ORPHANED, and reading it as a live handoff makes
-      ``pod down`` refuse a pod it has itself just stopped -- leaving the
-      scheduled task registered, which is the residue teardown exists to remove.
-      Time cannot tell that marker from a real one; its writer's liveness can.
-    * **No identity** (an unparseable marker, or one written by a build that
-      carries none): fail closed for as long as a handoff could legitimately
-      still be running -- the adoption timeout the supervisor itself obeys plus a
-      small margin -- and not past it, so such a marker cannot wedge teardown
-      forever.
-
-    An unreadable marker (a stat error) counts as a live handoff: the
-    alternative is deleting a serving pod's HOME on the strength of an I/O error.
-
-    The protection this does NOT give up: an unrecorded successor left behind by
-    a killed supervisor is still caught, by the survivor snapshot taken before
-    anything is signalled and by the still-running check, both in :func:`stop`.
+    A matching live publisher keeps its marker active regardless of age. A
+    positively gone publisher settles this diagnostic; identity-less markers
+    retain the bounded age behavior. Read errors keep reporting in progress.
+    Only the durable run identity, publisher retirement and Job proof in stop
+    establish whether HOME may be reclaimed.
     """
     marker = handoff_marker_path(cfg, name)
     try:
@@ -361,22 +312,11 @@ def _handoff_publisher(raw: str) -> tuple[int, str] | None:
 
 
 def _begin_handoff(cfg: PodConfig, name: str) -> bool:
-    """Publish the handoff marker, reporting whether the window is protected.
+    """Publish the supervisor identity for restart visibility.
 
-    A failure here must not CRASH the supervisor, but it must not be mistaken for
-    a published marker either: the marker is the only thing that stops a
-    concurrent teardown from deleting the isolated HOME while a successor boots,
-    so an unpublished one means the protection does not exist. The caller answers
-    that by ending the successor rather than serving it unprotected — losing an
-    in-app restart is recoverable, losing the HOME under a live gateway is not.
-
-    The payload NAMES THIS PROCESS -- pid plus its creation-time token, the same
-    two-fact identity the pid record carries -- so a reader can ask whether the
-    supervisor that claimed this window still exists rather than inferring it from
-    the file's age. ``/End`` can reap this process between the publication and the
-    retraction in the ``finally``, and an orphan left that way is indistinguishable
-    from a live handoff by mtime alone (see :func:`handoff_in_progress`). Written as
-    one payload rather than appended, so a reader never sees a half-built record.
+    Publication failure ends adoption; the supervisor drains its lifetime Job
+    instead. Marker absence never authorizes cleanup, which requires the
+    independent durable run descriptor and kernel proof.
     """
     token = process_start_time(os.getpid()) or ""
     try:
@@ -583,24 +523,12 @@ def task_exists(cfg: PodConfig, name: str) -> bool:
 # The supervised pid record
 # ------------------------------------------------------------------------- #
 def record_supervised_pid(cfg: PodConfig, name: str, pid: int) -> None:
-    """Record *pid* as pod *name*'s gateway, bound to its start identity.
+    """Record the serving gateway's PID and creation identity for liveness readers.
 
-    A bare pid is not an identity: a wrapper terminated without running its
-    cleanup leaves the record behind, and Windows recycles pids. The
-    creation-time token is what lets :func:`supervised_pid` refuse a recycled
-    number instead of reporting an unrelated process as the pod.
-
-    **Raises on failure, because this record IS the pod's liveness.** Every
-    Windows reader of "is this pod running" resolves through it: with no record
-    ``supervised_pid`` answers None, ``is_active`` reports the pod down, and
-    ``stop`` skips both the tree kill and the still-alive guard, so it deletes
-    the task and the isolated HOME while the gateway is serving and reports
-    success. A silent degrade here therefore does not lose a diagnostic, it
-    fabricates a stopped pod, which is the fail-OPEN direction this backend
-    refuses everywhere else. :func:`supervise_gateway` catches the raise,
-    terminates the child it just spawned, and exits non-zero. A creation time
-    that cannot be read is refused the same way: a record carrying a blank token
-    is one no reader can ever match, so it would fabricate the same stopped pod.
+    Missing identities and write failures raise: a gateway must not serve without
+    a usable visibility record. The supervisor then drains its contained Job.
+    This record is independent of the gateway's own sidecar for port attestation;
+    neither its disappearance nor PID death is a runtime reclamation certificate.
     """
     token = process_start_time(pid)
     if not token:
@@ -695,6 +623,12 @@ def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     fails outright without one. So the task runs as the user, unelevated, which
     is the whole reason this backend is Task Scheduler and not ``sc.exe``.
     """
+    try:
+        if _stop_state_path(cfg, name) is not None or task_exists(cfg, name):
+            raise OSError("prior Windows pod state must be retired before starting again")
+        runs.reserve(cfg, name)
+    except (OSError, ValueError) as exc:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=str(exc))
     script = write_task_script(cfg, name)
     # Clear the previous run's result HOST-side too. The wrapper also does it,
     # but only once the task has started: until then unit_state would read the
@@ -773,117 +707,10 @@ def _still_alive(pid: int, token: str) -> bool:
     return pid_exists(pid) and process_start_time(pid) == token
 
 
-def _describe_processes(pids: list[int]) -> str:
-    """One ``tasklist`` line per pid, for the refusal report. Best-effort."""
-    tasklist = trusted_system_bin("tasklist")
-    if tasklist is None:
-        return ""
-    lines: list[str] = []
-    for pid in pids:
-        try:
-            r = subprocess.run(
-                [tasklist, "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
-                capture_output=True,
-                timeout=10,
-                **UTF8_TEXT,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        lines.append(f"  pid {pid}: {(r.stdout or r.stderr or '').strip()}")
-    return "\n".join(lines)
-
-
-def _drain_exact_windows_tree(
-    root_pid: int,
-    root_handle: int,
-    descendants: dict[int, int],
-    *,
-    timeout: float = 5.0,
-) -> tuple[bool, list[int]]:
-    """Terminate an anchored Windows tree without acting on recyclable PIDs.
-
-    Every retained process is scanned while active and once more after it is
-    observed inactive. Toolhelp keeps a living child's PPID after its parent
-    exits, so that terminal scan closes the stop race where the parent creates
-    a child and exits between polls. Newly discovered children are retained by
-    exact handle and receive the same treatment recursively.
-
-    Two distinct ways of not finishing inside *timeout*. A process that is
-    STILL ACTIVE at the deadline is a known survivor: it is returned as
-    ``(root_alive, orphan_pids)`` so the caller can name the pids in its
-    refusal. Only when nothing is live but a terminal snapshot is still
-    outstanding is the proof itself incomplete, and that raises
-    :class:`TimeoutError` -- the caller reports it as an enumeration failure,
-    because there is no pid left to point at.
-    """
-
-    root_terminally_scanned = False
-    terminally_scanned: set[int] = set()
-    deadline = time.monotonic() + timeout
-    while True:
-        roots: list[tuple[int, int, bool, bool]] = []
-        root_active_before = process_handle_active(root_handle)
-        if root_active_before or not root_terminally_scanned:
-            roots.append((root_pid, root_handle, True, root_active_before))
-        for child_pid, child_handle in tuple(descendants.items()):
-            child_active_before = process_handle_active(child_handle)
-            if child_active_before or child_pid not in terminally_scanned:
-                roots.append((child_pid, child_handle, False, child_active_before))
-        if not roots:
-            break
-
-        for scan_pid, scan_handle, is_root, active_before in roots:
-            descendants.update(
-                descendant_termination_handles(
-                    scan_pid,
-                    descendants,
-                    root_handle=scan_handle,
-                )
-            )
-            active_after = process_handle_active(scan_handle)
-            terminal = not active_before and not active_after
-            if is_root:
-                root_terminally_scanned = terminal
-            elif terminal:
-                terminally_scanned.add(scan_pid)
-            else:
-                terminally_scanned.discard(scan_pid)
-
-        for child_handle in tuple(descendants.values()):
-            if process_handle_active(child_handle):
-                with contextlib.suppress(OSError, ValueError):
-                    terminate_process_handle(child_handle)
-        if process_handle_active(root_handle):
-            with contextlib.suppress(OSError, ValueError):
-                terminate_process_handle(root_handle)
-
-        proof_complete = root_terminally_scanned and all(
-            child_pid in terminally_scanned for child_pid in descendants
-        )
-        if proof_complete:
-            return False, []
-        if time.monotonic() >= deadline:
-            live_children = sorted(
-                child_pid
-                for child_pid, child_handle in descendants.items()
-                if process_handle_active(child_handle)
-            )
-            root_live = process_handle_active(root_handle)
-            if root_live or live_children:
-                return root_live, live_children
-            raise TimeoutError(
-                "exact Windows tree drain timed out before terminal snapshots completed"
-            )
-        time.sleep(0.2)
-
-    # Reaching an empty root set is the same completed proof as the explicit
-    # check above; retained handles are inactive and terminally scanned.
-    return False, []
-
-
 def _stop_state_path(cfg: PodConfig, name: str) -> Path | None:
     """Existing or unreadable pod state is evidence, never proof of writer death."""
     for path in (
+        runs.path(cfg, name),
         pid_record_path(cfg, name),
         task_script_path(cfg, name),
         result_path(cfg, name),
@@ -903,398 +730,67 @@ def _stop_state_path(cfg: PodConfig, name: str) -> Path | None:
 def stop(
     cfg: PodConfig, name: str, *, timeout: float = STOP_TIMEOUT_SECS
 ) -> subprocess.CompletedProcess:
-    """End pod *name*'s task, prove its gateway tree drained, then delete it.
+    """Retire the publisher, drain its boot-contained Job, then delete the task.
 
-    Three things here are not obvious, and each mirrors a hazard the launchd
-    backend documents:
-
-    **``/End`` is asynchronous and only reaches the task's own process.** It
-    returns before the wrapper has exited, and Task Scheduler's termination is
-    not a contractual kill of the whole tree, so the gateway can outlive it. The
-    caller reaps the pod's isolated HOME immediately afterwards, so returning
-    early means deleting state from under a live writer — the removal then fails
-    quietly while the CLI reports zero residue. So anchor the SUPERVISED PID,
-    not the task's status, and prove the whole attributed tree drained. A dead
-    root alone cannot make HOME safe to delete.
-
-    **A survivor is escalated, not waited out forever.** Once the window
-    expires the anchored gateway and every validated descendant are terminated
-    through exact process handles. A recycled PID therefore cannot redirect the
-    stop onto a stranger's process.
-
-    **The unload result must be authoritative.** If the gateway, any
-    attributed child, or the task survives, this returns a failure and keeps
-    the wrapper script. The caller must not tear down state that may belong to
-    a live pod. A ``/End`` or ``/Delete`` against a task that is not there is a
-    no-op, not a failure, which is why both are judged by re-probing existence
-    rather than by their own exit code.
-
-    **The root is anchored before ``/End`` and scanned after exit.** Toolhelp
-    keeps the original PPID on a living direct child after its parent exits.
-    Holding an exact root process handle supplies the missing lifetime boundary:
-    the reported race -- a direct child created after the initial snapshot but
-    before root exit -- is accepted, while a process attached to a recycled root
-    PID is rejected. A descendant already retained by exact handle also receives
-    one final post-exit scan. This does not claim to reconstruct lineage through
-    an intermediary that was never observed and is already gone. If the root
-    cannot be anchored or any required snapshot fails, teardown fails closed and
-    preserves the task and HOME.
-
-    The caller still owns the HOME removal (see ``runtime.stop_pod``) because
-    that goes through ``cleanup_home``'s name re-validation.
+    A legacy PID/marker/tree snapshot cannot establish boot-time containment.
+    Such runs preserve HOME and task rather than granting a token-only fallback.
+    A durable receipt permits retry after the Job disappears, but only after its
+    publisher is proven retired. The caller keeps the name mutex through HOME
+    reclamation and consumes the receipt after all seven cleanup sweeps.
     """
-    # A known root is anchored by an exact process handle before `/End`; numeric
-    # PIDs are never used as termination authority. There is no token-only
-    # fallback: this backend is only dispatched on win32 (runtime.stop_pod), and
-    # the exact-handle primitives answer "not anchorable" off-Windows, which
-    # fails closed below rather than guessing.
-    exact_descendants: dict[int, int] = {}
-    root_handle: int | None = None
-    prior_state = _stop_state_path(cfg, name)
-    gateway_pid = supervised_pid(cfg, name)
-    handoff = handoff_in_progress(cfg, name)
-    if gateway_pid is None and not handoff:
-        settle_deadline = time.monotonic() + _HANDOFF_SETTLE_TIMEOUT_SECS
-        while gateway_pid is None and not handoff and time.monotonic() < settle_deadline:
-            time.sleep(_HANDOFF_SETTLE_POLL_SECS)
-            gateway_pid = supervised_pid(cfg, name)
-            handoff = handoff_in_progress(cfg, name)
-    saw_handoff = handoff
-    if gateway_pid is None and handoff and _await_handoff_outcome(cfg, name, bound=timeout):
-        # The handoff resolved while we waited, so re-read the pid it settled on and
-        # carry on into the ordinary path. Refusing here without waiting was the same
-        # defect the pre-`/Delete` gate had -- and worse, because this arm returns
-        # before `/End` runs at all, so it left the scheduled task registered AND the
-        # pod running. This is the gate the canary's own retry hit.
-        gateway_pid = supervised_pid(cfg, name)
-        handoff = False
-    if gateway_pid is None and handoff:
-        # The pid record cannot name a process right now because a restart handoff
-        # is underway: the predecessor is reaped and the successor has not claimed
-        # its sidecar yet. "No record" therefore does NOT mean "nothing is running",
-        # and proceeding would delete the task and let the caller rmtree the isolated
-        # HOME under a gateway that is booting into it. Refusing is recoverable --
-        # the marker goes stale on its own ceiling if the supervisor died -- while the
-        # deletion is not.
+    try:
+        record = runs.read(cfg, name)
+        if record is None:
+            if _stop_state_path(cfg, name) is not None or task_exists(cfg, name):
+                raise OSError("legacy or unrecorded runtime has no boot-contained Job proof")
+        elif record["state"] not in {"ready", "drained"}:
+            raise OSError("boot publication is incomplete; its runtime cannot be reclaimed")
+        else:
+            publisher_pid, publisher_token = record["publisher"]
+            if publisher_pid == os.getpid():
+                raise OSError("refusing to retire the calling process as a pod publisher")
+            with contextlib.ExitStack() as stack:
+                publisher = jobs.open_identity(publisher_pid, publisher_token)
+                if publisher is not None:
+                    stack.callback(jobs.close_identity, publisher)
+                job = None
+                if record["state"] == "ready":
+                    # Open BEFORE /End can destroy the last publisher-held handle.
+                    # An absent Job is never replaced with an empty one.
+                    job = stack.enter_context(jobs.PodJob.open_existing(record["job"]))
+                    root = jobs.open_identity(*record["root"])
+                    if root is not None:
+                        stack.callback(jobs.close_identity, root)
+                        if not job.contains(root):
+                            raise OSError("recorded initial process is outside its lifetime Job")
+                schtasks("/End", "/TN", task_name(cfg, name))
+                if publisher is not None:
+                    jobs.retire_identity(publisher, timeout=timeout)
+                current = runs.read(cfg, name)
+                if current is None or {**current, "state": "ready"} != {**record, "state": "ready"}:
+                    raise OSError("run identity changed while retiring its publisher")
+                if job is not None:
+                    job.terminate_and_wait(timeout=timeout)
+                    runs.drained(cfg, name, record)
+                # A stored receipt represents a kernel-zero proof with no further
+                # spawn/resume from that publisher. It survives cleanup retries.
+        deleted = schtasks("/Delete", "/TN", task_name(cfg, name), "/F")
+        if deleted.returncode != 0 and task_exists(cfg, name):
+            raise OSError("the drained pod's scheduled task could not be deleted")
+        task_script_path(cfg, name).unlink(missing_ok=True)
+        # Supervisor cleanup is best-effort; authoritative teardown must surface
+        # errors so its durable receipt remains available for a later retry.
+        handoff_marker_path(cfg, name).unlink(missing_ok=True)
+        pid_record_path(cfg, name).unlink(missing_ok=True)
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(
             args=[],
             returncode=1,
             stdout="",
-            stderr=(
-                f"pod {name!r} is handing off to a restarted gateway, so it has no "
-                "settled pid to stop and its state must not be reclaimed yet.\n"
-                f"  Retry in a moment: kirocrew pod down {name}\n"
-                f"  What is up:        kirocrew pod ls"
-            ),
+            stderr=f"pod {name!r}: {exc}. HOME and remaining task/run evidence were "
+            "preserved; this pod is NOT proven zero-residue.",
         )
-    gateway_token = process_start_time(gateway_pid) if gateway_pid is not None else None
-    recorded_gateway = _read_pid_record(cfg, name)
-    snapshot_error: OSError | ValueError | None = None
-    root_alive = False
-    orphans: list[int] = []
-
-    if gateway_pid is None:
-        # A dead/missing root says nothing about surviving descendants. Even a
-        # cleared record or settled handoff is not an exact tree-drain proof.
-        # Only a plane with no evidence of a prior writer may skip anchoring.
-        prior_state = prior_state or _stop_state_path(cfg, name)
-        if recorded_gateway is not None or prior_state or saw_handoff or task_exists(cfg, name):
-            return subprocess.CompletedProcess(
-                args=[],
-                returncode=1,
-                stdout="",
-                stderr=(
-                    f"pod {name!r} has prior runtime state but no provable live root "
-                    "to anchor by exact process handle. Root death, a missing pid "
-                    "record, or a settled handoff cannot prove its descendants "
-                    "stopped. Its HOME and task were preserved; this pod is NOT "
-                    "proven zero-residue. Inspect the prior runtime before reclaiming "
-                    f"state (evidence: {prior_state or 'recorded pid, handoff, or task'})."
-                ),
-            )
-        ended = schtasks("/End", "/TN", task_name(cfg, name))
-    else:
-        if not gateway_token or recorded_gateway != (gateway_pid, gateway_token):
-            return subprocess.CompletedProcess(
-                args=[],
-                returncode=1,
-                stdout="",
-                stderr=(
-                    f"pod {name!r} gateway pid {gateway_pid} does not match its "
-                    "authoritative creation identity, so teardown cannot exclude PID "
-                    "reuse. Its HOME and task were preserved."
-                ),
-            )
-        root_handle = open_process_termination_handle(gateway_pid, gateway_token)
-        if root_handle is None:
-            return subprocess.CompletedProcess(
-                args=[],
-                returncode=1,
-                stdout="",
-                stderr=(
-                    f"pod {name!r} gateway pid {gateway_pid} could not be anchored by "
-                    "an exact process handle matching its creation identity. Its HOME "
-                    "and task were preserved."
-                ),
-            )
-        ended = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
-        try:
-            try:
-                exact_descendants.update(
-                    descendant_termination_handles(
-                        gateway_pid,
-                        exact_descendants,
-                        root_handle=root_handle,
-                    )
-                )
-            except (OSError, ValueError) as exc:
-                snapshot_error = exc
-            if snapshot_error is None:
-                ended = schtasks("/End", "/TN", task_name(cfg, name))
-                deadline = time.monotonic() + timeout
-                while time.monotonic() < deadline:
-                    try:
-                        exact_descendants.update(
-                            descendant_termination_handles(
-                                gateway_pid,
-                                exact_descendants,
-                                root_handle=root_handle,
-                            )
-                        )
-                    except (OSError, ValueError) as exc:
-                        snapshot_error = exc
-                        break
-                    if not process_handle_active(root_handle):
-                        break
-                    time.sleep(0.2)
-                try:
-                    root_alive, orphans = _drain_exact_windows_tree(
-                        gateway_pid,
-                        root_handle,
-                        exact_descendants,
-                    )
-                except (OSError, ValueError) as exc:
-                    snapshot_error = snapshot_error or exc
-                    # Retained handles still name exact owned process objects.
-                    # Best-effort termination is safe, but the failed proof below
-                    # preserves the task and HOME regardless of liveness afterward.
-                    for child_handle in exact_descendants.values():
-                        with contextlib.suppress(OSError, ValueError):
-                            terminate_process_handle(child_handle)
-                    with contextlib.suppress(OSError, ValueError):
-                        terminate_process_handle(root_handle)
-                    root_alive = process_handle_active(root_handle)
-                    orphans = sorted(
-                        child_pid
-                        for child_pid, child_handle in exact_descendants.items()
-                        if process_handle_active(child_handle)
-                    )
-        finally:
-            for child_handle in exact_descendants.values():
-                close_process_handle(child_handle)
-            close_process_handle(root_handle)
-
-    if snapshot_error is not None:
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=ended.stdout or "",
-            stderr=(
-                f"pod {name!r} process tree enumeration failed during teardown: "
-                f"{snapshot_error}. Its HOME and task were preserved; this pod is "
-                "NOT proven zero-residue."
-            ),
-        )
-    if orphans:
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=ended.stdout or "",
-            stderr=(
-                f"the gateway for pod {name!r} exited but {len(orphans)} of its child "
-                f"processes are still running after exact-handle termination (pids "
-                f"{orphans}). Its HOME and task were preserved; this pod is NOT "
-                f"zero-residue.\n{_describe_processes(orphans)}"
-            ),
-        )
-    if root_alive:
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=ended.stdout or "",
-            stderr=(
-                f"the gateway for pod {name!r} is still running after "
-                f"{timeout:.0f}s and exact-handle termination (schtasks /End "
-                f"rc={ended.returncode}). Its HOME and task were preserved; this "
-                "pod is NOT zero-residue."
-            ),
-        )
-    unattributable = _unattributable_live_pid(cfg, name)
-    if unattributable is not None:
-        # A record whose pid is ALIVE but whose creation-time identity does not
-        # match is the one shape that reads as "stopped" while a process is
-        # serving. Deleting the task here hands the caller a rc=0 it would
-        # reclaim the HOME on, out from under that process. A record for a pid
-        # that is GONE is the ordinary hard-stop leftover and passes through.
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=ended.stdout or "",
-            stderr=(
-                f"pod {name!r} has a pid record at {pid_record_path(cfg, name)} "
-                f"naming pid {unattributable}, which is ALIVE but does not carry "
-                "the creation-time identity the record was written with. This pod "
-                "cannot be proven stopped, so its task and HOME were preserved. "
-                f"Inspect pid {unattributable} (its own start time against that "
-                "record's second line): end it by hand if it is this pod's "
-                "gateway, or delete the record if the pid has been recycled onto "
-                f"something else, then re-run `kirocrew pod down {name}`."
-            ),
-        )
-    late_pid = supervised_pid(cfg, name)
-    if late_pid is not None:
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=ended.stdout or "",
-            stderr=(
-                f"the gateway for pod {name!r} appeared during teardown as pid "
-                f"{late_pid}. Its HOME and task were preserved; retry "
-                f"`kirocrew pod down {name}`."
-            ),
-        )
-    late_handoff = handoff_in_progress(cfg, name)
-    if late_handoff and not _await_handoff_outcome(cfg, name, bound=timeout):
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=ended.stdout or "",
-            stderr=(
-                f"pod {name!r} is handing off to a restarted gateway and had not "
-                "settled by the time teardown gave up waiting, so its task and HOME "
-                "were preserved.\n"
-                f"  Retry:             kirocrew pod down {name}\n"
-                f"  What is up:        kirocrew pod ls"
-            ),
-        )
-    if late_handoff:
-        # Settled is not drained: adoption may publish (or clear) a successor
-        # after late_pid was checked. No exact handle proved that new tree.
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=ended.stdout or "",
-            stderr=(
-                f"pod {name!r} settled a restart handoff after its original tree "
-                "was drained, but the successor tree has no exact-handle stop "
-                "proof. Its HOME and task were preserved; retry teardown once "
-                "a live root can be anchored. This pod is NOT proven zero-residue."
-            ),
-        )
-    deleted = schtasks("/Delete", "/TN", task_name(cfg, name), "/F")
-    if deleted.returncode != 0 and task_exists(cfg, name):
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=deleted.returncode or 1,
-            stdout=deleted.stdout or "",
-            stderr=(
-                f"pod {name!r} stopped but its scheduled task at "
-                f"{task_name(cfg, name)} could not be deleted "
-                f"(rc={deleted.returncode}): "
-                f"{(deleted.stderr or deleted.stdout or '').strip()}"
-            ),
-        )
-    # Per-pod state must not outlive the pod: a leftover wrapper makes
-    # runtime.orphan_homes classify the HOME as "installed, not orphaned" and
-    # never collect it, and leaves a definition that could be re-run later.
-    wrapper = task_script_path(cfg, name)
-    try:
-        wrapper.unlink(missing_ok=True)
-    except OSError as exc:
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=deleted.stdout or "",
-            stderr=(
-                f"pod {name!r} stopped but its task wrapper at {wrapper} could "
-                f"not be deleted: {exc}. Its HOME was preserved."
-            ),
-        )
-    # Same rule for the handoff marker. A settled teardown routinely leaves one
-    # behind now -- the reap `/End` caused publishes it -- and while nothing keys on
-    # a stale marker, leaving per-pod state on disk after the pod is gone is exactly
-    # what the wrapper unlink above exists to prevent.
-    _end_handoff(cfg, name)
-    clear_supervised_pid(cfg, name)
-    return subprocess.CompletedProcess(args=[], returncode=0, stdout=ended.stdout or "", stderr="")
-
-
-def _await_handoff_outcome(cfg: PodConfig, name: str, *, bound: float | None = None) -> bool:
-    """Wait, BOUNDED, for a handoff seen during teardown to RESOLVE. True = settled.
-
-    A marker's presence is not a verdict, it is a question a supervisor has not yet
-    answered: :func:`supervise_gateway` publishes one the moment the process it
-    supervised is reaped and only THEN looks for a successor. So teardown waits for
-    the answer instead of assuming the worst, which is what the refusal's own advice
-    ("retry in a moment") was asking every caller to do by hand.
-
-    Three outcomes; none independently proves a tree drained:
-
-    * the marker is retracted -- the supervisor DECIDED, and :func:`_end_handoff`
-      runs on every exit of the successor loop, including the one that ends an
-      unadoptable successor -- so report settled, not safe to reclaim;
-    * a pid is recorded again -- a successor WAS adopted and is running, which is a
-      different refusal from this one, so report unsettled and let the caller say so;
-    * the bound expires with the marker still live -- undecided, so refuse.
-
-    A marker that goes STALE also settles, and deliberately: staleness means nothing
-    is refreshing it, which this module already treats as "its supervisor is presumed
-    dead" (:func:`handoff_in_progress`) and trades for bounded teardown rather than
-    an unbounded refusal. That is the pre-existing trade, not a new one.
-
-    The default bound is the supervisor's own adoption ceiling plus the same margin
-    the freshness test uses, because that is the longest a legitimate handoff can
-    stay undecided. It is injectable so ``stop``'s own ``timeout`` can shorten it --
-    without that, a caller passing a small ``timeout`` could still block here for the
-    full ceiling.
-    """
-    if bound is None:
-        bound = SUCCESSOR_ADOPT_TIMEOUT_SECS + _HANDOFF_FRESHNESS_MARGIN_SECS
-    deadline = time.monotonic() + bound
-    while time.monotonic() < deadline:
-        if not handoff_in_progress(cfg, name):
-            return True
-        if supervised_pid(cfg, name) is not None:
-            return False
-        time.sleep(_HANDOFF_OUTCOME_POLL_SECS)
-    return not handoff_in_progress(cfg, name)
-
-
-def _unattributable_live_pid(cfg: PodConfig, name: str) -> int | None:
-    """The recorded pid when it is ALIVE but cannot prove it is this pod's gateway.
-
-    ``supervised_pid`` collapses four different answers into ``None``: no record,
-    a junk record, a record with no creation-time token, and a token that does
-    not match the live process. The first three are the ordinary shapes of a pod
-    that is genuinely down, and the LAST one is too whenever the pid is gone --
-    a hard ``/End`` reaps the wrapper before its cleanup runs, so a stale record
-    naming a dead pid is the routine leftover.
-
-    The one dangerous shape is a record naming a pid that is still ALIVE and
-    still unattributable, which is what a fragment written by a failed record
-    write, or a pid recycled onto another process, looks like. There ``None``
-    from ``supervised_pid`` means "cannot tell", not "not running", and teardown
-    has to refuse rather than delete state a live process may own.
-
-    Returns that pid, or ``None`` when nothing is in that shape.
-    """
-    record = _read_pid_record(cfg, name)
-    if record is None:
-        return None
-    pid, _token = record
-    if pid <= 0 or supervised_pid(cfg, name) is not None:
-        return None
-    return pid if pid_exists(pid) else None
 
 
 def _live_children_of(pid: int, token: str) -> list[int]:
@@ -1430,333 +926,85 @@ def supervise_gateway(
     *,
     gateway_pid_record: Path,
 ) -> int:
-    """Spawn the pod's gateway, record it, wait for it, and return its exit code.
+    """Contain the suspended gateway before publishing and resuming it.
 
-    *gateway_pid_record* is the path of the pod's OWN gateway pid sidecar (the
-    file a booting gateway rewrites with its pid and start identity). It is
-    handed in rather than re-derived here so the derivation stays in the one
-    place that already owns it, ``runtime._pod_pid_record_path``; a second
-    spelling of that path would be a way for the reader and the writer to drift.
-    It is what lets an in-app restart be ADOPTED rather than misread as a stop —
-    see the successor handling at the end of this function.
-
-    **RESIDUAL, stated because it is not observable rather than not considered:**
-    an adopted successor was not spawned by this process, so there is no handle
-    to read its exit code from, and this task therefore reports the code of the
-    gateway it originally spawned. A gateway that crashes AFTER an in-app restart
-    is thus recorded as a clean task completion, and the crash shows in the pod's
-    logs rather than in ``last_result``. That is no worse than before adoption
-    existed (the record was cleared and the task exited 0 either way) and it is
-    strictly better on the thing that mattered: the pod stays visible to every
-    verb instead of becoming one ``pod down`` would reclaim underneath.
-
-    **The win32 substitute for ``os.execve``**, which the POSIX path ends with.
-    Windows has no ``exec``: CPython's ``os.execve`` spawns a new process and
-    terminates the caller, so using it here would (a) change the pid, breaking
-    ``main_pid``'s contract that it names the process which bound the port, and
-    (b) let the task's own process exit while the gateway kept running,
-    orphaned, with Task Scheduler reporting the task finished. Supervising
-    instead keeps the wrapper alive as the parent, which is what makes ``/End``
-    a real stop and the pid record a real identity.
-
-    ``CREATE_NEW_PROCESS_GROUP`` is the analogue of the POSIX
-    ``start_new_session``: a Ctrl+C in whatever console the task ran under must
-    not reach the pod. Standard handles are deliberately INHERITED so the
-    gateway's output lands in the log files the wrapper redirected — that is the
-    journal on this platform.
-
-    **The resource ceiling is applied here, and this is the only place it can
-    be.** systemd caps a pod with ``MemoryMax``/``CPUQuota`` on the unit; a
-    scheduled task has no such field, so the Windows equivalent is a Job object,
-    which cannot be expressed as an argv prefix and has to be attached to a live
-    pid. The ordering below is what makes it airtight rather than merely small:
-    the child is created ``CREATE_SUSPENDED`` (it has executed no instructions,
-    so it provably has no descendants that could already have escaped the job),
-    the ceiling is attached, and only then is it resumed. That is the sequence
-    ``platform-compat.md`` names for race-free Job object assignment, and
-    :func:`kiro_crew.sandbox.apply_windows_resource_ceiling` reads the same
-    ``resource_limits`` config the cgroup path reads, so one operator setting
-    governs both platforms.
-
-    A ceiling that could not be installed does NOT fail the boot: that matches
-    how an unavailable cgroup scope is handled, and ``apply_job_limits`` has
-    already logged it as a SECURITY warning. A failed RESUME is the opposite --
-    the child is alive but frozen, so it is terminated rather than left to
-    masquerade as a running gateway, which is the policy
-    ``acp.client.finish_suspended_spawn`` implements for the same handshake.
-
-    A pid record that cannot be WRITTEN is fatal for the same reason, one step
-    later. That record is this platform's only liveness answer, so a gateway
-    running without one is a pod every reader calls stopped, and the first
-    ``pod down`` deletes its task and its isolated HOME while it serves. The
-    child is terminated with a pinned tree kill, no record is left behind, and
-    the exit names the path that could not be written.
+    The CLI reservation is claimed once, independently of the CLI name mutex.
+    All restart descendants inherit the lifetime Job, including branches whose
+    intermediaries disappear before either supervisor or stop can observe them.
+    Gateway sidecars still select the serving gateway; they never certify drain.
+    The terminal receipt is published only after the final kernel-zero proof,
+    with no further gateway spawn/resume possible from this invocation.
     """
-    proc = subprocess.Popen(  # noqa: S603 - argv is package-derived, never user text
-        [str(bin_path), *argv],
-        env=env,
-        creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED,
-        close_fds=False,
-    )
-    # A process created CREATE_SUSPENDED has executed nothing and will execute
-    # nothing until it is resumed, so ANY exception between the spawn and the resume
-    # leaks a permanently frozen process that nothing can find: no pid record exists
-    # yet, and Task Scheduler reports the task finished. `apply_job_limits` cannot
-    # raise (it has a blanket except), but `apply_windows_resource_ceiling` reads the
-    # operator's `resource_limits` config OUTSIDE that guard, so its docstring's
-    # "never raises" is a promise no code enforces. Make the window exception-safe
-    # rather than trusting the promise.
-    try:
-        apply_windows_resource_ceiling(proc.pid)
-        resumed = resume_process_main_thread(proc.pid)
-    except BaseException:
-        _terminate_unrecorded_child(proc)
-        print(
-            "FATAL: the pod's gateway was created suspended so its resource ceiling "
-            "could be attached without a race, and attaching or resuming it raised, "
-            "so it was terminated rather than left frozen with no record of it."
-        )
-        raise
-    if not resumed:
-        proc.kill()
-        proc.wait()
-        print(
-            "FATAL: the pod's gateway was created suspended so its resource "
-            "ceiling could be attached without a race, but it could not be "
-            "resumed, so it was terminated rather than left frozen."
-        )
-        return EXIT_REFUSED_UNRECOVERABLE
-    # Read while the process is provably ours: it has just been resumed and this
-    # process holds its handle, so the number cannot yet have been recycled. The
-    # successor pre-check below attributes children against this token.
-    spawn_token = process_start_time(proc.pid) or ""
-    try:
-        record_supervised_pid(cfg, name, proc.pid)
-    except OSError as exc:
-        _terminate_unrecorded_child(proc)
-        # Best-effort, and only ever a PARTIAL record: the write above is the one
-        # that failed, so anything at that name is a fragment no reader may trust.
-        clear_supervised_pid(cfg, name)
-        print(
-            "FATAL: the pod's gateway started but its pid record could not be "
-            f"written at {pid_record_path(cfg, name)} ({exc}). That record is the "
-            "only thing that reports this pod alive on Windows, so the gateway was "
-            "terminated rather than left running as a pod every verb calls stopped "
-            "and `pod down` would reclaim underneath."
-        )
-        return EXIT_REFUSED_UNRECOVERABLE
-    try:
-        rc = proc.wait()
-        # FIRST statement after the reap, deliberately: the window this marker
-        # covers opens the moment the predecessor dies, and liveness is derived
-        # from `pid_exists` on the recorded pid, so it has already flipped by the
-        # time control returns here. Publishing before the wait would keep the
-        # marker present for the pod's whole lifetime and defeat the freshness
-        # bound that stops a dead supervisor from wedging teardown. `stop()`
-        # settles a missing pid across this one-statement gap and then WAITS for
-        # whatever this publication decides, because the reap it is publishing for
-        # is very often the one `stop()` itself just caused. The marker names THIS
-        # process, so a `/End` that reaps this supervisor before the `finally`
-        # retracts it leaves an orphan a reader can recognise instead of waiting out.
-        # Liveness and handoff remain separate because one atomic record changes the
-        # all-backend on-disk contract.
-        protected = _begin_handoff(cfg, name)
-        # An in-app restart does NOT end this pod, and on Windows it looks
-        # exactly like one ending. `POST /api/restart`, the update path and the
-        # stale-assets reload all reach `platform_compat.reexec_python_module`,
-        # whose `os.execv` on this platform is CreateProcess plus an exit of the
-        # caller — measured here: the predecessor reports exit code 0 (so `rc`
-        # cannot tell a restart from a stop), the successor is its CHILD, and the
-        # successor outlives the reap. So `proc.wait()` returns for a pod that is
-        # still serving, under a new pid.
-        #
-        # Clearing the record here would be the fail-OPEN direction, and the
-        # worst one this backend has: the record is the ONLY thing that reports
-        # this pod alive on Windows, so `is_active` would call the pod stopped,
-        # `stop` would take neither the survivor snapshot nor the still-alive
-        # guard, and the next `pod down` would delete the live successor's task
-        # and its isolated HOME — an irreversible `rmtree` under a serving
-        # gateway. Adopt the successor instead and keep supervising it; the
-        # record is cleared only once no successor remains.
-        #
-        # The Job object ceiling survives the handover for free: job membership
-        # covers a member's descendants, and the successor is the member's child.
-        # The anchor ADVANCES with each handover. Both of `_await_successor`'s
-        # signals are relative to the process that was just reaped: the sidecar
-        # read excludes that pid as a leftover, and the tree check asks whether
-        # THAT pid still has a live attributed child. Holding the original
-        # gateway's pid across a second restart breaks both — the intermediate is
-        # dead, so it has no children to find, and the window then closes
-        # instantly with a successor that has not yet rewritten the sidecar still
-        # booting. The `finally` would clear the only record that reports this pod
-        # alive, and `pod down` would rmtree a serving gateway's HOME. It is a
-        # RACE in that shape, not a clean failure: a successor quick enough to
-        # claim the sidecar first survives, a slow one loses the pod.
-        # The LAUNCHER is not the gateway. `bin_path` can spawn the interpreter that
-        # becomes the gateway, and an in-app restart execs inside THAT process, so the
-        # successor is the launcher's GRANDCHILD. Anchoring on the launcher makes the
-        # successor invisible rather than merely hard to find: per-edge attribution
-        # drops a child whose intermediate is dead, together with its whole subtree,
-        # and the intermediate here is exactly the process that just exec'd away. The
-        # window then closes with nothing found, the record is cleared, and `pod down`
-        # rmtrees a serving gateway's HOME.
-        #
-        # So the anchor is the pid the gateway's OWN sidecar named -- but only when
-        # that pid is GONE, which is what makes it the process that was reaped. A
-        # sidecar still naming a LIVE pid is naming the successor itself, and
-        # `_await_successor`'s sidecar signal returns it directly; anchoring on it
-        # would instead exclude it as the leftover.
-        reaped_pid, reaped_token = proc.pid, spawn_token
-        gateway_named = run_marker.read_pid_record_path(gateway_pid_record)
-        if gateway_named is not None:
-            gw_pid, gw_token = gateway_named
-            if gw_pid != proc.pid and not pid_exists(gw_pid):
-                reaped_pid, reaped_token = gw_pid, gw_token
+    record = runs.claim(cfg, name)
+    with jobs.PodJob.create() as job:
+        proc = None
         try:
-            # An unprotected window must not be entered. With no marker published,
-            # `handoff_in_progress` reports nothing in flight while the record names
-            # a pid that is already gone, so a concurrent `pod down` would `/Delete`
-            # the task and rmtree the isolated HOME under whatever is booting. The
-            # `finally` below ends any successor before the state is dropped, which
-            # is the recoverable outcome; serving it unprotected is not.
-            if not protected:
-                print(
-                    "kirocrew-pod: the handoff marker could not be published, so a "
-                    "restart cannot be protected from a concurrent teardown; any "
-                    "successor is being ended instead. Run `pod up` again."
-                )
-            while protected and (
-                (successor := _await_successor(gateway_pid_record, reaped_pid, reaped_token))
-                is not None
-            ):
-                successor_token = process_start_time(successor)
-                if not successor_token:
-                    # No identity: either it already exited between the sighting and
-                    # this read, or it cannot be opened. Confirm which, because the
-                    # two need opposite handling and only one of them is benign.
-                    if pid_exists(successor):
-                        _terminate_unrecorded_pid(successor)
-                        print(
-                            "kirocrew-pod: the gateway restarted itself but the successor's "
-                            "creation time could not be read, so it could not be tracked; "
-                            "it has been ended rather than left serving unrecorded."
-                        )
+            proc = subprocess.Popen(
+                [str(bin_path), *argv],
+                env=env,
+                creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED,
+                close_fds=False,
+            )
+            native = int(getattr(proc, "_handle"))
+            job.assign_suspended(native)
+            identity = jobs.pc._windows_process_handle_identity(native)
+            if identity is None or identity[0] != proc.pid or identity[2] is not None:
+                raise OSError("the suspended gateway has no provable creation identity")
+            # Resource ceilings remain optional and use the existing settings;
+            # the separate lifetime Job is mandatory and already contains it.
+            apply_windows_resource_ceiling(proc.pid)
+            record_supervised_pid(cfg, name, proc.pid)
+            record = runs.ready(cfg, name, record, job.name, (proc.pid, str(identity[1])))
+            if not resume_process_main_thread(proc.pid):
+                raise OSError("the contained gateway could not be resumed")
+            rc = proc.wait()
+            protected = _begin_handoff(cfg, name)
+            reaped_pid, reaped_token = proc.pid, str(identity[1])
+            named = run_marker.read_pid_record_path(gateway_pid_record)
+            if named is not None and named[0] != proc.pid and not pid_exists(named[0]):
+                reaped_pid, reaped_token = named
+            while protected:
+                successor = _await_successor(gateway_pid_record, reaped_pid, reaped_token)
+                if successor is None:
+                    break
+                token = process_start_time(successor)
+                if not token:
+                    raise OSError("restart successor identity is unavailable")
+                handle = jobs.open_identity(successor, token)
+                if handle is None:
                     break
                 try:
+                    if not job.contains(handle):
+                        raise OSError("restart successor is outside this pod's lifetime Job")
                     record_supervised_pid(cfg, name, successor)
-                except OSError as exc:
-                    # Fail CLOSED. Leaving it serving is the unrecoverable direction:
-                    # the record is the only thing that reports this pod alive, so a
-                    # later `pod down` would take neither the survivor snapshot nor
-                    # the still-alive guard and would rmtree the isolated HOME under a
-                    # live writer. Ending it costs the restart and nothing else, and
-                    # it is what makes the advice below safe to follow -- `pod down`
-                    # on a pod that is genuinely gone is the ordinary cleanup path.
-                    _terminate_unrecorded_pid(successor, token=successor_token)
-                    print(
-                        "kirocrew-pod: the gateway restarted itself but the successor's "
-                        f"pid record could not be written at {gateway_pid_record} ({exc}); "
-                        "the successor has been ended so it cannot serve unrecorded. Run "
-                        "`pod down` to clear the task, then boot again."
+                    _wait_for_pid(
+                        successor, token, on_poll=lambda: _refresh_handoff_if_stale(cfg, name)
                     )
-                    break
-                # The refresh runs INSIDE the wait, so the marker never ages into
-                # staleness while this successor lives and the poll's own detection
-                # lag is covered. The re-stamp after this returns then only has to
-                # cover the gap that opens for the NEXT handover.
-                _wait_for_pid(
-                    successor,
-                    successor_token,
-                    on_poll=lambda: _refresh_handoff_if_stale(cfg, name),
-                )
-                # RE-STAMP: this successor is now gone and the next gap has just
-                # opened, so the marker must date from THIS handover rather than
-                # from the first. The freshness bound that stops a dead supervisor
-                # wedging teardown would otherwise read the original mtime and
-                # report no handoff on every handover after the first — the pod's
-                # second in-app restart would then be exactly the fail-open the
-                # marker exists to prevent, since `supervised_pid` is None while
-                # the record still names the successor that just died.
-                if not _begin_handoff(cfg, name):
-                    # The gap that just opened cannot be protected either, so stop
-                    # adopting: the `finally` ends whatever is live before the state
-                    # that would have covered it goes away.
-                    print(
-                        "kirocrew-pod: the handoff marker could not be re-published for "
-                        "this restart, so the window is unprotected; any successor is "
-                        "being ended instead. Run `pod up` again."
-                    )
-                    reaped_pid, reaped_token = successor, successor_token
-                    break
-                reaped_pid, reaped_token = successor, successor_token
+                finally:
+                    jobs.close_identity(handle)
+                reaped_pid, reaped_token = successor, token
+                protected = _begin_handoff(cfg, name)
+            return rc
+        except (OSError, ValueError, AttributeError) as exc:
+            print(f"FATAL: Windows pod lifetime containment refused: {exc}")
+            return EXIT_REFUSED_UNRECOVERABLE
         finally:
-            # Before the protection goes away, make sure there is nothing left to
-            # protect. The loop also exits when `_await_successor` gives up — a
-            # successor that took longer than SUCCESSOR_ADOPT_TIMEOUT_SECS to claim
-            # the sidecar is alive but was never adopted — and the `finally` below
-            # then clears the record while `_end_handoff` retracts the marker,
-            # leaving it serving with NEITHER. That is the same unrecoverable shape
-            # as an unrecordable successor, so it gets the same answer: end it, and
-            # end it before the state that would have covered it is dropped. The
-            # ordering is the whole point; retracting first would reopen the window
-            # for exactly as long as the kill takes.
-            for orphan in _live_children_of(reaped_pid, reaped_token):
-                _terminate_unrecorded_pid(orphan)
-                print(
-                    "kirocrew-pod: the gateway restarted itself but no successor claimed "
-                    f"the pod within {SUCCESSOR_ADOPT_TIMEOUT_SECS:.0f}s, so pid {orphan} "
-                    "could not be adopted; it has been ended rather than left serving "
-                    "with no record. Run `pod down` to clear the task, then boot again."
-                )
-            # Retracted on EVERY exit: adopted, terminated, or timed out. A marker
-            # left behind would block teardown until it went stale, which is the
-            # slow version of the bug this whole handoff exists to avoid.
-            _end_handoff(cfg, name)
-        return rc
-    finally:
-        clear_supervised_pid(cfg, name)
-
-
-def _terminate_unrecorded_pid(pid: int, *, token: str = "") -> None:
-    """End an untrackable process TREE, pinned to its creation time.
-
-    The by-pid twin of :func:`_terminate_unrecorded_child`, for a successor this
-    process adopted rather than spawned: there is no ``Popen`` to fall back on, so
-    the pin is the only safety, and a token that cannot be read means the kill is
-    skipped rather than aimed at whatever now holds the number.
-    """
-    identity = token or process_start_time(pid)
-    if not identity:
-        return
-    with contextlib.suppress(OSError):
-        kill_process_tree_pinned(pid, identity, SIGTERM)
-
-
-def _terminate_unrecorded_child(proc: "subprocess.Popen[bytes]") -> None:
-    """End a gateway that started but could not be recorded, tree and all.
-
-    The pinned tree kill first, because the gateway spawns its own children and
-    ``Popen.kill`` reaches only the process itself, which would leave exactly the
-    grandchildren the Job object ceiling exists to bound. The pin is what keeps a
-    recycled pid from being signalled. ``proc.kill`` then covers the case where no
-    creation-time token can be read, and the wait reaps whichever call landed.
-
-    Every step is independently suppressed, INCLUDING the tree kill: it is one
-    access-denied member away from raising, and an escape there would skip the two
-    fallbacks below it and replace the caller's boot-failure handling with an
-    ``OSError``. The gateway this is called on has no record, so nothing else will
-    ever come back for it -- leaving it running is what the caller is about to
-    reclaim a HOME out from under. A best-effort step must not be able to cancel
-    the step that covers for it.
-    """
-    token = process_start_time(proc.pid)
-    if token:
-        with contextlib.suppress(OSError):
-            kill_process_tree_pinned(proc.pid, token, SIGTERM)
-    with contextlib.suppress(OSError):
-        proc.kill()
-    with contextlib.suppress(OSError, subprocess.SubprocessError):
-        proc.wait(timeout=10)
+            try:
+                # This also covers an assignment failure: the original Popen
+                # handle owns the still-suspended child, without a PID fallback.
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                job.terminate_and_wait(timeout=STOP_TIMEOUT_SECS)
+                _end_handoff(cfg, name)
+                clear_supervised_pid(cfg, name)
+                if record["state"] == "ready":
+                    runs.drained(cfg, name, record)
+            except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                # Keep the run descriptor: a consumer can retry the exact Job,
+                # but must never infer completion from this publisher's exit.
+                print(f"FATAL: Windows pod drain remains unproven: {exc}")
+                raise
 
 
 # ------------------------------------------------------------------------- #

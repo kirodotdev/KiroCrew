@@ -9,17 +9,20 @@ platform flag pinned.
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
 import pytest
+from test_pod_windows_liveness import supervisor as supervisor
+from test_pod_windows_run import model as model
 
 from kiro_crew import cli as kc_cli
 from kiro_crew import platform_compat
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import windows as win
 from kiro_crew.pod.config import PodConfig, environment_vars
+
+__all__ = ["model", "supervisor"]
 
 
 @pytest.fixture
@@ -334,46 +337,16 @@ def test_the_booted_gateway_environment_carries_the_pin(cfg, monkeypatch, tmp_pa
     assert env["KIROCREW_KIRO_BIN"] == str(tmp_path / "fake-kiro.cmd")
 
 
-def test_supervise_gateway_hands_the_pin_to_the_child(cfg, monkeypatch, tmp_path):
-    """Pinned at the CreateProcess boundary: argv plus the env the child gets."""
-    seen: dict[str, object] = {}
-
-    class FakeProc:
-        pid = os.getpid()
-
-        def wait(self, timeout=None):
-            return 0
-
-    def fake_popen(argv, **kwargs):
-        seen["argv"] = list(argv)
-        seen["env"] = dict(kwargs.get("env") or {})
-        return FakeProc()
-
-    monkeypatch.setattr(win.subprocess, "Popen", fake_popen)
-    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
-    # to ``ps`` through the same ``subprocess.Popen`` and would receive FakeProc.
-    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
-    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: True)
-    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: True)
-    # Pinned like `process_start_time`: after the gateway is reaped the supervisor
-    # asks whether a restart successor could exist, and `process_descendants`
-    # shells out to `ps` on macOS -- an unpinned call would hand the fake Popen a
-    # real query. Empty is the ordinary-shutdown answer.
-    monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
+def test_supervise_gateway_hands_the_pin_to_the_child(supervisor, tmp_path):
+    _cfg, state, run = supervisor
     binary = tmp_path / "kirocrew.exe"
     fake = tmp_path / "fake-kiro.cmd"
-
-    win.supervise_gateway(
-        cfg,
-        "demo",
-        binary,
-        ["gateway", "--no-crons"],
-        {"KIROCREW_KIRO_BIN": str(fake)},
-        gateway_pid_record=tmp_path / "no-such-gateway.pid",
-    )
-
-    assert seen["argv"] == [str(binary), "gateway", "--no-crons"]
-    assert dict(seen["env"])["KIROCREW_KIRO_BIN"] == str(fake)
+    state.binary = binary
+    state.argv = ["gateway", "--no-crons"]
+    state.env = {"KIROCREW_KIRO_BIN": str(fake)}
+    assert run() == 0
+    assert state.spawn_args[0] == [str(binary), "gateway", "--no-crons"]
+    assert state.spawn_kwargs["env"]["KIROCREW_KIRO_BIN"] == str(fake)
 
 
 def test_the_canary_pins_a_fake_backend(monkeypatch):

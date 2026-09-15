@@ -411,24 +411,24 @@ Task Scheduler, and `kiro_crew.pod.windows` states the five consequences:
   `port_owner` rests on: the recorded pid IS the process that bound the port.
   It stays an independent fact from the gateway's own PID sidecar (different
   file, different directory, different writer).
-- **A restart HANDOFF is a marker naming its writer, and `pod down` waits it out
-  rather than refusing on sight.** `supervised_pid` fails closed on a dead pid, so
-  between reaping a gateway and recording its successor the pod reads STOPPED while
-  a successor may be booting into its HOME. The supervisor covers that window with
-  `<prefix>.<name>.handoff`, published as the first statement after the reap — which
-  means it is published on EVERY reap, *including the one `pod down` itself causes*.
-  Its presence therefore says only "a supervisor has not yet decided whether a
-  successor exists", so teardown waits, bounded, for that decision: a retracted
-  marker means the supervisor decided and the task is deleted; a pid recorded again
-  means a successor is serving and the stop reports THAT; only a still-undecided
-  marker at the bound refuses. The marker carries its publisher's pid and
-  creation-time token, so a supervisor that `/End` reaped before it could retract is
-  recognised as gone rather than waited out — reading such an orphan as a live
-  handoff made `pod down` refuse pods it had already stopped and leave their
-  scheduled tasks registered. Freshness remains the outer bound, for a supervisor
-  that is alive but wedged; a stale marker is treated as "publisher presumed dead"
-  and traded for bounded teardown, which is the pre-existing trade this backend
-  documents rather than a new one.
+- **Restart adoption and reclamation use different evidence.** The supervisor
+  keeps the gateway PID sidecar and handoff marker for restart visibility. Stop
+  does not use their absence, expiry or polling history as proof of writer death.
+  Before scheduling, the CLI reserves a unique run in `<prefix>.<name>.winrun`.
+  The supervisor claims it once, attaches a mandatory owner-only lifetime Job to
+  its suspended child, and publishes the plane, name, generation, publisher and
+  initial-process identities before resume. All ordinary restart descendants
+  remain in this Job even when an intermediary exits between observations.
+  Stop opens the existing Job before `/End`, pins the publisher by exact identity,
+  retires it, and requires a successful kernel zero count before task deletion.
+  A durable drain receipt survives cleanup failures and is removed only after
+  all HOME cleanup sweeps and handoff/PID/result sidecar deletions succeed. A
+  sidecar deletion failure reports failure and retains the same-generation receipt,
+  so another `pod down` can finish without reopening a vanished Job. A
+  missing/unreadable descriptor, incomplete
+  publication or an inaccessible Job refuses rather than fabricating an empty
+  replacement. Old uncontained pods require verified retirement before another
+  start; merely updating their task definition does not establish containment.
 - **`schtasks` output is localized, so this backend never parses it.** Both the
   CSV headers and the `Status` values are translated on a non-English Windows, so
   a reader keyed on `Status == "Running"` would report every pod down on a German
@@ -489,11 +489,13 @@ failed `pod up` blaming the worktree build. The probe result is cached per
 process, since the gate sits on the chokepoint every `schtasks` call funnels
 through.
 
-Teardown is `stop`'s job here as on the other two. There is no cgroup to drain,
-so `windows.stop` proves the pod gone by watching the **supervised pid** die
-(`/End` is asynchronous and reaches only the task's own process), escalates to
-`platform_compat.kill_process_tree_pinned` if it will not, and refuses to delete
-the task or let the HOME be reclaimed while that pid is still alive.
+Teardown is `stop`'s job here as on the other two. A separate mandatory lifetime
+Job supplies the whole-run proof, independent of the optional resource-ceiling
+Job and its existing settings. The kernel preserves descendant membership across
+parent exit. The controller retires the exact publisher before spending the
+zero-count proof, so asynchronous `/End` and disappearing handoff records cannot
+release HOME reclamation early. This is operational containment of ordinary
+process descendants, not isolation from arbitrary same-user external launch brokers.
 
 `pod api` does not work on Windows, and that is a fail-closed refusal rather than
 a gap in this backend: the authenticated request travels over the pod's private

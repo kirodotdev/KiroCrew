@@ -75,23 +75,31 @@ no model load or inference.
 An open Windows process handle pins its process object and prevents PID reuse even
 through exit; reuse is possible only after exit and the last handle closes
 ([Windows process-object lifetime](https://devblogs.microsoft.com/oldnewthing/20110107-00/?p=11803)).
-`windows.stop` retains root/descendant handles through every scan and closes them
-only in its outer `finally`, so excluding retained PIDs cannot hide a replacement.
+Exact-handle tree discovery retains root/descendant handles through its scans;
+retained PIDs cannot hide a replacement while their handles remain open.
 Host-effect tests must attempt authoritative teardown in `finally`; OS refusal or
 incomplete identity proof must fail loudly and preserve isolated HOME/service
 evidence, never certify zero residue or invoke an unsafe duplicate cleanup authority.
 Service-free, newly owned precondition cleanup is a separate case.
 
-A missing live root is not a completed drain. Before `/End`, `windows.stop`
-refuses when it cannot anchor a live root and finds a PID record (including
-malformed/unreadable/dead/reused identities), wrapper, result, handoff marker,
-HOME, or registered task. State observed before settling is retained as evidence
-if the supervisor clears it while stop waits. A settled handoff does not prove
-its descendants stopped; a handoff observed after the original tree drain also
-blocks deletion, even if its marker disappears while waiting. Only a plane with
-no prior runtime evidence can take the unanchored, never-started no-op path.
-These refusals preserve records, task, and HOME; they do not infer descendant
-death from root death or grant termination authority over a recycled PID.
+`windows.stop` requires a boot-contained Job descriptor or a generation-bound
+kernel-zero receipt. The CLI reserves the run before scheduling; the supervisor
+claims it under a separate short lock, assigns the initial child while suspended,
+and atomically publishes its exact identities before resume. A legacy PID record,
+marker, HOME or task without that protocol refuses reclamation.
+
+Before `/End`, stop opens the existing Job and pins its publisher and available
+initial process by exact identity. Access/query failures never mean death. After
+retiring the publisher it requires a successful Job zero-count query and persists
+a receipt. A publisher may also publish that receipt as its final action after
+draining, with no further child creation or resume. Receipt consumers still retire
+the publisher before cleanup. The receipt survives task-deletion, sidecar-deletion
+or HOME-cleanup failure. Authoritative teardown must delete the handoff marker,
+PID record and result sidecar successfully before consuming the receipt after the
+full seven-sweep HOME cleanup. A retry uses the same generation's receipt even if
+the Job has disappeared; supervisor-side diagnostic cleanup remains best-effort.
+This covers unobserved restart branches without reconstructing dead intermediaries;
+marker/PID record removal and polling history do not authorize reclamation.
 
 `descendant_termination_handles` checks every first-snapshot edge against exact
 handle creation/exit times, then rechecks identity and lifetime bounds after a
@@ -130,6 +138,23 @@ This covers an **already observed, handle-pinned** chain. An intermediary that d
 before it was ever observed/pinned remains unverifiable; a single numeric snapshot
 is not enough to recover that chain. The deterministic and self-owned native
 regressions are in `test/test_platform_compat.py`, `TestProcessDescendants`.
+
+## Pod lifetime Job primitives
+
+`pod._windows_job.PodJob` owns pod-specific named Windows Job handles. Creation
+uses a unique global name and an owner-only protected DACL, so the scheduler and
+CLI can run in different Windows sessions; opening an
+existing job never creates one. Assignment borrows the caller's original process
+handle and requires a never-resumed `CREATE_SUSPENDED` child. Breakaway and
+kill-on-close flags are refused. Membership and accounting errors raise rather
+than reporting absence; termination succeeds only after a bounded kernel zero
+count. Closing a handle does not terminate members. The shared resource-ceiling
+helper and its configuration are unchanged.
+
+The Task Scheduler backend uses these primitives with `pod._windows_run` durable
+run identities and publisher retirement. Job emptiness alone is not reclamation
+authority. Native tests exercise owner-only access, descendant containment,
+nested resource jobs and breakaway refusal; injected failures run on all hosts.
 
 ## Verifying a change
 

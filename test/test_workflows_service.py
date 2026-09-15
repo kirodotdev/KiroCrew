@@ -1059,17 +1059,20 @@ async def test_start_definition_loads_saved_source_off_the_event_loop(
 async def test_start_launches_run_and_injects_on_done(monkeypatch) -> None:
     _patch_stream(monkeypatch, ["stub"])  # the workflow's ctx.agent uses this
     done: list[dict] = []
-    svc = WorkflowService(
-        sessions=FakeSessions([]),
-        on_done=lambda rid, snap: done.append({"rid": rid, **snap}),
-    )
+    notified = asyncio.Event()
+
+    def on_done(rid, snap):
+        done.append({"rid": rid, **snap})
+        notified.set()
+
+    svc = WorkflowService(sessions=FakeSessions([]), on_done=on_done)
     out = await svc.start(GOOD_SCRIPT, name="demo", session_key="slot:main")
     assert "run_id" in out
     snap = await _wait_terminal(svc, out["run_id"])
     assert snap["status"] == "finished"
     assert snap["result"] == {"ok": True}
-    # M6.4: on_done carried the originating session so the result routes to chat
-    await asyncio.sleep(0.02)
+    # Terminal state precedes the durable flush and result-to-chat callback.
+    await asyncio.wait_for(notified.wait(), timeout=3.0)
     assert done and done[0]["session_key"] == "slot:main"
 
 

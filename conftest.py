@@ -642,10 +642,27 @@ def _floor_monkeypatch():
     test and the floor's value is what gets put back first, then the original.
     """
     mp = pytest.MonkeyPatch()
+    # In-process CLI calls clear the sandbox markers and publish the UTF-8
+    # process contract. Preserve the worker's exact outer environment for the
+    # next test, including absent and explicitly empty values.
+    cli_process_environment = {
+        name: os.environ.get(name)
+        for name in (
+            "KIROCREW_SANDBOX_ACTIVE",
+            "KIROCREW_SANDBOX_LEVEL",
+            "PYTHONUTF8",
+            "PYTHONIOENCODING",
+        )
+    }
     try:
         yield mp
     finally:
         mp.undo()
+        for name, value in cli_process_environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 @pytest.fixture

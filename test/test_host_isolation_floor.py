@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import io
 import logging
 import os
 import pathlib
@@ -2050,3 +2051,64 @@ class TestTheWorkerBudgetIsMemoryBounded:
         monkeypatch.setattr("builtins.open", _fake_cgroup)
 
         assert budget._cgroup_limit_mib() == 8 * 1024
+
+
+class TestCliProcessEnvironmentIsRestored:
+    """CLI startup may mutate this call, not the next test's environment."""
+
+    @pytest.mark.parametrize(
+        "initial",
+        [
+            pytest.param(None, id="absent"),
+            pytest.param(
+                ("outer-active", "outer-tier", "0", "latin-1:strict"),
+                id="non-default",
+            ),
+            pytest.param(("", "", "", ""), id="empty"),
+        ],
+    )
+    def test_real_cli_mutations_are_restored_exactly(self, initial, monkeypatch, tmp_path):
+        names = (
+            "KIROCREW_SANDBOX_ACTIVE",
+            "KIROCREW_SANDBOX_LEVEL",
+            "PYTHONUTF8",
+            "PYTHONIOENCODING",
+        )
+        for index, name in enumerate(names):
+            # Record an undo even for absent keys, so a failed assertion cannot
+            # leak the deliberately mutated process environment.
+            monkeypatch.setenv(name, "test-sentinel")
+            if initial is None:
+                monkeypatch.delenv(name)
+            else:
+                monkeypatch.setenv(name, initial[index])
+        before = {name: os.environ.get(name) for name in names}
+
+        # On Windows the real initializer also reconfigures stdout/stderr. Give it
+        # test-owned streams so that side effect is observed without changing
+        # pytest's capture streams for later tests.
+        stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        stderr = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        monkeypatch.setattr(sys, "stdout", stdout)
+        monkeypatch.setattr(sys, "stderr", stderr)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "--help"])
+
+        definition = _root._floor_monkeypatch
+        cycle = getattr(definition, "__wrapped__", definition)()
+        next(cycle)
+        try:
+            with pytest.raises(SystemExit) as exit_info:
+                cli.main()
+            assert exit_info.value.code == 0
+            assert "KIROCREW_SANDBOX_ACTIVE" not in os.environ
+            assert "KIROCREW_SANDBOX_LEVEL" not in os.environ
+            assert os.environ["PYTHONUTF8"] == "1"
+            assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
+            expected_errors = "backslashreplace" if cli.platform_compat.IS_WINDOWS else "strict"
+            assert stdout.errors == expected_errors
+            assert stderr.errors == expected_errors
+        finally:
+            cycle.close()
+
+        assert {name: os.environ.get(name) for name in names} == before

@@ -20,12 +20,17 @@ from __future__ import annotations
 import subprocess
 
 import pytest
+from test_pod_windows_liveness import supervisor as supervisor
+from test_pod_windows_run import contained
+from test_pod_windows_run import model as model
 
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import windows as win
 from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+__all__ = ["model", "supervisor"]
 
 requires_windows = pytest.mark.skipif(
     not IS_WINDOWS, reason="drives the real schtasks.exe, which only exists on win32"
@@ -349,8 +354,15 @@ def test_start_creates_a_manual_run_only_task_then_runs_it(cfg, monkeypatch):
     user" form and the only one that never prompts for a password.
     """
     calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr(win, "schtasks", lambda *a: calls.append(a) or _cp())
-    win.start(cfg, "smoke")
+
+    def task(*args):
+        if args[0] == "/Query":
+            return _cp(returncode=1)
+        calls.append(args)
+        return _cp()
+
+    monkeypatch.setattr(win, "schtasks", task)
+    assert win.start(cfg, "smoke").returncode == 0
     script = win.task_script_path(cfg, "smoke")
     assert calls[0] == (
         "/Create",
@@ -369,18 +381,20 @@ def test_start_creates_a_manual_run_only_task_then_runs_it(cfg, monkeypatch):
     assert script.exists(), "the wrapper must exist before the task points at it"
 
 
-def test_start_clears_a_stale_result_before_creating_the_task(cfg, monkeypatch):
-    """Otherwise unit_state reads the previous boot's failure as this one's."""
-    monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
+def test_start_preserves_a_stale_result_until_its_run_is_retired(cfg, monkeypatch):
+    """A stale result is prior-writer evidence, not permission to start over it."""
+    monkeypatch.setattr(win, "schtasks", lambda *_a: pytest.fail("prior evidence blocks start"))
     win.result_path(cfg, "smoke").write_text("70\n")
-    win.start(cfg, "smoke")
-    assert win.last_result(cfg, "smoke") is None
+    assert win.start(cfg, "smoke").returncode == 1
+    assert win.last_result(cfg, "smoke") == 70
 
 
 def test_start_does_not_run_a_task_it_could_not_create(cfg, monkeypatch):
     calls: list[tuple[str, ...]] = []
 
     def fake(*a):
+        if a[0] == "/Query":
+            return _cp(returncode=1)
         calls.append(a)
         return _cp(returncode=1, stderr="ERROR: Access is denied.")
 
@@ -391,30 +405,14 @@ def test_start_does_not_run_a_task_it_could_not_create(cfg, monkeypatch):
 
 
 @pytest.fixture
-def drainable_stop_root(monkeypatch):
-    """Deletion tests still traverse the real exact-handle drain first."""
-    active = {8001}
-    opened: list[tuple[int, str]] = []
-    closed: list[int] = []
-    monkeypatch.setattr(win, "time", _FakeClock())
-    monkeypatch.setattr(win, "handoff_in_progress", lambda *_a: False)
-    monkeypatch.setattr(win, "supervised_pid", lambda *_a: 4242 if active else None)
-    monkeypatch.setattr(win, "pid_exists", lambda pid: pid == 4242 and bool(active))
-    monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
-    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "1000"))
-    monkeypatch.setattr(
-        win,
-        "open_process_termination_handle",
-        lambda pid, token: opened.append((pid, token)) or 8001,
-    )
-    monkeypatch.setattr(win, "descendant_termination_handles", lambda *_a, **_k: {})
-    monkeypatch.setattr(win, "process_handle_active", lambda handle: handle in active)
-    monkeypatch.setattr(win, "terminate_process_handle", lambda handle: active.discard(handle))
-    monkeypatch.setattr(win, "close_process_handle", closed.append)
-    yield
-    assert not active, "task deletion must follow a drained root"
-    assert opened == [(4242, "1000")]
-    assert closed == [8001]
+def drainable_stop_root(cfg, model):
+    """Deletion tests traverse publisher retirement and the contained Job drain."""
+    _config, state = model
+    contained(cfg, "smoke")
+    yield state
+    assert state.active == 0
+    assert state.events.count("close_identity") == 2
+    assert state.events.count("close_job") == 1
 
 
 def test_stop_ends_then_deletes_and_drops_the_wrapper(cfg, monkeypatch, drainable_stop_root):
@@ -433,79 +431,36 @@ def test_stop_ends_then_deletes_and_drops_the_wrapper(cfg, monkeypatch, drainabl
 
 
 @pytest.mark.parametrize("recycled", [False, True])
-def test_stop_waits_for_the_supervised_pid_before_deleting_anything(cfg, monkeypatch, recycled):
-    """`/End` is asynchronous; stop must poll the exact root handle."""
-
-    monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
-    monkeypatch.setattr(win, "time", _FakeClock())
-    seen = {"n": 0}
-
-    def _active(_handle):
-        seen["n"] += 1
-        return seen["n"] < 4
-
+def test_stop_waits_for_the_supervised_pid_before_deleting_anything(model, monkeypatch, recycled):
+    cfg, state = model
+    contained(cfg)
     monkeypatch.setattr(
-        win,
-        "supervised_pid",
-        lambda *_a: 4242 if seen["n"] < 4 else None,
+        win.jobs, "open_identity", lambda pid, token: None if recycled and pid == 4242 else 8100
     )
-    # Answer liveness from the same poll counter so the liveness view and the
-    # handle view flip together, and a real host process at the invented PID
-    # cannot trip the reuse guard. The recycled arm keeps the pid ALIVE past the
-    # poll, which is the unattributable shape the teardown must refuse on.
-    monkeypatch.setattr(win, "pid_exists", lambda pid: pid == 4242 and (seen["n"] < 4 or recycled))
-    monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
-    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "1000"))
-    monkeypatch.setattr(
-        win,
-        "open_process_termination_handle",
-        lambda _pid, expected: 8001 if expected == "1000" else None,
+    assert win.stop(cfg, "demo").returncode == 0
+    assert (
+        state.events.index("retire")
+        < state.events.index("job_zero")
+        < state.events.index("/Delete")
     )
-    monkeypatch.setattr(win, "descendant_termination_handles", lambda *_a, **_k: {})
-    monkeypatch.setattr(win, "process_handle_active", _active)
-    monkeypatch.setattr(win, "terminate_process_handle", lambda _handle: True)
-    monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
-    win.write_task_script(cfg, "smoke")
-
-    result = win.stop(cfg, "smoke")
-    assert result.returncode == (1 if recycled else 0), result.stderr
-    assert seen["n"] >= 4, "stop must poll rather than trust /End's return"
-    assert win.task_script_path(cfg, "smoke").exists() is recycled
-    if recycled:
-        assert "ALIVE but does not carry" in result.stderr
+    assert state.events.count("close_identity") == (1 if recycled else 2)
+    assert state.active == 0
 
 
-def test_stop_preserves_everything_when_the_gateway_will_not_die(cfg, monkeypatch):
-    monkeypatch.setattr(win, "schtasks", lambda *a: _cp())
-    monkeypatch.setattr(win, "time", _FakeClock())
-    monkeypatch.setattr(win, "supervised_pid", lambda *_a: 4242)
-    monkeypatch.setattr(win, "process_start_time", lambda _pid: "1000")
-    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "1000"))
-    monkeypatch.setattr(
-        win,
-        "open_process_termination_handle",
-        lambda _pid, expected: 8001 if expected == "1000" else None,
-    )
-    monkeypatch.setattr(win, "descendant_termination_handles", lambda *_a, **_k: {})
-    monkeypatch.setattr(win, "process_handle_active", lambda _handle: True)
-    terminated: list[int] = []
-    monkeypatch.setattr(
-        win,
-        "terminate_process_handle",
-        lambda handle: terminated.append(handle) or True,
-    )
-    monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
-    win.write_task_script(cfg, "smoke")
+def test_stop_preserves_everything_when_the_gateway_will_not_die(model, monkeypatch):
+    cfg, state = model
+    contained(cfg)
+    wrapper = win.write_task_script(cfg, "demo")
 
-    cp = win.stop(cfg, "smoke")
+    def survives(*_a, **_kw):
+        raise TimeoutError("contained process remains active")
 
-    assert cp.returncode == 1
-    # A root that stays active is a KNOWN survivor, reported as such -- not
-    # folded into the "enumeration failed" refusal, which has no pid to name.
-    assert "is still running" in cp.stderr and "NOT zero-residue" in cp.stderr
-    assert "enumeration failed" not in cp.stderr
-    assert terminated and terminated[0] == 8001
-    assert win.task_script_path(cfg, "smoke").exists(), "a live pod keeps its definition"
+    monkeypatch.setattr(win.jobs.PodJob, "terminate_and_wait", survives)
+    cp = win.stop(cfg, "demo")
+    assert cp.returncode == 1 and "remains active" in cp.stderr
+    assert "/Delete" not in state.events
+    assert state.active == 1 and wrapper.exists()
+    assert win.runs.read(cfg, "demo")["state"] == "ready"
 
 
 def test_stop_reports_a_task_it_could_not_delete(cfg, monkeypatch, drainable_stop_root):
@@ -677,209 +632,53 @@ def test_stop_pod_clears_the_recorded_result_so_a_reused_name_starts_clean(cfg, 
     assert win.last_result(cfg, "smoke") is None
 
 
-def test_boot_supervises_instead_of_exec_on_windows(cfg, monkeypatch, tmp_path):
-    """Windows has no exec: os.execve there spawns and terminates the caller.
-
-    Using it would change the pid (so main_pid would stop naming the process
-    that bound the port) and let the task's own process exit while the gateway
-    kept running orphaned, with Task Scheduler reporting the task finished.
-    """
-    import os
-    import sys
-
-    seen: dict[str, object] = {}
-
-    class FakeProc:
-        pid = os.getpid()
-
-        def wait(self):
-            return 3
-
-    def fake_popen(argv, **kwargs):
-        seen["argv"] = argv
-        seen["flags"] = kwargs.get("creationflags")
-        return FakeProc()
-
-    monkeypatch.setattr(win.subprocess, "Popen", fake_popen)
-    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
-    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
-    # Popen a real query and fail on the fake's missing context-manager protocol.
-    # On Linux it reads /proc and the pin is a no-op.
-    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
-    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: True)
-    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: True)
-    # Same reason as the pin above, for the other platform primitive the
-    # supervision loop reads. After the gateway is reaped it asks whether a
-    # restart successor could exist, and `process_descendants` shells out to `ps`
-    # on macOS -- an unpinned call would hand the fake Popen a real query. Empty
-    # is the ordinary-shutdown answer: nothing to adopt.
-    monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
-    rc = win.supervise_gateway(
-        cfg,
-        "smoke",
-        tmp_path / "kirocrew",
-        ["gateway", "--no-crons"],
-        {"A": "b"},
-        gateway_pid_record=_no_successor(tmp_path),
-    )
-    assert rc == 3
-    assert seen["argv"][1:] == ["gateway", "--no-crons"]
-    # The flag composition itself is pinned by
-    # test_the_ceiling_is_attached_while_the_gateway_is_still_suspended, which
-    # substitutes sentinels because both constants are 0 off win32.
-    assert seen["flags"] == win.CREATE_NEW_PROCESS_GROUP | win.CREATE_SUSPENDED
-    # The record is dropped once the gateway exits, so a dead pod never attests.
-    assert win.supervised_pid(cfg, "smoke") is None
-    assert sys is not None  # keep the import meaningful for linters
-
-
-def test_the_ceiling_is_attached_while_the_gateway_is_still_suspended(cfg, monkeypatch, tmp_path):
-    """Order is the whole guarantee, so it is pinned rather than left to reading.
-
-    Job membership covers a member's FUTURE descendants, not ones it already
-    spawned, so attaching the ceiling to a RUNNING child leaves a window where a
-    grandchild escapes. A child created suspended has executed no instructions
-    and provably has no descendants, which closes that window by construction --
-    which only holds if the calls happen in this order.
-
-    The two creation flags are replaced with distinct sentinels for the duration:
-    both are literally ``0`` off win32, so asserting on their real values would
-    make this test vacuous on the matrix that actually runs it.
-    """
-    import os
-
-    order: list[str] = []
-    monkeypatch.setattr(win, "CREATE_NEW_PROCESS_GROUP", 0x200)
-    monkeypatch.setattr(win, "CREATE_SUSPENDED", 0x4)
-
-    class FakeProc:
-        pid = os.getpid()
-
-        def wait(self):
-            return 0
-
-    def fake_popen(argv, **kwargs):
-        assert kwargs["creationflags"] & win.CREATE_SUSPENDED, (
-            "the gateway must be created SUSPENDED, or the ceiling races the "
-            "descendants it is meant to bound"
-        )
-        assert (
-            kwargs["creationflags"] & win.CREATE_NEW_PROCESS_GROUP
-        ), "the pod must still be out of the task console's Ctrl+C group"
-        order.append("spawn")
-        return FakeProc()
-
-    monkeypatch.setattr(win.subprocess, "Popen", fake_popen)
-    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
-    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
-    # Popen a real query and fail on the fake's missing context-manager protocol.
-    # On Linux it reads /proc and the pin is a no-op.
-    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
-    monkeypatch.setattr(
-        win, "apply_windows_resource_ceiling", lambda pid: order.append("ceiling") or True
-    )
-    monkeypatch.setattr(
-        win, "resume_process_main_thread", lambda pid: order.append("resume") or True
-    )
-    # Pinned like `process_start_time`: the post-reap successor check would
-    # otherwise shell out to a real `ps` on macOS. Empty keeps it out of `order`.
-    monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
+def test_boot_supervises_instead_of_exec_on_windows(supervisor):
+    cfg, state, run = supervisor
+    state.argv = ["gateway", "--no-crons"]
+    state.env = {"A": "b"}
+    state.exit_code = 3
+    assert run() == 3
+    assert state.spawn_args[0][1:] == state.argv
+    assert state.spawn_kwargs["env"] == state.env
     assert (
-        win.supervise_gateway(
-            cfg,
-            "smoke",
-            tmp_path / "kirocrew",
-            ["gateway"],
-            {},
-            gateway_pid_record=_no_successor(tmp_path),
-        )
-        == 0
+        state.spawn_kwargs["creationflags"] == win.CREATE_NEW_PROCESS_GROUP | win.CREATE_SUSPENDED
     )
-    assert order == ["spawn", "ceiling", "resume"]
+    assert win.supervised_pid(cfg, "demo") is None
 
 
-def test_a_gateway_that_cannot_be_resumed_is_killed_not_left_frozen(cfg, monkeypatch, tmp_path):
-    """A frozen child must never masquerade as a running gateway.
-
-    Same policy ``acp.client.finish_suspended_spawn`` implements for this
-    handshake: a failed resume leaves a process that is alive, answers nothing,
-    and would otherwise sit there until the boot timeout blamed the worktree.
-    """
-    import os
-
-    killed: list[str] = []
-
-    class FakeProc:
-        pid = os.getpid()
-
-        def kill(self):
-            killed.append("kill")
-
-        def wait(self):
-            return 0
-
-    monkeypatch.setattr(win.subprocess, "Popen", lambda argv, **kw: FakeProc())
-    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
-    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
-    # Popen a real query and fail on the fake's missing context-manager protocol.
-    # On Linux it reads /proc and the pin is a no-op.
-    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
-    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: True)
-    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: False)
-    # Pinned like `process_start_time`: the post-reap successor check would
-    # otherwise shell out to a real `ps` on macOS.
-    monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
-    rc = win.supervise_gateway(
-        cfg,
-        "smoke",
-        tmp_path / "kirocrew",
-        ["gateway"],
-        {},
-        gateway_pid_record=_no_successor(tmp_path),
+def test_the_ceiling_is_attached_while_the_gateway_is_still_suspended(supervisor, monkeypatch):
+    cfg, state, run = supervisor
+    monkeypatch.setattr(
+        win, "apply_windows_resource_ceiling", lambda _pid: state.events.append("ceiling") or True
     )
-    assert killed == ["kill"]
-    assert rc == EXIT_REFUSED_UNRECOVERABLE
-    # Nothing was recorded, so no reader can attest for a pod that never ran.
-    assert win.supervised_pid(cfg, "smoke") is None
+
+    def resume(_pid):
+        assert win.runs.read(cfg, "demo")["state"] == "ready"
+        state.events.append("resume")
+        return True
+
+    monkeypatch.setattr(win, "resume_process_main_thread", resume)
+    assert run() == 0
+    order = [item for item in state.events if item in {"spawn", "assign", "ceiling", "resume"}]
+    assert order == ["spawn", "assign", "ceiling", "resume"]
 
 
-def test_a_missing_ceiling_does_not_fail_the_boot(cfg, monkeypatch, tmp_path):
-    """Matches how an unavailable cgroup scope is handled on the POSIX side.
+def test_a_gateway_that_cannot_be_resumed_is_killed_not_left_frozen(supervisor, monkeypatch):
+    cfg, state, run = supervisor
+    monkeypatch.setattr(win, "resume_process_main_thread", lambda _pid: False)
+    assert run() == EXIT_REFUSED_UNRECOVERABLE
+    assert state.events.count("kill_original") == 1
+    assert state.active == 0
+    assert win.supervised_pid(cfg, "demo") is None
+    assert win.runs.read(cfg, "demo")["state"] == "drained"
 
-    ``apply_job_limits`` has already logged the miss as a SECURITY warning; a pod
-    that refuses to start because a ceiling could not be attached would be a
-    worse outcome than one that runs unbounded and says so in the log.
-    """
-    import os
 
-    class FakeProc:
-        pid = os.getpid()
-
-        def wait(self):
-            return 0
-
-    monkeypatch.setattr(win.subprocess, "Popen", lambda argv, **kw: FakeProc())
-    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
-    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
-    # Popen a real query and fail on the fake's missing context-manager protocol.
-    # On Linux it reads /proc and the pin is a no-op.
-    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
-    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: False)
-    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: True)
-    # Pinned like `process_start_time`: the post-reap successor check would
-    # otherwise shell out to a real `ps` on macOS.
-    monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
-    assert (
-        win.supervise_gateway(
-            cfg,
-            "smoke",
-            tmp_path / "kirocrew",
-            ["gateway"],
-            {},
-            gateway_pid_record=_no_successor(tmp_path),
-        )
-        == 0
-    )
+def test_a_missing_ceiling_does_not_fail_the_boot(supervisor, monkeypatch):
+    cfg, state, run = supervisor
+    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda _pid: False)
+    assert run() == 0
+    assert "assign" in state.events
+    assert win.runs.read(cfg, "demo")["state"] == "drained"
 
 
 # --------------------------------------------------------------------------

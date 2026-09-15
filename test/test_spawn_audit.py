@@ -1431,13 +1431,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # gate's own create-and-delete probe of a throwaway task calls it
         # directly. Not agent-influenced.
         "pod/windows.py::_schtasks_raw",
-        # The refusal report's process description: `tasklist /FI "PID eq <n>"
-        # /NH /FO CSV`, one call per pid, best-effort and its output only ever
-        # rendered into a message. Every argument is fixed except the pid, which
-        # is an integer this module read from the OS parent map -- never a caller
-        # value, let alone an agent one -- and the binary comes from
-        # `trusted_system_bin`, not from PATH. Not agent-influenced.
-        "pod/windows.py::_describe_processes",
         # The pod's own gateway. On Linux and macOS the service manager execs
         # it; Windows has no exec, so the task's wrapper spawns
         # `<python> -m kiro_crew gateway ...` itself and supervises it. Argv is
