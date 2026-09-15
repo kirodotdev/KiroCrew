@@ -416,7 +416,7 @@ jobs:
 
       # Mint short-lived, Bedrock-only creds immediately before the model call,
       # via the SAME dedicated least-privilege role the same-repo GPT reviewer uses.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
@@ -688,7 +688,7 @@ jobs:
       # discovery pass that consumes most of it used to leave pass 2 to die
       # mid-call on an expired security token, failing the gate closed with no
       # verdict. Keep in sync with codex-review.yml.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
@@ -984,7 +984,7 @@ jobs:
       # The OPUS Bedrock role -- the same dedicated least-privilege role
       # fork-opus-review.yml uses, in its region, assumed only here and only
       # after the codex CLI has finished.
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         if: >-
           (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
           || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')

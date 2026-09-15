@@ -179,7 +179,7 @@ jobs:
           name: ${{ env.HANDOVER_ARTIFACT }}
           path: .
 
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           # SHIP_REPORT_BEDROCK_ROLE_ARN, not AWS_BEDROCK_ROLE_ARN: the review
           # lanes' role is trusted for pull_request events; this workflow runs
