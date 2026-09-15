@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import signal
+import threading
 import time
 
 from container.supervisor.process import spawn_process_group
@@ -28,6 +29,47 @@ def _wait_for(path, timeout=5.0):
     return False
 
 
+def _wait_for_pid(path, timeout=5.0):
+    """Wait until ``path`` holds a parseable pid and return it as an int.
+
+    A pidfile is created and then written in two syscalls, so it exists as a
+    zero-byte file for an instant before the pid lands. Waiting on existence and
+    parsing in a separate step lets the read observe that empty window and raise
+    ``ValueError`` on ``int("")``. Folding the parse into the wait makes the
+    window unreachable: the parse itself is the predicate.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            pid = int(path.read_text())
+        except (FileNotFoundError, ValueError):
+            pid = 0
+        if pid > 0:
+            return pid
+        time.sleep(0.02)
+    raise AssertionError(f"{path} never held a parseable pid within {timeout}s")
+
+
+def test_wait_for_pid_survives_the_empty_pidfile_window(tmp_path):
+    # Reproduce the two-syscall write a pidfile goes through: the file exists as
+    # a zero-byte file first, and the pid lands a beat later. The wait must hold
+    # for the content, not return on the bare existence and leave the caller to
+    # parse an empty string.
+    pidfile = tmp_path / "worker.pid"
+    pidfile.write_text("")  # exists, empty -- the window the wait must not return in
+
+    def _land_the_pid():
+        time.sleep(0.1)
+        pidfile.write_text("4242")
+
+    writer = threading.Thread(target=_land_the_pid)
+    writer.start()
+    try:
+        assert _wait_for_pid(pidfile) == 4242
+    finally:
+        writer.join()
+
+
 def test_terminate_reaps_the_whole_group_including_a_grandchild(tmp_path):
     # A launcher plus a forked grandchild -- the two-process shape a real
     # kiro-cli worker has. Draining must take out both.
@@ -44,8 +86,8 @@ def test_terminate_reaps_the_whole_group_including_a_grandchild(tmp_path):
             ttl=30,
         ),
     )
-    assert _wait_for(parent_pidfile) and _wait_for(child_pidfile)
-    child_pid = int(child_pidfile.read_text())
+    assert _wait_for(parent_pidfile)
+    child_pid = _wait_for_pid(child_pidfile)
 
     pg.terminate(drain_timeout=5.0)
 
@@ -125,8 +167,8 @@ def test_drain_reaps_a_worker_that_escaped_into_its_own_session(tmp_path):
             ttl=30,
         ),
     )
-    assert _wait_for(ppf) and _wait_for(cpf)
-    worker = int(cpf.read_text())
+    assert _wait_for(ppf)
+    worker = _wait_for_pid(cpf)
     # The worker really is in a different process group than the backend.
     assert os.getpgid(worker) != pg.pgid
 
@@ -158,8 +200,8 @@ def test_group_kill_alone_cannot_reach_an_escaped_worker(tmp_path):
             ttl=6,
         ),
     )
-    assert _wait_for(ppf) and _wait_for(cpf)
-    worker = int(cpf.read_text())
+    assert _wait_for(ppf)
+    worker = _wait_for_pid(cpf)
     try:
         pg.terminate(drain_timeout=0.5)  # SIGTERM ignored -> SIGKILL the backend group
         assert pg.poll() is not None
@@ -205,8 +247,7 @@ def _crashed_leader_with_a_live_worker(tmp_path):
         ),
         cwd=str(tmp_path),
     )
-    assert _wait_for(child_pidfile), "the fake worker never recorded its pid"
-    worker_pid = int(child_pidfile.read_text())
+    worker_pid = _wait_for_pid(child_pidfile)
 
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and group.leader.poll() is None:
