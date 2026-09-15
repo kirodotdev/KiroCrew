@@ -151,23 +151,41 @@ def test_the_cooldown_is_scoped_to_the_stalled_prefix(monkeypatch, tmp_path) -> 
     clock = [1000.0]
     monkeypatch.setattr(security, "_path_resolve_clock", lambda: clock[0])
     real_resolver = security._resolved_spellings
+    real_executor = security.path_resolve_executor
     stalled = _StalledResolver()
     monkeypatch.setattr(security, "_resolved_spellings", stalled)
     try:
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/home/a/one")  # times out -> opens cooldown
         assert len(stalled.calls) == 1
+        # "For free" is a claim about the POOL, not about the wall clock.  This
+        # was a 50ms stopwatch around each refusal, which is inside the noise
+        # band these runners actually produce -- one scheduler stall or GC pause
+        # inside the window reds the test with a pool regression that never
+        # happened -- and it is also blind in the other direction, since a
+        # regression that submits and comes straight back stays under the
+        # ceiling.  Count submissions instead: the cooldown short-circuit must
+        # be reached BEFORE ``path_resolve_executor().submit``.
+        submissions: list[str] = []
+
+        class _Counting:
+            def submit(self, fn, *args):
+                submissions.append(getattr(fn, "__name__", repr(fn)))
+                return real_executor().submit(fn, *args)
+
+        monkeypatch.setattr(security, "path_resolve_executor", lambda: _Counting())
         for token in ("/home/a/two", "/home/a/deeper/three"):
-            started = time.perf_counter()
             with pytest.raises(security.PathResolutionStalled):
                 security._candidate_forms(token)
-            assert time.perf_counter() - started < 0.05, "cooldown must not touch the pool"
+        assert submissions == [], "cooldown must not touch the pool"
         assert len(stalled.calls) == 1, "no resolution may be attempted under the cooldown"
     finally:
         stalled.release.set()
 
     # A different prefix is untouched by the cooldown: resolution still runs,
     # and on a healthy filesystem a symlink there still resolves to its target.
+    # That needs the live pool back, not the counting stand-in.
+    monkeypatch.setattr(security, "path_resolve_executor", real_executor)
     monkeypatch.setattr(security, "_resolved_spellings", real_resolver)
     target = tmp_path / "creds"
     target.write_text("k")
@@ -476,11 +494,25 @@ def test_a_known_stalled_prefix_is_not_reprobed_onto_the_last_free_worker(
             security._candidate_forms("/net/other/z")
         assert security._wedged_workers() == 2
         # ... after which a fresh prefix is refused immediately rather than
-        # queued behind two wedged futures: nothing reaches the resolver.
-        started = time.perf_counter()
+        # queued behind two wedged futures: nothing reaches the resolver.  The
+        # pool is the only witness available here, and it has to be COUNTED, not
+        # timed.  Both workers are pinned, so a lost guard would submit a future
+        # that never starts: the resolver stub is never entered, so
+        # ``second.calls`` stays at 1, and a never-run future charges no stall,
+        # so the assertion below it holds too.  A wall-clock ceiling would see
+        # it, but only by reading a scheduler stall as the same regression.
+        submissions: list[str] = []
+        real_executor = security.path_resolve_executor
+
+        class _Counting:
+            def submit(self, fn, *args):
+                submissions.append(getattr(fn, "__name__", repr(fn)))
+                return real_executor().submit(fn, *args)
+
+        monkeypatch.setattr(security, "path_resolve_executor", lambda: _Counting())
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/srv/fresh/w")
-        assert time.perf_counter() - started < 0.05
+        assert submissions == [], "a saturated pool must be refused without a submit"
         assert len(second.calls) == 1
         # ... and that healthy prefix is not charged a stall it never had, so
         # it is served again the moment a worker frees up.

@@ -96,6 +96,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -609,16 +610,104 @@ class LaunchFailed:
 
 
 def reap(process: subprocess.Popen[bytes]) -> None:
-    """Kill the proof if it is still running, then wait for it. Safe to call twice.
+    """Kill the proof's whole process GROUP, then wait for it. Safe to call twice.
 
-    The direct child only. A proof that detaches a grandchild is the operator's
-    own checkout leaving a process on the operator's own machine, which the RFC's
-    trust boundary places outside this script: there is no privilege drop to
-    defend, and a portable process-tree kill does not exist in the standard
-    library. The verdict is already decided when this runs, so a bounded wait
-    beats blocking the conductor on an unreapable child.
+    The direct child is not enough, and the cost of believing it was is measured:
+    nine ``python3`` processes reparented to init, spinning at 1464% CPU between
+    them for six days, left by four separate runs of this script's own test file.
+    Every one had a deleted ``pytest-of-*/garbage-*/scratch-checkout`` cwd, so
+    nothing on the machine could even name what they belonged to any more.
+
+    The mechanism is not exotic, it is the ordinary consequence of two decisions
+    in :func:`child_env`: PATH is inherited (a PoC needs an interpreter) while
+    HOME is repointed at the throwaway worktree (the blast-radius bound). On any
+    host whose PATH leads with a version-manager shim directory -- mise, asdf,
+    pyenv, volta, nodenv -- ``python3`` IS the manager, and a manager that cannot
+    find its tool state under HOME never execs an interpreter at all. It spins.
+    So the thing this reaps is routinely a shim that has already forked, and
+    ``kill()`` on the direct child leaves the spinning half behind.
+
+    A portable tree kill is not in the standard library, but a portable process
+    GROUP kill effectively is, and it is what the repo already does one layer up
+    (``test/installer_test_helpers.run_bounded``): :func:`run_poc` starts the
+    proof in its own session/group, so one ``killpg`` reaches every descendant,
+    and Windows gets ``taskkill /T``. The bounded wait stays -- the verdict is
+    already decided when this runs, so blocking the conductor forever on an
+    unreapable child would still be worse than a zombie.
     """
-    process.kill()
+    if hasattr(os, "killpg"):
+        try:
+            # run_poc gave the child its own session, so its pid IS its pgid.
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            # Already gone, or the session was never created; fall through to the
+            # direct kill, which is still strictly better than nothing.
+            process.kill()
+    else:  # pragma: no cover - Windows
+        # TerminateProcess (what Popen.kill does here) does not touch the tree,
+        # and CREATE_NEW_PROCESS_GROUP alone does not make one killable, so ask
+        # the OS tool. Best-effort: a failure falls back to the direct kill.
+        #
+        # By ABSOLUTE path, never the bare name. This runs while an untrusted
+        # checkout's proof of concept is executing, and a bare argv[0] is
+        # resolved by the OS search order -- which on Windows begins with the
+        # directory of the calling process. The same rule the rest of the tree
+        # applies to `git` and `gh` (a trusted system directory, never PATH)
+        # therefore applies here, and it costs one `isfile`.
+        #
+        # A LITERAL path, not one built from ``%SystemRoot%``. Deriving it from the
+        # environment would put an environment value in ``argv[0]`` of a spawn that
+        # runs next to untrusted code, which is the shape
+        # ``dangerous-subprocess-use-tainted-env-args`` exists to refuse -- and the
+        # refusal is right even though the verifier holds the operator's own
+        # environment, because nothing here needs the value.
+        #
+        # A Windows installed somewhere other than ``C:\Windows`` is covered by
+        # trying the known system directories in turn -- still literals, so no
+        # environment value reaches ``argv[0]``. ``Sysnative`` is what a 32-bit
+        # interpreter on 64-bit Windows must use to see the real System32.
+        taskkill = next(
+            (
+                candidate
+                for candidate in (
+                    "C:\\Windows\\System32\\taskkill.exe",
+                    "C:\\Windows\\Sysnative\\taskkill.exe",
+                    "C:\\WINNT\\System32\\taskkill.exe",
+                )
+                if os.path.isfile(candidate)
+            ),
+            None,
+        )
+        # A NONZERO taskkill is a failed tree kill, not a reap: it answers 128 for
+        # "no such process" but also for an access denial, and treating that as done
+        # left the descendants running while this returned as though it had killed
+        # them. So the status is read, and anything but success -- a missing binary,
+        # a raise, a nonzero exit -- falls through to the direct kill, which at least
+        # reaps the wrapper.
+        #
+        # That fallback is deliberately still best-effort rather than an error the
+        # verdict carries. There is no portable tree kill left to try once the OS
+        # tool is unavailable, and the RFC's trust boundary already places "the
+        # operator's own checkout left a process on the operator's own machine"
+        # outside this script -- the verdict is decided before this runs, and
+        # blocking the conductor on an unreapable child would be worse.
+        reaped = False
+        if taskkill is not None:
+            try:
+                reaped = (
+                    subprocess.run(
+                        [taskkill, "/T", "/F", "/PID", str(process.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=REAP_SECONDS,
+                        check=False,
+                    ).returncode
+                    == 0
+                )
+            except (OSError, subprocess.SubprocessError):
+                reaped = False
+        if not reaped:
+            process.kill()
     try:
         process.wait(timeout=REAP_SECONDS)
     except subprocess.TimeoutExpired:
@@ -645,6 +734,16 @@ def run_poc(argv: list[str], worktree: Path, timeout: int) -> int | Timeout | La
             # No shell, no inherited stdin: a PoC that waits on input must hit
             # the deadline rather than hang on a terminal nobody is watching.
             stdin=subprocess.DEVNULL,
+            # Its own session on POSIX, its own process group on Windows, so
+            # `reap` can kill every descendant rather than only this pid. A PoC
+            # routinely IS a wrapper that forks (a version-manager shim), and
+            # without this the forked half outlives the run -- see `reap`.
+            start_new_session=os.name != "nt",
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+                if os.name == "nt"
+                else 0
+            ),
         )
     except OSError as exc:
         # A mistyped or hallucinated program name is the verifier's ordinary
@@ -658,6 +757,22 @@ def run_poc(argv: list[str], worktree: Path, timeout: int) -> int | Timeout | La
     except subprocess.TimeoutExpired:
         reap(process)
         return Timeout()
+    except BaseException:
+        # A signal or a cancellation reaching the conductor must not turn the
+        # proof loose: without this the group survives whatever ends the
+        # verifier, which is the same abandonment the deadline path guards.
+        reap(process)
+        raise
+    # NORMAL completion is the other leak, and it is the one the measured
+    # incident actually took: the direct child exiting says nothing about a half
+    # it forked first. A version-manager shim is exactly that shape, so the
+    # status can be in hand while the spinning fork is still in the group.
+    #
+    # Safe to send after the wait: POSIX will not reassign a pgid while the
+    # group is non-empty, so this either reaches the survivors or fails ESRCH on
+    # an empty group -- it cannot land on some unrelated process that inherited
+    # the number. `reap` is bounded and safe to call on an already-reaped child.
+    reap(process)
     return returncode
 
 

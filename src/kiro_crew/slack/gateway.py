@@ -2055,6 +2055,18 @@ class GatewayOrchestrator:
 
     _UPDATE_BUSY_RETRY_SECS = 300.0
     _MANDATORY_UPDATE_MAX_DEFER_SECS = 600.0
+    #: How long the pre-restart drain waits for callbacks and refusal writes to
+    #: become durable before giving up and deferring the restart.
+    #:
+    #: Named rather than inlined at the call site so a test that is about the
+    #: fetch/reset/venv SEQUENCE can shorten it. When nothing makes the drain
+    #: condition true, ``_drain_update_callback_work`` polls at 10ms to the
+    #: deadline, so an inlined 30.0 cost eleven such tests thirty seconds EACH --
+    #: ~330s of pure sleeping per full suite run, asserted on by none of them.
+    #: The value itself stays pinned by the test that IS about it
+    #: (``test_restart_fences_then_closes_and_final_drains`` asserts
+    #: ``drain:30.0``), so shortening it elsewhere cannot hide a change here.
+    _UPDATE_DRAIN_TIMEOUT_SECS = 30.0
 
     async def _prepare_auto_update_apply(
         self,
@@ -10813,7 +10825,7 @@ class GatewayOrchestrator:
             logger.debug("Breadcrumb flush before update restart failed", exc_info=True)
         exe = await asyncio.to_thread(respawn)
 
-        if not await self._drain_update_callback_work(timeout=30.0):
+        if not await self._drain_update_callback_work(timeout=self._UPDATE_DRAIN_TIMEOUT_SECS):
             self._update_apply_deferred = True
             logger.warning(
                 "Update applied but restart deferred: callback/refusal work did not drain"

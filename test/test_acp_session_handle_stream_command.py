@@ -549,6 +549,34 @@ class _Clock:
         return getattr(time, name)
 
 
+class _TickQueue(asyncio.Queue):
+    """Real queue semantics, except that an EMPTY get() surfaces the dispatch
+    loop's watchdog tick after 20ms instead of paying the production park.
+
+    ``_dispatch_events`` parks on ``asyncio.wait_for(self._queue.get(),
+    timeout=min(remaining, 5.0))``, so with a real queue every watchdog
+    evaluation costs 5 seconds of REAL time on an otherwise idle worker -- and
+    no assertion below is on that interval: the idle these tests check comes
+    from ``_Clock``'s offset, so what separates a stall from a healthy turn is
+    fake time, not elapsed time. Raising ``TimeoutError`` out of ``get()`` is
+    what the loop already treats as "the park expired", so the tick arrives
+    unchanged, just sooner.
+
+    Subclassing ``asyncio.Queue`` rather than faking one keeps the paths that do
+    not go through ``get()`` honest: the pre-turn stale drain's
+    ``get_nowait()``/``QueueEmpty`` pair and the TOCTOU guard's ``qsize()``
+    depth read both still see a real queue. Same shape as
+    ``_SilentQueueWithBacklog`` in test_acp_stale_recovery.py.
+    """
+
+    async def get(self):
+        if self.empty():
+            await asyncio.sleep(0.02)
+            if self.empty():
+                raise asyncio.TimeoutError
+        return self.get_nowait()
+
+
 def _own_update(text: str = "streamed") -> JsonRpcMessage:
     """A session/update frame ROUTED to this session (owner known)."""
     return JsonRpcMessage(
@@ -572,21 +600,29 @@ async def _run_with_late_frame(monkeypatch, clock: _Clock, late_frame: JsonRpcMe
     """Drive one turn with a tool in flight and exactly one late frame.
 
     Timeline, in the module's clock: an OWN frame at ~0 (which also arms
-    ``_tool_dispatched``), ``late_frame`` dequeued at ~50s, the watchdog's first
-    evaluation at ~55s (the loop parks on the queue for 5 real seconds), and
+    ``_tool_dispatched``), ``late_frame`` dequeued at ~50s, the watchdog's next
+    evaluation right after it (``_TickQueue`` turns the loop's 5-second queue
+    park into a 20ms one, since no assertion here is on real elapsed time), and
     then -- for a turn the watchdog leaves alone -- the backend's own response,
     so both outcomes terminate and are told apart by their stop reason.
 
     With ``check_after_secs`` at 30s the two candidate reference points fall on
     opposite sides of the threshold: measured from the late frame the tool has
-    been idle ~5s, measured from this session's own last frame ~55s. Which one
-    the watchdog uses is exactly what this issue is about.
+    been idle for one park, measured from this session's own last frame ~50s.
+    Which one the watchdog uses is exactly what this issue is about -- and it is
+    the clock's 50s offset, never the real park length, that separates them, so
+    the park can be shortened without touching either assertion.
     """
     from kiro_crew.acp import session_handle as sh
 
     monkeypatch.setattr(sh, "time", clock)
 
-    handle, _rt = _make(respond=False, updates=[_own_update()])
+    handle, rt = _make(respond=False, updates=[_own_update()])
+    # Both references have to be repointed: the runtime double enqueues the
+    # scripted own frame through its OWN ``_queue`` attribute, so swapping only
+    # the handle's would strand that frame in the discarded queue and the turn
+    # would never arm ``_tool_dispatched``.
+    handle._queue = rt._queue = _TickQueue()
     handle._watchdog = replace(
         handle._watchdog,
         check_after_secs=30.0,
@@ -599,10 +635,11 @@ async def _run_with_late_frame(monkeypatch, clock: _Clock, late_frame: JsonRpcMe
         await asyncio.sleep(0.2)
         clock.offset = 50.0
         handle._queue.put_nowait(late_frame)
-        # Past the watchdog's first evaluation (~5 real seconds), answer the
-        # prompt so a turn the watchdog does NOT stall still terminates -- and
-        # terminates with a stop reason that cannot be confused for a stall.
-        await asyncio.sleep(8.0)
+        # Well past the watchdog's first evaluation (~14 ticks of _TickQueue's
+        # 20ms park), answer the prompt so a turn the watchdog does NOT stall
+        # still terminates -- and terminates with a stop reason that cannot be
+        # confused for a stall.
+        await asyncio.sleep(0.3)
         handle._queue.put_nowait(JsonRpcMessage(id=_REQ_ID, result={"stopReason": "end_turn"}))
 
     feeder = asyncio.create_task(_feeder())
@@ -639,7 +676,8 @@ async def test_co_tenant_fanout_frame_does_not_defer_the_tool_watchdog(monkeypat
         events[-1].stop_reason,
     )
     # The idle on the terminal event is measured from the session's OWN last
-    # frame (~55s), never from the co-tenant's (~5s) -- so it clears the window.
+    # frame (~50s), never from the co-tenant's (one park) -- so it clears the
+    # window.
     idle = int(re.search(r"idle_secs=(\d+)", events[-1].text).group(1))
     assert idle >= 30, f"idle {idle}s was measured from the co-tenant's frame"
 

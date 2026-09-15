@@ -619,7 +619,6 @@ test/test_frontend_dist_resolve.py
 test/test_frontend_edition_build.py
 test/test_frontmatter.py
 test/test_gateway_appkit_endpoints.py
-test/test_gateway_pipe_death.py
 test/test_gatewayd_more_coverage.py
 test/test_gatewayd_self_exit.py
 test/test_github_runner.py

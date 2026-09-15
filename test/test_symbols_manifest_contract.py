@@ -40,16 +40,19 @@ runs by pre-seeding both cached slices, the manifest runs by failing their gate.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 import yaml
 
+from kiro_crew import platform_compat
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -317,9 +320,69 @@ def test_both_symbol_formats_are_recorded_for_macos() -> None:
 # These run the real script. It needs bash (for the script) and node (to parse
 # the manifest), and exits at the validation gate well before any download, so
 # there is no network dependency -- but there IS a toolchain one, hence the skip.
+# "node is on PATH" is not that requirement: the skip has to know WHICH node the
+# script will resolve and what VERSION it is, which is what `_probe_node` answers.
 
 VERSION = "43.2.0"
 OFFICIAL = f"https://github.com/electron/electron/releases/download/v{VERSION}"
+
+
+class _Node(NamedTuple):
+    """The interpreter these tests hand the scripts, and the version of THAT binary."""
+
+    executable: str
+    version: tuple[int, int]
+
+
+def _probe_node() -> _Node | None:
+    """Resolve the real node once, or ``None`` if node cannot run here.
+
+    Two facts have to come out of the same probe, because a gate that measures a
+    different binary from the one the child runs is not a gate.
+
+    WHICH binary: ``shutil.which("node")`` on a mise/asdf/volta/nodenv host answers
+    with a SHIM, and a shim needs its manager's state under the developer's ``$HOME``.
+    The helpers below repoint ``HOME`` at ``tmp_path`` -- deliberately, so a
+    regression that misses the seeded cache cannot unpack a 1.4 GB symbol tree into
+    the real ``~/.cache`` -- and a shim reached with a foreign ``HOME`` never execs
+    node: it spins at 100% CPU indefinitely. ``bash`` then blocks forever in
+    ``$(node -e ...)``, the ceiling fires, and only ``bash`` is killed, leaving the
+    spinning shim orphaned to init where nothing in the run can reach it. Asking the
+    still-working parent environment where the interpreter actually lives keeps the
+    shim off the child's PATH entirely.
+
+    WHICH version: presence is not a version. ``scripts/emit-symbols-manifest.mjs`` is
+    written against the repo's Node pin, not against whatever a host happens to ship,
+    so the gate below keys off ``process.versions.node`` of the RESOLVED binary. A gate
+    that asked only "is node on PATH" let the two tests that import the emitter fail
+    with a node ``TypeError``, which names no contract at all.
+
+    Called exactly once, into :data:`_NODE`: a skip predicate that re-probed per test
+    would be a skip that comes and goes with load, which is coverage that comes and
+    goes. A probe that cannot answer inside the ceiling raises rather than resolving
+    to "skip", for the same reason.
+    """
+    node = shutil.which("node")
+    if node is None:
+        return None
+    probe = subprocess.run(
+        [
+            node,
+            "-p",
+            "JSON.stringify([process.execPath, "
+            "...process.versions.node.split('.').slice(0, 2).map(Number)])",
+        ],
+        capture_output=True,
+        timeout=120,
+        **UTF8_TEXT,
+    )
+    if probe.returncode != 0:
+        return None  # on PATH but unable to run: as good as absent for these tests
+    executable, major, minor = json.loads(probe.stdout)
+    return _Node(str(executable), (int(major), int(minor)))
+
+
+_NODE = _probe_node()
 
 # Windows is excluded by platform, not by tool discovery. `shutil.which("bash")`
 # succeeds on a GitHub Windows runner and resolves to the WSL launcher, which
@@ -330,18 +393,42 @@ OFFICIAL = f"https://github.com/electron/electron/releases/download/v{VERSION}"
 # `dwarfdump` and `minidump_stackwalk`); its contract is asserted on the hosts
 # that can execute it.
 requires_shell_and_node = pytest.mark.skipif(
-    sys.platform == "win32" or shutil.which("bash") is None or shutil.which("node") is None,
+    sys.platform == "win32" or shutil.which("bash") is None or _NODE is None,
     reason="the symbolizer is a posix bash script that parses its manifest with node",
+)
+
+# `import.meta.dirname` (scripts/emit-symbols-manifest.mjs) is `undefined` before
+# Node 20.11, where `path.resolve(undefined, "..")` raises ERR_INVALID_ARG_TYPE at
+# module scope. The emitter is entitled to that API -- the repo's toolchain pin is
+# `.nvmrc` (24) and its declared floor is `website/package.json`'s `engines.node`
+# (>= 22) -- so the floor belongs in the gate below, not in the script. Without it
+# the two tests that ask the emitter what it would name an asset report a node
+# TypeError, which reads as "the manifest contract broke" on a host whose only
+# defect is an old interpreter. The narrow LANGUAGE floor rather than the repo's
+# declared 22 is deliberate: every host that can load the module keeps the coverage.
+EMITTER_NODE_FLOOR = (20, 11)
+
+requires_node_that_can_load_the_emitter = pytest.mark.skipif(
+    _NODE is None or _NODE.version < EMITTER_NODE_FLOOR,
+    reason=(
+        "scripts/emit-symbols-manifest.mjs reads import.meta.dirname, which needs "
+        f"Node >= {EMITTER_NODE_FLOOR[0]}.{EMITTER_NODE_FLOOR[1]}; this host resolves "
+        + (".".join(str(part) for part in _NODE.version) if _NODE else "no runnable node")
+    ),
 )
 
 
 def _symbolizer_path(*extra: Path) -> str:
-    """Keep the detected shell and Node available in the isolated environment."""
-    tool_dirs = [
-        str(Path(binary).parent)
-        for name in ("bash", "node")
-        if (binary := shutil.which(name)) is not None
-    ]
+    """Keep the detected shell and the RESOLVED Node available in the isolated env.
+
+    Node's directory comes from :data:`_NODE`, never from ``shutil.which("node")``,
+    and it precedes the shell's so the script resolves the same interpreter the skip
+    gate above measured -- on a host where the version manager's shim is first on
+    PATH but ``/usr/bin`` also holds an older node, taking the shell's directory
+    first would hand the script a node the gate never looked at.
+    """
+    binaries = [_NODE.executable if _NODE is not None else None, shutil.which("bash")]
+    tool_dirs = [str(Path(binary).parent) for binary in binaries if binary is not None]
     return os.pathsep.join(
         dict.fromkeys(
             [
@@ -384,10 +471,14 @@ def _emitter_asset(kind: str, platform: str, arch: str) -> dict[str, str]:
     literal here would keep passing after the formula changed, while every real
     manifest started being refused as forged -- the exact drift the gate cannot
     detect for itself.
+
+    Runs the RESOLVED interpreter, so the node whose version the gate cleared is the
+    node that imports the module.
     """
+    assert _NODE is not None, "guarded by requires_node_that_can_load_the_emitter"
     out = subprocess.run(
         [
-            "node",
+            _NODE.executable,
             "--input-type=module",
             "-e",
             "const [, url, kind, platform, arch, version] = process.argv;"
@@ -410,12 +501,87 @@ def _emitter_asset(kind: str, platform: str, arch: str) -> dict[str, str]:
     return asset
 
 
+SYMBOLIZER_TIMEOUT = 120
+
+
+def _run_symbolizer(
+    argv: list[str], tmp_path: Path, *extra_path: Path
+) -> subprocess.CompletedProcess[str]:
+    """Run the real script in an isolated environment, reaping the tree on expiry.
+
+    Every temp write is pinned under ``tmp_path``: symbolize-crash.sh runs
+    ``mktemp -d``, and if a timeout or a worker kill bypasses its EXIT trap the
+    residue must land in the test's own dir, not the shared host temp. ``cwd`` covers
+    a relative mktemp; ``TMPDIR`` steers the absolute default it uses here; ``HOME``
+    is repointed because the script's cache default lives under it, and a regression
+    that misses the seeded cache would otherwise unpack a 1.4 GB symbol tree into the
+    developer's real ``~/.cache``.
+
+    The ceiling is enforced here rather than through ``subprocess.run(timeout=...)``
+    because that kills only ``bash``: whatever bash was waiting on -- the ``node``
+    inside a command substitution, or the ``curl`` on the download path these tests
+    do not seed -- would be orphaned to init, outside every group the run can still
+    signal. So the script owns its own session and the expiry path signals the whole
+    group through the same ``platform_compat`` seam production uses, mirroring
+    :func:`platform_compat.kill_and_reap` (async, so not reusable here): tree SIGKILL,
+    then the pid-scoped kill that cannot fail, then a BOUNDED drain -- an unbounded
+    one would let a surviving descendant holding the pipes turn a failed test into a
+    wedged worker, which costs the run rather than the test.
+    """
+    cache = tmp_path / "cache"
+    cache.mkdir(exist_ok=True)
+    with subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=tmp_path,
+        env={
+            "PATH": _symbolizer_path(*extra_path),
+            "HOME": str(tmp_path),
+            "TMPDIR": str(tmp_path),
+            "KIROCREW_SYMBOL_CACHE": str(cache),
+        },
+        start_new_session=True,
+        **UTF8_TEXT,
+    ) as proc:
+
+        def reap_group() -> None:
+            """Tree SIGKILL, then the pid-scoped kill that cannot fail."""
+            with contextlib.suppress(OSError):
+                platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+            proc.kill()
+
+        try:
+            stdout, stderr = proc.communicate(timeout=SYMBOLIZER_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            reap_group()
+            stdout, stderr = proc.communicate(timeout=platform_compat.REAP_TIMEOUT_SECS)
+            raise subprocess.TimeoutExpired(argv, SYMBOLIZER_TIMEOUT, output=stdout, stderr=stderr)
+        except BaseException:
+            # BaseException, not Exception, because the interruption that matters
+            # here is not one: pytest-timeout's expiry raises ``Failed``, and
+            # Ctrl-C raises ``KeyboardInterrupt``. Either can land while
+            # ``communicate`` is blocked -- the OUTER ceiling firing before the
+            # inner one, which is exactly what happens when the seeded cache
+            # misses and the script waits on a download these tests never serve.
+            #
+            # Without this the group is never signalled and ``Popen.__exit__``
+            # then calls an UNBOUNDED ``wait()`` on a child that is still
+            # running, so a failed test becomes a wedged worker: on Windows
+            # pytest-timeout has no SIGALRM and kills the worker outright, and at
+            # ``--max-worker-restart=0`` that ends the whole run with every
+            # unreached result missing (testing-conventions flake class 6). The
+            # bounded drain belongs to the TimeoutExpired path above; here the
+            # SIGKILL has already landed, so ``__exit__``'s wait returns at once.
+            reap_group()
+            raise
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
 def _symbolize(tmp_path: Path, manifest: Path) -> subprocess.CompletedProcess[str]:
     artifact = tmp_path / "crash.dmp"
     artifact.write_bytes(b"")  # never parsed: the gate is upstream of the walker
-    cache = tmp_path / "cache"
-    cache.mkdir(exist_ok=True)
-    return subprocess.run(
+    return _run_symbolizer(
         [
             "bash",
             str(SYMBOLIZER),
@@ -425,20 +591,7 @@ def _symbolize(tmp_path: Path, manifest: Path) -> subprocess.CompletedProcess[st
             "--arch",
             "arm64",
         ],
-        capture_output=True,
-        timeout=120,
-        # Pin every temp write under tmp_path: symbolize-crash.sh runs `mktemp -d`,
-        # and if a timeout or a worker kill bypasses its EXIT trap the residue must
-        # land in the test's own dir, not the shared host temp. cwd covers a
-        # relative mktemp; TMPDIR steers the absolute default it uses here.
-        cwd=tmp_path,
-        env={
-            "PATH": _symbolizer_path(),
-            "HOME": str(tmp_path),
-            "TMPDIR": str(tmp_path),
-            "KIROCREW_SYMBOL_CACHE": str(cache),
-        },
-        **UTF8_TEXT,
+        tmp_path,
     )
 
 
@@ -533,6 +686,7 @@ def test_an_implausible_electron_version_is_refused(tmp_path: Path) -> None:
 
 
 @requires_shell_and_node
+@requires_node_that_can_load_the_emitter
 def test_a_manifest_from_a_future_schema_is_refused_by_name(tmp_path: Path) -> None:
     """The emitter stamps ``schema``; the symbolizer has to be the one reading it.
 
@@ -557,6 +711,7 @@ def test_a_manifest_from_a_future_schema_is_refused_by_name(tmp_path: Path) -> N
 
 
 @requires_shell_and_node
+@requires_node_that_can_load_the_emitter
 def test_the_manifest_the_emitter_actually_writes_passes_the_gate(tmp_path: Path) -> None:
     """The gate has to be lossless for honest input, or it just breaks the tool.
 
@@ -636,23 +791,7 @@ def _symbolize_ips(tmp_path: Path, report: Path, *args: str) -> subprocess.Compl
     cache = tmp_path / "cache"
     for arch in ("arm64", "x64"):
         (cache / f"electron-v{VERSION}-darwin-{arch}-dsym").mkdir(parents=True, exist_ok=True)
-    return subprocess.run(
-        ["bash", str(SYMBOLIZER), str(report), *args],
-        capture_output=True,
-        timeout=120,
-        # Pin every temp write under tmp_path: symbolize-crash.sh runs `mktemp -d`,
-        # and if a timeout or a worker kill bypasses its EXIT trap the residue must
-        # land in the test's own dir, not the shared host temp. cwd covers a
-        # relative mktemp; TMPDIR steers the absolute default it uses here.
-        cwd=tmp_path,
-        env={
-            "PATH": _symbolizer_path(),
-            "HOME": str(tmp_path),
-            "TMPDIR": str(tmp_path),
-            "KIROCREW_SYMBOL_CACHE": str(cache),
-        },
-        **UTF8_TEXT,
-    )
+    return _run_symbolizer(["bash", str(SYMBOLIZER), str(report), *args], tmp_path)
 
 
 @requires_shell_and_node
@@ -763,19 +902,7 @@ def _symbolize_ips_at_uuid_gate(
     )
     dwarfdump.chmod(0o755)
 
-    return subprocess.run(
-        ["bash", str(SYMBOLIZER), str(report)],
-        capture_output=True,
-        timeout=120,
-        cwd=tmp_path,
-        env={
-            "PATH": _symbolizer_path(fakebin),
-            "HOME": str(tmp_path),
-            "TMPDIR": str(tmp_path),
-            "KIROCREW_SYMBOL_CACHE": str(cache),
-        },
-        **UTF8_TEXT,
-    )
+    return _run_symbolizer(["bash", str(SYMBOLIZER), str(report)], tmp_path, fakebin)
 
 
 _full_dsym_uuid = "12345678-9ABC-DEF0-1234-56789ABCDEF0"

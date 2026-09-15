@@ -794,14 +794,25 @@ class TestPersistenceGuards:
         holder = sp._lock_for_agent(agent_id)
         holder.lock.acquire()
         try:
-            started = time.monotonic()
             result = asyncio.run(self._promote_on_loop(sp, agent_id))
-            elapsed = time.monotonic() - started
         finally:
             holder.lock.release()
 
+        # RETRYABLE alone proves the loop did not queue behind the writer lock:
+        # every acquire on that path is non-blocking by construction
+        # (``_try_acquire_retention_lock`` then ``_try_acquire_state_lock``), and
+        # the branch returns before ``state_writer`` runs, so the promotion does
+        # no file I/O at all. A stopwatch around ``asyncio.run`` cannot add signal
+        # here -- the lock is held by the MEASURING thread, so a blocking-acquire
+        # regression self-deadlocks and hangs to the pytest timeout instead of
+        # reaching an elapsed assertion, while the number it would report is pure
+        # loop-construction and interpreter cost that coverage and a co-tenant
+        # runner inflate. The properly shaped version of that timing property --
+        # holder on a separate thread, bound DERIVED from the hold -- already
+        # exists as test_a_coroutine_does_not_wait_on_a_held_lock in
+        # test_subagent_state_write_serialization.py, whose own comment records a
+        # bare 0.5s bound false-redding at 0.515s on a loaded runner.
         assert result is sp.RetentionPromotionResult.RETRYABLE
-        assert elapsed < 0.5
         assert not (sp.read_state(agent_id) or {}).get("keep")
 
         result = asyncio.run(self._promote_on_loop(sp, agent_id))

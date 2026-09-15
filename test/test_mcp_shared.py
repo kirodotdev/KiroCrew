@@ -389,7 +389,14 @@ class TestRespondStdoutFdSnapshot:
         assert json.loads(out.getvalue().strip())["id"] == 4
 
     def test_falls_back_when_snapshot_fd_is_broken(self):
-        """A closed/unusable snapshot fd must fall back, not lose the response."""
+        """An unusable snapshot fd must fall back, not lose the response.
+
+        The unusable descriptor is a real, open, read-only one: ``os.write``
+        gives the same kernel EBADF a closed fd would, so this stays a genuine
+        syscall failure rather than a patched raise (that variant is
+        ``test_clean_failure_still_falls_back``) -- but the fd table is left
+        untouched, which the closed-fd spelling could not promise.
+        """
         out = io.StringIO()
         read_fd, restore = self._redirect_stdout_to_pipe()
         try:
@@ -398,13 +405,20 @@ class TestRespondStdoutFdSnapshot:
         finally:
             restore()
         os.close(read_fd)
-        # Close the snapshot behind respond()'s back so os.write raises EBADF.
-        os.close(mcp_shared._stdout_fd)
+        # Do NOT close the snapshot: freeing the NUMBER while _stdout_fd still
+        # holds it lets another thread's open() in this worker be handed it, and
+        # respond() would then write the JSON-RPC frame into that unrelated
+        # stream -- the exact hazard mcp_shared.respond()'s own comment names.
+        # release_stdout_fd() does the owner-correct close and clears the global
+        # in one step, so no stale number is ever visible to respond().
+        mcp_shared.release_stdout_fd()
+        mcp_shared._stdout_fd = os.open(os.devnull, os.O_RDONLY)
         try:
             with patch("sys.stdout", out):
                 respond(5, {"ok": True})
             assert json.loads(out.getvalue().strip())["id"] == 5
         finally:
+            os.close(mcp_shared._stdout_fd)
             mcp_shared._stdout_fd = None
 
     def test_write_all_loops_on_short_writes(self):

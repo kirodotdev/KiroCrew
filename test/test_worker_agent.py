@@ -15,7 +15,6 @@ procedure it does not run.
 from __future__ import annotations
 
 import ast
-import functools
 import json
 import logging
 import os
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from source_corpus import parsed_candidates, source_texts
 
 from kiro_crew import agent
 from kiro_crew.agent_files import (
@@ -34,38 +34,36 @@ from kiro_crew.agent_files import (
     WORKER_AGENT_FILENAME,
 )
 
+# One xdist worker for the whole module: the four enumeration gates below share ONE read of
+# src/ (~1,550 files, 0.9 s and ~187 MB of text while it is warm), and under `--dist
+# loadgroup` an unmarked module is spread across workers -- so those four can land on four
+# workers, each paying the read again and each holding its own copy of the corpus at the
+# same time. Grouping keeps it single-copy per run; the copy itself is released at module
+# teardown by `conftest._release_source_corpus_after_module`.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_test_worker_agent")
 
-@functools.lru_cache(maxsize=1)
+
 def _package_sources() -> tuple[tuple[Path, str], ...]:
-    """Every ``kiro_crew`` module, read ONCE for the whole session.
+    """Every ``kiro_crew`` module except ``agent.py``, off the shared corpus read.
 
     Four enumeration tests below reason over the package, and one traversal serves all of
     them. A walk per test is thousands of small reads each -- seconds on Linux and far
     worse on the Windows shards, whose job budget is 40 minutes for a quarter of a
     100k-test suite. The rule-shaped assertions are what matter; repeating the traversal
     is not part of them.
+
+    The sharing is ``test/source_corpus.py``'s and NOT an ``lru_cache`` of our own,
+    because the text of the ~1,550 modules under ``src/`` is ~115 MB of retained ``str``
+    and only the corpus helper's copy can be released: ``test/conftest.py``'s
+    ``_release_source_corpus_after_module`` calls ``_clear_caches()`` at module teardown,
+    but a second tuple of ours holding those same ``str`` objects would keep every one of
+    them alive for the rest of the xdist worker's life, paid by every later test that
+    worker runs. So this stays uncached -- rebuilding a tuple of ~1,550 references costs
+    nothing measurable -- and the ``agent.py`` exclusion stays HERE with the gates rather
+    than in the shared helper, because which files a gate polices is that gate's contract
+    (and ``agent.py``, defining every name these gates hunt for, would match them all).
     """
-    from kiro_crew import agent as agent_mod
-
-    root = Path(agent_mod.__file__).resolve().parent
-    return tuple(
-        (path, path.read_text(encoding="utf-8"))
-        for path in sorted(root.rglob("*.py"))
-        if path.name != "agent.py"  # the definitions themselves
-    )
-
-
-@functools.lru_cache(maxsize=None)
-def _package_tree(path: Path) -> "ast.Module":
-    """One module's AST, parsed once per session.
-
-    Per file rather than for the whole package: parsing every module eagerly costs more
-    than the walks this cache replaced. Callers prefilter on the TEXT first -- a file that
-    never mentions an identifier cannot reference it -- so only the handful of modules that
-    could match are parsed at all, and the AST is left doing the one job it is needed for:
-    telling a real reference apart from a mention in a docstring.
-    """
-    return ast.parse(dict(_package_sources())[path])
+    return tuple((path, text) for path, text in source_texts() if path.name != "agent.py")
 
 
 @pytest.fixture()
@@ -1649,16 +1647,19 @@ def test_every_spawn_path_goes_through_the_freshness_gate():
 
     materialize = {}
     fresh = {}
-    for path, source in _package_sources():
-        # Text prefilter, then AST for the candidates only. A module whose text never
-        # mentions the name cannot reference it, and the AST is what tells a call site
-        # apart from a docstring mention.
-        names = [
-            n for n in ("ensure_agent_materialized", "require_fresh_derived_spec") if n in source
-        ]
-        tree = _package_tree(path) if names else None
-        materialize[path] = _refs(tree, "ensure_agent_materialized") if tree else 0
-        fresh[path] = _refs(tree, "require_fresh_derived_spec") if tree else 0
+    # Text prefilter, then AST for the candidates only. A module whose text never mentions
+    # either name cannot reference it, so a file the corpus does not yield scores 0 for
+    # both -- what the old `tree = None` branch recorded -- and the AST is left doing the
+    # one job it is needed for: telling a real reference apart from a docstring mention.
+    # `parsed_candidates` yields one tree at a time and retains none, so the ASTs do not
+    # outlive the loop the way a per-path AST cache here did.
+    for path, _source, tree in parsed_candidates(
+        require_any=("ensure_agent_materialized", "require_fresh_derived_spec")
+    ):
+        if path.name == "agent.py":  # the definitions themselves, not a spawn path
+            continue
+        materialize[path] = _refs(tree, "ensure_agent_materialized")
+        fresh[path] = _refs(tree, "require_fresh_derived_spec")
 
     callers = {p for p, n in materialize.items() if n}
     assert callers, "no spawn path calls the materialization self-heal at all"
@@ -1731,10 +1732,13 @@ def test_the_gate_is_not_inside_a_try_at_any_spawn_site():
     gates = ("require_fresh_derived_spec", "require_unchanged_derived_spec")
     offenders: list[str] = []
     checked: set[str] = set()
-    for path, source in _package_sources():
-        if not any(gate in source for gate in gates):
+    # Same narrowed read as the enumeration above: only a file whose text spells one of
+    # the gates can hold a `try` around a call to it, and the tree is dropped after each
+    # file instead of being retained per path.
+    for path, _source, tree in parsed_candidates(require_any=gates):
+        if path.name == "agent.py":  # the definitions themselves, not a spawn site
             continue
-        for node in ast.walk(_package_tree(path)):
+        for node in ast.walk(tree):
             if not isinstance(node, ast.Try):
                 continue
             names = {

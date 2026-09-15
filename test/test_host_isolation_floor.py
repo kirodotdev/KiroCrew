@@ -1779,9 +1779,13 @@ class TestTheWorkerBudgetIsMemoryBounded:
         monkeypatch.setattr(budget, "_cgroup_limit_mib", lambda: 8 * 1024)
         monkeypatch.setattr(budget, "_host_available_mib", lambda: 0)
 
-        # 8 GiB ceiling at 2 GiB/worker is the tightest real reading, and the
+        # The 8 GiB cgroup ceiling is the tightest real reading, and the
         # unavailable one (0) is skipped rather than read as "no memory".
-        assert budget._static_memory_bounded_capacity(32) == 4
+        # Derived from the reservation rather than restated: the constant tracks a
+        # remeasured per-worker footprint and has moved (2 -> 3 GiB when the
+        # collection floor doubled), so a literal here pins the wrong thing and
+        # goes red for a reason that is not this test's subject.
+        assert budget._static_memory_bounded_capacity(32) == 8 // budget._GIB_PER_WORKER
 
     def test_a_starved_host_is_bounded_rather_than_read_as_unknown(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1817,10 +1821,17 @@ class TestTheWorkerBudgetIsMemoryBounded:
         """The memory budget is SHARED between concurrent runs, not granted to each.
 
         This is the property that decides where each bound goes. A 64-core / 32 GiB host
-        can back 16 workers, so there must be 16 SLOTS in total -- a first run takes them
-        all and a second gets its floor. Put the static bound only on the per-run cap and
-        both runs take 16 each: 32 workers against a 16-worker budget, which is the
-        swapping incident the budget exists to prevent, reached from the other end.
+        can back only as many workers as the reservation allows, so that many SLOTS must
+        exist in total -- a first run takes them all and a second gets its floor. Put the
+        static bound only on the per-run cap and both runs take the full share each:
+        double the workers against a single budget, which is the swapping incident the
+        budget exists to prevent, reached from the other end.
+
+        The expected count is DERIVED from the reservation, not restated. The constant
+        tracks a remeasured per-worker footprint and has already moved once (2 -> 3 GiB
+        when the collection floor doubled); a literal would fail here for a reason that
+        has nothing to do with where the bound is applied, which is the only thing this
+        test is about.
         """
         import xdist_budget as budget
 
@@ -1833,11 +1844,13 @@ class TestTheWorkerBudgetIsMemoryBounded:
         # from an agent shell would otherwise read the spawner's cap here.
         monkeypatch.delenv(budget._XDIST_ENV_CAP, raising=False)
 
+        expected = 32 // budget._GIB_PER_WORKER
+        assert expected < 64, "the memory bound must be the tighter one for this to mean anything"
         first = budget.resolve_workers()
         # A second run in this same process cannot re-lock what it already holds, so the
-        # slot RANGE is what the assertion has to pin: 16, never 64.
-        assert first == 16
-        assert budget._static_memory_bounded_capacity(64) == 16
+        # slot RANGE is what the assertion has to pin: the memory-backed share, never 64.
+        assert first == expected
+        assert budget._static_memory_bounded_capacity(64) == expected
 
     def test_the_live_bound_does_not_shrink_the_shared_range(
         self, monkeypatch: pytest.MonkeyPatch

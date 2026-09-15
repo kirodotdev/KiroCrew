@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from source_corpus import parsed_candidates
 
 from conftest import MockSlackClient
 from kiro_crew.slack import sessions_view
@@ -1168,24 +1169,27 @@ class TestOffLoopStructuralRatchet:
     happen to mention the guarded names.
     """
 
-    @staticmethod
-    def _src_modules() -> list[Path]:
-        import kiro_crew
-
-        pkg_root = Path(kiro_crew.__file__).parent
-        return sorted(pkg_root.rglob("*.py"))
-
     def test_sync_collector_is_private_to_sessions_view(self):
         """No module outside sessions_view.py may import or reference the
         synchronous collector — async callers must go through
-        _collect_recent_sessions_off_loop, which owns the thread hop."""
+        _collect_recent_sessions_off_loop, which owns the thread hop.
+
+        Routed through the shared corpus helper instead of an own rglob +
+        ast.parse of all ~1,555 package modules, which cost ~4 s of CPU per
+        run to answer a question four files hold. The narrowing cannot hide
+        an offender: neither AST pattern below can match unless the literal
+        ``_collect_recent_sessions`` is in the module's text, and
+        ``candidate_sources`` filters on NFKC-normalised text, so a Unicode
+        compatibility homoglyph of the name — which CPython folds to this
+        ASCII identifier at parse time, making it a real AST match — is
+        still a candidate.
+        """
         import ast
 
         offenders: list[str] = []
-        for py in self._src_modules():
+        for py, _text, tree in parsed_candidates(require_all=["_collect_recent_sessions"]):
             if py.name == "sessions_view.py":
                 continue
-            tree = ast.parse(py.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and any(
                     alias.name == "_collect_recent_sessions" for alias in node.names

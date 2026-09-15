@@ -19,6 +19,7 @@ root — unfencing the lock/temp — fails here.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -103,10 +104,23 @@ class TestAgentStateSidecarWriteProtection:
         from kiro_crew import sandbox
         from kiro_crew.config.paths import kiro_agents_dir
 
+        # ``normpath`` on the expected side because the resolver normalizes too, so a
+        # ``..``-bearing KIRO_HOME cannot false-red this.
+        sealed = os.path.normpath(str(kiro_agents_dir()))
         targets = sandbox._resolved_kiro_agents_targets()
-        assert targets == [str(kiro_agents_dir())] or targets, targets
+        # Equality, and nothing weaker: the contract is that the seal covers EXACTLY
+        # the tree the resolver names. An ``or targets`` disjunct here is
+        # satisfied by any non-empty list, so such an assertion could
+        # only ever fail on the resolver's ``except Exception: return []`` branch —
+        # a regression to a hard-coded home-relative literal, an extra entry, or a
+        # differently spelled path would seal the WRONG tree and still pass.
+        assert targets == [sealed], targets
         dirs, _files = sandbox._sealable_absent_ceilings()
-        assert any(d.rstrip("/").endswith("agents") for d in dirs), dirs
+        # The pre-create list must name that same resolved dir. A suffix check on
+        # ``endswith("agents")`` passes on any entry whose basename merely ends that
+        # way — including this suite's own ``kiro-agents`` isolation dir — so it would
+        # not notice the agents-tree entry disappearing from the Linux mount seal.
+        assert sealed in [os.path.normpath(d) for d in dirs], dirs
 
     def test_entry_is_published_on_the_posture_surface(self) -> None:
         entries = write_protected_home_paths()

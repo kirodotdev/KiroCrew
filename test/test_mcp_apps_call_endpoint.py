@@ -132,19 +132,35 @@ async def _spawn_pooled_server() -> _LivePool:
         last_used_at=now,
     )
     pump = asyncio.get_running_loop().create_task(backend.run_stdout_pump())
-    pool = BackendPool(max_backends=4)
-    await pool.add(key, backend)
+    # Build the owner of aclose() BEFORE the first await that can fail. The
+    # handshake below can raise (asyncio.TimeoutError from the bounded
+    # inbox.get() on a loaded shard, BackendGone from forward_from_stub if the
+    # child died during startup), and every one of this file's callers only
+    # reaps through the `finally: await live.aclose()` around the value we
+    # return — so a raise from inside the helper strands the real python MCP
+    # server unless this reaps it, and that server blocks on
+    # `for line in sys.stdin` and therefore lives
+    # until the xdist worker exits and the kernel closes its pipe, plus the
+    # never-cancelled pump task and an unreaped child watcher thread.
+    live = _LivePool(BackendPool(max_backends=4), backend, process, pump)
+    try:
+        await live.pool.add(key, backend)
 
-    # Handshake once through a normal stub so _init_state is "ready" — the
-    # state a pooled backend that already served an app is guaranteed to be in.
-    inbox = await backend.attach_stub("chat-stub")
-    await backend.forward_from_stub("chat-stub", {
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                   "clientInfo": {"name": "kiro-cli", "version": "0"}},
-    })
-    await asyncio.wait_for(inbox.get(), timeout=10)
-    return _LivePool(pool, backend, process, pump)
+        # Handshake once through a normal stub so _init_state is "ready" — the
+        # state a pooled backend that already served an app is guaranteed to be in.
+        inbox = await backend.attach_stub("chat-stub")
+        await backend.forward_from_stub("chat-stub", {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "kiro-cli", "version": "0"}},
+        })
+        await asyncio.wait_for(inbox.get(), timeout=10)
+    except BaseException:
+        # BaseException, not Exception: a CancelledError delivered at the
+        # wait_for (timeout teardown, worker shutdown) must reap the child too.
+        await live.aclose()
+        raise
+    return live
 
 
 # --------------------------------------------------------------------------

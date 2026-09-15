@@ -399,7 +399,14 @@ class TestNudgeLoop:
             max_nudges=5,
             interval_s=0.0,
         )
-        snap = _await_status(reg, "fp-breach", {pr_watchers.STATUS_ERROR})
+        # `WAIT_S * 3`, the same allowance the exhausted-after-one-pass test below
+        # carries and for the same reason: reaching a verdict here is a real `git
+        # clone` plus a full loop pass plus the breach detection, and the default
+        # 10s is sized for one cheap poll. MEASURED as
+        # "watcher never reached {'error'}" on a Windows CI shard that had just run
+        # 12,366 tests. The ceiling is not a race to tune -- it only matters when
+        # the property is broken, so it is generous and still far under `--timeout`.
+        snap = _await_status(reg, "fp-breach", {pr_watchers.STATUS_ERROR}, timeout=WAIT_S * 3)
         assert "re-pointed" in snap["lastNote"]
         assert len(breaches) == 1  # stopped after the breaching pass, not 5 passes
         log = reg.get_log("fp-breach")

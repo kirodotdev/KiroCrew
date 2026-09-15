@@ -1953,6 +1953,10 @@ class TestSourceRootBarrier:
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="os.link needs elevated privileges on Windows to make the second name",
+    )
     def test_rejected_writes_do_not_leak_descriptors(
         self, home_store, project_file
     ) -> None:
@@ -1962,27 +1966,56 @@ class TestSourceRootBarrier:
         through it), so it cannot be closed in a blanket ``finally``. That made
         each rejected update leak one descriptor, which would eventually exhaust
         the gateway's limit.
+
+        The subject therefore has to be a path the write gate refuses AFTER that
+        open: a second hardlink on the file, which ``_pinned_replace``'s
+        ``fstat`` check rejects (``st_nlink > 1``). A path OUTSIDE the approved
+        root -- what this test drove before -- never gets that far:
+        ``allowed_source_roots`` refuses it in ``_try_write_source_path`` itself,
+        so no descriptor is opened and the leak this test names could not have
+        been observed either way.
+
+        Pairing is read off the descriptors the writer itself opened and closed,
+        never a ``/proc/<pid>/fd`` census: this worker's other threads (executor
+        pools, the SEL writer) open and close descriptors of their own, so a
+        census moves for reasons that have nothing to do with this write.
         """
         import os as _os
 
         proj, src = project_file
-        # A path outside the approved root is rejected during validation.
-        outside = proj.parent / "outside.md"
-        outside.write_text("x", encoding="utf-8")
+        target = str(src.resolve())
+        # A second name on the same inode makes st_nlink == 2, which the pinned
+        # writer refuses -- but only once it already holds the descriptor.
+        _os.link(target, str(src.with_name("second-name.md")))
 
-        def open_fds() -> int:
-            try:
-                return len(_os.listdir(f"/proc/{_os.getpid()}/fd"))
-            except OSError:  # pragma: no cover -- non-Linux
-                pytest.skip("no /proc to count descriptors")
+        opened: list[int] = []
+        closed: list[int] = []
+        real_open, real_close = _os.open, _os.close
 
-        before = open_fds()
-        for _ in range(40):
-            assert (
-                home_store._try_write_source_path(str(outside), "nope", str(proj)) is False
-            )
-        # A leak would add ~40 descriptors; allow a little slack for unrelated I/O.
-        assert open_fds() - before < 10
+        def tracking_open(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            if str(path) == target:
+                opened.append(fd)
+            return fd
+
+        def tracking_close(fd: int, /) -> None:
+            closed.append(fd)
+            real_close(fd)
+
+        # Wrapped, never stubbed -- the real syscalls still run, so what the
+        # assertions below see is the writer's own cleanup. Scoped to a context
+        # rather than the shared ``monkeypatch``, whose ``undo()`` would also
+        # unpin the fake ``Path.home`` the ``home_store`` fixture installed.
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(_os, "open", tracking_open)
+            patched.setattr(_os, "close", tracking_close)
+            for _ in range(5):
+                assert home_store._try_write_source_path(target, "nope", str(proj)) is False
+
+        assert len(opened) == 5, "the refusal never reached the descriptor-pinned open"
+        leaked = [fd for fd in opened if fd not in closed]
+        assert leaked == [], f"a rejected update leaked its descriptor: {leaked}"
+        assert src.read_text(encoding="utf-8") == "# live from the project"
 
     def test_write_refuses_when_an_acl_attribute_cannot_be_carried(
         self, home_store, project_file, monkeypatch

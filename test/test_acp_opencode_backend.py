@@ -68,6 +68,15 @@ class TestResolutionLadder:
         for the host to call it runnable differs per platform (a mode bit here, a
         PATHEXT suffix there), and this test is about rung ORDER. The next test
         covers the case where the override is not runnable.
+
+        The mise stub answers ``/never/reached`` so a dropped override rung shows up
+        as that value in ``resolved``. Bind the expected answer -- the resolver's own
+        casing normalization, with the same ``or`` fallback it applies -- to a
+        variable before comparing, as ``test_path_is_the_last_rung`` does: written
+        inline, ``assert resolved == norm(x) or x`` parses as
+        ``(resolved == norm(x)) or x``, and a non-empty tmp_path string on the right
+        of ``or`` makes the whole assert unfalsifiable, so the rung this test exists
+        for would be pinned by nothing.
         """
         binary = tmp_path / "opencode"
         binary.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -75,7 +84,8 @@ class TestResolutionLadder:
         monkeypatch.setenv(_ENV_BIN, str(binary))
         monkeypatch.setattr(acp_client, "_mise_which", lambda _tool: "/never/reached")
         resolved, _searched = _resolve_opencode_bin()
-        assert resolved == acp_client._normalize_exe_casing(str(binary)) or str(binary)
+        expected = acp_client._normalize_exe_casing(str(binary)) or str(binary)
+        assert resolved == expected
 
     def test_a_non_executable_override_falls_through(self, monkeypatch, tmp_path):
         """An override naming something unrunnable must not shadow a working install.
