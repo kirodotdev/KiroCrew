@@ -699,7 +699,10 @@ a success.
 **History is best-effort.** `CronHistoryStore` never lets a history failure reach
 the scheduler. Its directory is resolved once by `prepare()`: usable means history
 is fully on, unusable means the store constructs with `enabled` False, where every
-read returns empty and every write is dropped. Usability is decided by the syscalls
+read returns empty and every write is dropped. History readers skip malformed JSONL
+lines and valid JSON values that are not record objects; pagination totals count
+only readable records. Deleting a job drops invalid index rows while preserving
+other jobs' valid records. Usability is decided by the syscalls
 the store's own paths issue — an `os.stat` of the directory plus the lock-file
 `os.open` — because a refused `mkdir` does not imply an unusable directory
 (`Path.mkdir(exist_ok=True)` consults `Path.is_dir()`, and pathlib re-raises

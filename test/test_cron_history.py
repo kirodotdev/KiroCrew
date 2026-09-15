@@ -163,6 +163,38 @@ async def test_get_all_history_no_index(store: CronHistoryStore) -> None:
     assert total == 0
 
 
+@pytest.mark.asyncio
+async def test_non_object_jsonl_rows_do_not_break_history_reads_or_delete(
+    store: CronHistoryStore, tmp_path: Path
+) -> None:
+    await store.append(_record(job_id="job1", run_id="r1", trace="private"))
+    await store.append(_record(job_id="keep", run_id="r2"))
+    history_dir = tmp_path / "cron-history"
+    job_file = history_dir / "job1.jsonl"
+    index_file = history_dir / "_index.jsonl"
+    job_file.write_text(job_file.read_text(encoding="utf-8") + "null\n", encoding="utf-8")
+    index_file.write_text("[]\n" + index_file.read_text(encoding="utf-8"), encoding="utf-8")
+
+    job_rows, job_total = await store.get_job_history("job1")
+    assert job_total == 1
+    assert [row["run_id"] for row in job_rows] == ["r1"]
+    assert "trace" not in job_rows[0]
+    assert (await store.get_run_detail("job1", "r1"))["trace"] == "private"
+    assert await store.get_run_detail("job1", "missing") is None
+
+    all_rows, all_total = await store.get_all_history()
+    assert all_total == 2
+    assert [row["run_id"] for row in all_rows] == ["r2", "r1"]
+    filtered_rows, filtered_total = await store.get_all_history(job_id="job1")
+    assert filtered_total == 1
+    assert [row["run_id"] for row in filtered_rows] == ["r1"]
+
+    assert await store.delete_job_history("job1") is True
+    remaining, total = await store.get_all_history()
+    assert total == 1
+    assert [row["run_id"] for row in remaining] == ["r2"]
+
+
 # ── rotate ───────────────────────────────────────────────────────────────
 
 
