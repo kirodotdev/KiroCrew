@@ -67,6 +67,7 @@ from kiro_crew.dashboard.chat_persistence import (
     save_slot_off_loop,
 )
 from kiro_crew.dashboard.chat_runner import (
+    _consume_pending_reset,
     _context_usage_payload,
     _run_chat,
     _start_next_queued_turn,
@@ -102,6 +103,7 @@ from kiro_crew.dashboard.chat_utils import (
     chat_done_payload,
     effective_session_key,
     history_corpus_unreadable,
+    recompute_queue_hold,
     slot_history_key,
     subagents_attached,
 )
@@ -756,6 +758,63 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # Same receipt contract as the busy-slot queue branch: `queue_id`
         # binds the sender's pre-send composer state to this exact entry.
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
+
+    # An idle slot can still owe a deferred teardown, so dispatching here would run
+    # this send ahead of the held queue and against a conversation awaiting discard.
+    # A steer reaching here found no live turn, and the sibling hold's steer opt-out
+    # does not transfer: waiting is what that one trades away, correctness this one.
+    # Excluded on `executor`, not `is_remote`: a BROKEN binding reads False and would
+    # run a named crew's turn here. A relayed send enters but cannot be QUEUED -- below.
+    _relayed = request.query.get("relay") == "1"
+    if slot.executor != "remote" and (
+        slot._pending_reset_history_key is not None
+        or slot._pending_discard_conversation_key is not None
+    ):
+        # The busy check above is not under this lock, so a racing send can reach
+        # here too; it serializes them and the await below is why that matters.
+        async with slot._lock:
+            await _consume_pending_reset(state, slot, allow_discard=True)
+            _teardown_pending = (
+                slot._pending_reset_history_key is not None
+                or slot._pending_discard_conversation_key is not None
+            )
+            # Queueing onto a REPLACED slot strands the entry behind a 200 the client
+            # cannot retry; registry writers replace a key without this `slot._lock`.
+            if state._slots.get(slot.key) is not slot:
+                return web.json_response(
+                    {"error": "slot changed during deferred teardown", "code": "session_rebound"},
+                    status=409,
+                )
+            # Busy still owns the key, so the queue it lands on is the one that turn drains.
+            _busy = slot.running
+            _would_queue = _teardown_pending or slot._queue or _busy
+            # Neither disposition is open to a relay: the 200 receipt precedes the
+            # `relay_mode` mirror, and dispatch answers the discarded conversation.
+            if _relayed and _would_queue:
+                return web.json_response(
+                    {
+                        "error": (
+                            "this crew is finishing a queued session change; "
+                            "send again when it settles"
+                        ),
+                        "code": "remote_turn_busy",
+                    },
+                    status=409,
+                )
+            if _would_queue:
+                qid = queue_for_next_turn(
+                    state,
+                    slot,
+                    message,
+                    directive_user_origin=not bool(request_app),
+                    send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
+                    attachments=attachment_meta(user_meta),
+                )
+                # Derive rather than clear: a teardown still pending must leave the hold
+                # SET, or the retry's release reads an unheld queue and this entry parks.
+                if not _busy and not recompute_queue_hold(slot):
+                    await _start_next_queued_turn(state, slot)
+                return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
     # WS mode: return JSON immediately, chunks delivered via WebSocket
     ws_mode = request.query.get("ws") == "1"

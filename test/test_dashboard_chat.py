@@ -3818,6 +3818,213 @@ class TestKiroReadinessQueueHandoff:
             for call in state.broadcast_ws.call_args_list
         )
 
+    def _synthesis_state(self, tmp_path, client):
+        state = _make_state(tmp_path)
+        # A service whose latch would answer "not ready" if anything asked it.
+        state.kiro_prerequisite_service = object()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.context_builder = None
+        state.consolidator = None
+        state._hook_store = None
+        state._yolo = False
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        # No attached children. Left truthy, `subagents_attached` answers True and every
+        # teardown defers on THAT branch -- a busy-refusal test never refuses.
+        state.subagents._queued_depth = MagicMock(return_value=0)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        return state
+
+    @pytest.mark.asyncio
+    async def test_a_signed_out_cli_also_holds_the_queue_against_synthesis(self, tmp_path):
+        """The hold has to stop the synthesis dispatch, not only the tail drain.
+
+        ``_run_pending_synthesis`` drains the queue itself, calling
+        ``_start_next_queued_turn``, so a hold honoured by only the tail drain lost
+        the same prompts through synthesis -- the loss the flag exists to prevent.
+        Drives the real ``AcpAuthRequired`` path rather than setting the flag, so
+        what is pinned is the wiring from the catch through ``slot._queue_held`` to
+        the gate, not the gate read alone.
+        """
+        from kiro_crew.acp.client import AcpAuthRequired
+        from kiro_crew.dashboard.chat import _run_chat
+
+        async def stream(stream_message: str):
+            raise AcpAuthRequired("kiro-cli is not logged in.")
+            yield  # unreachable, but makes this an async generator
+
+        client = MagicMock()
+        client.stream = stream
+        client.stream_command = stream
+        client.context_usage_pct = MagicMock(return_value=1.0)
+        state = self._synthesis_state(tmp_path, client)
+        slot = state.get_or_create_slot("signed-out-synthesis")
+        slot._titled = True
+        slot._pending_synthesis = True
+        slot.queue_append("keep this queued")
+
+        await _run_chat(state, slot, "first message")
+
+        assert slot._queue_held is True
+        # Recorded apart so a later teardown release cannot speak for this cause.
+        assert slot._queue_held_auth is True
+        assert slot._synthesis_inflight is False
+        # Withheld rather than cancelled: the note stays ARMED for the cycle after
+        # the user signs in, so the hold costs the synthesis nothing.
+        assert slot._pending_synthesis is True
+        assert [i["content"] for i in slot._queue] == ["keep this queued"]
+
+    @pytest.mark.asyncio
+    async def test_synthesis_still_dispatches_when_nothing_is_held(self, tmp_path):
+        """Positive control for the gate above: an unheld cycle still synthesises.
+
+        The gate narrows ONE branch. Without this an always-false ``will_synthesize``
+        would satisfy the test above while retiring synthesis altogether.
+        """
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        async def stream(stream_message: str):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"response to {stream_message}")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client = MagicMock()
+        client.stream = stream
+        client.stream_command = stream
+        client.context_usage_pct = MagicMock(return_value=1.0)
+        state = self._synthesis_state(tmp_path, client)
+        slot = state.get_or_create_slot("unheld-synthesis")
+        slot._titled = True
+        slot._pending_synthesis = True
+
+        await _run_chat(state, slot, "first message")
+
+        assert slot._queue_held is False
+        # Republished every turn, so a past sign-out cannot latch the queue held.
+        assert slot._queue_held_auth is False
+        assert slot._synthesis_inflight is True
+        assert slot.task is not None
+        slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_reset_left_deferred_holds_the_queue(self, tmp_path):
+        """A reset the end-of-turn consume could not apply holds the queue too.
+
+        The teardown is what makes a queued prompt run under the session it was
+        queued for, so draining while the flag is still armed runs the queue against
+        the session the reset was meant to replace. Driven through the busy-decline
+        deferral, the branch that leaves the flag armed after the turn's own consume
+        ran -- so the hold is read off the flag AFTER that consume, not before it.
+        """
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        async def stream(stream_message: str):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"response to {stream_message}")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client = MagicMock()
+        client.stream = stream
+        client.stream_command = stream
+        client.context_usage_pct = MagicMock(return_value=1.0)
+        state = self._synthesis_state(tmp_path, client)
+        # Declined every time: the session stays busy, so the consume defers.
+        state.sessions.reset = AsyncMock(return_value=False)
+        slot = state.get_or_create_slot("deferred-reset-hold")
+        slot._titled = True
+        slot._pending_reset_history_key = "dashboard:deferred-reset-hold"
+        slot.queue_append("queued across the reset")
+
+        await _run_chat(state, slot, "first message")
+
+        # The branch this test claims to drive actually ran: an inert refusal mock
+        # would otherwise defer on the attached-children branch and pass anyway.
+        state.sessions.reset.assert_awaited()
+        assert slot._pending_reset_history_key == "dashboard:deferred-reset-hold"
+        assert slot._queue_held is True
+        assert [i["content"] for i in slot._queue] == ["queued across the reset"]
+
+        retry = chat_runner._pending_reset_retries.pop(slot.key, None)
+        if retry is not None:
+            retry[1].cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_conversation_discard_holds_the_queue(self, tmp_path):
+        """A refused conversation DISCARD holds the queue on its own parallel flag.
+
+        Same hazard as the reset above, reached through different state: the discard
+        is refused while a linked channel turn holds the session, so draining here
+        would run the queued prompt against -- and append it to -- the conversation
+        the user asked to discard. The release needs no new machinery: a later turn's
+        end-of-turn consume lands the discard and clears the flag BEFORE this
+        predicate is recomputed, so the drain follows in that same tail.
+        """
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        async def stream(stream_message: str):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"response to {stream_message}")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client = MagicMock()
+        client.stream = stream
+        client.stream_command = stream
+        client.context_usage_pct = MagicMock(return_value=1.0)
+        state = self._synthesis_state(tmp_path, client)
+        # Refused every time: a linked channel turn is streaming on the session.
+        state.sessions.discard_conversation = AsyncMock(return_value=False)
+        slot = state.get_or_create_slot("deferred-discard-hold")
+        slot._titled = True
+        slot._pending_discard_conversation_key = "dashboard:deferred-discard-hold"
+        slot.queue_append("queued across the discard")
+
+        await _run_chat(state, slot, "first message")
+
+        state.sessions.discard_conversation.assert_awaited()
+        assert slot._pending_discard_conversation_key == "dashboard:deferred-discard-hold"
+        assert slot._queue_held is True
+        assert [i["content"] for i in slot._queue] == ["queued across the discard"]
+
+    @pytest.mark.asyncio
+    async def test_a_landed_discard_releases_the_queue(self, tmp_path):
+        """Positive control for the hold above: the release needs no new edge.
+
+        The consume runs BEFORE the predicate is recomputed, so a discard that lands
+        clears its flag in time for the drain in the same tail. Without this, a hold
+        that latched forever would satisfy the test above.
+        """
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        delivered: list[str] = []
+
+        async def stream(stream_message: str):
+            delivered.append(stream_message)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"response to {stream_message}")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client = MagicMock()
+        client.stream = stream
+        client.stream_command = stream
+        client.context_usage_pct = MagicMock(return_value=1.0)
+        state = self._synthesis_state(tmp_path, client)
+        state.sessions.discard_conversation = AsyncMock(return_value=True)
+        slot = state.get_or_create_slot("landed-discard-drain")
+        slot._titled = True
+        slot._pending_discard_conversation_key = "dashboard:landed-discard-drain"
+        slot.queue_append("queued across the discard")
+
+        await _run_chat(state, slot, "first message")
+        assert slot.task is not None
+        await slot.task
+
+        assert slot._pending_discard_conversation_key is None
+        assert slot._queue_held is False
+        assert slot._queue == []
+        assert delivered[1].endswith("queued across the discard")
+
 
 # ── History save on close (not per-turn) ──
 
@@ -11648,7 +11855,7 @@ class TestPythonStageLoop:
         slot.queue_append("queued during plan")
 
         async def _auth_run_chat(s, sl, msg, **kw):
-            sl._last_turn_auth_required = True  # signed-out CLI discovered this stage
+            sl._queue_held = True  # signed-out CLI discovered this stage
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _auth_run_chat)
         start_next = AsyncMock(return_value=False)
@@ -11660,6 +11867,37 @@ class TestPythonStageLoop:
 
         start_next.assert_not_awaited()  # queue held for post-login resume
         assert [i["content"] for i in slot._queue] == ["queued during plan"]
+
+    @pytest.mark.asyncio
+    async def test_stage_handoff_still_drains_when_nothing_is_held(self, tmp_path, monkeypatch):
+        """Positive control for the gate above: with no hold the end-of-plan handoff
+        must still drain the queue, so the fix narrows one branch rather than
+        stranding every queued follow-up after a plan."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        slot = self._make_slot(max_stages=1)
+        state._slots = {slot.key: slot}
+        slot.queue_append("queued during plan")
+
+        async def _clean_run_chat(s, sl, msg, **kw):
+            sl._queue_held = False
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _clean_run_chat)
+        start_next = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn", start_next
+        )
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        start_next.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_orchestrating_slot_queues_message(self, tmp_path, monkeypatch):
