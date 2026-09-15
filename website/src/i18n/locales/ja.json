@@ -9739,6 +9739,7 @@
         "cancel_esc": "キャンセル (Esc)",
         "copy": "コピー",
         "copy_link_to_message": "メッセージへのリンクをコピー",
+        "row_redacted": "[REDACTED...] 元のテキストは未保持",
         "edit_message": "メッセージを編集",
         "edit_resend": "編集して再送信",
         "send": "送信",

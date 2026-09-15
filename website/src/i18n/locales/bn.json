@@ -9881,6 +9881,7 @@
         "cancel_esc": "বাতিল (Esc)",
         "copy": "কপি করুন",
         "copy_link_to_message": "মেসেজের লিঙ্ক কপি করুন",
+        "row_redacted": "[REDACTED...] মূল লেখা রাখা হয়নি",
         "edit_message": "মেসেজ সম্পাদনা করুন",
         "edit_resend": "সম্পাদনা করে আবার পাঠান",
         "send": "পাঠান",
