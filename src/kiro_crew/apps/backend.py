@@ -26,11 +26,13 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew import shutdown_event as _gateway_shutdown_event
 from kiro_crew.apps import deps_boot as _deps_boot_module
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import (
@@ -42,7 +44,10 @@ from kiro_crew.apps.execution import (
 from kiro_crew.apps.interpreter import app_deps_dir, path_command_is_abi_matched, resolve_app_python
 from kiro_crew.apps.manager import (
     _DEPS_STAGING_SWEEP_RE,
+    _app_activation_denied,
+    _read_installed,
     app_dir,
+    app_enabled_state,
     get_app_manifest,
     list_apps,
 )
@@ -50,6 +55,8 @@ from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.governance_profiles import GOVERNANCE_ERROR_REASON
 from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
@@ -64,6 +71,36 @@ from kiro_crew.sandbox import (
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+
+class _BackendShutdownEvent:
+    """Expose timeout-aware waits for synchronous backend supervisor threads.
+
+    The process-wide shutdown signal is asyncio-native and cannot be awaited from these
+    threads. Polling it through a private never-set threading event preserves prompt
+    shutdown without changing the shared async API.
+    """
+
+    _POLL_INTERVAL = 0.1
+
+    def is_set(self) -> bool:
+        return _gateway_shutdown_event.is_set()
+
+    def wait(self, timeout: float) -> bool:
+        if self.is_set():
+            return True
+        deadline = time.monotonic() + max(0.0, timeout)
+        sleeper = threading.Event()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self.is_set()
+            sleeper.wait(min(remaining, self._POLL_INTERVAL))
+            if self.is_set():
+                return True
+
+
+shutdown_event = _BackendShutdownEvent()
 
 try:  # optional dependency: the digest has a platform-module fallback
     from packaging.markers import default_environment as _default_marker_environment
@@ -97,6 +134,23 @@ _HEALTH_WATCH_INTERVAL = 15.0
 # would take a working app offline; an exited process needs no threshold at all because
 # it cannot recover. See _watch_backend_health.
 _HEALTH_WATCH_FAILURES = 3
+# Consecutive successful liveness sweeps before a replacement is considered stable enough
+# to reset its crash-restart budget. A startup health gate proves only that the backend
+# came up; this window prevents a post-gate flapper from restarting forever at 1s.
+_RESTART_STABLE_SWEEPS = 4
+# A spawned backend that exits cannot recover by itself. The health watch first uses a
+# bounded fast exponential ramp while the app is positively enabled. The first
+# replacement attempt is immediate; seven subsequent waits cover a transient per-user
+# service-manager outage of roughly 45 seconds with margin
+# (0+1+2+4+8+16+30+30 = 91 seconds). After that ramp, retries continue indefinitely at
+# a slow steady interval: an enabled app must not remain dead waiting for an operator,
+# while the interval keeps persistent failures cheap. The counter resets only after the
+# replacement remains healthy for `_RESTART_STABLE_SWEEPS`.
+_RESTART_ON_EXIT_INITIAL_DELAY = 1.0
+_RESTART_ON_EXIT_MAX_DELAY = 30.0
+_RESTART_ON_EXIT_FAST_ATTEMPTS = 8
+_RESTART_STEADY_INTERVAL = 300.0
+_SETTLE_UNRESOLVED_WARN_AFTER = 20
 # Serializes health-driven MCP reconciliation (see _set_backend_health). Deliberately
 # NOT `_lock`: the reconcile does manifest + config file I/O, and holding `_lock` across
 # it would block the reverse proxy's get_app_backend_port on every request and risk a
@@ -329,6 +383,10 @@ def _spawn_owns_listener(port: int, spawn_pid: int) -> bool:
     return any(_pid_is_self_or_descendant_of(pid, spawn_pid) for pid in _listening_pids(port))
 
 
+class _SpawnOwnershipLost(RuntimeError):
+    """The spawn does not own the placeholder that authorizes reservation."""
+
+
 def _reserve_free_port(app_name: str) -> int:
     """Atomically pick a free port and record it against *app_name*.
 
@@ -338,9 +396,19 @@ def _reserve_free_port(app_name: str) -> int:
     which is the crash-loop the post-spawn survival check exists to catch. The
     reservation is overwritten with the real port on success and cleared on
     failure by the existing spawn bookkeeping.
+
+    When the current spawn has an owner, its placeholder identity is checked in
+    the same critical section as the reservation. A retired spawn therefore cannot
+    claim a port after a later start has replaced its placeholder.
     """
+    _spawn_owner = _spawn_publication_owner.get()
     with _lock:
+        if _spawn_owner is not None and _processes.get(app_name) is not _spawn_owner:
+            raise _SpawnOwnershipLost(app_name)
         port = _find_free_port()
+        # Reservation ownership follows the process-table slot: a runtime writer must
+        # own `_processes[app_name]`. Boot pre-claims run before placeholders exist;
+        # the first owning spawn's identity-gated failure cleanup releases that claim.
         _allocated_ports[app_name] = port
     return port
 
@@ -364,7 +432,10 @@ def _claim_port(app_name: str, port: int) -> None:
     Raises:
         PortUnavailableError: another app already holds *port*.
     """
+    _spawn_owner = _spawn_publication_owner.get()
     with _lock:
+        if _spawn_owner is not None and _processes.get(app_name) is not _spawn_owner:
+            raise _SpawnOwnershipLost(app_name)
         holder = next(
             (name for name, taken in _allocated_ports.items() if taken == port),
             None,
@@ -373,6 +444,9 @@ def _claim_port(app_name: str, port: int) -> None:
             raise PortUnavailableError(
                 f"app {app_name} declares fixed port {port}, already reserved by {holder}"
             )
+        # Reservation ownership follows the process-table slot: a runtime writer must
+        # own `_processes[app_name]`. Boot pre-claims run before placeholders exist;
+        # the first owning spawn's identity-gated failure cleanup releases that claim.
         _allocated_ports[app_name] = port
 
 
@@ -397,6 +471,10 @@ class AppProcess:
     mcp_healthy: bool | None = None
     started_at: float = 0.0
     log_path: str = ""
+    # Stable identity persisted beside ``pid``. Restart/stop cleanup removes a pidfile
+    # row only while both values still identify this process, so a concurrently-recorded
+    # successor under the same app name cannot be forgotten.
+    pid_start_time: str | None = None
     adopted_pids: list[int] = field(default_factory=list)
     # PID-reuse guard for the adopted set: pid -> platform_compat.process_start_time
     # token captured at adoption. stop signals a recorded PID only when its live
@@ -435,6 +513,33 @@ class AppProcess:
 
 
 _processes: dict[str, AppProcess] = {}  # app_name -> AppProcess
+# Carries the exact placeholder owned by the current spawn body without widening
+# that body's long-standing two-argument seam (many tests replace it directly).
+_spawn_publication_owner: ContextVar[AppProcess | None] = ContextVar(
+    "app_backend_spawn_publication_owner", default=None
+)
+# Consecutive restart attempts survive replacement generations and reset only after one
+# remains healthy for the sustained liveness window. Protected by `_lock` together with
+# `_processes`.
+_restart_attempts: dict[str, int] = {}
+# Monotonic lifecycle identity for restart handoffs. Every deliberate stop and every
+# public/external start advances the generation and records which transition won; the
+# restart's own spawn deliberately does neither. Protected by ``_lock``. Transition
+# bumps additionally take ``_health_reconcile_lock`` so a post-spawn compare + teardown
+# is atomic with respect to a later explicit start.
+_LIFECYCLE_START = "start"
+_LIFECYCLE_STOP = "stop"
+_lifecycle_generation: dict[str, tuple[int, str]] = {}
+
+
+def _advance_lifecycle_locked(app_name: str, transition: str) -> tuple[int, str]:
+    """Advance one app's lifecycle; caller holds ``_lock``."""
+    generation = _lifecycle_generation.get(app_name, (0, _LIFECYCLE_START))[0] + 1
+    state = (generation, transition)
+    _lifecycle_generation[app_name] = state
+    return state
+
+
 # Apps whose backends spawn real build workloads (vite/pip) and need the
 # elevated-but-finite NOFILE ceiling as the workload's ANCESTOR. Every other
 # app backend keeps the standard (operator-configurable) resource policy.
@@ -756,16 +861,71 @@ def _shebang_argv(entry: Path) -> list[str]:
 # Lifecycle
 # ---------------------------------------------------------------------------
 
+
+@dataclass(frozen=True)
+class ActivationVerdict:
+    """Result of re-vetting an app before a restart attempt.
+
+    ``denied`` carries an affirmative policy denial or evaluation error.
+    ``transient`` identifies governance-evaluator errors so restart supervision
+    refuses the current attempt while preserving its retry cadence.
+    """
+
+    denied: str | None = None
+    transient: bool = False
+
+
+def _activation_denied(app_name: str, action: str) -> ActivationVerdict:
+    """Re-vet restart activation; only governance-evaluator errors are transient."""
+    try:
+        denied = _app_activation_denied(app_name, fail_closed=True)
+    except PlatformCompositionError as exc:
+        return ActivationVerdict(denied=f"platform composition error: {exc}")
+    except Exception as exc:  # noqa: BLE001 — unexpected governance errors deny restart
+        return ActivationVerdict(denied=f"governance re-vet error: {exc}")
+    if denied:
+        return ActivationVerdict(
+            denied=denied,
+            transient=denied.startswith(GOVERNANCE_ERROR_REASON)
+            or denied.startswith("governance evaluation error:"),
+        )
+    installed = _read_installed(app_name)
+    if installed is None or installed.origin != "builtin":
+        try:
+            admission_denied = app_admission_denied(
+                app_name,
+                manifest=get_app_manifest(app_name),
+                action=action,
+            )
+        except Exception as exc:  # noqa: BLE001 — admission uncertainty is a hard denial
+            return ActivationVerdict(denied=f"admission re-vet error: {exc}")
+        if admission_denied:
+            return ActivationVerdict(denied=admission_denied)
+    return ActivationVerdict()
+
+
 def start_app_backend(app_name: str) -> AppProcess | None:
     """Start an app's backend process if it declares one.
 
     Returns the AppProcess on success, None if no backend declared.
     """
+    # This public entry point represents an explicit enable/boot-reconcile start. It
+    # supersedes an older stop racing a health-driven restart. The restart itself calls
+    # the internal entry point below so it does not manufacture a lifecycle transition.
+    with _health_reconcile_lock:
+        with _lock:
+            _advance_lifecycle_locked(app_name, _LIFECYCLE_START)
+    return _start_app_backend(app_name)
+
+
+def _start_app_backend(app_name: str) -> AppProcess | None:
+    """Single-flight spawn implementation without an external lifecycle transition."""
     manifest = get_app_manifest(app_name)
     if not manifest or not manifest.backend.entryPoint:
         return None
 
     await_inflight = False
+    spawn_placeholder: AppProcess | None = None
     with _lock:
         if app_name in _processes:
             existing = _processes[app_name]
@@ -789,49 +949,95 @@ def start_app_backend(app_name: str) -> AppProcess | None:
                 await_inflight = True
         if not await_inflight:
             # Reserve a STARTING placeholder so a concurrent call sees this spawn in flight.
-            _processes[app_name] = AppProcess(app_name=app_name, starting=True, started_at=time.time())
+            spawn_placeholder = AppProcess(
+                app_name=app_name, starting=True, started_at=time.time()
+            )
+            _processes[app_name] = spawn_placeholder
     if await_inflight:
         logger.info("App %s backend is already starting — awaiting the in-flight spawn", app_name)
         return _await_inflight_spawn(app_name)
 
+    assert spawn_placeholder is not None
     # From here the spawn is single-flighted for this app. The body returns the real
     # AppProcess on success, or None on any failure / no-op path; in EITHER the None
-    # case or an exception we must clear the STARTING placeholder so a later retry isn't
-    # permanently blocked (and a success path replaces it with the real record).
+    # case or an exception we must clear THIS call's STARTING placeholder so a later
+    # retry isn't permanently blocked (and a success path replaces it with the real
+    # record). A stop followed by a later start may replace our placeholder while we
+    # wait for the cross-process flock; such a retired call must not spawn or clean up
+    # the successor's state.
     # Held across the whole body: the backend exists as a PROCESS before its
     # pidfile record does, and a CLI uninstall probing in that window reads
     # "no record" as "no backend". Under this cross-process lock the probe
     # waits until the record is persisted (or the spawn torn down) - see
     # app_backend_lifecycle_flock.
+    # Ordering invariant: while holding the lifecycle flock, revalidate ownership,
+    # run the body, and clean every failed/retired reservation before release. A
+    # successor can reserve only after that cleanup is complete.
+    flock_entered = False
     try:
         with app_backend_lifecycle_flock(app_name):
-            result = _start_app_backend_body(app_name, manifest)
+            flock_entered = True
+            with _lock:
+                still_owner = _processes.get(app_name) is spawn_placeholder
+            if not still_owner:
+                _clear_failed_spawn_state(app_name, spawn_placeholder)
+                return None
+
+            try:
+                owner_context = _spawn_publication_owner.set(spawn_placeholder)
+                try:
+                    result = _start_app_backend_body(app_name, manifest)
+                finally:
+                    _spawn_publication_owner.reset(owner_context)
+            except Exception:
+                _clear_failed_spawn_state(app_name, spawn_placeholder)
+                raise
+            if result is None:
+                _clear_failed_spawn_state(app_name, spawn_placeholder)
+            return result
     except Exception:
-        _clear_failed_spawn_state(app_name)
+        # If flock acquisition itself failed, no successor was serialized behind
+        # this call. Identity/value checks still prevent clearing another caller.
+        if not flock_entered:
+            _clear_failed_spawn_state(app_name, spawn_placeholder)
         raise
-    if result is None:
-        _clear_failed_spawn_state(app_name)
-    return result
 
 
-def _clear_failed_spawn_state(app_name: str) -> None:
-    """Release the STARTING placeholder and any port reservation for a failed spawn.
+def _clear_failed_spawn_state(app_name: str, spawn_placeholder: AppProcess) -> None:
+    """Release this failed spawn's STARTING placeholder and port reservation.
 
-    The port must be released too, not just the placeholder: the spawn body now
-    reserves/claims a port BEFORE binding it (so concurrent boot cannot hand the
-    same number to two apps), so a failure that left the reservation behind would
-    permanently retire that port from the pool for the rest of the process — and a
-    long-lived gateway retrying a broken app would leak one port per attempt.
-    Only released when the app has no live record, so this can never revoke the
-    reservation of a successfully-running backend.
+    Identity is load-bearing: a stop followed by a later start can replace the
+    placeholder while this call is still inside the lifecycle flock. Clearing by
+    app name or by ``starting`` alone would delete that later caller's placeholder
+    and reopen the duplicate-spawn race.
     """
     with _lock:
-        cur = _processes.get(app_name)
-        if cur is not None and getattr(cur, "starting", False):
+        if _processes.get(app_name) is spawn_placeholder:
             _processes.pop(app_name, None)
-            cur = None
-        if cur is None:
             _allocated_ports.pop(app_name, None)
+
+
+def _terminate_retired_spawn(
+    app_name: str, proc: subprocess.Popen, log_fh: Any
+) -> None:
+    """Terminate a child whose caller does not own the STARTING placeholder."""
+    pid_start_time = _proc_start_time(proc.pid)
+    try:
+        platform_compat.kill_process_tree(proc.pid, platform_compat.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+    _forget_app_pid_if(app_name, proc.pid, pid_start_time)
+    try:
+        log_fh.close()
+    except OSError:
+        pass
 
 
 def _await_inflight_spawn(app_name: str, timeout: float = 20.0) -> AppProcess | None:
@@ -1662,10 +1868,11 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
     return provision_error
 
 
-def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
+def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     """The spawn body, single-flighted by the STARTING placeholder set in
     :func:`start_app_backend`. Returns the real AppProcess on success or None on any
     failure; the caller clears the placeholder on None/exception."""
+    _spawn_owner = _spawn_publication_owner.get()
     root = app_dir(app_name)
     entry_point = manifest.backend.entryPoint
     # Module-style entry point (e.g. "kiro_crew.apps.builtins.<name>"):
@@ -1741,7 +1948,10 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     # to two apps and crash-loop the loser on EADDRINUSE.
     port_str = manifest.backend.port
     if port_str == "auto":
-        port = _reserve_free_port(app_name)
+        try:
+            port = _reserve_free_port(app_name)
+        except _SpawnOwnershipLost:
+            return None
     else:
         try:
             port = int(port_str)
@@ -1761,8 +1971,13 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
             except PortUnavailableError as exc:
                 logger.error("App %s backend cannot start: %s", app_name, exc)
                 return None
+            except _SpawnOwnershipLost:
+                return None
         except ValueError:
-            port = _reserve_free_port(app_name)
+            try:
+                port = _reserve_free_port(app_name)
+            except _SpawnOwnershipLost:
+                return None
 
     # Prepare log directory (needed early for adopt path)
     log_dir = root / "data" / "logs"
@@ -1817,6 +2032,11 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 # would kill a healthy service we would immediately re-adopt. stop's
                 # adopted path kills only the re-validated PIDs for this reason.
                 with _lock:
+                    if (
+                        _spawn_owner is not None
+                        and _processes.get(app_name) is not _spawn_owner
+                    ):
+                        return None
                     _processes[app_name] = ap
                     _allocated_ports[app_name] = port
                 # Register through the SERIALIZED transition, before the watch is armed.
@@ -2387,14 +2607,27 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         log_path=str(log_path),
     )
 
+    retired = False
     with _lock:
-        _processes[app_name] = ap
-        _allocated_ports[app_name] = port
+        if _spawn_owner is not None and _processes.get(app_name) is not _spawn_owner:
+            retired = True
+        else:
+            _processes[app_name] = ap
+            _allocated_ports[app_name] = port
+
+    if retired:
+        logger.info(
+            "App %s backend spawn lost publication ownership; terminating pid %d",
+            app_name,
+            proc.pid,
+        )
+        _terminate_retired_spawn(app_name, proc, log_fh)
+        return None
 
     logger.info("Started app %s backend on port %d (pid %d)", app_name, port, proc.pid)
 
     # Persist identity for the startup stale-reap (see _reap_stale_app_backends).
-    _record_app_pid(app_name, proc.pid, port)
+    ap.pid_start_time = _record_app_pid(app_name, proc.pid, port)
 
     # Health check in background, then a standing liveness watch for as long as the
     # backend is tracked — see _supervise_backend_health.
@@ -2429,7 +2662,7 @@ def _wait_for_pids(pids: list[int], timeout: float = 2.0) -> None:
             time.sleep(0.1)
 
 
-def stop_app_backend(app_name: str) -> bool:
+def stop_app_backend(app_name: str, *, _expected: AppProcess | None = None) -> bool:
     """Stop an app's backend process."""
     # Teardown participates in the health serialization, so the pop cannot land in the
     # middle of a reconcile. Without this, a watcher that had already passed its identity
@@ -2441,10 +2674,18 @@ def stop_app_backend(app_name: str) -> bool:
     # check fails. Lock order matches `_set_backend_health`: reconcile lock, then `_lock`.
     with _health_reconcile_lock:
         with _lock:
+            if _expected is not None and _processes.get(app_name) is not _expected:
+                return False
+            _advance_lifecycle_locked(app_name, _LIFECYCLE_STOP)
             ap = _processes.pop(app_name, None)
             _allocated_ports.pop(app_name, None)
-
-    _forget_app_pid(app_name)
+            _restart_attempts.pop(app_name, None)
+        # Keep cleanup inside the lifecycle transition's serialization. A later explicit
+        # start cannot record its successor between the pop and this identity check.
+        if ap is not None and ap.proc is not None:
+            _forget_app_pid_if(app_name, ap.pid, ap.pid_start_time)
+        else:
+            _forget_app_pid(app_name)
 
     if not ap:
         return False
@@ -3021,6 +3262,301 @@ def _rebind_adopted_owners(ap: AppProcess, health_path: str) -> bool:
     return True
 
 
+def _settle_superseding_start(
+    app_name: str,
+    ap: AppProcess,
+    replacement: AppProcess | None,
+) -> Literal["continue", "return_true", "return_false"]:
+    """Resolve a process-table handoff without abandoning restart supervision.
+
+    The caller holds neither ``_health_reconcile_lock`` nor ``_lock``. A STARTING
+    record is intent, not a successor, so wait until it settles. Only a tracked
+    non-STARTING successor, STOP/disable/shutdown, or restoration of ``ap`` is
+    decisive; failed spawn cleanup owns port reservations.
+    """
+    unresolved_awaits = 0
+    warned_unresolved = False
+    while True:
+        _await_inflight_spawn(app_name)
+        with _health_reconcile_lock:
+            with _lock:
+                lifecycle_now = _lifecycle_generation.get(
+                    app_name, (0, _LIFECYCLE_START)
+                )
+            if (
+                lifecycle_now[1] == _LIFECYCLE_STOP
+                or shutdown_event.is_set()
+                or _app_enabled_state(app_name) is not True
+            ):
+                if replacement is not None:
+                    stop_app_backend(app_name, _expected=replacement)
+                return "return_false"
+            with _lock:
+                current = _processes.get(app_name)
+                if current is ap:
+                    return "continue"
+                if current is None:
+                    _processes[app_name] = ap
+                    return "continue"
+                if not current.starting:
+                    return "return_true"
+        # A timed-out await can leave a genuinely slow STARTING owner in place.
+        # Keep waiting rather than treating unresolved intent as a successor.
+        unresolved_awaits += 1
+        if (
+            not warned_unresolved
+            and unresolved_awaits >= _SETTLE_UNRESOLVED_WARN_AFTER
+        ):
+            logger.warning(
+                "App %s: superseding start unresolved after %d awaits; "
+                "STARTING placeholder is not settling",
+                app_name,
+                unresolved_awaits,
+            )
+            warned_unresolved = True
+
+
+def _restart_exited_backend(ap: AppProcess, returncode: int | None) -> bool:
+    """Replace one exited, still-tracked backend through the ordinary spawn path.
+
+    The caller reaches this only after the dead generation's MCP scrub landed. Keeping
+    the dead record through the backoff lets ``stop_app_backend`` win naturally: its
+    identity pop makes the final check fail before this function removes the record and
+    starts anything. The replacement uses the normal spawn implementation (pidfile,
+    health gate, MCP promotion, and single-flight) without recording an external START.
+    A lifecycle generation snapshot then distinguishes a later STOP from a later START.
+    Fast retries transition to a slow steady cadence rather than giving up while the app
+    remains enabled.
+
+    Exit invariant: this loop returns only after it published its own replacement, a
+    tracked non-STARTING successor has assumed supervision, or STOP, disable, or
+    shutdown made restart supervision unnecessary. A START generation records intent,
+    not success, so its in-flight spawn is awaited with neither
+    ``_health_reconcile_lock`` nor ``_lock`` held before that intent is decisive.
+    """
+    app_name = ap.app_name
+    activation_error_warned = False
+    steady_state_warned = False
+    while True:
+        entered_steady_state = False
+        identity_moved = False
+        with _health_reconcile_lock:
+            with _lock:
+                proc = ap.proc
+                if _processes.get(app_name) is not ap:
+                    identity_moved = True
+                elif proc is None or proc.poll() is None:
+                    return False
+                else:
+                    previous_attempts = _restart_attempts.get(app_name, 0)
+            if not identity_moved:
+                # ``None`` is deliberately fail-closed: an unreadable installed.json
+                # must not bring an app back after the operator may have disabled it.
+                if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
+                    return False
+                attempt_number = previous_attempts + 1
+                steady_state = previous_attempts >= _RESTART_ON_EXIT_FAST_ATTEMPTS
+                if steady_state:
+                    delay = _RESTART_STEADY_INTERVAL
+                    with _lock:
+                        if _processes.get(app_name) is not ap:
+                            identity_moved = True
+                        else:
+                            entered_steady_state = not steady_state_warned
+                else:
+                    delay = (
+                        0.0
+                        if previous_attempts == 0
+                        else min(
+                            _RESTART_ON_EXIT_INITIAL_DELAY
+                            * (2 ** (previous_attempts - 1)),
+                            _RESTART_ON_EXIT_MAX_DELAY,
+                        )
+                    )
+                if not identity_moved:
+                    if steady_state:
+                        logger.info(
+                            "App %s backend exited (rc=%s); restarting "
+                            "(attempt %d, steady) in %.1fs",
+                            app_name,
+                            returncode,
+                            attempt_number,
+                            delay,
+                        )
+                    else:
+                        logger.info(
+                            "App %s backend exited (rc=%s); restarting "
+                            "(fast attempt %d/%d) in %.1fs",
+                            app_name,
+                            returncode,
+                            attempt_number,
+                            _RESTART_ON_EXIT_FAST_ATTEMPTS,
+                            delay,
+                        )
+
+        if identity_moved:
+            settlement = _settle_superseding_start(app_name, ap, None)
+            if settlement == "continue":
+                continue
+            return settlement == "return_true"
+
+        if entered_steady_state:
+            logger.warning(
+                "App %s backend still failing after %d fast restart attempts; "
+                "retrying every %.0fs while the app stays enabled (disable the app to stop)",
+                app_name,
+                _RESTART_ON_EXIT_FAST_ATTEMPTS,
+                _RESTART_STEADY_INTERVAL,
+            )
+            steady_state_warned = True
+
+        if shutdown_event.wait(delay):
+            return False
+
+        # Re-check after waiting. ``stop_app_backend`` takes the same serialization
+        # before popping, so a deliberate stop cannot race this removal into a respawn.
+        post_wait_identity_moved = False
+        with _health_reconcile_lock:
+            if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
+                return False
+            with _lock:
+                proc = ap.proc
+                if _processes.get(app_name) is not ap:
+                    post_wait_identity_moved = True
+                elif proc is None or proc.poll() is None:
+                    return False
+                else:
+                    _processes.pop(app_name, None)
+                    _allocated_ports.pop(app_name, None)
+                    _restart_attempts[app_name] = previous_attempts + 1
+                    lifecycle_snapshot = _lifecycle_generation.get(
+                        app_name, (0, _LIFECYCLE_START)
+                    )
+
+        if post_wait_identity_moved:
+            settlement = _settle_superseding_start(app_name, ap, None)
+            if settlement == "continue":
+                continue
+            return settlement == "return_true"
+
+        _forget_app_pid_if(app_name, ap.pid, ap.pid_start_time)
+        if ap.log_fh:
+            try:
+                ap.log_fh.close()
+            except OSError:
+                pass
+
+        verdict = _activation_denied(app_name, "restart")
+        if verdict.denied and not verdict.transient:
+            logger.warning(
+                "App %s backend not restarted: blocked by activation policy: %s",
+                app_name,
+                verdict.denied,
+            )
+            try:
+                sel().log_api_access(
+                    caller="gateway",
+                    operation="app_backend_restart",
+                    outcome="denied",
+                    resources=app_name,
+                    error=verdict.denied,
+                )
+            except Exception as exc:  # noqa: BLE001 — denial remains fail-closed
+                logger.debug("SEL audit failed for app %s restart deny: %s", app_name, exc)
+            return False
+
+        backend_still_declared = True
+        if verdict.transient:
+            evaluation_error = verdict.denied or "activation evaluation error"
+            if not activation_error_warned:
+                logger.warning(
+                    "App %s backend restart activation evaluation failed; "
+                    "refusing this attempt and retrying on the restart cadence: %s",
+                    app_name,
+                    evaluation_error,
+                )
+                activation_error_warned = True
+            try:
+                sel().log_api_access(
+                    caller="gateway",
+                    operation="app_backend_restart",
+                    outcome="error",
+                    resources=app_name,
+                    error=evaluation_error,
+                )
+            except Exception as exc:  # noqa: BLE001 — evaluation remains fail-closed
+                logger.debug("SEL audit failed for app %s restart error: %s", app_name, exc)
+            replacement = None
+        else:
+            # The permit is a gateway-initiated exercise of the app's execution
+            # grant with no operator in the loop, so SEL records it as it does the
+            # denial: an operator reconstructing a trust timeline must see the
+            # decision, not infer it from the spawn that followed.
+            try:
+                sel().log_api_access(
+                    caller="gateway",
+                    operation="app_backend_restart",
+                    outcome="allowed",
+                    resources=f"{app_name} attempt={attempt_number}",
+                )
+            except Exception as exc:  # noqa: BLE001 — the permit stands without its audit line
+                logger.debug("SEL audit failed for app %s restart allow: %s", app_name, exc)
+            try:
+                replacement = _start_app_backend(app_name)
+                if replacement is None:
+                    manifest = get_app_manifest(app_name)
+                    backend_still_declared = bool(
+                        manifest is not None and manifest.backend.entryPoint
+                    )
+            except Exception as exc:  # noqa: BLE001 — a raised spawn is a retryable failure
+                logger.warning(
+                    "App %s backend restart attempt %d failed to spawn: %s",
+                    app_name,
+                    attempt_number,
+                    exc,
+                )
+                replacement = None
+
+        # The compare and any teardown are serialized with public START generation
+        # bumps. A later START is intent only: the shared handoff below waits outside
+        # both locks before deciding whether another supervisor really took over.
+        with _health_reconcile_lock:
+            with _lock:
+                lifecycle_now = _lifecycle_generation.get(
+                    app_name, (0, _LIFECYCLE_START)
+                )
+            superseding_start = (
+                lifecycle_now != lifecycle_snapshot
+                and lifecycle_now[1] == _LIFECYCLE_START
+            )
+            if lifecycle_now != lifecycle_snapshot and not superseding_start:
+                logger.info(
+                    "App %s backend restart was cancelled after spawn; stopping replacement",
+                    app_name,
+                )
+                if replacement is not None:
+                    stop_app_backend(app_name, _expected=replacement)
+                return False
+            if not superseding_start:
+                if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
+                    logger.info(
+                        "App %s backend restart was cancelled after spawn; stopping replacement",
+                        app_name,
+                    )
+                    if replacement is not None:
+                        stop_app_backend(app_name, _expected=replacement)
+                    return False
+                if not backend_still_declared:
+                    return True
+                if replacement is not None:
+                    return True
+
+        settlement = _settle_superseding_start(app_name, ap, replacement)
+        if settlement == "continue":
+            continue
+        return settlement == "return_true"
+
+
 def _watch_backend_health(ap: AppProcess, health_path: str) -> None:
     """Run the liveness watch, surviving an unexpected fault in any single sweep.
 
@@ -3070,6 +3606,7 @@ def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
     "not the tracked record" guard the startup poll uses.
     """
     consecutive_failures = 0
+    consecutive_healthy_sweeps = 0
     while True:
         time.sleep(_HEALTH_WATCH_INTERVAL)
         with _lock:
@@ -3101,20 +3638,23 @@ def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
                 _demote(ap, reason=f"process exited (rc={proc.returncode})")
             elif mcp_healthy is not False:
                 _retry_mcp_reconcile(ap, healthy=False)
-            else:
-                return  # confirmed scrubbed — nothing to unwind
             with _lock:
                 dropped = _processes.get(ap.app_name) is not ap
                 reconciled = ap.mcp_healthy is False
-            if dropped or reconciled:
+            if dropped:
+                return
+            if reconciled:
+                _restart_exited_backend(ap, proc.returncode)
                 return
             continue
 
         if _health_probe(ap.port, health_path):
             consecutive_failures = 0
+            consecutive_healthy_sweeps += 1
             healthy = True
         else:
             consecutive_failures += 1
+            consecutive_healthy_sweeps = 0
             healthy = was_healthy and consecutive_failures < _HEALTH_WATCH_FAILURES
 
         if healthy != was_healthy:
@@ -3139,6 +3679,16 @@ def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
             # transition, which for a backend that now stays put would never arrive.
             _retry_mcp_reconcile(ap, healthy=healthy)
 
+        if consecutive_healthy_sweeps >= _RESTART_STABLE_SWEEPS:
+            with _lock:
+                recovered_attempts = (
+                    _restart_attempts.pop(ap.app_name, 0)
+                    if _processes.get(ap.app_name) is ap and ap.healthy
+                    else 0
+                )
+            if recovered_attempts:
+                logger.info("App %s backend recovered after restart", ap.app_name)
+
 
 def _app_enabled_state(app_name: str) -> bool | None:
     """Tri-state enablement: True, False, or None when it could not be read.
@@ -3151,15 +3701,11 @@ def _app_enabled_state(app_name: str) -> bool | None:
     "disabled" would destroy data over a temporary fault.
     """
     try:
-        # circular import: manager imports from this module's package at call time.
-        #
         # `app_enabled_state`, NOT `is_app_enabled`: the latter returns False for BOTH a
         # deliberate disable and an unreadable metadata file, because `_read_installed`
         # answers None to both. Trusting that collapsed False would make this whole
         # tri-state a no-op for the transient fault it exists to catch — the read error
         # never raises, so the `except` below would never see it.
-        from kiro_crew.apps.manager import app_enabled_state
-
         return app_enabled_state(app_name)
     except Exception as exc:  # noqa: BLE001 — unknown is a state, not a crash
         logger.warning(
@@ -3341,6 +3887,14 @@ def _supervise_backend_health(ap: AppProcess, health_path: str) -> None:
     stays tracked."""
     if _health_check_loop(ap, health_path) is not None:
         _watch_backend_health(ap, health_path)
+        return
+    # A process can stay unhealthy through the short startup poll and exit later.
+    # Hand every still-tracked record to the ordinary watch so it can demote a live
+    # unhealthy backend, observe a later exit, and enter the restart sequence.
+    with _lock:
+        still_tracked = _processes.get(ap.app_name) is ap
+    if still_tracked:
+        _watch_backend_health(ap, health_path)
 
 
 def _start_health_supervisor(ap: AppProcess, health_path: str) -> None:
@@ -3483,10 +4037,11 @@ def _write_pidfile(data: dict[str, dict[str, Any]]) -> None:
         logger.debug("Could not write app-backend pidfile: %s", exc)
 
 
-def _record_app_pid(app_name: str, pid: int, port: int) -> None:
+def _record_app_pid(app_name: str, pid: int, port: int) -> str | None:
     """Persist a spawned backend's identity for the startup stale-reap. Never raises."""
     if pid <= 0:
-        return
+        return None
+    start_time: str | None = None
     try:
         # Compute start_time BEFORE taking the lock: the probe is slow on the
         # platforms that cannot answer from memory (a `ps` spawn on macOS, an
@@ -3501,10 +4056,11 @@ def _record_app_pid(app_name: str, pid: int, port: int) -> None:
             _write_pidfile(data)
     except Exception as exc:  # noqa: BLE001 — persistence must never break a spawn
         logger.debug("Could not record app pid for %s: %s", app_name, exc)
+    return start_time
 
 
 def _forget_app_pid(app_name: str) -> None:
-    """Drop an app's pidfile entry (called on a clean stop). Never raises."""
+    """Drop an app's pidfile entry (called when no process identity is tracked)."""
     try:
         with _pidfile_lock:
             data = _read_pidfile()
@@ -3512,6 +4068,23 @@ def _forget_app_pid(app_name: str) -> None:
                 _write_pidfile(data)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not forget app pid for %s: %s", app_name, exc)
+
+
+def _forget_app_pid_if(app_name: str, pid: int, start_time: str | None) -> None:
+    """Drop a pidfile row only if it still identifies the expected process."""
+    try:
+        with _pidfile_lock:
+            data = _read_pidfile()
+            entry = data.get(app_name)
+            if (
+                isinstance(entry, dict)
+                and entry.get("pid") == pid
+                and entry.get("start_time") == start_time
+            ):
+                data.pop(app_name, None)
+                _write_pidfile(data)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not conditionally forget app pid for %s: %s", app_name, exc)
 
 
 def _reap_stale_app_backends() -> int:
@@ -3671,8 +4244,6 @@ def start_enabled_app_backends() -> list[str]:
     # generation before starting the new one. See the RFC,
     # "Apps as supervised sandboxed children".
     _reap_stale_app_backends()
-
-    from kiro_crew.apps.manager import _app_activation_denied
 
     apps = list_apps()
 

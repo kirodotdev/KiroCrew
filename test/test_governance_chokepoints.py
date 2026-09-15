@@ -918,6 +918,18 @@ class TestAppsGate:
 
         assert manager._app_activation_denied("anything") is None
 
+    def test_platform_composition_error_still_propagates(self, monkeypatch):
+        from kiro_crew.apps import manager
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        def _raise_composition_error(*_args, **kwargs):
+            assert kwargs["fail_closed"] is True
+            raise PlatformCompositionError("governance composition failed")
+
+        monkeypatch.setattr(gp, "governance_permits", _raise_composition_error)
+        with pytest.raises(PlatformCompositionError, match="governance composition failed"):
+            manager._app_activation_denied("anything", fail_closed=True)
+
     def test_host_bound_profile_governs_app_activation(self):
         # H-p4: app activation runs through the _host session key
         # (surface "host"), so a profile bound to surface:host narrows it on top

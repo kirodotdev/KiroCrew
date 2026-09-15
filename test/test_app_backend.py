@@ -1388,6 +1388,11 @@ class TestBootAdmissionRevet:
             "manifest": {"backend": {"entryPoint": "server.py"}},
         }]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        monkeypatch.setattr(
+            bmod,
+            "_read_installed",
+            lambda _name: SimpleNamespace(origin="builtin"),
+        )
         bmod.start_enabled_app_backends()
         # Builtin is exempt from the gate — start_app_backend was invoked for it.
         assert "core-builtin" in started

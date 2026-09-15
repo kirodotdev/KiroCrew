@@ -564,6 +564,11 @@ def app_lifecycle_lock(name: str) -> LoopBoundLock:
 
     Must be called from (and the lock used on) the event loop thread; the
     guarded blocking work itself runs off-loop via executor/``to_thread``.
+    This async lock serializes route handlers only and does not imply exclusive
+    backend-lifecycle ownership. New lifecycle paths must go through the public
+    ``start_app_backend`` or ``stop_app_backend`` entry points, which take
+    ``_health_reconcile_lock`` and ``_lock`` and call
+    ``_advance_lifecycle_locked``; they never mutate ``_processes`` directly.
     """
     if name not in _LIFECYCLE_LOCKS:
         _LIFECYCLE_LOCKS[name] = LoopBoundLock()
@@ -1737,7 +1742,7 @@ def _restore_trust_grant(
 # ---------------------------------------------------------------------------
 
 
-def _app_activation_denied(name: str) -> str | None:
+def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | None:
     """Return a denial reason if governance forbids activating app *name*, else None.
 
     The ``apps`` scope (a ScopedRuleset over app slugs) is the per-app activation
@@ -1749,8 +1754,10 @@ def _app_activation_denied(name: str) -> str | None:
     it is governed by the policy ceiling AND any ``bind: {type: surface, id:
     host}`` profile — an honest, stable bind target.  (It must NOT use an empty
     key, which classifies to surface ``unknown`` and silently matches nothing.)
-    Best-effort beyond the always-on checks: a ``PlatformCompositionError``
-    propagates (fail-closed CPP); any other error degrades to "no opinion" (None).
+    By default, a ``PlatformCompositionError`` propagates while any other
+    evaluation error degrades to "no opinion".  With ``fail_closed=True``, the
+    evaluator receives the strict disposition and any escaped evaluation error
+    becomes a denial reason.
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
@@ -1760,7 +1767,9 @@ def _app_activation_denied(name: str) -> str | None:
             governance_permits,
         )
 
-        decision = governance_permits("apps", name, session_key=HOST_SESSION_KEY)
+        decision = governance_permits(
+            "apps", name, session_key=HOST_SESSION_KEY, fail_closed=fail_closed
+        )
         if not getattr(decision, "permitted", True):
             try:
                 from kiro_crew.sel import sel
@@ -1777,12 +1786,11 @@ def _app_activation_denied(name: str) -> str | None:
         return None
     except PlatformCompositionError:
         raise
-    except Exception:
+    except Exception as exc:
         # scope="apps" + app=name so the SEL records WHICH app's activation gate
         # degraded; session_key=_host so the SEL source is the honest "host"
         # surface (not "unknown"/"slack").  Wrapped so a late-import failure cannot
-        # raise out of this except-branch and convert the soft fail-open into a
-        # hard fail.
+        # escape this branch and change its configured disposition.
         try:
             from kiro_crew.platform.governance_profiles import (
                 HOST_SESSION_KEY,
@@ -1794,6 +1802,8 @@ def _app_activation_denied(name: str) -> str | None:
             )
         except Exception:
             logger.debug("governance degrade audit unavailable", exc_info=True)
+        if fail_closed:
+            return f"governance evaluation error: {exc}"
         return None
 
 

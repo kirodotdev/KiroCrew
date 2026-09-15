@@ -718,6 +718,40 @@ class TestProperty6EnableDisableRoundTrip:
         assert meta is not None
         assert meta.enabled is True
 
+    def test_enable_degrades_governance_evaluation_error_to_no_opinion(
+        self, app_home, monkeypatch, tmp_path
+    ):
+        """Interactive enable remains available when governance evaluation degrades."""
+        import kiro_crew.apps.manager as mgr
+        from kiro_crew.apps.manager import enable_app
+        from kiro_crew.platform import governance_profiles as gp
+
+        _ship_builtin(monkeypatch, tmp_path, "degraded-enable-app")
+        monkeypatch.setattr(
+            mgr,
+            "_BUILTIN_APPS",
+            [{
+                "name": "degraded-enable-app",
+                "version": "1.0.0",
+                "displayName": "Degraded Enable",
+                "description": "Governance evaluation degradation test",
+                "author": "kirocrew",
+                "defaultEnabled": False,
+            }],
+        )
+        register_builtin_apps()
+
+        def _raise_evaluation_error(*_args, **_kwargs):
+            raise RuntimeError("profile evaluator unavailable")
+
+        monkeypatch.setattr(gp, "governance_permits", _raise_evaluation_error)
+        result = enable_app("degraded-enable-app")
+
+        assert result.ok
+        meta = _read_installed("degraded-enable-app")
+        assert meta is not None
+        assert meta.enabled is True
+
     def test_disable_then_read(self, app_home, monkeypatch):
         """Disabling an enabled builtin app persists enabled=False."""
         import kiro_crew.apps.manager as mgr
