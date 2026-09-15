@@ -40,6 +40,7 @@ from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
@@ -542,11 +543,14 @@ async def handle_message_transport(
                 # the tab refresh below must not run until the row is actually
                 # on disk (it reads the file), and a failure here has to be
                 # visible so the post-turn fallback can cover the whole turn.
+                #
+                # Own hop: this scan is quadratic on uniform runs.
+                scrubbed_row = await asyncio.to_thread(redact_row_via_context, text)
                 await asyncio.to_thread(
                     conversation_log.append,
                     session_key,
                     "user",
-                    text,
+                    scrubbed_row,
                     source_thread=session_key,
                     source_user=user_id,
                     # This is the write that creates the session file, and the

@@ -1312,6 +1312,8 @@ def _rehydrate_slot_from_history(
                 # meta to a client.
                 meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
                 mint_mid=False,
+                # Disk already answered this; None falls back, so this can only ADD marks.
+                redacted=True if m.get("redacted") else None,
             )
             # Provenance is not a slot.append() argument, so carry it onto the
             # message the append just created. Without this the window loses where
@@ -1766,6 +1768,7 @@ def _apply_recent_session(
             broadcast=False,
             meta=(m["meta"] if isinstance(m.get("meta"), dict) else None),
             mint_mid=False,
+            redacted=True if m.get("redacted") else None,
         )
         # See the equivalent call in _rehydrate_slot_from_history.
         carry_provenance(slot.messages[-1], m)
@@ -2328,6 +2331,7 @@ def _build_message_entry_uncached(
         # dashboard-authored turn, so it keeps these defaults.
         "source_thread": "dashboard",
         "source_user": "dashboard",
+        **({"redacted": True} if m.get("redacted") else {}),
     }
     carry_provenance(entry, m)
     if m.get("variants"):
