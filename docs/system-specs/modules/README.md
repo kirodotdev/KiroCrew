@@ -122,5 +122,6 @@ agent loads only the one it needs.
 | [connections.md](connections.md) | Third-party account connections: provider registry and tiers, the mint endpoints, grant custody at the kiro-cli boundary, warm-table prewarming, owner-only disconnect, and the L0/L1 launch gates. |
 | [connector-capability-manifest.md](connector-capability-manifest.md) | The connector campaign's manifest field schema (one row per required operation) and the `W00`–`W16` work-stream DAG that sequences its provider rounds. |
 | [connector-github.md](connector-github.md) | The GitHub connector (`W02`): per-operation instance data and the GitHub-specific wire parsing (pagination, rate-limit signals, status/body-to-error-class mapping, capability-signature resolution). |
+| [microsoft-graph-runtime.md](microsoft-graph-runtime.md) | The shared Microsoft Graph runtime base (`W05`): the resource locator (`/me` vs `/users/{id}`, the app-only `/me` refusal, the required Graph resource shapes), request/response payload shaping, and the `@odata.nextLink` pagination variants. Pure logic; defines no vendor-error taxonomy. |
 | [instances.md](instances.md) | Managing multiple instances over SSH. Sections here are cited by number from `cloud/connect.py`, so do not renumber them. |
 | [dev-fleet.md](dev-fleet.md) | Worktree fleet management and pruning. |
