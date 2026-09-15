@@ -254,3 +254,61 @@ def test_extra_mcp_servers_other_errors_degrade_to_empty(monkeypatch) -> None:
 
     monkeypatch.setattr(agent, "current_context", lambda: _Ctx())
     assert agent._extra_mcp_servers() == {}
+
+
+def test_extra_heartbeat_mcp_servers_fails_closed_on_composition_error(monkeypatch) -> None:
+    """A ``PlatformCompositionError`` must propagate out of the heartbeat seam
+    too, never be swallowed into an empty server set. Same fail-closed invariant
+    as ``_extra_mcp_servers``: a non-standalone host that cannot compose must
+    abort rather than silently install a heartbeat agent missing the edition
+    servers its allowlist was written against."""
+
+    def _boom():
+        raise PlatformCompositionError("cannot compose companion")
+
+    monkeypatch.setattr(agent, "current_context", _boom)
+    with pytest.raises(PlatformCompositionError):
+        agent._extra_heartbeat_mcp_servers()
+
+
+def test_extra_heartbeat_mcp_servers_other_errors_degrade_to_empty(monkeypatch) -> None:
+    """A non-composition lookup failure degrades to the empty set — the
+    standalone-safe fallback — rather than crashing heartbeat agent install."""
+
+    class _BrokenTooling:
+        def extra_heartbeat_mcp_servers(self):
+            raise RuntimeError("transient lookup failure")
+
+    class _Ctx:
+        mcp_tooling = _BrokenTooling()
+
+    monkeypatch.setattr(agent, "current_context", lambda: _Ctx())
+    assert agent._extra_heartbeat_mcp_servers() == {}
+
+
+def test_extra_heartbeat_mcp_servers_absent_on_older_companion(monkeypatch) -> None:
+    """A companion built against a core that PREDATES this seam must degrade to
+    the empty set, not crash.
+
+    This is the forward-compatibility proof behind adding
+    ``extra_heartbeat_mcp_servers`` as a v1 method addition with no
+    ``CONTRACT_VERSION`` bump. Such a companion has no attribute of this name, so
+    the lookup raises ``AttributeError``; ``safe_context_call`` re-raises only
+    ``PlatformCompositionError`` and degrades every other exception, so the
+    heartbeat agent still installs with ``kirocrew-core`` alone. Without this
+    property, landing core before the companion would break every enterprise
+    install in the interim.
+    """
+
+    class _OldTooling:
+        """Deliberately implements only the pre-existing seam."""
+
+        def extra_mcp_servers(self):
+            return {"builder-mcp": {"command": "/bin/builder-mcp", "args": []}}
+
+    class _Ctx:
+        mcp_tooling = _OldTooling()
+
+    monkeypatch.setattr(agent, "current_context", lambda: _Ctx())
+    assert not hasattr(_Ctx.mcp_tooling, "extra_heartbeat_mcp_servers")
+    assert agent._extra_heartbeat_mcp_servers() == {}

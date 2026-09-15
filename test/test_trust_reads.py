@@ -17,6 +17,7 @@ from kiro_crew.dashboard.state import (
     _SORT_READONLY_LONG,
     DashboardState,
     _ChatSlot,
+    command_invokes_program,
     is_read_only_bash,
     unsafe_bash_reason,
 )
@@ -1683,6 +1684,65 @@ class TestUnsafeBashReason:
         for cmd in samples:
             has_reason = unsafe_bash_reason(cmd) != ""
             assert has_reason == (not is_read_only_bash(cmd)), cmd
+
+
+# ── command_invokes_program ──
+
+
+class TestCommandInvokesProgram:
+    """A caller (e.g. heartbeat's git exclusion) layering a program-specific
+    denial on top of ``is_read_only_bash`` must catch that program in every
+    segment ``_classify_bash`` itself would separately classify — this is
+    the shared helper that guarantees the two can never desync.
+    """
+
+    def test_bare_invocation_matches(self):
+        assert command_invokes_program("git status", "git") is True
+        assert command_invokes_program("ls -la", "git") is False
+
+    def test_compound_command_every_separator(self):
+        """Every separator ``_classify_bash`` itself splits on (&&/||/;/\\n)
+        must be checked, not only the string's raw first token."""
+        for cmd in (
+            "pwd; git status",
+            "pwd && git status",
+            "pwd || git status",
+            "pwd\ngit status",
+            "git status; pwd",
+            "pwd; ls -la; git log",
+        ):
+            assert command_invokes_program(cmd, "git") is True, cmd
+        assert command_invokes_program("pwd; ls -la", "git") is False
+
+    def test_pipe_target_checked_too(self):
+        """A pipe target's leading verb is a segment ``_classify_bash``
+        classifies on its own merits (``pipe_parts[1:]`` in
+        ``_classify_bash``), so a program named as a pipe target must be
+        caught the same as a leading verb."""
+        assert command_invokes_program("pwd | git status", "git") is True
+        assert command_invokes_program("pwd | grep foo", "git") is False
+
+    def test_case_insensitive(self):
+        """``_classify_bash`` lowercases the verb before comparing to its
+        allowlist (``first = head.lower()``); a caller's exclusion must
+        match that leniency or a differently-cased invocation slips through
+        the exclusion while still classifying as read-only."""
+        for cmd in ("GIT status", "Git log -1", "gIt diff", "pwd; GIT status"):
+            assert command_invokes_program(cmd, "git") is True, cmd
+
+    def test_empty_and_malformed_command_returns_false(self):
+        """Permissive on unparseable input — a caller pairs this with
+        ``is_read_only_bash``, which already denies these on its own."""
+        assert command_invokes_program("", "git") is False
+        assert command_invokes_program("   ", "git") is False
+        assert command_invokes_program(";;;", "git") is False
+
+    def test_substring_does_not_match(self):
+        """Only the exact leading word matches — a program name that is a
+        substring of another word (``gitk``, ``digit``) must not falsely
+        trigger the exclusion."""
+        assert command_invokes_program("gitk --all", "git") is False
+        assert command_invokes_program("echo digit", "git") is False
 
 
 # ── _extract_bash_command ──

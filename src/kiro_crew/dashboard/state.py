@@ -1974,6 +1974,44 @@ def unsafe_bash_reason(cmd: str) -> str:
     return _classify_bash(cmd)
 
 
+def command_invokes_program(cmd: str, program: str) -> bool:
+    """True if any segment of ``cmd`` invokes ``program`` as its leading verb.
+
+    Splits on the SAME separators ``_classify_bash`` uses (``&&``/``||``/
+    ``;``/newline for top-level segments, then ``|`` for pipe targets) and
+    compares each segment's leading word case-insensitively — the same two
+    axes ``_classify_bash`` itself is lenient on. A caller checking only the
+    whole string's first token (no segment split, or a case-sensitive
+    compare) is trivially bypassed by ``pwd; PROGRAM ...`` or
+    ``pwd | PROGRAM ...``, since ``_classify_bash`` still classifies the
+    later segment on its own merits and can approve it as read-only even
+    though the caller's naive check missed it entirely — exactly the
+    "checked the string, not what the classifier will actually run" gap a
+    caller adds a program-specific exclusion on TOP of ``is_read_only_bash``
+    to close (e.g. heartbeat excluding ``git`` regardless of read-only
+    classification, because git reads repo-local ``.git/config`` on
+    invocation and the classifier cannot see that channel). Does not itself
+    judge safety — pair with ``is_read_only_bash``/``unsafe_bash_reason``.
+
+    Deliberately permissive on ``cmd``: an empty or malformed command (no
+    parseable segments) returns False rather than raising, so a caller that
+    already handles "command missing" via ``is_read_only_bash`` denying it
+    does not need a second failure mode here.
+    """
+    program_lower = program.lower()
+    for part in re.split(r"\s*(?:&&|\|\||;|\n)\s*", cmd.strip()):
+        if not part.strip():
+            continue
+        for pipe_part in part.split("|"):
+            pipe_part = pipe_part.strip()
+            if not pipe_part:
+                continue
+            leading = pipe_part.split(maxsplit=1)[0] if pipe_part.split() else ""
+            if leading.lower() == program_lower:
+                return True
+    return False
+
+
 # ── Shared helpers ──
 
 
