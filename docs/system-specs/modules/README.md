@@ -121,5 +121,6 @@ agent loads only the one it needs.
 | [cloud.md](cloud.md) | Cloud connect and remote gateway login. |
 | [connections.md](connections.md) | Third-party account connections: provider registry and tiers, the mint endpoints, grant custody at the kiro-cli boundary, warm-table prewarming, owner-only disconnect, and the L0/L1 launch gates. |
 | [connector-capability-manifest.md](connector-capability-manifest.md) | The connector campaign's manifest field schema (one row per required operation) and the `W00`–`W16` work-stream DAG that sequences its provider rounds. |
+| [connector-google-mime.md](connector-google-mime.md) | The Gmail-side MIME parsing/construction engine (`W03` / G1): RFC 2047 headers, multipart/alternative + related, inline `cid:` images, attachments with checksums, reply threading, To/Cc/Bcc (Bcc never leaks), `sendAs` alias validation, and the base64url `raw` round-trip. Pure logic, zero auth. |
 | [instances.md](instances.md) | Managing multiple instances over SSH. Sections here are cited by number from `cloud/connect.py`, so do not renumber them. |
 | [dev-fleet.md](dev-fleet.md) | Worktree fleet management and pruning. |
