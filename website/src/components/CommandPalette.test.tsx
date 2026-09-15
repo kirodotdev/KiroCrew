@@ -34,7 +34,7 @@ const H = vi.hoisted(() => {
     chat: {
       slotStatusDetail: {} as Record<
         string,
-        { kind: string; text: string; ts: number; toolName?: string }
+        { kind: string; label: string; purpose?: string; ts: number }
       >,
     },
   }
@@ -442,7 +442,7 @@ describe('CommandPalette — render', () => {
     expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
 
     H.storeState.chat.slotStatusDetail = {
-      'chat-1': { kind: 'tool', text: 'Running: read /workspace/src/app.ts', ts: 1 },
+      'chat-1': { kind: 'tool', label: 'read /workspace/src/app.ts', purpose: 'Running: read /workspace/src/app.ts', ts: 1 },
     }
     rerender(<CommandPalette open onClose={vi.fn()} />)
 
@@ -457,7 +457,7 @@ describe('CommandPalette — render', () => {
       { key: 'chat-1', title: 'Live session', running: true, messages: 2 },
     ]
     H.storeState.chat.slotStatusDetail = {
-      'chat-1': { kind: 'tool', text: 'Reading the app entrypoint', ts: 1 },
+      'chat-1': { kind: 'tool', label: 'read /workspace/src/app.ts', purpose: 'Reading the app entrypoint', ts: 1 },
     }
     const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
     await screen.findByText('Recent Session')
