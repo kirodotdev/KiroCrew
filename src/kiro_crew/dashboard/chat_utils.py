@@ -849,7 +849,7 @@ def chat_done_payload(
             continuing
             or slot._in_stage_execution
             or slot._pending_synthesis
-            or (slot.queue_depth and not slot._last_turn_auth_required)
+            or (slot.queue_depth and not slot._queue_held)
             or subagents_attached(state, slot, effective_session_key(slot), "completion_sound")
             or (
                 workflows is not None
