@@ -71,9 +71,11 @@ await page.waitForTimeout(2500)
 await page.getByRole('button', { name: /^Agent: / }).first().click()
 await page.getByRole('option', { name: /reviewer/ }).first().click()
 
-// The notice is an aria-live status region — wait for it rather than sleeping,
-// so the shot cannot race the render or photograph an already-expired notice.
-await page.getByRole('status').filter({ hasText: FAILURE }).first()
+// This scene's stubbed 400 carries no refusal code, so it is a genuine breakage and
+// the notice announces assertively as `role="alert"` — NOT the `status` a withheld
+// switch gets. Wait on the region rather than sleeping, so the shot cannot race the
+// render or photograph an already-expired notice.
+await page.getByRole('alert').filter({ hasText: FAILURE }).first()
   .waitFor({ state: 'visible', timeout: 5000 })
 
 const out = join(OUT, 'after-01-agent-switch-failure-notice.png')
