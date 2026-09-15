@@ -35,6 +35,7 @@ from kiro_crew.hooks import (
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
@@ -3116,7 +3117,8 @@ def save_conversation_turn(
     log.append(
         key,
         "user",
-        user_text,
+        # Where all twelve callers persist a user row; each caller's prompt is untouched.
+        redact_row_via_context(user_text),
         source_thread=source_thread,
         source_user=source_user,
         agent=agent,

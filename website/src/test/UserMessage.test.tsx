@@ -637,3 +637,26 @@ describe('unconfirmed send treatment', () => {
     expect(line.querySelector('button')).toBeNull()
   })
 })
+
+describe('UserMessage — a rewritten row says so', () => {
+  it('cues a redacted row in visible text, matching the inline token', () => {
+    render(
+      <UserMessage
+        content="my key is [REDACTED: credential] ok"
+        redacted
+        renderContent={renderContent}
+      />,
+    )
+    const cue = screen.getByTestId('user-message-redacted')
+    // ONE vocabulary: the badge reuses the token the row's own text already carries.
+    expect(cue).toHaveTextContent('[REDACTED...]')
+    // The loss must be readable WITHOUT hover: a title is unreachable on touch and by keyboard.
+    expect(cue).toHaveTextContent('original not kept')
+    expect(cue).not.toHaveAttribute('title')
+  })
+
+  it('leaves a verbatim row uncued', () => {
+    render(<UserMessage content="just my ordinary question" renderContent={renderContent} />)
+    expect(screen.queryByTestId('user-message-redacted')).toBeNull()
+  })
+})

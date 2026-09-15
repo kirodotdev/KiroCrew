@@ -1205,9 +1205,10 @@ async def fork_slot(
                 content, _ = redact_exfiltration_urls(content)
                 content, _ = redact_credentials(content)
             cls = "msg msg-u" if role == "user" else "msg msg-a"
-            new_slot.append(
-                role, content, cls, ts=m.get("ts", ""), meta=m.get("meta"), broadcast=False
-            )
+            # Carried, not re-derived: the copied text cannot answer for a companion
+            # policy's own tag spelling.
+            mark, ts, meta = m.get("redacted"), m.get("ts", ""), m.get("meta")
+            new_slot.append(role, content, cls, ts=ts, meta=meta, redacted=mark, broadcast=False)
             # A fork copies the parent's messages into a new session. Origin is
             # a property of the message, not of the file, so a copied inbound
             # channel turn keeps the origin it actually had.

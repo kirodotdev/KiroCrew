@@ -1164,7 +1164,8 @@ def _assemble_bundle(
         if role != "user":
             content, _ = redact_exfiltration_urls(content)
             content, _ = redact_credentials(content)
-        messages.append({"role": role, "content": content, "ts": m.get("ts", "")})
+        mark = {"redacted": True} if m.get("redacted") else {}
+        messages.append({"role": role, "content": content, "ts": m.get("ts", ""), **mark})
 
     # Strip our own marker so a session bounced back and forth does not
     # accumulate one prefix per hop.
@@ -1504,8 +1505,10 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
                 f"bundle too large (> {_MAX_TOTAL_CHARS} chars of content)",
                 "transfer_bundle_too_large",
             )
-        ts = m.get("ts", "")
-        messages.append({"role": role, "content": content, "ts": ts if isinstance(ts, str) else ""})
+        ts = m.get("ts", "") if isinstance(m.get("ts", ""), str) else ""
+        # Validated, not trusted: a non-bool lands ABSENT and the boundary re-infers.
+        mark = {"redacted": True} if m.get("redacted") is True else {}
+        messages.append({"role": role, "content": content, "ts": ts, **mark})
 
     title = body.get("title", "")
     if not isinstance(title, str):
@@ -1737,7 +1740,7 @@ async def _install_arrived_bundle(
     # importer's own egress-mirroring scrub (defense-in-depth; it must not assume
     # the sender scrubbed).
     rows: list[dict] = [
-        {"role": m["role"], "content": m["content"], "ts": m["ts"]} for m in messages
+        {k: m[k] for k in ("role", "content", "ts", "redacted") if k in m} for m in messages
     ]
     rows = await asyncio.to_thread(_redact_history_rows, rows)
 

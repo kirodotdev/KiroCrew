@@ -95,6 +95,7 @@ from kiro_crew.messaging.queue_drain import (
     tag_entry,
 )
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface, receipt_address_key
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
 from kiro_crew.webex import cards
@@ -1864,6 +1865,9 @@ class WebexDispatcher:
         """Record the turn to conversation_log (dashboard visibility + restart)."""
         if self.conv_log is None:
             return
+        # An EGRESS: served to readers after the turn ran, so it cannot rewrite the prompt.
+
+        user_text = redact_row_via_context(user_text)
         self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
             self.conv_log.append(

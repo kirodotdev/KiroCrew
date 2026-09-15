@@ -501,6 +501,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           timestampTitle={fmtMessageTimeFull(m.ts)}
           renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}
           onReplyInThread={replyInThreadFor(m, ctx)}
+          redacted={m.redacted === true}
         />
       )
       // The bubble alone on every surface without a thread footer to draw, so

@@ -109,6 +109,7 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
 from kiro_crew.notifications.settings import ChannelSettings
+from kiro_crew.platform.context import carries_redaction_marker
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
@@ -1023,6 +1024,9 @@ def chat_message_frame(note: dict, *, include_metadata: bool) -> dict[str, Any]:
         "content": note["content"],
         "ts": note.get("ts", ""),
     }
+    # Above the metadata gate: a display boolean, not privileged meta.
+    if note.get("redacted"):
+        frame["redacted"] = True
     if not include_metadata:
         return frame
     if note.get("cls"):
@@ -1467,6 +1471,8 @@ def append_and_surface(
         }
         if cls:
             frame["cls"] = cls
+        if msg.get("redacted"):
+            frame["redacted"] = True
         row_meta = msg.get("meta")
         if isinstance(row_meta, dict) and row_meta:
             frame["meta"] = row_meta
@@ -4098,6 +4104,7 @@ class _ChatSlot:
         broadcast_user: bool = False,
         meta: dict | None = None,
         mint_mid: bool = True,
+        redacted: bool | None = None,
     ) -> dict[str, Any]:
         # A LIVE user row retires every unanswered STATELESS question: that row
         # IS the next message the card's answer was contracted to arrive as.
@@ -4144,6 +4151,12 @@ class _ChatSlot:
             "role": role,
             "content": content,
             "cls": cls,
+            # An explicit value wins: text alone cannot answer for a companion's tag spelling.
+            **(
+                {"redacted": True}
+                if (carries_redaction_marker(content) if redacted is None else redacted)
+                else {}
+            ),
             # This window is re-serialized into the SAME transcript file that
             # ConversationLog.append writes, so it owes the reader the same
             # ordering guarantee: strictly after the row before it, even when
@@ -7143,6 +7156,10 @@ class DashboardState:
             "content": content,
             "ts": msg.get("ts", ""),
         }
+        # Read off the ROW, not re-derived from `content`: display redaction masks
+        # model output at render time, so a body-derived mark would false-positive.
+        if msg.get("redacted"):
+            payload["redacted"] = True
         # Include cls for backward compatibility
         cls_val = msg.get("cls", "")
         if cls_val:

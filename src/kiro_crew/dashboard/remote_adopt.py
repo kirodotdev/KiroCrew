@@ -460,6 +460,7 @@ def prepare_backfill_rows(
         content = row.get("content", "")
         if not isinstance(content, str):
             content = json.dumps(content)
+        raw = content
         # Redacted for every role, INCLUDING ``user``. The local rule leaves
         # user-authored text raw because its author is its only reader — but this
         # text was authored on another machine and arrives over a wire, so the
@@ -482,7 +483,8 @@ def prepare_backfill_rows(
             meta = {k: v for k, v in meta.items() if k != "mid"} or None
         else:
             meta = None
-        kept.append({"role": role, "content": content, "cls": cls, "ts": ts, "meta": meta})
+        mark = {"redacted": True} if (content != raw or row.get("redacted")) else {}
+        kept.append({"role": role, "content": content, "cls": cls, "ts": ts, "meta": meta, **mark})
     dropped_older = max(0, len(kept) - PEER_TRANSCRIPT_MAX_ROWS)
     if dropped_older:
         kept = kept[dropped_older:]
@@ -653,5 +655,6 @@ def apply_adopted_backfill(slot: "_ChatSlot", backfill: AdoptBackfill) -> int:
             broadcast=False,
             meta=row["meta"],
             mint_mid=False,
+            redacted=row.get("redacted"),
         )
     return len(backfill.rows)

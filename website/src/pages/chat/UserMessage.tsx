@@ -62,9 +62,12 @@ interface UserMessageProps {
    *  send while the member works is a steer), the badge would label every
    *  such send with the mechanics the surface exists to hide. */
   hideSteerBadge?: boolean
+  /** This stored row is a REWRITE, not what the user typed: a credential scrub replaced a
+   *  span and kept no original, so without the cue a false positive is indistinguishable. */
+  redacted?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, redacted }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -457,6 +460,16 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {steerDecision && <SteerDecisionLine record={steerDecision} />}
           {bubble}
         </>
+      )}
+      {/* NOT in the action row below, which is `opacity-0` until this message is
+          hovered: a reveal-on-hover trust signal is no signal. */}
+      {redacted && (
+        <div
+          data-testid="user-message-redacted"
+          className="text-muted text-[12px] leading-5 mt-1 pr-1"
+        >
+          {i18nT('pages.chat.userMessage.row_redacted')}
+        </div>
       )}
       {/* Where the pointer cannot hover the footer is always visible and its
           descendant overrides grow every action to a 40px touch target (20px
