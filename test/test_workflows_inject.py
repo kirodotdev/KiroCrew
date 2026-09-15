@@ -33,7 +33,9 @@ class _FakeSlot:
     def _on_message(self, _key, msg) -> None:
         self.delivered.append(msg)
 
-    def append(self, role, content, cls="", ts="", *, broadcast=True, broadcast_user=False, meta=None):
+    def append(
+        self, role, content, cls="", ts="", *, broadcast=True, broadcast_user=False, meta=None
+    ):
         # Mirror the real ``_ChatSlot.append`` contract: mint ``meta.mid``, hand
         # the appended row back, and deliver ONE live copy via ``_on_message``
         # when no reader is draining (the injector reads the id off the return
@@ -150,8 +152,11 @@ def test_inject_routes_to_originating_slot_and_broadcasts_live() -> None:
     origin = _FakeSlot("chat-2-123")
     state = _FakeState({"chat-2-123": origin})
     snap = {
-        "name": "pizza", "run_id": "wf_2", "status": "finished",
-        "session_key": "dashboard:chat-2-123", "result": {"report": "/tmp/r.md"},
+        "name": "pizza",
+        "run_id": "wf_2",
+        "status": "finished",
+        "session_key": "dashboard:chat-2-123",
+        "result": {"report": "/tmp/r.md"},
     }
     ok = inject_workflow_result(state, "wf_2", snap)
     assert ok is True
@@ -170,12 +175,38 @@ def test_inject_routes_to_originating_slot_and_broadcasts_live() -> None:
 def test_inject_falls_back_when_origin_slot_gone() -> None:
     state = _FakeState({})  # originating slot is gone
     snap = {
-        "name": "pizza", "run_id": "wf_9", "status": "finished",
-        "session_key": "dashboard:chat-gone", "result": {"ok": True},
+        "name": "pizza",
+        "run_id": "wf_9",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
     }
     ok = inject_workflow_result(state, "wf_9", snap)
     assert ok is True
     assert state.created == ["workflow-wf_9"]  # dedicated fallback slot created
+
+
+def test_inject_does_not_bind_or_surface_into_an_app_owned_fallback_slot() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from kiro_crew.dashboard import chat_utils
+
+    held = _FakeSlot("workflow-wf_9")
+    held._app = "my-app"  # an app pre-minted the fallback slot's name
+    state = _FakeState({"workflow-wf_9": held})
+    snap = {
+        "name": "pizza",
+        "run_id": "wf_9",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
+    }
+    with patch.object(chat_utils, "sel", lambda: MagicMock()):
+        ok = inject_workflow_result(state, "wf_9", snap)
+    assert ok is False
+    assert held.linked_session_key == ""
+    assert held.messages == []
+    assert state.broadcasts == []
 
 
 def test_inject_no_session_key_returns_false() -> None:
@@ -194,24 +225,30 @@ def test_durable_copy_carries_the_window_rows_id() -> None:
     state = _FakeState({"chat-2-123": origin})
     state.conversation_log = MagicMock()
     snap = {
-        "name": "pizza", "run_id": "wf_2", "status": "finished",
-        "session_key": "dashboard:chat-2-123", "result": {"ok": True},
+        "name": "pizza",
+        "run_id": "wf_2",
+        "status": "finished",
+        "session_key": "dashboard:chat-2-123",
+        "result": {"ok": True},
     }
     with patch("kiro_crew.dashboard.workflow_inject.append_if_absent_off_loop") as durable:
         assert inject_workflow_result(state, "wf_2", snap) is True
     assert len(origin.messages) == 1
     window_mid = origin.messages[0]["meta"]["mid"]
-    assert durable.call_args.kwargs["mid"] == window_mid, (
-        "the durable copy did not carry the window row's id"
-    )
+    assert (
+        durable.call_args.kwargs["mid"] == window_mid
+    ), "the durable copy did not carry the window row's id"
 
 
 def test_inject_dedups_on_refire() -> None:
     origin = _FakeSlot("chat-5")
     state = _FakeState({"chat-5": origin})
     snap = {
-        "name": "x", "run_id": "wf_5", "status": "finished",
-        "session_key": "dashboard:chat-5", "result": {"v": 1},
+        "name": "x",
+        "run_id": "wf_5",
+        "status": "finished",
+        "session_key": "dashboard:chat-5",
+        "result": {"v": 1},
     }
     inject_workflow_result(state, "wf_5", snap)
     inject_workflow_result(state, "wf_5", snap)  # re-fire
@@ -230,11 +267,16 @@ def test_on_injected_fires_for_originating_slot() -> None:
     origin = _FakeSlot("chat-2-123")
     state = _FakeState({"chat-2-123": origin})
     snap = {
-        "name": "pizza", "run_id": "wf_2", "status": "finished",
-        "session_key": "dashboard:chat-2-123", "result": {"n": 1},
+        "name": "pizza",
+        "run_id": "wf_2",
+        "status": "finished",
+        "session_key": "dashboard:chat-2-123",
+        "result": {"n": 1},
     }
     fired: list = []
-    ok = inject_workflow_result(state, "wf_2", snap, on_injected=lambda s, sn: fired.append((s, sn)))
+    ok = inject_workflow_result(
+        state, "wf_2", snap, on_injected=lambda s, sn: fired.append((s, sn))
+    )
     assert ok is True
     assert len(fired) == 1
     assert fired[0][0] is origin  # the live originating slot
@@ -246,8 +288,11 @@ def test_on_injected_not_fired_for_fallback_slot() -> None:
     # so the auto-turn callback must NOT fire.
     state = _FakeState({})
     snap = {
-        "name": "x", "run_id": "wf_9", "status": "finished",
-        "session_key": "dashboard:chat-gone", "result": {"ok": True},
+        "name": "x",
+        "run_id": "wf_9",
+        "status": "finished",
+        "session_key": "dashboard:chat-gone",
+        "result": {"ok": True},
     }
     fired: list = []
     ok = inject_workflow_result(state, "wf_9", snap, on_injected=lambda s, sn: fired.append(s))
@@ -260,8 +305,11 @@ def test_on_injected_not_fired_on_dedup_refire() -> None:
     origin = _FakeSlot("chat-5")
     state = _FakeState({"chat-5": origin})
     snap = {
-        "name": "x", "run_id": "wf_5", "status": "finished",
-        "session_key": "dashboard:chat-5", "result": {"v": 1},
+        "name": "x",
+        "run_id": "wf_5",
+        "status": "finished",
+        "session_key": "dashboard:chat-5",
+        "result": {"v": 1},
     }
     fired: list = []
     cb = lambda s, sn: fired.append(s)  # noqa: E731
@@ -275,5 +323,107 @@ def test_on_injected_not_fired_for_ui_only_run() -> None:
     state = _FakeState({})
     snap = {"name": "x", "run_id": "wf_0", "status": "finished", "result": {}, "session_key": ""}
     fired: list = []
-    assert inject_workflow_result(state, "wf_0", snap, on_injected=lambda s, sn: fired.append(s)) is False
+    assert (
+        inject_workflow_result(state, "wf_0", snap, on_injected=lambda s, sn: fired.append(s))
+        is False
+    )
     assert fired == []
+
+
+def test_inject_refuses_an_app_owned_originating_slot_and_falls_back() -> None:
+    """The originating-slot path carries the same guard as the fallback: the
+    launching chat can close mid-run and an app can re-mint its key, so
+    injecting by key alone would hand the app the run's private result."""
+    from unittest.mock import MagicMock, patch
+
+    from kiro_crew.dashboard import chat_utils
+
+    squatted = _FakeSlot("chat-2-123")
+    squatted._app = "my-app"  # the launching chat closed; an app re-minted its key
+    state = _FakeState({"chat-2-123": squatted})
+    snap = {
+        "name": "pizza",
+        "run_id": "wf_7",
+        "status": "finished",
+        "session_key": "dashboard:chat-2-123",
+        "result": {"ok": True},
+    }
+    fired: list[object] = []
+    with patch.object(chat_utils, "sel", lambda: MagicMock()):
+        ok = inject_workflow_result(state, "wf_7", snap, on_injected=lambda s, sn: fired.append(s))
+    assert ok is True
+    assert squatted.messages == []  # nothing surfaced to the app-owned slot
+    assert squatted.linked_session_key == ""
+    assert state.created == ["workflow-wf_7"]  # routed to the fallback instead
+    assert fired == []  # the auto-turn only ever fires for the true origin
+
+
+def test_inject_reaches_an_app_slot_that_launched_the_run() -> None:
+    """An app may launch a workflow from its own chat: the originating slot
+    being app-owned is not by itself grounds to divert the completion. The run
+    identity carries ``launched_at``; a slot created BEFORE that instant is the
+    launcher, and discarding its completion would silently drop the run's
+    final turn."""
+    origin = _FakeSlot("chat-2-123")
+    origin._app = "my-app"
+    origin.created_at = "2026-09-15T10:00:00+00:00"
+    state = _FakeState({"chat-2-123": origin})
+    snap = {
+        "name": "pizza",
+        "run_id": "wf_8",
+        "status": "finished",
+        "session_key": "dashboard:chat-2-123",
+        "launched_at": 1789469200.0,  # 2026-09-15T18:06:40Z, after created_at
+        "result": {"ok": True},
+    }
+    fired: list[object] = []
+    ok = inject_workflow_result(state, "wf_8", snap, on_injected=lambda s, sn: fired.append(s))
+    assert ok is True
+    assert origin.messages, "the completion must reach the slot that launched the run"
+    assert state.created == []  # no fallback slot minted
+    assert fired == [origin]  # the auto-turn fires for the true origin
+
+
+def test_inject_still_refuses_an_app_slot_minted_after_launch() -> None:
+    """The discriminator cuts the other way too: an app slot whose
+    ``created_at`` postdates the run's ``launched_at`` re-minted the
+    originator's name mid-run and must not receive the result."""
+    from unittest.mock import MagicMock, patch
+
+    from kiro_crew.dashboard import chat_utils
+
+    squatted = _FakeSlot("chat-2-123")
+    squatted._app = "my-app"
+    squatted.created_at = "2026-09-15T19:00:00+00:00"
+    state = _FakeState({"chat-2-123": squatted})
+    snap = {
+        "name": "pizza",
+        "run_id": "wf_9",
+        "status": "finished",
+        "session_key": "dashboard:chat-2-123",
+        "launched_at": 1789469200.0,  # 2026-09-15T18:06:40Z, before created_at
+        "result": {"ok": True},
+    }
+    with patch.object(chat_utils, "sel", lambda: MagicMock()):
+        ok = inject_workflow_result(state, "wf_9", snap, on_injected=lambda s, sn: None)
+    assert ok is True
+    assert squatted.messages == []
+    assert state.created == ["workflow-wf_9"]  # diverted to the fallback
+
+
+def test_rebind_refusal_survives_an_audit_failure() -> None:
+    """``refuse_app_owned_rebind`` is called from injectors whose contract is
+    never-raises: a failing SEL audit must not escape (it would record a
+    COMPLETED run as failed), and the refusal must still stand."""
+    from unittest.mock import patch
+
+    from kiro_crew.dashboard import chat_utils
+
+    slot = _FakeSlot("workflow-wf_9")
+    slot._app = "my-app"
+
+    def _boom():
+        raise RuntimeError("sel init failed")
+
+    with patch.object(chat_utils, "sel", _boom):
+        assert chat_utils.refuse_app_owned_rebind(slot, "workflow_slot_bind") is True

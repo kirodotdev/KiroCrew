@@ -538,6 +538,86 @@ class TestRewindSlot:
         state.sessions.discard_conversation.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_rewind_refuses_a_bind_landing_during_the_body_read(self, tmp_path):
+        """The guard is re-checked on the lock's side of the awaits.
+
+        The early guards read the binding before ``request.json()``; a bind
+        landing during that suspension would otherwise anchor
+        ``expected_history_key`` to the foreign key itself, making the commit
+        re-check compare foreign to foreign and pass.
+        """
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        slot._app = "some-app"
+        original_messages = list(slot.messages)
+
+        from aiohttp import web as _web
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind
+
+        app = _make_app(state)
+        fake_request = make_mocked_request(
+            "POST",
+            "/api/chat/slots/src/rewind",
+            match_info={"slot": "src"},
+            app=app,
+        )
+        fake_request["app"] = "some-app"
+
+        async def _json():
+            # The race: a channel bind lands while the body read is suspended.
+            slot.linked_session_key = "slack:1700000000.000100"
+            return {"at_message_index": 0, "content": "x"}
+
+        fake_request.json = _json  # type: ignore[method-assign]
+        try:
+            resp = await api_chat_slot_rewind(fake_request)
+        except _web.HTTPException as exc:
+            resp = exc
+        assert resp.status == 404
+        assert slot.messages == original_messages
+        state.sessions.discard_conversation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rewind_app_cannot_reach_an_unbound_channel_origin_slot(self, tmp_path):
+        """The second channel-transcript shape: ``channel_origin`` with an
+        EMPTY link resolves ``slot_history_key`` through ``slot_transcript_key``
+        onto the channel's own transcript, so an app rewind would rewrite a
+        conversation the app does not own. Same 404 as the linked case."""
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        slot._app = "some-app"
+        slot.channel_origin = True
+        original_messages = list(slot.messages)
+
+        from aiohttp import web as _web
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind
+
+        app = _make_app(state)
+        fake_request = make_mocked_request(
+            "POST",
+            "/api/chat/slots/src/rewind",
+            match_info={"slot": "src"},
+            app=app,
+        )
+        fake_request["app"] = "some-app"  # owns the slot, but it is channel-born
+
+        async def _json():
+            return {"at_message_index": 0, "content": "x"}
+
+        fake_request.json = _json  # type: ignore[method-assign]
+        try:
+            resp = await api_chat_slot_rewind(fake_request)
+        except _web.HTTPException as exc:
+            resp = exc
+        assert resp.status == 404
+        assert slot.messages == original_messages
+        state.sessions.discard_conversation.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_rewind_rejects_when_the_sid_flush_fails(self, tmp_path):
         """The cleared resume sid must be durable before the commit.
 

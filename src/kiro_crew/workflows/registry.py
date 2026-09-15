@@ -18,6 +18,7 @@ to callers are plain dicts (JSON-serializable, never the live objects).
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
@@ -91,6 +92,10 @@ class RunHandle:
     error: Optional[str] = None
     author: str = ""
     session_key: str = ""  # originating chat session (for result injection)
+    # The instant the run was registered, so completion injection can tell
+    # the slot that LAUNCHED the run from one re-minted under the same name
+    # while it ran: a slot created after this instant is not the originator.
+    launched_at: float = field(default_factory=time.time)
     task: Optional["asyncio.Task[Any]"] = None
     source: str = ""  # the script (so a resume/restart can re-run it)
     # False when the durable store had to redact source bytes (or provenance is
@@ -142,6 +147,7 @@ class RunHandle:
             "error": "; ".join(filter(None, (self._persistence_error, self.error))) or None,
             "author": self.author,
             "session_key": self.session_key,
+            "launched_at": self.launched_at,
             "source_format": self.source_format,
             "execution_binding_version": self.execution_binding_version,
             "driver": self.driver,
@@ -238,6 +244,7 @@ class RunHandle:
             "error": self.error,
             "author": self.author,
             "session_key": self.session_key,
+            "launched_at": self.launched_at,
             "source_format": self.source_format,
             "execution_binding_version": self.execution_binding_version,
             "driver": self.driver,
@@ -284,6 +291,7 @@ class RunHandle:
             error=error,
             author=obj.get("author", ""),
             session_key=obj.get("session_key", ""),
+            launched_at=float(obj.get("launched_at") or 0.0),
             source_format=obj.get("source_format", "python"),
             execution_binding_version=obj.get("execution_binding_version", 0),
             driver=obj.get("driver", "workflow"),
@@ -749,6 +757,7 @@ async def start_background_run(
     workflow_id: str = "",
     workflow_slug: str = "",
     workflow_revision: int = 0,
+    launched_at: float = 0.0,
     admission_closed: Optional[Callable[[], bool]] = None,
 ) -> str:
     """Schedule a workflow run on the loop, register a handle, return its run_id.
@@ -765,6 +774,7 @@ async def start_background_run(
         name=name,
         author=author,
         session_key=session_key,
+        launched_at=launched_at or time.time(),
         source=source,
         source_is_original=source_is_original,
         execution_binding_version=execution_binding_version,

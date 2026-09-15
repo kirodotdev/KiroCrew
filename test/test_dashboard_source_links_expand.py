@@ -200,6 +200,52 @@ class TestAppTokenIsolation:
         assert json.loads(resp.text)["total"] == 8
 
     @pytest.mark.asyncio
+    async def test_an_app_cannot_read_its_own_channel_backed_slot(self):
+        """Owning the SLOT is not owning the TRANSCRIPT: the URLs are extracted
+        from the channel conversation's messages."""
+        slot = _slot()
+        slot._app = "design_critique"
+        slot.linked_session_key = "cron:job-1"
+        resp = await _get("s1", {"s1": slot}, app="design_critique")
+        assert resp.status == 404
+        assert json.loads(resp.text) == {"error": "not found", "code": "slot_not_found"}
+
+    @pytest.mark.asyncio
+    async def test_a_bind_landing_during_the_allowlist_warm_up_is_refused(self):
+        """The guard runs before the awaited GitLab warm-up; a channel/cron bind
+        landing during it makes the in-memory window the channel's. Re-checked
+        on the far side, so the response never carries those URLs."""
+        slot = _slot()
+        slot._app = "design_critique"
+
+        async def _warm_up_and_bind():
+            slot.linked_session_key = "cron:job-1"
+
+        with (
+            patch(
+                "kiro_crew.dashboard.handlers.source_providers.ensure_gitlab_hosts_loaded",
+                _warm_up_and_bind,
+            ),
+            patch(
+                "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+                return_value=False,
+            ),
+            patch("kiro_crew.dashboard.chat_handlers.sel") as sel,
+        ):
+            resp = await api_chat_slot_source_links(
+                _request("s1", {"s1": slot}, app="design_critique")
+            )
+        assert resp.status == 404
+        assert json.loads(resp.text) == {"error": "not found", "code": "slot_not_found"}
+        denied = [
+            call.kwargs
+            for call in sel().log_api_access.call_args_list
+            if call.kwargs.get("outcome") == "denied"
+        ]
+        assert len(denied) == 1
+        assert denied[0]["operation"] == "chat_source_links"
+
+    @pytest.mark.asyncio
     async def test_the_allowed_app_read_is_audited_too(self):
         """An audit trail that records only refusals cannot answer which app
         actually read a slot's links -- the ALLOW is a permission decision."""

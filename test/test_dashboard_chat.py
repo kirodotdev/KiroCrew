@@ -4064,6 +4064,141 @@ class TestResumeDedupe:
             assert sum(1 for s in slots if s["key"] == "s1") == 1
 
     @pytest.mark.asyncio
+    async def test_resume_of_a_live_slot_refuses_an_app_when_a_bind_lands_mid_reconcile(
+        self, tmp_path, monkeypatch
+    ):
+        """The live-slot resume re-checks the channel-backed guard after its
+        awaited window reconcile: a channel/cron bind landing during it
+        hydrates the window from the channel, and the response is built from
+        that window."""
+        from kiro_crew.dashboard import chat_handlers
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot._app = "my-app"
+        slot.append("user", "own message", "msg msg-u")
+        slot.drain()
+
+        async def _reconcile_and_bind(_state, existing):
+            existing.linked_session_key = "cron:job-1"
+
+        monkeypatch.setattr(chat_handlers, "_reconcile_slot_window", _reconcile_and_bind)
+        app = _make_app(state)
+
+        @web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.insert(0, _as_app)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+
+    @pytest.mark.asyncio
+    async def test_fresh_resume_refuses_an_app_for_a_transcript_it_does_not_own(
+        self, tmp_path, monkeypatch
+    ):
+        """No live slot matches, so the live-slot ownership gate never runs:
+        the fresh path must itself refuse an app token naming a dormant
+        transcript whose persisted ``app`` is not the caller -- a dashboard
+        user's (no app), another app's, or a channel's -- with the same 404
+        as the live path, and before any side effect (no slot created, the
+        closed flag untouched). A matching stamp on a channel-backed
+        transcript (channel key, ``linked_session_key`` or ``channel_origin``
+        persisted beside ``app``) is refused too, as the live path refuses
+        ``slot_is_channel_backed`` slots the app owns."""
+        from unittest.mock import MagicMock
+
+        mock_sel = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: mock_sel)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:userconv", "user", "the user's private message")
+        log.update_metadata("dashboard:userconv", {"closed": True})
+        log.append("dashboard:otherapp", "user", "another app's message")
+        log.update_metadata("dashboard:otherapp", {"app": "other-app"})
+        log.append("slack:C1:171.1", "user", "a channel's message")
+        # Pre-fix app slots could be bound to a channel/cron session and saved
+        # with ``app`` beside the channel markers: the stamp MATCHES, and the
+        # transcript is still not the app's. All three persisted shapes.
+        log.append("slack:C2:171.2", "user", "channel transcript stamped by my-app")
+        log.update_metadata("slack:C2:171.2", {"app": "my-app"})
+        log.append("dashboard:linked", "user", "cron-bound transcript stamped by my-app")
+        log.update_metadata("dashboard:linked", {"app": "my-app", "linked_session_key": "cron:j1"})
+        log.append("dashboard:chanorig", "user", "channel-born transcript stamped by my-app")
+        log.update_metadata("dashboard:chanorig", {"app": "my-app", "channel_origin": True})
+
+        app = _make_app(state)
+
+        @web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.insert(0, _as_app)
+        async with TestClient(TestServer(app)) as client:
+            for slot_name, key in (
+                ("userconv", "dashboard:userconv"),
+                ("otherapp", "dashboard:otherapp"),
+                ("chan", "slack:C1:171.1"),
+                ("ghost", "dashboard:does-not-exist"),
+                ("chan2", "slack:C2:171.2"),
+                ("linked", "dashboard:linked"),
+                ("chanorig", "dashboard:chanorig"),
+            ):
+                resp = await client.post(f"/api/chat/slots/{slot_name}/resume", json={"key": key})
+                assert resp.status == 404, (slot_name, resp.status)
+                assert await resp.json() == {"error": "not found", "code": "slot_not_found"}
+                assert slot_name not in state._slots
+
+        # Refused BEFORE the closed-flag clear: the user's conversation stays closed.
+        assert log.get_metadata("dashboard:userconv").get("closed") is True
+        denied = [
+            c for c in mock_sel.log_api_access.call_args_list if c[1].get("outcome") == "denied"
+        ]
+        assert len(denied) == 7
+        assert {c[1]["source"] for c in denied} == {"app_isolation"}
+        assert all(c[1]["caller"] == "my-app" for c in denied)
+        # The audit names which arm fired; the response never does.
+        assert [c[1]["error"] for c in denied] == [
+            "app cannot resume a transcript it does not own",
+            "app cannot resume a transcript it does not own",
+            "app cannot resume a channel-backed transcript",
+            "app cannot resume a transcript it does not own",
+            "app cannot resume a channel-backed transcript",
+            "app cannot resume a channel-backed transcript",
+            "app cannot resume a channel-backed transcript",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_fresh_resume_admits_an_app_to_its_own_transcript(self, tmp_path, monkeypatch):
+        """The persisted ``app`` is the ownership record: an app resumes its own
+        dormant conversation, and the hydrated slot is app-owned as before."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:mine", "user", "my own message")
+        log.update_metadata("dashboard:mine", {"app": "my-app"})
+
+        app = _make_app(state)
+
+        @web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.insert(0, _as_app)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/mine/resume", json={"key": "dashboard:mine"})
+            assert resp.status == 200
+            assert (await resp.json())["ok"] is True
+        assert state._slots["mine"]._app == "my-app"
+
+    @pytest.mark.asyncio
     async def test_resume_close_resume_no_duplicate_history(self, tmp_path, monkeypatch):
         """Resume → close → resume → close should not create duplicate history."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -22334,3 +22469,334 @@ class TestUnflushedTailOrderingAndSnapshot:
             "stopped",
             "partial an",
         ], f"the owed chunk must keep its trailing window position; got {bodies}"
+
+
+@pytest.mark.asyncio
+class TestDeniedSendRetractsItsOwnMint:
+    """A refused ``/api/chat`` send must not leave the slot it minted.
+
+    ``api_chat`` calls ``get_or_create_slot`` BEFORE the app-ownership gate, and
+    creation both auto-binds a channel-stem name to the channel's session and
+    publishes the slot. Without retraction, an app naming a live channel stem
+    gets the 404 but keeps a published slot squatting the stem, and channel
+    reconciliation skips the occupied name -- the conversation disappears from
+    its own surface. The denial arm must retract exactly what the request
+    created (never a pre-existing slot) and republish the key set.
+    """
+
+    channel_key = "slack:1783733803.877979"
+
+    def _app_client_setup(self, tmp_path, monkeypatch):
+        from chat_test_helpers import _make_app, _make_state
+
+        mock_sel = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: mock_sel)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.sessions.channel_key_for_stem = lambda _stem: self.channel_key
+        app = _make_app(state)
+
+        @web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.insert(0, _as_app)
+        return state, app, mock_sel
+
+    async def test_denied_send_retracts_the_slot_it_minted(self, tmp_path, monkeypatch):
+        from kiro_crew.history import _safe_key
+
+        stem = _safe_key(self.channel_key)
+        state, app, mock_sel = self._app_client_setup(tmp_path, monkeypatch)
+
+        # Record whether the stem was still present at each publish: the
+        # retraction must be followed by a republish (the creation already
+        # published the key set, so a silent pop would leave every consumer
+        # of the published set believing the squatter still exists).
+        pushes: list[bool] = []
+        orig_push = state.push_slots_update
+
+        def _spy_push() -> None:
+            pushes.append(stem in state._slots)
+            orig_push()
+
+        monkeypatch.setattr(state, "push_slots_update", _spy_push)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "hi", "slot": stem}, timeout=None
+            )
+            assert resp.status == 404
+            # Byte-identical to the missing/not-owned answer (anti-enumeration).
+            assert await resp.json() == {"error": "not found", "code": "slot_not_found"}
+
+        assert stem not in state._slots
+        assert pushes and pushes[-1] is False, "retraction must republish the key set"
+        denied = [
+            c for c in mock_sel.log_api_access.call_args_list if c[1].get("outcome") == "denied"
+        ]
+        assert len(denied) == 1
+        assert denied[0][1]["operation"] == "chat_send"
+        assert denied[0][1]["source"] == "app_isolation"
+
+    async def test_denied_send_leaves_an_existing_slot_in_place(self, tmp_path, monkeypatch):
+        from kiro_crew.history import _safe_key
+
+        stem = _safe_key(self.channel_key)
+        state, app, mock_sel = self._app_client_setup(tmp_path, monkeypatch)
+
+        # The slot pre-exists (auto-bound at creation, owned by the app): the
+        # denial must leave it exactly as it found it -- retraction covers
+        # only a mint performed by the denied request itself.
+        existing = state.get_or_create_slot(stem, app="my-app")
+        assert existing.linked_session_key == self.channel_key
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "hi", "slot": stem}, timeout=None
+            )
+            assert resp.status == 404
+            assert await resp.json() == {"error": "not found", "code": "slot_not_found"}
+
+        assert state._slots.get(stem) is existing
+        assert existing.linked_session_key == self.channel_key
+
+    async def test_denied_send_resettles_the_restricted_marker(self, tmp_path, monkeypatch):
+        """An incognito/temporary mint adds ``dashboard:<key>`` to
+        ``_restricted_keys`` at creation. Retraction must re-derive the marker
+        too: leaving it would 403 every memory/artifact/mcp-apps call on the
+        NEXT legitimate holder of the key (an app-triggered authorization-state
+        denial of service)."""
+        from kiro_crew.history import _safe_key
+
+        stem = _safe_key(self.channel_key)
+        state, app, _mock_sel = self._app_client_setup(tmp_path, monkeypatch)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={"message": "hi", "slot": stem, "memory_mode": "temporary"},
+                timeout=None,
+            )
+            assert resp.status == 404
+
+        assert stem not in state._slots
+        assert f"dashboard:{stem}" not in state._restricted_keys
+
+    async def test_empty_message_send_retracts_the_slot_it_minted(self, tmp_path, monkeypatch):
+        """The ``message_required`` 400 also sits after the mint. Without
+        retraction an empty-message send -- any caller, no app token needed --
+        creates and publishes a slot for a name it never used, including a
+        channel-stem squatter."""
+        from chat_test_helpers import _make_app, _make_state
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.sessions.channel_key_for_stem = lambda _stem: ""
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "", "slot": "never-used"}, timeout=None
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "message_required"
+
+        assert "never-used" not in state._slots
+
+    async def test_empty_message_send_leaves_an_existing_slot_in_place(self, tmp_path, monkeypatch):
+        from chat_test_helpers import _make_app, _make_state
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.sessions.channel_key_for_stem = lambda _stem: ""
+        existing = state.get_or_create_slot("pre-existing")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "", "slot": "pre-existing"}, timeout=None
+            )
+            assert resp.status == 400
+
+        assert state._slots.get("pre-existing") is existing
+
+
+@pytest.mark.asyncio
+class TestDeniedSendForeignTranscript:
+    """An app-scoped send may not CLAIM an existing transcript it does not own.
+
+    The history saver stamps ``app`` from ``slot._app``, and the fresh-resume
+    gate reads that stamp as ownership -- so a send that mints a slot named
+    for an existing foreign transcript would plant forgeable provenance over
+    rows the app never wrote. The send-path gate refuses the mint (same 404,
+    slot retracted) so an ``app`` stamp can only appear on a transcript the
+    app created empty or already owned.
+    """
+
+    def _app_client_setup(self, tmp_path, monkeypatch):
+        from chat_test_helpers import _make_app, _make_state
+
+        mock_sel = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: mock_sel)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.sessions.channel_key_for_stem = lambda _stem: ""
+        app = _make_app(state)
+
+        @web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.insert(0, _as_app)
+        return state, app, mock_sel
+
+    async def test_send_into_a_foreign_transcript_is_refused_and_not_stamped(
+        self, tmp_path, monkeypatch
+    ):
+        state, app, mock_sel = self._app_client_setup(tmp_path, monkeypatch)
+        log = state.conversation_log
+        log.append("dashboard:userconv", "user", "the user's private message")
+        log.update_metadata("dashboard:userconv", {"closed": True})
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "hi", "slot": "userconv"}, timeout=None
+            )
+            assert resp.status == 404
+            assert await resp.json() == {"error": "not found", "code": "slot_not_found"}
+
+            # The mint is retracted and the ownership stamp was never planted --
+            # so the forgery chain's final step (fresh resume) still refuses.
+            assert "userconv" not in state._slots
+            assert str(log.get_metadata("dashboard:userconv").get("app", "") or "") == ""
+            resume = await client.post(
+                "/api/chat/slots/userconv/resume", json={"key": "dashboard:userconv"}
+            )
+            assert resume.status == 404
+
+        denied = [
+            c for c in mock_sel.log_api_access.call_args_list if c[1].get("outcome") == "denied"
+        ]
+        assert denied and all(c[1]["source"] == "app_isolation" for c in denied)
+        assert denied[0][1]["operation"] == "chat_send"
+        assert denied[0][1]["error"] == "app cannot claim an existing transcript it does not own"
+
+    async def test_send_into_a_metadata_less_transcript_is_refused(self, tmp_path, monkeypatch):
+        """Rows without a metadata first line still mean the transcript EXISTS:
+        the content probe refuses what the stamp probe cannot attribute."""
+        state, app, _mock_sel = self._app_client_setup(tmp_path, monkeypatch)
+        state.conversation_log.append("dashboard:bare", "user", "rows, no metadata line")
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "hi", "slot": "bare"}, timeout=None
+            )
+            assert resp.status == 404
+        assert "bare" not in state._slots
+
+    async def test_send_to_its_own_dormant_transcript_proceeds(self, tmp_path, monkeypatch):
+        state, app, _mock_sel = self._app_client_setup(tmp_path, monkeypatch)
+        log = state.conversation_log
+        log.append("dashboard:mine", "user", "my own prior message")
+        log.update_metadata("dashboard:mine", {"app": "my-app"})
+
+        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+            sl.append("chunk", "ack", "chunk")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "hi", "slot": "mine"}, timeout=None
+            )
+            assert resp.status == 200
+            async for _chunk in resp.content.iter_any():
+                break
+            resp.close()
+        assert "mine" in state._slots
+
+    async def test_send_to_a_brand_new_name_proceeds(self, tmp_path, monkeypatch):
+        state, app, _mock_sel = self._app_client_setup(tmp_path, monkeypatch)
+
+        async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+            sl.append("chunk", "ack", "chunk")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "hi", "slot": "fresh-name"}, timeout=None
+            )
+            assert resp.status == 200
+            async for _chunk in resp.content.iter_any():
+                break
+            resp.close()
+        assert "fresh-name" in state._slots
+        assert state._slots["fresh-name"]._app == "my-app"
+
+    async def test_no_slot_is_published_while_transcript_ownership_resolves(
+        self, tmp_path, monkeypatch
+    ):
+        """The claim gate runs BEFORE the mint: during its off-loop probes the
+        slot key must not exist in ``state._slots``. A slot published before
+        the probes would be reachable during the await -- the bypass the
+        concurrent-send test below exercises end to end."""
+        state, app, _mock_sel = self._app_client_setup(tmp_path, monkeypatch)
+        log = state.conversation_log
+        log.append("dashboard:userconv", "user", "the user's private message")
+        published_during_probe: list[bool] = []
+        orig = log.get_metadata_status
+
+        def _probe(key):
+            published_during_probe.append("userconv" in state._slots)
+            return orig(key)
+
+        monkeypatch.setattr(log, "get_metadata_status", _probe)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "hi", "slot": "userconv"}, timeout=None
+            )
+            assert resp.status == 404
+        assert published_during_probe == [False]
+        assert "userconv" not in state._slots
+
+    async def test_concurrent_same_app_send_cannot_bypass_the_claim_gate(
+        self, tmp_path, monkeypatch
+    ):
+        """The forgery race: a second same-app send arriving while the first
+        send's probe awaits must NOT find a published slot, pass the ownership
+        gate on it, and start a turn -- both sends must be refused and the
+        foreign transcript left unclaimed."""
+        state, app, _mock_sel = self._app_client_setup(tmp_path, monkeypatch)
+        log = state.conversation_log
+        log.append("dashboard:userconv", "user", "the user's private message")
+
+        first_in_probe = threading.Event()
+        release_first = threading.Event()
+        calls = {"n": 0}
+        orig = log.get_metadata_status
+
+        def _gated_probe(key):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                first_in_probe.set()
+                release_first.wait(10)
+            return orig(key)
+
+        monkeypatch.setattr(log, "get_metadata_status", _gated_probe)
+        async with TestClient(TestServer(app)) as client:
+            first = asyncio.ensure_future(
+                client.post("/api/chat", json={"message": "hi", "slot": "userconv"}, timeout=None)
+            )
+            # Wait (off-loop) until the first send is parked inside its probe.
+            assert await asyncio.to_thread(first_in_probe.wait, 10)
+            # The second send lands mid-await: no slot was published, so it
+            # runs the claim gate itself and is refused.
+            second = await client.post(
+                "/api/chat", json={"message": "hi again", "slot": "userconv"}, timeout=None
+            )
+            assert second.status == 404
+            release_first.set()
+            resp = await first
+            assert resp.status == 404
+        assert "userconv" not in state._slots
+        assert str(log.get_metadata("dashboard:userconv").get("app", "") or "") == ""

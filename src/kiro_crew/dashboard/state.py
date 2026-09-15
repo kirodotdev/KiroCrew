@@ -6527,8 +6527,8 @@ class DashboardState:
     async def _flush_loop(self) -> None:
         await _persistence_for(self)._flush_loop(self)
 
-    def flush_slot_now(self, slot: _ChatSlot) -> None:
-        _persistence_for(self).flush_slot_now(self, slot)
+    def flush_slot_now(self, slot: _ChatSlot, *, expected_history_key: str | None = None) -> None:
+        _persistence_for(self).flush_slot_now(self, slot, expected_history_key=expected_history_key)
 
     def _flush_dirty_slots(self) -> None:
         _persistence_for(self)._flush_dirty_slots(self)

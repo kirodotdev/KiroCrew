@@ -647,6 +647,42 @@ async def test_an_app_cannot_export_a_channel_linked_slot_it_owns():
 
 
 @pytest.mark.asyncio
+async def test_an_app_cannot_export_a_channel_origin_slot_with_an_empty_link():
+    """The second way a slot's transcript can be a channel's: an unbound
+    channel-born slot (``channel_origin`` set, link empty) resolves through
+    ``slot_transcript_key`` onto the channel's own transcript, so the link
+    guard alone would pass it. Same refusal, same shape."""
+    slot = _slot(MSGS, app="my-app", channel_origin=True)
+    state = _state(MSGS, slots={"slot-1": slot})
+
+    resp = await se.api_chat_slot_export(_request(state, app="my-app"))
+
+    assert resp.status == 404
+    assert json.loads(resp.body)["code"] == "export_slot_not_found"
+
+
+@pytest.mark.asyncio
+async def test_export_refuses_when_the_slot_is_bound_during_the_build(monkeypatch):
+    """The guard is re-checked on BOTH sides of the awaited build: a bind
+    landing while the builder is off the loop redirects its transcript read,
+    and links are only ever set, never cleared -- so the post-build re-check
+    sees the raced bind and discards the bundle."""
+    slot = _slot(MSGS, app="my-app")
+    state = _state(MSGS, slots={"slot-1": slot})
+
+    async def _binding_bundle(_state, _slot, **_kw):
+        _slot.linked_session_key = "slack:1700000000.000100"
+        return {"bundle_version": 2, "messages": list(MSGS), "source": {}}
+
+    monkeypatch.setattr(se, "build_transfer_bundle_async", _binding_bundle)
+
+    resp = await se.api_chat_slot_export(_request(state, app="my-app"))
+
+    assert resp.status == 404
+    assert json.loads(resp.body)["code"] == "export_slot_not_found"
+
+
+@pytest.mark.asyncio
 async def test_the_dashboard_owner_can_still_export_a_channel_linked_slot():
     """The refusal is the APP boundary, not a general restriction: the owner is
     entitled to both the slot and the channel transcript behind it."""

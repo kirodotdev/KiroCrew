@@ -108,6 +108,10 @@ def _make_slot():
     slot.task = None
     slot.event = asyncio.Event()
     slot._pending = []
+    # A plain slot: its transcript is its own. A bare MagicMock attribute is
+    # truthy and would read as a channel link to ``slot_is_channel_backed``.
+    slot.linked_session_key = ""
+    slot.channel_origin = False
 
     def drain():
         out = slot._pending[:]
@@ -743,6 +747,58 @@ class TestAppKitOwnership:
             resp = await api_completions(request)
 
         assert resp.status == 200
+
+    async def test_app_scoped_caller_denied_its_own_channel_backed_slot(self):
+        """Owning the SLOT is not owning the TRANSCRIPT: a channel-linked slot
+        runs its turn on the channel conversation. Refused with the endpoint's
+        own not-found shape, and the freshly-minted slot is not left behind."""
+        slot = _make_slot()
+        slot._app = "app-A"
+        slot.linked_session_key = "slack:1700000000.000100"
+        state = _make_state(slot)
+        # ``id`` names a slot that did not exist: the constructor mints it (and
+        # would auto-bind the channel link from the name), so the refusal has
+        # to take the fresh slot back out.
+        state._slots = {}
+        state.get_or_create_slot = MagicMock(
+            side_effect=lambda *a, **k: state._slots.setdefault(slot.key, slot)
+        )
+
+        body = {
+            "id": "test-slot",
+            "model": "vanellope",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }
+        request = _make_request(body, state, app="app-A")
+
+        with patch("kiro_crew.dashboard.openai_compat._run_chat") as run_chat:
+            resp = await api_completions(request)
+
+        assert resp.status == 404
+        assert json.loads(resp.body)["code"] == "not_found"
+        run_chat.assert_not_called()
+        assert "test-slot" not in state._slots
+
+    async def test_app_scoped_caller_denied_its_own_channel_origin_slot(self):
+        slot = _make_slot()
+        slot._app = "app-A"
+        slot.channel_origin = True
+        state = _make_state(slot)
+
+        body = {
+            "id": "test-slot",
+            "model": "vanellope",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }
+        request = _make_request(body, state, app="app-A")
+
+        with patch("kiro_crew.dashboard.openai_compat._run_chat") as run_chat:
+            resp = await api_completions(request)
+
+        assert resp.status == 404
+        run_chat.assert_not_called()
 
     async def test_no_app_header_skips_check(self):
         """Non-app callers (dashboard, CLI) skip App-Kit check entirely."""

@@ -902,11 +902,8 @@ test/test_session_rss.py
 test/test_session_sharing.py
 test/test_session_spend_identity.py
 test/test_session_start_timeout_diagnostics.py
-test/test_session_summary_api.py
 test/test_session_summary_extract.py
-test/test_session_summary_generate.py
 test/test_session_thread_map.py
-test/test_session_transfer.py
 test/test_session_usage.py
 test/test_sessions_health_cache.py
 test/test_settingref_schema_fixture.py
@@ -1037,7 +1034,6 @@ test/test_windows_sim.py
 test/test_worker_pool.py
 test/test_workflow_permissions.py
 test/test_workflows_dsl.py
-test/test_workflows_inject.py
 test/test_workflows_invariants.py
 test/test_workflows_resilience.py
 test/test_workflows_run_bounds.py

@@ -413,6 +413,64 @@ class TestChatSlotContinue:
             assert resp.status == 200
 
     @pytest.mark.asyncio
+    async def test_app_token_cannot_continue_its_own_channel_backed_slot(self, _patched):
+        # Owning the SLOT is not owning the TRANSCRIPT: a continue on a
+        # channel-linked slot dispatches a turn onto the channel's session.
+        slot = _ChatSlot("s")
+        slot.append("user", "hi", "msg msg-u")
+        slot._app = "my-app"
+        slot.linked_session_key = "cron:job-1"
+        state = _mock_state(slot)
+        app = _make_app(state)
+
+        @web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+        assert not slot._queue
+        _patched.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_bind_landing_while_waiting_for_the_lock_is_refused(self, _patched):
+        # The channel-backed guard runs before ``async with slot._lock``; a
+        # channel/cron injection can bind the slot while the handler waits for
+        # it. Re-checked on the far side, on the same tick as the queue insert,
+        # so the continuation is never queued onto the channel's session.
+        slot = _ChatSlot("s")
+        slot.append("user", "hi", "msg msg-u")
+        slot._app = "my-app"
+
+        class _BindingLock:
+            async def __aenter__(self):
+                slot.linked_session_key = "cron:job-1"
+
+            async def __aexit__(self, *exc):
+                return False
+
+        slot._lock = _BindingLock()
+        state = _mock_state(slot)
+        app = _make_app(state)
+
+        @web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+        assert not slot._queue
+        _patched.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_mid_plan_orchestration_is_refused(self, _patched):
         # An autopilot plan reads `running` False BETWEEN stages, so `running`
         # alone would let Continue dispatch concurrently with the next stage.

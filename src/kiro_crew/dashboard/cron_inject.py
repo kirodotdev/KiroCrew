@@ -10,6 +10,7 @@ import asyncio
 import math
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_utils import refuse_app_owned_rebind
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, row_mid
 from kiro_crew.history import append_rows_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -391,6 +392,11 @@ def _bind_cron_slot(
         # A USER label would expose it to any app holding `slots:user`.
         origin=SlotOrigin.CRON,
     )
+    if refuse_app_owned_rebind(slot, "cron_slot_bind"):
+        # An app pre-minted this job's slot name. Neither bind nor surface:
+        # see ``refuse_app_owned_rebind``. The run itself is unaffected (its
+        # result stays in ``job.last_result`` and the notification log).
+        return None
     slot.title = f"Cron: {_safe_job_name(job)}"
     # A provider-template alias on a legacy V1 job cannot authorize a private
     # member. Private cron dispatch publishes its protected session binding;
@@ -469,6 +475,8 @@ def inject_cron_result_to_dashboard(
     whatever snapshot an earlier run stored.
     """
     slot = _bind_cron_slot(state, job, history)
+    if slot is None:
+        return
     safe_name = _safe_job_name(job)
 
     # Rows this call owes the durable transcript, in the order they happened.

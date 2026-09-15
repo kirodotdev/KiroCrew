@@ -758,6 +758,70 @@ def effective_session_key(slot: _ChatSlot) -> str:
     return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
 
 
+def slot_is_channel_backed(slot: _ChatSlot) -> bool:
+    """True when *slot*'s TRANSCRIPT is a channel conversation's.
+
+    The two shapes, both resolved by :func:`slot_history_key`: a bound link
+    (``linked_session_key``, followed first), and an unbound channel-born slot
+    (``channel_origin`` with an empty link, resolved through
+    :func:`slot_transcript_key`). One predicate so the app-isolation
+    boundaries -- the chokepoint, send, export, fork, rewind -- refuse the
+    same set of slots and cannot drift apart as sites multiply.
+    """
+    return bool(getattr(slot, "linked_session_key", "") or getattr(slot, "channel_origin", False))
+
+
+def refuse_app_owned_rebind(slot: _ChatSlot, operation: str) -> bool:
+    """True when a LIVE bind onto *slot* must be refused because an app owns it.
+
+    The cron and workflow injectors create-or-find a slot by a NAME they
+    derive (``cron-<id>``, ``workflow-<id>``) and, when it is unlinked, bind
+    ``linked_session_key`` to their own session and hydrate the window from
+    that transcript. An app-scoped caller can pre-mint a slot under exactly
+    that name, so without this check the bind lands on a slot the app owns:
+    the app's unsaved rows and the channel's hydrated rows then share one
+    window, and every later flush of that window -- the periodic loop, the
+    shutdown save -- writes the app's rows into the channel transcript, past
+    every request-time guard. Refusing the bind at its source is what makes
+    those guards sufficient: an app-owned slot's routing never moves after
+    creation, so no request can be authorized against one transcript and land
+    on another. Callers skip surfacing too -- appending the run's output into
+    an app-owned slot would hand the app content it may not read.
+    """
+    app = getattr(slot, "_app", "")
+    # ``_app`` is a str on every real slot ("" for the dashboard's own); the
+    # isinstance guard keeps a test double's auto-attribute from reading as
+    # an owner.
+    if not isinstance(app, str) or not app:
+        return False
+    # BEST-EFFORT audit: ``sel()`` retries a failed SEL init on the caller's
+    # thread and can raise. Every caller of this predicate is a result
+    # injector whose contract is "never raises" -- an audit failure escaping
+    # here would convert a COMPLETED cron/workflow run into a recorded
+    # failure (and eventually auto-pause the job). The refusal itself is the
+    # fail-closed outcome; losing one audit line must not change the verdict.
+    # Same discipline as ``_app_isolation_denied`` in chat_handlers.
+    try:
+        sel().log_api_access(
+            caller=app,
+            operation=operation,
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error="slot name is held by an app-scoped session; bind refused",
+        )
+    except Exception:
+        logger.warning(
+            "refuse_app_owned_rebind: audit failed for %s (refusal stands)",
+            slot.key,
+            exc_info=True,
+        )
+    logger.warning(
+        "Refusing to bind slot %s to a channel session: it is owned by app %r", slot.key, app
+    )
+    return True
+
+
 def subagents_attached(
     state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
 ) -> bool:

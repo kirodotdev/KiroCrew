@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any, Callable, Optional
 
-from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key, refuse_app_owned_rebind
 from kiro_crew.dashboard.state import DashboardState, append_and_surface, row_mid
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -46,6 +47,27 @@ def _redact(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+def _slot_originated_run(slot, snapshot: dict) -> bool:
+    """True when *slot* already existed at the instant the run was registered.
+
+    The run identity captures ``launched_at`` at registration; a slot whose
+    ``created_at`` postdates it was re-minted under the originator's name while
+    the run executed and must not receive the result. Unknown on either side
+    (a pre-field persisted run, a slot without the stamp, an unparsable value)
+    reads as NOT the originator, so the caller falls back to its fail-closed
+    app-owned refusal.
+    """
+    launched_at = snapshot.get("launched_at")
+    created_raw = getattr(slot, "created_at", "")
+    if not launched_at or not created_raw:
+        return False
+    try:
+        created = datetime.fromisoformat(str(created_raw)).timestamp()
+    except ValueError:
+        return False
+    return created <= float(launched_at)
 
 
 def _summarize(snapshot: dict) -> str:
@@ -153,6 +175,24 @@ def inject_workflow_result(
             getter = getattr(state, "get_slot", None)
             if getter is not None:
                 slot = getter(target_slot_key)
+            if (
+                slot is not None
+                and not _slot_originated_run(slot, snapshot)
+                and refuse_app_owned_rebind(slot, "workflow_slot_inject")
+            ):
+                # The originating slot's KEY is now held by an app-scoped
+                # session that did NOT launch this run: the launching chat
+                # closed mid-run and an app re-minted the name. Injecting here
+                # would hand the app the run's private result -- the same
+                # exposure the fallback path's guard below refuses. Treat the
+                # originating chat as gone and route to the dedicated
+                # ``workflow-<id>`` slot, which carries its own copy of the
+                # guard. An app slot that existed BEFORE the run launched IS
+                # the originator (an app may launch workflows from its own
+                # chat), and discarding its completion would silently drop the
+                # run's final turn -- ``_slot_originated_run`` is what tells
+                # the two apart.
+                slot = None
         # The originating chat is live iff we found its slot above; the auto-turn
         # only makes sense there (the fallback slot has no agent watching it).
         is_originating = slot is not None
@@ -160,6 +200,10 @@ def inject_workflow_result(
         # 2. Fall back to a dedicated workflow slot only if the chat is gone.
         if slot is None:
             slot = state.get_or_create_slot(name=f"workflow-{run_id}")
+            if refuse_app_owned_rebind(slot, "workflow_slot_bind"):
+                # An app pre-minted the fallback slot's name: neither bind nor
+                # surface the result there (see ``refuse_app_owned_rebind``).
+                return False
             if not getattr(slot, "linked_session_key", ""):
                 slot.linked_session_key = session_key
             slot.title = f"Workflow: {snapshot.get('name') or run_id}"

@@ -37,6 +37,7 @@ from kiro_crew.cron_script import (
     resolve_script_path,
     validate_secret_env_grant,
 )
+from kiro_crew.dashboard.chat_utils import refuse_app_owned_rebind
 from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
@@ -1706,8 +1707,27 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             if state.conversation_log
             else []
         )
+
+        # Both re-surface arms below create-or-find ``cron-<id>`` and put the
+        # run's content into it; neither may do so into a slot an app owns
+        # (see ``refuse_app_owned_rebind``) -- the notification body is the
+        # same private output as the transcript.
+        def _held_by_app(candidate: Any) -> web.Response | None:
+            if refuse_app_owned_rebind(candidate, "cron_slot_open"):
+                return web.json_response(
+                    {
+                        "error": "slot name is held by an app-scoped session",
+                        "code": "slot_app_owned",
+                    },
+                    status=409,
+                )
+            return None
+
         if history:
             slot = state.get_or_create_slot(name=slot_name, agent="", origin=SlotOrigin.CRON)
+            held = _held_by_app(slot)
+            if held is not None:
+                return held
             if not slot.linked_session_key:
                 slot.linked_session_key = session_key
                 hydrate_slot_from_history(slot, history)
@@ -1720,6 +1740,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             if not notif:
                 return web.json_response({"error": "job not found"}, status=404)
             slot = state.get_or_create_slot(name=slot_name, agent="", origin=SlotOrigin.CRON)
+            held = _held_by_app(slot)
+            if held is not None:
+                return held
             body = notif.get("body", "")
             if body:
                 body, _ = redact_exfiltration_urls(body)

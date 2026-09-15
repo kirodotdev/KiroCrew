@@ -234,6 +234,7 @@ async def generate_session_summary(
     *,
     cfg: KiroCrewConfig | None = None,
     force: bool = False,
+    expected_history_key: str | None = None,
 ) -> bool:
     """Generate and cache an intent summary for *slot*. Never raises.
 
@@ -245,6 +246,13 @@ async def generate_session_summary(
     :func:`_should_summarize` for exactly which gates that lifts. A forced pass
     is still free when the cached summary is current -- the cache check below is
     deliberately NOT skipped, so a second click cannot buy an identical answer.
+
+    ``expected_history_key`` pins the transcript the CALLER authorized: when the
+    slot's key has moved off it by the time this pass resolves its own (a
+    channel/cron injection bound ``linked_session_key`` while the caller was
+    off the loop), the pass is refused rather than summarizing -- and caching
+    under -- a conversation the caller was never authorized against. ``None``
+    (the turn-end caller) keeps the live resolution.
     """
     log = state.conversation_log
     if log is None:
@@ -259,6 +267,11 @@ async def generate_session_summary(
     # stat a file no read path addresses -- the summary would be written to a
     # phantom transcript and the panel would never find it.
     key = slot_history_key(slot)
+    if expected_history_key is not None and key != expected_history_key:
+        logger.info(
+            "Session summary refused for %s: transcript key moved off the authorized one", key
+        )
+        return False
 
     # Cheap slot-level gates BEFORE touching the transcript: the common cases
     # (feature disabled, unclean stop) must cost no disk IO.
@@ -276,7 +289,9 @@ async def generate_session_summary(
     # the second write, after the tokens are already gone.
     slot._summary_in_flight = True
     try:
-        return await _generate_locked(state, slot, cfg, key, log, force=force)
+        return await _generate_locked(
+            state, slot, cfg, key, log, force=force, expected_history_key=expected_history_key
+        )
     except Exception:
         # A summary is a convenience. Losing one must never surface as a failed
         # turn, and the previous cached summary stays valid.
@@ -294,6 +309,7 @@ async def _generate_locked(
     log: Any,
     *,
     force: bool,
+    expected_history_key: str | None = None,
 ) -> bool:
     """The body of a pass, run with ``slot._summary_in_flight`` already held.
 
@@ -315,7 +331,14 @@ async def _generate_locked(
     # the flush loop's dirty-bit bookkeeping, which matters here — a write that
     # left the slot dirty would just be re-saved by the loop moments later,
     # moving the mtime again and refusing the payload regardless.
-    await asyncio.to_thread(state.flush_slot_now, slot)
+    #
+    # Pinned to the caller's authorized transcript when it named one: the
+    # flush resolves its write target live, and a channel/cron bind landing
+    # between the key resolution above and this write would otherwise land
+    # the slot's dirty rows on the channel's transcript. The saver refuses
+    # (nothing written) when the routing moved; the slot stays dirty for the
+    # periodic loop, and the ``_dirty`` re-check below then discards the pass.
+    await asyncio.to_thread(state.flush_slot_now, slot, expected_history_key=expected_history_key)
 
     # Capture the cache signature BEFORE reading the transcript. The signature
     # must be at least as old as the snapshot it stamps: any append landing

@@ -31,6 +31,7 @@ from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
+    slot_is_channel_backed,
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
@@ -109,6 +110,36 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             # anti-enumeration (CWE-204); true reason logged via SEL above.
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
+    # An app may rewind only the slot's OWN dashboard session. An app-owned
+    # slot can be channel-backed (``slot_is_channel_backed``: a bound
+    # ``linked_session_key``, or an unbound channel-born slot whose
+    # ``channel_origin`` resolves through ``slot_transcript_key``), and
+    # ``expected_history_key`` below -- the transcript the rewrite lands on --
+    # then addresses a foreign channel conversation. Rewinding through it
+    # would clear the native identity of a session the app does not own.
+    # Same 404-not-403 shape as the ownership check above
+    # (anti-enumeration); SEL records the truth.
+    if request_app and slot_is_channel_backed(slot):
+        # BEST-EFFORT audit: an escaping ``sel()`` failure would answer 500
+        # where a missing slot answers 404 -- the enumeration signal this
+        # shape exists to hide. The refusal stands without its audit line.
+        try:
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat.slot_rewind",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={name}",
+                error="app cannot rewind a channel-backed slot",
+            )
+        except Exception:
+            logger.warning(
+                "slot_rewind: denial audit failed for %s (refusal stands)",
+                name,
+                exc_info=True,
+            )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
     # A crew-bound slot has no local rewind: it would rebuild the LOCAL ACP
     # session and re-run the edited turn on this machine, diverging from the peer.
     # AFTER the app-ownership 404 above so a foreign app cannot tell a remote slot
@@ -138,6 +169,24 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     async with slot._lock:
         if slot.running:
             return web.json_response({"error": "slot is running"}, status=409)
+
+        # Re-checked on THIS side of the awaits (the body read and the lock
+        # acquire), on the same tick as the key captures below: the early
+        # guards above kept transcript-derived validation from leaking, but a
+        # bind landing during those suspensions would otherwise anchor
+        # ``expected_history_key`` to the foreign key it was bound TO -- the
+        # commit re-check would then compare foreign to foreign and pass.
+        # Same 404, so nothing becomes distinguishable.
+        if request_app and slot_is_channel_backed(slot):
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat.slot_rewind",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={name}",
+                error="slot became channel-backed before the rewind was anchored",
+            )
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
         msgs = slot.messages
 
@@ -218,23 +267,6 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # Capture orphan info before any mutation, so we can clean up the
         # kiro-cli session file even if the swap path errors out partway.
         session_key = effective_session_key(slot)
-
-        # An app may rewind only the slot's OWN dashboard session. An
-        # app-owned slot can carry a channel link (``linked_session_key``),
-        # and ``session_key`` then addresses a foreign channel conversation
-        # -- rewinding through it would clear the native identity of a
-        # session the app does not own. Same 404-not-403 shape as the
-        # ownership check above (anti-enumeration); SEL records the truth.
-        if request_app and getattr(slot, "linked_session_key", ""):
-            sel().log_api_access(
-                caller=request_app,
-                operation="chat.slot_rewind",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={name}",
-                error="app cannot rewind a channel-linked slot",
-            )
-            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
         # The transcript this rewind was authorized against. A concurrent
         # rebinding (a cron injection re-linking the slot) moves the slot to

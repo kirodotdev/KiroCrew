@@ -17,7 +17,7 @@ from typing import Any
 
 AtomicWriter = Callable[..., None]
 JsonCodecProvider = Callable[[], Any]
-SlotSaver = Callable[[Any, Any], Any]
+SlotSaver = Callable[..., Any]
 
 
 def _current_shutdown_event() -> Any:
@@ -88,8 +88,23 @@ class DashboardPersistenceCoordinator:
             flush_dirty = self._owner_method(owner, "_flush_dirty_slots", self._flush_dirty_slots)
             await asyncio.get_running_loop().run_in_executor(None, flush_dirty)
 
-    def flush_slot_now(self, owner: Any, slot: Any) -> None:
-        """Write one dirty slot and clear only the generation that was saved."""
+    def flush_slot_now(
+        self, owner: Any, slot: Any, *, expected_history_key: str | None = None
+    ) -> None:
+        """Write one dirty slot and clear only the generation that was saved.
+
+        ``expected_history_key`` pins the transcript the CALLER authorized: the
+        saver refuses the write (nothing written) when the slot's routing has
+        moved off it -- a channel/cron bind landing on the event loop between
+        the caller's check and this worker -- so a caller acting on one
+        transcript cannot have its flush land the slot's rows on another.
+        ``None`` (the periodic loop) keeps the live resolution. A refused
+        pinned save leaves the slot dirty for that loop: the rows are then
+        persisted under the slot's CURRENT routing, which is correct because
+        routing moves only on slots the same owner holds on both sides --
+        ``refuse_app_owned_rebind`` keeps an app-owned slot's routing fixed
+        after creation, so an app's rows cannot be carried across.
+        """
         # Endpoint metadata is applied to the live slot before its guarded
         # history write.  Do not let this unpinned periodic writer make that
         # provisional value durable while the guarded writer is still waiting.
@@ -105,11 +120,24 @@ class DashboardPersistenceCoordinator:
         # erasing a new dirty mark set concurrently by the event loop.
         generation = slot._dirty_gen
         try:
-            save_slot_to_history(owner, slot)
+            if expected_history_key is None:
+                saved = save_slot_to_history(owner, slot)
+            else:
+                saved = save_slot_to_history(owner, slot, expected_history_key=expected_history_key)
         except Exception:
             # A failed write remains owed to the next periodic pass.
             self._logger_provider().warning("Flush failed for slot %s", slot.key, exc_info=True)
         else:
+            if expected_history_key is not None and saved is False:
+                # The saver refused the PINNED write (routing moved off the
+                # pin, or the delete-won guard) and wrote nothing: the window
+                # is not durable, so the dirty bit stays set and the rows
+                # remain owed to the periodic loop. Clearing it would mark
+                # unsaved rows clean -- lost on eviction, and absent from the
+                # summary the caller goes on to cache. The caller that pinned
+                # gets nothing from this flush and re-decides on its own
+                # re-check.
+                return
             if slot._dirty_gen == generation:
                 slot._dirty = False
 

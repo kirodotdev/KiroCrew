@@ -1175,6 +1175,42 @@ class TestPersistsResultToConversationLog:
         assert len(slot.messages) == 2
 
 
+class TestAppOwnedSlotIsNeverBound:
+    """An app can pre-mint ``cron-<id>``; the injector must neither bind nor
+    surface into it, or the app's unsaved rows and the cron transcript would
+    share one window and ride the periodic flush into the cron transcript."""
+
+    def test_bind_and_surface_are_refused_for_an_app_owned_slot(self):
+        from kiro_crew.dashboard import chat_utils
+
+        state = _make_state(history_messages=[{"role": "assistant", "content": "prior run"}])
+        job = _make_job()
+        slot = state.get_or_create_slot(name=f"cron-{job.id}")
+        slot._app = "my-app"
+        slot.append("user", "the app's own unsaved row", "msg msg-u")
+        mock_sel = MagicMock()
+        with patch.object(chat_utils, "sel", lambda: mock_sel):
+            _inject(state, job, "result")
+        assert slot.linked_session_key == ""
+        assert [m["content"] for m in slot.messages] == ["the app's own unsaved row"]
+        denied = [
+            c.kwargs
+            for c in mock_sel.log_api_access.call_args_list
+            if c.kwargs["outcome"] == "denied"
+        ]
+        assert len(denied) == 1
+        assert denied[0]["operation"] == "cron_slot_bind"
+        assert denied[0]["caller"] == "my-app"
+
+    def test_a_dashboard_owned_slot_is_still_bound(self):
+        state = _make_state(history_messages=[{"role": "assistant", "content": "prior run"}])
+        job = _make_job()
+        slot = state.get_or_create_slot(name=f"cron-{job.id}")
+        slot._app = ""
+        _inject(state, job, "result")
+        assert slot.linked_session_key == f"cron:{job.id}"
+
+
 class TestHydrateSlotFromHistory:
     """Tests for hydrate_slot_from_history (accepts pre-loaded messages)."""
 

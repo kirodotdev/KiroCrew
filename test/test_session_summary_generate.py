@@ -57,7 +57,7 @@ class _FakeState:
     def push_session_summary(self, key):
         self.pushed.append(key)
 
-    def flush_slot_now(self, slot):
+    def flush_slot_now(self, slot, *, expected_history_key=None):
         """Mirror DashboardState.flush_slot_now: write, then clear the bit.
 
         Clearing matters to what the pass under test relies on — a flush that
@@ -67,7 +67,7 @@ class _FakeState:
         if not slot._dirty or not slot.messages:
             return
         gen = slot._dirty_gen
-        _save_slot_to_history(self, slot)
+        _save_slot_to_history(self, slot, expected_history_key=expected_history_key)
         if slot._dirty_gen == gen:
             slot._dirty = False
 
@@ -193,9 +193,7 @@ class TestGating:
         assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is False
         assert called == []
 
-    async def test_summarizes_the_full_disk_transcript_not_the_memory_tail(
-        self, env, monkeypatch
-    ):
+    async def test_summarizes_the_full_disk_transcript_not_the_memory_tail(self, env, monkeypatch):
         """A restored slot keeps only the most recent messages in memory;
         generation must read the full transcript from disk or earlier intents
         vanish from the regenerated summary."""
@@ -293,9 +291,7 @@ class TestGating:
         assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is True
         assert log.get_cached_intent_summary(state.hkey) is not None
 
-    async def test_an_append_during_the_transcript_read_refuses_the_write(
-        self, env, monkeypatch
-    ):
+    async def test_an_append_during_the_transcript_read_refuses_the_write(self, env, monkeypatch):
         """The signature is captured BEFORE the transcript read, so a message
         landing during the read advances the mtime past the captured sig and
         the write guard refuses the payload -- an incomplete summary must never
@@ -596,7 +592,7 @@ class TestReplyParsing:
         reply = (
             "Using the {title, ranges} shape as asked:\n"
             f"{_GOOD_REPLY}\n"
-            'Emit {} if the transcript is empty.'
+            "Emit {} if the transcript is empty."
         )
         parsed = chat_summary._parse_reply(reply)
         assert isinstance(parsed, dict)

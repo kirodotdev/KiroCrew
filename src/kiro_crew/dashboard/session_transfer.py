@@ -655,6 +655,7 @@ async def build_transfer_bundle_async(
     origin: str = "",
     with_source: bool = False,
     include_layer_b: bool = True,
+    expected_history_key: str | None = None,
 ) -> dict[str, Any]:
     """Serialise *slot*'s visible conversation into a portable bundle, with the
     disk read off the event loop.
@@ -732,7 +733,11 @@ async def build_transfer_bundle_async(
     # key resolves to ``dashboard:<stem>`` — a file no read path uses. Bundling
     # from that phantom transcript would ship only the resident window and
     # silently drop every older turn. chat_utils documents the split.
-    key = slot_history_key(slot)
+    # When the caller pins the transcript key it authorized (the app-boundary
+    # routes do), read THAT key and refuse-to-save off it, rather than
+    # re-resolving after awaits -- a rebind landing mid-build would otherwise
+    # redirect both the read and the flush onto a foreign transcript.
+    key = expected_history_key or slot_history_key(slot)
     # The session_map is keyed by the SESSION key (what turns run on), which for
     # a channel-bound slot differs from the transcript key above. Resolve it on
     # the loop (pure getattr) and hand it to the thread, so Layer B is read from
@@ -788,7 +793,9 @@ async def build_transfer_bundle_async(
             # across this await and spend an attempt rather than trusting it.
             gen_before_save = slot._dirty_gen
             try:
-                saved = await save_slot_off_loop(state, slot, best_effort=False)
+                saved = await save_slot_off_loop(
+                    state, slot, best_effort=False, expected_history_key=expected_history_key
+                )
             except Exception as exc:
                 logger.warning(
                     "session_transfer: could not persist slot=%s before bundling",

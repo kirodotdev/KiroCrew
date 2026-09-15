@@ -24,6 +24,7 @@ import asyncio
 import hashlib
 import logging
 import threading
+import time
 from typing import Any, Callable, Optional
 
 from kiro_crew import autonudge
@@ -354,6 +355,10 @@ class WorkflowService:
         Host runs publish lifecycle and progress only. Their driver keeps all
         product semantics, including planning, approvals, retries, and cleanup.
         """
+        # The launch instant, captured on the request's FIRST tick: every
+        # await below is inside the admission window a slot re-mint could
+        # race, so the run identity must predate them all.
+        _launched_at = time.time()
         run_id = await self._new_run_id()
         memory_scope = await WorkflowScope.admit(
             run_id, self._context_builder, session_key, author, expected_store=expected_store
@@ -363,6 +368,7 @@ class WorkflowService:
             name=name or run_id,
             author=author,
             session_key=memory_scope.origin,
+            launched_at=_launched_at,
             execution_binding_version=1,
             source=source,
             source_format=source_format,
@@ -932,6 +938,10 @@ class WorkflowService:
         (clamped); a long multi-phase investigation can be given more room without
         changing the default for everything else.
         """
+        # The launch instant, captured on the request's FIRST tick: every
+        # await below is inside the admission window a slot re-mint could
+        # race, so the run identity must predate them all.
+        _launched_at = time.time()
         if not intent.strip():
             return {"error": "intent is required"}
         refused = await _memory_admission_error(session_key, author)
@@ -969,6 +979,7 @@ class WorkflowService:
             args=args or {},
             author=author,
             session_key=session_key,
+            launched_at=_launched_at,
             budget_total=budget_total,
             intent=intent,
             author_fn=_author_fn,
@@ -998,6 +1009,10 @@ class WorkflowService:
         ``timeout_secs`` overrides the wall-clock ceiling for this run only (clamped
         into the runner's bounds).
         """
+        # The launch instant, captured on the request's FIRST tick: every
+        # await below is inside the admission window a slot re-mint could
+        # race, so the run identity must predate them all.
+        _launched_at = time.time()
         vr = validate(source)
         if not vr.ok:
             return {"error": "; ".join(vr.errors), "errors": vr.errors}
@@ -1025,6 +1040,7 @@ class WorkflowService:
             args=args or {},
             author=author,
             session_key=session_key,
+            launched_at=_launched_at,
             budget_total=budget_total,
             workflow_id=workflow_id,
             workflow_slug=workflow_slug,
@@ -1237,6 +1253,10 @@ class WorkflowService:
         timeout_secs: Optional[int] = None,
     ) -> dict[str, Any]:
         """Run the exact current revision of a named saved workflow."""
+        # The launch instant, captured on the request's FIRST tick: every
+        # await below is inside the admission window a slot re-mint could
+        # race, so the run identity must predate them all.
+        _launched_at = time.time()
         refused = await _memory_admission_error(session_key, author)
         if refused is not None:
             return refused
@@ -1263,6 +1283,7 @@ class WorkflowService:
                 input_text=effective_input,
                 author=author,
                 session_key=session_key or author,
+                launched_at=_launched_at,
             )
             if "run_id" in started:
                 started.update(
@@ -1282,6 +1303,7 @@ class WorkflowService:
             args=run_args,
             author=author,
             session_key=session_key,
+            launched_at=_launched_at,
             budget_total=budget_total,
             timeout_secs=timeout_secs,
             workflow_id=str(definition["id"]),

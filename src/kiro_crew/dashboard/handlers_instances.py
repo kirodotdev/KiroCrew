@@ -31,6 +31,7 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.chat_utils import slot_history_key, slot_is_channel_backed
 from kiro_crew.dashboard.handlers._shared import (
     SESSION_SEARCH_TEXT_FIELDS,
     _owner_denial_response,
@@ -1036,6 +1037,30 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "session not found", "code": "transfer_slot_not_found"}, status=404
         )
+    # Owning the SLOT is not owning the TRANSCRIPT. A channel-linked slot displays
+    # a conversation that lives on the channel's own session, and
+    # ``get_or_create_slot`` auto-binds that link from a channel-shaped NAME --
+    # which the creating caller supplies. So an app can hold a slot it legitimately
+    # owns whose transcript is a channel's (``slot_history_key`` follows the link
+    # first), and the ownership check above would pass it. The app boundary refuses
+    # instead of reasoning about the binding: fail closed, because the cost of
+    # being wrong is a foreign conversation copied off this machine. The dashboard
+    # owner is unaffected -- they are entitled to both. Same 404 as above, for the
+    # same reason: a distinguishable answer would let an app learn which of its
+    # slots carry a channel link. Mirrors chat_rewind and the session export.
+    # ``slot_is_channel_backed`` covers both shapes -- the bound link and the
+    # unbound channel-born slot whose ``channel_origin`` resolves through
+    # ``slot_transcript_key`` onto the channel's own transcript.
+    if request_app and slot_is_channel_backed(slot):
+        _audit(
+            "send_session",
+            "denied",
+            request_id=instance_id,
+            error="app cannot send a channel-backed slot",
+        )
+        return web.json_response(
+            {"error": "session not found", "code": "transfer_slot_not_found"}, status=404
+        )
     if slot.memory_mode != "persistent":
         # An incognito/temporary session has no durable transcript by design;
         # transferring one would defeat the mode the user deliberately chose.
@@ -1056,7 +1081,16 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
     # does NOT advance, is what re-appended the same tail from memory and landed
     # every unsaved turn twice in the copy.
     try:
-        bundle = await build_transfer_bundle_async(state, slot, origin=local_instance_label())
+        bundle = await build_transfer_bundle_async(
+            state,
+            slot,
+            origin=local_instance_label(),
+            # The transcript key the guards above authorized, resolved on
+            # their side of the await: the builder reads it and refuses its
+            # own flush off it, so a rebind racing the build can neither
+            # redirect the read nor persist onto a foreign transcript.
+            expected_history_key=slot_history_key(slot),
+        )
     except SnapshotUnstable:
         # No consistent view of the source: either a flush landed inside every
         # retry, or a rewind/regenerate rewrite is still owed so disk is stale.
@@ -1068,6 +1102,24 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
                 "code": "transfer_snapshot_unstable",
             },
             status=503,
+        )
+    # Re-checked on BOTH sides of the awaited build, the same discipline the
+    # rewind commit applies to its history key: the guards above read the
+    # binding at one instant, and a channel/cron injection can bind
+    # ``linked_session_key`` while the builder is off the loop -- redirecting
+    # its transcript read onto a conversation the app was never authorized
+    # against. Links are only ever set, never cleared, so a bind that raced the
+    # build is visible here: discard the bundle and answer with the same 404
+    # the pre-build guards use.
+    if request_app and slot_is_channel_backed(slot):
+        _audit(
+            "send_session",
+            "denied",
+            request_id=instance_id,
+            error="slot bound to a channel during the transfer build",
+        )
+        return web.json_response(
+            {"error": "session not found", "code": "transfer_slot_not_found"}, status=404
         )
     ok, payload = await mgr.send_session_bundle(instance_id, bundle)
     if not ok:

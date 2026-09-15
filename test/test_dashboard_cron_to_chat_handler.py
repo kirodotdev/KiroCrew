@@ -119,6 +119,44 @@ class TestApiCronToChat:
             assert len(slot.messages) == 2
 
     @pytest.mark.asyncio
+    async def test_deleted_job_history_is_not_bound_onto_an_app_owned_slot(self):
+        from kiro_crew.dashboard import chat_utils
+
+        history = [{"role": "assistant", "content": "the cron's transcript"}]
+        state = _make_state(history_messages=history)
+        slot = state.get_or_create_slot(name="cron-deleted123")
+        slot._app = "my-app"
+        with patch.object(chat_utils, "sel", lambda: MagicMock()):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/crons/deleted123/to-chat")
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "slot_app_owned"
+        assert slot.linked_session_key == ""
+        assert slot.messages == []
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_notification_fallback_is_not_surfaced_into_an_app_owned_slot(
+        self,
+    ):
+        """The notification body is the same private output as the transcript;
+        the no-history fallback must refuse an app-owned name just like the
+        history arm does."""
+        from kiro_crew.dashboard import chat_utils
+
+        state = _make_state(
+            history_messages=[],
+            notifications=[{"job_id": "deleted123", "body": "the private cron result"}],
+        )
+        slot = state.get_or_create_slot(name="cron-deleted123")
+        slot._app = "my-app"
+        with patch.object(chat_utils, "sel", lambda: MagicMock()):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/crons/deleted123/to-chat")
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "slot_app_owned"
+        assert slot.messages == []
+
+    @pytest.mark.asyncio
     async def test_deleted_job_no_history_uses_notification(self):
         notifications = [{"job_id": "notif123", "body": "Cron completed successfully"}]
         state = _make_state(notifications=notifications)

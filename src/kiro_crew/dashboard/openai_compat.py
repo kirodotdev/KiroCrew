@@ -26,6 +26,7 @@ from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_utils import slot_is_channel_backed
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
@@ -518,6 +519,43 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             return web.json_response(
                 {"error": {"message": "slot owned by another app", "type": "forbidden"}},
                 status=403,
+            )
+        if slot_is_channel_backed(slot):
+            # Owning the SLOT is not owning the TRANSCRIPT: a channel-backed
+            # slot (a bound ``linked_session_key``, or a channel-born slot whose
+            # ``channel_origin`` resolves through ``slot_transcript_key``) runs
+            # its turns on and writes to a channel conversation's own
+            # transcript -- and ``get_or_create_slot`` auto-binds that link
+            # from a channel-shaped ``id`` the app itself supplies. The same
+            # refusal ``api_chat`` applies to the dashboard send path, in this
+            # endpoint's own not-found shape (the member-slot refusal above),
+            # so the answer does not say which of the app's slots carry a link.
+            # BEST-EFFORT audit: an escaping ``sel()`` failure would answer
+            # 500 where the member/missing arm answers 404 -- the signal this
+            # shape hides. The refusal stands without its audit line.
+            try:
+                sel().log_api_access(
+                    caller=request_app,
+                    operation="openai_compat.chat",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={slot.key}",
+                    error="app cannot use a channel-backed slot here",
+                )
+            except Exception:
+                logger.warning(
+                    "openai_compat: denial audit failed for %s (refusal stands)",
+                    slot.key,
+                    exc_info=True,
+                )
+            if slot_id and freshly_created:
+                state._slots.pop(slot.key, None)
+            return web.json_response(
+                {
+                    "error": {"message": "not found", "type": "invalid_request_error"},
+                    "code": "not_found",
+                },
+                status=404,
             )
 
     # Drain stale pending from prior turns whose reader disconnected

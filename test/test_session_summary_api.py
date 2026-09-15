@@ -167,9 +167,7 @@ class TestSummaryEndpoint:
             await client.get("/api/chat/slots/s1/summary")
         assert called == []
 
-    async def test_disabling_the_flag_stops_serving_an_earlier_summary(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_disabling_the_flag_stops_serving_an_earlier_summary(self, tmp_path, monkeypatch):
         """Opting out has to stop serving, not just stop producing."""
         _pin_flag(monkeypatch, False)
         state = _make_state(tmp_path)
@@ -203,9 +201,7 @@ class TestSummaryAppIsolation:
         app.middlewares.insert(0, inject_app)
         return app
 
-    async def test_a_foreign_app_cannot_read_another_apps_summary(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_a_foreign_app_cannot_read_another_apps_summary(self, tmp_path, monkeypatch):
         mock_sel = MagicMock()
         monkeypatch.setattr(chat_handlers, "sel", lambda: mock_sel)
         _pin_flag(monkeypatch, True)
@@ -255,6 +251,86 @@ class TestSummaryAppIsolation:
         async with TestClient(TestServer(self._app_client_app(state, "app-A"))) as client:
             body = await (await client.get("/api/chat/slots/s1/summary")).json()
         assert body["intents"][0]["title"] == "set up auth"
+
+    async def test_the_owning_app_is_refused_its_own_channel_backed_slot(
+        self, tmp_path, monkeypatch
+    ):
+        """Owning the SLOT is not owning the TRANSCRIPT: a channel-linked slot's
+        summary is the channel conversation's. Same 404 as the foreign arm."""
+        mock_sel = MagicMock()
+        monkeypatch.setattr(chat_handlers, "sel", lambda: mock_sel)
+        _pin_flag(monkeypatch, True)
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("s1")
+        slot._app = "app-A"
+        slot.linked_session_key = "cron:job-1"
+        state._slots[slot.key] = slot
+        log = state.conversation_log
+        log.append("cron:job-1", "user", "channel talk")
+        log.set_cached_intent_summary(
+            "cron:job-1", _payload("cron secret"), log.session_mtime("cron:job-1")
+        )
+
+        async with TestClient(TestServer(self._app_client_app(state, "app-A"))) as client:
+            resp = await client.get("/api/chat/slots/s1/summary")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+        denied = [
+            c for c in mock_sel.log_api_access.call_args_list if c[1].get("outcome") == "denied"
+        ]
+        assert len(denied) == 1
+        assert denied[0][1]["source"] == "app_isolation"
+
+    async def test_a_bind_landing_during_the_config_load_is_refused_not_served(
+        self, tmp_path, monkeypatch
+    ):
+        """The guard runs before the awaited config load; a channel/cron
+        injection can bind the slot WHILE that load is off the loop. The read
+        must then neither follow the new link (the key is pinned before the
+        await) nor answer at all (re-checked after it)."""
+        mock_sel = MagicMock()
+        monkeypatch.setattr(chat_handlers, "sel", lambda: mock_sel)
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("s1")
+        slot._app = "app-A"
+        state._slots[slot.key] = slot
+        log = state.conversation_log
+        own_key = slot_history_key(slot)
+        log.append(own_key, "user", "hello")
+        log.set_cached_intent_summary(own_key, _payload("own work"), log.session_mtime(own_key))
+        log.append("cron:job-1", "user", "channel talk")
+        log.set_cached_intent_summary(
+            "cron:job-1", _payload("cron secret"), log.session_mtime("cron:job-1")
+        )
+        reads: list[str] = []
+        real_read = log.read_intent_summary
+
+        def spy_read(key):
+            reads.append(key)
+            return real_read(key)
+
+        monkeypatch.setattr(log, "read_intent_summary", spy_read)
+
+        def _load_and_bind():
+            slot.linked_session_key = "cron:job-1"
+            cfg = KiroCrewConfig()
+            cfg.session_summary = SessionSummaryConfig(enabled=True)
+            return cfg
+
+        monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", staticmethod(_load_and_bind))
+
+        async with TestClient(TestServer(self._app_client_app(state, "app-A"))) as client:
+            resp = await client.get("/api/chat/slots/s1/summary")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+        # Nothing was read off the channel's key, on either side of the await.
+        assert "cron:job-1" not in reads
+        denied = [
+            c for c in mock_sel.log_api_access.call_args_list if c[1].get("outcome") == "denied"
+        ]
+        assert len(denied) == 1
+        assert denied[0][1]["operation"] == "slot_summary_read"
+        assert denied[0][1]["source"] == "app_isolation"
 
     async def test_a_dashboard_user_reads_an_app_owned_summary(self, tmp_path, monkeypatch):
         """An explicit empty request_app is the dashboard user and bypasses the check."""
@@ -418,6 +494,136 @@ class TestSummaryGenerateEndpoint:
         assert len(denied) == 1
         assert denied[0][1]["source"] == "app_isolation"
         assert denied[0][1]["operation"] == "slot_summary_generate"
+
+    async def test_a_bind_landing_during_the_config_load_does_not_generate(
+        self, tmp_path, monkeypatch
+    ):
+        """Same window as the GET, with a model call at stake: the generator
+        must not run against the channel's transcript, and the caller must get
+        the same 404 as a slot it never owned."""
+        mock_sel = MagicMock()
+        monkeypatch.setattr(chat_handlers, "sel", lambda: mock_sel)
+        called = _stub_generation(monkeypatch)
+        state = _make_state(tmp_path)
+        slot = _seed_slot(state, app_owner="app-A")
+        state.conversation_log.append("cron:job-1", "user", "channel talk")
+
+        def _load_and_bind():
+            slot.linked_session_key = "cron:job-1"
+            cfg = KiroCrewConfig()
+            cfg.session_summary = SessionSummaryConfig(enabled=True)
+            return cfg
+
+        monkeypatch.setattr(chat_handlers.KiroCrewConfig, "load", staticmethod(_load_and_bind))
+        app = _make_generate_app(state)
+
+        @web.middleware
+        async def inject_app(request, handler):
+            request["app"] = "app-A"
+            return await handler(request)
+
+        app.middlewares.insert(0, inject_app)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/s1/summary")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+
+        assert called == []
+        assert state.conversation_log.get_cached_intent_summary("cron:job-1") is None
+        denied = [
+            c for c in mock_sel.log_api_access.call_args_list if c[1].get("outcome") == "denied"
+        ]
+        assert len(denied) == 1
+        assert denied[0][1]["operation"] == "slot_summary_generate"
+        assert denied[0][1]["source"] == "app_isolation"
+
+    async def test_a_pinned_pass_pins_its_transcript_flush(self, tmp_path, monkeypatch):
+        """The pass flushes the slot's dirty rows before reading the transcript,
+        and that flush resolves its target live -- so the caller's pin has to
+        reach it, or a bind landing before the flush writes the app's rows onto
+        the channel's transcript."""
+        _stub_generation(monkeypatch)
+        state = _make_state(tmp_path)
+        slot = _seed_slot(state)
+        cfg = KiroCrewConfig()
+        cfg.session_summary = SessionSummaryConfig(enabled=True)
+        own_key = slot_history_key(slot)
+        flushes: list[dict] = []
+        real_flush = state.flush_slot_now
+
+        def spy(s, **kwargs):
+            flushes.append(kwargs)
+            return real_flush(s, **kwargs)
+
+        monkeypatch.setattr(state, "flush_slot_now", spy)
+        await chat_summary.generate_session_summary(
+            state, slot, cfg=cfg, force=True, expected_history_key=own_key
+        )
+        assert flushes == [{"expected_history_key": own_key}]
+
+    async def test_a_pinned_flush_refuses_when_the_routing_moved(self, tmp_path):
+        """``flush_slot_now(expected_history_key=)``: nothing is written -- not
+        to the authorized transcript, and not to the one the slot now routes
+        to -- when the slot's key differs from the pin."""
+        state = _make_state(tmp_path)
+        # The real saver resolves the slot's canonical identity through the
+        # session map; the harness's bare mock would answer with a mock.
+        state.sessions._session_map.get = MagicMock(return_value="")
+        slot = _seed_slot(state, user_turns=0)
+        own_key = slot_history_key(slot)
+        slot.append("user", "an unsaved app message", "msg msg-u")
+        assert slot._dirty
+        slot.linked_session_key = "cron:job-1"
+
+        state.flush_slot_now(slot, expected_history_key=own_key)
+
+        log = state.conversation_log
+        assert log.read_messages("cron:job-1") == []
+        assert log.read_messages(own_key) == []
+        # Nothing was written, so the rows are still owed: a cleared dirty bit
+        # here would be silent loss (the periodic loop skips clean slots).
+        assert slot._dirty is True
+
+    async def test_a_pinned_flush_that_wrote_clears_the_dirty_bit(self, tmp_path):
+        state = _make_state(tmp_path)
+        # The real saver resolves the slot's canonical identity through the
+        # session map; the harness's bare mock would answer with a mock.
+        state.sessions._session_map.get = MagicMock(return_value="")
+        slot = _seed_slot(state, user_turns=0)
+        own_key = slot_history_key(slot)
+        slot.append("user", "a saved app message", "msg msg-u")
+        assert slot._dirty
+
+        state.flush_slot_now(slot, expected_history_key=own_key)
+
+        assert slot._dirty is False
+        assert [m["content"] for m in state.conversation_log.read_messages(own_key)] == [
+            "a saved app message"
+        ]
+
+    async def test_the_generator_refuses_a_key_that_moved_off_the_authorized_one(
+        self, tmp_path, monkeypatch
+    ):
+        """The pin is enforced INSIDE the generator too, so a caller that
+        authorized one transcript cannot have a pass summarize -- and cache
+        under -- another."""
+        called = _stub_generation(monkeypatch)
+        state = _make_state(tmp_path)
+        slot = _seed_slot(state)
+        cfg = KiroCrewConfig()
+        cfg.session_summary = SessionSummaryConfig(enabled=True)
+        own_key = slot_history_key(slot)
+        slot.linked_session_key = "cron:job-1"
+        state.conversation_log.append("cron:job-1", "user", "channel talk")
+
+        stored = await chat_summary.generate_session_summary(
+            state, slot, cfg=cfg, force=True, expected_history_key=own_key
+        )
+
+        assert stored is False
+        assert called == []
+        assert state.conversation_log.get_cached_intent_summary("cron:job-1") is None
 
     async def test_the_feature_being_off_is_409_summary_disabled(self, tmp_path, monkeypatch):
         _pin_flag(monkeypatch, False)
