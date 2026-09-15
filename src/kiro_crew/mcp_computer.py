@@ -58,6 +58,18 @@ session" must not become "you may not drive the desktop". What is lost is audit
 ATTRIBUTION, not a control: the trail records that the session could not be named,
 which is honest, where the lenient walk would have recorded a forgeable name.
 
+**The placeholder travels in the request BODY only, never in ``X-Session-Key``.**
+The header is an identity CLAIM: on the AF_UNIX leg the gateway kernel-verifies it
+(``token_auth._verify_unix_peer``) against the session its peer-pid ancestry
+resolves to, and denies on mismatch as the impersonation case. The placeholder
+names no session, so declaring it is a claim the gateway must reject whenever the
+ancestry walk does recover a real key, which on macOS it does for every shim a
+dashboard-launched kiro-cli spawns, so every Computer Use call is refused. A
+shim that could not name itself therefore sends NO header, which the gateway
+already treats as "nothing session-scoped is claimed, nothing to verify", and
+keeps the placeholder in the body for ``SnapshotIndex`` namespacing. A
+strictly-resolved key is still declared and still verified.
+
 Tool visibility follows the keystone primary enable: ``tools/list`` returns ``[]``
 while computer use is off, so a disabled feature is invisible to the model rather
 than a set of tools that always refuse.
@@ -221,6 +233,23 @@ def _unresolved_session_key() -> str:
     if nonce:
         return f"{key}{UNRESOLVED_TENANT_SEPARATOR}{nonce}"
     return key
+
+
+def _declares_identity(session_key: str) -> bool:
+    """Whether ``session_key`` is an identity the shim may CLAIM in ``X-Session-Key``.
+
+    Only a strictly-resolved key is. The ``unresolved:`` placeholder is a namespace
+    separator the shim minted for itself (see :func:`_unresolved_session_key`), and
+    a claim the gateway's AF_UNIX peer check would compare against the session it
+    resolves from the peer pid: the two can never agree, so declaring it makes
+    every unnamed call a 403 ``peer_session_mismatch``. No header is
+    the gateway's documented "nothing claimed, nothing to verify" arm.
+
+    Decided by the placeholder's own prefix rather than by a flag threaded from the
+    caller, so no future call site can put the placeholder in the header by
+    forgetting to pass one.
+    """
+    return bool(session_key) and not session_key.startswith(UNRESOLVED_SESSION_PREFIX)
 
 
 def _list_tools() -> list[dict[str, Any]]:
@@ -712,9 +741,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     session_key = require_strict_session_key("computer-use attribution")[0] or (
         _unresolved_session_key()
     )
-    header_err = _session_key_header_error(session_key)
-    if header_err:
-        return f"{ERROR_PREFIX}{header_err}"
+    # The header pre-flight applies to what goes in the header. The placeholder
+    # never does (see ``_declares_identity``), and it is ASCII by construction.
+    if _declares_identity(session_key):
+        header_err = _session_key_header_error(session_key)
+        if header_err:
+            return f"{ERROR_PREFIX}{header_err}"
 
     payload = _invoke(session_key, name, args)
     # ``text`` is the SUCCESS-AND-REFUSAL channel: the gateway answers 200 with
@@ -746,12 +778,17 @@ def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]
     and reported as an opaque internal error, where an unreachable gateway is
     both diagnosable and actionable.
 
-    The body carries the resolved session key as well as the header. The HEADER is
-    what the auth middleware sees; the BODY field is what the handler threads into
-    the dispatcher as the calling surface. Neither is an authorization claim the
-    gateway trusts on its own — the trust comes from the loopback local-secret
-    handshake plus the STRICT resolution above, which has already refused an empty
-    key before this function is reached.
+    The body carries the session key; the HEADER carries it only when it is a real,
+    strictly-resolved identity. The header is what the auth middleware kernel-verifies
+    on the AF_UNIX leg (``_verify_unix_peer``: a same-uid peer declaring a key that
+    differs from the one its ancestry resolves to is denied); the BODY field is what
+    the handler threads into the dispatcher as the calling surface and the
+    ``SnapshotIndex`` namespace. An ``unresolved:`` placeholder is a namespace, not
+    a claim, so it goes in the body and the header is omitted: the gateway's
+    empty-header arm is "nothing session-scoped is claimed, nothing to verify", which
+    is exactly true. Neither field is an authorization claim the gateway trusts on its
+    own; the trust comes from the loopback local-secret handshake plus the kernel
+    peer check on whatever IS declared.
     """
     body = json.dumps(
         {"tool": name, "args": args, "session_key": session_key, "agent": "", "app": ""}
@@ -759,8 +796,9 @@ def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]
     headers = {
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
-        "X-Session-Key": session_key,
     }
+    if _declares_identity(session_key):
+        headers["X-Session-Key"] = session_key
 
     def _send_once(target: tuple[str, str]):
         base, socket_path = target
