@@ -2308,6 +2308,33 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .side-tab-inactive:hover::before{
   content:'';position:absolute;left:0;right:0;top:2px;bottom:4px;
   border-radius:8px;background:var(--bg-hover);z-index:-1}
+
+/* Workspace fullscreen expands the existing SidePanel across the content grid.
+   The topbar stays in place, and the panel subtree remains mounted. */
+[data-workspace-fullscreen] #activity-bar-slot {
+  position: absolute;
+  inset: 0;
+  grid-area: 2 / 1 / -1 / -1 !important;
+  z-index: 65;
+  background: var(--bg);
+}
+[data-workspace-fullscreen] #activity-bar-slot [data-workspace-panel-host] {
+  width: 100% !important;
+  height: 100% !important;
+}
+[data-workspace-fullscreen] [data-workspace-panel-host].fixed {
+  height: auto !important;
+  z-index: 65;
+}
+/* Fullscreen puts this strip at the window's top corners, where the frameless
+   platforms paint their caption controls. Keep 84px in sync with
+   TRAFFIC_LIGHT_INSET_PX, 142px with WIN_CAPTION_RESERVE_PX and 112px with
+   LINUX_CAPTION_CONTROLS_WIDTH in src/lib/electron.ts, as the header and
+   focus-caption-reserve copies above do. */
+[data-workspace-fullscreen].mac-electron:not(.mac-fullscreen) .side-panel-strip { padding-left: 84px; }
+[data-workspace-fullscreen].win-electron .side-panel-strip { padding-right: 142px; }
+[data-workspace-fullscreen].linux-electron .side-panel-strip { padding-right: 112px; }
+
 /* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
    briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
    background, because the revealed row is usually the active one and already

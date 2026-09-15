@@ -10237,7 +10237,6 @@
       "message_saved_as_draft": "{{error}}. Ton message est enregistré comme brouillon dans la session depuis laquelle tu l’as envoyé.{{extra}}",
       "no_results": "Aucun résultat",
       "no_tools": "Aucun outil",
-      "open_activity_panel": "Ouvrir le panneau d’activité",
       "open_file": "Ouvrir le fichier {{path}}",
       "attached_file_inert": "Fichier joint (impossible de l'ouvrir ici) : {{path}}",
       "open_folder": "Ouvrir le dossier {{path}}",

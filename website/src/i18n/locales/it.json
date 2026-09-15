@@ -10237,7 +10237,6 @@
       "message_saved_as_draft": "{{error}}. Il tuo messaggio è salvato come bozza nella sessione da cui lo hai inviato.{{extra}}",
       "no_results": "Nessun risultato",
       "no_tools": "Nessuno strumento",
-      "open_activity_panel": "Apri il pannello attività",
       "open_file": "Apri il file {{path}}",
       "attached_file_inert": "File allegato (non può essere aperto qui): {{path}}",
       "open_folder": "Apri la cartella {{path}}",

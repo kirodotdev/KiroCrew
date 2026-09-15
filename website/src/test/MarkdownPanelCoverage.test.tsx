@@ -22,6 +22,7 @@ import { forwardRef, useImperativeHandle, createRef } from 'react'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { WorkspaceFullscreenContext } from '../components/WorkspacePanelContext'
 import type { PierreEditorHandle } from '../pierre'
 
 // ── CSS Custom Highlight API stub (must precede the dynamic import) ──────────
@@ -320,6 +321,7 @@ interface MountOpts {
   onSubmitComments?: (m: string) => void
   /** Omit the key entirely to let the auto-diff heuristic decide. */
   initialDiffMode?: boolean
+  workspace?: boolean
 }
 
 function mountPanel(opts: MountOpts = {}) {
@@ -335,7 +337,14 @@ function mountPanel(opts: MountOpts = {}) {
     savedBaseline: opts.savedBaseline,
     initialDiffMode: 'initialDiffMode' in opts ? opts.initialDiffMode : false,
   }
-  const utils = render(<MarkdownPanel embedded {...props} />, { wrapper })
+  const panel = <MarkdownPanel embedded {...props} />
+  const controls = { fullscreen: false, exit: vi.fn(), toggle: vi.fn() }
+  const utils = render(
+    opts.workspace
+      ? <WorkspaceFullscreenContext.Provider value={controls}>{panel}</WorkspaceFullscreenContext.Provider>
+      : panel,
+    { wrapper },
+  )
   return { ...utils, props }
 }
 
@@ -699,6 +708,14 @@ describe('MarkdownPanel — breadcrumb', () => {
     mountPanel({ filePath: '/home/dev/docs/notes.md' })
     expect(screen.getByTitle('/home/dev/docs/notes.md')).toBeInTheDocument()
     expect(screen.queryByText('/home')).toBeNull()
+  })
+})
+
+describe('MarkdownPanel — fullscreen ownership', () => {
+  it('omits file-only fullscreen when the workspace owns fullscreen', () => {
+    mountPanel({ workspace: true })
+    openPanelMenu()
+    expect(screen.queryByText('Full screen')).not.toBeInTheDocument()
   })
 })
 

@@ -1,10 +1,12 @@
-import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react'
+import { useId, useState, useRef, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react'
+import { useWorkspaceFullscreenPanel } from '../../hooks/useWorkspaceFullscreenPanel'
+import PanelToggles, { PANEL_HEADER_ACTION_CLS, PANEL_HEADER_ACTIONS_CLS } from '../../components/PanelToggles'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin, Maximize2, Minimize2 } from 'lucide-react'
 import { PanelRightLight } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
@@ -467,6 +469,9 @@ export default function SidePanel({
   expanded, fillWidth, canDockBottom = true,
   leadingTab, extraReserveW = 0, hiddenViews, onActiveTabChange,
 }: SidePanelProps) {
+  const fullscreenOwnerId = useId()
+  const fullscreenRef = useRef<HTMLDivElement>(null)
+  const { fullscreen, onKeyDown: onFullscreenKeyDown, toggle: toggleFullscreen, exit: exitFullscreen } = useWorkspaceFullscreenPanel(fullscreenRef)
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
   // A permanent panel has no close control and answers Escape with nothing —
   // the views' `onToggle` still needs a function, so it gets a no-op.
@@ -681,11 +686,29 @@ export default function SidePanel({
   })
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- nested controls own Escape first.
     <div
-      className={`shrink-0 flex flex-col bg-bg overflow-hidden relative ${isBottom ? 'min-w-0 w-full border-t border-border' : 'min-h-0 mt-0 mb-2 border-l border-t border-b border-border rounded-l-xl'}`}
-      style={isBottom ? { height: effectiveHeight, maxHeight: '85vh', width: '100%' } : { width: effectiveWidth, maxWidth: '100vw' }}
+      id={fullscreenOwnerId}
+      ref={fullscreenRef}
+      role="region"
+      aria-label={i18nT('pages.chat.activityViewer.activity')}
+      tabIndex={-1}
+      onKeyDown={onFullscreenKeyDown}
+      data-workspace-panel
+      className={`shrink-0 flex flex-col bg-bg overflow-hidden relative ${
+        fullscreen
+          ? 'min-w-0 w-full h-full border-l border-border'
+          : isBottom
+            ? 'min-w-0 w-full border-t border-border'
+            : 'min-h-0 mt-0 mb-2 border-l border-t border-b border-border rounded-l-xl'
+      }`}
+      style={fullscreen
+        ? { width: '100%', height: '100%', maxWidth: '100%', maxHeight: '100%' }
+        : isBottom
+          ? { height: effectiveHeight, maxHeight: '85vh', width: '100%' }
+          : { width: effectiveWidth, maxWidth: '100vw' }}
     >
-      {isBottom ? (
+      {fullscreen ? null : isBottom ? (
         /* Top-edge resize handle — drag up/down to size the bottom dock. */
         <div role="separator" aria-orientation="horizontal" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className="absolute left-0 right-0 top-0 h-[6px] cursor-row-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResizeV}>
           <div className="absolute left-0 right-0 top-0 h-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
@@ -716,7 +739,7 @@ export default function SidePanel({
           frameless Linux paint their caption controls — the panel chrome below
           would sit under them, covered and unclickable. Bottom-docked the strip
           is nowhere near that corner, so it takes no reserve. */}
-      <div className={`side-panel-strip flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}`}>
+      <div className={`side-panel-strip flex items-end gap-1.5 shrink-0 pl-2 pr-[9px] mt-0.5 h-10 pt-px pb-0 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}`}>
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. The group's 8px gap
             matches the active chip's corner-piece width, so a piece lands in the
@@ -788,14 +811,28 @@ export default function SidePanel({
             arrow-key focus and Escape handling as every other menu in the app
             (previously hand-rolled with an outside-click listener and
             useListboxKeyboard). */}
+        {/* Vertical placement — a recorded decision, not a leftover. The
+            strip's trailing actions are 28px cells centered on the 40px row
+            (y+6..y+34). The tabs are 32px chips fused to the strip's bottom
+            edge (y+8..y+40), so their center is 4px lower. This `+` belongs to
+            the TABS, not to the trailing actions: like Chrome's new-tab button
+            it is bottom-aligned with the chips (self-end; the 1px mb-px puts
+            the 28px cell's center exactly on the 32px chips' center, the chips
+            themselves overhanging the seam by 1px), so its glyph shares the tab
+            icon/label center and the eye reads one tab row. Rejected alternatives: (a) 40px chips
+            so the tabs share the action cells' center — a chip filling the whole
+            strip loses its tab silhouette; (b) keeping `+` self-center with 32px
+            chips — its glyph then floats 4px above the tab glyphs it sits beside;
+            (c) shifting the trailing actions down instead — the Side toggle must
+            keep the exact bounding box it has in the closed-state title row. */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
-              className="flex items-center justify-center w-7 h-7 shrink-0 self-center rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
+              className="flex items-center justify-center w-7 h-7 shrink-0 self-end mb-px rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
               title={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
               aria-label={i18nT('pages.chat.sidePanel.open_side_panel_tab')}
             >
-              <Plus size={15} />
+              <Plus className="lucide-inline w-3.5 h-3.5" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
@@ -842,48 +879,68 @@ export default function SidePanel({
         {/* Flexible gap: the tabs and + hug the leading edge; this absorbs the
             slack so the panel chrome sits at the trailing edge. */}
         <div aria-hidden="true" className="flex-1 min-w-0" />
-        {/* Panel chrome, trailing edge. Collapse (frequent) stays a one-tap
-            button; the rarely-used dock toggle moves into a ⋯ menu so the two
-            panel-square glyphs are never adjacent look-alikes. A permanent
-            panel (no onClose) that cannot dock has no chrome here at all — the
-            divider goes with it rather than ruling off an empty group. */}
-        {(closable || (canDockBottom && !isMobile)) && (
-          <span aria-hidden="true" className="w-px h-5 bg-border shrink-0 self-center relative z-10" />
-        )}
-        <div className="flex items-center gap-0.5 shrink-0 self-center">
+        {/* Panel chrome, trailing edge: the dock action, the fullscreen action,
+            then the Bottom + Side toggles at one shared 6px rhythm, with no
+            visual separators. The dock-direction action lives in the ⋯ menu
+            with a text label: drawn as a panel-square icon in this row it reads
+            as "open the bottom panel" rather than "move this panel", so it is
+            kept out of the icon row. The Bottom-panel and Side-panel toggles
+            beside it are both real panel toggles, so they share the panel glyph
+            family and sit together at the workspace edge; the two panel squares
+            are adjacent by design, distinguished by which strip is filled,
+            their names and their pressed state. */}
         {canDockBottom && !isMobile && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          <div className={`${PANEL_HEADER_ACTIONS_CLS} self-center`} data-panel-controls-host="dock">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className={`${PANEL_HEADER_ACTION_CLS} text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text cursor-pointer`}
+                  title={i18nT('pages.chatSidebar.more_options')}
+                  aria-label={i18nT('pages.chatSidebar.more_options')}
+                >
+                  <MoreHorizontal className="lucide-inline w-3.5 h-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
+                <DropdownMenuItem className="gap-2.5 py-2" onSelect={() => setDock(isBottom ? 'right' : 'bottom')}>
+                  <span className="text-muted shrink-0">{isBottom ? <PanelRight size={16} /> : <PanelBottom size={16} />}</span>
+                  <span className="flex-1">{isBottom ? i18nT('pages.chat.sidePanel.dock_right') : i18nT('pages.chat.sidePanel.dock_bottom')}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+        {toggleFullscreen && (
+          <>
+            <div className={`${PANEL_HEADER_ACTIONS_CLS} self-center`} data-panel-controls-host="fullscreen">
               <button
-                className="flex items-center justify-center w-7 h-7 shrink-0 rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
-                title={i18nT('pages.chatSidebar.more_options')}
-                aria-label={i18nT('pages.chatSidebar.more_options')}
+                data-testid="workspace-fullscreen-toggle"
+                className={`${PANEL_HEADER_ACTION_CLS} cursor-pointer ${fullscreen ? 'text-accent bg-accent/10' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+                onClick={toggleFullscreen}
+                title={fullscreen ? i18nT('components.markdownPanel.exit_full_screen') : i18nT('components.markdownPanel.full_screen')}
+                aria-label={fullscreen ? i18nT('components.markdownPanel.exit_full_screen') : i18nT('components.markdownPanel.full_screen')}
+                aria-pressed={fullscreen}
               >
-                <MoreHorizontal size={15} />
+                {fullscreen ? <Minimize2 className="lucide-inline w-3.5 h-3.5" /> : <Maximize2 className="lucide-inline w-3.5 h-3.5" />}
               </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
-              <DropdownMenuItem
-                className="gap-2.5 py-2"
-                onSelect={() => setDock(isBottom ? 'right' : 'bottom')}
-              >
-                <span className="text-muted shrink-0">{isBottom ? <PanelRight size={16} /> : <PanelBottom size={16} />}</span>
-                <span className="flex-1">{isBottom ? i18nT('pages.chat.sidePanel.dock_right') : i18nT('pages.chat.sidePanel.dock_bottom')}</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            </div>
+            <div className="self-center" data-panel-controls-host="workspace">
+              <PanelToggles showWorkspace workspaceOpen exitFullscreen={fullscreen ? exitFullscreen : undefined} />
+            </div>
+          </>
         )}
-        {closable && (
-        <button
-          className="pi-morph flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-          onClick={closePanel}
-          title={i18nT('pages.chat.sidePanel.close_panel')}
-          aria-label={i18nT('pages.chat.sidePanel.close_panel')}
-        >
-          <PanelRightLight size={15} />
-        </button>
+        {!toggleFullscreen && closable && (
+          <div className={`${PANEL_HEADER_ACTIONS_CLS} self-center`}>
+            <button
+              className={`${PANEL_HEADER_ACTION_CLS} cursor-pointer text-muted hover:text-text hover:bg-bg-hover`}
+              onClick={closePanel}
+              title={i18nT('pages.chat.sidePanel.close_panel')}
+              aria-label={i18nT('pages.chat.sidePanel.close_panel')}
+            >
+              <PanelRightLight size={14} />
+            </button>
+          </div>
         )}
-        </div>
       </div>
 
       {/* Body — render every doc/terminal tab mounted (hidden when inactive) so
@@ -1452,8 +1509,13 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
       // server/tool identity, #9868). Icon-only chips need it as their name.
       title={tab.title}
       data-testid={testId}
-      // Browser-tab chip: 32px tall, top corners only (8px), bottom edge fused
-      // into the panel body. Active = the body's own background (--bg) plus a
+      // Browser-tab chip: 32px tall inside the 40px strip, so 8px of strip shows
+      // above it (a tab that fills the whole strip reads as a solid column, not a
+      // tab) while the bottom edge stays fused into the panel body. The chip's
+      // center therefore sits 4px below the strip's 28px action cells; the `+`
+      // beside it follows THE TAB (self-end in the strip), the trailing action
+      // group does not — see the `+` trigger for the recorded decision.
+      // Active = the body's own background (--bg) plus a
       // top/side hairline (--border, bottom open) so the silhouette survives a
       // custom theme where --bg and --bg-elevated are equal; the ::before/::after
       // corner pieces carry a matching 1px arc in their gradient, so the hairline

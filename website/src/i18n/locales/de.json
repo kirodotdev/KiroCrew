@@ -10093,7 +10093,6 @@
       "message_saved_as_draft": "{{error}}. Deine Nachricht wurde als Entwurf in der Sitzung gespeichert, aus der du sie gesendet hast.{{extra}}",
       "no_results": "Keine Ergebnisse",
       "no_tools": "Keine Tools",
-      "open_activity_panel": "Aktivitätspanel öffnen",
       "open_file": "Datei {{path}} öffnen",
       "attached_file_inert": "Angehängte Datei (kann hier nicht geöffnet werden): {{path}}",
       "open_folder": "Ordner {{path}} öffnen",

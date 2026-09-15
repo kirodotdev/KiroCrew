@@ -10093,7 +10093,6 @@
       "message_saved_as_draft": "{{error}}। যে সেশন থেকে পাঠিয়েছ, সেখানেই তোমার বার্তা ড্রাফট হিসেবে সংরক্ষিত আছে।{{extra}}",
       "no_results": "কোনো ফলাফল নেই",
       "no_tools": "কোনো টুল নেই",
-      "open_activity_panel": "কাজের প্যানেল খোলো",
       "open_file": "{{path}} ফাইল খোলো",
       "attached_file_inert": "সংযুক্ত ফাইল (এখানে খোলা যাবে না): {{path}}",
       "open_folder": "{{path}} ফোল্ডার খোলো",

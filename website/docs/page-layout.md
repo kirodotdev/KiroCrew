@@ -350,6 +350,50 @@ are Tailwind utilities defined in `tailwind.config.js`, and both use
 - Add a new CSS `@keyframes`. Use Framer Motion, or an existing utility.
 
 
+
+### Chat workspace title rows and panel controls
+
+The Sessions sidebar, main chat, and right SidePanel share one control baseline:
+action cells are 28px square, icons are 14px, and each row is 40px high with
+6px gaps. The SidePanel keeps its fused browser-tab strip and half-card frame;
+alignment is achieved by placing that strip on the same header line, not by
+changing the tabs into pills or flattening the panel frame.
+
+The browser tabs are 32px chips fused to the strip's bottom edge, so 8px of strip
+stays visible above them and their center sits 4px below the strip's 28px action
+cells. The `+` (new tab) trigger belongs to the tab row and follows the chips'
+center, the way Chrome bottom-aligns its new-tab button with its tabs; the
+trailing action group (Fullscreen, Bottom panel, Side panel) keeps the row's
+center. This is a recorded decision. A 40px chip would share the action cells'
+center but fills the whole strip and stops reading as a tab; a self-centered `+`
+floats 4px above the tab glyphs beside it; moving the trailing group down would
+move the Side toggle away from its closed-state position.
+
+When the SidePanel is closed, the main title row's trailing actions are Pop out,
+Split view, Bottom panel, then Side panel. When it is open, the SidePanel owns the
+window's trailing edge and renders Fullscreen, Bottom panel, then Side panel. The
+fullscreen action and the two panel toggles keep separate component ownership but
+share one uninterrupted 6px visual rhythm; no divider is drawn between them. The
+dock-direction menu remains a separate panel-owned action. The Side panel toggle's
+bounding box is identical before and after the panel opens.
+
+The Bottom-panel toggle in these rows (labelled "Toggle terminal" for both its
+tooltip and its accessible name, as the Side-panel toggle is "Toggle side panel";
+each control carries one name and reports its state through `aria-pressed`; while the
+terminal is popped out the control reads "Focus popped-out window", because the click then
+focuses that window and toggles nothing here) is a
+second entry point to the docked terminal, beside the nav rail's Terminal row and
+the keyboard chord. It sits next
+to the Side-panel toggle because the two panels share the workspace edge and are
+opened and closed together. Dropping the nav-rail row instead was considered and
+rejected: existing users reach the terminal from there, and removing a known entry
+to keep one path would trade their orientation for a tidier inventory.
+
+Workspace fullscreen expands the existing SidePanel subtree across the shell's
+content grid while retaining the topbar. It must not remount tab bodies, editor
+drafts, browser frames, or PTY sessions. A focused terminal owns Escape; the
+visible fullscreen control exits while focus is inside a PTY.
+
 ### Split view: leading edge and focus
 
 The surface's top-left is the sessions-sidebar toggle's. In single chat the

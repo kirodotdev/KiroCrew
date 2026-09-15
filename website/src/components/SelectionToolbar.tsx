@@ -943,6 +943,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
         >
           {composer ? (
             <ComposerBox
+              workspaceOwnerId={containerRef.current?.closest('[data-workspace-panel]')?.id}
               inputRef={composerInputRef}
               autoFocus={composerAutoFocus}
               actions={actions}
@@ -1030,7 +1031,8 @@ const COMPOSER_MAX_INPUT_H = 160
  * its placeholder naming the way in (Enter), and the toolbar's document-level
  * Enter handler moves focus here.
  */
-function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed }: {
+function ComposerBox({ workspaceOwnerId, inputRef, autoFocus, actions, copiedId, hintIdBase, onAction, onSubmit, onEscape, onCopyShortcut, onGrow, text, onTextChange, copyFailed, onDismissCopyFailed }: {
+  workspaceOwnerId?: string
   inputRef: React.RefObject<HTMLTextAreaElement>
   autoFocus: boolean
   actions: SelectionAction[]
@@ -1142,6 +1144,7 @@ function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase, onAct
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
     <div
       data-testid="selection-composer"
+      data-workspace-escape-owner={workspaceOwnerId || undefined}
       data-layout={stacked ? 'stack' : 'row'}
       className={`rounded-lg bg-bg-elevated border border-border shadow-lg p-1.5 flex gap-1.5 ${stacked ? 'flex-col w-[calc(100vw-16px)]' : 'items-start flex-wrap w-[520px] max-w-[calc(100vw-16px)]'}`}
       onKeyDown={e => {

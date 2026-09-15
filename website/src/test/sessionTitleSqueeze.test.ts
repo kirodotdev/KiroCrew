@@ -36,7 +36,7 @@ describe('session header at phone widths', () => {
   it('keeps the trailing controls at full width', async () => {
     const s = await src()
     // These are the buttons that were pushed out; they must not absorb the deficit.
-    expect(s).toMatch(/ml-auto flex shrink-0 items-center gap-1\.5 pointer-events-none/)
+    expect(s).toMatch(/data-panel-controls-host="chat" className=\{`\$\{PANEL_HEADER_ACTIONS_CLS\} ml-auto pointer-events-none/)
   })
 
   it('passes the shrink down every cluster between row and title', async () => {
