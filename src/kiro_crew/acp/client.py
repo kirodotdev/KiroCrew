@@ -207,6 +207,7 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     BoundWorkspaceMismatch,
     _ensure_run_dir,
+    _forward_ssh_auth_sock,
     apply_windows_resource_ceiling,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
@@ -7216,10 +7217,18 @@ class AcpClient:
             if self._private_memory
             else {}
         )
+        # Resolve the SSH_AUTH_SOCK forward opt-in OFF the event
+        # loop (KiroCrewConfig.load() may stat/read config) ONCE, then pass the
+        # resolved boolean into both the sandbox wrap below and the parent-side
+        # scrub further down, so neither reads config synchronously on the loop
+        # (anchor: no-blocking-call-on-event-loop). Scoped to this agent spawn:
+        # generic launchers default the flag off and keep scrubbing the socket.
+        forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             # Credential homes the standard tier exposes for kiro-cli's sake and
             # that an enforced adapter has no claim on. Empty for every harness
             # this core does not enforce, so their spawn arguments are unchanged.
@@ -7301,8 +7310,9 @@ class AcpClient:
         # Windows Kiro delegation has no POSIX `env -u` wrapper, so this is the
         # enforcement point there. Keep it after _resolve_spawn_env so SSH repair
         # cannot reintroduce a denied pointer; KIRO_API_KEY remains available only
-        # to the positively identified Kiro backend.
-        env = scrub_agent_subprocess_env(env)
+        # to the positively identified Kiro backend. forward_ssh_auth_sock is
+        # the opt-in resolved off-loop above and reused here.
+        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
         # Bundled skill scripts must not depend on a system ``python`` name.
         # The desktop bundles carry their interpreter outside the user's PATH,
         # while this path is already running under the exact environment that

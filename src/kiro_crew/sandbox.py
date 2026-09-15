@@ -4626,6 +4626,7 @@ def _build_launcher_script(
     private_log_dir: str = "",
     private_layout: _PrivateMemoryLayout | None = None,
     strip_python_env: bool = False,
+    forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
@@ -4672,6 +4673,14 @@ def _build_launcher_script(
         # Foreign Python subprocess (kiro-cli's MCP servers) — do not let
         # KiroCrew's PYTHONPATH/PYTHONHOME leak in and shadow their own deps.
         env_prefixes = env_prefixes + list(_PYTHON_ENV_PREFIXES)
+    # Keep SSH_AUTH_SOCK when the operator opted in AND this is an
+    # agent spawn (forward_ssh_auth_sock is threaded from the agent path only, so
+    # a generic app/openCommand launcher defaults it False and still scrubs the
+    # socket). Applied last so the whole assembled set is filtered. The
+    # strict-tier ~/.ssh hide below is unaffected (the agent socket lives in
+    # $TMPDIR/tmp, outside ~/.ssh), so key material stays unreadable while the
+    # socket becomes usable.
+    env_prefixes = _agent_scrub_prefixes(env_prefixes, forward_ssh_auth_sock)
     hide_ssh = sandbox_level == "strict"
     hidden_dirs = [os.path.join(home, d) for d in dirs]
     # Re-anchor the SAME tier list under a pod child's remapped home. Must run here
@@ -5700,6 +5709,7 @@ def namespace_argv(
     *,
     private_memory: bool = False,
     strip_python_env: bool = False,
+    forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
@@ -5756,6 +5766,7 @@ def namespace_argv(
         sandbox_level,
         **private_options,
         strip_python_env=strip_python_env,
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
         extra_hidden_dirs=extra_hidden_dirs,
         extra_visible_dirs=extra_visible_dirs,
         extra_writable_dirs=extra_writable_dirs,
@@ -6325,6 +6336,7 @@ def _delegate_to_kiro_internal_sandbox(
     sandbox_level: str,
     *,
     strip_python_env: bool = False,
+    forward_ssh_auth_sock: bool = False,
 ) -> tuple[list[str], str | None] | None:
     """Delegate an explicitly trusted kiro-cli spawn to its internal sandbox.
 
@@ -6398,7 +6410,7 @@ def _delegate_to_kiro_internal_sandbox(
         )
     if sys.platform == "win32":
         return list(argv), None
-    unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env)
+    unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env, forward_ssh_auth_sock)
     if unset_args:
         return [_pinned_env_bin(), *unset_args, *argv], None
     return list(argv), None
@@ -6410,6 +6422,7 @@ def sandbox_exec_argv(
     *,
     private_memory: bool = False,
     strip_python_env: bool = False,
+    forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
@@ -6466,7 +6479,7 @@ def sandbox_exec_argv(
     # Build env -u flags for sensitive vars present in current env. cc/strict
     # additionally scrub agent-denied credential keys (Slack tokens, owner id)
     # since loader.py seeds them into os.environ for trusted children only.
-    unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env)
+    unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env, forward_ssh_auth_sock)
     # Mark the sandboxed tree, exactly as the Linux namespace launcher does after
     # its own env scrub (see the export beside ``KIROCREW_HOST_PID``). Without
     # this, an in-sandbox ``wrap_argv`` call cannot tell that KiroCrew's own
@@ -6513,7 +6526,9 @@ def sandbox_exec_argv(
     )
 
 
-def _sandbox_env_scrub_keys(sandbox_level: str, strip_python_env: bool) -> list[str]:
+def _sandbox_env_scrub_keys(
+    sandbox_level: str, strip_python_env: bool, forward_ssh_auth_sock: bool = False
+) -> list[str]:
     """Names of the live environment keys to scrub for a given sandbox level.
 
     The single source of the per-level scrub set, shared by
@@ -6527,10 +6542,17 @@ def _sandbox_env_scrub_keys(sandbox_level: str, strip_python_env: bool) -> list[
         prefixes.extend(_AGENT_DENIED_ENV_KEYS)
     if strip_python_env:
         prefixes.extend(_PYTHON_ENV_PREFIXES)
+    # Honour the SSH_AUTH_SOCK forward opt-in on the seatbelt
+    # ``env -u`` path (macOS) exactly as on the Linux launcher. The decision is
+    # passed in (resolved off-loop on the agent path) and defaults False, so a
+    # generic caller keeps the socket in the unset flags.
+    prefixes = _agent_scrub_prefixes(prefixes, forward_ssh_auth_sock)
     return [key for key in os.environ if any(key.startswith(p) for p in prefixes)]
 
 
-def _sandbox_env_unset_args(sandbox_level: str, strip_python_env: bool) -> list[str]:
+def _sandbox_env_unset_args(
+    sandbox_level: str, strip_python_env: bool, forward_ssh_auth_sock: bool = False
+) -> list[str]:
     """``env -u`` flags scrubbing sensitive vars for a sandboxed/delegated spawn.
 
     Shared by ``sandbox_exec_argv`` (seatbelt wrap) and
@@ -6539,7 +6561,7 @@ def _sandbox_env_unset_args(sandbox_level: str, strip_python_env: bool) -> list[
     the active isolation layer.
     """
     unset_args: list[str] = []
-    for key in _sandbox_env_scrub_keys(sandbox_level, strip_python_env):
+    for key in _sandbox_env_scrub_keys(sandbox_level, strip_python_env, forward_ssh_auth_sock):
         unset_args.extend(["-u", key])
     return unset_args
 
@@ -7622,6 +7644,39 @@ def _unsandboxed_exec_key_declared() -> bool:
         return False
 
 
+def _forward_ssh_auth_sock() -> bool:
+    """Whether the operator has explicitly opted into keeping SSH_AUTH_SOCK in
+    the agent subprocess environment.
+
+    When False (default), SSH_AUTH_SOCK is scrubbed like every other entry in
+    ``_SENSITIVE_ENV_PREFIXES`` - today's behaviour, unchanged. When True, the
+    single ``SSH_AUTH_SOCK`` key is kept so git commit signing and git-over-SSH
+    inside the sandbox can reach the operator's ssh-agent. The socket grants USE
+    of the agent's keys, not possession; the private key material is never
+    forwarded, and under the strict tier ~/.ssh stays hidden/read-denied.
+
+    Fail-closed: any failure to read config returns False, so the socket is
+    scrubbed unless the operator positively enabled forwarding. Read lazily to
+    avoid an import cycle with the config loader.
+
+    Windows has no ``SSH_AUTH_SOCK`` (Win32 OpenSSH's agent is a named pipe, not
+    a Unix-domain socket), so the forward is a no-op there regardless of config:
+    an opt-in default-off feature must simply not be offered on a platform where
+    the concept it forwards does not exist. This mirrors ``_resolve_ssh_auth_sock``
+    returning early on Windows.
+    """
+    if platform_compat.IS_WINDOWS:
+        return False
+    try:
+        from kiro_crew.config.loader import (
+            KiroCrewConfig,  # circular import: sandbox is a low-level dep of config.loader
+        )
+
+        return bool(getattr(KiroCrewConfig.load().agent, "sandbox_forward_ssh_auth_sock", False))
+    except Exception:
+        return False
+
+
 def unsandboxed_exec_permitted_by() -> str:
     """Public read of the no-backend execution verdict, for diagnostics.
 
@@ -7638,6 +7693,33 @@ def unsandboxed_exec_permitted_by() -> str:
     verdict must say that a floor overrides it.
     """
     return _unsandboxed_grant_source(_allow_unsandboxed_exec())
+
+
+def _agent_scrub_prefixes(base: list[str], forward_ssh_auth_sock: bool) -> list[str]:
+    """Filter the ``SSH_AUTH_SOCK`` prefix out of *base* when *forward_ssh_auth_sock*
+    is set, else return *base* unchanged.
+
+    The forward decision is passed in as an already-resolved boolean, NOT read
+    from config here: config resolution (:func:`_forward_ssh_auth_sock`) is done
+    ONCE on the agent spawn path in the off-loop environment-prep hop, then
+    threaded down to the launcher builders as an explicit parameter -- exactly as
+    ``strip_python_env`` is. This keeps the synchronous config read off the
+    asyncio event loop (anchor: no-blocking-call-on-event-loop) AND scopes the
+    forward to agent spawns: the generic launcher builders default the flag to
+    False, so a non-agent caller (a third-party app ``openCommand`` going through
+    the same generic ``wrap_argv`` launcher, a ``sandboxed_spawn_argv`` spawn)
+    never re-admits the socket.
+
+    It filters the exact literal ``"SSH_AUTH_SOCK"`` prefix only; every other
+    credential prefix is untouched, so the opt-in can never widen into a general
+    env passthrough. The shared module constant ``_SENSITIVE_ENV_PREFIXES`` is
+    NEVER mutated here - mcp_gateway.manager imports it to refuse credential keys
+    in MCP declared-env forwarding, and that refusal must keep covering
+    SSH_AUTH_SOCK regardless of this flag.
+    """
+    if not forward_ssh_auth_sock:
+        return base
+    return [p for p in base if p != "SSH_AUTH_SOCK"]
 
 
 # Fallback tier for configured_sandbox_mode() when the config cannot be read.
@@ -8532,6 +8614,7 @@ def wrap_argv(
     private_mcp_gateway_socket: str = "",
     private_mcp_gateway_socket_overrides: tuple[str, ...] = (),
     strip_python_env: bool = False,
+    forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
@@ -8670,7 +8753,9 @@ def wrap_argv(
                     _command_log_label(argv),
                     exc_info=True,
                 )
-            unset_args = _sandbox_env_unset_args("standard", strip_python_env)
+            unset_args = _sandbox_env_unset_args(
+                "standard", strip_python_env, forward_ssh_auth_sock
+            )
             if unset_args:
                 return [_pinned_env_bin(), *unset_args, *argv], None
             return list(argv), None
@@ -8796,7 +8881,9 @@ def wrap_argv(
             # a planted ``env`` there would receive exactly the credentials
             # this scrub exists to withhold. No trusted binary → keep the
             # plain passthrough (never fail closed) and say so.
-            unset_args = _sandbox_env_unset_args(requested_level, strip_python_env)
+            unset_args = _sandbox_env_unset_args(
+                requested_level, strip_python_env, forward_ssh_auth_sock
+            )
             if unset_args:
                 scrub_keys = tuple(unset_args[1::2])
                 env_prefix = _unset_env_argv(scrub_keys)
@@ -8854,6 +8941,7 @@ def wrap_argv(
                     sandbox_level,
                     **({"private_memory": True} if private_memory else {}),
                     strip_python_env=strip_python_env,
+                    forward_ssh_auth_sock=forward_ssh_auth_sock,
                     extra_hidden_dirs=extra_hidden_dirs,
                     extra_visible_dirs=extra_visible_dirs,
                     extra_writable_dirs=extra_writable_dirs,
@@ -8861,14 +8949,22 @@ def wrap_argv(
                 )
         else:
             delegated = _delegate_to_kiro_internal_sandbox(
-                argv, sandbox_level, strip_python_env=strip_python_env
+                argv,
+                sandbox_level,
+                strip_python_env=strip_python_env,
+                forward_ssh_auth_sock=forward_ssh_auth_sock,
             )
             if delegated is not None:
                 return delegated
             if sys.platform == "darwin":
                 # Preserve macOS's audit-failure fallback: once delegation is
                 # refused, Kiro Crew's own seatbelt remains the safe owner.
-                return sandbox_exec_argv(argv, sandbox_level, strip_python_env=strip_python_env)
+                return sandbox_exec_argv(
+                    argv,
+                    sandbox_level,
+                    strip_python_env=strip_python_env,
+                    forward_ssh_auth_sock=forward_ssh_auth_sock,
+                )
 
     backend = detect_backend(config_mode=mode)
 
@@ -8887,6 +8983,7 @@ def wrap_argv(
                 sandbox_level,
                 **private_options,
                 strip_python_env=strip_python_env,
+                forward_ssh_auth_sock=forward_ssh_auth_sock,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
                 extra_writable_dirs=extra_writable_dirs,
@@ -8898,6 +8995,7 @@ def wrap_argv(
                 sandbox_level,
                 **private_options,
                 strip_python_env=strip_python_env,
+                forward_ssh_auth_sock=forward_ssh_auth_sock,
             )
         # Caller deletes the generated launcher script. Its position is
         # ``1 + len(flags)``, NOT a hardcoded 1: the interpreter flags sit between
@@ -8911,6 +9009,7 @@ def wrap_argv(
                 sandbox_level,
                 **private_options,
                 strip_python_env=strip_python_env,
+                forward_ssh_auth_sock=forward_ssh_auth_sock,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
                 extra_writable_dirs=extra_writable_dirs,
@@ -8921,6 +9020,7 @@ def wrap_argv(
             sandbox_level,
             **private_options,
             strip_python_env=strip_python_env,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
         )
 
     if backend == "none":
@@ -9185,6 +9285,7 @@ async def wrap_argv_async(
     private_mcp_gateway_socket: str = "",
     private_mcp_gateway_socket_overrides: tuple[str, ...] = (),
     strip_python_env: bool = False,
+    forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
@@ -9212,6 +9313,8 @@ async def wrap_argv_async(
             options["private_mcp_gateway_socket_overrides"] = private_mcp_gateway_socket_overrides
     if strip_python_env:
         options["strip_python_env"] = True
+    if forward_ssh_auth_sock:
+        options["forward_ssh_auth_sock"] = True
     if extra_hidden_dirs:
         options["extra_hidden_dirs"] = extra_hidden_dirs
     if extra_visible_dirs:
@@ -9297,7 +9400,9 @@ def scrub_agent_denied_env(env: dict[str, str]) -> dict[str, str]:
     }
 
 
-def scrub_agent_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
+def scrub_agent_subprocess_env(
+    env: dict[str, str] | None = None, *, forward_ssh_auth_sock: bool = False
+) -> dict[str, str]:
     """Return the full environment scrub required for a Kiro/ACP child.
 
     This is the parent-side equivalent of the OS launchers' sensitive-variable
@@ -9305,8 +9410,26 @@ def scrub_agent_subprocess_env(env: dict[str, str] | None = None) -> dict[str, s
     delegation because Windows cannot express the POSIX ``env -u`` prefix, and
     keeping it on every platform makes delegated and wrapped ACP spawns inherit
     the same environment policy.
+
+    This is the AGENT enforcement point, so the SSH_AUTH_SOCK
+    forward opt-in is applied HERE rather than in the generic :func:`scrub_env`,
+    which also serves non-agent callers (tailscale host children,
+    ``sandboxed_spawn_argv`` spawns) that must keep the socket scrubbed. The
+    decision is passed in as an already-resolved boolean (the caller resolves
+    :func:`_forward_ssh_auth_sock` once in its off-loop environment-prep hop, so
+    no synchronous config read runs on the asyncio event loop here); it defaults
+    False, so a caller that does not opt in scrubs the socket as before. When
+    set, the socket value is preserved across the scrub for the agent child
+    alone.
     """
-    return scrub_env(env, extra_prefixes=_PYTHON_ENV_PREFIXES)
+    scrubbed = scrub_env(env, extra_prefixes=_PYTHON_ENV_PREFIXES)
+    src = os.environ if env is None else env
+    if forward_ssh_auth_sock and "SSH_AUTH_SOCK" in src:
+        # scrub_env removed it unconditionally; re-add the socket for the agent
+        # child only. Restricted to the exact key, so nothing else the generic
+        # scrub dropped is reintroduced.
+        scrubbed["SSH_AUTH_SOCK"] = src["SSH_AUTH_SOCK"]
+    return scrubbed
 
 
 def sandboxed_spawn_argv(

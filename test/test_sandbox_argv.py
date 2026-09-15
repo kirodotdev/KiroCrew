@@ -175,14 +175,18 @@ class TestWrapArgv:
             "kiro-cli",
         ]
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
-        mock_ns_argv.assert_called_once_with(["kiro-cli"], "strict", strip_python_env=False)
+        mock_ns_argv.assert_called_once_with(
+            ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
+        )
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
     @patch("kiro_crew.sandbox.sandbox_exec_argv")
     def test_sandbox_exec_backend(self, mock_sb_argv, mock_detect):
         mock_sb_argv.return_value = (["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli"], "/tmp/p.sb")
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
-        mock_sb_argv.assert_called_once_with(["kiro-cli"], "strict", strip_python_env=False)
+        mock_sb_argv.assert_called_once_with(
+            ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
+        )
 
     @patch("kiro_crew.sandbox.detect_backend")
     def test_inside_sandbox_passes_through(self, mock_detect, monkeypatch):

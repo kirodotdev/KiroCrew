@@ -2502,6 +2502,14 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
                 unsandboxed_exec_platform_default(),
             )
         ),
+        # A quoted "false" must resolve to the documented default (off): the
+        # opt-in forwards the operator's ssh-agent socket into the sandbox, so a
+        # malformed value has to fail closed. bool("false") is True, which would
+        # silently forward the socket, so _safe_bool guards it as the sibling
+        # toggles do.
+        sandbox_forward_ssh_auth_sock=_safe_bool(
+            agent_data.get("sandbox_forward_ssh_auth_sock", False), False
+        ),
         apps_allow_third_party=_safe_bool(agent_data.get("apps_allow_third_party", False), False),
         apps_trusted=(
             [a for a in _trusted if isinstance(a, str) and a]
