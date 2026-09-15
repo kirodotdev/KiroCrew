@@ -10,12 +10,16 @@ import sys
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.gateway_lock import (
+    _IDENTITY_ATTEMPTS,
     LOCK_FILENAME,
     GatewayLock,
     GatewayLockError,
     LockHolder,
     LockProbeError,
+    _directory_locks_supported,
+    _is_same_file,
     _read_pid,
     lock_holder,
 )
@@ -136,6 +140,167 @@ def test_windows_stale_pid_reclaimed_on_startup(tmp_path, monkeypatch):
     # is a MANDATORY byte-range lock, so a second handle opened while we hold it
     # fails with ``PermissionError`` rather than returning the contents.
     assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
+
+
+class TestLockFileIdentity:
+    """Deleting the lock file must not admit a second gateway.
+
+    An ``flock`` belongs to the open file description, so unlinking the lock
+    file releases nothing -- but it does make that inode unreachable by name, so
+    an acquire that trusts the name alone creates a fresh inode, locks it
+    unopposed, and runs as a second writer on the same home. No zombie and no
+    inherited descriptor are needed; a healthy running gateway is enough. Two
+    guards close it: the exclusive lock on the home DIRECTORY, which deletion
+    cannot reach, and an identity check that refuses to keep a lock on an inode
+    the path does not name.
+    """
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS, reason="an open Windows lock file cannot be deleted"
+    )
+    def test_unlink_then_acquire_is_refused(self, tmp_path):
+        if not _directory_locks_supported(tmp_path):
+            pytest.skip("this filesystem does not implement directory locks")
+        held = GatewayLock(tmp_path).acquire()
+        try:
+            os.unlink(tmp_path / LOCK_FILENAME)
+            with pytest.raises(GatewayLockError) as excinfo:
+                GatewayLock(tmp_path).acquire()
+            text = str(excinfo.value)
+            assert "no longer names it" in text
+            assert "neither stops a gateway nor releases its lock" in text
+        finally:
+            held.release()
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no home anchor on Windows")
+    def test_release_frees_the_home_anchor_so_the_home_can_be_reacquired(self, tmp_path):
+        # flock is per open file description, so a leaked anchor descriptor would
+        # refuse the next acquire from this very process.
+        lock = GatewayLock(tmp_path).acquire()
+        lock.release()
+        assert lock._home_fd is None
+        GatewayLock(tmp_path).acquire().release()
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS,
+        reason="Windows refuses to unlink a file its holder has open, so the lock path "
+        "cannot be replaced under a live acquire there",
+    )
+    def test_a_path_replaced_mid_acquire_is_relocked_on_the_current_inode(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / LOCK_FILENAME
+        opens: list[int] = []
+        real_open = GatewayLock._open_lock_file
+
+        def replace_after_first_open(lock):
+            fd = real_open(lock)
+            opens.append(fd)
+            if len(opens) == 1:
+                # The window between the open and the lock: the path is unlinked
+                # and a new file is created under the same name.
+                os.unlink(path)
+                path.write_text("999999\n", encoding="utf-8")
+            return fd
+
+        monkeypatch.setattr(GatewayLock, "_open_lock_file", replace_after_first_open)
+        lock = GatewayLock(tmp_path).acquire()
+        try:
+            assert len(opens) == 2  # the orphaned inode was dropped, not kept
+            assert _is_same_file(lock._fd, path)
+            assert path.read_text(encoding="utf-8").strip() == str(os.getpid())
+        finally:
+            lock.release()
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS,
+        reason="Windows refuses to unlink a file its holder has open, so the lock path "
+        "cannot be replaced under a live acquire there",
+    )
+    def test_acquire_refuses_a_path_replaced_on_every_attempt(self, tmp_path, monkeypatch):
+        path = tmp_path / LOCK_FILENAME
+        real_open = GatewayLock._open_lock_file
+
+        def always_replace(lock):
+            fd = real_open(lock)
+            os.unlink(path)
+            path.write_text("1\n", encoding="utf-8")
+            return fd
+
+        monkeypatch.setattr(GatewayLock, "_open_lock_file", always_replace)
+        with pytest.raises(GatewayLockError, match="being replaced faster"):
+            GatewayLock(tmp_path).acquire()
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no home anchor on Windows")
+    def test_a_filesystem_without_directory_locks_still_starts(self, tmp_path, monkeypatch):
+        """Missing evidence must never refuse a legitimate start."""
+        from kiro_crew import gateway_lock
+
+        anchor = os.open(tmp_path, os.O_RDONLY)
+        try:
+            if not platform_compat.try_acquire_lock(anchor, exclusive=True):
+                pytest.skip("this filesystem does not implement directory locks")
+            # A held home on a filesystem that does lock directories is a real
+            # incumbent, so the start is refused.
+            monkeypatch.setattr(gateway_lock, "_directory_locks_supported", lambda _home: True)
+            with pytest.raises(GatewayLockError):
+                GatewayLock(tmp_path).acquire()
+            # The same held home, reported as a filesystem that cannot lock
+            # directories at all: that is no evidence, so the start goes ahead.
+            monkeypatch.setattr(gateway_lock, "_directory_locks_supported", lambda _home: False)
+            GatewayLock(tmp_path).acquire().release()
+        finally:
+            platform_compat.release_lock(anchor)
+            os.close(anchor)
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no home anchor on Windows")
+    def test_a_transiently_held_anchor_is_retried_rather_than_refused(self, tmp_path, monkeypatch):
+        # `lock_holder` takes the same anchor non-destructively and drops it two
+        # syscalls later, so a `stop` or `restart` running beside a legitimate
+        # start must not refuse that start.
+        real_anchor = GatewayLock._acquire_home_anchor
+        calls: list[int] = []
+
+        def refuse_once(lock):
+            calls.append(1)
+            if len(calls) == 1:
+                raise GatewayLockError(lock._home, None, "a probe holds the anchor")
+            return real_anchor(lock)
+
+        monkeypatch.setattr(GatewayLock, "_acquire_home_anchor", refuse_once)
+        lock = GatewayLock(tmp_path).acquire()
+        try:
+            assert len(calls) == 2  # the refusal was retried, not raised
+            assert (tmp_path / LOCK_FILENAME).read_text(encoding="utf-8").strip() == str(
+                os.getpid()
+            )
+        finally:
+            lock.release()
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no home anchor on Windows")
+    def test_a_permanently_held_anchor_is_still_refused(self, tmp_path, monkeypatch):
+        # The other half of the same discrimination: an incumbent holds the
+        # anchor for its whole lifetime, so every attempt fails and the refusal
+        # stands. Retrying must not soften it.
+        calls: list[int] = []
+
+        def always_refuse(lock):
+            calls.append(1)
+            raise GatewayLockError(lock._home, None, "an incumbent holds the anchor")
+
+        monkeypatch.setattr(GatewayLock, "_acquire_home_anchor", always_refuse)
+        with pytest.raises(GatewayLockError, match="an incumbent holds the anchor"):
+            GatewayLock(tmp_path).acquire()
+        assert len(calls) == _IDENTITY_ATTEMPTS
+
+    def test_support_probe_reports_a_filesystem_that_cannot_lock_directories(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(platform_compat, "try_acquire_lock", lambda fd, **k: False)
+        assert _directory_locks_supported(tmp_path) is False
+
+    def test_support_probe_reports_a_home_it_cannot_write_in(self, tmp_path):
+        assert _directory_locks_supported(tmp_path / "does-not-exist") is False
 
 
 class TestLockHolder:
@@ -323,6 +488,26 @@ class TestLockHolder:
         )
         holder = lock_holder(tmp_path)
         assert holder == LockHolder(pid=4242, alive=True, source="recorded_pid")
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no home anchor on Windows")
+    def test_a_deleted_lock_file_does_not_read_as_nobody(self, tmp_path):
+        # The state `stop`/`restart` must not mistake for "nothing running": the
+        # lock file is gone, the gateway holding the home is not.
+        if not _directory_locks_supported(tmp_path):
+            pytest.skip("this filesystem does not implement directory locks")
+        held = GatewayLock(tmp_path).acquire()
+        try:
+            os.unlink(tmp_path / LOCK_FILENAME)
+            try:
+                holder = lock_holder(tmp_path)
+            except LockProbeError as exc:
+                # Off Linux no surface names a directory's flock owner, so the
+                # answer is indeterminate rather than a pid to signal.
+                assert "no longer names" in str(exc)
+            else:
+                assert holder == LockHolder(pid=os.getpid(), alive=True, source="home_anchor")
+        finally:
+            held.release()
 
     def test_flock_owner_outranks_a_disagreeing_recorded_pid(self, tmp_path, monkeypatch):
         # A forked inheritor keeps the flock alive under a DIFFERENT pid than

@@ -155,9 +155,9 @@ def test_flock_is_held_by_a_fork_orphan(tmp_path, reap):
         assert not platform_compat.pid_exists(recorded)
         assert excinfo.value.holder_pid == recorded
         text = str(excinfo.value)
-        assert "holder could not be identified" in text
-        assert f"file records pid {recorded}" in text
-        assert "may be stale" in text
+        assert f"the pid it records ({recorded}) no longer exists" in text
+        assert "inherited that descriptor" in text
+        assert "may be stale" not in text
         assert "held by pid" not in text
         assert "kill" not in text.lower()
         return
@@ -315,17 +315,82 @@ def test_refusal_refuses_to_guess_between_multiple_openers(monkeypatch, refused_
     assert "kill -9" not in text  # an opener is not proof of ownership
 
 
+# --- no owner surface: the macOS and Windows shape ------------------------
+#
+# ``flock_owner_pid`` and ``pids_holding_file`` both read ``/proc`` and return
+# ``None`` off Linux, and macOS has no way to identify an flock owner at all:
+# ``F_GETLK`` reports ``l_pid = -1`` for a conflicting flock and ``lsof`` leaves
+# the lock field blank. Naming the owner is not what the operator needs, though.
+# Liveness and port ownership work everywhere, so the recorded pid's own facts
+# decide which of four things the refusal says.
+
+
 @pytest.mark.parametrize("openers", [None, [23185]])
-def test_refusal_degrades_honestly_without_proc_locks(monkeypatch, refused_lock, openers):
-    """Without an owner record, even a known opener cannot establish ownership."""
+def test_refusal_keeps_the_hedge_when_there_is_no_port_to_weigh(monkeypatch, refused_lock, openers):
+    """No owner surface and no port supplied: the recorded pid stays a hedge.
+
+    This is the ``--port auto`` / ``--slack-only`` shape. Even a known opener
+    cannot establish ownership, because an opener may merely have read the file.
+    """
     from kiro_crew import platform_compat
 
     monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: None)
     monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: openers)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: pid == 4242)
 
-    err = _refusal(refused_lock, port=5477)
+    err = _refusal(refused_lock)
     text = str(err)
     assert err.holder_pid == 4242
     assert "could not be identified" in text
     assert "may be stale" in text
     assert "kill" not in text.lower()  # we cannot name anyone -- do not guess
+
+
+def test_refusal_names_a_live_port_holding_pid_without_an_owner_surface(monkeypatch, refused_lock):
+    """Running and holding the dashboard port: that is the gateway, so say so."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: None)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: None)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: pid == 4242)
+    monkeypatch.setattr(platform_compat, "find_listening_pids", lambda _p: [4242])
+
+    err = _refusal(refused_lock, port=5477)
+    text = str(err)
+    assert err.holder_pid == 4242
+    assert "held by pid 4242" in text
+    assert "running and holds port 5477" in text
+    assert "may be stale" not in text  # sending the operator after a phantom
+    assert "kirocrew stop" in text
+    assert "kill" not in text.lower()
+
+
+def test_refusal_hedges_when_the_recorded_pid_holds_no_port(monkeypatch, refused_lock):
+    """Running but portless: name the missing fact instead of deciding either way."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: None)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: None)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda pid: pid == 4242)
+    monkeypatch.setattr(platform_compat, "find_listening_pids", lambda _p: [])
+
+    text = str(_refusal(refused_lock, port=5477))
+    assert "does not hold port 5477" in text
+    assert "reused the number" in text
+    assert "kill" not in text.lower()
+
+
+def test_refusal_reports_an_inherited_lock_when_the_recorded_pid_is_gone(monkeypatch, refused_lock):
+    """A dead recorded pid is not a stale number -- something inherited the fd."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: None)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: None)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: False)
+
+    text = str(_refusal(refused_lock, port=5477))
+    assert "no longer exists" in text
+    assert "inherited that descriptor" in text
+    assert "may be stale" not in text
+    assert "lsof " in text
+    assert "kill" not in text.lower()

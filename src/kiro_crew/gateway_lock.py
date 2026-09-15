@@ -36,6 +36,30 @@ that ACTUALLY holds the lock from ``/proc/*/fd`` rather than quoting the pid in
 the file, reports what that process looks like, and names the reclaim command
 when the evidence points at an inherited fd. It never kills anything itself.
 
+Why the home directory is locked too
+------------------------------------
+A lock file is only as strong as its name. Deleting ``<home>/gateway.lock``
+releases nothing -- the incumbent's ``flock`` lives on -- but it does strip the
+lock of the one thing that made it a rendezvous: no later gateway can reach that
+inode by name, so the next start creates a FRESH inode, locks that unopposed,
+and runs as a second writer on the same home. Neither a zombie nor an inherited
+descriptor is needed; a healthy running gateway is enough. Operators reach that
+state by following recovery advice that says to remove the file.
+
+No check inside the second gateway can see the first one's orphaned inode, so
+the fix is a rendezvous that deletion cannot reach: the home DIRECTORY. A
+directory cannot be unlinked while it holds entries, so an exclusive ``flock``
+on the home survives every deletion of what is inside it, and the second
+gateway is refused on it. The lock file keeps its own ``flock`` unchanged --
+it carries the pid stamp, the Windows path, and the non-destructive probe in
+:func:`lock_holder` -- and is additionally checked for identity after locking,
+so a name replaced mid-acquire is never mistaken for a held rendezvous.
+
+A filesystem that cannot lock a directory yields no evidence rather than a
+verdict: an unlockable home never refuses a legitimate start. Windows does not
+need the anchor at all, because a Windows gateway's open lock file cannot be
+deleted out from under it.
+
 Isolated homes (``--test-mode``/``--seed`` with a distinct ``KIROCREW_HOME``)
 resolve to a different lock file and are unaffected.
 """
@@ -45,6 +69,8 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,6 +79,20 @@ from kiro_crew import platform_compat
 logger = logging.getLogger(__name__)
 
 LOCK_FILENAME = "gateway.lock"
+
+# How many times ``acquire`` re-opens the lock path and re-takes the home
+# anchor. It bounds two transient causes: the inode it locked differing from the
+# inode the path names, and the home anchor being held for the two syscalls
+# :func:`_home_is_anchored` needs for its non-destructive probe. Either clearing
+# takes microseconds, while a real incumbent holds the anchor for its whole
+# lifetime and fails every attempt, so the ceiling is small and the refusal is
+# loud. Each retry costs one open, one flock and one short wait.
+_IDENTITY_ATTEMPTS = 3
+
+# Wait before each retry. Long enough that a probe holding the anchor has
+# released it, short enough that the whole ceiling stays under a tenth of a
+# second on a startup path that already does disk I/O.
+_RETRY_BACKOFF_SECS = 0.05
 
 
 class GatewayLockError(RuntimeError):
@@ -113,6 +153,7 @@ class GatewayLock:
         self._path = home / LOCK_FILENAME
         self._port = port
         self._fd: int | None = None
+        self._home_fd: int | None = None
 
     @property
     def path(self) -> Path:
@@ -122,9 +163,66 @@ class GatewayLock:
         """Take the exclusive lock or raise ``GatewayLockError``.
 
         Fail-closed: any inability to take the lock refuses startup rather than
-        proceeding as a second writer.
+        proceeding as a second writer. Two things are locked, for two different
+        failure modes -- the lock file, which carries the pid stamp and the
+        Windows path, and the home directory, which stays reachable by name
+        after the lock file is deleted (see the module docstring).
         """
         self._home.mkdir(parents=True, exist_ok=True)
+        for attempt in range(_IDENTITY_ATTEMPTS):
+            if attempt:
+                time.sleep(_RETRY_BACKOFF_SECS)
+            fd = self._open_lock_file()
+            # platform_compat.try_acquire_lock: fcntl.flock LOCK_EX|LOCK_NB on
+            # POSIX; msvcrt.locking LK_NBLCK on Windows. Returns True iff acquired.
+            if not platform_compat.try_acquire_lock(fd, exclusive=True):
+                recorded = _read_pid(fd)
+                os.close(fd)
+                holder, diagnosis = self._diagnose(recorded)
+                raise GatewayLockError(self._home, holder, diagnosis)
+            if not _is_same_file(fd, self._path):
+                # The path was unlinked or replaced between the open and the
+                # lock, so the inode we hold is not the one the next gateway
+                # will open: this lock guards nothing. Drop it and re-open the
+                # name that is there now.
+                _release_fd(fd)
+                continue
+            try:
+                home_fd = self._acquire_home_anchor()
+            except GatewayLockError:
+                _release_fd(fd)
+                if attempt + 1 < _IDENTITY_ATTEMPTS:
+                    # :func:`lock_holder`'s probe takes the same anchor
+                    # non-destructively and releases it two syscalls later, so a
+                    # ``stop`` or ``restart`` running beside a legitimate start
+                    # can refuse it. Retrying separates that from an incumbent,
+                    # which holds the anchor until it exits.
+                    continue
+                raise
+            self._stamp_pid(fd)
+            self._fd = fd
+            self._home_fd = home_fd
+            logger.info("acquired gateway singleton lock on %s (pid %d)", self._home, os.getpid())
+            return self
+        raise GatewayLockError(
+            self._home,
+            None,
+            f"{self._path} is being replaced faster than it can be locked "
+            f"({_IDENTITY_ATTEMPTS} attempts); refusing to start rather than hold a lock on "
+            "an inode no other gateway will open",
+        )
+
+    def release(self) -> None:
+        """Release both descriptors if held. Idempotent."""
+        if self._home_fd is not None:
+            _release_fd(self._home_fd)
+            self._home_fd = None
+        if self._fd is not None:
+            _release_fd(self._fd)
+            self._fd = None
+
+    def _open_lock_file(self) -> int:
+        """Open (creating if absent) the lock file, reclaiming a stale Windows one."""
         # O_RDWR | O_CREAT without truncation: a failed acquire must leave the
         # incumbent holder's pid intact so we can name it in the error.
         fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -151,17 +249,10 @@ class GatewayLock:
                 except OSError:
                     pass
                 fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        return fd
 
-        # platform_compat.try_acquire_lock: fcntl.flock LOCK_EX|LOCK_NB on
-        # POSIX; msvcrt.locking LK_NBLCK on Windows. Returns True iff acquired.
-        if not platform_compat.try_acquire_lock(fd, exclusive=True):
-            recorded = _read_pid(fd)
-            os.close(fd)
-            holder, diagnosis = self._diagnose(recorded)
-            raise GatewayLockError(self._home, holder, diagnosis)
-
-        # We hold the lock. Stamp our pid over whatever was there so the file
-        # keeps naming the most recent acquirer.
+    def _stamp_pid(self, fd: int) -> None:
+        """Record this pid in the lock file so it names the most recent acquirer."""
         try:
             os.ftruncate(fd, 0)
             os.lseek(fd, 0, os.SEEK_SET)
@@ -172,20 +263,31 @@ class GatewayLock:
             # record the pid only degrades the diagnostic message. Keep the lock.
             logger.warning("acquired gateway lock on %s but could not record pid", self._home)
 
-        self._fd = fd
-        logger.info("acquired gateway singleton lock on %s (pid %d)", self._home, os.getpid())
-        return self
+    def _acquire_home_anchor(self) -> int | None:
+        """Lock the home directory, the rendezvous deleting the lock file cannot reach.
 
-    def release(self) -> None:
-        """Release the lock if held. Idempotent."""
-        if self._fd is None:
-            return
-        platform_compat.release_lock(self._fd)
+        Returns the held descriptor, or ``None`` when no verdict is available:
+        Windows (``msvcrt.locking`` needs a byte range in a file, and an open
+        Windows lock file cannot be deleted anyway), a home that cannot be
+        opened, or a filesystem with no directory locks. Raises only on the one
+        case that is positive evidence -- the directory locks here, and
+        something else already holds this one. The caller retries that raise a
+        bounded number of times, because a non-destructive probe holds the same
+        anchor for two syscalls while an incumbent holds it for its lifetime.
+        """
+        if platform_compat.IS_WINDOWS:
+            return None
         try:
-            os.close(self._fd)
+            fd = os.open(self._home, os.O_RDONLY)
         except OSError:
-            pass
-        self._fd = None
+            return None
+        if platform_compat.try_acquire_lock(fd, exclusive=True):
+            return fd
+        os.close(fd)
+        if not _directory_locks_supported(self._home):
+            return None
+        holder, diagnosis = self._diagnose_replaced_lock_file()
+        raise GatewayLockError(self._home, holder, diagnosis)
 
     def __enter__(self) -> "GatewayLock":
         return self.acquire()
@@ -217,13 +319,75 @@ class GatewayLock:
         if owner is not None:
             return owner, self._describe_orphaned_lock(owner, openers)
         # No /proc/locks (non-Linux, or unreadable): the recorded pid is all we
-        # have. Say that, rather than presenting it as the proven holder.
+        # have, so weigh its own facts rather than presenting it as the holder.
         if recorded_pid is None:
             return None, None
-        return recorded_pid, (
-            f"{self._path} is locked, but the holder could not be identified. "
-            f"The file records pid {recorded_pid}, which may be stale. "
-            "Stop the running gateway, or set KIROCREW_HOME to an isolated directory."
+        return recorded_pid, self._describe_unidentified_owner(recorded_pid)
+
+    def _describe_unidentified_owner(self, recorded_pid: int) -> str:
+        """No surface names the flock owner, so report what the recorded pid proves.
+
+        macOS and Windows cannot identify an flock owner at all: ``F_GETLK``
+        reports ``l_pid = -1`` for a conflicting flock and ``lsof`` leaves the
+        lock field blank. Naming the owner is not what the operator needs,
+        though. Liveness and port ownership work on every platform, and between
+        them they separate the three states that lead to different actions:
+        the recorded pid is gone (an inherited descriptor holds the lock, and
+        nothing here can name the inheritor); it is running and holds the
+        dashboard port (a gateway, to be stopped); or it is running without the
+        port, where the number may belong to an unrelated process that reused
+        it. Only the last one, and the case where no port was supplied to
+        measure, keep a hedge.
+        """
+        if not platform_compat.pid_exists(recorded_pid):
+            return (
+                f"{self._path} is locked, but the pid it records ({recorded_pid}) no longer "
+                "exists. An flock belongs to the open file description, so it survives in a "
+                "process that inherited that descriptor -- typically a child forked from a "
+                "crashed gateway. This platform cannot name that process; find it with: "
+                f"lsof {self._path}"
+            )
+        if self._port is None:
+            return (
+                f"{self._path} is locked, but the holder could not be identified. "
+                f"The file records pid {recorded_pid}, which may be stale. "
+                "Stop the running gateway, or set KIROCREW_HOME to an isolated directory."
+            )
+        if recorded_pid in platform_compat.find_listening_pids(self._port):
+            return (
+                f"{self._path} is held by pid {recorded_pid}, which is running and holds port "
+                f"{self._port} -- another gateway already owns {self._home}; stop it first "
+                "(kirocrew stop) or set KIROCREW_HOME to an isolated directory"
+            )
+        return (
+            f"{self._path} is locked and the pid it records ({recorded_pid}) is running, but "
+            f"that pid does not hold port {self._port}, so it may be an unrelated process that "
+            "reused the number rather than the gateway. Stop the running gateway, or set "
+            "KIROCREW_HOME to an isolated directory."
+        )
+
+    def _diagnose_replaced_lock_file(self) -> tuple[int | None, str]:
+        """The home is still held, but its lock file does not name the holder.
+
+        Reached when the lock file could be locked -- because it was deleted and
+        this call re-created it -- while another gateway still holds the home
+        directory. The pid inside the file is no evidence at all here: either
+        this process just created the file, or whatever is in it predates the
+        deletion. The directory's own owner is the only thing worth reading, and
+        only Linux can name it.
+        """
+        owner = platform_compat.flock_owner_pid(self._home)
+        if owner is not None and platform_compat.pid_exists(owner):
+            facts = self._port_facts(owner)
+            who = f"pid {owner}" + (f" ({', '.join(facts)})" if facts else "")
+        else:
+            owner = None
+            who = "a running gateway"
+        return owner, (
+            f"{self._home} is still held by {who}, but {self._path} no longer names it -- the "
+            "lock file was deleted or replaced while that gateway was running. Deleting the "
+            "lock file neither stops a gateway nor releases its lock; stop it first (kirocrew "
+            "stop) or set KIROCREW_HOME to an isolated directory."
         )
 
     def _describe_live_owner(self, pid: int, recorded_pid: int | None) -> str:
@@ -332,12 +496,14 @@ class LockHolder:
     the orphaned-flock wedge :class:`GatewayLock` diagnoses in prose
     (``_describe_orphaned_lock``) -- as indeterminate (:class:`LockProbeError`)
     rather than as a dead holder, so no caller can read it as nobody running.
-    ``source`` says which surface produced the pid.
+    ``source`` says which surface produced the pid; ``"home_anchor"`` is the
+    home directory's own lock, which is the only surface left once the lock
+    file has been deleted.
     """
 
     pid: int | None
     alive: bool
-    source: str  # "flock_owner" | "recorded_pid" | "none"
+    source: str  # "flock_owner" | "recorded_pid" | "home_anchor" | "none"
 
 
 _NO_HOLDER = LockHolder(pid=None, alive=False, source="none")
@@ -349,10 +515,12 @@ def lock_holder(home: Path) -> LockHolder:
     Shares its resolution logic with :meth:`GatewayLock._diagnose` so a caller
     that never intends to ACQUIRE the lock -- ``cli_perf``'s profiler target,
     and ``_stop``/``_restart``'s port-probe fallback -- can still ask who owns a
-    home without opening it for writing first. A missing lock file reports
-    ``pid=None, source="none"``, the same "nothing to diagnose" shape as no
-    lock existing at all; a file that exists but cannot be read is still
-    probed, since being unable to read it is not evidence that nobody holds it.
+    home without opening it for writing first. A missing or free lock file is
+    not a free home -- the file can be deleted out from under a running gateway
+    without releasing anything -- so both cases fall through to the home anchor
+    (:func:`_anchor_holder_or_nobody`) before ``nobody`` is reported. A file
+    that exists but cannot be read is still probed, since being unable to read
+    it is not evidence that nobody holds it.
 
     The file's contents are NOT evidence on their own. ``acquire`` stamps the
     holder's pid but ``release`` never clears it, so after a clean stop the file
@@ -391,7 +559,7 @@ def lock_holder(home: Path) -> LockHolder:
     """
     path = home / LOCK_FILENAME
     if not path.exists():
-        return _NO_HOLDER
+        return _anchor_holder_or_nobody(home, path)
     recorded: int | None = None
     try:
         fd = os.open(path, os.O_RDONLY)
@@ -418,7 +586,7 @@ def lock_holder(home: Path) -> LockHolder:
         raise
 
     if not held:
-        return _NO_HOLDER
+        return _anchor_holder_or_nobody(home, path)
 
     owner = platform_compat.flock_owner_pid(path)
     if owner is not None:
@@ -443,6 +611,34 @@ def lock_holder(home: Path) -> LockHolder:
     # running while `kirocrew gateway` refuses to start on the very same lock.
     raise LockProbeError(
         path, OSError("the lock is held but no live holder pid can be established")
+    )
+
+
+def _anchor_holder_or_nobody(home: Path, path: Path) -> LockHolder:
+    """Who holds *home* when its lock FILE proves nothing -- missing, or free.
+
+    Deleting the lock file releases no ``flock``; it only makes that inode
+    unreachable by name. So a missing or free lock file is not a free home, and
+    ``acquire`` refuses on the home anchor in exactly that state -- answering
+    "nobody" here would report nothing running in the same turn ``kirocrew
+    gateway`` refuses to start. Returns ``nobody`` only when the anchor yields
+    no verdict either, and raises :class:`LockProbeError` when the home is held
+    by someone this platform cannot name, the same indeterminate answer the
+    lock file's own unnameable-holder case produces.
+
+    Probing the anchor can create and remove one throwaway directory inside
+    *home* to tell an unsupported directory lock from a held one. That is a
+    write, but it disturbs no holder, which is the sense in which this oracle
+    is non-destructive.
+    """
+    if not _home_is_anchored(home):
+        return _NO_HOLDER
+    owner = platform_compat.flock_owner_pid(home)
+    if owner is not None and platform_compat.pid_exists(owner):
+        return LockHolder(pid=owner, alive=True, source="home_anchor")
+    raise LockProbeError(
+        path,
+        OSError(f"{home} is still held by a gateway that {LOCK_FILENAME} no longer names"),
     )
 
 
@@ -479,6 +675,77 @@ def _lock_is_held(path: Path) -> bool:
                 os.close(fd)
             except OSError:
                 pass
+
+
+def _is_same_file(fd: int, path: Path) -> bool:
+    """True iff the inode open as *fd* is still the inode *path* names.
+
+    False also when *path* has no inode at all (it is unlinked), because both
+    answers mean the same thing to a lock: the descriptor we hold is not what
+    another process opening that name would get.
+    """
+    try:
+        held = os.fstat(fd)
+        named = os.stat(path)
+    except OSError:
+        return False
+    return (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
+
+
+def _directory_locks_supported(home: Path) -> bool:
+    """True iff an exclusive ``flock`` can be taken on a directory under *home*.
+
+    Separates the two reasons locking the home directory can fail: another
+    gateway holds it, or this filesystem does not implement directory locks.
+    Only the first may refuse a start, so the second is measured against a
+    throwaway directory that provably has no holder. A home that cannot host
+    one -- read-only, out of space -- reports False, which withholds the
+    refusal rather than inventing a holder.
+    """
+    try:
+        with tempfile.TemporaryDirectory(dir=home, prefix=".lockprobe-") as probe:
+            fd = os.open(probe, os.O_RDONLY)
+            try:
+                if not platform_compat.try_acquire_lock(fd, exclusive=True):
+                    return False
+                platform_compat.release_lock(fd)
+                return True
+            finally:
+                os.close(fd)
+    except OSError:
+        return False
+
+
+def _home_is_anchored(home: Path) -> bool:
+    """True iff something holds the exclusive ``flock`` on *home* itself.
+
+    Non-destructive: a free directory is unlocked again immediately. False
+    whenever no verdict is available -- Windows, an unopenable directory, or a
+    filesystem without directory locks -- since missing evidence must never
+    read as a holder.
+    """
+    if platform_compat.IS_WINDOWS:
+        return False
+    try:
+        fd = os.open(home, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        if platform_compat.try_acquire_lock(fd, exclusive=True):
+            platform_compat.release_lock(fd)
+            return False
+    finally:
+        os.close(fd)
+    return _directory_locks_supported(home)
+
+
+def _release_fd(fd: int) -> None:
+    """Release any lock on *fd* and close it, tolerating a closed descriptor."""
+    platform_compat.release_lock(fd)
+    try:
+        os.close(fd)
+    except OSError:
+        pass
 
 
 def _port_answers_http(port: int, timeout: float = 1.5) -> bool:
