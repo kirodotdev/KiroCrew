@@ -147,6 +147,10 @@ SUBAGENT_TIMEOUT_MAX = 86400
 # unambiguous and avoids a polynomial-ReDoS (``py/polynomial-redos``) backtracking
 # path over ``[OPTIONS:`` + a long whitespace run. The real tic (``(OPTIONS)``, a
 # bare ``(url)``) contains no whitespace or nested parens, so nothing is lost.
+#: Opening brackets accepted on a protocol marker, paired positionally with
+#: MARKER_CLOSERS. ASCII ``[`` pairs with ``]``, U+3010 ``【`` with U+3011 ``】``,
+#: U+FF3B ``［`` with U+FF3D ``］``, U+3014 ``〔`` with U+3015 ``〕``.
+MARKER_OPENERS = "[\u3010\uff3b\u3014"
 #: Closing brackets accepted on a protocol marker. ASCII ``]`` is the only form
 #: the prompt ever specifies, but a model intermittently substitutes a fullwidth
 #: or CJK lookalike — U+3011 ``】`` is the observed one; U+FF3D ``］`` and U+3015
@@ -171,7 +175,12 @@ SUBAGENT_TIMEOUT_MAX = 86400
 #: NOT to skip. Both readmit all four codepoints at once, which is why adding
 #: these three introduces no ambiguity that ASCII ``]`` did not already have.
 MARKER_CLOSERS = "]\u3011\uff3d\u3015"
+_MARKER_OPEN_CLASS = "[" + re.escape(MARKER_OPENERS) + "]"
 _MARKER_CLOSE_CLASS = "[" + re.escape(MARKER_CLOSERS) + "]"
+
+# Paired opener-closer tuples for matched-pair parsing.
+# Each opener at index i pairs with the closer at the same index.
+MARKER_PAIRS = tuple(zip(MARKER_OPENERS, MARKER_CLOSERS))
 
 #: Markdown WRAPPER characters tolerated around a complete marker line.
 #: A model sometimes wraps the whole marker in inline code or emphasis --
