@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -74,8 +75,9 @@ from kiro_crew.monitoring.models import (
     quarantine_monitor_state,
 )
 from kiro_crew.monitoring.registry import REVIEW_READY, kind_supports_objective
+from kiro_crew.platform import redact_log_via_context, redact_via_context
 from kiro_crew.probes import targets
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +110,13 @@ _NUDGES_FILE = "autonudge.json"
 _STORE_VERSION = 1
 _MIN_IDLE_SECS = 15
 _MAX_IDLE_SECS = 86400  # 24h
+
+
+#: Exempt from the egress scrub, because rewriting either would break a client's
+#: ability to address the row; ``_load`` refuses such a row rather than scrub it.
+ADDRESSING_FIELDS = frozenset({"id", "slot_key"})
+
+
 # Re-arm delay after a skipped/failed fire so a busy slot or a transient fire
 # error can't silently orphan the loop. The delay escalates exponentially per
 # consecutive failure (base << streak) up to _REARM_MAX_BACKOFF_SECS, and is
@@ -339,6 +348,64 @@ def enabled() -> bool:
     return os.environ.get("KIROCREW_AUTONUDGE", "1").lower() not in ("0", "false", "no")
 
 
+@functools.cache
+def _numeric_loop_fields() -> frozenset[str]:
+    """The ``NudgeLoop`` fields declared ``int``/``float``/``bool``.
+
+    Derived at CALL time rather than module scope: ``scrub_loop_text`` is defined above
+    the class, so the annotations do not exist yet at import -- which is why this was
+    once a hand-written set kept honest by a drift test. Deriving removes the second
+    copy instead of policing it. Cached because every serialized field consults it.
+    """
+    return frozenset(
+        name
+        for name, spec in NudgeLoop.__dataclass_fields__.items()
+        if str(spec.type).replace("'", "") in {"int", "float", "bool"}
+    )
+
+
+def scrub_loop_text(value: Any, field: str | None = None) -> Any:
+    """Credential-scrub one serialized ``NudgeLoop`` field value.
+
+    Shared by every reader of a nudge loop, so one projection rule serves all of
+    them. ``field`` is the dataclass field name the value came from; it defaults
+    to ``None``, which coerces rather than exempting.
+
+    ``None`` passes through untouched, so an absent value does not become the
+    string ``"None"``. A value in a DECLARED NUMERIC field
+    (``_numeric_loop_fields()``) passes through untouched when it really is
+    numeric, because clients compare and do arithmetic on it; a numeric field
+    carrying non-numeric text is still coerced and scrubbed. A string goes
+    through ``platform.redact_via_context``, an empty one as-is. Anything else is
+    coerced with ``str()`` and scrubbed, which removes a credential while leaving
+    the value inspectable.
+    """
+    if value is None:
+        return value
+    if isinstance(value, str):
+        if not value:
+            return value
+        return redact_via_context(value)
+    if field in _numeric_loop_fields() and isinstance(value, (bool, int, float)):
+        return value
+    return redact_via_context(str(value))
+
+
+def redact_store_value(value: object) -> str:
+    """Render a store-sourced value safe for a log line in this module.
+
+    ``repr`` supplies the ESCAPE: a store value can carry a newline or an ANSI
+    sequence, and a raw ``%r``/``%s`` would let it forge a second log record.
+
+    The SCRUB is delegated to ``platform.redact_log_via_context``, which owns
+    exactly this contract -- context-aware redaction for a log line that must not
+    raise, yielding ``LOG_WITHHELD_PLACEHOLDER`` when a declared companion policy
+    cannot be composed. Several callers sit inside ``except`` arms whose job is to
+    never raise, so raising here would leave one of them unguarded.
+    """
+    return redact_log_via_context(repr(value))
+
+
 def repair_sentinel_path(raw: str) -> str:
     """Re-home a persisted ``stop_sentinel_path`` onto the CURRENT data home.
 
@@ -441,21 +508,24 @@ def repair_sentinel_path(raw: str) -> str:
                 )
                 path = str(rehomed)
     except Exception:  # noqa: BLE001 - a repair failure must never block startup
-        logger.warning("AutoNudge: could not re-home sentinel %r", raw, exc_info=True)
+        # NO ``exc_info``: the traceback's last line repeats the offending path
+        # verbatim, which would undo this record's ``redact_store_value``.
+        logger.warning("AutoNudge: could not re-home sentinel %s", redact_store_value(raw))
     try:
         sensitive = is_sensitive_path(path)
     except Exception:  # noqa: BLE001 - fail closed: unvalidated ⇒ untrusted
+        # NO ``exc_info``, same reason as the arm above: the traceback would carry
+        # the raw path in the exception's own text, undoing this ``redact_store_value``.
         logger.warning(
-            "AutoNudge: sensitivity re-check failed for %r — dropping the sentinel",
-            path,
-            exc_info=True,
+            "AutoNudge: sensitivity re-check failed for %s — dropping the sentinel",
+            redact_store_value(path),
         )
         return ""
     if sensitive:
         logger.warning(
-            "AutoNudge: dropping stop sentinel %r — path is now sensitive; "
+            "AutoNudge: dropping stop sentinel %s — path is now sensitive; "
             "the loop will be deactivated rather than left unstoppable by file",
-            path,
+            redact_store_value(path),
         )
         return ""
     return path
@@ -917,10 +987,12 @@ class AutoNudgeService:
                 # instruction merely mentioned a pull request. Only an explicit
                 # boolean true gates.
                 if "gate" in loop_values and not isinstance(loop_values["gate"], bool):
+                    # BOTH args scrubbed: these normalisation sinks fire ABOVE the addressing
+                    # guard, so each one must scrub every store-sourced value it names.
                     logger.warning(
-                        "AutoNudge: loop %s stored a non-boolean gate (%r); leaving it ungated",
-                        raw.get("id"),
-                        loop_values["gate"],
+                        "AutoNudge: loop %s stored a non-boolean gate (%s); leaving it ungated",
+                        redact_store_value(raw.get("id")),
+                        redact_store_value(loop_values["gate"]),
                     )
                     loop_values["gate"] = False
                 # ``self_armed`` is the ONE bit that relaxes the crew/member
@@ -931,10 +1003,10 @@ class AutoNudgeService:
                 # admits, and the fire-time check compares ``is True`` besides.
                 if "self_armed" in loop_values and not isinstance(loop_values["self_armed"], bool):
                     logger.warning(
-                        "AutoNudge: loop %s stored a non-boolean self_armed (%r); "
+                        "AutoNudge: loop %s stored a non-boolean self_armed (%s); "
                         "treating it as externally armed",
-                        raw.get("id"),
-                        loop_values["self_armed"],
+                        redact_store_value(raw.get("id")),
+                        redact_store_value(loop_values["self_armed"]),
                     )
                     loop_values["self_armed"] = False
                 loop = NudgeLoop(**loop_values)
@@ -1159,8 +1231,7 @@ class AutoNudgeService:
                     # makes elsewhere: a value the authorized write path would have
                     # rejected is not invented back by keeping a shrunk remnant,
                     # and the row falls back to the full message.
-                    scrubbed, _ = redact_exfiltration_urls(loop.banner)
-                    scrubbed, _ = redact_credentials(scrubbed)
+                    scrubbed = scrub_loop_text(loop.banner, field="banner")
                     if len(loop.banner) > MAX_BANNER_CHARS or len(scrubbed) > MAX_BANNER_CHARS:
                         scrubbed = ""
                     if scrubbed != loop.banner:
@@ -1177,8 +1248,7 @@ class AutoNudgeService:
                 # ``message`` is the payload the model receives and has no
                 # fallback row, and its 8000-char limit is a write-path concern.
                 if isinstance(loop.message, str) and loop.message:
-                    scrubbed_msg, _ = redact_exfiltration_urls(loop.message)
-                    scrubbed_msg, _ = redact_credentials(scrubbed_msg)
+                    scrubbed_msg = scrub_loop_text(loop.message, field="message")
                     if scrubbed_msg != loop.message:
                         loop.message = scrubbed_msg
                         self._store_dirty = True
@@ -1202,8 +1272,23 @@ class AutoNudgeService:
                     )
                     loop.active = True
                     self._store_dirty = True
-            except Exception:
-                logger.warning("AutoNudge: skipping malformed loop entry: %r", raw, exc_info=True)
+            except Exception as exc:
+                # ``loops`` is hand-editable JSON, so a row need not be a mapping;
+                # raising in the arm whose job is to SKIP it would arm nothing.
+                if isinstance(raw, dict):
+                    bad_id = redact_store_value(raw.get("id", "<no id>"))
+                    fields = redact_store_value(", ".join(sorted(map(str, raw))))
+                else:
+                    bad_id = "<not an object>"
+                    fields = type(raw).__name__
+                # No ``%r`` of the row: it can carry a credential, so only the
+                # scrubbed id, the field NAMES and the exception type go out.
+                logger.warning(
+                    "AutoNudge: skipping malformed loop entry %s (fields present: %s; %s)",
+                    bad_id,
+                    fields,
+                    type(exc).__name__,
+                )
                 continue
             self._loops[loop.id] = loop
             if repaired != loop.stop_sentinel_path:
