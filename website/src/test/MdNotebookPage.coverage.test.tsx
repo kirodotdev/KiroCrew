@@ -55,6 +55,7 @@ const mockApi = {
   setPat: vi.fn(),
   pickFolder: vi.fn(),
   listNotes: vi.fn(),
+  listAttachments: vi.fn(),
   readNote: vi.fn(),
   saveNote: vi.fn(),
   deleteNote: vi.fn(),
@@ -170,6 +171,7 @@ describe('MdNotebookPage', () => {
     vi.clearAllMocks()
     localStorage.clear()
     notesState = baseNotes()
+    mockApi.listAttachments.mockResolvedValue({ attachmentFolderPath: null })
     mockApi.health.mockResolvedValue({ ok: true, features: ALL_FEATURES })
     mockApi.listVaults.mockResolvedValue({
       vaults: [vault(), vault({ id: 'v2', name: 'Second vault' })],

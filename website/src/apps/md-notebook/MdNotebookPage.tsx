@@ -57,7 +57,7 @@ import {
 } from './constants'
 import { MDNB_CSS } from './styles'
 import { listViewLabel, paneViewLabel, sortLabel, syncedAgoLabel } from './labels'
-import { notesApi } from './api'
+import { ApiError, notesApi } from './api'
 import { InlineTitle } from './BlockEditor'
 import { Preview } from './Preview'
 import { ConnectVault } from './ConnectVault'
@@ -81,7 +81,8 @@ import {
   shiftListItem,
   targetsSameNote,
 } from './utils'
-import type { Backlink, EditRange, Note, NoteActions, SearchHit, Shortcut, Vault } from './types'
+import type { EmbedContext } from './utils'
+import type { AttachmentSettings, Backlink, EditRange, Note, NoteActions, SearchHit, Shortcut, Vault } from './types'
 
 /** Backend capabilities this UI bundle needs. */
 const REQUIRED_FEATURES = [
@@ -144,6 +145,15 @@ function useMeasuredBox(onMeasure: (el: HTMLElement) => void) {
 export default function MdNotebookPage() {
   const [vaults, setVaults] = useState<Vault[] | null>(null)
   const [notes, setNotes] = useState<Note[]>([])
+  // The active vault's attachment folder setting and its image files,
+  // vault-root-relative, for resolving an Obsidian `![[file]]` embed.
+  // Undefined until the backend has answered (or when it predates the
+  // endpoint), which the resolver reads as "no setting".
+  const [attachments, setAttachments] = useState<AttachmentSettings | undefined>(undefined)
+  // Sequence of attachment-setting requests. Two refreshes of the SAME vault
+  // can overlap (a save followed by a manual refresh, say); the vault guard
+  // below does not order those, so without this an older reply could land last.
+  const attachmentsSeq = useRef(0)
   const [activePath, setActivePath] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const [backlinks, setBacklinks] = useState<Backlink[]>([])
@@ -739,6 +749,31 @@ export default function MdNotebookPage() {
       if (vaultRef.current !== requested) return
       setError(e instanceof Error ? e.message : String(e))
     }
+    // The attachment setting rides along with the note listing rather than
+    // gating it: a backend older than this UI has no such route, and a
+    // setting that fails to read must not take the notes down with it. A
+    // failure clears the setting rather than keeping the last one: that one
+    // may belong to the vault the user just switched away from, and resolving
+    // this vault's embeds against it would look in another vault's folder.
+    // With no setting the embeds resolve against the note's folder and the
+    // vault root, which is right for every vault. Only the
+    // newest request may write: an older reply for the same vault is dropped.
+    // The one failure swallowed is the missing route on an older backend
+    // (`ApiError.staleBackend`): that is the case the ride-along exists for, the
+    // page has a banner for it, and a notice would fire on every such boot.
+    // Any other failure is a request that failed and shows through the page's
+    // `ErrorNotice`, like every other one here, with its agent hand-off.
+    const seq = ++attachmentsSeq.current
+    try {
+      const settings = await notesApi.listAttachments(requested)
+      if (vaultRef.current !== requested || seq !== attachmentsSeq.current) return
+      setAttachments(settings)
+    } catch (e) {
+      if (vaultRef.current !== requested || seq !== attachmentsSeq.current) return
+      setAttachments(undefined)
+      if (e instanceof ApiError && e.staleBackend) return
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }, [])
 
   const flushSave = useCallback(async () => {
@@ -893,6 +928,10 @@ export default function MdNotebookPage() {
     // are per-vault for the same reason: the trees are unrelated.
     setPinned(new Set(loadPref<string[]>(pinnedKey(activeVaultId), [])))
     setCollapsed(new Set(loadPref<string[]>(collapsedKey(activeVaultId), [])))
+    // The attachment setting is per-vault too. Cleared here, before this
+    // vault's arrives, so an embed rendered in the meantime resolves against
+    // the note's folder instead of the previous vault's attachment folder.
+    setAttachments(undefined)
     setRenamingPath(null)
     void loadNotes()
   }, [activeVaultId, loadNotes])
@@ -1637,6 +1676,15 @@ export default function MdNotebookPage() {
   // sources. Derived here rather than in `Preview` because the vault's local
   // path lives in this page's state, not in the note body.
   const noteDir = noteDirPath(activeVault, activePath)
+  // Same for an Obsidian embed, which additionally needs the vault root and
+  // the vault's attachment folder setting.
+  const embeds: EmbedContext | undefined = activeVault
+    ? {
+        vaultRoot: activeVault.localPath,
+        noteDir,
+        attachmentFolder: attachments?.attachmentFolderPath,
+      }
+    : undefined
   // `pending` means "differs from the last commit", which is only actionable when
   // there is a remote the note has not reached yet. On a local-only vault it has
   // no destination, clears itself on the next autosave, and reads as "not saved"
@@ -2520,6 +2568,7 @@ export default function MdNotebookPage() {
               <Preview
                 content={content}
                 noteDir={noteDir}
+                embeds={embeds}
                 onToggleCheckbox={toggleCheckbox}
                 editRange={editBlock}
                 onStartEdit={startBlockEdit}
