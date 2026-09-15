@@ -421,6 +421,30 @@ def governance_answer_generation() -> int:
     return governance_generation() + _profile_generation()
 
 
+def governance_ceiling_unchanged(observed: int | None) -> bool:
+    """Whether the governance token behind a permit is still the one that was read.
+
+    SYNCHRONOUS by design: it is the last confirmation before a send, so a coroutine
+    here would reopen the window it exists to close.
+
+    Compares a GENERATION TOKEN spanning ceiling and profile -- NOT the composite
+    answer, which would need ``vet_and_audit``: filesystem work on the event loop plus
+    a duplicate audit row per chunk. So a moved token means "the answer MAY have
+    changed", never "it did", and a caller mid-send must treat a move as a reason to
+    RE-ASK rather than to stop -- refusing truncates the message on an unrelated edit.
+
+    Both arms refuse: ``None`` means the sample never happened, and a raising re-read
+    cannot answer; neither is evidence the permit still holds.
+    """
+    if observed is None:
+        return False
+    try:
+        return governance_answer_generation() == observed
+    except Exception:
+        logger.warning("governance generation re-read failed", exc_info=True)
+        return False
+
+
 def _ceiling_token() -> Tuple[bool, int]:
     """The active ceiling's identity, as far as the profile store needs to know it.
 
