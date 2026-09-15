@@ -27,16 +27,119 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from kiro_crew import model_registry
 
 logger = logging.getLogger(__name__)
 
-# Concrete effort levels, ordered low→high.  ``""`` is NOT a level — it means
-# "no explicit override; use the provider/model default" and is handled by the
-# callers, not stored here.  ``xhigh`` sits between ``high`` and ``max`` and is
-# the recommended default for capable Opus models in both backends.
-EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+# Concrete effort levels, ordered low→high. GPT-5.6 additionally accepts
+# ``"none"`` (a real kiro-cli /effort value, distinct from the empty-string
+# sentinel below). ``""`` is NOT a level: it clears an override and delegates
+# to the provider/model default. Per-model filtering keeps ``none`` out of
+# Claude's picker. ``xhigh`` sits between ``high`` and ``max``.
+EFFORT_LEVELS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
+
+# The levels each kiro-cli model accepts, as probed over ACP ``/effort`` against
+# kiro-cli 2.21.4. Mirrors ``website/src/lib/effort.ts`` — the two
+# tables must agree so the slider offers exactly what the wire accepts.
+#
+#  - Opus 5 / 4.8 / 4.7, Sonnet 5, Fable 5 / 5.1: low, medium, high, xhigh, max
+#  - Sonnet 4.6: low, medium, high, max (no xhigh)
+#  - GPT-5.6 sol / terra / luna: none, low, medium, high, xhigh, max
+#  - Opus 4.5, Sonnet 4 / 4.5, Haiku, auto, deepseek, minimax, glm, qwen, nova:
+#    ``/effort`` is rejected outright
+#
+# Keyed on kiro-cli's own id spelling (``claude-sonnet-4.6``, ``gpt-5.6-sol``).
+# Provider-prefixed ids (``global.anthropic.claude-...[1m]``) belong to the
+# config-option harnesses, which negotiate levels at runtime, so they are
+# deliberately UNKNOWN here.
+_LEVELS_CLAUDE: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+_LEVELS_GPT: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
+_LEVELS_SONNET_46: tuple[str, ...] = ("low", "medium", "high", "max")
+_REJECTS_EFFORT: tuple[str, ...] = ()
+
+_KIRO_CLAUDE_ID = re.compile(r"^claude-(opus|sonnet|fable|haiku)-(\d+)(?:\.(\d+))?$")
+_KIRO_GPT_ID = re.compile(r"^gpt-\d")
+_KIRO_REJECTS_ID = re.compile(r"^(auto|deepseek|minimax|glm|qwen|nova)(?:$|[-.\d])")
+
+
+def effort_levels_for_model(model: str | None) -> tuple[str, ...] | None:
+    """The effort levels kiro-cli accepts for *model*, from the probed table.
+
+    Returns the accepted levels low→high, an EMPTY tuple for a model kiro-cli
+    is known to reject effort on, and ``None`` for an id the table does not
+    know (a provider-prefixed spelling or a family not yet probed) so the
+    caller falls back to its runtime answer.
+    """
+    if not model:
+        return None
+    m = model.lower()
+    if _KIRO_REJECTS_ID.match(m):
+        return _REJECTS_EFFORT
+    if _KIRO_GPT_ID.match(m):
+        return _LEVELS_GPT
+    matched = _KIRO_CLAUDE_ID.match(m)
+    if matched is None:
+        return None
+    family = matched.group(1)
+    major = int(matched.group(2))
+    minor = int(matched.group(3) or 0)
+    if family == "haiku":
+        return _REJECTS_EFFORT
+    if family == "fable":
+        return _LEVELS_CLAUDE
+    if family == "sonnet":
+        if major == 4 and minor == 6:
+            return _LEVELS_SONNET_46
+        if major == 4:
+            return _REJECTS_EFFORT  # Sonnet 4 and 4.5 reject effort
+        return _LEVELS_CLAUDE
+    if major == 4 and minor == 5:
+        return _REJECTS_EFFORT  # Opus 4.5 rejects effort
+    return _LEVELS_CLAUDE
+
+
+def nearest_supported_effort(requested: str, levels: tuple[str, ...]) -> str:
+    """The level a model will actually run at when asked for *requested*.
+
+    Same level when the model accepts it; otherwise the nearest LOWER level it
+    does accept (Sonnet 4.6 asked for ``xhigh`` runs ``high``), never a higher
+    one. Only when nothing lower exists (``none`` on a Claude model) does it
+    step up to the lowest accepted level. ``""`` (no request) stays ``""``.
+    Mirrors ``nearestSupportedEffort`` in ``website/src/lib/effort.ts``.
+    """
+    if not requested:
+        return ""
+    if requested in levels:
+        return requested
+    if requested not in EFFORT_LEVELS:
+        # A level this vocabulary cannot rank has no "nearest lower".
+        return ""
+    at = EFFORT_LEVELS.index(requested)
+    for candidate in reversed(EFFORT_LEVELS[:at]):
+        if candidate in levels:
+            return candidate
+    for candidate in EFFORT_LEVELS[at + 1 :]:
+        if candidate in levels:
+            return candidate
+    return ""
+
+
+def effort_for_model(model: str | None, level: str) -> str:
+    """*level* clamped to what kiro-cli's *model* accepts, per the probed table.
+
+    The stored intent (a slot override, a crew pin, the Settings default) is a
+    level NAME shared across models; this is the value to put on the wire for
+    the model in front of it. Unchanged when the table does not know the model
+    (the runtime answer then decides) or when *level* is the empty sentinel.
+    """
+    if not level:
+        return level
+    levels = effort_levels_for_model(model)
+    if not levels:
+        return level
+    return nearest_supported_effort(level, levels)
 
 # Accepted by the API/persistence layer: the concrete levels plus the empty
 # sentinel for "provider default".  Single source for ``_REASONING_EFFORT_VALUES``.
@@ -83,6 +186,12 @@ def model_supports_effort(model: str | None) -> bool:
     # a kiro Haiku agent can never wrongly report effort-capable.
     if "haiku" in m:
         return False
+    # The probed table answers first for kiro-cli spellings: the versions kiro
+    # rejects (Sonnet 4 / 4.5, Opus 4.5) must not be reported capable by the
+    # family heuristic below, or the dashboard offers a level the wire refuses.
+    known = effort_levels_for_model(model)
+    if known is not None:
+        return bool(known)
     try:
         declared = model_registry.supports_effort(model)
         if declared is not None:

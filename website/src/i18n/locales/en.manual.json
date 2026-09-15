@@ -1733,7 +1733,13 @@
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",
       "closing_terminal": "Closing terminal…",
       "maximum_terminals": "Maximum {{n}} terminals",
-      "terminal": "Terminal"
+      "terminal": "Terminal",
+      "history_cleanup_failed": "Chat “{{session}}” was deleted, but terminal cleanup failed. Retry to remove its terminals.",
+      "history_delete_failed": "Could not delete chat “{{session}}”. Its terminals were kept.",
+      "terminal_revive_check_failed": "Could not check whether chat “{{session}}” still exists. Its terminals stay hidden until the check succeeds.",
+      "history_deletion_unconfirmed": "Chat deletion for “{{session}}” is unconfirmed in this window. You can close its terminals separately.",
+      "close_terminals": "Close terminals",
+      "terminal_cleanup_failed": "Terminal cleanup for “{{session}}” failed. Retry to close its terminals."
     },
     "chatInput": {
       "send_a_message_or_tap_the_mic_for_voice": "Send a message, or tap the mic for voice",
@@ -2837,9 +2843,9 @@
       "comment_unread_other": "{{count}} comments · unread"
     },
     "reasoningEffortDropdown": {
-      "configured_default_marker": "Configured default",
-      "default_with_level": "Default · {{level}}",
-      "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Turning off the per-session override falls back to the default in Settings → Chat, or to the model's own choice when no default is set (Fable/Opus/Sonnet only)."
+      "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Picking a level here fixes it for this session. Only the levels the selected model accepts are offered.",
+      "model_default": "Model decides",
+      "effort_clamped": "{{model}} does not support {{requested}}; switched to {{effective}}."
     },
     "readingWidthToggle": {
       "label_full": "F",
@@ -4808,6 +4814,8 @@
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Ceiling on the auto-sized concurrent subagent count (only applies when Max Concurrent Subagents = 0). The host memory/CPU formula never exceeds this. Range 1–64. Default: 16.",
         "controls_how_many_subagents_can_run_concurrently": "Controls how many subagents can run concurrently and how many tool calls each subagent is allowed. Changes take effect on the next subagent spawn.",
         "default_agent": "default agent",
+        "disabled": "Disabled",
+        "enabled": "Enabled",
         "maximum_subagents_running_at_once": "Maximum subagents running at once. 0 = auto-size from host memory/CPU (capped at {{cap}}). Default: 3.",
         "named_agent_definitions": "Named agent definitions that bind a {{label}}, workspace, and memory store together. Edit config.json to add or modify agents.",
         "named_memory_stores_with_optional_per_store_embe": "Named memory stores with optional per-store embedding overrides. Unset fields inherit from the top-level memory section.",
@@ -4818,7 +4826,8 @@
         "max_age_for_pooled_processes_0_disables_expiry": "Max age for pooled processes. 0 disables expiry.",
         "number_of_pre_spawned_processes_0_disables": "Number of pre-spawned processes. 0 disables.",
         "agent_for_pool_processes_empty_uses_default_agent": "Agent for pool processes. Empty uses default agent.",
-        "warm_pool_description": "Pre-spawn ACP CLI processes for instant session start."
+        "warm_pool_description": "Pre-spawn ACP CLI processes for instant session start.",
+        "enable_conductor_skill_for_multi_agent_orchestration": "Enable conductor skill for multi-agent orchestration."
       },
       "mcpTab": {
         "applied_change_one": "Applied {{count}} change",
@@ -6576,7 +6585,8 @@
       "low": "Low",
       "max": "Max",
       "medium": "Medium",
-      "xhigh": "Extra High"
+      "xhigh": "Extra High",
+      "none": "Off"
     },
     "sttProviders": {
       "downloading_decoder": "Downloading the audio decoder: {{pct}} ({{done}} of {{total}})",

@@ -196,14 +196,14 @@ describe('ModelDropdownList — pending roster renders loading, not "No matches"
     // Filtering an already-populated roster must not flip to the loading row.
     render(
       <ModelDropdownList
-        models={[{ name: 'auto' }]}
+        models={[{ name: 'Auto' }]}
         activeModel="auto"
         onSelect={() => {}}
         loading
       />,
     )
     expect(document.querySelector('[aria-busy="true"]')).toBeNull()
-    expect(screen.getByText('auto')).not.toBeNull()
+    expect(screen.getByText('Auto')).not.toBeNull()
   })
 
   it('a failed empty list renders neither the loading row nor "No matches"', () => {
@@ -219,13 +219,13 @@ describe('ModelDropdownList — pending roster renders loading, not "No matches"
     // A stale-but-present roster stays usable while the refresh read errors.
     render(
       <ModelDropdownList
-        models={[{ name: 'auto' }]}
+        models={[{ name: 'Auto' }]}
         activeModel="auto"
         onSelect={() => {}}
         failed
       />,
     )
-    expect(screen.getByText('auto')).not.toBeNull()
+    expect(screen.getByText('Auto')).not.toBeNull()
     expect(screen.queryByText('No matches')).toBeNull()
   })
 })

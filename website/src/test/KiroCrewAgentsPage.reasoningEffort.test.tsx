@@ -353,7 +353,7 @@ describe('crew editor — reasoning effort pin', () => {
     ).toBeInTheDocument()
 
     const modelPane = selectScope(sheet, 'Edit default model')
-    fireEvent.click(modelPane.getByRole('option', { name: 'claude-haiku-4.5' }))
+    fireEvent.click(modelPane.getByRole('option', { name: 'Claude Haiku 4.5' }))
 
     await waitFor(() =>
       expect(

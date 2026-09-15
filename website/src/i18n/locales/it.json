@@ -7081,7 +7081,6 @@
       "close": "Chiudi"
     },
     "modelDropdownList": {
-      "auto_default": "Predefinito",
       "credit_multiplier": "{{value}} il costo in crediti di Auto",
       "credit_multiplier_baseline": "{{value}}, il costo in crediti di riferimento",
       "loading_models": "Caricamento dei modelli…",
@@ -7409,15 +7408,13 @@
       "title_md": "Larghezza media"
     },
     "reasoningEffortDropdown": {
-      "default_with_level": "Predefinito · {{level}}",
-      "effort": "Impegno",
-      "effort_help": "Il livello di ragionamento determina quanto tempo il modello riflette prima di rispondere. Un valore più alto significa più tempo per ragionare sui problemi difficili (risposte più lente ma migliori); uno più basso è più veloce. Se disattivi la sostituzione per sessione, si torna al valore predefinito in Impostazioni → Chat, oppure alla scelta del modello stesso quando non è impostato alcun valore predefinito (solo Fable/Opus/Sonnet).",
+      "effort": "Intensità di ragionamento",
+      "effort_help": "Lo sforzo di ragionamento stabilisce quanto il modello riflette prima di rispondere. Più alto significa più tempo per i problemi difficili (più lento, risposte migliori); più basso è più veloce. Un livello scelto qui resta fissato per questa sessione. Vengono offerti solo i livelli accettati dal modello selezionato.",
       "faster": "Più veloce",
-      "configured_default_marker": "Predefinito configurato",
       "reasoning_effort": "Livello di ragionamento",
       "smarter": "Più intelligente",
-      "use_configured_default": "Usa il valore predefinito configurato",
-      "use_model_default": "Usa il valore predefinito del modello"
+      "model_default": "Decide il modello",
+      "effort_clamped": "{{model}} non supporta «{{requested}}»; passato a «{{effective}}»."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Aggiungi un registry dell'organizzazione per scoprire app specifiche del team",
@@ -8763,7 +8760,8 @@
       "low": "Basso",
       "max": "Massimo",
       "medium": "Medio",
-      "xhigh": "Molto alto"
+      "xhigh": "Molto alto",
+      "none": "Disattivato"
     },
     "sttProviders": {
       "downloading_decoder": "Download del decodificatore audio: {{pct}} ({{done}} di {{total}})",

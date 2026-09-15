@@ -64,21 +64,24 @@ describe('AcpAdapter.resolveModel — delegates to the backend resolver', () => 
   })
 })
 
-describe('AcpAdapter.resolveDefaultEffort', () => {
+describe('AcpAdapter.resolveDefaultEffort — delegates to the backend resolver', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('returns the configured default effort', async () => {
-    kirocrewConfig.mockResolvedValue({ agent: { reasoning_effort: 'high' } })
-    expect(await new AcpAdapter().resolveDefaultEffort()).toBe('high')
+  it('returns the effort the backend resolved for the crew (pin → role → global)', async () => {
+    agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5', reasoning_effort: 'high' })
+    expect(await new AcpAdapter().resolveDefaultEffort('oncall')).toBe('high')
+    expect(agentResolvedModel).toHaveBeenCalledWith('oncall')
+    // The global config tier is NOT read here: that skipped the crew and role tiers.
+    expect(kirocrewConfig).not.toHaveBeenCalled()
   })
 
-  it('returns "" when unset, so callers keep the model-default semantics', async () => {
-    kirocrewConfig.mockResolvedValue({ agent: {} })
-    expect(await new AcpAdapter().resolveDefaultEffort()).toBe('')
+  it('returns "" when no tier pins one, so callers keep the model-decides semantics', async () => {
+    agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
+    expect(await new AcpAdapter().resolveDefaultEffort('oncall')).toBe('')
   })
 
-  it('returns "" on a failed config read rather than throwing', async () => {
-    kirocrewConfig.mockRejectedValue(new Error('boom'))
-    expect(await new AcpAdapter().resolveDefaultEffort()).toBe('')
+  it('returns "" on a failed resolve rather than throwing', async () => {
+    agentResolvedModel.mockRejectedValue(new Error('boom'))
+    expect(await new AcpAdapter().resolveDefaultEffort('oncall')).toBe('')
   })
 })

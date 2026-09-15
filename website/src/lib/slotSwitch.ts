@@ -104,6 +104,10 @@ interface Entry {
    *  the backend applied it, but a newer request may still supersede it.
    *  Stored opaquely — the SlotSwitchValueMap pins what it really is. */
   heldSuccess: { seq: number; value: unknown } | null
+  /** Store value before the oldest unsettled optimistic pick. If every queued
+   * pick fails, this is the known server value to restore. */
+  optimisticBaseline: unknown | null
+  hasOptimisticBaseline: boolean
 }
 
 const entries = new Map<string, Entry>()
@@ -127,11 +131,27 @@ export function stageSlotSwitchTarget(field: SlotSwitchField, slot: string, targ
 }
 
 /** Register a new in-flight switch and return its ticket for the settle calls. */
-function beginSlotSwitch(field: SlotSwitchField, slot: string, target: string): number {
+function beginSlotSwitch(
+  field: SlotSwitchField, slot: string, target: string, optimisticBaseline?: unknown,
+): number {
   const key = keyOf(field, slot)
   staged.delete(key)
-  const entry = entries.get(key)
-    ?? { seq: 0, pending: '', newestOutcome: 'inflight' as const, bestWrittenSeq: 0, heldSuccess: null }
+  const existing = entries.get(key)
+  const entry: Entry = existing
+    ?? {
+      seq: 0, pending: '', newestOutcome: 'success', bestWrittenSeq: 0,
+      heldSuccess: null, optimisticBaseline: null, hasOptimisticBaseline: false,
+    }
+  // Record the baseline only when nothing for this slot+field is unsettled: the
+  // caller of a LATER pick in a burst reads the store, which already shows the
+  // earlier optimistic value, so its "baseline" is not a server value. Keeping
+  // the first one is what lets an all-failure burst roll back to what the
+  // backend is really running. A fresh entry has nothing in flight by definition.
+  const settled = existing === undefined || existing.newestOutcome !== 'inflight'
+  if (settled && optimisticBaseline !== undefined) {
+    entry.optimisticBaseline = optimisticBaseline
+    entry.hasOptimisticBaseline = true
+  }
   entry.seq += 1
   entry.pending = target
   entry.newestOutcome = 'inflight'
@@ -173,6 +193,8 @@ function settleSlotSwitchSuccess(
     entry.newestOutcome = 'success'
     entry.bestWrittenSeq = seq
     entry.heldSuccess = null
+    entry.optimisticBaseline = null
+    entry.hasOptimisticBaseline = false
     return true
   }
   if (entry.newestOutcome === 'inflight') {
@@ -214,7 +236,17 @@ function settleSlotSwitchFailure(
   entry.heldSuccess = null
   if (held && held.seq > entry.bestWrittenSeq) {
     entry.bestWrittenSeq = held.seq
+    entry.optimisticBaseline = null
+    entry.hasOptimisticBaseline = false
     return { value: held.value }
+  }
+  // No queued request succeeded. Restore the actual server value from before
+  // this optimistic burst, if the caller supplied one.
+  if (entry.hasOptimisticBaseline) {
+    const baseline = entry.optimisticBaseline
+    entry.optimisticBaseline = null
+    entry.hasOptimisticBaseline = false
+    return { value: baseline }
   }
   return null
 }
@@ -281,14 +313,24 @@ const CONFIRM_TIMEOUT = Symbol('slot-switch-confirm-timeout')
  *  the caller were still waiting — a late success is written when it is what
  *  the backend was left running.
  */
+export interface SlotSwitchOptimistic<F extends SlotSwitchField> {
+  /** Value to render immediately, before the serialized request confirms. */
+  value: SlotSwitchValueMap[F]
+  /** Last server-known value before this burst began. Used only if every
+   * optimistic request in the burst fails. */
+  baseline: SlotSwitchValueMap[F]
+}
+
 export async function performSlotSwitch<F extends SlotSwitchField>(
   field: F,
   slot: string,
   target: string,
   request: () => Promise<SlotSwitchValueMap[F]>,
   write: (value: SlotSwitchValueMap[F]) => void,
+  optimistic?: SlotSwitchOptimistic<F>,
 ): Promise<void> {
-  const seq = beginSlotSwitch(field, slot, target)
+  const seq = beginSlotSwitch(field, slot, target, optimistic?.baseline)
+  if (optimistic) write(optimistic.value)
   // The wire outcome ALWAYS adjudicates, whether or not the caller is still
   // waiting when it lands — this is the only path that touches the settles,
   // so a caller released by the timeout cannot race a second settle in.

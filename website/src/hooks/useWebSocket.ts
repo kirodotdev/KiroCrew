@@ -101,6 +101,10 @@ function invalidateRefreshQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['default-agent'] })
   qc.invalidateQueries({ queryKey: ['workspaces'] })
   qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  // Derived from the config by the backend resolver (crew pin → role → global),
+  // so they go stale with it.
+  qc.invalidateQueries({ queryKey: ['resolved-model'] })
+  qc.invalidateQueries({ queryKey: ['default-effort'] })
 }
 
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */

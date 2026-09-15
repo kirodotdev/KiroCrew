@@ -39,6 +39,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 import { errMessage } from '../utils/thunkError'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
+import { modelDisplayName } from '../lib/modelDisplayName'
 import { templateSourceBadge, type TemplateProvenance } from '../lib/templateSource'
 
 import { i18nT } from '../i18n/t'
@@ -487,7 +488,7 @@ export function ModelField({ options, value, onChange }: {
         // promises task-based routing, whereas here it means "pin nothing,
         // inherit the next tier" — which can resolve to a concrete model. Label
         // it as the card does so the round trip stays honest.
-        optionLabels={withCurrent(options, value).map(m => (m === INHERIT_MODEL ? i18nT('pages.kiroCrewAgentsPage.inherited') : m))}
+        optionLabels={withCurrent(options, value).map(m => (m === INHERIT_MODEL ? i18nT('pages.kiroCrewAgentsPage.inherited') : modelDisplayName(m)))}
         value={value}
         onChange={onChange}
         aria-label={i18nT('pages.kiroCrewAgentsPage.edit_model')}
@@ -1245,7 +1246,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   })
   const updateMut = useMutation({
     mutationFn: ({ name, data }: { name: string; data: AgentUpdatePayload; epoch: number }) => api.updateKirocrewAgent(name, data),
-    onSuccess: (r: AgentMutationResult, vars) => { settleFor(vars.epoch, r.error); refetchAgents() },
+    onSuccess: (r: AgentMutationResult, vars) => {
+      settleFor(vars.epoch, r.error)
+      refetchAgents()
+      // A crew's model or effort pin feeds the composer's inherited-default
+      // queries (ChatPage); retire them so an open session's picker follows.
+      void queryClient.invalidateQueries({ queryKey: ['resolved-model'] })
+      void queryClient.invalidateQueries({ queryKey: ['default-effort'] })
+    },
     onError: (e: Error, vars) => settleFor(vars.epoch, e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent')),
   })
   const provisionMut = useMutation({

@@ -208,13 +208,15 @@ class TestClearEffort:
     async def test_kiro_pushes_the_workspace_default_live(self, monkeypatch) -> None:
         provider = _provider()
         provider._client._model = "some-model"
-        provider._client.send_command = AsyncMock()
+        provider._client.command_result = AsyncMock(return_value={"success": True})
         monkeypatch.setattr(acp_mod, "model_supports_effort", lambda _m: True)
         monkeypatch.setattr(provider, "_resolve_effort", lambda: "high")
         monkeypatch.setattr(provider, "_apply_effort_overlay", lambda: None)
 
         assert await provider.clear_effort() is True
-        provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "high"})
+        provider._client.command_result.assert_awaited_once_with(
+            "/effort", args={"level": "high"}
+        )
 
     @pytest.mark.asyncio
     async def test_claude_cannot_clear_live_and_asks_for_a_reset(self, monkeypatch) -> None:

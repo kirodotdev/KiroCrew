@@ -206,6 +206,79 @@ describe('performSlotSwitch (#4523)', () => {
   })
 })
 
+/** Optimistic picks: the store shows the pick at once and the wire confirms it
+ *  later. Every adjudication rule above still holds; what the option adds is a
+ *  BASELINE — the last server-confirmed value — so a burst in which nothing
+ *  landed can put the store back to what the backend is actually running. */
+describe('performSlotSwitch — optimistic writes', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('writes the pick before the request settles, then the stored value on success', async () => {
+    const writes: string[] = []
+    let release: (v: string) => void = () => {}
+    const p = performSlotSwitch('model', 'slot-opt-ok', 'model-a',
+      () => new Promise<string>(res => { release = res }), (v) => writes.push(v),
+      { value: 'model-a', baseline: 'model-0' })
+    expect(writes).toEqual(['model-a'])
+    await new Promise(res => setTimeout(res, 0))
+    release('model-a-stored')
+    await p
+    expect(writes).toEqual(['model-a', 'model-a-stored'])
+  })
+
+  it('a failed pick rolls the store back to the baseline', async () => {
+    const writes: string[] = []
+    await expect(performSlotSwitch('model', 'slot-opt-fail', 'model-a',
+      () => Promise.reject(new Error('boom')), (v) => writes.push(v),
+      { value: 'model-a', baseline: 'model-0' })).rejects.toThrow('boom')
+    expect(writes).toEqual(['model-a', 'model-0'])
+  })
+
+  it('a burst that fails entirely rolls back to the FIRST baseline, not a later optimistic value', async () => {
+    // The second pick's caller reads the store, which already shows the first
+    // optimistic pick — so its "baseline" is not a server value. The registry
+    // keeps the baseline from before the burst and restores that.
+    const writes: string[] = []
+    let rejectFirst: (e: Error) => void = () => {}
+    const first = performSlotSwitch('model', 'slot-opt-burst', 'model-a',
+      () => new Promise<string>((_res, rej) => { rejectFirst = rej }), (v) => writes.push(v),
+      { value: 'model-a', baseline: 'model-0' })
+    const second = performSlotSwitch('model', 'slot-opt-burst', 'model-b',
+      () => Promise.reject(new Error('boom-b')), (v) => writes.push(v),
+      { value: 'model-b', baseline: 'model-a' })
+    expect(writes).toEqual(['model-a', 'model-b'])
+    await new Promise(res => setTimeout(res, 0))
+    rejectFirst(new Error('boom-a'))
+    await expect(first).rejects.toThrow('boom-a')
+    await expect(second).rejects.toThrow('boom-b')
+    expect(writes[writes.length - 1]).toBe('model-0')
+  })
+
+  it('newest failure adopts an older pick that landed, not the baseline', async () => {
+    const writes: string[] = []
+    const first = performSlotSwitch('model', 'slot-opt-adopt', 'model-a',
+      async () => 'model-a', (v) => writes.push(v),
+      { value: 'model-a', baseline: 'model-0' })
+    const second = performSlotSwitch('model', 'slot-opt-adopt', 'model-b',
+      () => Promise.reject(new Error('boom')), (v) => writes.push(v),
+      { value: 'model-b', baseline: 'model-a' })
+    await first
+    await expect(second).rejects.toThrow('boom')
+    // The backend is on model-a (the older success): that is what the store ends on.
+    expect(writes[writes.length - 1]).toBe('model-a')
+  })
+
+  it('the baseline is cleared once a pick confirms, so a later lone failure has nothing stale to restore', async () => {
+    const writes: string[] = []
+    await performSlotSwitch('model', 'slot-opt-clear', 'model-a',
+      async () => 'model-a', (v) => writes.push(v), { value: 'model-a', baseline: 'model-0' })
+    // A non-optimistic call afterwards: no baseline, so the failure writes nothing.
+    await expect(performSlotSwitch('model', 'slot-opt-clear', 'model-b',
+      () => Promise.reject(new Error('boom')), (v) => writes.push(v))).rejects.toThrow('boom')
+    expect(writes).toEqual(['model-a', 'model-a'])
+  })
+})
+
 /** The agent/effort siblings (#5120) grow the field union: `agent` carries an
  *  OBJECT value (the response names agent + workspace, and the pair must ride
  *  one adjudication — recovering an older agent with a fresher workspace

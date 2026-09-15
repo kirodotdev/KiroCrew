@@ -7081,7 +7081,6 @@
       "close": "Fechar"
     },
     "modelDropdownList": {
-      "auto_default": "Padrão",
       "credit_multiplier": "{{value}} o custo em créditos do Auto",
       "credit_multiplier_baseline": "{{value}}, o custo em créditos de referência",
       "loading_models": "Carregando modelos…",
@@ -7409,15 +7408,13 @@
       "title_md": "Largura média"
     },
     "reasoningEffortDropdown": {
-      "default_with_level": "Padrão · {{level}}",
-      "effort": "Esforço",
-      "effort_help": "O esforço de raciocínio define por quanto tempo o modelo pensa antes de responder. Valores maiores significam mais tempo raciocinando sobre problemas difíceis (mais lento, respostas melhores); valores menores são mais rápidos. Ao desativar a substituição por sessão, o esforço volta ao padrão definido em Configurações → Chat, ou à escolha do próprio modelo quando nenhum padrão está definido (apenas Fable/Opus/Sonnet).",
+      "effort": "Intensidade de raciocínio",
+      "effort_help": "O esforço de raciocínio define quanto tempo o modelo pensa antes de responder. Mais alto significa mais tempo em problemas difíceis (mais lento, respostas melhores); mais baixo é mais rápido. Um nível escolhido aqui fica fixo para esta sessão. Só são oferecidos os níveis que o modelo selecionado aceita.",
       "faster": "Mais rápido",
-      "configured_default_marker": "Padrão configurado",
       "reasoning_effort": "Esforço de raciocínio",
       "smarter": "Mais inteligente",
-      "use_configured_default": "Usar o padrão configurado",
-      "use_model_default": "Usar o padrão do modelo"
+      "model_default": "O modelo decide",
+      "effort_clamped": "{{model}} não suporta “{{requested}}”; mudou para “{{effective}}”."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Adicione um registro da organização para descobrir apps específicos da equipe",
@@ -8763,7 +8760,8 @@
       "low": "Baixo",
       "max": "Máximo",
       "medium": "Médio",
-      "xhigh": "Muito alto"
+      "xhigh": "Muito alto",
+      "none": "Desativado"
     },
     "sttProviders": {
       "downloading_decoder": "Baixando o decodificador de áudio: {{pct}} ({{done}} de {{total}})",

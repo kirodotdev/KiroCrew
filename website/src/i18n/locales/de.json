@@ -6978,7 +6978,6 @@
       "close": "Schließen"
     },
     "modelDropdownList": {
-      "auto_default": "Standard",
       "credit_multiplier": "{{value}} der Credit-Kosten von Auto",
       "credit_multiplier_baseline": "{{value}}, die Basis-Credit-Kosten",
       "loading_models": "Modelle werden geladen…",
@@ -7298,15 +7297,13 @@
       "title_md": "Mittlere Breite"
     },
     "reasoningEffortDropdown": {
-      "default_with_level": "Standard · {{level}}",
-      "effort": "Aufwand",
-      "effort_help": "Der Denkaufwand legt fest, wie lange das Modell vor der Antwort nachdenkt. Höher bedeutet mehr Zeit zum Durchdenken schwieriger Probleme (langsamer, bessere Antworten); niedriger ist schneller. Wird die Übersteuerung pro Sitzung deaktiviert, fällt der Denkaufwand auf den Standard unter Einstellungen → Chat zurück oder, wenn kein Standard gesetzt ist, auf die Wahl des Modells selbst (nur Fable/Opus/Sonnet).",
+      "effort": "Denkintensität",
+      "effort_help": "Die Denkintensität legt fest, wie lange das Modell vor der Antwort nachdenkt. Höher bedeutet mehr Zeit für schwierige Probleme (langsamer, bessere Antworten); niedriger ist schneller. Eine hier gewählte Stufe gilt fest für diese Sitzung. Es werden nur die Stufen angeboten, die das gewählte Modell akzeptiert.",
       "faster": "Schneller",
-      "configured_default_marker": "Konfigurierter Standard",
       "reasoning_effort": "Denkaufwand",
       "smarter": "Intelligenter",
-      "use_configured_default": "Konfigurierten Standard verwenden",
-      "use_model_default": "Modellstandard verwenden"
+      "model_default": "Modell entscheidet",
+      "effort_clamped": "{{model}} unterstützt „{{requested}}“ nicht; auf „{{effective}}“ umgestellt."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Fügen Sie eine Organisations-Registry hinzu, um teamspezifische Apps zu entdecken",
@@ -8647,7 +8644,8 @@
       "low": "Niedrig",
       "max": "Maximal",
       "medium": "Mittel",
-      "xhigh": "Sehr hoch"
+      "xhigh": "Sehr hoch",
+      "none": "Aus"
     },
     "sttProviders": {
       "downloading_decoder": "Audio-Decoder wird heruntergeladen: {{pct}} ({{done}} von {{total}})",

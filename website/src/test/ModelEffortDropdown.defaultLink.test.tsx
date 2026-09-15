@@ -102,7 +102,7 @@ describe('ModelEffortDropdown — visible models shortcut', () => {
 
   it('is optional and opens management from between the list and effort controls', () => {
     const onManageModels = vi.fn()
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort onManageModels={onManageModels} />)
+    wrap(<ModelEffortDropdown {...baseProps} hasEffort defaultEffort="high" onManageModels={onManageModels} />)
     const button = screen.getByRole('button', { name: 'Manage visible models' })
     expect(screen.getByRole('listbox').compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(button.compareDocumentPosition(screen.getByRole('slider')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -122,6 +122,7 @@ describe('ModelEffortDropdown — visible models shortcut', () => {
       <ModelEffortDropdown
         {...baseProps}
         hasEffort
+        defaultEffort="high"
         onManageModels={vi.fn()}
         onListKeyDown={onListKeyDown}
       />,
@@ -165,7 +166,7 @@ describe('ModelEffortDropdown — global fallback link', () => {
 
   it('coexists with the reasoning-effort footer', () => {
     wrap(<ModelEffortDropdown {...baseProps} hasEffort onSetDefault={vi.fn()} />)
-    expect(screen.getByText('Effort')).toBeInTheDocument()
+    expect(screen.getByText('Thinking effort')).toBeInTheDocument()
     expect(screen.getByText(/Global default for new sessions/)).toBeInTheDocument()
   })
 })
@@ -222,9 +223,16 @@ describe('ModelEffortDropdown — per-agent default row', () => {
         onSetDefault={vi.fn()}
       />
     )
-    expect(screen.getByText('Effort')).toBeInTheDocument()
+    expect(screen.getByText('Thinking effort')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Set as default model for oncall' })).toBeInTheDocument()
     expect(screen.getByText(/Global default for new sessions/)).toBeInTheDocument()
+  })
+})
+
+describe('ModelEffortDropdown — shadcn popover shell', () => {
+  it('renders inside the Radix popper layer', () => {
+    wrap(<ModelEffortDropdown {...baseProps} />)
+    expect(screen.getByRole('dialog').closest('[data-radix-popper-content-wrapper]')).not.toBeNull()
   })
 })
 
@@ -251,9 +259,9 @@ describe('ModelEffortDropdown — inline effort', () => {
     }
   })
 
-  it('shows the configured default when the slot carries no override', () => {
+  it('shows the effective configured level when the slot carries no override', () => {
     wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="" defaultEffort="high" />)
-    expect(screen.getByText('Default · High')).toBeInTheDocument()
+    expect(screen.getByText('High')).toBeInTheDocument()
   })
 
   it('shows the per-slot override when one is set', () => {
@@ -261,9 +269,38 @@ describe('ModelEffortDropdown — inline effort', () => {
     expect(screen.getByText('Low')).toBeInTheDocument()
   })
 
-  it('falls back to "Default" when neither is set', () => {
+  it('shows the axis directly with no marker when the chain ends at the model default', () => {
     wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="" defaultEffort="" />)
-    expect(screen.getAllByText('Default').length).toBeGreaterThan(0)
+    expect(screen.getByText('Model decides')).toBeInTheDocument()
+    expect(screen.getByRole('slider', { name: 'Reasoning effort' })).toHaveAttribute('aria-valuetext', 'Model decides')
+    expect(screen.queryByRole('img', { name: 'Default' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Customize' })).toBeNull()
+  })
+
+  it('shows the inherited level as the level in force, with no marker and no reset', () => {
+    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="" defaultEffort="high" effortModel="claude-opus-4.8" />)
+    expect(screen.queryByRole('img', { name: 'Default' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /default/i })).toBeNull()
+    expect(screen.getByRole('slider', { name: 'Reasoning effort' })).toHaveAttribute('aria-valuenow', '2')
+    expect(screen.getByText('High')).toBeInTheDocument()
+  })
+
+  it('offers only the levels the shown model accepts and clamps the default to them', () => {
+    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="" defaultEffort="xhigh" effortModel="claude-sonnet-4.6" />)
+    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+    // low, medium, high, max — no xhigh notch on Sonnet 4.6
+    expect(slider).toHaveAttribute('aria-valuemax', '3')
+    // An xhigh pin runs at high on this model: the thumb sits at high.
+    // The substitution is announced as a toast in ChatPage, not inline here.
+    expect(slider).toHaveAttribute('aria-valuenow', '2')
+    expect(screen.getByText('High')).toBeInTheDocument()
+  })
+
+  it('includes the GPT-only "none" notch for a GPT model', () => {
+    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="none" defaultEffort="high" effortModel="gpt-5.6-sol" />)
+    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+    expect(slider).toHaveAttribute('aria-valuemax', '5')
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
   })
 
   it('stays on one page with no drill-in chevron or back row and keeps model search', () => {
@@ -282,7 +319,7 @@ describe('ModelEffortDropdown — inline effort', () => {
 
   it('tabs from the filter into the inline slider without closing the picker', async () => {
     const onListKeyDown = vi.fn()
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort onListKeyDown={onListKeyDown} />)
+    wrap(<ModelEffortDropdown {...baseProps} hasEffort defaultEffort="high" onListKeyDown={onListKeyDown} />)
     const user = userEvent.setup()
     const input = screen.getByPlaceholderText('Type to filter…')
     input.focus()
@@ -293,7 +330,7 @@ describe('ModelEffortDropdown — inline effort', () => {
 
   it('moves ArrowDown from the last model into the inline slider', () => {
     const onListKeyDown = vi.fn()
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort onListKeyDown={onListKeyDown} />)
+    wrap(<ModelEffortDropdown {...baseProps} hasEffort defaultEffort="high" onListKeyDown={onListKeyDown} />)
     const options = screen.getAllByRole('option')
     const last = options[options.length - 1]
     last.focus()
@@ -332,14 +369,21 @@ describe('pin row monospaces only its two identifiers', () => {
     return screen.getByRole('button', { name: /default model for/i })
   }
 
-  it('puts the model id and the agent name in mono, and nothing else', () => {
+  it('names the model by its display name and monospaces only the agent', () => {
     const row = pinRow()
     const mono = Array.from(row.querySelectorAll('.font-mono')).map(e => e.textContent)
-    expect(mono).toEqual(['claude-opus-5', 'oncall'])
+    expect(mono).toEqual(['oncall'])
     // The sentence around them must NOT be mono, or the whole row would ignore
     // the Font Family setting again.
     expect(row.querySelector('span')?.className).not.toContain('font-mono')
-    expect(row.textContent).toBe('Set claude-opus-5 as default model for oncall')
+    expect(row.textContent).toBe('Set Claude Opus 5 as default model for oncall')
+    // The persisted id is still reachable from the row.
+    expect(row.querySelector('[title="claude-opus-5"]')).not.toBeNull()
+  })
+
+  it('falls back to the mono id for a model without a display name', () => {
+    const row = pinRow({ pinModelName: 'mystery-9' })
+    expect(Array.from(row.querySelectorAll('.font-mono')).map(e => e.textContent)).toEqual(['mystery-9', 'oncall'])
   })
 
   it('monospaces the agent name in the already-pinned state too', () => {
@@ -347,14 +391,15 @@ describe('pin row monospaces only its two identifiers', () => {
     expect(Array.from(row.querySelectorAll('.font-mono')).map(e => e.textContent)).toEqual(['oncall'])
   })
 
-  it('monospaces the model id in the unavailable state too', () => {
+  it('uses the display name in the unavailable state too', () => {
     // Same value reaches this branch, so styling only the other two states would
-    // leave one row rendering a bare id in prose type.
+    // leave one row rendering a bare id.
     const row = wrap(<ModelEffortDropdown
       {...baseProps} agentName="oncall" pinModelName="claude-opus-5"
       onPinToAgent={vi.fn()} pinModelUnavailable
-    />) && screen.getByRole('button', { name: /claude-opus-5/ })
-    expect(Array.from(row.querySelectorAll('.font-mono')).map(e => e.textContent)).toEqual(['claude-opus-5'])
+    />) && screen.getByRole('button', { name: /Claude Opus 5/ })
+    expect(Array.from(row.querySelectorAll('.font-mono')).map(e => e.textContent)).toEqual([])
+    expect(row.querySelector('[title="claude-opus-5"]')).not.toBeNull()
   })
 
   it('wraps instead of truncating so a long locale keeps the agent name', () => {

@@ -16,6 +16,7 @@ from kiro_crew.acp.client import (
     AcpAuthRequired,
     AcpClient,
     AcpError,
+    AcpTimeoutError,
     _is_config_value_rejection,
     advertised_model_ids,
     model_is_unusable,
@@ -60,6 +61,7 @@ from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.effort import (
     EFFORT_LEVELS,
+    effort_for_model,
     effort_settings_key,
     model_supports_effort,
     resolve_effort_for_model,
@@ -1265,12 +1267,53 @@ class AcpProvider(LLMProvider):
         specific than a per-model default -- and not an aliasing gap to close.
         ``change_effort`` writes the override under the same recorded spelling
         this reads, so the override path matches by construction.
+
+        On the kiro family the answer is CLAMPED to what the model in front of
+        it accepts (:func:`effort_for_model`): the stored intent is a level name
+        shared across models, so a crew pinned to ``xhigh`` resolves to ``high``
+        on Sonnet 4.6 rather than writing an overlay kiro rejects at spawn. The
+        config-option harnesses negotiate the level at runtime
+        (``_set_effort_config_option``) and are left as recorded.
         """
-        return resolve_effort_for_model(
+        level = resolve_effort_for_model(
             self._client._model,
             slot_overrides=self._effort_per_model,
             defaults=self._effort_defaults,
         )
+        if not level or self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+            return level
+        return self._clamp_for_wire(level)
+
+    def _clamp_for_wire(self, level: str) -> str:
+        """*level* as kiro-cli's current model will accept it, logging a step down."""
+        model = self._client._model
+        wire = effort_for_model(model, level)
+        if wire != level:
+            logger.info(
+                "ACP effort %r not offered by model %s — applying %r instead", level, model, wire
+            )
+        return wire
+
+    async def _push_effort_slash(self, level: str) -> None:
+        """Push *level* over kiro's ``/effort`` and fail on a rejected value.
+
+        kiro-cli answers a level the model does not accept with a NORMAL result
+        carrying ``success: false`` and a message (``invalid value 'xhigh' for
+        'output_config.effort', must be one of: low, medium, high, max``;
+        verified against kiro-cli 2.21.4), not a JSON-RPC error. A text-only
+        read of that reply looks like success while the model keeps its prior
+        level and the dashboard shows the new one. Raising here lets
+        ``change_effort`` roll back and the handler fall back to a reset — the
+        same path a transport failure takes. A response timeout is swallowed,
+        matching ``send_command``: the command may have landed.
+        """
+        try:
+            result = await self._client.command_result("/effort", args={"level": level})
+        except AcpTimeoutError:
+            logger.debug("/effort %s response timed out (may still have applied)", level)
+            return
+        if result.get("success") is False:
+            raise AcpError(str(result.get("message") or f"/effort {level} rejected"))
 
     def _apply_effort_overlay(self) -> None:
         """Write the kiro workspace cli.json overlay for (current model, effort).
@@ -1372,13 +1415,17 @@ class AcpProvider(LLMProvider):
             logger.debug("adapter exposes no %r config option; skipping effort push", effort_option)
             return
         # Descend from the requested level through lower levels (e.g.
-        # max → xhigh → high). Never escalate above what was asked.
+        # max → xhigh → high). Never escalate above what was asked, and never
+        # step down INTO ``none``: "no reasoning" is not a fallback for a user
+        # who asked for some — it is only pushed when it is the pick itself.
         try:
             start = EFFORT_LEVELS.index(level)
         except ValueError:
             await self._client.set_config_option(effort_option, level)
             return
-        ladder = [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1])]
+        ladder = [
+            lvl for lvl in reversed(EFFORT_LEVELS[: start + 1]) if lvl != "none" or lvl == level
+        ]
         last_exc: Exception | None = None
         for candidate in ladder:
             try:
@@ -1454,14 +1501,18 @@ class AcpProvider(LLMProvider):
             raise ValueError(f"invalid effort level {level!r}")
         # Snapshot so a failed live push doesn't leave a poisoned override/
         # overlay that would re-push the rejected level on every respawn.
+        # The override keeps the level as PICKED; what goes on the wire is the
+        # level this model accepts (an ``xhigh`` pick runs ``high`` on Sonnet 4.6
+        # and is ``xhigh`` again after a switch back to Opus).
         _prev = self._effort_per_model.get(model)
         self._effort_per_model[model] = level
         self._apply_effort_overlay()
+        wire = self._clamp_for_wire(level) if via_slash_command else level
         try:
             if via_config_option:
-                await self._set_effort_config_option(level)
+                await self._set_effort_config_option(wire)
             else:
-                await self._client.send_command("/effort", args={"level": level})
+                await self._push_effort_slash(wire)
         except Exception:
             # Roll back to the prior state before propagating to the caller.
             if _prev is None:
@@ -1520,10 +1571,10 @@ class AcpProvider(LLMProvider):
             )
             return False
         # kiro family: clear/rewrite the overlay so a respawn doesn't re-apply it.
-        level = self._resolve_effort()  # workspace default, or None
+        level = self._resolve_effort()  # workspace default (clamped), or None
         if level:
             self._apply_effort_overlay()
-            await self._client.send_command("/effort", args={"level": level})
+            await self._push_effort_slash(level)
             logger.info("ACP effort cleared to workspace default %s (kiro)", level)
             return True
         # No default to push live — clear the overlay and let the caller reset

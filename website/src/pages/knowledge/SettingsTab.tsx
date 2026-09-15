@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useId, createContext, useContext } from 'r
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
+import { modelDisplayName } from '../../lib/modelDisplayName'
 import SimpleSelect from '../../components/SimpleSelect'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
 import { i18nT } from '../../i18n/t'
@@ -162,7 +163,7 @@ export function SettingsTab() {
       >
         <SimpleSelect
           options={modelOptions}
-          optionLabels={modelOptions.map(m => m === 'auto' ? i18nT('pages.knowledge.settings.model_auto') : m)}
+          optionLabels={modelOptions.map(m => m === 'auto' ? i18nT('pages.knowledge.settings.model_auto') : modelDisplayName(m))}
           value={currentModel}
           onChange={v => patchMut.mutate({
             path: 'knowledge.extraction_model',

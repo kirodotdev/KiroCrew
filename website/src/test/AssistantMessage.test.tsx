@@ -1087,17 +1087,21 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(stats).not.toHaveTextContent('$')
   })
 
-  it('leads with the served model when the backend resolved one', () => {
+  it('leads with the served model, shown by its display name, when the backend resolved one', () => {
     render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, model: 'claude-sonnet-4.6' }} />)
     const text = screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()
-    expect(text).toMatch(/^claude-sonnet-4\.6 ·\s*2\.50 credits ·\s*1m 24s$/)
+    expect(text).toMatch(/^Claude Sonnet 4\.6 ·\s*2\.50 credits ·\s*1m 24s$/)
+    // The tooltip names the model the same way; the raw id is not repeated.
+    expect(screen.getByTestId('turn-stats').title).toContain('Claude Sonnet 4.6')
+    expect(screen.getByTestId('turn-stats').title).not.toContain('claude-sonnet-4.6')
   })
 
-  it('trims routing prefixes from the inline model label but keeps the full id in the tooltip', () => {
+  it('trims routing prefixes from the model label in both the row and the tooltip', () => {
     render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 8_400, credits: 1.2, model: 'global.anthropic.claude-opus-4-8[1m]' }} />)
     expect(screen.getByTestId('turn-model')).toHaveTextContent('claude-opus-4-8[1m]')
     expect(screen.getByTestId('turn-model')).not.toHaveTextContent('global.anthropic')
-    expect(screen.getByTestId('turn-stats').title).toContain('global.anthropic.claude-opus-4-8[1m]')
+    expect(screen.getByTestId('turn-stats').title).toContain('claude-opus-4-8[1m]')
+    expect(screen.getByTestId('turn-stats').title).not.toContain('global.anthropic')
   })
 
   it('omits the model chip when the backend did not resolve one', () => {
@@ -1109,11 +1113,11 @@ describe('turn stats footer (elapsed time + credits)', () => {
   // per-turn choice is not disclosed on the wire. It still renders: a blank
   // chip there is indistinguishable from a turn with no measurement at all,
   // which is exactly the reading this chip exists to prevent.
-  it('shows the bare auto sentinel for a turn the backend routed itself', () => {
+  it('shows the Auto sentinel for a turn the backend routed itself', () => {
     render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 6_100, credits: 0.64, model: 'auto' }} />)
-    expect(screen.getByTestId('turn-model')).toHaveTextContent('auto')
+    expect(screen.getByTestId('turn-model')).toHaveTextContent('Auto')
     const text = screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()
-    expect(text).toMatch(/^auto ·\s*0\.64 credits ·\s*6\.1s$/)
+    expect(text).toMatch(/^Auto ·\s*0\.64 credits ·\s*6\.1s$/)
   })
 
   // The tooltip is four whole-sentence catalog keys, one per combination of the
@@ -1164,15 +1168,19 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(fmtCredits(12.53)).toBe('12.5')
   })
 
-  it('fmtTurnModel drops region/vendor routing prefixes and keeps unknown shapes intact', () => {
+  it('fmtTurnModel drops routing prefixes, then shows the picker display name for known ids', () => {
+    // Bedrock-style ids: the prefix goes, and the remaining spelling is not
+    // in the display table, so it passes through as-is.
     expect(fmtTurnModel('global.anthropic.claude-opus-4-8[1m]')).toBe('claude-opus-4-8[1m]')
     expect(fmtTurnModel('us.anthropic.claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
     expect(fmtTurnModel('anthropic.claude-haiku-4-5')).toBe('claude-haiku-4-5')
-    expect(fmtTurnModel('claude-sonnet-4.6')).toBe('claude-sonnet-4.6')
-    expect(fmtTurnModel('gpt-5.6-luna')).toBe('gpt-5.6-luna')
-    // The Auto sentinel is passed through verbatim — the trimmer must not
-    // mistake it for a vendor-prefixed id and leave an empty label behind.
-    expect(fmtTurnModel('auto')).toBe('auto')
+    // kiro ids the table knows read like the picker row, not like an identifier.
+    expect(fmtTurnModel('claude-sonnet-4.6')).toBe('Claude Sonnet 4.6')
+    expect(fmtTurnModel('gpt-5.6-luna')).toBe('GPT-5.6 Luna')
+    expect(fmtTurnModel('gpt-5.5')).toBe('GPT-5.5')
+    expect(fmtTurnModel('auto')).toBe('Auto')
+    // An id nobody named stays verbatim — never an invented name.
+    expect(fmtTurnModel('mystery-9')).toBe('mystery-9')
   })
 })
 

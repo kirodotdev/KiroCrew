@@ -12,6 +12,7 @@ import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput, { type ComposerBusyMode } from './ChatInput'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
+import { Popover, PopoverAnchor, PopoverContent } from './ui/popover'
 import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PaneDim from './PaneDim'
 
@@ -39,6 +40,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
+import { modelDisplayName } from '../lib/modelDisplayName'
 import { filterInteractiveModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
@@ -477,7 +479,7 @@ export default function ChatPane({
     ]),
     [effectiveModels, hiddenModelIds, paneSlot?.model, paneSlot?.served_model],
   )
-  const modelDD = useFilteredDropdown(modelPickerModels)
+  const modelDD = useFilteredDropdown(modelPickerModels, m => modelDisplayName(m.name))
   // See ChatPage: display what will actually run, not a pin the account lost
   // access to. The slot's own `model_withheld` verdict answers that when the
   // backend has one; the degraded flag gates only the list-membership fallback —
@@ -1574,72 +1576,92 @@ export default function ChatPane({
           document.body,
         )}
 
-        {/* Model picker portal — anchored to the input-bar model button. */}
-        {modelDD.open && modelBtnRect && createPortal(
-          /* The labeled dialog owns roving-focus key handling for its descendants. */
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-          <div
-            ref={modelDD.dropdownRef}
-            role="dialog"
-            aria-label={i18nT('components.chatPane.model_list')}
-            tabIndex={-1}
-            onKeyDown={onModelListKeyDown}
-            className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[252px] max-w-[348px] flex flex-col p-1 gap-0.5 animate-slide-up"
-            style={(() => { const left = Math.max(8, Math.min(modelBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - modelBtnRect.top + 4, left } })()}
-          >
-            <div className="px-1.5 pt-1.5 pb-1">
-              <input
-                ref={modelDD.inputRef}
-                type="text"
-                aria-label={i18nT('components.chatPane.type_to_filter')}
-                placeholder={i18nT('components.chatPane.type_to_filter')}
-                value={modelDD.filter}
-                onChange={(e) => modelDD.setFilter(e.target.value)}
-                /* Enter/Escape live on the portal container's onListKeyDown
-                   (useListboxKeyboard), which claims Enter against IME
-                   composition internally — a second handler here would give
-                   the same keys two dispatch paths. */
-                className={ddInputCls}
+        {/* Model picker — Radix owns portal, collision handling and dismissal. */}
+        {modelDD.open && modelBtnRect && (
+          <Popover open onOpenChange={open => modelDD.setOpen(open)}>
+            <PopoverAnchor asChild>
+              <span
+                aria-hidden
+                className="fixed pointer-events-none"
+                style={{
+                  left: modelBtnRect.left,
+                  top: modelBtnRect.top,
+                  width: modelBtnRect.width,
+                  height: modelBtnRect.height,
+                }}
               />
-            </div>
-            {hiddenModelsQ.isError && (
-              <div className="flex items-center gap-2 px-1.5 py-1">
-                {/* No hand-off: this pane's composer may hold an unsent draft.
-                    Retry keeps the user in the owning chat. */}
-                <ErrorNotice
-                  className="min-w-0 flex-1"
-                  variant="inline"
-                  message={i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config')}
+            </PopoverAnchor>
+            {/* The labeled dialog owns roving-focus key handling for its descendants. */}
+            <PopoverContent
+              ref={modelDD.dropdownRef}
+              role="dialog"
+              aria-label={i18nT('components.chatPane.model_list')}
+              tabIndex={-1}
+              side="top"
+              align="start"
+              sideOffset={4}
+              collisionPadding={8}
+              onOpenAutoFocus={event => {
+                // useFilteredDropdown focuses the filter on desktop and skips
+                // it on touch so opening the menu does not summon the keyboard.
+                event.preventDefault()
+              }}
+              onKeyDown={onModelListKeyDown}
+              className="w-[348px] max-w-[calc(100vw-16px)] max-h-[var(--radix-popover-content-available-height)] bg-bg-elevated rounded-xl shadow-xl flex flex-col p-1 gap-0.5 overflow-hidden"
+            >
+              <div className="px-1.5 pt-1.5 pb-1">
+                <input
+                  ref={modelDD.inputRef}
+                  type="text"
+                  aria-label={i18nT('components.chatPane.type_to_filter')}
+                  placeholder={i18nT('components.chatPane.type_to_filter')}
+                  value={modelDD.filter}
+                  onChange={(e) => modelDD.setFilter(e.target.value)}
+                  /* Enter/Escape live on the PopoverContent's onListKeyDown
+                     (useListboxKeyboard), which claims Enter against IME
+                     composition internally — a second handler here would give
+                     the same keys two dispatch paths. */
+                  className={ddInputCls}
                 />
-                <Btn type="button" className="shrink-0" onClick={() => hiddenModelsQ.refetch()}>
-                  {i18nT('pages.settings.chatPanel.retry')}
-                </Btn>
               </div>
-            )}
-            {paneRemoteCrew.failed && (
-              <div className="flex items-center gap-2 px-1.5 py-1">
-                {/* No hand-off: this pane's composer may hold an unsent draft.
-                    Retry keeps the user in the owning chat. */}
-                <ErrorNotice
-                  className="min-w-0 flex-1"
-                  variant="inline"
-                  message={i18nT('components.modelEffortDropdown.models_failed')}
-                />
-                <Btn type="button" className="shrink-0" onClick={() => paneRemoteCrew.refetch()} disabled={paneRemoteCrew.retrying}>
-                  {paneRemoteCrew.retrying && <LoaderCircle className="lucide-inline animate-spin" aria-hidden />}
-                  {i18nT('pages.settings.chatPanel.retry')}
-                </Btn>
+              {hiddenModelsQ.isError && (
+                <div className="flex items-center gap-2 px-1.5 py-1">
+                  {/* No hand-off: this pane's composer may hold an unsent draft.
+                      Retry keeps the user in the owning chat. */}
+                  <ErrorNotice
+                    className="min-w-0 flex-1"
+                    variant="inline"
+                    message={i18nT('pages.settings.chatPanel.failed_to_load_dashboard_config')}
+                  />
+                  <Btn type="button" className="shrink-0" onClick={() => hiddenModelsQ.refetch()}>
+                    {i18nT('pages.settings.chatPanel.retry')}
+                  </Btn>
+                </div>
+              )}
+              {paneRemoteCrew.failed && (
+                <div className="flex items-center gap-2 px-1.5 py-1">
+                  {/* No hand-off: this pane's composer may hold an unsent draft.
+                      Retry keeps the user in the owning chat. */}
+                  <ErrorNotice
+                    className="min-w-0 flex-1"
+                    variant="inline"
+                    message={i18nT('components.modelEffortDropdown.models_failed')}
+                  />
+                  <Btn type="button" className="shrink-0" onClick={() => paneRemoteCrew.refetch()} disabled={paneRemoteCrew.retrying}>
+                    {paneRemoteCrew.retrying && <LoaderCircle className="lucide-inline animate-spin" aria-hidden />}
+                    {i18nT('pages.settings.chatPanel.retry')}
+                  </Btn>
+                </div>
+              )}
+              <div role="listbox" aria-label={i18nT('components.chatPane.model_list')} className="min-h-0 overflow-y-auto max-h-[280px]">
+                <ModelDropdownList models={modelDD.filtered} activeModel={shownModel} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} loading={paneRemoteCrew.modelsPending} failed={paneRemoteCrew.failed} />
               </div>
-            )}
-            <div role="listbox" aria-label={i18nT('components.chatPane.model_list')} className="overflow-y-auto max-h-[280px]">
-              <ModelDropdownList models={modelDD.filtered} activeModel={shownModel} onSelect={(name) => { switchModel(name); modelDD.setOpen(false) }} loading={paneRemoteCrew.modelsPending} failed={paneRemoteCrew.failed} />
-            </div>
-            {!modelPickerConfigured && <ManageModelsFooter onManage={() => {
-              modelDD.setOpen(false)
-              navigate(settingsPath({ tab: 'chat', highlight: 'key:dashboard.model_picker_hidden_models' }))
-            }} />}
-          </div>,
-          document.body,
+              {!modelPickerConfigured && <ManageModelsFooter onManage={() => {
+                modelDD.setOpen(false)
+                navigate(settingsPath({ tab: 'chat', highlight: 'key:dashboard.model_picker_hidden_models' }))
+              }} />}
+            </PopoverContent>
+          </Popover>
         )}
 
       </div>

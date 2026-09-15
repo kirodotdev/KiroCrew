@@ -118,12 +118,12 @@ describe('Settings selectable models', () => {
         { model_name: 'model-b', description: 'Model B' },
       ])
     mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    await screen.findByTestId('multi-select-summary')
     expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load config.')
-    expect(trigger).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: 'Search models…' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(modelsMock).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(trigger).not.toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search models…' })).not.toBeDisabled())
     expect(screen.queryByText('Failed to load config.')).not.toBeInTheDocument()
   })
 
@@ -131,11 +131,12 @@ describe('Settings selectable models', () => {
     const models = deferred<Array<{ model_name: string; description: string }>>()
     modelsMock.mockReturnValueOnce(models.promise)
     mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    await screen.findByTestId('multi-select-summary')
     await waitFor(() => expect(dashboardConfigMock).toHaveBeenCalled())
-    expect(trigger).toBeDisabled()
-    fireEvent.click(trigger)
-    expect(screen.queryByRole('button', { name: 'Deselect all' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Search models…' })).toBeDisabled()
+    // The list stands in the page, so the bulk actions are present but locked
+    // until the catalog they would act on has loaded.
+    expect(screen.getByRole('button', { name: 'Deselect all' })).toBeDisabled()
     expect(updateDashboardConfigMock).not.toHaveBeenCalled()
 
     models.resolve([
@@ -143,8 +144,7 @@ describe('Settings selectable models', () => {
       { model_name: 'model-a', description: 'Model A' },
       { model_name: 'model-b', description: 'Model B' },
     ])
-    await waitFor(() => expect(trigger).not.toBeDisabled())
-    fireEvent.click(trigger)
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search models…' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Deselect all' }))
     await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledWith({
       model_picker_hidden_models_add: ['model-a', 'model-b'],
@@ -159,12 +159,11 @@ describe('Settings selectable models', () => {
       return { ok: true }
     })
     const { client } = mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    const trigger = await screen.findByTestId('multi-select-summary')
     await waitFor(() => expect(trigger).toHaveTextContent('All models (3)'))
     const configured = () => client.getQueryData<{ model_picker_configured: boolean }>(['dashboardConfig'])?.model_picker_configured
     expect(configured()).toBe(false)
     expect(updateDashboardConfigMock).not.toHaveBeenCalled()
-    fireEvent.click(trigger)
     fireEvent.click(screen.getByRole('checkbox', { name: 'model-a' }))
     expect(await screen.findByText('Failed to save selectable models')).toBeInTheDocument()
     expect(configured()).toBe(false)
@@ -180,9 +179,8 @@ describe('Settings selectable models', () => {
     const config = await dashboardConfigMock()
     dashboardConfigMock.mockResolvedValue({ ...config, model_picker_hidden_models: ['temporarily-unavailable'] })
     mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    const trigger = await screen.findByTestId('multi-select-summary')
     await waitFor(() => expect(trigger).toHaveTextContent('All models (3)'))
-    fireEvent.click(trigger)
     expect(screen.queryByRole('checkbox', { name: 'temporarily-unavailable' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: 'model-a' }))
     await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledWith({ model_picker_hidden_models_add: ['model-a'] }))
@@ -198,11 +196,10 @@ describe('Settings selectable models', () => {
 
   it('defaults to all selected, searches, persists hidden IDs, and locks auto', async () => {
     mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    const trigger = await screen.findByTestId('multi-select-summary')
     await waitFor(() => expect(trigger).toHaveTextContent('All models (3)'))
-    fireEvent.click(trigger)
 
-    const auto = screen.getByRole('checkbox', { name: 'auto' })
+    const auto = screen.getByRole('checkbox', { name: 'Auto' })
     expect(auto).toBeChecked()
     expect(auto).toBeDisabled()
     expect(screen.getByRole('checkbox', { name: 'model-a' })).toBeChecked()
@@ -222,13 +219,12 @@ describe('Settings selectable models', () => {
 
   it('moves from search through options with arrow keys and toggles the focused row', async () => {
     mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    const trigger = await screen.findByTestId('multi-select-summary')
     await waitFor(() => expect(trigger).toHaveTextContent('All models (3)'))
-    fireEvent.click(trigger)
     const search = screen.getByRole('textbox', { name: 'Search models…' })
     search.focus()
     fireEvent.keyDown(search, { key: 'ArrowDown' })
-    const autoRow = screen.getByRole('checkbox', { name: 'auto' }).closest('label') as HTMLElement
+    const autoRow = screen.getByRole('checkbox', { name: 'Auto' }).closest('label') as HTMLElement
     expect(autoRow).toHaveFocus()
     fireEvent.keyDown(autoRow, { key: 'ArrowDown' })
     const modelARow = screen.getByRole('checkbox', { name: 'model-a' }).closest('label') as HTMLElement
@@ -251,11 +247,13 @@ describe('Settings selectable models', () => {
     })
     const user = userEvent.setup()
     mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    const trigger = await screen.findByTestId('multi-select-summary')
     await waitFor(() => expect(trigger).toHaveTextContent('Selected 2 / 3'))
-    await user.click(trigger)
 
+    // Standing in the page, the list does not steal focus on mount; keyboard
+    // travel starts from the search box once the user reaches it.
     const search = screen.getByRole('textbox', { name: 'Search models…' })
+    await user.click(search)
     expect(search).toHaveFocus()
     await user.tab()
     const selectAll = screen.getByRole('button', { name: 'Select all' })
@@ -268,7 +266,7 @@ describe('Settings selectable models', () => {
     })
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'model-a' })).toBeChecked())
     expect(screen.getByRole('checkbox', { name: 'model-b' })).toBeChecked()
-    expect(screen.getByRole('checkbox', { name: 'auto' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Auto' })).toBeChecked()
   })
 
   it('deselects optional advertised models in one save and acknowledges only success', async () => {
@@ -283,9 +281,8 @@ describe('Settings selectable models', () => {
     })
     const user = userEvent.setup()
     const { client } = mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    const trigger = await screen.findByTestId('multi-select-summary')
     await waitFor(() => expect(trigger).toHaveTextContent('All models (3)'))
-    await user.click(trigger)
 
     const configured = () => client.getQueryData<{ model_picker_configured: boolean }>(['dashboardConfig'])?.model_picker_configured
     await user.click(screen.getByRole('button', { name: 'Deselect all' }))
@@ -295,8 +292,8 @@ describe('Settings selectable models', () => {
     })
     expect(await screen.findByText('Failed to save selectable models')).toBeInTheDocument()
     expect(configured()).toBe(false)
-    expect(screen.getByRole('checkbox', { name: 'auto' })).toBeChecked()
-    expect(screen.getByRole('checkbox', { name: 'auto' })).toBeDisabled()
+    expect(screen.getByRole('checkbox', { name: 'Auto' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Auto' })).toBeDisabled()
 
     await user.click(screen.getByRole('button', { name: 'Deselect all' }))
     await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledTimes(2))
@@ -309,9 +306,8 @@ describe('Settings selectable models', () => {
   it('rolls the edited selection back when persistence fails', async () => {
     updateDashboardConfigMock.mockRejectedValueOnce(new Error('write failed'))
     mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    const trigger = await screen.findByTestId('multi-select-summary')
     await waitFor(() => expect(trigger).toHaveTextContent('All models (3)'))
-    fireEvent.click(trigger)
     const modelB = screen.getByRole('checkbox', { name: 'model-b' })
     fireEvent.click(modelB)
 
@@ -337,9 +333,8 @@ describe('Settings selectable models', () => {
         return result
       })
     mount()
-    const trigger = await screen.findByRole('button', { name: 'Selectable Models' })
+    const trigger = await screen.findByTestId('multi-select-summary')
     await waitFor(() => expect(trigger).toHaveTextContent('All models (3)'))
-    fireEvent.click(trigger)
     fireEvent.click(screen.getByRole('checkbox', { name: 'model-a' }))
     fireEvent.click(screen.getByRole('checkbox', { name: 'model-b' }))
     expect(trigger).toHaveTextContent('Selected 1 / 3')

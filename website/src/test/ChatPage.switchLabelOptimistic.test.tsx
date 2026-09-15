@@ -138,7 +138,7 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
 
     const chip = screen.getByTitle('Model: claude-opus-5')
     await act(async () => { fireEvent.click(chip) })
-    const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    const option = await waitFor(() => screen.getByRole('option', { name: /claude sonnet 5/i }))
     await act(async () => { fireEvent.click(option) })
 
     // Label reflects the pick…
@@ -160,7 +160,7 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     const chip = screen.getByTitle('Model: claude-opus-5')
     await act(async () => { fireEvent.click(chip) })
     // Pick the auto row; the (mocked) server answers with its stored value.
-    const option = await waitFor(() => screen.getByRole('option', { name: /auto/ }))
+    const option = await waitFor(() => screen.getByRole('option', { name: /^auto/i }))
     await act(async () => { fireEvent.click(option) })
     await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 'slot-a')?.model).toBe('claude-sonnet-5'))
   })
@@ -170,7 +170,7 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     const store = await renderChat()
     const chip = screen.getByTitle('Model: claude-opus-5')
     await act(async () => { fireEvent.click(chip) })
-    const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    const option = await waitFor(() => screen.getByRole('option', { name: /claude sonnet 5/i }))
     await act(async () => { fireEvent.click(option) })
 
     // The pick failed: the store keeps the pre-switch model and the chip
@@ -192,9 +192,9 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
 
     const chip = screen.getByTitle('Model: claude-opus-5')
     await act(async () => { fireEvent.click(chip) })
-    const first = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    const first = await waitFor(() => screen.getByRole('option', { name: /claude sonnet 5/i }))
     await act(async () => { fireEvent.click(first) })
-    const second = await waitFor(() => screen.getByRole('option', { name: /auto/ }))
+    const second = await waitFor(() => screen.getByRole('option', { name: /^auto/i }))
     await act(async () => { fireEvent.click(second) })
 
     // Serialization: the second pick's wire call is queued, not in flight.

@@ -138,7 +138,7 @@ describe('ChatPage — Auto model selection', { timeout: 15_000 }, () => {
     await renderChat(AGENT_MODEL)
     await openModelPicker()
 
-    const autoOption = await waitFor(() => screen.getByRole('option', { name: /auto/ }))
+    const autoOption = await waitFor(() => screen.getByRole('option', { name: /^auto/i }))
     await act(async () => { fireEvent.click(autoOption) })
 
     expect(api.chatSlotModel).toHaveBeenCalledWith('slot-a', 'auto')
@@ -151,7 +151,7 @@ describe('ChatPage — Auto model selection', { timeout: 15_000 }, () => {
     expect(await waitFor(() => screen.getByTitle('Model: auto'))).toBeTruthy()
 
     await openModelPicker()
-    const autoOption = await waitFor(() => screen.getByRole('option', { name: /auto/ }))
+    const autoOption = await waitFor(() => screen.getByRole('option', { name: /^auto/i }))
     expect(autoOption.getAttribute('aria-selected')).toBe('true')
   })
 

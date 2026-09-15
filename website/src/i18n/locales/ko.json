@@ -6875,7 +6875,6 @@
       "close": "닫기"
     },
     "modelDropdownList": {
-      "auto_default": "기본값",
       "credit_multiplier": "Auto 크레딧 비용의 {{value}}",
       "credit_multiplier_baseline": "{{value}}, 기준 크레딧 비용",
       "loading_models": "모델 불러오는 중…",
@@ -7187,15 +7186,13 @@
       "title_md": "중간 너비"
     },
     "reasoningEffortDropdown": {
-      "default_with_level": "기본값 · {{level}}",
-      "effort": "강도",
-      "effort_help": "추론 강도는 모델이 답변하기 전에 생각하는 시간을 정합니다. 높을수록 어려운 문제를 더 오래 추론하므로 느리지만 답변 품질이 좋아지고, 낮을수록 빠릅니다. 세션별 재정의를 끄면 설정 → 채팅의 기본값으로 돌아가며, 기본값이 없으면 모델 자체의 선택을 사용합니다(Fable/Opus/Sonnet만 해당).",
+      "effort": "사고 강도",
+      "effort_help": "추론 강도는 모델이 답하기 전에 얼마나 오래 생각할지 정합니다. 높을수록 어려운 문제에 더 많은 시간을 쓰고(느리지만 더 좋은 답), 낮을수록 빠릅니다. 여기서 단계를 선택하면 이 세션에 고정됩니다. 선택한 모델이 허용하는 단계만 제공됩니다.",
       "faster": "빠르게",
-      "configured_default_marker": "설정된 기본값",
       "reasoning_effort": "추론 강도",
       "smarter": "똑똑하게",
-      "use_configured_default": "설정된 기본값 사용",
-      "use_model_default": "모델 기본값 사용"
+      "model_default": "모델이 결정",
+      "effort_clamped": "{{model}}은(는) “{{requested}}”을(를) 지원하지 않아 “{{effective}}”으로 전환했습니다."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "조직 레지스트리를 추가하여 팀 전용 앱을 찾아보세요",
@@ -8531,7 +8528,8 @@
       "low": "낮음",
       "max": "최대",
       "medium": "보통",
-      "xhigh": "매우 높음"
+      "xhigh": "매우 높음",
+      "none": "끔"
     },
     "sttProviders": {
       "downloading_decoder": "오디오 디코더 다운로드 중: {{pct}}({{total}} 중 {{done}})",

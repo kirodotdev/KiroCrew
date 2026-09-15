@@ -99,14 +99,14 @@ describe('ChatPanel — default model', () => {
     const opts = await openSelect('Default Model')
     const labels = opts.map(o => o.textContent)
     expect(labels).toContain('Default (auto)')
-    expect(labels).toContain('claude-opus-4.8')
+    expect(labels).toContain('Claude Opus 4.8')
   })
 
   it('PATCHes agent.model on selection', async () => {
     wrap(<ChatPanel />)
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     await openSelect('Default Model')
-    fireEvent.click(screen.getByRole('option', { name: 'claude-opus-4.8' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Claude Opus 4.8' }))
     await waitFor(() =>
       expect(patchConfigMock).toHaveBeenCalledWith('agent.model', 'claude-opus-4.8')
     )
@@ -117,7 +117,7 @@ describe('ChatPanel — default model', () => {
     wrap(<ChatPanel />)
     await waitFor(() =>
       expect(screen.getByRole('combobox', { name: 'Default Model' })).toHaveTextContent(
-        'claude-opus-4.8'
+        'Claude Opus 4.8'
       )
     )
   })
@@ -149,7 +149,7 @@ describe('ChatPanel — default model', () => {
     wrap(<ChatPanel />)
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     await openSelect('Default Model')
-    fireEvent.click(screen.getByRole('option', { name: 'claude-opus-4.8' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Claude Opus 4.8' }))
     expect(await screen.findByText(/Failed to save default model/)).toBeInTheDocument()
   })
 })

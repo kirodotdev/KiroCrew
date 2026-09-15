@@ -277,7 +277,8 @@ import ChatDropOverlay from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
 import SessionTabStrip from '../components/SessionTabStrip'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
-import { modelSupportsEffort } from '../lib/effort'
+import { effortLabel, effortLevelsForModel, modelSupportsEffort, nearestSupportedEffort } from '../lib/effort'
+import { modelDisplayName } from '../lib/modelDisplayName'
 import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
 import { countCompletedTurns } from '../lib/completedTurns'
 import { displayModel, pinIsWithheld } from '../lib/model'
@@ -942,7 +943,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     },
     [effectiveModels, hiddenModelIds, slots, activeSlot],
   )
-  const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelPickerModels)
+  const { open: modelDropdown, setOpen: setModelDropdown, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropdownRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelPickerModels, m => modelDisplayName(m.name))
   // Roving-focus keyboard nav for the agent + model dropdowns (shared with StyledSelect/AgentSelector).
   const { onListKeyDown: onAgentListKeyDown } = useListboxKeyboard({
     open: agentDropdown,
@@ -2951,7 +2952,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           const r = await api.chatSlotModel(activeSlot, modelName)
           return r?.model ?? modelName
         },
-        (value) => dispatch(updateSlot({ key: activeSlot, model: value })))
+        (value) => dispatch(updateSlot({ key: activeSlot, model: value })),
+        // Update the chip and picker immediately. `performSlotSwitch` keeps
+        // the server requests serialized and restores the last confirmed model
+        // if every pick in a rapid burst fails, so this removes latency without
+        // letting an out-of-order response lie about what is running.
+        { value: modelName, baseline: slots.find(slot => slot.key === activeSlot)?.model || '' })
     } catch (e) {
       // Same failure surface as the agent switch beside this: the shared
       // notice toast, preferring the server's own message. The chip keeps
@@ -2963,7 +2969,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Keep the dropdown open after selecting — the user may switch models again
     // or drill into the reasoning-effort panel. Dismiss is via outside-click/Escape.
     // setPendingModel is a stable useState setter.
-  }, [activeSlot, dispatch, setPendingModel])
+  }, [activeSlot, dispatch, setPendingModel, slots])
   const setProject = useCallback(async (path: string) => {
     if (!activeSlot) { setPendingProject(path); return }
     try {
@@ -3672,6 +3678,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     onSuccess: () => {
       dispatch(triggerRefresh())
       queryClient.invalidateQueries({ queryKey: ['resolved-model'] })
+      queryClient.invalidateQueries({ queryKey: ['default-effort'] })
     },
     // The dropdown closes as soon as the row is clicked, so without this a
     // failed write left NOTHING on screen and the old default silently stood —
@@ -3743,21 +3750,58 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const _modelPinActive = currentSlot?.model || resolvedModel || ''
   const _modelPinPinned =
     !!_modelPinCfg?.model && _modelPinCfg.model === _modelPinActive && _modelPinActive !== 'auto'
-  // The configured default effort for new sessions. A slot that has never
-  // touched the effort control carries '' (no override) but still RUNS at this
-  // default — the backend applies `slot.reasoning_effort or agent.reasoning_effort`
-  // — so the composer must show the inherited value rather than a bare
-  // "Default", which read as "the model decides" and hid the real setting.
+  // The effort a session on this crew inherits when it carries no override. A
+  // slot that has never touched the effort control carries '' (no override) but
+  // still RUNS at this value, so the composer must show it rather than a bare
+  // "Default". Resolved by the backend's own chain (crew pin → role default →
+  // Settings → Chat default → '' = the model decides) and keyed on the crew, so
+  // a crew pin and the global default both land here and the picker agrees
+  // with the Agents page instead of reading only the global tier.
+  const _effortAgentName = currentSlot?.agent || pendingAgent || defaultAgent || 'default'
   const { data: _defaultEffort } = useQuery({
-    queryKey: ['default-effort', provider.id],
-    queryFn: () => provider.resolveDefaultEffort(),
+    queryKey: ['default-effort', _effortAgentName, provider.id],
+    queryFn: () => provider.resolveDefaultEffort(_effortAgentName),
     enabled: provider.capabilities.reasoningEffort,
   })
-  const defaultEffort = _defaultEffort || ''
+  const inheritedEffort = _defaultEffort || ''
+  // What the CURRENT model will actually run that default at: a model that
+  // rejects the configured level (Sonnet 4.6 has no xhigh) runs the nearest
+  // lower one it accepts, so the marker and the chip must both say that level.
+  const _effortModelLevels = effortLevelsForModel(shownModel === 'auto' ? '' : shownModel)
+  const defaultEffort = _effortModelLevels ? nearestSupportedEffort(inheritedEffort, _effortModelLevels) : inheritedEffort
   // Effort actually in force for the active slot: per-slot override, else the
-  // configured default. Display only — the slot's raw value still drives the
-  // picker so "no override" stays distinguishable from an explicit pick.
-  const effectiveEffort = currentSlot?.reasoning_effort || defaultEffort
+  // inherited default — each clamped to what the shown model accepts. Display
+  // only — the slot's raw value still drives the picker so "no override" stays
+  // distinguishable from an explicit pick.
+  const _slotEffortRaw = currentSlot?.reasoning_effort || ''
+  const effectiveEffort = _slotEffortRaw
+    ? (_effortModelLevels ? nearestSupportedEffort(_slotEffortRaw, _effortModelLevels) : _slotEffortRaw)
+    : defaultEffort
+  // When the model changes and the session carries an override the new model
+  // does not accept, rewrite the override to the clamped value and show a 3s
+  // toast so the user knows it changed. The effect fires once per model change,
+  // not on every re-render, because its dep list is [shownModel, activeSlot,
+  // _slotEffortRaw]. The API call is fire-and-forget: a failure here is
+  // non-critical — the backend also clamps on the wire.
+  useEffect(() => {
+    if (!activeSlot || !_slotEffortRaw || !_effortModelLevels) return
+    const clamped = nearestSupportedEffort(_slotEffortRaw, _effortModelLevels)
+    if (clamped === _slotEffortRaw || !clamped) return
+    // Rewrite the slot's stored override to the clamped value.
+    dispatch(updateSlot({ key: activeSlot, reasoning_effort: clamped }))
+    api.chatSlotReasoningEffort(activeSlot, clamped).catch(() => {})
+    // Show a 3-second toast describing the substitution.
+    const modelName = modelDisplayName(shownModel)
+    const msg = i18nT('components.reasoningEffortDropdown.effort_clamped', {
+      model: modelName,
+      requested: effortLabel(_slotEffortRaw),
+      effective: effortLabel(clamped),
+    })
+    dispatch(setAgentSwitchNotice(msg))
+    const timer = setTimeout(() => dispatch(setAgentSwitchNotice(null)), 3000)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownModel, activeSlot, _slotEffortRaw])
   // Branch label for the active project chip. The user can check out a
   // different branch outside the dashboard at any time, so this refetches on a
   // slow interval and on window focus rather than being read once. A failure
@@ -7676,7 +7720,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               document.body
             )}
             {/* Model dropdown portal — triggered from input bar */}
-            {modelDropdown && modelBtnRect && createPortal(
+            {modelDropdown && modelBtnRect && (
               <ModelEffortDropdown
                 anchorRect={modelBtnRect}
                 dropdownRef={modelDropdownRef}
@@ -7697,7 +7741,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 hasEffort={!!(activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel))}
                 slot={activeSlot}
                 currentEffort={currentSlot?.reasoning_effort || ''}
-                defaultEffort={defaultEffort}
+                defaultEffort={inheritedEffort}
+                effortModel={shownModel === 'auto' ? '' : shownModel}
                 effortLevelsOverride={remoteCrew.isRemote ? (remoteCrew.capabilities?.effort_levels ?? []) : undefined}
                 onManageModels={modelPickerConfigured ? undefined : () => {
                   setModelDropdown(false)
@@ -7721,8 +7766,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     model: _modelPinActive === 'auto' ? '' : _modelPinActive,
                   })
                 }}
-              />,
-              document.body
+              />
             )}
             {/* Project picker — triggered from input bar */}
             <ProjectPicker
@@ -7774,7 +7818,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             {/* Reasoning effort dropdown portal */}
             {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>
-                <ReasoningEffortDropdown slot={activeSlot} currentEffort={currentSlot?.reasoning_effort || ''} defaultEffort={defaultEffort} levelsOverride={remoteCrew.isRemote ? (remoteCrew.capabilities?.effort_levels ?? []) : undefined} onClose={() => setReasoningEffortDropdown(false)} />
+                <ReasoningEffortDropdown slot={activeSlot} currentEffort={currentSlot?.reasoning_effort || ''} defaultEffort={inheritedEffort} model={shownModel === 'auto' ? '' : shownModel} levelsOverride={remoteCrew.isRemote ? (remoteCrew.capabilities?.effort_levels ?? []) : undefined} onClose={() => setReasoningEffortDropdown(false)} />
               </div>,
               document.body
             )}

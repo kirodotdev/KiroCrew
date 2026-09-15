@@ -23,6 +23,10 @@ interface Props {
   searchPlaceholder?: string
   disabled?: boolean
   id?: string
+  /** Render the list in the page instead of behind a summary trigger. For a
+   *  set the user manages (which models the picker offers) rather than picks
+   *  from, seeing every row at once beats a dropdown that hides the state. */
+  inline?: boolean
 }
 
 export default function MultiSelect({
@@ -35,6 +39,7 @@ export default function MultiSelect({
   searchPlaceholder,
   disabled,
   id,
+  inline = false,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -86,6 +91,91 @@ export default function MultiSelect({
     }
   }
 
+  // The search + bulk-actions header and the option list are the same in both
+  // shapes; only the shell around them differs (a Popover under a summary
+  // trigger, or the list standing in the page).
+  const panel = (
+    <>
+      <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
+        <div className="flex min-w-[9rem] flex-1 items-center gap-2">
+          <Search className="lucide-inline shrink-0 text-muted" aria-hidden />
+          <Input
+            ref={inputRef}
+            id={inline ? id : undefined}
+            autoFocus={!inline}
+            disabled={disabled}
+            value={filter}
+            onChange={event => setFilter(event.target.value)}
+            placeholder={searchPlaceholder ?? i18nT('components.searchableSelect.search')}
+            aria-label={searchPlaceholder ?? i18nT('components.searchableSelect.search')}
+            className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-[13px] outline-none focus-ring placeholder:text-muted"
+          />
+        </div>
+        {!!bulkActions?.length && (
+          <div className="flex shrink-0 items-center gap-1">
+            {bulkActions.map(action => (
+              <Btn key={action.label} type="button" disabled={disabled} onClick={action.onSelect} className="border-0 px-1.5 py-0.5 text-[11px]">
+                {action.label}
+              </Btn>
+            ))}
+          </div>
+        )}
+      </div>
+      <div
+        ref={listRef}
+        // Inline, the group role sits on the outer container so the key handler
+        // has an interactive owner; the popover shell has no such wrapper, so
+        // the list itself is the group there.
+        role={inline ? undefined : 'group'}
+        aria-label={inline ? undefined : label}
+        className={`overflow-y-auto p-1 ${inline ? 'max-h-[320px]' : 'max-h-[300px]'}`}
+      >
+        {filtered.length === 0 && (
+          <div className="px-3 py-2 text-[13px] italic text-muted">
+            {i18nT('components.searchableSelect.no_matches')}
+          </div>
+        )}
+        {filtered.map(option => {
+          const checked = selected.has(option.value)
+          return (
+            <label
+              key={option.value}
+              data-multi-select-option
+              aria-disabled={option.locked || undefined}
+              tabIndex={-1}
+              className={`flex min-h-11 items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors ${option.locked ? 'cursor-default opacity-70' : 'cursor-pointer hover:bg-bg-hover'}`}
+            >
+              <Checkbox
+                tabIndex={-1}
+                checked={checked}
+                disabled={option.locked || disabled}
+                aria-label={option.label}
+                onChange={event => onToggle(option.value, event.target.checked)}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-medium text-text">{option.label}</span>
+                {option.description && <span className="block truncate text-[11px] text-muted">{option.description}</span>}
+              </span>
+            </label>
+          )
+        })}
+      </div>
+    </>
+  )
+
+  if (inline) {
+    // Standing in the page: no trigger to open, so the summary that the
+    // trigger carried becomes a caption above the list, and disabled applies
+    // to the controls themselves rather than to a closed shell.
+    return (
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- container-level arrow/Home/End travel between the search box and the rows, which IS the keyboard path; the operable controls are the input, the checkboxes and the bulk buttons inside
+      <div role="group" aria-label={label} className={`flex flex-col gap-1.5 ${disabled ? 'opacity-70' : ''}`} onKeyDown={handleKeyDown}>
+        <span data-testid="multi-select-summary" className="text-[12px] text-muted">{summary}</span>
+        <div className="overflow-hidden rounded-lg border border-border bg-bg-elevated/40">{panel}</div>
+      </div>
+    )
+  }
+
   return (
     <Popover open={open} onOpenChange={next => { setOpen(next); if (!next) setFilter('') }}>
       <PopoverTrigger
@@ -104,60 +194,7 @@ export default function MultiSelect({
         onKeyDown={handleKeyDown}
         className="w-[min(360px,calc(100vw-32px))] max-h-[360px] overflow-hidden p-0"
       >
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
-          <div className="flex min-w-[9rem] flex-1 items-center gap-2">
-            <Search className="lucide-inline shrink-0 text-muted" aria-hidden />
-            <Input
-              ref={inputRef}
-              autoFocus
-              value={filter}
-              onChange={event => setFilter(event.target.value)}
-              placeholder={searchPlaceholder ?? i18nT('components.searchableSelect.search')}
-              aria-label={searchPlaceholder ?? i18nT('components.searchableSelect.search')}
-              className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-[13px] outline-none focus-ring placeholder:text-muted"
-            />
-          </div>
-          {!!bulkActions?.length && (
-            <div className="flex shrink-0 items-center gap-1">
-              {bulkActions.map(action => (
-                <Btn key={action.label} type="button" onClick={action.onSelect} className="border-0 px-1.5 py-0.5 text-[11px]">
-                  {action.label}
-                </Btn>
-              ))}
-            </div>
-          )}
-        </div>
-        <div ref={listRef} role="group" aria-label={label} className="max-h-[300px] overflow-y-auto p-1">
-          {filtered.length === 0 && (
-            <div className="px-3 py-2 text-[13px] italic text-muted">
-              {i18nT('components.searchableSelect.no_matches')}
-            </div>
-          )}
-          {filtered.map(option => {
-            const checked = selected.has(option.value)
-            return (
-              <label
-                key={option.value}
-                data-multi-select-option
-                aria-disabled={option.locked || undefined}
-                tabIndex={-1}
-                className={`flex min-h-11 items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors ${option.locked ? 'cursor-default opacity-70' : 'cursor-pointer hover:bg-bg-hover'}`}
-              >
-                <Checkbox
-                  tabIndex={-1}
-                  checked={checked}
-                  disabled={option.locked}
-                  aria-label={option.label}
-                  onChange={event => onToggle(option.value, event.target.checked)}
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium text-text">{option.label}</span>
-                  {option.description && <span className="block truncate text-[11px] text-muted">{option.description}</span>}
-                </span>
-              </label>
-            )
-          })}
-        </div>
+        {panel}
       </PopoverContent>
     </Popover>
   )

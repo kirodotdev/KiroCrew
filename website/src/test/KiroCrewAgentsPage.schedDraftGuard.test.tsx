@@ -234,8 +234,12 @@ describe('crew editor — schedule-draft discard guard', () => {
       await vi.advanceTimersByTimeAsync(8000)
       // The escape: Discard unlocks and the visible note switches to the
       // honest caveat — the request is not cancelled, so the schedule may
-      // still be created.
-      expect(discard).not.toBeDisabled()
+      // still be created. Awaited rather than asserted synchronously: the
+      // schedule form reads the shared model catalog, which on a degraded
+      // (empty) catalog refetches on the same 8s cadence as this grace, so
+      // the unlock and a refetch render can land in one fake-timer tick and
+      // React flushes them together on the next one.
+      await waitFor(() => expect(discard).not.toBeDisabled())
       expect(screen.getByTestId('crew-sched-discard-saving-note').textContent)
         .toMatch(/may still be created/i)
       fireEvent.click(discard)

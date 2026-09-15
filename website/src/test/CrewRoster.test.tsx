@@ -567,7 +567,7 @@ describe('crew editor — opening', () => {
     expect(await within(sheet).findByRole('combobox', { name: 'Agent Template' })).toHaveTextContent('oncall-agent')
 
     gotoPane(sheet, 'model')
-    expect(within(sheet).getByRole('combobox', { name: 'Edit default model' })).toHaveTextContent('claude-opus-5')
+    expect(within(sheet).getByRole('combobox', { name: 'Edit default model' })).toHaveTextContent('Claude Opus 5')
   })
 
   it('opens the create dialog from "Add crew member"', async () => {

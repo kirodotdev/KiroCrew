@@ -451,7 +451,12 @@ export function Toggle({ checked, onChange, disabled, label, describedBy, tone =
 
 export interface SliderProps {
   value: number
-  onChange: (value: number) => void
+  /** Fires when a pointer or keyboard gesture lands on a DIFFERENT notch. */
+  onChange?: (value: number) => void
+  /** Fires on EVERY pointer seek, arrow step, or Enter — including a landing on
+   *  the notch already shown. For a control where "the user picked this" is the
+   *  event (not "the value changed"), pass this instead of `onChange`. */
+  onPick?: (value: number) => void
   min?: number
   max?: number
   /** Snap increment. Discrete tick marks render automatically for small, even step counts. */
@@ -467,21 +472,24 @@ export interface SliderProps {
   ticks?: boolean
   /** When true, the knob pulses an accent halo while parked at the max notch. */
   emphasizeMax?: boolean
-  /** Independent reference marker on the same axis, such as a configured default. */
-  markerValue?: number
-  /** Visible and accessible label for markerValue. */
-  markerLabel?: string
+  /** Hide the fill and knob when the backing value is intentionally unknown.
+   *  The track remains interactive: the first click/arrow establishes a value. */
+  hidePosition?: boolean
+  /** Accessible value text used while `hidePosition` is true. */
+  unresolvedValueText?: string
   className?: string
   'aria-label'?: string
 }
 
 /** macOS-style range slider: accent fill, circular knob, optional step ticks.
  *  Fully custom (not <input type="range">) for precise theming. Controlled —
- *  pass `value` + `onChange`. Supports drag, click-to-seek, and full keyboard
- *  (arrows = step, Shift+arrow / PageUp-Down = ×10, Home/End = min/max). */
+ *  pass `value` + `onChange` (or `onPick`). Supports drag, click-to-seek, and
+ *  full keyboard (arrows = step, Shift+arrow / PageUp-Down = ×10,
+ *  Home/End = min/max, Enter = pick the shown notch). */
 export function Slider({
-  value, onChange, min = 0, max = 100, step = 1, disabled,
-  label, showValue, formatValue, ticks, emphasizeMax, markerValue, markerLabel, className = '', 'aria-label': ariaLabel,
+  value, onChange, onPick, min = 0, max = 100, step = 1, disabled,
+  label, showValue, formatValue, ticks, emphasizeMax,
+  hidePosition = false, unresolvedValueText, className = '', 'aria-label': ariaLabel,
 }: SliderProps) {
   const trackRef = React.useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = React.useState(false)
@@ -501,13 +509,13 @@ export function Slider({
   const pct = ((current - min) / range) * 100
   const display = formatValue ? formatValue(current) : String(current)
   const atMax = emphasizeMax && current >= max
-  const markerCurrent = markerValue === undefined ? null : clamp(markerValue)
-  const markerFrac = markerCurrent === null ? null : (markerCurrent - min) / range
-  const markerTransform = markerCurrent === min
-    ? 'translateX(0)'
-    : markerCurrent === max
-      ? 'translateX(-100%)'
-      : 'translateX(-50%)'
+  // A gesture landed on `next`: `onPick` hears every landing, `onChange` only
+  // a move. A drag re-lands on the same notch many times; consumers of onPick
+  // must be idempotent for that (the effort control's debounced commit is).
+  const land = (next: number) => {
+    onPick?.(next)
+    if (next !== value) onChange?.(next)
+  }
 
   // Discrete-stepper detection: a small, even number of steps. Discrete sliders
   // render tick marks AND spring to each notch even while dragging; continuous
@@ -541,7 +549,7 @@ export function Slider({
     const usable = rect.width - KNOB
     const frac = usable > 0 ? (clientX - rect.left - KNOB / 2) / usable : 0
     const next = snap(min + Math.min(1, Math.max(0, frac)) * range)
-    if (next !== value) onChange(next)
+    land(next)
   }
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -590,11 +598,12 @@ export function Slider({
       case 'PageDown': next = value - big; break
       case 'Home': next = min; break
       case 'End':  next = max; break
+      // Keyboard counterpart of clicking the notch the knob already sits on.
+      case 'Enter': if (!onPick) return; break
       default: return
     }
     e.preventDefault()
-    next = snap(next)
-    if (next !== value) onChange(next)
+    land(snap(next))
   }
 
 
@@ -607,16 +616,17 @@ export function Slider({
         </div>
       )}
 
-      {/* The track is the single interactive control: role=slider, owns pointer
-          (drag + click-to-seek) and keyboard. The knob below is decorative. */}
-      <div
-        ref={trackRef}
+      <div className="relative">
+        {/* The track is the single interactive control: role=slider, owns pointer
+            (drag + click-to-seek) and keyboard. The knob below is decorative. */}
+        <div
+          ref={trackRef}
         role="slider"
         aria-label={ariaLabel || label}
         aria-valuemin={min}
         aria-valuemax={max}
         aria-valuenow={current}
-        aria-valuetext={display}
+        aria-valuetext={hidePosition ? (unresolvedValueText || display) : display}
         aria-orientation="horizontal"
         aria-disabled={disabled || undefined}
         tabIndex={disabled ? -1 : 0}
@@ -635,18 +645,22 @@ export function Slider({
       >
         {/* groove */}
         <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-border" />
-        {/* filled — springs with the knob, ending at its center */}
-        <motion.div className="absolute left-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-accent overflow-hidden" style={{ width: motionPos }}>
-          {atMax && (
-            <motion.div
-              aria-hidden
-              className="absolute inset-y-0 w-1/3"
-              style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,.85), transparent)' }}
-              animate={{ x: ['-120%', '420%'] }}
-              transition={{ repeat: Infinity, duration: 1.6, ease: 'easeInOut', repeatDelay: 0.3 }}
-            />
-          )}
-        </motion.div>
+        {/* filled — springs with the knob, ending at its center. Hidden while
+            the inherited/model-owned value is unknown: painting it to an
+            arbitrary midpoint would claim the model runs at that level. */}
+        {!hidePosition && (
+          <motion.div className="absolute left-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-accent overflow-hidden" style={{ width: motionPos }}>
+            {atMax && (
+              <motion.div
+                aria-hidden
+                className="absolute inset-y-0 w-1/3"
+                style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,.85), transparent)' }}
+                animate={{ x: ['-120%', '420%'] }}
+                transition={{ repeat: Infinity, duration: 1.6, ease: 'easeInOut', repeatDelay: 0.3 }}
+              />
+            )}
+          </motion.div>
+        )}
         {/* notches on the bar itself */}
         {showTicks && tickFracs.map((f, i) => (
           <span
@@ -656,17 +670,6 @@ export function Slider({
             style={{ left: center(f) }}
           />
         ))}
-        {markerFrac !== null && markerLabel && markerValue === markerCurrent && (
-          <span
-            role="img"
-            aria-label={markerLabel}
-            data-slider-marker
-            className="absolute bottom-[calc(100%+4px)] z-10 whitespace-nowrap text-[10px] font-medium text-accent"
-            style={{ left: center(markerFrac), transform: markerTransform }}
-          >
-            {markerLabel}
-          </span>
-        )}
         {/* hover/drag tooltip — value of the step under the cursor */}
         {hoverVal !== null && (
           <div
@@ -680,16 +683,21 @@ export function Slider({
           </div>
         )}
         {/* knob (decorative — the track is the control). Positioner springs to
-            the value; the inner circle owns press/drag scale + focus ring. */}
-        <motion.div aria-hidden className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: motionPos }}>
-          <motion.div
-            className="relative w-[18px] h-[18px] rounded-full bg-white border border-black/10 shadow-[0_1px_3px_rgba(0,0,0,.3),0_0.5px_1px_rgba(0,0,0,.2)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)] group-focus-visible:ring-offset-1 group-focus-visible:ring-offset-[var(--bg)]"
-            animate={{ scale: reduceMotion ? 1 : (dragging ? 1.15 : 1), boxShadow: dragging ? '0 2px 7px rgba(0,0,0,.4)' : atMax ? '0 0 10px var(--accent)' : '0 1px 3px rgba(0,0,0,.3)' }}
-            whileHover={disabled || reduceMotion ? undefined : { scale: 1.12 }}
-            whileTap={disabled || reduceMotion ? undefined : { scale: 1.2 }}
-            transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 26 }}
-          />
-        </motion.div>
+            the value; the inner circle owns press/drag scale + focus ring. No
+            knob while the inherited value is unknown; the first interaction
+            establishes one and the controlled value makes it appear. */}
+        {!hidePosition && (
+          <motion.div aria-hidden className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: motionPos }}>
+            <motion.div
+              className="relative w-[18px] h-[18px] rounded-full bg-white border border-black/10 shadow-[0_1px_3px_rgba(0,0,0,.3),0_0.5px_1px_rgba(0,0,0,.2)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)] group-focus-visible:ring-offset-1 group-focus-visible:ring-offset-[var(--bg)]"
+              animate={{ scale: reduceMotion ? 1 : (dragging ? 1.15 : 1), boxShadow: dragging ? '0 2px 7px rgba(0,0,0,.4)' : atMax ? '0 0 10px var(--accent)' : '0 1px 3px rgba(0,0,0,.3)' }}
+              whileHover={disabled || reduceMotion ? undefined : { scale: 1.12 }}
+              whileTap={disabled || reduceMotion ? undefined : { scale: 1.2 }}
+              transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 26 }}
+            />
+          </motion.div>
+        )}
+        </div>
       </div>
 
       {/* discrete tick marks under the groove (static reference; the hover
