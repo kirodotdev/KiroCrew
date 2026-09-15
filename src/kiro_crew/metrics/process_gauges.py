@@ -22,7 +22,7 @@ name                                             kind        source
 ===============================================  ==========  ====================
 ``kirocrew.process.threads.python``              gauge       ``threading.active_count()``
 ``kirocrew.process.threads.os``                  gauge       ``/proc/self/task`` (Linux only)
-``kirocrew.process.open_fds``                    gauge       ``/proc/self/fd`` / ``/dev/fd``
+``kirocrew.process.open_fds``                    gauge       ``platform_compat.count_open_fds``
 ``kirocrew.process.memory.rss_bytes``            gauge       ``platform_compat.proc_rss_bytes``
 ``kirocrew.process.memory.peak_rss_bytes``       gauge       ``platform_compat.proc_peak_rss_bytes``
 ``kirocrew.process.cpu.seconds``                 gauge       ``platform_compat.proc_cpu_seconds``
@@ -179,7 +179,6 @@ def _gc_stats() -> list[dict[str, int]]:
 
 def _observations(
     reader: Callable[[], "int | float | None"],
-    attrs: "dict[str, str] | None" = None,
 ) -> "Callable[[CallbackOptions], Iterable[Observation]]":
     """Wrap a raw reader as an OTEL observable callback.
 
@@ -197,7 +196,7 @@ def _observations(
             return
         if value is None:
             return
-        yield Observation(value, attributes=attrs or {})
+        yield Observation(value, attributes={})
 
     return _callback
 

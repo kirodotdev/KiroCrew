@@ -110,13 +110,12 @@ OUTCOME_COMPLETED = "completed"
 OUTCOME_FAILED = "failed"
 OUTCOME_CANCELLED = "cancelled"
 
-#: Every value ``outcome`` can carry. Exactly the terminal statuses: an unknown
-#: status is not folded into ``other`` because :func:`record_tool_call_finished`
-#: returns without emitting for anything outside this set, so no such sample can
-#: exist. (Contrast :data:`TOOL_KIND_OTHER`, which IS reachable -- an unknown
-#: kind still belongs to a call whose duration is recorded.)
-OUTCOMES = frozenset({OUTCOME_COMPLETED, OUTCOME_FAILED, OUTCOME_CANCELLED})
-
+#: Every value ``outcome`` can carry, because it is also the gate on emitting at
+#: all: an unknown status is not folded into ``other`` because
+#: :func:`record_tool_call_finished` returns without emitting for anything outside
+#: this set, so no such sample can exist. (Contrast :data:`TOOL_KIND_OTHER`, which
+#: IS reachable -- an unknown kind still belongs to a call whose duration is
+#: recorded.)
 _TERMINAL_STATUSES = frozenset({OUTCOME_COMPLETED, OUTCOME_FAILED, OUTCOME_CANCELLED})
 
 # A turn cannot legitimately hold this many tool calls open at once, so a
