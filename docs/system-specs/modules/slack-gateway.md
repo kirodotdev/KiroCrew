@@ -513,7 +513,40 @@ A channel-neutral dispatch path that replaces the native `handle_message` stream
 4. `events.py` routes `interactive` Socket Mode event to `interactions.dispatch()`
 5. Approval/rejection sent to ACP, streaming resumes or stops
 6. Approval button message replaced with outcome text
-7. 120s timeout — auto-rejects if no click
+7. Timeout — steers an in-band approval-timeout notice into the running
+   turn (`deny_notice.steer_refusal_notice`: capability-gated, cause
+   `approval_timeout`, bounded by `constants.STEER_NOTICE_BOUND_SECS`,
+   best-effort), then auto-rejects. The model is told the prompt expired
+   unanswered instead of reading kiro-cli generic denial text as a human
+   refusal (dashboard precedent: PR #10217). Both Slack paths do this: the
+   native `_request_approval` arm (120s) below, and the transport path, where
+   `SlackApprovalDecider` records `last_deny_cause = approval_timeout` on
+   expiry and the channel-neutral `TurnDriver` steers it before `reject_tool`
+   (see the messaging spec's approval ladder).
+
+### Claim-winner invariant (timeout arm ↔ `handle_interaction`)
+
+The pending-approval registry entry is claimed with `pop(key)` BEFORE any
+await, on both sides:
+
+- `_request_approval`'s timeout arm pops first; only when it wins the claim
+  does it steer and answer the wire (`reject_tool`). A lost claim means a
+  click owns the answer; the arm then awaits the click's real outcome via the
+  shielded waiter future until it resolves -- no bound, no fabricated
+  rejection, nothing on the wire. Every way the click can end resolves that
+  future: its approve/reject completes, its write raises (the click
+  self-answers the wire), or a backend that stopped reading stdin is torn
+  down by the ACP tool-stall watchdog, which raises out of the parked write.
+- `handle_interaction` pops at lookup. If its `approve_tool`/`reject_tool`
+  raises after claiming, it answers the wire itself (`_reject_orphaned_tool`)
+  and resolves the waiter — a timeout arm that already returned can never
+  claim again.
+
+Exactly one side ever answers a given `request_id`: a second answer lands in
+the ACP client's popped-options cancelled-outcome fallback, which cancels the
+whole turn. Every fallback rejection that reaches the wire is recorded in the
+SEL audit trail by `_reject_orphaned_tool`. Editors of either function must
+preserve this contract.
 
 ## Session Management
 

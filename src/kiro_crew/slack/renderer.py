@@ -42,6 +42,7 @@ import os
 import time
 from typing import Any, Awaitable, Callable
 
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
     OutboundFile,
@@ -218,8 +219,11 @@ class SlackApprovalDecider:
     def __init__(self, session_key: str = "") -> None:
         self._futures: dict[str, asyncio.Future[bool]] = {}
         self.session_key = session_key
+        #: Why the LAST call denied -- see ``messaging.driver.ApprovalDecider``.
+        self.last_deny_cause = ""
 
     async def __call__(self, event: Any) -> bool:
+        self.last_deny_cause = ""
         rid = str(getattr(event, "request_id", ""))
         key = _approval_registry_key(self.session_key, rid)
         loop = asyncio.get_running_loop()
@@ -233,6 +237,9 @@ class SlackApprovalDecider:
             # Deny-by-default if the user never clicks within the window.
             return await asyncio.wait_for(fut, timeout=_APPROVAL_TIMEOUT)
         except asyncio.TimeoutError:
+            # Recorded for the driver, which steers the cause into the turn
+            # before it rejects, so the model hears "expired" not "denied".
+            self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
             return False
         finally:
             self._futures.pop(rid, None)

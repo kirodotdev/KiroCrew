@@ -983,3 +983,27 @@ BANNER = r"""
 # authorizers, the MCP tool schemas, and the store loader -- reads THIS name, so
 # there is one definition and no path can drift to a different cap.
 MAX_BANNER_CHARS = 500
+
+#: Why a tool call was denied, for the in-band notice's cause-specific wording
+#: (``dashboard.state.build_refusal_steer_notice``). Defined in this leaf rather
+#: than in ``dashboard.state`` because the messaging core (``messaging.driver``
+#: and the channel approval deciders) has to name a cause without importing the
+#: dashboard: a decider that lets its prompt expire records
+#: ``DENY_CAUSE_APPROVAL_TIMEOUT`` and the TurnDriver steers that cause before
+#: it rejects. ``dashboard.state`` re-exports every name, so its importers are
+#: unchanged.
+DENY_CAUSE_POLICY = "policy"
+DENY_CAUSE_INVALID_NAME = "invalid_name"
+DENY_CAUSE_HOOK_ERROR = "hook_error"
+DENY_CAUSE_BATCH_CASCADE = "batch_cascade"
+DENY_CAUSE_APPROVAL_TIMEOUT = "approval_timeout"
+DENY_CAUSE_APPROVAL_NO_BUDGET = "approval_no_budget"
+DENY_CAUSE_APPROVAL_UNDELIVERABLE = "approval_undeliverable"
+
+#: Upper bound on the best-effort in-band deny notice steered into a running
+#: turn before a permission rejection goes back on the wire. Every deny site
+#: (dashboard chat runner, native Slack handler, messaging TurnDriver) runs
+#: ``reject_tool`` plus a SEL audit write AFTER the steer, and an unbounded await
+#: on a backpressured ACP stdin would stall the reject that unblocks the turn.
+#: One number so the three surfaces cannot drift apart.
+STEER_NOTICE_BOUND_SECS = 5.0

@@ -56,7 +56,7 @@ import urllib.parse
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import split_trailing_protocol_suffix
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, split_trailing_protocol_suffix
 from kiro_crew.discord.client import (
     DISCORD_MAX_FILE_BYTES,
     DISCORD_MAX_FILES_PER_MESSAGE,
@@ -398,6 +398,8 @@ class DiscordApprovalDecider:
 
     def __init__(self, *, session_key: str) -> None:
         self._session_key = session_key
+        #: Why the LAST call denied -- see ``messaging.driver.ApprovalDecider``.
+        self.last_deny_cause = ""
 
     @staticmethod
     def key(session_key: str, request_id: str | int) -> str:
@@ -411,12 +413,16 @@ class DiscordApprovalDecider:
         return nonce
 
     async def __call__(self, event: Any) -> bool:
+        self.last_deny_cause = ""
         k = self.key(self._session_key, getattr(event, "request_id", ""))
         fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
         DiscordApprovalDecider._REGISTRY[k] = fut
         try:
             return bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
         except asyncio.TimeoutError:
+            # Recorded for the driver, which steers the cause into the turn
+            # before it rejects, so the model hears "expired" not "denied".
+            self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
             # Nobody pressed a button for the whole window, so a monitoring loop
             # bound to this session cannot act either -- record it so the loop
             # stops on its next wake instead of spending the rest of its cycle

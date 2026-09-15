@@ -37,7 +37,7 @@ import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import split_trailing_protocol_suffix
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, split_trailing_protocol_suffix
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
@@ -828,6 +828,8 @@ class TelegramApprovalDecider:
 
     def __init__(self, *, session_key: str) -> None:
         self._session_key = session_key
+        #: Why the LAST call denied -- see ``messaging.driver.ApprovalDecider``.
+        self.last_deny_cause = ""
 
     @staticmethod
     def key(session_key: str, request_id: str | int) -> str:
@@ -839,12 +841,16 @@ class TelegramApprovalDecider:
         cls._NONCES[key] = nonce
 
     async def __call__(self, event: Any) -> bool:
+        self.last_deny_cause = ""
         k = self.key(self._session_key, getattr(event, "request_id", ""))
         fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
         TelegramApprovalDecider._REGISTRY[k] = fut
         try:
             return bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
         except asyncio.TimeoutError:
+            # Recorded for the driver, which steers the cause into the turn
+            # before it rejects, so the model hears "expired" not "denied".
+            self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
             return False  # deny-by-default on timeout
         finally:
             TelegramApprovalDecider._REGISTRY.pop(k, None)

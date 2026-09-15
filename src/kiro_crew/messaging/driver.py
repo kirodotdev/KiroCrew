@@ -18,6 +18,8 @@ Slack-specific rendering lives in the Slack ``Renderer``
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import re
 from typing import Any, Awaitable, Callable
@@ -34,7 +36,12 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
 )
-from kiro_crew.constants import _STEERING_TAIL_PREFIX_RE
+from kiro_crew.constants import (
+    _STEERING_TAIL_PREFIX_RE,
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    STEER_NOTICE_BOUND_SECS,
+)
+from kiro_crew.deny_notice import steer_refusal_notice
 from kiro_crew.messaging.renderer import (
     COMPACTION,
     DONE,
@@ -65,7 +72,22 @@ APPROVAL_INTERACTIVE = "interactive"
 #: A decision callback: given a permission-request event, return True to
 #: approve. Used for the interactive ladder (each channel supplies its own,
 #: e.g. by awaiting a button click). Returns None/False => deny.
+#:
+#: A decider MAY also carry ``last_deny_cause``: set on every call, ``""`` for a
+#: human's own answer (or no answer worth explaining) and a ``DENY_CAUSE_*``
+#: name from ``kiro_crew.constants`` when the denial was the host's doing.
+#: Today that is :data:`DENY_CAUSE_APPROVAL_TIMEOUT`, recorded by every shipped
+#: decider when its prompt expires unanswered. The driver reads it after a
+#: denial and steers the cause into the running turn BEFORE it rejects, so the
+#: model is not left with kiro-cli's generic "User denied tool execution" for a
+#: call nobody answered. A plain callable without the attribute is a denial
+#: with no cause, exactly as before.
 ApprovalDecider = Callable[[Any], Awaitable[bool]]
+
+#: Strong references to the teardown-time orphan rejects scheduled by
+#: :meth:`TurnDriver._steer_deny_cause`: asyncio holds tasks weakly, and these
+#: are created exactly while the turn is unwinding.
+_orphan_rejects: "set[asyncio.Task[Any]]" = set()
 
 #: A synchronous predicate: given the PERMISSION EVENT, return True to
 #: auto-approve that tool regardless of the interactive ladder. The caller
@@ -735,6 +757,11 @@ class TurnDriver:
                 if approved:
                     await self.provider.approve_tool(event.request_id)
                 else:
+                    # Steer FIRST, reject SECOND: while the permission request
+                    # is unanswered the turn is provably in flight, so a
+                    # host-caused denial (an expired prompt) can be explained
+                    # to the model in-band instead of arriving as "User denied".
+                    await self._steer_deny_cause(event)
                     await self.provider.reject_tool(event.request_id)
                 sel().log_api_access(
                     caller="turn_driver",
@@ -896,6 +923,61 @@ class TurnDriver:
             # The consumer is injected code applying a side effect; a failure
             # there must never abort the rest of the turn's stream.
             logger.warning("session-directive consumer failed for %r", tool, exc_info=True)
+
+    async def _steer_deny_cause(self, event: Any) -> None:
+        """Explain a host-caused denial to the model before the reject goes out.
+
+        Reads the decider's ``last_deny_cause`` (see :data:`ApprovalDecider`).
+        Only :data:`DENY_CAUSE_APPROVAL_TIMEOUT` is steered: a human's Deny is a
+        real decision the generic tool result already describes correctly, and
+        deny-by-default with no decider is a configuration the model cannot act
+        on. Best-effort and bounded through
+        :func:`kiro_crew.deny_notice.steer_refusal_notice`; a failure there
+        never blocks the reject that follows.
+
+        Cancellation mid-steer (turn teardown) must still answer the wire: a
+        stranded ``session/request_permission`` blocks the subprocess forever and
+        wedges every later turn behind it. The reject is scheduled as a strongly
+        referenced task and awaited through ``asyncio.shield`` so it is stepped
+        while this coroutine unwinds; the denial is then audited exactly as the
+        normal path audits it (the re-raise skips the caller's audit row, and a
+        rejection that reached the wire but not the SEL trail is a gap in a
+        security control), and the cancellation re-raises.
+        """
+        cause = getattr(self.decider, "last_deny_cause", "") if self.decider is not None else ""
+        if cause != DENY_CAUSE_APPROVAL_TIMEOUT:
+            return
+        try:
+            await steer_refusal_notice(
+                self.provider,
+                str(getattr(event, "title", "") or ""),
+                "the tool-approval prompt went unanswered until its window closed",
+                cause=cause,
+                bound_secs=STEER_NOTICE_BOUND_SECS,
+            )
+        except asyncio.CancelledError:
+            reject = asyncio.ensure_future(self.provider.reject_tool(event.request_id))
+            _orphan_rejects.add(reject)
+            reject.add_done_callback(_orphan_rejects.discard)
+            rejected = False
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(reject)
+                rejected = True
+            if rejected:
+                with contextlib.suppress(Exception):
+                    sel().log_api_access(
+                        caller="turn_driver",
+                        operation="tool_permission",
+                        outcome="denied",
+                        source="messaging",
+                        resources=(
+                            f"request_id={event.request_id} mode={self.approval_mode} "
+                            "reason=approval_timeout_cancelled_mid_steer"
+                        ),
+                    )
+            raise
+        except Exception:
+            logger.debug("approval-timeout steer notice failed; rejecting anyway", exc_info=True)
 
     async def _approve(self, event: Any) -> bool:
         """Apply the approval ladder to a permission-request event."""
