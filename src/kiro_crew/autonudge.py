@@ -32,6 +32,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import tempfile
 import time
 import uuid
@@ -83,6 +84,7 @@ from kiro_crew.monitoring.models import (
     quarantine_monitor_state,
 )
 from kiro_crew.monitoring.registry import REVIEW_READY, kind_supports_objective
+from kiro_crew.platform import redact_via_context
 from kiro_crew.probes import targets
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 
@@ -172,6 +174,26 @@ APPROVAL_STALL_REASON = "approval_stalled"
 # ``_REPLACEABLE_LOOP_STOP_REASONS`` (via ``_TERMINAL_BOUND_REASONS`` below) for
 # exactly that reason.
 STRUCTURAL_TERMINAL_REASON = "structural_terminal"
+
+
+def new_goal_token() -> str:
+    """A fresh opaque identity for a goal write.
+
+    Random rather than content-derived so the value can be served next to the goal's
+    own redaction without becoming a brute-force oracle against the masked span. Its
+    only consumer compares it for equality against a value from a prior GET.
+    """
+    return secrets.token_hex(16)
+
+
+class AutoNudgeStaleBaseline(RuntimeError):
+    """Raised when an update's confirmed baseline does not match the stored goal.
+
+    Compared INSIDE ``_update_unserialized``'s lock, because any check outside it is the
+    TOCTOU this exists to close: a second client committing between a caller's read and
+    its write would otherwise have its goal silently overwritten last-write-wins. The
+    HTTP layer answers this with 409 so the loss becomes a refusal the user can see.
+    """
 
 
 class NudgeAdmissionRefused(RuntimeError):
@@ -369,6 +391,23 @@ def enabled() -> bool:
     return os.environ.get("KIROCREW_AUTONUDGE", "1").lower() not in ("0", "false", "no")
 
 
+def scrub_loop_text(value: Any) -> Any:
+    """Credential-scrub one serialized ``NudgeLoop`` field value.
+
+    ``None`` passes through untouched, because ``str(None)`` would turn an absent value
+    into a message that reads like content. Everything else is scrubbed through
+    ``platform.redact_via_context``, coerced with ``str()`` first when not already a
+    string -- coerced rather than blanked so the operator can still see the bad row.
+    """
+    if value is None:
+        return value
+    if isinstance(value, str):
+        if not value:
+            return value
+        return redact_via_context(value)
+    return redact_via_context(str(value))
+
+
 def repair_sentinel_path(raw: str) -> str:
     """Re-home a persisted ``stop_sentinel_path`` onto the CURRENT data home.
 
@@ -559,6 +598,10 @@ class NudgeLoop:
     last_fire_ts: float = 0.0
     created_ts: float = 0.0
     stop_sentinel_path: str = ""  # optional absolute path; if present loop halts
+    # Opaque per-write identity of ``message``, for stale-baseline (409) detection.
+    # RANDOM: a digest served beside its own redaction is an oracle for the masked span.
+    # NOT PERSISTED -- re-minted on every load, so a pre-restart value cannot authorise.
+    goal_token: str = ""
     # Wall-clock budget in seconds, measured from ``created_ts`` (0 = unlimited).
     # A cycle cap alone cannot bound COST: a loop whose turns are slow or whose
     # idle gap is long can run for days within its cycle budget. Anchoring on
@@ -997,6 +1040,9 @@ class AutoNudgeService:
                         )
                         loop_values["config_generation"] = 0
                 loop = NudgeLoop(**loop_values)
+                # Rotated on EVERY load: a human may have hand-edited the goal while we
+                # were down, so a pre-restart token must not authorise overwriting it.
+                loop.goal_token = new_goal_token()
                 if "monitor" in raw:
                     monitor_raw = raw["monitor"]
                     monitor_quarantined = False
@@ -1348,6 +1394,9 @@ class AutoNudgeService:
     @staticmethod
     def _serialize_loop(loop: NudgeLoop) -> dict[str, Any]:
         payload = asdict(loop)
+        # In-memory only: the load path re-mints it unconditionally, so a persisted
+        # value could never be honoured and writing one would dirty a clean store.
+        payload.pop("goal_token", None)
         if loop.monitor is None:
             # Preserve the legacy wire shape instead of eagerly migrating every
             # record the next time an unrelated loop is saved.
@@ -1726,6 +1775,7 @@ class AutoNudgeService:
                     idle_secs=cadence,
                     created_ts=created,
                     next_due_ts=due,
+                    goal_token=new_goal_token(),
                     monitor=monitor,
                     self_armed=self_armed,
                 )
@@ -1991,6 +2041,7 @@ class AutoNudgeService:
                 idle_secs=idle_secs,
                 max_cycles=max(0, int(max_cycles)),
                 created_ts=now,
+                goal_token=new_goal_token(),
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max(0, int(max_runtime_secs)),
                 # Anchor the first deadline at arm time (set BEFORE the
@@ -2090,6 +2141,7 @@ class AutoNudgeService:
         stopped_reason: str | None = None,
         banner: str | None = None,
         expected_generation: int | None = None,
+        expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
         # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
         # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -2107,14 +2159,21 @@ class AutoNudgeService:
                 stopped_reason=stopped_reason,
                 banner=banner,
                 expected_generation=expected_generation,
+                expect_fingerprint=expect_fingerprint,
             )
         )
         self._inflight_adds.add(inner)
 
         def _finish(t: "asyncio.Task[NudgeLoop | None]") -> None:
             self._inflight_adds.discard(t)
-            if not t.cancelled() and t.exception() is not None:
-                logger.warning("AutoNudge: detached update() failed", exc_info=t.exception())
+            if t.cancelled():
+                return
+            exc = t.exception()
+            # A stale baseline is the 409 this update's caller already surfaces, so it is
+            # an answer rather than a fault; every other exception keeps its warning.
+            if exc is None or isinstance(exc, AutoNudgeStaleBaseline):
+                return
+            logger.warning("AutoNudge: detached update() failed", exc_info=exc)
 
         inner.add_done_callback(_finish)
         return await asyncio.shield(inner)
@@ -2183,6 +2242,7 @@ class AutoNudgeService:
         stopped_reason: str | None = None,
         banner: str | None = None,
         expected_generation: int | None = None,
+        expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
         lock = await self._acquire_mutation_lock(loop_id)
         if lock is None:
@@ -2198,6 +2258,7 @@ class AutoNudgeService:
                 stopped_reason=stopped_reason,
                 banner=banner,
                 expected_generation=expected_generation,
+                expect_fingerprint=expect_fingerprint,
             )
         finally:
             lock.release()
@@ -2214,6 +2275,7 @@ class AutoNudgeService:
         stopped_reason: str | None = None,
         banner: str | None = None,
         expected_generation: int | None = None,
+        expect_fingerprint: str | None = None,
     ) -> NudgeLoop | None:
         async with self._lock:
             loop = self._loops.get(loop_id)
@@ -2241,6 +2303,12 @@ class AutoNudgeService:
                 # touching even one shared scheduling field so a non-HTTP
                 # caller cannot bypass structured policy.
                 return loop
+            # Under the lock, so no write can land between this and the mutation. The
+            # fingerprint is authoritative: a projection baseline cannot distinguish goals.
+            if expect_fingerprint is not None and (
+                not expect_fingerprint or loop.goal_token != expect_fingerprint
+            ):
+                raise AutoNudgeStaleBaseline(loop_id)
             # Keep typed nested values intact. ``asdict`` recursively converts
             # MonitorState to a plain dict, which is not a valid rollback value.
             previous = {item.name: getattr(loop, item.name) for item in fields(loop)}
@@ -2252,6 +2320,9 @@ class AutoNudgeService:
             if message is not None:
                 retarget = message != loop.message
                 loop.message = message
+                # A new goal is a new identity, so a baseline served for the old text
+                # cannot authorise a write.
+                loop.goal_token = new_goal_token()
                 if retarget:
                     # A changed instruction is a new config generation, so a
                     # structural-terminal verdict recorded for the OLD
@@ -2799,11 +2870,12 @@ class AutoNudgeService:
     def get_by_id(self, loop_id: str) -> NudgeLoop | None:
         """The loop with this id, or ``None``.
 
-        Public because the update authorizer holds only an opaque ``loop_id`` and
-        must resolve it to a slot key to decide whether a banner is supported
-        there. An accessor rather than reaching into ``_loops`` from another
-        module, matching ``get_by_slot``/``list_all``. Returns the LIVE object,
-        not a copy; callers here only read from it.
+        Public because ``autonudge_authz`` needs it twice: to resolve an opaque
+        ``loop_id`` to a slot key when deciding whether a banner is supported there,
+        and to read the CURRENT message when deciding whether a submitted one is
+        merely the scrubbed projection it served. An accessor rather than reaching
+        into ``_loops`` from another module, matching ``get_by_slot``/``list_all``.
+        Returns the LIVE object, not a copy; callers here only read from it.
         """
         return self._loops.get(loop_id)
 

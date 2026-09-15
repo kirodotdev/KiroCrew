@@ -176,6 +176,8 @@ def _serialize_monitor(loop: Any) -> dict[str, Any]:
 #: A GATED prompt loop is in NEITHER case: it carries probe state but still
 #: delivers down the legacy path, so its message and its cycle accounting are
 #: real, and ``is_structured_monitor_loop`` already excludes it.
+#:
+#: ``goal_token`` is an authorisation a client sends back, not a fact about the subject.
 _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
     {
         "monitor",
@@ -183,6 +185,7 @@ _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
         "banner",
         "stop_sentinel_path",
         "config_generation",
+        "goal_token",
         "max_cycles",
         "cycle_count",
         "last_fire_ts",

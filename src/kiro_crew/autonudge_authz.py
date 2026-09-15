@@ -30,9 +30,11 @@ from typing import Any, Callable, Protocol, runtime_checkable
 from kiro_crew import autonudge_provider_trust
 from kiro_crew.autonudge import (
     MAX_BANNER_CHARS,
+    AutoNudgeStaleBaseline,
     MonitorUpdateConflict,
     NudgeAdmissionRefused,
     is_channel_key,
+    scrub_loop_text,
 )
 from kiro_crew.autonudge_selfarm import forget_self_arm, record_self_arm
 from kiro_crew.config.loader import workspace_dir_for
@@ -42,6 +44,7 @@ from kiro_crew.monitoring.models import (
     MonitorCreationSurface,
     MonitorState,
 )
+from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -520,6 +523,54 @@ def banner_unsupported_for(slot_key: str, banner: Any) -> str | None:
     )
 
 
+def banner_is_echoed_projection(current: Any, banner: Any) -> bool:
+    """True when *banner* re-sends a stored banner that scrubbing would SHORTEN.
+
+    The banner twin of :func:`message_is_echoed_projection`, and it answers for the
+    same two shapes: the projection a client was served, and the raw stored text a
+    client that did not edit sends back. Both destroy operator text, because applying
+    either stores the redaction over the original.
+
+    Gated on the scrub actually changing the stored value, which is the part the message
+    guard does not need: a banner the scrub leaves ALONE projects to itself, so an equal
+    incoming value stores the identical bytes -- an idempotent set, not data loss, and
+    the only way PATCH can quiet a running loop.
+
+    Raises ``PlatformCompositionError`` when the policy cannot compose; the caller
+    answers with a 503.
+    """
+    stored = getattr(current, "banner", None)
+    if current is None or banner is None or not isinstance(stored, str):
+        return False
+    served = scrub_loop_text(stored)
+    if served == stored:
+        return False
+    return banner == served or banner == stored
+
+
+def message_is_echoed_projection(current: Any, message: Any) -> bool:
+    """True when *message* is the stored one, either raw or as its scrubbed projection.
+
+    THE single spelling of this predicate, and it has exactly ONE caller.
+    ``authorize_and_update_nudge`` evaluates it once against the row it is about to
+    write, so the decision rests on the same read the write uses rather than on a
+    second read an intervening update could have moved.
+
+    Both arms answer the same question -- did the operator edit anything? -- and the
+    RAW arm is the load-bearing one, because ``GET`` serves the stored message
+    verbatim: a client that saves without editing sends back text that is not its own
+    projection, so matching only the projection let the inbound redaction rewrite a
+    stored instruction the operator never touched, with no way back to the original.
+
+    Raises ``PlatformCompositionError`` on a host that cannot compose its policy; the
+    caller answers for that with a 503.
+    """
+    if current is None or message is None:
+        return False
+    stored = getattr(current, "message", None)
+    return message == stored or message == scrub_loop_text(stored)
+
+
 async def authorize_and_update_nudge(
     *,
     svc: Any,
@@ -530,6 +581,7 @@ async def authorize_and_update_nudge(
     active: Any = None,
     max_runtime_secs: Any = None,
     banner: Any = None,
+    expect_fingerprint: Any = None,
     source: str,
     caller: str = "",
 ) -> tuple[Any | None, str | None, int]:
@@ -580,13 +632,57 @@ async def authorize_and_update_nudge(
         return None, "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", 503
     if not loop_id:
         return _deny("loop_id required", 400)
+    # ONE read serving BOTH consumers below. Called directly, NOT behind a ``hasattr``
+    # probe, which would fail open and hide an attribute-name error at runtime.
+    row = svc.get_by_id(loop_id)
     if message is not None:
         if not isinstance(message, str):
             return _deny("message must be a string", 400)
         if len(message) > 8000:
             return _deny("message too long (max 8000 chars)", 400)
+        # A client that RE-SUBMITS the served projection has not edited the message, so
+        # applying it would destroy the stored instruction with no error and no warning.
+        try:
+            resubmitted_projection = message_is_echoed_projection(row, message)
+        except PlatformCompositionError:
+            return _deny(
+                "Safety checks are temporarily unavailable, so this goal cannot "
+                "be saved. If this keeps happening, restart Kiro Crew.",
+                503,
+            )
+        if resubmitted_projection:
+            message = None
+            # NOT silent: a caller that really did mean this exact text can see why it
+            # had no effect, since the popover sends `message` only when it was edited.
+            logger.info(
+                "autonudge update: dropped a `message` identical to the stored one "
+                "(raw or scrubbed) (loop=%s, source=%s); the stored message "
+                "is unchanged.",
+                scrub_loop_text(loop_id),
+                source,
+            )
+    if message is not None:
         message, _ = redact_exfiltration_urls(message)
         message, _ = redact_credentials(message)
+    if banner is not None:
+        # The same overwrite the message guard above prevents, on the field it did not
+        # cover: nulling means "leave unchanged" on this path, so the stored text stands.
+        try:
+            if banner_is_echoed_projection(row, banner):
+                logger.info(
+                    "autonudge update: dropped a `banner` identical to the stored one "
+                    "(raw or scrubbed) (loop=%s, source=%s); the stored "
+                    "banner is unchanged.",
+                    scrub_loop_text(loop_id),
+                    source,
+                )
+                banner = None
+        except PlatformCompositionError:
+            return _deny(
+                "Safety checks are temporarily unavailable, so this goal cannot "
+                "be saved. If this keeps happening, restart Kiro Crew.",
+                503,
+            )
     if banner is not None:
         # Optional and display-only; ``None`` reached here means "leave
         # unchanged" and was filtered by the caller, so a value present now is a
@@ -597,15 +693,9 @@ async def authorize_and_update_nudge(
         if banner_error:
             return _deny(banner_error, 400)
         if banner:
-            # This path holds an OPAQUE ``loop_id`` and no slot key, so the
-            # channel refusal has to resolve the loop first. Gated on a non-blank
-            # banner so a clear (``banner=""``) never pays for a lookup. An
-            # unresolvable id yields ``None`` and is left to ``svc.update``'s own
-            # 404 rather than guessed as channel-bound. Resolved through
-            # ``svc.get_by_id`` -- the SAME accessor the DELETE handler uses --
-            # and called directly rather than behind a ``hasattr`` probe, which
-            # would fail open and hide an attribute-name error at runtime.
-            bound = svc.get_by_id(loop_id)
+            # An OPAQUE ``loop_id`` with no slot key, so the refusal needs the stored
+            # row -- taken from the single read above, which the write also uses.
+            bound = row
             if bound is not None:
                 banner_channel_error = banner_unsupported_for(
                     getattr(bound, "slot_key", ""), banner
@@ -680,6 +770,17 @@ async def authorize_and_update_nudge(
             active=active,
             max_runtime_secs=max_runtime_secs,
             banner=banner,
+            expect_fingerprint=expect_fingerprint,
+        )
+    except AutoNudgeStaleBaseline:
+        # Refused under the store's own lock, so the newer goal is still there. 409 rather
+        # than a silent success: last-write-wins would destroy a change never seen.
+        _audit("denied", "stale baseline — nudge loop not updated")
+        return (
+            None,
+            "The goal changed in another window. Your text is kept — save again to compare "
+            "and choose.",
+            409,
         )
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.update failed: {type(exc).__name__}")
