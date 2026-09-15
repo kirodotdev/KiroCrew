@@ -135,6 +135,10 @@ _REFUSAL_SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE_REFUSED]]"
 # Also what :func:`strip_marker` substitutes for a marker it cannot cut to the
 # end of the text without truncating an envelope around it.
 _DEFANGED = "[[kirocrew-marker-removed]]"
+# Digest of the directive THIS process emitted on the current dispatch, written by
+# :func:`vouch` and cleared by :func:`clear_vouch`. A one-slot list rather than a
+# module global so the writers are named functions with a docstring apiece.
+_VOUCHED: list[str] = []
 # Substituted for the middle of an over-long refusal by :func:`tag_refusal`, so
 # the elision is visible rather than a silent cut.
 _ELIDED_NOTE = " [... {n} chars elided so the refusal tag survives delivery ...] "
@@ -226,6 +230,56 @@ def tag_refusal(text: str) -> str:
     return f"{text}\n{_REFUSAL_SENTINEL}"
 
 
+def content_free_digest(payload: str, _len: int = 12) -> str:
+    """Short stable digest of *payload* that reveals none of its content.
+
+    The vouch record is a correlation handle, not a signature: two calls naming
+    the same digest saw the same payload, and two naming different digests did
+    not. Deliberately truncated for that reason, and deliberately content-free
+    so the record does not retain a model-visible payload past the call that
+    made it.
+
+    Returns a marker instead of a digest for empty input, so a caller can print
+    or compare the result unconditionally without a special case.
+    """
+    if not payload:
+        return "empty"
+    return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:_len]
+
+
+def vouch(text: str) -> str:
+    """Record that THIS process just produced *text* as a genuine directive.
+
+    Positive provenance, and the reason forgery fails by construction rather than
+    by author discipline. :func:`neutralize_markers` protects the error strings a
+    caller KNOWS are not directives, but that is a per-site defence, and the
+    "a directive tool RETURNS its declines" convention routes declines through
+    handler ``return`` statements a future author must remember to defang.
+    Vouching inverts it: the ONE producer of a real marker (``_emit_directive``)
+    says so, and :func:`refuse_if_markerless` defangs every marker nobody vouched
+    for.
+
+    A single module slot is safe because MCP dispatch is strictly sequential --
+    one worker at a time, joined before the next dispatch, the same property
+    ``mcp_caller.set_current_caller`` relies on -- and :func:`clear_vouch` runs
+    before each dispatch so a previous call's directive can never authorize this
+    one's. A DIGEST, not the text: the record is a correlation handle, and
+    keeping the bytes would retain a payload past the call that made it.
+    """
+    _VOUCHED[:] = [content_free_digest(text)]
+    return text
+
+
+def clear_vouch() -> None:
+    """Forget any vouched directive. Called before each tool dispatch."""
+    _VOUCHED.clear()
+
+
+def is_vouched(text: str) -> bool:
+    """True iff *text* is the directive this process vouched for on THIS call."""
+    return bool(_VOUCHED) and _VOUCHED[0] == content_free_digest(text)
+
+
 def preserve_tail_marker(full: str, truncated: str) -> str:
     """Re-attach a tail-anchored marker that truncating *full* into *truncated* cut.
 
@@ -266,14 +320,27 @@ def refuse_if_markerless(tool_name: str, text: str) -> str:
     because argument validation runs in the dispatch wrapper AHEAD of the
     handler and returns a bare ``"Error: …"`` string.
 
+    A marker is honoured here ONLY if :func:`vouch` recorded it on this call.
+    Trusting :func:`has_marker` instead is what let a rejection that echoed a
+    model-chosen argument name pass a forged marker straight through — the check
+    asked "does this look like a directive?" when the only safe question is "did
+    we make one?". Defanging the error strings closes the paths a caller
+    remembered; this closes the rest.
+
     Deliberately keyed on the tool NAME alone and therefore inert elsewhere: the
     consumer honours a directive only from a call carrying this server's
     :data:`CORE_MCP_SERVER` identity, so tagging text cannot grant anything.
     Tagging is diagnostic; it changes how the consumer LOGS a result it was
     already going to drop, never whether an effect applies.
     """
-    if not text or tool_name not in DIRECTIVE_TOOLS or has_marker(text):
+    if not text or tool_name not in DIRECTIVE_TOOLS:
         return text
+    if has_marker(text):
+        if is_vouched(text):
+            return text
+        # Marker-shaped but unvouched: this process did not emit it, so it came
+        # in as content. Defang, then treat it as the decline it really is.
+        text = neutralize_markers(text)
     return tag_refusal(text)
 
 
