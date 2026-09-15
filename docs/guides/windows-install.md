@@ -671,6 +671,43 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
 - **Web terminal / interactive SSO login panels** — unavailable on Windows
   (they need `pty`/`fork`/`termios`); they return a clear "not supported on
   Windows" response instead of crashing.
+- **Desktop shortcut shows a gray/blank window and exits, while `kirocrew
+  gateway` + a browser work fine** — Chromium cannot start a sandboxed child
+  process on this device. The launcher log shows children dying at launch with
+  `exit_code=-2147483645` (`0x80000003`, `STATUS_BREAKPOINT`) and, for the GPU,
+  `GPU process isn't usable. Goodbye.` This is not a graphics fault and not a
+  shortcut or gateway problem: it is usually software that injects a DLL into
+  every process (endpoint security, or a display driver such as DisplayLink),
+  which the sandbox then refuses to admit.
+
+  The real fix is a **process exclusion for the Kiro Crew executable** in the
+  endpoint security product, which keeps the sandbox intact. The faulting
+  module named in Event Viewer's `AppCrash` entry identifies what to exclude.
+
+  Where device policy makes that impossible, `KIROCREW_SANDBOX_COMPAT` relaxes
+  one hardening layer at a time. Set it as an environment variable and relaunch
+  — the equivalent command-line flag is dropped when an instance already holds
+  the single-instance lock, and a shortcut's arguments do not survive an app
+  update. Try these in order, narrowest first; each keeps the sandbox on:
+
+  | Value | Relaxes |
+  |---|---|
+  | `renderer-code-integrity` | renderer DLL signing checks (mirrors Chrome's `RendererCodeIntegrityEnabled` policy) |
+  | `renderer-app-container` | the renderer's AppContainer/LPAC confinement |
+  | `network-service-sandbox` | the network service's sandbox |
+  | `gpu-sandbox` | the GPU process's sandbox only |
+  | `off` | **last resort** — the sandbox for *every* child process |
+
+  Values may be combined (`renderer-code-integrity,gpu-sandbox`). Only these
+  values are accepted; anything else is ignored and named in the log rather
+  than being read as a broader opt-out. `off` weakens renderer, GPU and utility
+  isolation for every launch and logs a warning each time — treat it as a
+  diagnostic step, not a steady state.
+
+  Related: `KIROCREW_DISABLE_GPU=1` disables hardware acceleration outright,
+  for hosts with no usable GPU (a VM guest, an RDP session, headless Linux).
+  That is a different failure — the GPU process cannot create a rendering
+  context — and it does not help when the sandbox is what is failing.
 
 ## Related
 

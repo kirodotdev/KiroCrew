@@ -177,6 +177,8 @@
       "native-logging.js",
       "crash-collector.js",
       "disable-gpu.js",
+      "sandbox-compat.js",
+      "windows-sandbox-advice.js",
       "early-boot-guard.js",
       "memory-watch-log.js",
       "frame-load-log.js",

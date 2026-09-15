@@ -5,6 +5,8 @@ const path = require("path");
 
 const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
 const { createRendererRecovery } = require("./renderer-recovery");
+const { describeWindowsSandboxFailure } = require("./windows-sandbox-advice");
+const { sandboxIsDisabled } = require("./sandbox-compat");
 const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide } = require("./hide-to-tray");
@@ -1014,8 +1016,25 @@ function createWindowLifecycle(options) {
           glog(`renderer recovery reload failed: ${error && error.message}`);
         });
       },
-      onGiveUp: ({ reason }) => {
+      onGiveUp: ({ reason, exitCode }) => {
         glog(`renderer recovery exhausted (reason=${reason}); leaving the window as-is`);
+        // A blocked sandbox is the one exhaustion cause the reload could never
+        // have fixed, and the details to identify it are only in hand here.
+        // Reading env+argv back (rather than threading state down from main)
+        // also catches a raw `--no-sandbox`, which reaches Chromium without
+        // this app's involvement at all.
+        const advice = describeWindowsSandboxFailure({
+          platform: process.platform,
+          reason,
+          exitCode,
+          alreadyOptedOut: sandboxIsDisabled({
+            env: process.env,
+            argv: process.argv,
+          }),
+        });
+        if (!advice) return;
+        glog(`renderer recovery: ${advice.cause}`);
+        for (const line of advice.remedy) glog(`renderer recovery: ${line}`);
       },
     });
 

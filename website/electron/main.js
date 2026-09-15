@@ -35,6 +35,7 @@ const { identityFamily } = require("./instance-guard");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
+const { initSandboxCompat } = require("./sandbox-compat");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
@@ -329,6 +330,22 @@ if (!app.requestSingleInstanceLock()) {
   // handoff can repair the renderer that already launched.
   initGpuPolicy({
     appendSwitch: (name) => app.commandLine.appendSwitch(name),
+    env: process.env,
+    argv: process.argv,
+    log: glog,
+  });
+
+  // Same timing constraint and the same reason for living in the lock-winner
+  // branch as the GPU policy above: Chromium reads sandbox switches during
+  // initialization, and a second-instance argv handoff cannot repair children
+  // that already failed to launch.
+  initSandboxCompat({
+    // Forwarded without an explicit `undefined`: a valueless Chromium switch
+    // must reach the native binding as a one-argument call.
+    appendSwitch: (name, value) =>
+      value === undefined
+        ? app.commandLine.appendSwitch(name)
+        : app.commandLine.appendSwitch(name, value),
     env: process.env,
     argv: process.argv,
     log: glog,
