@@ -350,13 +350,51 @@ def test_session_info_missing_or_malformed_meta_is_safe() -> None:
 
 def test_session_info_unhandled_kind_is_dropped() -> None:
     handle = _handle(ACP_BACKEND_KAS)
-    # recap/focus_update/etc. are session_info kinds Group A does not map — they
+    # focus_update/etc. are session_info kinds Group A does not map — they
     # must drop cleanly (no event, no crash), not fall through to the parser.
+    # (recap graduated out of this set: it maps to EVENT_SESSION_RECAP below.)
     events = _update(
         handle,
-        {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "recap", "text": "so far..."}}},
+        {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "focus_update", "text": "x"}}},
     )
     assert events == []
+
+
+def test_session_info_recap_maps_to_session_recap_event() -> None:
+    from kiro_crew.acp.types import EVENT_SESSION_RECAP
+
+    handle = _handle(ACP_BACKEND_KAS)
+    events = _update(
+        handle,
+        {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "recap", "text": "Goal: X. Task: Y. Next: Z."}}},
+    )
+    assert [e.kind for e in events] == [EVENT_SESSION_RECAP]
+    assert events[0].text == "Goal: X. Task: Y. Next: Z."
+
+
+def test_session_info_recap_redacts_backend_echoed_text() -> None:
+    # Backend-echoed, LLM-influenced text must pass the same scrub as the
+    # summarization/steering kinds before reaching any surface.
+    from kiro_crew.acp.types import EVENT_SESSION_RECAP
+
+    handle = _handle(ACP_BACKEND_KAS)
+    secret = "found key AKIAIOSFODNN7EXAMPLE in output"
+    events = _update(
+        handle,
+        {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "recap", "text": f"resume; {secret}"}}},
+    )
+    assert [e.kind for e in events] == [EVENT_SESSION_RECAP]
+    assert "AKIAIOSFODNN7EXAMPLE" not in events[0].text
+
+
+def test_session_info_recap_empty_text_is_dropped() -> None:
+    handle = _handle(ACP_BACKEND_KAS)
+    for text in ("", "   ", None):
+        events = _update(
+            handle,
+            {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "recap", "text": text}}},
+        )
+        assert events == []
 
 
 # ── available_commands_update → recognized-and-dropped ───────────────────────

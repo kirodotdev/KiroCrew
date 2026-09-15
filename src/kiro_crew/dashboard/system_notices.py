@@ -11,7 +11,7 @@ the real turn, or vice versa.
 
 SESSION_RELOAD_KIND = "session_reload"
 
-SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset({"compaction", SESSION_RELOAD_KIND})
+SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset({"compaction", SESSION_RELOAD_KIND, "recap"})
 
 
 def is_system_notice(role: object, meta: object) -> bool:
