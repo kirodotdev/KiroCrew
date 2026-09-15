@@ -103,8 +103,14 @@ class TestModelSupportsEffort:
 class TestEffortSettingsKey:
     @pytest.mark.parametrize(
         "model",
-        ["claude-opus-4.7", "claude-sonnet-4.6", "claude-fable-5",
-         "global.anthropic.claude-opus-4-8[1m]", None, "auto"],
+        [
+            "claude-opus-4.7",
+            "claude-sonnet-4.6",
+            "claude-fable-5",
+            "global.anthropic.claude-opus-4-8[1m]",
+            None,
+            "auto",
+        ],
     )
     def test_claude_and_default_use_output_config(self, model: str | None):
         assert effort_settings_key(model) == "output_config"
@@ -228,11 +234,7 @@ class TestCliOverlay:
         cli = settings_dir / "cli.json"
         cli.write_text(
             json.dumps(
-                {
-                    "chat.modelDefaults": {
-                        model: {stale_key: {"effort": "low", "preserved": True}}
-                    }
-                }
+                {"chat.modelDefaults": {model: {stale_key: {"effort": "low", "preserved": True}}}}
             )
         )
 
@@ -266,7 +268,9 @@ class TestFactoryEffortThreading:
     into effort_per_model for BOTH ACP backends — otherwise a cold start
     (or the handler's reset-then-respawn) never applies the persisted effort."""
 
-    def _capture_provider_kwargs(self, provider_name: str, *, config_effort: str = "", **factory_call):
+    def _capture_provider_kwargs(
+        self, provider_name: str, *, config_effort: str = "", **factory_call
+    ):
         # Both factory branches lazily `from kiro_crew.providers.acp import
         # AcpProvider` (circular-import workaround). That import runs inside
         # create_provider_factory(), so patch the source module symbol BEFORE

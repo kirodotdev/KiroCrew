@@ -11145,7 +11145,10 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "추론 노력(추출)",
+        "effort_hint": "기본값은 수준을 선택할 때까지 High effort로 동작합니다.",
+        "effort_model_unknown_hint": "모델은 실행 시점에 선택되므로, effort는 확인된 모델이 지원할 때만 적용됩니다. 기본값은 High effort로 동작합니다."
       }
     },
     "localStorageDebug": {

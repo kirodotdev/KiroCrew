@@ -2111,6 +2111,16 @@ class KnowledgeConfig:
             "ingest already running is never resized under it.",
         ),
     )
+    extraction_effort: str = field(
+        default="",
+        metadata=_meta(
+            "Extraction Effort",
+            "Reasoning effort for the document-extraction LLM pool. Empty "
+            "runs the default high. Only applies on reasoning-capable models.",
+            enum=["", *EFFORT_LEVELS],
+            restart=True,
+        ),
+    )
 
 
 def _read_auto_add_documents(knowledge_data: dict) -> bool:

@@ -11145,7 +11145,10 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "提取投入",
+        "effort_hint": "选择级别之前,默认使用 High effort。",
+        "effort_model_unknown_hint": "模型在运行时才确定,因此只有当解析出的模型支持 effort 时才会应用。默认使用 High effort。"
       }
     },
     "localStorageDebug": {
