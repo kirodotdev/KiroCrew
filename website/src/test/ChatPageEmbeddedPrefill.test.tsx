@@ -19,7 +19,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { StrictMode, useEffect, useRef, useState } from 'react'
-import { render, screen, act, waitFor } from '@testing-library/react'
+import { render, act, waitFor } from '@testing-library/react'
+import { composerValue } from './helpers'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -146,8 +147,6 @@ beforeEach(() => {
 })
 
 describe('embedded ChatPage prefill on first activation (artifact companion)', () => {
-  const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
-
   it('seeds the composer with the staged prompt the FIRST time the panel opens', async () => {
     const store = makeStore()
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -167,7 +166,9 @@ describe('embedded ChatPage prefill on first activation (artifact companion)', (
       ;(globalThis as unknown as { __openCompanion: () => void }).__openCompanion()
     })
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    await waitFor(() => expect(document.querySelector('[data-composer-input]')).not.toBeNull())
+    await act(async () => {})
+    await waitFor(() => expect(composerValue()).toBe(PROMPT))
     expect(sessionStorage.getItem('kirocrew_prefill')).toBeNull()
   })
 })

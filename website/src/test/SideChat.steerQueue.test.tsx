@@ -6,8 +6,22 @@ import reducer, {
   sseSideResult, sseSideQueue, sideReleaseConsumed, sideOptimisticAppend, sideOptimisticRollback,
   sideClose as sideCloseAction,
 } from '../store/chatSlice'
-import { renderWithProviders, createTestStore } from './helpers'
+import {
+  renderWithProviders, createTestStore,
+  composerRoot, composerValue, setComposerSelection, typeIntoComposer,
+} from './helpers'
 import dashboardReducer from '../store/dashboardSlice'
+
+// The SideChat composer is now a Lexical contenteditable (ChatInput gets
+// `lexicalComposer`), mounted inside `[data-side-chat-input]` and LAZY-loaded.
+// These scenes render exactly one composer (the side one), so the default
+// document-scoped drivers resolve it. `sideComposer()` waits for the lazy mount
+// + handle before returning the root; every driver then takes that root.
+async function sideComposer(): Promise<HTMLElement> {
+  await waitFor(() => expect(document.querySelector('[data-composer-input]')).not.toBeNull())
+  await act(async () => {})
+  return composerRoot()
+}
 
 vi.mock('../api/client', () => ({
   api: {
@@ -67,7 +81,7 @@ describe('SideChat busy-send: steer vs queue', () => {
     const user = userEvent.setup()
     renderWithProviders(<SideChat slot={SLOT} />, { store: busyState() })
 
-    await user.type(screen.getByLabelText('Ask a side question'), 'actually use QUIC')
+    await typeIntoComposer('actually use QUIC', await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
 
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalledWith(SLOT, 'actually use QUIC', { steer: true }))
@@ -79,7 +93,7 @@ describe('SideChat busy-send: steer vs queue', () => {
 
     await user.click(screen.getByTestId('busy-send-caret'))
     await user.click(screen.getByTestId('busy-send-mode-queue'))
-    await user.type(screen.getByLabelText('Ask a side question'), 'later please')
+    await typeIntoComposer('later please', await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
 
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalledWith(SLOT, 'later please', undefined))
@@ -90,16 +104,21 @@ describe('SideChat busy-send: steer vs queue', () => {
     const store = createTestStore({ dashboard: dashInitial, chat: { ...initial, activeSlot: SLOT } })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
-    await user.type(screen.getByLabelText('Ask a side question'), 'fresh question')
+    await typeIntoComposer('fresh question', await sideComposer())
     expect(screen.queryByTestId('busy-send-button')).not.toBeInTheDocument()
     await user.click(screen.getByLabelText('Send'))
 
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalledWith(SLOT, 'fresh question', undefined))
   })
 
-  it('the composer stays usable while a turn runs', () => {
+  it('the composer stays usable while a turn runs', async () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store: busyState() })
-    expect(screen.getByLabelText('Ask a side question')).not.toBeDisabled()
+    // The rich composer is a contenteditable, not a disable-able form control:
+    // "usable" now means it mounts and accepts input rather than `!disabled`.
+    const root = await sideComposer()
+    expect(root.getAttribute('contenteditable')).toBe('true')
+    await typeIntoComposer('still typeable', root)
+    expect(composerValue(root)).toBe('still typeable')
   })
 
   it('a rejected submit keeps BOTH its text and whatever was typed since', async () => {
@@ -114,16 +133,16 @@ describe('SideChat busy-send: steer vs queue', () => {
     )
     renderWithProviders(<SideChat slot={SLOT} />, { store: busyState() })
 
-    const box = screen.getByLabelText('Ask a side question')
-    await user.type(box, 'rejected one')
+    const box = await sideComposer()
+    await typeIntoComposer('rejected one', box)
     await user.click(screen.getByTestId('busy-send-button'))
     // onMutate cleared the draft; the user starts a new thought while it is in flight.
-    await waitFor(() => expect(box).toHaveValue(''))
-    await user.type(box, 'a new thought')
+    await waitFor(() => expect(composerValue(box)).toBe(''))
+    await typeIntoComposer('a new thought', box)
 
     failRequest(new Error('side queue is full (max 20)'))
 
-    await waitFor(() => expect(box).toHaveValue('a new thought\n\nrejected one'))
+    await waitFor(() => expect(composerValue(box)).toBe('a new thought\n\nrejected one'))
   })
 })
 
@@ -148,7 +167,8 @@ describe('SideChat queue cards', () => {
     // `chat.side_queue` frame), so the card retires without any WebSocket
     // delivery — a dropped socket cannot leave it stale forever.
     await waitFor(() => expect(store.getState().chat.slotSide[SLOT].queue).toEqual([]))
-    await waitFor(() => expect(screen.getByLabelText('Ask a side question')).toHaveValue('queued text'))
+    const box = await sideComposer()
+    await waitFor(() => expect(composerValue(box)).toBe('queued text'))
 
     // And the frame arriving afterwards is a no-op rather than a double-apply.
     store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-1' }))
@@ -164,14 +184,13 @@ describe('SideChat queue cards', () => {
 
     // Typing while something is queued is the intended flow now that the composer
     // stays live, so this is the common case — not an edge one.
-    await user.type(screen.getByLabelText('Ask a side question'), 'half-typed')
+    const box = await sideComposer()
+    await typeIntoComposer('half-typed', box)
     await user.click(screen.getByLabelText('Cancel queued message'))
 
     // Both are typed work and the released text has no other home, so neither
     // may be discarded — they are merged for the user to edit.
-    await waitFor(() =>
-      expect(screen.getByLabelText('Ask a side question')).toHaveValue('half-typed\n\nqueued text')
-    )
+    await waitFor(() => expect(composerValue(box)).toBe('half-typed\n\nqueued text'))
   })
 
   it('a demoted steer says so instead of only showing a card', async () => {
@@ -179,7 +198,7 @@ describe('SideChat queue cards', () => {
     vi.mocked(api.sideTurn).mockResolvedValueOnce({ ok: true, queued: true, demoted: true, queue_id: 'q-9', depth: 1 })
     renderWithProviders(<SideChat slot={SLOT} />, { store: busyState() })
 
-    await user.type(screen.getByLabelText('Ask a side question'), 'too late')
+    await typeIntoComposer('too late', await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
 
     await waitFor(() =>
@@ -227,12 +246,13 @@ describe('SideChat queue cards', () => {
 
     store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-1', content: 'released by frame' }))
 
-    await waitFor(() => expect(screen.getByLabelText('Ask a side question')).toHaveValue('released by frame'))
+    const box = await sideComposer()
+    await waitFor(() => expect(composerValue(box)).toBe('released by frame'))
     // Released exactly once — the stash is cleared, so a redelivered frame or the
     // late HTTP response cannot append it a second time.
     expect(store.getState().chat.slotSide[SLOT].releasedText).toBeUndefined()
     store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-1', content: 'released by frame' }))
-    await waitFor(() => expect(screen.getByLabelText('Ask a side question')).toHaveValue('released by frame'))
+    await waitFor(() => expect(composerValue(box)).toBe('released by frame'))
   })
 
   it('a cancel the server refuses leaves the card standing and reports it', async () => {
@@ -249,7 +269,7 @@ describe('SideChat queue cards', () => {
 
     await waitFor(() => expect(screen.getByText('Could not cancel that queued question')).toBeInTheDocument())
     expect(store.getState().chat.slotSide[SLOT].queue).toHaveLength(1)
-    expect(screen.getByLabelText('Ask a side question')).toHaveValue('')
+    expect(composerValue(await sideComposer())).toBe('')
   })
 
   it('edits through the server and takes the content from its frame', async () => {
@@ -308,12 +328,12 @@ describe('SideChat queue cards', () => {
     await waitFor(() => expect(api.sideQueueEdit).toHaveBeenCalledWith(SLOT, 'q-1', 'new wording'))
 
     view.rerender(<SideChat slot="other-slot" />)
-    const composer = () => screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    await user.type(composer(), 'typing in B')
+    const box = await sideComposer()
+    await typeIntoComposer('typing in B', box)
 
     await act(async () => { rejectEdit(new Error('queue entry not found')); await Promise.resolve() })
     await waitFor(() => expect(readSideChatDraft(SLOT)).toContain('new wording'))
-    expect(composer().value).toBe('typing in B')
+    expect(composerValue(box)).toBe('typing in B')
     expect(readSideChatDraft('other-slot')).toBe('typing in B')
   })
 
@@ -452,7 +472,7 @@ describe('chatSlice steer frame placement', () => {
     const user = userEvent.setup()
     await user.click(screen.getByTestId('busy-send-caret'))
     await user.click(screen.getByTestId('busy-send-mode-steer'))
-    await user.type(screen.getByLabelText('Ask a side question'), raw)
+    await typeIntoComposer(raw, await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalled())
 
@@ -491,7 +511,7 @@ describe('chatSlice steer frame placement', () => {
     const user = userEvent.setup()
     await user.click(screen.getByTestId('busy-send-caret'))
     await user.click(screen.getByTestId('busy-send-mode-steer'))
-    await user.type(screen.getByLabelText('Ask a side question'), raw)
+    await typeIntoComposer(raw, await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalled())
 
@@ -510,12 +530,12 @@ describe('chatSlice steer frame placement', () => {
 
     // And a cancel arriving as a WS frame — no HTTP response involved — releases raw.
     store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-requeued' }))
-    await waitFor(() => {
-      const box = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-      expect(box.value).toContain('AKIAIOSFODNN7EXAMPLE')
+    await waitFor(async () => {
+      const box = await sideComposer()
+      expect(composerValue(box)).toContain('AKIAIOSFODNN7EXAMPLE')
     })
-    const box = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    expect(box.value).not.toContain('[REDACTED')
+    const box = await sideComposer()
+    expect(composerValue(box)).not.toContain('[REDACTED')
   })
 
   it('a requeued steer card keeps the steer id it came from', () => {
@@ -593,9 +613,9 @@ describe('chatSlice steer frame placement', () => {
       { store },
     )
 
-    const box = await screen.findByLabelText<HTMLTextAreaElement>('Ask a side question')
-    await waitFor(() => expect(box.value).toContain('the cancelled question'))
-    const hits = box.value.split('the cancelled question').length - 1
+    const box = await sideComposer()
+    await waitFor(() => expect(composerValue(box)).toContain('the cancelled question'))
+    const hits = composerValue(box).split('the cancelled question').length - 1
     expect(hits).toBe(1)
   })
 
@@ -605,8 +625,8 @@ describe('chatSlice steer frame placement', () => {
     const store = busyState({ releasedText: 'same words' })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
-    const box = await screen.findByLabelText<HTMLTextAreaElement>('Ask a side question')
-    await waitFor(() => expect(box.value).toContain('same words'))
+    const box = await sideComposer()
+    await waitFor(() => expect(composerValue(box)).toContain('same words'))
     // The component consumed it, so the store is clear again.
     await waitFor(() => expect(store.getState().chat.slotSide[SLOT]?.releasedText ?? '').toBe(''))
 
@@ -615,7 +635,7 @@ describe('chatSlice steer frame placement', () => {
     store.dispatch(sseSideQueue({ slot: SLOT, action: 'push', queue_id: 'q-again', content: 'same words' }))
     store.dispatch(sseSideQueue({ slot: SLOT, action: 'cancel', queue_id: 'q-again' }))
 
-    await waitFor(() => expect(box.value).toContain('same words'))
+    await waitFor(() => expect(composerValue(box)).toContain('same words'))
   })
 
   it('the submit itself repairs a WS-first redacted card to the raw text', async () => {
@@ -641,7 +661,7 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    await user.type(screen.getByLabelText('Ask a side question'), raw)
+    await typeIntoComposer(raw, await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
 
     await waitFor(() => {
@@ -672,7 +692,7 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    await user.type(screen.getByLabelText('Ask a side question'), original)
+    await typeIntoComposer(original, await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => {
       expect(store.getState().chat.slotSide[SLOT]?.queue?.[0]?.content).toBe(original)
@@ -696,14 +716,14 @@ describe('chatSlice steer frame placement', () => {
 
     await user.click(screen.getByLabelText('Cancel queued message'))
 
-    await waitFor(() => {
-      const box = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-      expect(box.value).toContain('AKIAIOSFODNN7EXAMPLE')
+    await waitFor(async () => {
+      const box = await sideComposer()
+      expect(composerValue(box)).toContain('AKIAIOSFODNN7EXAMPLE')
     })
-    const box = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    expect(box.value).toContain('tomorrow')
-    expect(box.value).not.toContain('[REDACTED')
-    expect(box.value).not.toContain('now')
+    const box = await sideComposer()
+    expect(composerValue(box)).toContain('tomorrow')
+    expect(composerValue(box)).not.toContain('[REDACTED')
+    expect(composerValue(box)).not.toContain('now')
   })
 
   it('a requeued steer card whose id is not yet known cannot be cancelled', async () => {
@@ -778,7 +798,7 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    await user.type(screen.getByLabelText('Ask a side question'), 'original question')
+    await typeIntoComposer('original question', await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => {
       expect(store.getState().chat.slotSide[SLOT]?.queue?.[0]?.content).toBe('original question')
@@ -790,9 +810,9 @@ describe('chatSlice steer frame placement', () => {
     await user.type(editor, 'the edited question')
     await user.click(screen.getByLabelText('Save edit'))
 
-    await waitFor(() => {
-      const box = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-      expect(box.value).toContain('the edited question')
+    await waitFor(async () => {
+      const box = await sideComposer()
+      expect(composerValue(box)).toContain('the edited question')
     })
   })
 
@@ -808,14 +828,14 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    const box = screen.getByLabelText('Ask a side question')
-    await user.type(box, 'queued one')
+    const box = await sideComposer()
+    await typeIntoComposer('queued one', box)
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalled())
 
     // A new question already sitting in the composer when the edit fails. Seeded before the
     // editor opens because typing into the composer closes the inline editor.
-    await user.type(screen.getByLabelText('Ask a side question'), 'meanwhile a new thought')
+    await typeIntoComposer('meanwhile a new thought', await sideComposer())
 
     await user.click(screen.getByLabelText('Edit queued message'))
     const editor = screen.getByDisplayValue('queued one')
@@ -823,12 +843,12 @@ describe('chatSlice steer frame placement', () => {
     await user.type(editor, 'queued one edited')
     await user.click(screen.getByLabelText('Save edit'))
 
-    await waitFor(() => {
-      const composer = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-      expect(composer.value).toContain('queued one edited')
+    await waitFor(async () => {
+      const composer = await sideComposer()
+      expect(composerValue(composer)).toContain('queued one edited')
     })
-    const composer = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    expect(composer.value).toContain('meanwhile a new thought')
+    const composer = await sideComposer()
+    expect(composerValue(composer)).toContain('meanwhile a new thought')
   })
 
   it('a steer echo arriving after close does not resurrect the conversation', () => {
@@ -901,7 +921,7 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    await user.type(screen.getByLabelText('Ask a side question'), 'deploy with AKIAIOSFODNN7EXAMPLE')
+    await typeIntoComposer('deploy with AKIAIOSFODNN7EXAMPLE', await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
 
     // The broadcast lands first, carrying the scrubbed rendering.
@@ -942,14 +962,14 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    await user.type(screen.getByLabelText('Ask a side question'), 'first question')
+    await typeIntoComposer('first question', await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => {
       expect(store.getState().chat.slotSide[SLOT]?.queue?.[0]?.content).toBe('first question')
     })
 
     // A second submit is now in flight and never settles during this test.
-    await user.type(screen.getByLabelText('Ask a side question'), 'second question')
+    await typeIntoComposer('second question', await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => {
       expect(vi.mocked(api.sideTurn).mock.calls.length).toBe(turnsBefore + 2)
@@ -1027,8 +1047,8 @@ describe('chatSlice steer frame placement', () => {
 
     await waitFor(() => expect(api.sideQueueEdit).toHaveBeenCalled())
     // Not merged back into the composer, and no failure claimed — the edit did land.
-    await waitFor(() => {
-      expect(screen.getByPlaceholderText(/ask/i)).toHaveValue('')
+    await waitFor(async () => {
+      expect(composerValue(await sideComposer())).toBe('')
     })
     expect(screen.queryByText(/queue_edit_failed|failed/i)).toBeNull()
   })
@@ -1055,8 +1075,8 @@ describe('chatSlice steer frame placement', () => {
     await user.type(editor, 'edited question')
     await user.keyboard('{Enter}')
 
-    await waitFor(() => {
-      expect(screen.getByPlaceholderText(/ask/i)).toHaveValue('edited question')
+    await waitFor(async () => {
+      expect(composerValue(await sideComposer())).toBe('edited question')
     })
   })
 
@@ -1147,8 +1167,8 @@ describe('chatSlice steer frame placement', () => {
     // A single click on the chip body is debounced (the chip reserves double-click for its
     // own send gesture), so the fill lands after the timer rather than on the click.
     await userEvent.setup().click(screen.getByRole('button', { name: 'Rebase first' }))
-    await waitFor(() => {
-      expect(screen.getByPlaceholderText(/ask/i)).toHaveValue('Rebase first')
+    await waitFor(async () => {
+      expect(composerValue(await sideComposer())).toBe('Rebase first')
     })
     expect(vi.mocked(api.sideTurn).mock.calls.length).toBe(turnsBefore)
   })
@@ -1173,7 +1193,7 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    await user.type(screen.getByPlaceholderText(/ask/i), 'some unrelated note')
+    await typeIntoComposer('some unrelated note', await sideComposer())
     await user.click(screen.getByRole('button', { name: /send now.*Rebase first/i }))
 
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalled())
@@ -1181,7 +1201,7 @@ describe('chatSlice steer frame placement', () => {
     expect(JSON.stringify(sent)).toContain('Rebase first')
     // The draft belongs to the composer, not to this send: wiping it would destroy text the
     // user typed and never sent. The main chat guards the same way (`if (!optionText)`).
-    expect(screen.getByPlaceholderText(/ask/i)).toHaveValue('some unrelated note')
+    expect(composerValue(await sideComposer())).toBe('some unrelated note')
   })
 
   it('un-picking keeps the identical word the user typed themselves', async () => {
@@ -1203,17 +1223,17 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    const composer = screen.getByPlaceholderText(/ask/i)
+    const composer = await sideComposer()
     const chip = screen.getByRole('button', { name: 'bar' })
 
-    await user.type(composer, 'bar, bar')
+    await typeIntoComposer('bar, bar', composer)
     // Only the LAST one is treated as the pick, so the chip offers to take one back.
     // The tooltip leads with the chip's own label (it may be visually clamped), so
     // assert the hint is present rather than that it is the whole attribute.
     expect(chip.getAttribute('title')).toContain('Click to remove from input (double-click to send)')
 
     await user.click(chip)
-    await waitFor(() => expect(composer).toHaveValue('bar'))
+    await waitFor(() => expect(composerValue(composer)).toBe('bar'))
   })
 
   it('a pick made after editing still reaches the draft and gets sent', async () => {
@@ -1233,17 +1253,17 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    const composer = screen.getByPlaceholderText(/ask/i)
+    const composer = await sideComposer()
     const before = (api.sideTurn as unknown as Mock).mock.calls.length
 
     await user.click(screen.getByRole('button', { name: 'Rebase first' }))
-    await waitFor(() => expect(composer).toHaveValue('Rebase first'))
+    await waitFor(() => expect(composerValue(composer)).toBe('Rebase first'))
 
-    await user.type(composer, ' if you can')
+    await typeIntoComposer(' if you can', composer)
     await user.click(screen.getByRole('button', { name: 'Skip the rebase' }))
     // A highlighted chip whose text never landed in the composer would be dropped silently here.
     await waitFor(() => {
-      expect(composer).toHaveValue('Rebase first if you can, Skip the rebase')
+      expect(composerValue(composer)).toBe('Rebase first if you can, Skip the rebase')
     })
 
     // Exactly 'Send': the chips carry their own 'Send now: <option>' segments.
@@ -1272,20 +1292,21 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    const composer = screen.getByPlaceholderText(/ask/i)
+    const composer = await sideComposer()
     const chip = screen.getByRole('button', { name: 'Rebase first' })
 
-    await user.type(composer, 'hi')
+    await typeIntoComposer('hi', composer)
     await user.click(chip)
-    await waitFor(() => expect(composer).toHaveValue('hi, Rebase first'))
+    await waitFor(() => expect(composerValue(composer)).toBe('hi, Rebase first'))
 
     // Typed at the front, so the option is still the tail and the block is still found — but what
     // precedes it is no longer what was recorded.
-    await user.type(composer, 'X ', { initialSelectionStart: 0, initialSelectionEnd: 0 })
-    expect(composer).toHaveValue('X hi, Rebase first')
+    await setComposerSelection(0, 0, composer)
+    await typeIntoComposer('X ', composer)
+    expect(composerValue(composer)).toBe('X hi, Rebase first')
 
     await user.click(chip)
-    await waitFor(() => expect(composer).toHaveValue('X hi'))
+    await waitFor(() => expect(composerValue(composer)).toBe('X hi'))
   })
 
   it('a draft already ending in a comma does not get a second one', async () => {
@@ -1305,17 +1326,17 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    const composer = screen.getByPlaceholderText(/ask/i)
+    const composer = await sideComposer()
     const chip = screen.getByRole('button', { name: 'Rebase first' })
 
-    await user.type(composer, 'hello,')
+    await typeIntoComposer('hello,', composer)
     await user.click(chip)
-    await waitFor(() => expect(composer).toHaveValue('hello, Rebase first'))
+    await waitFor(() => expect(composerValue(composer)).toBe('hello, Rebase first'))
 
     // And un-picking puts the user's comma back exactly, even though `hello,` + ` ` and
     // `hello` + `, ` are the same string.
     await user.click(chip)
-    await waitFor(() => expect(composer).toHaveValue('hello,'))
+    await waitFor(() => expect(composerValue(composer)).toBe('hello,'))
   })
 
   it('editing past the option de-selects it, and clicking again appends', async () => {
@@ -1335,23 +1356,23 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    const composer = screen.getByPlaceholderText(/ask/i)
+    const composer = await sideComposer()
     const chip = screen.getByRole('button', { name: 'Rebase first' })
 
     await user.click(chip)
-    await waitFor(() => expect(composer).toHaveValue('Rebase first'))
+    await waitFor(() => expect(composerValue(composer)).toBe('Rebase first'))
     await waitFor(() => expect(chip.getAttribute('title')).toContain('Click to remove from input (double-click to send)'))
 
     // Typing past the option makes it part of the user's own sentence, so it stops being a block
     // this can take back out — and the chip must stop claiming otherwise.
-    await user.type(composer, ' but only if CI is green')
-    expect(composer).toHaveValue('Rebase first but only if CI is green')
+    await typeIntoComposer(' but only if CI is green', composer)
+    expect(composerValue(composer)).toBe('Rebase first but only if CI is green')
     expect(chip.getAttribute('title')).toContain('Click to add to input (double-click to select and send)')
 
     // So the next click is a fresh pick: it appends rather than being swallowed.
     await user.click(chip)
     await waitFor(() => {
-      expect(composer).toHaveValue('Rebase first but only if CI is green, Rebase first')
+      expect(composerValue(composer)).toBe('Rebase first but only if CI is green, Rebase first')
     })
     expect(chip.getAttribute('title')).toContain('Click to remove from input (double-click to send)')
   })
@@ -1375,17 +1396,17 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    const composer = screen.getByPlaceholderText(/ask/i)
+    const composer = await sideComposer()
 
     await user.click(screen.getByRole('button', { name: 'bar' }))
-    await waitFor(() => expect(composer).toHaveValue('bar'))
+    await waitFor(() => expect(composerValue(composer)).toBe('bar'))
 
     await user.click(screen.getByRole('button', { name: 'foo, bar' }))
-    await waitFor(() => expect(composer).toHaveValue('bar, foo, bar'))
+    await waitFor(() => expect(composerValue(composer)).toBe('bar, foo, bar'))
 
     // Removing the FIRST option must leave the second one whole.
     await user.click(screen.getByRole('button', { name: 'bar' }))
-    await waitFor(() => expect(composer).toHaveValue('foo, bar'))
+    await waitFor(() => expect(composerValue(composer)).toBe('foo, bar'))
   })
 
   it('un-picking removes the appended copy, not the same words the user typed', async () => {
@@ -1407,18 +1428,18 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    const composer = screen.getByPlaceholderText(/ask/i)
-    await user.type(composer, 'a, Rebase first and b')
+    const composer = await sideComposer()
+    await typeIntoComposer('a, Rebase first and b', composer)
 
     const chip = screen.getByRole('button', { name: 'Rebase first' })
     await user.click(chip)
     await waitFor(() => {
-      expect(composer).toHaveValue('a, Rebase first and b, Rebase first')
+      expect(composerValue(composer)).toBe('a, Rebase first and b, Rebase first')
     })
 
     await user.click(chip)
     await waitFor(() => {
-      expect(composer).toHaveValue('a, Rebase first and b')
+      expect(composerValue(composer)).toBe('a, Rebase first and b')
     })
   })
 
@@ -1506,7 +1527,7 @@ describe('chatSlice steer frame placement', () => {
     const { rerender } = renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     const user = userEvent.setup()
-    await user.type(screen.getByLabelText('Ask a side question'), 'asked in the first slot')
+    await typeIntoComposer('asked in the first slot', await sideComposer())
     await user.click(screen.getByTestId('busy-send-button'))
     await waitFor(() => expect(api.sideTurn).toHaveBeenCalled())
 

@@ -39,6 +39,7 @@ import type { ModelInfo } from '../providers/types'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
+import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { filterInteractiveModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
@@ -155,6 +156,8 @@ export default function ChatPane({
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
   const provider = useProvider()
+  // Touch devices keep the textarea composer (same gate as ChatPage / SideChat).
+  const touchDevice = useIsTouchDevice()
   // Same gate the main chat uses: hide a Connections-owned OAuth banner only
   // while the card that owns that flow is reachable.
   const connectionsUiOn = useConnectionsUiEnabled()
@@ -1460,6 +1463,7 @@ export default function ChatPane({
           voice={composerVoiceOptions}
         >
         <ChatInput
+          lexicalComposer={!touchDevice}
           value={input}
           onChange={setInput}
           onSend={doSend}

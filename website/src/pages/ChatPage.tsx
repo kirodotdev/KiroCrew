@@ -10,6 +10,7 @@ import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
 import { isBrowseCommand } from '../utils/browseCommand'
@@ -500,6 +501,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // effect reads it (mobile replaces rather than pushes a session switch), and
   // that effect is defined well above where the layout hooks start.
   const isMobile = useIsMobile()
+  // Touch devices keep the classic textarea composer until a device pass records
+  // that soft-keyboard typing (composition events on the IME latch, Enter-to-send)
+  // and the pointer-only pill reorder hold up there — see `useIsTouchDevice`.
+  const touchDevice = useIsTouchDevice()
   // The mobile sessions drawer and its scrim are `fixed` overlays that autofocus
   // a search input, so a software keyboard is open whenever they are. iOS Safari
   // shrinks only the VISUAL viewport for the keyboard (`interactive-widget`
@@ -7298,6 +7303,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 voice={composerVoiceOptions}
               >
               <ChatInput
+                lexicalComposer={!touchDevice}
               aboveComposer={
                 <>
                   {/* Session-control failures surface HERE, beside the chips they

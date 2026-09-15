@@ -62,6 +62,7 @@ import {
   pruneBlocks,
   nextSeq,
   findTokenRanges,
+  splitDuplicateMarkers,
 } from '../utils/pasteTokens'
 import type { SendMode } from '../pages/chat/ChatSettings'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -626,8 +627,12 @@ interface ChatInputProps {
   pasteBlocks?: PasteBlock[]
   /** Replace the current list of paste blocks (add/remove). */
   onPasteBlocksChange?: (next: PasteBlock[]) => void
-  /** Opt into the first Lexical composer migration slice. Defaults off so the
-   *  established textarea path remains the production fallback until parity is complete. */
+  /** Render the Lexical composer (inline paste pills). Every product surface
+   *  passes this; the default stays off so a bare <ChatInput> — and the textarea
+   *  path that remains the lazy-load FAILURE fallback — keep their contract.
+   *  `test/chatInputHosts.lexicalComposer.test.ts` holds that line: every
+   *  product mount must name the prop, so a new host cannot fall back to the
+   *  textarea by omission. */
   lexicalComposer?: boolean
   /** Optional knowledge chip rendered above the input */
   knowledgeChip?: React.ReactNode
@@ -880,7 +885,7 @@ const noopVoiceControl = () => {}
 
 function ChatInput({
   aboveComposer,
-  value,
+  value: hostValue,
   onChange,
   onSend,
   canSteer,
@@ -956,7 +961,7 @@ function ChatInput({
   quickSend,
   followUpLayout,
   followUpSourceKey,
-  pasteBlocks = [],
+  pasteBlocks: hostPasteBlocks = [],
   onPasteBlocksChange,
   lexicalComposer = false,
   knowledgeChip,
@@ -969,6 +974,23 @@ function ChatInput({
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
+  // Canonicalise the host's value + paste blocks BEFORE either composer is
+  // chosen, so the textarea path (touch devices, chunk-load fallback) is held to
+  // the same contract as the Lexical one: every marker names its own block and
+  // no two blocks share a seq. A persisted draft can violate both (the same
+  // marker twice, or two records carrying one seq), and a marker resolves by seq
+  // alone — `expandAll` would then send one block for both and the textarea's
+  // id-keyed pill removal would drop a twin. `splitDuplicateMarkers` returns the
+  // SAME references when nothing changed; a rewrite is handed back to the host
+  // through the ordinary onChange / onPasteBlocksChange, after which the props
+  // are canonical and this is a no-op.
+  const canonical = useMemo(() => splitDuplicateMarkers(hostValue, hostPasteBlocks), [hostPasteBlocks, hostValue])
+  const value = canonical.text
+  const pasteBlocks = canonical.blocks
+  useEffect(() => {
+    if (value !== hostValue) onChange(value)
+    if (pasteBlocks !== hostPasteBlocks) onPasteBlocksChange?.(pasteBlocks)
+  }, [hostPasteBlocks, hostValue, onChange, onPasteBlocksChange, pasteBlocks, value])
   // Dictation state comes from the Composer root's Voice atom (mounted by the
   // root beside this input), not from host-wired props: one hook, the same
   // values the atom computes for every surface, and a host cannot forget to
@@ -1864,10 +1886,11 @@ function ChatInput({
   /**
    * Typing intent is an implicit expand.
    *
-   * Every programmatic route to the composer resolves through the textarea
-   * (`queryComposer` finds `textarea[data-composer-input]`; the `/` shortcut and
-   * the autoFocusKey effect call `inputRef.current?.focus()`), and a collapsed
-   * composer has no textarea -- so without this, `/`, quote-to-compose, a widget
+   * Every programmatic route to the composer resolves through the editable
+   * element (`queryComposer` finds `[data-composer-input]` — the textarea or the
+   * Lexical root; the `/` shortcut and the autoFocusKey effect call the
+   * composer control's `focus()`), and a collapsed composer has no editable
+   * element -- so without this, `/`, quote-to-compose, a widget
    * send and post-create focus all silently do nothing, and a pre-fill lands in a
    * draft the user cannot see. Review named this correctly against the ghost
    * precedent this collapse otherwise inherits: the ghost is transient and the app

@@ -19,7 +19,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, act, waitFor, screen } from '@testing-library/react'
+import { render, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -78,6 +78,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { composerRoot, composerValue, awaitComposer } from './helpers'
 
 const PROMPT = 'Draft the release note for the ACP retry backoff'
 const NEW_SLOT = 'chat-new-1'
@@ -128,7 +129,7 @@ async function renderAt(route: string) {
   return store
 }
 
-const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
+const composer = () => composerRoot()
 
 beforeEach(() => {
   sessionStorage.clear()
@@ -144,14 +145,14 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
     const store = await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    await waitFor(() => expect(composerValue(composer())).toBe(PROMPT))
     // The staged value is consumed, not left behind for the next slot switch.
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
   })
 
   it('sends nothing — the prompt waits for a human Enter', async () => {
     await renderAt(`/chat?new=1&prefill=${encodeURIComponent(PROMPT)}`)
-    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    await waitFor(() => expect(composerValue(composer())).toBe(PROMPT))
     expect(sendChat).not.toHaveBeenCalled()
   })
 
@@ -159,7 +160,7 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
     const store = await renderAt('/chat?new=1&prefill=')
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
   })
 
@@ -169,16 +170,16 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
     // and typing "1" into it is the failure this guard exists for.
     await renderAt('/chat?prefill=1')
 
-    await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+    await awaitComposer()
     expect(createChatSlot).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
   })
 
   it('ignores a bare ?prefill=<text> with no new=1, so the launcher URL must say what it wants', async () => {
     await renderAt(`/chat?prefill=${encodeURIComponent(PROMPT)}`)
 
-    await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+    await awaitComposer()
     expect(createChatSlot).not.toHaveBeenCalled()
-    expect(composer().value).toBe('')
+    expect(composerValue(composer())).toBe('')
   })
 })

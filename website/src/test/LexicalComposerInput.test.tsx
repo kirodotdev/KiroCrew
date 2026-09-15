@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createRef, useState } from 'react'
 import type { MutableRefObject, RefObject } from 'react'
@@ -6,7 +6,7 @@ import { $getRoot, $getSelection, $isRangeSelection, CAN_REDO_COMMAND, CAN_UNDO_
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LexicalComposerInput from '../components/LexicalComposerInput'
 import type { ComposerControl } from '../components/composerControl'
-import { formatToken, type PasteBlock } from '../utils/pasteTokens'
+import { expandAll, formatToken, type PasteBlock } from '../utils/pasteTokens'
 
 const block: PasteBlock = {
   id: 'paste-1',
@@ -76,9 +76,9 @@ describe('LexicalComposerInput', () => {
   it('hydrates canonical markers as true inline non-editable chips', () => {
     render(<ControlledHost initial={`before ${formatToken(block)} after`} initialBlocks={[block]} />)
     const chip = screen.getByTestId('paste-token-1')
-    expect(chip).toHaveTextContent('Paste #1 · 4 lines')
+    expect(chip).toHaveTextContent(/4 lines/) // first-line snippet + count
     expect(chip).not.toHaveTextContent('[ Paste')
-    expect(chip).toHaveAttribute('contenteditable', 'false')
+    expect(chip.closest('[contenteditable="false"]')).not.toBeNull()
     expect(screen.getByRole('textbox')).toHaveAttribute('data-lexical-composer')
   })
 
@@ -106,16 +106,14 @@ describe('LexicalComposerInput', () => {
   })
 
   it('anchors the preview to the real Lexical node element', async () => {
-    vi.useFakeTimers()
     render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} />)
     const chip = screen.getByTestId('paste-token-1')
-    const host = chip.parentElement as HTMLElement
     const rect = { left: 42, top: 18, right: 142, bottom: 38, width: 100, height: 20, x: 42, y: 18, toJSON: () => ({}) }
-    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue(rect as DOMRect)
-    fireEvent.mouseEnter(chip)
-    await vi.advanceTimersByTimeAsync(300)
-    const preview = screen.getByTestId('lexical-paste-preview-1')
-    expect(preview).toHaveStyle({ left: '42px', top: '42px' })
+    vi.spyOn(chip, 'getBoundingClientRect').mockReturnValue(rect as DOMRect)
+    fireEvent.click(chip)
+    // Anchored to the chip: same left; no room above (top 18) so it opens BELOW.
+    const preview = await screen.findByTestId('paste-preview-editor')
+    expect(preview).toHaveStyle({ left: '42px', top: '44px' })
   })
 
   it('applies parent-driven controlled value and sidecar updates', async () => {
@@ -144,23 +142,30 @@ describe('LexicalComposerInput', () => {
     expect(await screen.findByTestId('paste-token-1')).toBeInTheDocument()
   })
 
-  it('copies and cuts selected paste chips as expanded text', async () => {
+  it('copies and cuts a selection spanning a paste chip as expanded text', async () => {
     const user = userEvent.setup()
     render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} />)
     const chip = screen.getByTestId('paste-token-1')
+    // Clicking a pill opens its editable preview; Escape closes it and parks
+    // the caret right after the pill. Select-all then spans the pill.
     await user.click(chip)
+    await user.keyboard('{Escape}')
+    const editor = screen.getByRole('textbox')
+    await user.keyboard('{Control>}a{/Control}')
     const clipboard = { setData: vi.fn() }
-    fireEvent.copy(screen.getByRole('textbox'), { clipboardData: clipboard })
+    fireEvent.copy(editor, { clipboardData: clipboard })
     expect(clipboard.setData).toHaveBeenCalledWith('text/plain', block.content)
-    fireEvent.cut(screen.getByRole('textbox'), { clipboardData: clipboard })
+    fireEvent.cut(editor, { clipboardData: clipboard })
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(''))
     expect(screen.getByTestId('blocks')).toHaveTextContent('[]')
   })
 
-  it('deletes a selected paste chip atomically', async () => {
+  it('deletes a paste chip atomically with one Backspace', async () => {
     const user = userEvent.setup()
     render(<ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} />)
+    // Click opens the preview; Escape closes it with the caret right after the pill.
     await user.click(screen.getByTestId('paste-token-1'))
+    await user.keyboard('{Escape}')
     await user.keyboard('{Backspace}')
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('xy'))
     expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
@@ -356,23 +361,23 @@ describe('LexicalComposerInput', () => {
     expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
   })
 
-  it.each(['Enter', ' '])('opens a selected token preview on %s activation', async key => {
+  it.each(['Enter', ' '])('opens the editable preview from a focused chip on %s and never sends', async key => {
     const editorRef = createRef<LexicalEditor>()
     const onSend = vi.fn()
     render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} editorRef={editorRef} onSend={onSend} />)
     const chip = screen.getByTestId('paste-token-1')
     chip.focus()
     fireEvent.keyDown(chip, { key })
-    expect(await screen.findByTestId('lexical-paste-preview-1')).toBeInTheDocument()
-    expect(chip).toHaveAttribute('aria-expanded', 'true')
-    expect(chip.getAttribute('aria-label')).toContain(chip.getAttribute('title') || '')
-    expect(chip.getAttribute('aria-label')).toContain('Paste #1 · 4 lines')
-    // The chip's action is a PREVIEW toggle, not the transcript chip's inline
-    // expand/collapse — the accessible name must say what it actually does.
-    expect(chip.getAttribute('title')).toBe('Hide paste preview')
+    const preview = await screen.findByTestId('paste-preview-editor')
+    expect(preview).toHaveAttribute('role', 'dialog')
+    expect((screen.getByTestId('paste-preview-editor-textarea') as HTMLTextAreaElement).value).toBe(block.content)
+    // The accessible name leads with the snippet (what a voice-control user
+    // sees), then says what the chip is.
+    expect(chip.getAttribute('aria-label')).toBe('alpha · Pasted text · 4 lines')
     // Chip activation must stay the chip's: the same keystroke must never
     // reach the editor's send-on-Enter handler and submit the draft.
     expect(onSend).not.toHaveBeenCalled()
+    // Backspace on the focused chip removes it.
     fireEvent.keyDown(chip, { key: 'Backspace' })
     await waitFor(() => expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument())
   })
@@ -409,4 +414,205 @@ describe('LexicalComposerInput', () => {
     await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
   })
 
+  it('closes an open preview when the host swaps in another session whose draft has the same paste seq', async () => {
+    // Session A and session B both hold a `Paste #1`; the block ids differ.
+    // Switching sessions while A's preview is open replaces the controlled
+    // value + blocks underneath the popover. It must close rather than rebind
+    // to B's block — otherwise a Save would write A's edit into B's paste.
+    const other: PasteBlock = { id: 'paste-B', seq: 1, lines: 2, content: 'from B\nnot A' }
+    const onBlocksChange = vi.fn()
+    const props = {
+      onChange: vi.fn(),
+      onBlocksChange,
+      onSend: vi.fn(),
+      ariaLabel: 'Message input',
+      placeholder: 'Write a message',
+    }
+    const { rerender } = render(<LexicalComposerInput value={formatToken(block)} blocks={[block]} {...props} />)
+    fireEvent.click(screen.getByTestId('paste-token-1'))
+    const textarea = (await screen.findByTestId('paste-preview-editor-textarea')) as HTMLTextAreaElement
+    expect(textarea.value).toBe(block.content)
+
+    rerender(<LexicalComposerInput value={formatToken(other)} blocks={[other]} {...props} />)
+
+    await waitFor(() => expect(screen.queryByTestId('paste-preview-editor')).toBeNull())
+    // B's pill is on screen with B's content untouched — nothing from A landed on it.
+    expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+    expect(onBlocksChange).not.toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ id: 'paste-B', content: block.content })]))
+  })
+
+  describe('a value that holds the same marker twice', () => {
+    // `$replaceComposerValue` appends one node per marker occurrence, so a value
+    // holding `[ Paste #1 · … ]` twice (a restored draft, a small paste that
+    // contains the marker text) rehydrates as two nodes sharing seq AND id. A
+    // marker resolves by seq alone, so the pair must be split the moment it
+    // appears (`PasteSeqInvariantPlugin`) — otherwise `expandAll` writes one
+    // block into both markers — and every pill action must act on the clicked
+    // NODE, never on "the pill with this seq" (GPT reviews on #11100).
+    const twice = `x${formatToken(block)}y${formatToken(block)}z`
+    const second = { ...block, seq: 2 }
+
+    it('re-sequences the later twin and hands the host the rewritten value + blocks', async () => {
+      render(<ControlledHost initial={twice} initialBlocks={[block]} />)
+      await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(`x${formatToken(block)}y${formatToken(second)}z`))
+      const blocks = JSON.parse(screen.getByTestId('blocks').textContent!) as PasteBlock[]
+      expect(blocks).toHaveLength(2)
+      expect(blocks[0]).toEqual(block)
+      expect(blocks[1]).toEqual(expect.objectContaining({ seq: 2, lines: block.lines, content: block.content }))
+      expect(blocks[1].id).not.toBe(block.id)
+      expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+      expect(screen.getByTestId('paste-token-2')).toBeInTheDocument()
+    })
+
+    it('the ✕ removes only the clicked pill; its twin survives', async () => {
+      render(<ControlledHost initial={twice} initialBlocks={[block]} />)
+      const later = await screen.findByTestId('paste-token-2')
+      fireEvent.click(within(later).getByRole('button', { name: 'Remove pasted text' }))
+      await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(`x${formatToken(block)}yz`))
+      expect(JSON.parse(screen.getByTestId('blocks').textContent!)).toEqual([block])
+      expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+    })
+
+    it('saving the preview edits only the clicked pill, and the send expansion carries both contents', async () => {
+      render(<ControlledHost initial={twice} initialBlocks={[block]} />)
+      fireEvent.click(await screen.findByTestId('paste-token-2'))
+      const textarea = (await screen.findByTestId('paste-preview-editor-textarea')) as HTMLTextAreaElement
+      expect(textarea.value).toBe(block.content)
+      fireEvent.change(textarea, { target: { value: 'one\ntwo' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      const edited = { ...second, lines: 2, content: 'one\ntwo' }
+      await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(`x${formatToken(block)}y${formatToken(edited)}z`))
+      const value = screen.getByTestId('value').textContent!
+      const blocks = JSON.parse(screen.getByTestId('blocks').textContent!) as PasteBlock[]
+      expect(blocks.map(b => b.content)).toEqual([block.content, 'one\ntwo'])
+      // What the host submits: each marker expands to ITS block — the original
+      // paste is not replaced by the edited twin.
+      expect(expandAll(value, blocks)).toBe(`x${block.content}yone\ntwoz`)
+      expect(screen.queryByTestId('paste-preview-editor')).toBeNull()
+    })
+
+    it('a restored draft whose block list already holds two divergent same-seq records keeps both pastes', async () => {
+      // The state a draft persisted before the seq invariant can carry: two pills
+      // that shared seq 1 and were edited apart. Records pair with occurrences in
+      // order, so the first paste keeps its content instead of being resolved
+      // through the last record.
+      const edited: PasteBlock = { id: 'paste-1-edited', seq: 1, lines: 1, content: 'edited' }
+      const divergent = `x${formatToken(block)}y${formatToken(edited)}z`
+      render(<ControlledHost initial={divergent} initialBlocks={[block, edited]} />)
+      const canonical = { ...edited, seq: 2 }
+      await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(`x${formatToken(block)}y${formatToken(canonical)}z`))
+      const blocks = JSON.parse(screen.getByTestId('blocks').textContent!) as PasteBlock[]
+      expect(blocks).toEqual([block, canonical])
+      expect(within(screen.getByTestId('paste-token-1')).getByTestId('paste-chip-snippet')).toHaveTextContent('alpha')
+      expect(within(screen.getByTestId('paste-token-2')).getByTestId('paste-chip-snippet')).toHaveTextContent('edited')
+      expect(expandAll(screen.getByTestId('value').textContent!, blocks)).toBe(`x${block.content}yeditedz`)
+    })
+  })
+
+  describe('the preview writes through to the pill', () => {
+    /** Listen to CAN_UNDO / CAN_REDO on the editor and expose the latest values. */
+    function trackHistory(editor: LexicalEditor) {
+      const state = { canUndo: false, canRedo: false }
+      const off = [
+        editor.registerCommand(CAN_UNDO_COMMAND, value => { state.canUndo = value; return false }, COMMAND_PRIORITY_LOW),
+        editor.registerCommand(CAN_REDO_COMMAND, value => { state.canRedo = value; return false }, COMMAND_PRIORITY_LOW),
+      ]
+      return { state, unregister: () => off.forEach(fn => fn()) }
+    }
+    const hostBlocks = () => JSON.parse(screen.getByTestId('blocks').textContent!) as PasteBlock[]
+
+    it('every keystroke in the open preview reaches the host block list before any Save', async () => {
+      // The finding this closes: the panel used to hold the edit alone until
+      // Save, so a reload / Back / session switch that unmounted it mid-edit
+      // left the draft with the pre-edit paste. Now the draft is current at
+      // every keystroke — and the chip re-labels itself as the user types.
+      render(<ControlledHost initial={`x${formatToken(block)}y`} initialBlocks={[block]} />)
+      fireEvent.click(screen.getByTestId('paste-token-1'))
+      const textarea = (await screen.findByTestId('paste-preview-editor-textarea')) as HTMLTextAreaElement
+      fireEvent.change(textarea, { target: { value: 'one' } })
+      fireEvent.change(textarea, { target: { value: 'one\ntwo' } })
+      await waitFor(() => expect(hostBlocks()[0]).toMatchObject({ id: 'paste-1', seq: 1, lines: 2, content: 'one\ntwo' }))
+      // Still open, nothing committed, and the value text (the marker) is unchanged.
+      expect(screen.getByTestId('paste-preview-editor')).toBeInTheDocument()
+      expect(textarea.value).toBe('one\ntwo')
+      expect(screen.getByTestId('value').textContent).toBe(`x${formatToken({ ...block, lines: 2 })}y`)
+      expect(within(screen.getByTestId('paste-token-1')).getByTestId('paste-chip-snippet')).toHaveTextContent('one')
+      // What the host would persist right now already carries the edit.
+      expect(expandAll(screen.getByTestId('value').textContent!, hostBlocks())).toBe('xone\ntwoy')
+    })
+
+    it('Cancel puts the content the panel opened on back into the pill', async () => {
+      render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} />)
+      fireEvent.click(screen.getByTestId('paste-token-1'))
+      const textarea = (await screen.findByTestId('paste-preview-editor-textarea')) as HTMLTextAreaElement
+      fireEvent.change(textarea, { target: { value: 'scratch' } })
+      await waitFor(() => expect(hostBlocks()[0].content).toBe('scratch'))
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(hostBlocks()).toEqual([block]))
+      expect(screen.queryByTestId('paste-preview-editor')).toBeNull()
+      expect(within(screen.getByTestId('paste-token-1')).getByTestId('paste-chip-snippet')).toHaveTextContent('alpha')
+    })
+
+    it('a second Escape on a dirty panel also restores the original', async () => {
+      render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} />)
+      fireEvent.click(screen.getByTestId('paste-token-1'))
+      const textarea = (await screen.findByTestId('paste-preview-editor-textarea')) as HTMLTextAreaElement
+      fireEvent.change(textarea, { target: { value: 'scratch' } })
+      await waitFor(() => expect(hostBlocks()[0].content).toBe('scratch'))
+      fireEvent.keyDown(textarea, { key: 'Escape' })
+      // First Escape: still open, hint showing, pill still holds the live edit.
+      expect(screen.getByTestId('paste-preview-editor-unsaved')).toBeInTheDocument()
+      expect(hostBlocks()[0].content).toBe('scratch')
+      fireEvent.keyDown(textarea, { key: 'Escape' })
+      await waitFor(() => expect(hostBlocks()).toEqual([block]))
+      expect(screen.queryByTestId('paste-preview-editor')).toBeNull()
+    })
+
+    it('a saved edit is ONE undo step — the interim keystrokes are not recorded — and a cancelled edit records nothing', async () => {
+      const editorRef = createRef<LexicalEditor>()
+      render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} editorRef={editorRef} />)
+      await waitFor(() => expect(editorRef.current).not.toBeNull())
+      const { state, unregister } = trackHistory(editorRef.current!)
+      const canUndoBefore = state.canUndo
+
+      // Cancelled edit: three keystrokes, then Cancel → no history entry.
+      fireEvent.click(screen.getByTestId('paste-token-1'))
+      let textarea = (await screen.findByTestId('paste-preview-editor-textarea')) as HTMLTextAreaElement
+      for (const v of ['a', 'ab', 'abc']) fireEvent.change(textarea, { target: { value: v } })
+      await waitFor(() => expect(hostBlocks()[0].content).toBe('abc'))
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(hostBlocks()).toEqual([block]))
+      expect(state.canUndo).toBe(canUndoBefore)
+
+      // Saved edit: three keystrokes, then Save → exactly one entry.
+      fireEvent.click(screen.getByTestId('paste-token-1'))
+      textarea = (await screen.findByTestId('paste-preview-editor-textarea')) as HTMLTextAreaElement
+      for (const v of ['o', 'on', 'one']) fireEvent.change(textarea, { target: { value: v } })
+      await waitFor(() => expect(hostBlocks()[0].content).toBe('one'))
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(screen.queryByTestId('paste-preview-editor')).toBeNull())
+      await waitFor(() => expect(state.canUndo).toBe(true))
+      act(() => { editorRef.current!.dispatchCommand(UNDO_COMMAND, undefined) })
+      // One undo lands on the ORIGINAL, not on 'on' or 'o'.
+      await waitFor(() => expect(hostBlocks()[0].content).toBe(block.content))
+      await waitFor(() => expect(state.canRedo).toBe(true))
+      act(() => { editorRef.current!.dispatchCommand(REDO_COMMAND, undefined) })
+      await waitFor(() => expect(hostBlocks()[0].content).toBe('one'))
+      unregister()
+    })
+
+    it('the open preview follows its pill when the window resizes', async () => {
+      render(<ControlledHost initial={formatToken(block)} initialBlocks={[block]} />)
+      const chip = screen.getByTestId('paste-token-1')
+      const at = (left: number, top: number) => ({ left, top, right: left + 100, bottom: top + 20, width: 100, height: 20, x: left, y: top, toJSON: () => ({}) }) as DOMRect
+      const spy = vi.spyOn(chip, 'getBoundingClientRect').mockReturnValue(at(42, 18))
+      fireEvent.click(chip)
+      const preview = await screen.findByTestId('paste-preview-editor')
+      expect(preview).toHaveStyle({ left: '42px' })
+      // The composer re-wraps and the pill lands elsewhere; the panel re-anchors.
+      spy.mockReturnValue(at(120, 18))
+      fireEvent(window, new Event('resize'))
+      await waitFor(() => expect(screen.getByTestId('paste-preview-editor')).toHaveStyle({ left: '120px' }))
+    })
+  })
 })

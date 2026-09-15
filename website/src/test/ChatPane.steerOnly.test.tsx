@@ -13,6 +13,7 @@ import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
 import * as transport from '../chat-core/transport/sendTurn'
+import { composerRoot, composerValue, setComposerValue } from './helpers'
 
 /* Crew Members DM threads have no queue concept: a DM is a conversation with
  * ONE named member, and talking to a person has no "wait until they finish"
@@ -126,7 +127,12 @@ function renderPane(slotKey: string, opts: { running: boolean; busyMode?: BusyMo
   return Object.assign(r, { store, rebind })
 }
 
-const composer = async () => (await screen.findAllByRole('textbox'))[0]
+/** Wait for the lazy Lexical composer to mount + attach its handle, return its root. */
+const composer = async () => {
+  await waitFor(() => expect(document.querySelector('[data-composer-input]')).not.toBeNull())
+  await act(async () => {})
+  return composerRoot()
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -156,7 +162,7 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
     try {
       const { store } = renderPane('member-delivery', { running, busyMode: 'steer-only' })
       const box = await composer()
-      fireEvent.change(box, { target: { value: 'keep this delivered once' } })
+      await setComposerValue('keep this delivered once', box)
       fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
       await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
       const [content, slot, , , meta] = vi.mocked(api.sendChat).mock.calls[0]
@@ -175,7 +181,7 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
       expect(users[0].meta?.mid).toBe('m-delivered')
       expect(users[0].meta?.optimistic).toBeUndefined()
       expect(!!users[0].meta?.steer).toBe(echo === 'steer')
-      expect(box).toHaveValue('')
+      expect(composerValue(box)).toBe('')
       expect(rows.some(m => m.role === 'notice' || m.role === 'error')).toBe(false)
     } finally {
       sendTurn.mockRestore()
@@ -185,7 +191,7 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
   it('busy member: plain send button, no split/queue affordance, and Enter steers into the running turn', async () => {
     const { store } = renderPane('member-oncall', { running: true, busyMode: 'steer-only' })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'also check the logs' } })
+    await setComposerValue('also check the logs', box)
 
     // The composer offers ONE control, the same send button an idle pane has.
     const send = screen.getByTestId('steer-only-send')
@@ -208,7 +214,7 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
     expect(bubble?.meta).toMatchObject({ steer: true, optimistic: true, sendId: (meta as { sendId: string }).sendId })
     // …and nothing was queued: no queue card anywhere in the pane.
     expect(screen.queryByRole('button', { name: 'Cancel queued message' })).not.toBeInTheDocument()
-    expect((box as HTMLTextAreaElement).value).toBe('')
+    expect(composerValue(box)).toBe('')
   })
 
   it('busy member with an attachment: the steer carries the ordered file index in meta, so a spaced filename is not truncated', async () => {
@@ -225,7 +231,7 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
     Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'q3 report.pdf', { type: 'application/pdf' })] })
     fireEvent.change(fileInput)
     expect(await screen.findByText('q3 report.pdf')).toBeInTheDocument()
-    fireEvent.change(box, { target: { value: 'read this' } })
+    await setComposerValue('read this', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     const [wireText, , , , meta, steer] = vi.mocked(api.sendChat).mock.calls[0]
@@ -240,7 +246,7 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
   it('idle member: a plain send, no steer flag (steer-only changes only the BUSY composer)', async () => {
     renderPane('member-idle', { running: false, busyMode: 'steer-only' })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'hello' } })
+    await setComposerValue('hello', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     const [, , , , , steer] = vi.mocked(api.sendChat).mock.calls[0]
@@ -251,7 +257,7 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
   it('default busyMode (split view, ⌘D) keeps the Steer/Queue split button on a busy pane', async () => {
     renderPane('pane-split', { running: true })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'more' } })
+    await setComposerValue('more', box)
     expect(screen.getByTestId('busy-send-button')).toHaveAttribute('aria-label', 'Steer')
     expect(screen.getByTestId('busy-send-caret')).toBeInTheDocument()
     expect(screen.queryByTestId('steer-only-send')).not.toBeInTheDocument()
@@ -265,10 +271,10 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
     vi.mocked(api.sendChat).mockResolvedValue({ ok: false, status: 409, json: () => Promise.resolve({ error: 'slot agent mismatch' }) } as unknown as Response)
     const { store } = renderPane('member-refused', { running: true, busyMode: 'steer-only' })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'try again' } })
+    await setComposerValue('try again', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('try again'))
+    await waitFor(() => expect(composerValue(box)).toBe('try again'))
     const rows = selectSlotMessages(store.getState() as RootState, 'member-refused')
     expect(rows.find(m => m.role === 'user' && m.meta?.steer)).toBeUndefined()
     expect(rows.find(m => m.role === 'error')?.content).toContain('slot agent mismatch')
@@ -305,9 +311,9 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
     vi.mocked(api.sendChat).mockResolvedValue({ ok: false, status: 409, json: () => Promise.resolve({ error: 'slot agent mismatch' }) } as unknown as Response)
     const { store } = renderPane('member-framed', { running: true, busyMode: 'steer-only' })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'try again' } })
+    await setComposerValue('try again', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('try again'))
+    await waitFor(() => expect(composerValue(box)).toBe('try again'))
     const err = selectSlotMessages(store.getState() as RootState, 'member-framed').find(m => m.role === 'error')
     expect(err?.content).toBe("Couldn't send this message: slot agent mismatch. Your text is back in the composer.")
   })

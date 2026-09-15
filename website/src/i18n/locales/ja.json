@@ -7036,8 +7036,6 @@
     "pastedChip": {
       "collapse_paste": "ペーストを折りたたむ",
       "expand_paste": "ペーストを展開",
-      "hide_paste_preview": "貼り付けのプレビューを非表示",
-      "show_paste_preview": "貼り付けのプレビューを表示",
       "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]",
       "preview_more_lines_other": "… 他{{count}}行"
     },
@@ -8429,6 +8427,20 @@
       "label": "変更には再起動が必要",
       "tooltip": "この設定は {{productName}} の実行中には変更できません。保存した値は保持され、次に {{productName}} を再起動したときに適用されます（設定 → バージョン情報、または起動したターミナルから）。",
       "schema_unavailable": "この設定に再起動が必要かどうかを確認できませんでした。"
+    },
+    "pasteBlockChip": {
+      "count_other": "{{count}} 行",
+      "label_other": "貼り付けたテキスト · {{count}} 行",
+      "remove": "貼り付けたテキストを削除",
+      "actions": "クリックで編集 · ドラッグで並べ替え"
+    },
+    "pastePreviewEditor": {
+      "cancel": "キャンセル",
+      "editor_aria": "貼り付けたテキストを編集",
+      "save": "保存",
+      "lines_other": "{{count}} 行",
+      "resize_aria": "プレビューのサイズを変更",
+      "unsaved_hint": "未保存の変更があります — 破棄するにはもう一度 Esc を押してください"
     }
   },
   "hooks": {

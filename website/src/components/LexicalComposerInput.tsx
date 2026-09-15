@@ -19,6 +19,7 @@ import {
   $isRangeSelection,
   $isTextNode,
   $nodesOfType,
+  $setCompositionKey,
   $setSelection,
   CLEAR_HISTORY_COMMAND,
   COMMAND_PRIORITY_HIGH,
@@ -40,23 +41,26 @@ import {
 } from 'lexical'
 import { INPUT_TYPO } from './PasteHighlightLayer'
 import { createImeLatch } from '../hooks/useImeGuard'
-import type { ComposerControl, ComposerSelection } from './composerControl'
+import type { ComposerControl, ComposerRootHandle, ComposerSelection } from './composerControl'
 import {
   clipboardFiles,
   hasPlainClipboardText,
   stripTrailingBlankLines,
 } from './composerPastePolicy'
 import {
-  $createPasteTokenNode,
-  $isPasteTokenNode,
-  PasteTokenNode,
-} from './PasteTokenNode'
+  $createPasteBlockNode,
+  $isPasteBlockNode,
+  PasteBlockNode,
+} from '../composer/nodes/PasteBlockNode'
+import { DropGapNode } from '../composer/nodes/DropGapNode'
+import PillsPlugin from '../composer/plugins/PillsPlugin'
 import {
   countLines,
   findTokenRanges,
   makePasteId,
   nextSeq,
   shouldCollapse,
+  splitDuplicateMarkers,
   type PasteBlock,
 } from '../utils/pasteTokens'
 import type { SendMode } from '../pages/chat/ChatSettings'
@@ -103,7 +107,7 @@ function $replaceComposerValue(value: string, blocks: PasteBlock[]): void {
   let cursor = 0
   for (const range of ranges) {
     appendPlainText(value.slice(cursor, range.start), node => paragraph.append(node))
-    paragraph.append($createPasteTokenNode(range.block))
+    paragraph.append($createPasteBlockNode(range.block))
     cursor = range.end
   }
   appendPlainText(value.slice(cursor), node => paragraph.append(node))
@@ -120,7 +124,7 @@ function sameBlocks(left: PasteBlock[], right: PasteBlock[]): boolean {
 function $composerSnapshot(): { value: string; blocks: PasteBlock[] } {
   return {
     value: $getRoot().getTextContent(),
-    blocks: $nodesOfType(PasteTokenNode).map(node => node.getBlock()),
+    blocks: $nodesOfType(PasteBlockNode).map(node => node.getBlock()),
   }
 }
 
@@ -227,6 +231,32 @@ function ComposerControlPlugin({
       },
     }
     if (controlRef) controlRef.current = control
+    // Control seam on the editable root (`ComposerRootHandle`): the control plus
+    // a value read and a caret insert, for callers that reach the composer
+    // through the DOM hook instead of a ref — SideChat's seed nudge and the
+    // test drivers (see test/helpers `composer*`). `composerHandleOf(root)`
+    // is the typed accessor.
+    const hook: ComposerRootHandle = {
+      ...control,
+      getValue: () => {
+        let value = ''
+        editor.getEditorState().read(() => { value = $getRoot().getTextContent() })
+        return value
+      },
+      insertText: (text: string) => {
+        editor.update(() => {
+          // A never-focused editor has no selection: append at the end, the
+          // way a user's first click-then-type lands.
+          const selection = $isRangeSelection($getSelection()) ? $getSelection() : $getRoot().selectEnd()
+          if (!$isRangeSelection(selection)) return
+          if (text === '') selection.removeText()
+          else selection.insertRawText(text)
+        }, { discrete: true })
+      },
+    }
+    const unregisterRoot = editor.registerRootListener(root => {
+      if (root) (root as HTMLElement & { __composer?: ComposerRootHandle }).__composer = hook
+    })
     onReady?.()
     let previous = ''
     const unregister = editor.registerUpdateListener(({ editorState }) => {
@@ -240,6 +270,7 @@ function ComposerControlPlugin({
     })
     return () => {
       unregister()
+      unregisterRoot()
       if (controlRef?.current === control) controlRef.current = null
     }
   }, [controlRef, editor, onReady, onSelectionChange])
@@ -285,8 +316,8 @@ function expandedSelectionText(): string | null {
   const selection = $getSelection()
   if (!selection) return null
   const nodes = $isRangeSelection(selection) ? selection.extract() : selection.getNodes()
-  if (!nodes.some($isPasteTokenNode)) return null
-  return nodes.map(node => $isPasteTokenNode(node) ? node.getBlock().content : node.getTextContent()).join('')
+  if (!nodes.some($isPasteBlockNode)) return null
+  return nodes.map(node => $isPasteBlockNode(node) ? node.getBlock().content : node.getTextContent()).join('')
 }
 
 function InteractionPlugin({
@@ -323,9 +354,17 @@ function InteractionPlugin({
     // Stable one-line delegations into the SHARED latch (useImeGuard's
     // createImeLatch) — the sanctioned wiring shape the ImeEnterClaimRatchet
     // scans for: every compositionstart subscriber must feed the shared latch.
+    // Lexical mirrors the composition in its own key and drops EVERY keydown
+    // while it is set (LexicalEvents.onKeyDown returns early on
+    // `isComposing()`); `blur` is a pass-through command that never clears it,
+    // so an abandoned composition would also leave the editor deaf. Recover
+    // that state alongside the latch.
+    const recoverEditorComposition = () => {
+      if (editor.isComposing()) editor.update(() => { $setCompositionKey(null) }, { discrete: true })
+    }
     const onCompositionStart = () => latch.onCompositionStart()
     const onCompositionEnd = () => latch.onCompositionEnd()
-    const onFocusChange = () => latch.reset()
+    const onFocusChange = () => { latch.reset(); recoverEditorComposition() }
     const rootListeners = editor.registerRootListener((root, prevRoot) => {
       if (prevRoot) {
         prevRoot.removeEventListener('compositionstart', onCompositionStart)
@@ -376,7 +415,7 @@ function InteractionPlugin({
             lines: countLines(cleaned),
             content: cleaned,
           }
-          selection.insertNodes([$createPasteTokenNode(block)])
+          selection.insertNodes([$createPasteBlockNode(block)])
           blocksRef.current = [...blocksRef.current, block]
           return true
         }
@@ -412,7 +451,7 @@ function InteractionPlugin({
     )
     const deleteSelectedNode = (event: KeyboardEvent) => {
       const selection = $getSelection()
-      if (!$isNodeSelection(selection) || !selection.getNodes().some($isPasteTokenNode)) return false
+      if (!$isNodeSelection(selection) || !selection.getNodes().some($isPasteBlockNode)) return false
       event.preventDefault()
       selection.deleteNodes()
       return true
@@ -537,8 +576,8 @@ function InteractionPlugin({
 }
 
 export default function LexicalComposerInput({
-  value,
-  blocks,
+  value: hostValue,
+  blocks: hostBlocks,
   onChange,
   onBlocksChange,
   onSend,
@@ -556,11 +595,28 @@ export default function LexicalComposerInput({
   onUploadFiles,
   sentMessages,
 }: LexicalComposerInputProps) {
+  // The host's pair is canonicalised before it reaches the tree: a value that
+  // holds the same marker twice (a restored draft, a small paste that contained
+  // the marker text) would rehydrate as two pills sharing a seq, and a marker
+  // resolves by seq alone — `expandAll` would send one block for both, dropping
+  // the other's content once either had been edited. `splitDuplicateMarkers`
+  // gives every later occurrence its own block + marker and returns the SAME
+  // references when nothing changed. This happens here, in React, rather than
+  // as a Lexical transform on the initial tree, because OnChangePlugin never
+  // reports the initial commit or a `history-merge` update — the host would keep
+  // the unrewritten value. (`PasteSeqInvariantPlugin` still guards pills created
+  // INSIDE the editor, which do reach the host through OnChange.)
+  const { text: value, blocks } = useMemo(() => splitDuplicateMarkers(hostValue, hostBlocks), [hostBlocks, hostValue])
+  useEffect(() => {
+    if (value !== hostValue) onChange(value)
+    if (blocks !== hostBlocks) onBlocksChange?.(blocks)
+  }, [blocks, hostBlocks, hostValue, onBlocksChange, onChange, value])
+
   const initialValueRef = useRef({ value, blocks })
   const lastEmittedRef = useRef({ value, blocks })
   const initialConfig = useMemo(() => ({
     namespace: 'KiroCrewComposer',
-    nodes: [PasteTokenNode],
+    nodes: [PasteBlockNode, DropGapNode],
     editable: !disabled && !readOnly,
     editorState: () => $replaceComposerValue(initialValueRef.current.value, initialValueRef.current.blocks),
     onError(error: Error, _editor: LexicalEditor) {
@@ -580,24 +636,27 @@ export default function LexicalComposerInput({
   return (
     <LexicalComposer initialConfig={initialConfig}>
       <div className={`relative min-h-[44px] ${className}`}>
-        <PlainTextPlugin
-          contentEditable={
-            <ContentEditable
-              aria-label={ariaLabel}
-              aria-multiline="true"
-              spellCheck={spellCheck}
-              data-composer-input=""
-              data-lexical-composer=""
-              className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-none whitespace-pre-wrap break-words ${INPUT_TYPO}`}
-            />
-          }
-          placeholder={
-            <div className={`pointer-events-none absolute inset-0 overflow-hidden text-muted ${INPUT_TYPO}`}>
-              {placeholder}
-            </div>
-          }
-          ErrorBoundary={LexicalErrorBoundary}
-        />
+        <PillsPlugin>
+          <PlainTextPlugin
+            contentEditable={
+              <ContentEditable
+                aria-label={ariaLabel}
+                aria-multiline="true"
+                spellCheck={spellCheck}
+                data-composer-input=""
+                data-composer-typo=""
+                data-lexical-composer=""
+                className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-none whitespace-pre-wrap break-words ${INPUT_TYPO}`}
+              />
+            }
+            placeholder={
+              <div data-composer-placeholder className={`pointer-events-none absolute inset-0 overflow-hidden text-muted ${INPUT_TYPO}`}>
+                {placeholder}
+              </div>
+            }
+            ErrorBoundary={LexicalErrorBoundary}
+          />
+        </PillsPlugin>
         <HistoryPlugin />
         <ComposerControlPlugin
           controlRef={controlRef}

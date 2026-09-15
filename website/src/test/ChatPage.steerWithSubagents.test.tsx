@@ -16,7 +16,8 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, act, waitFor } from '@testing-library/react'
+import { composerRoot, setComposerValue, pressInComposer, awaitComposer } from './helpers'
 import type { RootState } from '../store'
 import { store as appStore } from '../store'
 import { Provider } from 'react-redux'
@@ -129,14 +130,14 @@ async function renderChat(opts: { subagentsRunning: boolean; turnRunning: boolea
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
-  return { input: screen.getByLabelText('Message input') as HTMLTextAreaElement, store }
+  await awaitComposer()
+  return { input: composerRoot(), store }
 }
 
-async function typeAndSubmit(input: HTMLTextAreaElement, text: string) {
-  fireEvent.change(input, { target: { value: text } })
+async function typeAndSubmit(_input: HTMLElement, text: string) {
+  await setComposerValue(text)
   await act(async () => {
-    fireEvent.keyDown(input, { key: 'Enter' })
+    pressInComposer('Enter')
     await Promise.resolve()
   })
 }
@@ -156,7 +157,8 @@ afterEach(() => vi.restoreAllMocks())
 describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
   it('offers the split Steer button when only sub-agents are running', async () => {
     const { input } = await renderChat({ subagentsRunning: true, turnRunning: false })
-    fireEvent.change(input, { target: { value: 'act on this now' } })
+    await setComposerValue('act on this now')
+    void input
 
     const button = await waitFor(() => screen.getByTestId('busy-send-button'))
     // Label reflects the mode, so it doubles as the assertion that the default
