@@ -104,6 +104,13 @@ export interface LegacyGoalLoop {
    *  `undefined` means "not known here", while '' is a real "no sentinel".
    *  Kept only so the goal editor can say which of the two it is (#10458). */
   stopSentinelPath?: string
+  /** The overwrite guard's two inputs, carried so `legacyWire` can hand them to the goal
+   *  editor: without them the editor's confirm never arms and a redacted goal is
+   *  overwritten silently and irreversibly. Both are OMITTED rather than defaulted when
+   *  the wire withholds them, exactly as `stopSentinelPath` above is -- a record must not
+   *  invent a field the frame did not send, and a deep-equal test pins that shape. */
+  messageFingerprint?: string
+  messageRedacted?: boolean
 }
 
 export interface StructuredMonitor {
@@ -315,6 +322,12 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       stoppedReason: text(loop.stopped_reason),
       ...(typeof loop.stop_sentinel_path === 'string'
         ? { stopSentinelPath: loop.stop_sentinel_path }
+        : {}),
+      ...(typeof loop.message_fingerprint === 'string'
+        ? { messageFingerprint: loop.message_fingerprint }
+        : {}),
+      ...(typeof loop.message_redacted === 'boolean'
+        ? { messageRedacted: loop.message_redacted }
         : {}),
     }
   }
