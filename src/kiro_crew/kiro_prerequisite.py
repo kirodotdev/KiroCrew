@@ -63,6 +63,8 @@ from kiro_crew.kiro_cli import (
 )
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
+    corroborate_launcher_refusal,
+    launcher_refusal,
     resource_limit_supervisor_argv,
     sandboxed_spawn_argv,
     shielded_prepare_off_loop,
@@ -405,10 +407,15 @@ class ProcessResult:
     timed_out: bool = False
     error: str = ""
     # ``(kind, detail, remedy)`` when the spawn was refused because the sandbox
-    # could not be built — set ONLY from the typed SandboxUnavailableError, never
-    # inferred from host capability. A probe that failed for any other reason
-    # leaves this None, so an unrelated failure can never be misreported as a
-    # sandbox problem.
+    # could not be built. Set from exactly two structural sources and never
+    # inferred from host capability or from the child's text: the typed
+    # SandboxUnavailableError raised BEFORE the spawn, and -- when the launcher
+    # refused AFTER the spawn -- a fresh run of the real launcher around a
+    # trusted no-op (``sandbox.corroborate_launcher_refusal``), which the
+    # candidate's stderr line merely triggers and whose own stderr is the
+    # verdict. A trusted run that succeeds, times out, or refuses over host
+    # state leaves this None, so an unrelated failure can never be misreported
+    # as a sandbox problem, and a child cannot print its way into one.
     sandbox_failure: tuple[str, str, str] | None = None
 
 
@@ -1867,11 +1874,35 @@ async def _run_process(
             platform_compat.close_process_handle(windows_root_handle)
         await _unlink_off_loop(cleanup_path)
 
+    if proc.returncode == 0:
+        return ProcessResult(ok=True, output=output, returncode=0)
+    # The launcher exits 1 with its refusal on stderr, exactly like a candidate
+    # that exited 1 on its own -- and the candidate can print the launcher's
+    # line: it is the unverified binary this spawn exists to verify. So the
+    # candidate's line is never the verdict. It only decides whether to look
+    # further, and the verdict comes from re-running the real launcher around a
+    # trusted no-op under THIS spawn's own mode and hidden/visible dirs, whose
+    # stderr no child wrote. Only where a launcher ran at all: Windows skips the
+    # wrap, so a ``sandbox:`` line there could only be the candidate's own text.
+    # Off the loop: the trusted run blocks on a subprocess, and a spawn-time
+    # refusal must not stall the gateway.
+    sandbox_failure = None
+    if not platform_compat.IS_WINDOWS and launcher_refusal(output) is not None:
+        sandbox_failure = await asyncio.to_thread(
+            functools.partial(
+                corroborate_launcher_refusal,
+                output,
+                mode=sandbox_mode,
+                extra_hidden_dirs=extra_hidden_dirs,
+                extra_visible_dirs=extra_visible_dirs,
+            )
+        )
     return ProcessResult(
-        ok=proc.returncode == 0,
+        ok=False,
         output=output,
         returncode=proc.returncode,
-        error="" if proc.returncode == 0 else f"process exited with code {proc.returncode}",
+        error=f"process exited with code {proc.returncode}",
+        sandbox_failure=sandbox_failure,
     )
 
 
@@ -2328,9 +2359,7 @@ class KiroPrerequisiteService:
             # what the card's button offers.
             repairable = AGENT_FILENAME in missing_before
             if not repairable:
-                auxiliary_missing = [
-                    name for name in missing_before if name != AGENT_FILENAME
-                ]
+                auxiliary_missing = [name for name in missing_before if name != AGENT_FILENAME]
                 error = ""
                 if auxiliary_missing:
                     # Only auxiliary required specs are missing. The main-spec
@@ -2360,11 +2389,7 @@ class KiroPrerequisiteService:
                     except Exception:  # noqa: BLE001 — stale state beats a 500
                         logger.warning("Re-probe of rejected agent specs failed", exc_info=True)
                 result = await self._agent_spec_overlay(self._snapshot_dict())
-                if (
-                    not error
-                    and auxiliary_missing
-                    and (result.get("missing_agent_specs") or [])
-                ):
+                if not error and auxiliary_missing and (result.get("missing_agent_specs") or []):
                     error = _SPECS_STILL_MISSING_ERROR
                 result["agent_spec_repair_error"] = error
                 return result
@@ -2785,12 +2810,18 @@ class KiroPrerequisiteService:
                 # cannot build one a perfectly good, already-authenticated CLI
                 # fails verification and must not be reported as missing.
                 #
-                # This keys on the typed failure the spawn actually raised, NOT
-                # on whether the host has a backend. Host capability is not
-                # evidence: _run_process skips the wrap on Windows, and the
-                # allow_unsandboxed_exec opt-in bypasses it, so a broken CLI on
-                # either would otherwise be blamed on the sandbox and lose the
-                # repair actions that would genuinely help.
+                # This keys on what the spawn itself reported, NOT on whether the
+                # host has a backend: the typed SandboxUnavailableError when the
+                # sandbox could not be built before the spawn, or — when the
+                # launcher refused after it (a container that grants the
+                # namespaces but denies the launcher's first mount can pass a
+                # cached boot probe and fail here) — the sandbox's own fresh
+                # probe, which the launcher's stderr line only triggers and
+                # which a candidate's output can therefore never forge. Host
+                # capability is not evidence: _run_process skips the wrap on
+                # Windows, and the allow_unsandboxed_exec opt-in bypasses it, so
+                # a broken CLI on either would otherwise be blamed on the sandbox
+                # and lose the repair actions that would genuinely help.
                 sandbox_failure = version_probe.sandbox_failure if version_probe else None
                 first_candidate = candidates[0] if candidates else ""
                 # Off-loop: _is_runnable_executable realpath()s and stat()s the

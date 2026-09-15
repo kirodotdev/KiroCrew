@@ -916,6 +916,7 @@ sandbox probe names the failing step so you can tell them apart:
 | `unshare` fails and `kernel.unprivileged_userns_clone=0` | Debian-family legacy knob (defaults to 1 since Debian 11) | Set it to 1 |
 | `unshare` fails `EINVAL` / `ENOSYS` | Kernel built without `CONFIG_USER_NS` | None short of a different kernel |
 | Fails inside Docker/Podman | The container's seccomp filter denies `unshare` | Container run flags, **not** host config |
+| Both `unshare` steps pass, `mount(MS_REC\|MS_PRIVATE)` on `/` fails `EACCES` (or `EPERM`) | The container runtime's default AppArmor profile (`deny mount`), or a seccomp filter without `mount`; the Kubernetes default on AppArmor nodes | `--security-opt apparmor=unconfined` / Pod `appArmorProfile: Unconfined` plus a seccomp profile permitting `unshare` and `mount`, or `agent.sandbox_allow_unsandboxed_exec=true` — see [Kubernetes and AppArmor](docker.md#kubernetes-and-apparmor) |
 | RHEL/Fedora/Rocky/AL2023 | SELinux, not AppArmor | userns is enabled there; the profile is inert |
 
 To see which step is failing on your host:
@@ -929,8 +930,8 @@ sb.reset_backend(); print(sb.detect_backend(), sb._last_unshare_failure)"
 `kirocrew doctor` reports the same verdict without the one-liner, and the
 dashboard's **Sandbox unavailable** screen names the mechanism and the command
 for it directly — the probe classifies the failing step into one of
-`apparmor_userns`, `max_user_namespaces`, `userns_denied` or `no_user_ns`, which
-is the row of the table above that applies to you.
+`apparmor_userns`, `max_user_namespaces`, `userns_denied`, `no_user_ns` or
+`mount_denied`, which is the row of the table above that applies to you.
 
 ## Troubleshooting
 

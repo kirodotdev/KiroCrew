@@ -249,6 +249,15 @@ def test_probe_child_killed_by_signal_is_transient(monkeypatch):
             def __call__(self, *a):
                 return 0
 
+        class mount:
+            # The probe binds mount(2) alongside unshare(2) for its third step;
+            # this fake never reaches it (the child is "killed" before reporting).
+            argtypes = None
+            restype = None
+
+            def __call__(self, *a):
+                return 0
+
     fake_libc = FakeLibC()
     monkeypatch.setattr(_ct, "CDLL", lambda *a, **kw: fake_libc)
 

@@ -54,6 +54,13 @@ function status(overrides: Partial<KiroPrerequisiteStatus> = {}): KiroPrerequisi
   }
 }
 
+// The Pod remedy block is real nested YAML. Matched on the code element's exact
+// text: RTL's default matcher collapses whitespace, which would hide a lost
+// newline or indentation — exactly the defect that makes a paste invalid.
+const POD_YAML = 'securityContext:\n  appArmorProfile:\n    type: Unconfined'
+const podBlock = () =>
+  screen.getByText((_, el) => el?.tagName === 'CODE' && el.textContent === POD_YAML)
+
 describe('KiroPrerequisiteGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -1089,6 +1096,75 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.queryByText('1.')).not.toBeInTheDocument()
   })
 
+  it('names the container policy and both spellings of the AppArmor switch for a refused mount', async () => {
+    // Issue #10765: a non-root Kubernetes pod granted both namespaces and its
+    // runtime's default AppArmor profile then refused the launcher's first
+    // mount. The probe now names that step, so the gate can say the fix is the
+    // container's policy — not root, not CAP_SYS_ADMIN, not a sysctl — and
+    // spell it for Docker and for a Pod.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_detail: 'mount(MS_REC|MS_PRIVATE) on / failed with errno 13 (EACCES)',
+      sandbox_remedy: 'mount_denied',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    expect(await screen.findByText('How to fix')).toBeInTheDocument()
+    expect(
+      screen.getByText(/--security-opt apparmor=unconfined/),
+    ).toBeInTheDocument()
+    // Real nested YAML, so it drops into a Pod manifest as-is.
+    expect(podBlock()).toBeInTheDocument()
+    // Each block is captioned, so the reader knows which of the two is theirs.
+    expect(screen.getByText('Docker')).toBeInTheDocument()
+    expect(screen.getByText('Kubernetes Pod')).toBeInTheDocument()
+    // Namespaces work here, so the generic "no OS-level sandbox" body would be
+    // false; the container body names what actually refused.
+    expect(screen.queryByText(/provides no OS-level sandbox/)).not.toBeInTheDocument()
+    expect(screen.getByText(/grants the user and mount namespaces/)).toBeInTheDocument()
+    // A host userns remedy would be the wrong fix for a pod that already grants them.
+    expect(screen.queryByText('kirocrew service install')).not.toBeInTheDocument()
+    expect(screen.queryByText(/sysctl/)).not.toBeInTheDocument()
+    expect(screen.getByText('kirocrew doctor')).toBeInTheDocument()
+  })
+
+  it('copies each container spelling on its own', async () => {
+    // Two blocks for one switch, because Docker and a Pod spell it differently;
+    // each must paste as something usable by itself — the Pod block as the
+    // whole nested YAML, newlines included.
+    const { copyToClipboard } = await import('../utils/clipboard')
+    vi.mocked(copyToClipboard).mockClear()
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_detail: 'mount(MS_REC|MS_PRIVATE) on / failed with errno 13 (EACCES)',
+      sandbox_remedy: 'mount_denied',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await screen.findByText('How to fix')
+    fireEvent.click(podBlock().closest('button')!)
+    await waitFor(() =>
+      expect(copyToClipboard).toHaveBeenCalledWith(POD_YAML),
+    )
+    const docker = screen.getByText(/--security-opt apparmor=unconfined/)
+    fireEvent.click(docker.closest('button')!)
+    await waitFor(() =>
+      expect(copyToClipboard).toHaveBeenLastCalledWith(
+        '--security-opt apparmor=unconfined --security-opt seccomp=kirocrew-seccomp.json',
+      ),
+    )
+  })
+
   it('still points at doctor when the mechanism is unknown', async () => {
     // An unclassified failure has no command to offer, but a dead end with a
     // retry button was the original complaint. The diagnostic pointer is the
@@ -1136,6 +1212,39 @@ describe('KiroPrerequisiteGate', () => {
     const column = document.querySelector('div.flex-1.overflow-y-auto')
     expect(column).not.toBeNull()
     expect(column!.contains(button)).toBe(false)
+  })
+
+  it('cues the reader that the tall remedy column scrolls', async () => {
+    // The mount_denied remedy overflows the panel's fixed height, so the footer
+    // divider below reads as the end of the content unless the fold is marked.
+    // jsdom does no layout, so the scroll geometry is stubbed on the region.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      sandbox_unavailable: true,
+      sandbox_failure_kind: 'no_backend',
+      sandbox_detail: 'mount(MS_REC|MS_PRIVATE) on / failed with errno 13 (EACCES)',
+      sandbox_remedy: 'mount_denied',
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await screen.findByText('How to fix')
+    const region = screen.getByTestId('gate-scroll-region')
+    // Overflowing, scrolled to the top: only the bottom cue should show.
+    Object.defineProperty(region, 'clientHeight', { configurable: true, get: () => 300 })
+    Object.defineProperty(region, 'scrollHeight', { configurable: true, get: () => 640 })
+    Object.defineProperty(region, 'scrollTop', { configurable: true, get: () => 0 })
+    fireEvent.scroll(region)
+    await waitFor(() => expect(screen.getByTestId('gate-scroll-cue-bottom')).toBeInTheDocument())
+    expect(screen.queryByTestId('gate-scroll-cue-top')).not.toBeInTheDocument()
+
+    // Scrolled to the very end: nothing is hidden below, so the bottom cue goes.
+    Object.defineProperty(region, 'scrollTop', { configurable: true, get: () => 340 })
+    fireEvent.scroll(region)
+    await waitFor(() => expect(screen.queryByTestId('gate-scroll-cue-bottom')).not.toBeInTheDocument())
+    expect(screen.getByTestId('gate-scroll-cue-top')).toBeInTheDocument()
   })
 
   it('offers no host remedy when a foreign sandbox is the cause', async () => {

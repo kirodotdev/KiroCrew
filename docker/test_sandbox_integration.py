@@ -7,8 +7,11 @@ Run inside a container:
     docker run --rm -v .:/repo -w /repo python:3.12-slim \
         bash -c "pip install -e . -q && python docker/test_sandbox_integration.py step1"
 
-  Step 2 (with kirocrew seccomp profile):
+  Step 2 (with kirocrew seccomp profile; on an AppArmor host — Ubuntu/Debian
+  families — ALSO pass --security-opt apparmor=unconfined, or the launcher's
+  first mount is refused by docker-default's `deny mount`):
     docker run --rm --security-opt seccomp=docker/seccomp/kirocrew-seccomp.json \
+        --security-opt apparmor=unconfined \
         -v .:/repo -w /repo python:3.12-slim \
         bash -c "pip install -e . -q && python docker/test_sandbox_integration.py step2"
 
@@ -72,10 +75,29 @@ def step1_reproduce_issue():
 
 
 def step2_with_seccomp_profile():
-    """With the Kiro Crew seccomp profile, the inner sandbox should work."""
+    """With the Kiro Crew seccomp profile, the inner sandbox should work — for real.
+
+    The probe verdict alone is not proof: it used to stop at the two unshares, so
+    a container whose runtime AppArmor profile carried ``deny mount`` (Docker on an
+    Ubuntu host, every Kubernetes pod on an AppArmor node) reported ``namespace``
+    here while every real spawn died in the launcher at its first mount. This
+    step therefore also SPAWNS a child through the launcher and requires it to
+    exit 0 — the only evidence that the whole sequence, mounts included, works
+    under this container's policy.
+    """
     banner("STEP 2: With kirocrew-seccomp.json profile")
 
-    from kiro_crew.sandbox import detect_backend, is_docker_container, userns_available
+    import subprocess
+
+    from kiro_crew.sandbox import (
+        detect_backend,
+        is_docker_container,
+        launcher_refusal,
+        unavailable_reason,
+        unavailable_remedy,
+        userns_available,
+        wrap_argv,
+    )
 
     print(f"  in_container    : {is_docker_container()}")
     print(f"  userns_available: {userns_available()}")
@@ -86,18 +108,49 @@ def step2_with_seccomp_profile():
     backend = detect_backend()
     userns = userns_available()
 
-    if backend == "namespace":
-        print()
-        print("STEP 2 PASSED — namespace backend active, inner sandbox works")
-    elif not userns:
-        # WSL2 kernel without CONFIG_USER_NS — expected failure mode
-        print()
-        print("NOTE: userns_available() = False — WSL2 kernel may lack CONFIG_USER_NS.")
-        print("This is an expected failure on WSL2 Docker CE without user namespace support.")
-        print("Use Option B (KIROCREW_ALLOW_UNSANDBOXED=1) instead. See docs/docker.md.")
-    else:
+    if backend != "namespace":
+        if not userns and unavailable_remedy() == "mount_denied":
+            print()
+            print(f"FAIL: both unshares succeed but the mount is refused ({unavailable_reason()}).")
+            print("The seccomp profile is only half the change on an AppArmor host: add")
+            print("  --security-opt apparmor=unconfined")
+            print("alongside it. See docs/guides/docker.md § 'Kubernetes and AppArmor'.")
+            sys.exit(1)
+        if not userns:
+            # WSL2 kernel without CONFIG_USER_NS — expected failure mode
+            print()
+            print("NOTE: userns_available() = False — WSL2 kernel may lack CONFIG_USER_NS.")
+            print("This is an expected failure on WSL2 Docker CE without user namespace support.")
+            print("Use Option B (KIROCREW_ALLOW_UNSANDBOXED=1) instead. See docs/docker.md.")
+            return
         print(f"FAIL: expected backend='namespace', got {backend!r}")
         sys.exit(1)
+
+    # The probe said yes; make the launcher prove it.
+    argv, cleanup = wrap_argv(["/bin/true"], "strict")
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, encoding="utf-8", timeout=60
+        )
+    finally:
+        if cleanup:
+            try:
+                import os
+
+                os.unlink(cleanup)
+            except OSError:
+                pass
+    print(f"  launcher exit   : {completed.returncode}")
+    if completed.returncode != 0:
+        refusal = launcher_refusal(completed.stderr + completed.stdout)
+        print()
+        print("FAIL: the probe reported a working sandbox but the launcher refused:")
+        print(f"  {refusal[1] if refusal else completed.stderr.strip()[-600:]}")
+        if refusal and refusal[2] == "mount_denied":
+            print("A mount was refused inside the namespaces: add --security-opt apparmor=unconfined.")
+        sys.exit(1)
+    print()
+    print("STEP 2 PASSED — namespace backend active and a child ran through the launcher")
 
 
 def step3_unsandboxed_consent():

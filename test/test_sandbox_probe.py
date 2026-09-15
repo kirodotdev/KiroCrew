@@ -245,12 +245,97 @@ class TestProbeSplitSequence:
 
     def test_full_sequence_success_reports_ok(self, monkeypatch, pipe_fds):
         read_fd, write_fd = pipe_fds
-        monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", 0), ("N", 0)))
+        monkeypatch.setattr(
+            sb, "_probe_read_step", _scripted_steps(("U", 0), ("N", 0), ("P", 0))
+        )
         monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: None)
 
         verdict = sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)
 
         assert verdict == (True, False, "ok", "")
+
+    def test_both_unshares_passing_is_not_yet_a_verdict(self, monkeypatch, pipe_fds):
+        """The container shape: namespaces granted, the launcher's first mount refused.
+
+        Both unshares succeed under a container runtime's default AppArmor profile
+        (Kubernetes applies it on AppArmor nodes and no seccomp filter at all), and
+        that profile's ``deny mount`` then refuses the propagation mount with EACCES.
+        A probe that stopped at the unshares reported such a pod sandbox-capable, so
+        every real spawn died in the launcher and was misread as a broken CLI.
+        """
+        read_fd, write_fd = pipe_fds
+        monkeypatch.setattr(
+            sb, "_probe_read_step", _scripted_steps(("U", 0), ("N", 0), ("P", errno.EACCES))
+        )
+        monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: None)
+
+        ok, transient, reason, remedy = sb._probe_parent_sequence(
+            4242, read_fd, write_fd, 1000, 1000
+        )
+
+        assert ok is False
+        assert transient is False, "a container policy does not clear on retry"
+        assert "MS_PRIVATE" in reason and "EACCES" in reason, reason
+        assert "CLONE_NEWNS" not in reason, "the step that failed is the mount, not NEWNS"
+        assert remedy == sb.REMEDY_MOUNT_DENIED
+
+    def test_a_seccomp_mount_denial_shares_the_mount_remedy(self, monkeypatch, pipe_fds):
+        """EPERM (a seccomp filter) and EACCES (AppArmor) need the same container fix."""
+        read_fd, write_fd = pipe_fds
+        monkeypatch.setattr(
+            sb, "_probe_read_step", _scripted_steps(("U", 0), ("N", 0), ("P", errno.EPERM))
+        )
+        monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: None)
+
+        ok, transient, _reason, remedy = sb._probe_parent_sequence(
+            4242, read_fd, write_fd, 1000, 1000
+        )
+
+        assert (ok, transient) == (False, False)
+        assert remedy == sb.REMEDY_MOUNT_DENIED
+
+    def test_silent_child_before_the_mount_is_transient(self, monkeypatch, pipe_fds):
+        """A child lost between NEWNS and the mount is a harness failure, not a verdict."""
+        read_fd, write_fd = pipe_fds
+        monkeypatch.setattr(sb, "_probe_read_step", _scripted_steps(("U", 0), ("N", 0), None))
+        monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: None)
+
+        ok, transient, reason, remedy = sb._probe_parent_sequence(
+            4242, read_fd, write_fd, 1000, 1000
+        )
+
+        assert (ok, transient) == (False, True)
+        assert "MS_PRIVATE" in reason, reason
+        assert remedy == ""
+
+    def test_the_child_is_released_for_the_mount_only_after_its_newns_report(
+        self, monkeypatch, pipe_fds
+    ):
+        """One release byte per step, each written after the previous report was read.
+
+        The two verdicts share one pipe: a child that ran the mount right after
+        NEWNS could write both lines before the parent read either, and the reader
+        keeps only the first line of a read. Observed on the real release pipe
+        rather than by patching ``os.write``: each scripted report drains whatever
+        the parent had released by then.
+        """
+        read_fd, write_fd = pipe_fds
+        os.set_blocking(read_fd, False)
+        released_before_each_report: list[bytes] = []
+        reports = _scripted_steps(("U", 0), ("N", 0), ("P", 0))
+
+        def read_step(fd):
+            try:
+                released_before_each_report.append(os.read(read_fd, 8))
+            except BlockingIOError:
+                released_before_each_report.append(b"")
+            return reports(fd)
+
+        monkeypatch.setattr(sb, "_probe_read_step", read_step)
+        monkeypatch.setattr(sb, "_probe_write_identity_maps", lambda *_a: None)
+
+        assert sb._probe_parent_sequence(4242, read_fd, write_fd, 1000, 1000)[0] is True
+        assert released_before_each_report == [b"", b"x", b"m"]
 
     def test_newuser_denial_names_newuser_not_newns(self, monkeypatch, pipe_fds):
         """A kernel with no CONFIG_USER_NS fails at the FIRST step."""
@@ -459,6 +544,83 @@ class TestProbeSplitSequence:
 
         assert calls == [sb._CLONE_NEWUSER]
         assert sb._probe_read_step(read_fd) == ("U", errno.EINVAL)
+
+    def test_a_refused_mount_is_reported_as_the_third_wire_step(self, monkeypatch, pipe_fds):
+        """Both unshares ok, the propagation mount EACCES: ``U:0``, ``N:0``, ``P:13``.
+
+        Read raw rather than through ``_probe_read_step``: with both release bytes
+        pre-loaded the child writes all three lines back to back, and the reader
+        keeps only the first line of a read -- in production the parent's
+        per-step release keeps them apart (covered on the parent side).
+        """
+        read_fd, write_fd = pipe_fds
+        release_r, release_w = os.pipe()
+        codes: list[int] = []
+        monkeypatch.setattr(sb, "_close_probe_fds", lambda *fds: None)
+        monkeypatch.setattr(sb, "_close_fd_ranges", lambda ranges: None)
+        monkeypatch.setattr(sb, "_probe_child_thread_count", lambda: 1)
+        monkeypatch.setattr(sb, "_probe_child_unshare", lambda libc, flags: 0)
+        monkeypatch.setattr(sb, "_probe_child_make_private", lambda libc: errno.EACCES)
+        monkeypatch.setattr(sb.os, "_exit", _exit_recorder(codes))
+        try:
+            os.write(release_w, b"xm")
+            with pytest.raises(_ChildExit):
+                sb._probe_child_sequence(None, -1, write_fd, release_r, -1, ())
+        finally:
+            for fd in (release_r, release_w):
+                os.close(fd)
+
+        assert codes[0] == 0, "a refused mount is a report, not a child failure"
+        assert os.read(read_fd, 64) == b"U:0\nN:0\nP:%d\n" % errno.EACCES
+
+    def test_a_denied_newns_ends_the_child_before_any_mount(self, monkeypatch, pipe_fds):
+        """No mount namespace, no mount: the child exits on ``N`` and leaves the
+        second release byte unread, so the parent's verdict is the NEWNS one."""
+        read_fd, write_fd = pipe_fds
+        release_r, release_w = os.pipe()
+        mounted: list[bool] = []
+        codes: list[int] = []
+        monkeypatch.setattr(sb, "_close_probe_fds", lambda *fds: None)
+        monkeypatch.setattr(sb, "_close_fd_ranges", lambda ranges: None)
+        monkeypatch.setattr(sb, "_probe_child_thread_count", lambda: 1)
+        monkeypatch.setattr(
+            sb,
+            "_probe_child_unshare",
+            lambda libc, flags: errno.EPERM if flags == sb._CLONE_NEWNS else 0,
+        )
+        monkeypatch.setattr(
+            sb, "_probe_child_make_private", lambda libc: mounted.append(True) or 0
+        )
+        monkeypatch.setattr(sb.os, "_exit", _exit_recorder(codes))
+        try:
+            os.write(release_w, b"xm")
+            with pytest.raises(_ChildExit):
+                sb._probe_child_sequence(None, -1, write_fd, release_r, -1, ())
+            os.set_blocking(release_r, False)
+            left_unread = os.read(release_r, 8)
+        finally:
+            for fd in (release_r, release_w):
+                os.close(fd)
+
+        assert codes[0] == 0
+        assert mounted == [], "the mount step must not run without a mount namespace"
+        assert left_unread == b"m"
+        assert os.read(read_fd, 64) == b"U:0\nN:%d\n" % errno.EPERM
+
+    def test_the_fresh_interpreter_shim_speaks_the_same_three_steps(self):
+        """The spawn shim and the fork child share one parent; their wire must agree.
+
+        Static rather than executed: the shim's real run needs a host whose kernel
+        answers, and ``test_both_paths_report_the_same_verdict_on_this_host``
+        already compares the two live. This pins the protocol itself -- every step
+        letter the fork child can write, in the same order, including the mount.
+        """
+        shim = sb._PROBE_SHIM_CODE
+        for step in (b"M:", b"U:", b"N:", b"P:"):
+            assert step.decode() in shim, f"the shim never reports step {step!r}"
+        assert shim.index('"N:') < shim.index('"P:'), "the mount is reported after NEWNS"
+        assert "MS_REC | MS_PRIVATE" in shim, "the shim performs the launcher's exact mount"
+        assert 'b"/"' in shim, "the propagation change is on / and nothing else"
 
     def test_the_thread_count_is_the_task_dir_link_count_minus_two(self):
         """One stat, no allocation: the probe child must not touch the allocator.
@@ -738,6 +900,10 @@ class TestProbeChildFdSweep:
             calls.append(("unshare", flags))
             return 0
 
+        def fake_make_private(_libc):
+            calls.append(("mount_private",))
+            return 0
+
         class _ChildExit(BaseException):
             """Raised by the patched ``os._exit`` so nothing runs past an exit."""
 
@@ -752,6 +918,7 @@ class TestProbeChildFdSweep:
             raise _ChildExit(code)
 
         monkeypatch.setattr(sb, "_probe_child_unshare", fake_unshare)
+        monkeypatch.setattr(sb, "_probe_child_make_private", fake_make_private)
         monkeypatch.setattr(sb.os, "_exit", fake_exit)
 
         c2p_r, c2p_w = os.pipe()
@@ -762,7 +929,7 @@ class TestProbeChildFdSweep:
         parent_c2p_r = os.dup(c2p_r)
         sweep = ((3, c2p_w), (c2p_w + 1, 64),)
         try:
-            os.write(p2c_w, b"x")  # pre-release the maps handshake
+            os.write(p2c_w, b"xm")  # pre-release the maps AND the mount handshakes
             with pytest.raises(_ChildExit):
                 sb._probe_child_sequence(None, c2p_r, c2p_w, p2c_r, p2c_w, sweep)
         finally:
@@ -775,13 +942,17 @@ class TestProbeChildFdSweep:
                 except OSError:
                     pass
 
-        # The success path exits 0; a failure after the second unshare would
-        # first record a nonzero exit before the BaseException handler re-exits,
-        # so the FIRST recorded code is the real verdict.
+        # The success path exits 0; a failure after the last step would first
+        # record a nonzero exit before the BaseException handler re-exits, so
+        # the FIRST recorded code is the real verdict.
         assert exits[0] == 0
         assert calls[0] == ("sweep", sweep)
         assert calls[1] == ("unshare", sb._CLONE_NEWUSER)
         assert ("unshare", sb._CLONE_NEWNS) in calls
+        # The launcher's order: the propagation mount is the LAST step, inside the
+        # mount namespace the step before it created.
+        assert calls[-1] == ("mount_private",)
+        assert calls.index(("unshare", sb._CLONE_NEWNS)) < calls.index(("mount_private",))
 
     @_linux_only
     def test_forked_child_really_drops_a_lock_shaped_fd(self, tmp_path):
