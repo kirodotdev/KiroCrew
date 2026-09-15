@@ -1018,6 +1018,38 @@ class TestRemoveIfUnclaimed:
         mgr.release(key)
 
     @pytest.mark.asyncio
+    async def test_noops_with_attached_subagents(self, cfg):
+        """The parent may be idle while shared-runtime children still work."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-children"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        probe = MagicMock(return_value=True)
+        mgr.set_subagent_probe(probe)
+
+        assert await mgr.remove_if_unclaimed(key) is False
+        assert key in mgr._sessions
+        probe.assert_called_once_with(key)
+        provider.shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_noops_when_subagent_probe_fails(self, cfg):
+        """An unreadable child registry must not terminate a parent runtime."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-probe-error"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        mgr.set_subagent_probe(MagicMock(side_effect=RuntimeError("registry unavailable")))
+
+        assert await mgr.remove_if_unclaimed(key) is False
+        assert key in mgr._sessions
+        provider.shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_noops_on_missing_key(self, cfg):
         from kiro_crew.session import SessionManager
 

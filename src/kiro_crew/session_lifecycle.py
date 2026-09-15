@@ -120,6 +120,8 @@ class SessionLifecycleOwner(Protocol):
 
     def _is_continuable_key(self, key: str) -> bool: ...
 
+    def _has_attached_subagents(self, key: str) -> bool: ...
+
     def clear_queue(self, key: str) -> None: ...
 
     def release(self, key: str) -> None: ...
@@ -723,7 +725,11 @@ class SessionLifecycleService:
             return complete
 
     async def remove_if_unclaimed(self, key: str) -> bool:
-        """Remove a speculative session only while its first turn is unclaimed."""
+        """Remove a speculative session only while its first turn is unclaimed.
+
+        A free parent semaphore does not prove that its runtime is disposable:
+        attached children can continue on it after the parent turn ends.
+        """
         owner = self._owner
         constants = self._deps.constants()
         key = owner._fold_key(key)
@@ -734,6 +740,19 @@ class SessionLifecycleService:
                 or session.first_turn is constants.first_turn_nothing_armed
                 or session.semaphore.locked()
             ):
+                return False
+            try:
+                if owner._has_attached_subagents(key):
+                    return False
+            except Exception:
+                # An unreadable child registry is not evidence that no child
+                # owns this runtime. Keep it until a later TTL pass can prove
+                # the opposite, matching the RSS recycle fail-closed policy.
+                self._deps.logger.debug(
+                    "Unclaimed removal: sub-agent probe failed for %s; keeping it",
+                    key,
+                    exc_info=True,
+                )
                 return False
             del owner._sessions[key]
             owner._advance_session_generation(key)
