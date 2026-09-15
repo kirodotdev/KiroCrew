@@ -11,6 +11,7 @@ import { useAppPreview } from '../WebAppArtifactCard'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../../lib/widgetSrcdoc'
 import MarkdownRenderer from '../MarkdownRenderer'
 import { i18nT } from '../../i18n/t'
+import { stripMd } from '../notifications/notifMeta'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
 import { useNearViewport } from '../../hooks/useNearViewport'
 import type { Artifact } from '../../types'
@@ -210,8 +211,33 @@ export function WidgetThumb({ content, slug }: { content: string; slug: string }
 /** Kind-aware preview for non-iframe artifacts: markdown is rendered, SVG is
  * drawn (sanitized), JSON is pretty-printed, everything else is a raw snippet.
  * All paths are height-capped so cards stay tidy. */
-export function ContentThumb({ content, kind }: { content: string; kind: Artifact['kind'] }) {
+export function ContentThumb({ content, kind, mini = false }: {
+  content: string
+  kind: Artifact['kind']
+  mini?: boolean
+}) {
   if (!content.trim()) return <div className="h-[64px] bg-bg-elevated" />
+
+  if (mini && kind === 'markdown') {
+    // stripMd drops heading / emphasis / list markers but keeps table pipes, and
+    // a five-line tile has no room to lay a table out: the delimiter row renders
+    // as literal `|---|---|`. Drop delimiter rows and collapse the remaining
+    // cell pipes here, so the tile reads as prose without changing the shared
+    // helper that notification previews and the turn minimap depend on.
+    const flat = content
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/^\s*\|?[-:| ]+\|[-:| ]*$/gm, ' ')
+      .replace(/\|/g, ' ')
+    const text = stripMd(flat).slice(0, 240)
+    return (
+      <div
+        data-testid="artifact-mini-text"
+        className="h-full px-2 py-1.5 overflow-hidden bg-bg-elevated text-[10px] leading-[1.35] text-muted line-clamp-5 break-words"
+      >
+        {text}
+      </div>
+    )
+  }
 
   if (kind === 'markdown') {
     return (

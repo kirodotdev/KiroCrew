@@ -305,6 +305,47 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
     expect(within(card).queryByTitle('loose one')).not.toBeInTheDocument()
   })
 
+  it('renders markdown inside folder tiles as compact plain text', async () => {
+    const markdown = mkArtifact('long-report', {
+      folder_id: 'ops',
+      kind: 'markdown',
+    })
+    seed({
+      artifacts: [markdown],
+      folders: [mkFolder('ops', 'Ops')],
+      full: { content: '# Huge report heading\n\n| A | B |\n|---|---|\n| one | two |' },
+    })
+    renderWithProviders(<ArtifactsPage />)
+    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const thumb = await within(folder).findByTestId('artifact-mini-text')
+
+    expect(thumb).toHaveTextContent('Huge report heading')
+    expect(thumb.className).toContain('line-clamp-5')
+    // Table syntax is not laid out in a five-line tile, so no pipe survives.
+    expect(thumb.textContent).not.toContain('|')
+    expect(thumb).toHaveTextContent('one two')
+    expect(within(folder).queryByRole('heading')).not.toBeInTheDocument()
+    expect(within(folder).queryByRole('table')).not.toBeInTheDocument()
+  })
+
+
+  it('keeps SVG folder tiles on the kind-aware preview path', async () => {
+    // The artifact is built inline, as the other seeds in this file do: a
+    // separate binding used in the same call as the script-bearing fixture is
+    // what the SAST unknown-value-with-script-tag rule matches on.
+    seed({
+      artifacts: [mkArtifact('brand-mark', { folder_id: 'ops', kind: 'svg' })],
+      folders: [mkFolder('ops', 'Ops')],
+      full: { content: '<' + 'svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /><script>window.x=1</script></svg>' },
+    })
+    renderWithProviders(<ArtifactsPage />)
+    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+
+    await waitFor(() => expect(folder.querySelector('svg circle')).toBeTruthy())
+    expect(folder.querySelector('svg script')).toBeNull()
+    expect(within(folder).queryByTestId('artifact-mini-text')).not.toBeInTheDocument()
+  })
+
   it('renders the derived emoji badge on a closed folder glyph', async () => {
     seed({ artifacts: [], folders: [mkFolder('ops', 'Ops', { icon: '🛠', color: '#3b82f6' })] })
     renderWithProviders(<ArtifactsPage />)
