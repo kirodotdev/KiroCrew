@@ -51,7 +51,7 @@ systemd part -- so they are the portable choice, and the only one on a host that
 denies you the bus.
 
 ```
-pod_up     {"worktree": "<wt>"}   -> {base_url, token, port, ttl}
+pod_up     {"worktree": "<wt>"}   -> {name, base_url, token, port, ttl}
 pod_status {"worktree": "<wt>"}   -> status + port + health
 pod_ls     {}                     -> every pod active on this host
 pod_down   {"worktree": "<wt>"}   -> stopped, HOME reclaimed
@@ -129,10 +129,85 @@ green). Flags:
 
 | flag | effect |
 |---|---|
+| `--handle-json <path>` | run against a pod the CALLER started, from the handle in that file (see below) |
 | `--keep` / `--no-stop` | leave the pod running after tests (debug) |
 | `--api-only` | skip the Playwright phase (leaves a boot + auth check) |
 | `--fe-only` | accepted no-op — no test-suite phase exists to skip |
 | `--video` | record the session at 1080p → `.webm` + `.mp4` (finalization is time-capped) |
+
+### Running the suite when you cannot reach the bus
+
+The script drives the pod with `kirocrew pod` verbs, and those need the systemd
+user bus, so on a host whose outer sandbox denies it the harness cannot start --
+even though every phase after the first is ordinary loopback HTTP. `--handle-json`
+is that path: boot the pod with the `pod_up` tool, then build the JSON object shown
+below out of the values it reports and hand that file over. Do not paste the tool's
+own reply into the file: it is labelled prose, and `json.load` rejects it with exit
+64.
+
+```bash
+# pod_up {"worktree": "<wt>"} -> {"name": "<wt>", "base_url": ..., "token": ..., "port": ...}
+# pod_status {"worktree": "<wt>"} -> health
+# keep pod_up's name and write the fresh health code into that object, then:
+bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <wt> --handle-json "$H/handle.json" --video
+# ... and when you are done, pod_down {"worktree": "<wt>"}
+```
+
+The file is the object `pod_up` returns, including its own `name`, with the
+`health` code `pod_status` reports added:
+
+```json
+{"name": "<wt>", "base_url": "http://127.0.0.1:7813", "token": "...", "port": 7813, "health": 200}
+```
+
+`name` must be a non-empty string exactly equal to the `<wt>` argument. The
+harness refuses a missing, non-string, empty, or different name before any phase
+runs; it never normalizes this field. Keep the value from `pod_up`'s own payload
+rather than rebuilding it. `base_url` must be an HTTP loopback address carrying
+an explicit port that is none of: the configured live-plane port
+(`KIROCREW_POD_LIVE_PORT`), its default `5476`, and the reserved `7777`. The
+default stays refused even when the variable names another port, because that
+variable is read from the harness's own environment: a deployment that sets it only
+in the gateway's unit would otherwise leave `5476` open here. Export it in the
+shell that runs the harness so the configured port is refused too.
+It and `token` may contain no whitespace or
+control characters. `token`
+must use the generated-token alphabet (`A-Z`, `a-z`, `0-9`, `-_.~+/=`), and
+`port` must be a canonical decimal integer from 1 through 65535 that matches the
+URL port. The harness validates these fields once, then runs from a canonical
+payload: `base_url` is rebuilt as `http://<loopback-host>:<port>` with no path,
+`port` is plain decimal, and the token is the validated value. No raw handle
+field reaches the production-port refusal, curl configuration, or Playwright.
+That is not shape pedantry: validating one representation and using another can
+point the harness at the live plane. The `pod_up` producer already emits the
+canonical URL, token, and port; add only the fresh `health` code from
+`pod_status`.
+
+In that mode the script calls no pod verb at all, and three things follow:
+
+- **The pod is yours, not the harness's.** It is never stopped on exit, whether
+  the run passes or crashes. Call `pod_down` yourself.
+- **The health verdict is read, not measured.** The summary says
+  `health — supplied by the caller`, and a stale handle means the run is judging a
+  pod that has already died. Re-read it with `pod_status` immediately before the
+  run, and pass what it reports rather than a remembered 200.
+- **The lifecycle ran on the gateway's build, not the worktree's.** The CLI path
+  deliberately pins the worktree's own `kirocrew` so `pod up` / `pod down`
+  exercise the branch under test. Nothing pins the gateway. So for a diff that
+  changes pod lifecycle code itself, the CLI path is the one that tests it -- a
+  green handle-mode run says the branch's *gateway* boots and renders, not that
+  the branch's *pod code* works.
+- **`name` ties the handle to a worktree, not to a clone.** The check refuses a
+  handle whose `name` is not the worktree you asked for, but a pod name is a
+  worktree basename, and two clones on one host can each hold a worktree of that
+  name. Run the harness from the clone whose pod you booted: with a handle from the
+  other one, the specs and the artifact directory come from here while the requests
+  go there, and the verdict is filed under the wrong checkout. Nothing in the
+  handle, and nothing the pod serves, identifies a checkout today -- closing it
+  needs `pod_up` to emit a machine-readable handle that carries one.
+
+A missing or malformed handle is refused before any phase runs, naming the field
+that is wrong.
 
 **It does not run the worktree's test suite.** There is no pytest phase, on
 purpose: the suite is ~62k tests that need no pod, CI runs it on the merge ref,
@@ -144,7 +219,8 @@ full suite.
 ## What each phase does
 
 1. **up** — `kirocrew pod up <wt> --json`. If already active, reuses it (and
-   won't stop it on exit). Boots the worktree's own gateway with `--no-crons`,
+   won't stop it on exit). With `--handle-json` nothing is started at all: the
+   handle IS this phase. Boots the worktree's own gateway with `--no-crons`,
    blank-seed DB, isolated HOME. If this phase fails with `gateway still
    starting after Ns` in `pod-up.log`, the gateway was alive but slower than
    the health-wait budget (default 90s): re-run with
@@ -260,6 +336,13 @@ never touches the live instance, and tears it down after):
 Rules:
 - Do NOT `cat` any .local_secret yourself (credential-read blocked). The script
   mints the token internally via the CLI — just run the one command above.
+- If that command dies with a `Permission denied` from systemd, your sandbox
+  denies you the user bus. Do NOT hand-roll curl and Playwright in its place:
+  boot the pod with the `pod_up` tool, build one JSON file holding its `name`,
+  `base_url`, `token` and `port` plus the `health` from `pod_status`, re-run the
+  same command with `--handle-json <file>`, and call `pod_down` when the verdict
+  is written. Every one of those fields is required and `name` must equal `<wt>`,
+  so a file missing one is refused with exit 64 before any phase runs.
 - After it finishes, READ the artifacts in the printed ARTIFACT_DIR:
   verdict.jsonl (per-phase results, written as decided — trust this even if the
   run was killed), playwright.log, fe-*.png screenshots (use the

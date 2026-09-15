@@ -158,6 +158,12 @@ refused, while a path is the sanitized config-only form. Other boot flags:
 
 Pods need Linux `systemd --user` or macOS `launchd`; run `kirocrew pod install`
 once per host. See [pod platform requirements](../../../pod/README.md).
+Every verb above talks to that per-user service manager, so an agent session
+behind an outer sandbox with its own user namespace gets `Permission denied` from
+all of them; `systemctl --user is-system-running` says which case you are in. The
+`pod_up` / `pod_down` / `pod_status` / `pod_ls` tools do the same work through the
+gateway, which holds the host bus, and `pod_up` returns the `{base_url, token,
+port}` handle directly. They need the Dev Fleet app enabled.
 `pod ls`, `status`, `logs`, `provision`, `prune`, `exec` and `api` cover inspection,
 provisioning, removal of gone worktrees, in-pod commands and HTTP probes.
 Without a service manager, or for a foreground debugger, run `./dev-backend.sh`
