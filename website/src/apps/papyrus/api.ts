@@ -8,8 +8,9 @@
 //
 // This is a BUILTIN dashboard page rendered inside the main React tree, so every
 // request is a same-origin fetch carrying the dashboard's session cookie. The
-// app-sdk hooks are deliberately not used — they require <AppApiProvider>, which
-// only wraps standalone/installed apps via AppHost.
+// app-sdk data hooks are deliberately not used — they need the SDK's scoped-API
+// layer, which a builtin page mounts for itself via `AppScopedApiProvider`. App
+// identity is published for every builtin page by BuiltinAppRoute.
 
 const API = '/api/apps/papyrus'
 
