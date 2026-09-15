@@ -110,14 +110,31 @@ describe('ChatPane hydrate is bounded', () => {
     expect(limit).toBeLessThanOrEqual(500)
   })
 
-  it('hydrates a slot that is already mid-turn unbounded, so the tail is not all it shows', async () => {
-    // Stream state reads idle until an SSE frame arrives, so the slot record is the
-    // signal. Unbounded is deliberate: the handler collapses chunk runs before slicing.
+  it('stays bounded when the slot is already mid-turn (#10005)', async () => {
+    // A running slot used to lift the bound and latch it. A Crew Members DM is
+    // almost always running, so that made opening one pull and render its whole
+    // persisted transcript (10 MB / ~3000 rows on a real install). The handler
+    // collapses chunk runs before slicing, so a bound never cut a raw row, and the
+    // turn's own rows reach the pane over the WS routing rather than this fetch.
     renderPane('pane-running-1', { running: true })
     await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
     const [slot, limit] = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(slot).toBe('pane-running-1')
-    expect(limit).toBeUndefined()
+    expect(limit).toBe(PANE_HYDRATE_LIMIT)
+  })
+
+  it('reports the running page as bounded to the store, so the has-more marker stays true to it', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [row('b-1')], running: true, has_more: true, total: 3000,
+    })
+    const view = renderPane('pane-running-marker', { running: true, onOpenFull: vi.fn() })
+    await view.findByText(/earlier messages/i)
+    // `bounded: true` is what records the page length; an unbounded claim here would
+    // let a later wider page be refused as a second upgrade.
+    expect(view.store.getState().chat.slotPaneBounded['pane-running-marker']).toBe(1)
+    // A bounded RUNNING count seeds the baseline in settled units (no pending
+    // cards in this page, so it is the count itself).
+    expect(view.store.getState().chat.slotServerTotal['pane-running-marker']).toBe(3000)
   })
 
   it('hydrates each pane once, so the bound is what caps a multi-pane grid', async () => {
@@ -219,22 +236,86 @@ describe('ChatPane hydrate is bounded', () => {
     expect(view.queryAllByText(/earlier messages/i)).toHaveLength(1)
   })
 
-  it('hides the marker when no caller can act on it', async () => {
+  it('offers to load earlier history in place when no caller can open the full session', async () => {
+    // The Crew Members DM passes no onOpenFull. The newest page must not be the end
+    // of the road there (#10005): the bar widens the bounded window a page at a time.
     ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [{ role: 'assistant', content: 'hydrated sentinel', ts: '2026-08-13T09:00:00Z', meta: { mid: 'h-1' } }],
       running: false, has_more: true, total: 120,
     })
     const view = renderPane('pane-bound-7')
     await view.findByText('hydrated sentinel')
-    expect(view.queryByText(/earlier messages/i)).toBeNull()
+    expect(view.queryByText(/earlier messages.*open/i)).toBeNull()
+    expect(view.getByTestId('load-earlier-messages')).toBeTruthy()
+  })
+
+  it('widens the bounded window by one page per load-earlier press, and the wider page replaces the held one', async () => {
+    const newest = { role: 'assistant', content: 'newest', ts: '2026-08-13T09:00:00Z', meta: { mid: 'h-2' } }
+    const older = { role: 'user', content: 'older', ts: '2026-08-13T08:00:00Z', meta: { mid: 'h-1' } }
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation((_slot: string, limit?: number) =>
+      Promise.resolve(limit === PANE_HYDRATE_LIMIT
+        ? { messages: [newest], running: false, has_more: true, total: 120 }
+        : { messages: [older, newest], running: false, has_more: true, total: 120 }))
+    const view = renderPane('pane-widen')
+    await view.findByText('newest')
+    fireEvent.click(view.getByTestId('load-earlier-messages'))
+    await view.findByText('older')
+    const limits = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1])
+    expect(limits).toEqual([PANE_HYDRATE_LIMIT, PANE_HYDRATE_LIMIT * 2])
+    expect(view.store.getState().chat.slotMessages['pane-widen'].map((m) => m.content)).toEqual(['older', 'newest'])
+    expect(view.store.getState().chat.slotPaneBounded['pane-widen']).toBe(2)
+  })
+
+  it('keeps the bar at the handler cap and takes the full-history read on the next press (>500 rows, #10005)', async () => {
+    // The maintainer's floor for landing the bound: a thread LONGER than the
+    // handler's cap must still reach its earliest rows from the Members DM. A
+    // 600-row thread: nine presses widen 50 -> 500; the bar then stays, and the
+    // tenth press is the explicit full-history read (no limit), which the
+    // reducer accepts as the final page. Row 0 must be on screen at the end.
+    const TOTAL = 600
+    const all = Array.from({ length: TOTAL }, (_, i) =>
+      ({ role: i % 2 ? 'assistant' : 'user', content: `row-${i}`, ts: `2026-08-13T${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00Z`, meta: { mid: `m-${i}` } }))
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation((_slot: string, limit?: number) =>
+      Promise.resolve(limit === undefined
+        ? { messages: all, running: false, has_more: false, total: TOTAL }
+        : { messages: all.slice(TOTAL - limit), running: false, has_more: true, total: TOTAL }))
+    const view = renderPane('pane-cap')
+    await view.findByText(`row-${TOTAL - 1}`)
+    for (let i = 0; i < 9; i++) {
+      // The bar swallows a press while a page is in flight, so wait for the
+      // previous widening to settle (aria-busy clears) before the next press.
+      await waitFor(() => expect(view.getByTestId('load-earlier-messages').getAttribute('aria-busy')).toBe('false'))
+      fireEvent.click(view.getByTestId('load-earlier-messages'))
+      await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalledTimes(i + 2))
+    }
+    const limits = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1])
+    expect(limits.at(-1)).toBe(500)
+    await waitFor(() => expect(view.store.getState().chat.slotMessages['pane-cap']).toHaveLength(500))
+    // Still bounded, and rows 0..99 are not yet reachable -- the bar must stay.
+    expect(view.store.getState().chat.slotPaneBounded['pane-cap']).toBe(500)
+    await waitFor(() => expect(view.getByTestId('load-earlier-messages').getAttribute('aria-busy')).toBe('false'))
+    fireEvent.click(view.getByTestId('load-earlier-messages'))
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalledTimes(11))
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1]).toBeUndefined()
+    await waitFor(() => expect(view.store.getState().chat.slotMessages['pane-cap']).toHaveLength(TOTAL))
+    const held = view.store.getState().chat.slotMessages['pane-cap']
+    expect(held[0].content).toBe('row-0')
+    expect(held[TOTAL - 1].content).toBe(`row-${TOTAL - 1}`)
+    // The full page is the widest there is: the bounded marker is gone, and so
+    // is the bar (the server reports no more history).
+    expect(view.store.getState().chat.slotPaneBounded['pane-cap']).toBeUndefined()
+    await waitFor(() => expect(view.queryByTestId('load-earlier-messages')).toBeNull())
+    // No unbounded read happened before the reader asked for it.
+    expect(limits.every((l) => typeof l === 'number')).toBe(true)
   })
 })
 
 /* A pane can mount against an IDLE slot and have the user start a turn before the
- * bounded fetch is served, so the limit must still be upgradable at that point. The
- * handler collapses chunk runs before slicing, so a bound is not a raw-row hazard. */
-describe('a turn that starts while the bounded fetch is in flight upgrades the limit', () => {
-  it('refetches unbounded when an idle slot starts running mid-hydrate', async () => {
+ * bounded fetch is served. Pre-#10005 that upgraded the in-flight bound to an
+ * unbounded refetch; the handler collapses chunk runs before slicing, so a bound is
+ * not a raw-row hazard, and the turn's rows arrive over WS -- the fetch stays bounded. */
+describe('a turn that starts while the bounded fetch is in flight does not lift the bound', () => {
+  it('issues no unbounded refetch when an idle slot starts running mid-hydrate', async () => {
     // Never resolves: pins the pane in the window where the bounded fetch is in flight.
     ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}))
     const store = makeStore('pane-midturn', undefined, [], false)
@@ -253,13 +334,17 @@ describe('a turn that starts while the bounded fetch is in flight upgrades the l
     await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
     expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(PANE_HYDRATE_LIMIT)
 
-    // The turn starts. Pre-fix the limit was already latched bounded and never upgraded,
-    // so the pane committed the tail of the streaming response with no marker.
+    // The turn starts. The query key no longer carries a running-derived limit, so no
+    // second fetch is issued and none of them is unbounded.
     act(() => {
       store.dispatch(sseSlots([{ key: 'pane-midturn', messages: 0, running: true, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }] as unknown as Parameters<typeof sseSlots>[0]))
     })
-    await waitFor(() =>
-      expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.some((c) => c[1] === undefined)).toBe(true))
+    // Settle rather than `waitFor`: the assertion is an ABSENCE, and a poll that
+    // passes on its first tick proves nothing about a refetch that lands later.
+    await act(async () => { await new Promise((r) => setTimeout(r, 200)) })
+    const calls = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls).toHaveLength(1)
+    expect(calls.every((c) => c[1] === PANE_HYDRATE_LIMIT)).toBe(true)
   })
 })
 
@@ -288,6 +373,32 @@ describe('a bounded pane page is superseded once by the unbounded refetch', () =
     store.dispatch(hydrateSlotMessages({ slot, messages: [row('a-0'), row('b-1'), row('b-2')], hasMore: false, bounded: false }))
     expect(store.getState().chat.slotMessages[slot].map((m) => m.meta?.mid)).toEqual(['a-0', 'b-1', 'b-2', 'live-1'])
     expect(store.getState().chat.slotPaneHasMore[slot]).toBe(false)
+  })
+
+  it('lets a WIDER bounded page supersede the held one and keeps the live tail', () => {
+    const store = reducerStore()
+    const slot = 'pane-wider'
+    store.dispatch(hydrateSlotMessages({ slot, messages: [row('b-1'), row('b-2')], hasMore: true, bounded: true }))
+    store.dispatch(appendSlotMessage({ slot, message: row('live-1') as never }))
+    // The pane widened its window: the newest-4 page reaches two rows further back.
+    store.dispatch(hydrateSlotMessages({ slot, messages: [row('a-0'), row('a-1'), row('b-1'), row('b-2')], hasMore: false, bounded: true }))
+    expect(store.getState().chat.slotMessages[slot].map((m) => m.meta?.mid)).toEqual(['a-0', 'a-1', 'b-1', 'b-2', 'live-1'])
+    expect(store.getState().chat.slotPaneBounded[slot]).toBe(4)
+    expect(store.getState().chat.slotPaneHasMore[slot]).toBe(false)
+    // A page no wider than the held one is declined -- the same page landing twice.
+    store.dispatch(hydrateSlotMessages({ slot, messages: [row('x-1'), row('x-2'), row('x-3'), row('x-4')], hasMore: true, bounded: true }))
+    expect(store.getState().chat.slotMessages[slot].map((m) => m.meta?.mid)).toEqual(['a-0', 'a-1', 'b-1', 'b-2', 'live-1'])
+  })
+
+  it('keeps a distinct confirmed live row whose sendId a wider page row also carries', () => {
+    const store = reducerStore()
+    const slot = 'pane-wider-sendid'
+    store.dispatch(hydrateSlotMessages({ slot, messages: [row('b-1')], hasMore: true, bounded: true }))
+    // Two confirmed rows share a repeated sendId: the older one is in the wider
+    // page, the newer one landed live. Matching on sendId would drop the newer.
+    store.dispatch(appendSlotMessage({ slot, message: sentOnServer('s-1', 'm-9', 'second send') as never }))
+    store.dispatch(hydrateSlotMessages({ slot, messages: [row('a-0'), row('b-1'), sentOnServer('s-1', 'm-8', 'first send')], hasMore: true, bounded: true }))
+    expect(store.getState().chat.slotMessages[slot].map((m) => m.content)).toEqual(['a-0', 'b-1', 'first send', 'second send'])
   })
 
   it('refuses a second upgrade and refuses a bounded page over an unbounded one', () => {
@@ -407,6 +518,54 @@ describe('reconciling a live tail against a wider page', () => {
     store.dispatch(appendSlotMessage({ slot, message: { role: 'assistant', content: 'legacy', ts: '2026-08-13T09:20:00Z' } as never }))
     store.dispatch(hydrateSlotMessages({ slot, messages: [row('a-0'), row('b-1')], hasMore: false, bounded: false }))
     expect(store.getState().chat.slotMessages[slot].map((m) => m.content)).toEqual(['a-0', 'b-1', 'legacy'])
+  })
+})
+
+describe('the first hydrate does not hold a raced live frame twice', () => {
+  it('drops a live frame the page already carries, matched on its mid', () => {
+    const store = reducerStore()
+    const slot = 'pane-raced'
+    // WS beats the HTTP render: the row lands live, then the page carries it too.
+    store.dispatch(appendSlotMessage({ slot, message: row('m-7', 'raced') as never }))
+    store.dispatch(hydrateSlotMessages({ slot, messages: [row('m-6'), row('m-7', 'raced')], hasMore: true, bounded: true }))
+    expect(store.getState().chat.slotMessages[slot].map((m) => m.meta?.mid)).toEqual(['m-6', 'm-7'])
+  })
+
+  it('keeps a confirmed live row whose sendId a distinct page row also carries', () => {
+    const store = reducerStore()
+    const slot = 'pane-sendid'
+    // A caller repeated a sendId across two valid sends; both rows are confirmed
+    // (mid-stamped) and distinct. Matching on sendId would drop the newer one.
+    store.dispatch(appendSlotMessage({ slot, message: sentOnServer('s-1', 'm-9', 'second send') as never }))
+    store.dispatch(hydrateSlotMessages({ slot, messages: [sentOnServer('s-1', 'm-8', 'first send')], hasMore: true, bounded: true }))
+    expect(store.getState().chat.slotMessages[slot].map((m) => m.content)).toEqual(['first send', 'second send'])
+  })
+
+  it('keeps a live row whose mid names a page row with a DIFFERENT timestamp', () => {
+    const store = reducerStore()
+    const slot = 'pane-mid-contradict'
+    // A caller-supplied mid (minted only when absent) posted twice: two distinct
+    // rows share it. The ts contradiction is what tells them apart.
+    store.dispatch(appendSlotMessage({ slot, message: { ...row('m-dup', 'second'), ts: '2026-08-13T10:00:00Z' } as never }))
+    store.dispatch(hydrateSlotMessages({ slot, messages: [row('m-dup', 'first')], hasMore: true, bounded: true }))
+    expect(store.getState().chat.slotMessages[slot].map((m) => m.content)).toEqual(['first', 'second'])
+  })
+
+  it('keeps a live row whose mid the page carries twice, since the id then names no one row', () => {
+    const store = reducerStore()
+    const slot = 'pane-mid-twice'
+    store.dispatch(appendSlotMessage({ slot, message: row('m-x', 'live') as never }))
+    store.dispatch(hydrateSlotMessages({ slot, messages: [row('m-x', 'page a'), row('m-x', 'page b')], hasMore: true, bounded: true }))
+    expect(store.getState().chat.slotMessages[slot].map((m) => m.content)).toEqual(['page a', 'page b', 'live'])
+  })
+
+  it('still matches an unconfirmed live row by its sendId', () => {
+    const store = reducerStore()
+    const slot = 'pane-unconfirmed'
+    store.dispatch(appendSlotMessage({ slot, message: sent('s-2') as never }))
+    store.dispatch(hydrateSlotMessages({ slot, messages: [sentOnServer('s-2', 'm-9')], hasMore: true, bounded: true }))
+    expect(store.getState().chat.slotMessages[slot].map((m) => m.content)).toEqual(['s-2'])
+    expect(store.getState().chat.slotMessages[slot]).toHaveLength(1)
   })
 })
 

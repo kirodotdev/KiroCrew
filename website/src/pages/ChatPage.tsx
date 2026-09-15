@@ -5316,8 +5316,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   // "Show in chat" button on the approval bar dispatches openActivityToTool,
   // which sets `focusToolCallId`. Pulling a virtualised pill back into the DOM
-  // requires Virtuoso's own scrollToIndex — direct DOM scrollIntoView fails
-  // because the element doesn't exist. ToolCallLine's own effect then takes
+  // requires the virtualizer's own index navigation (`navToDisplayIndex`, over
+  // useVirtualChat) — direct DOM scrollIntoView fails because the element
+  // doesn't exist. ToolCallLine's own effect then takes
   // over once it mounts: refines the scroll position and clears the focus.
   const focusToolCallId = useAppSelector(s => s.chat.focusToolCallId)
   useEffect(() => {
@@ -6318,7 +6319,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // while the rail and sidebar stay exactly where they are.
   //
   // The panel's render PATH is unchanged either way, so crossing the threshold
-  // never remounts it (no terminal re-attach, no Virtuoso churn) — only its
+  // never remounts it (no terminal re-attach, no virtualizer churn) — only its
   // width changes. See sidePanelFillWidth for why this is loop-free.
   const panelFillWidth = sidePanelFillWidth({
     winW,
