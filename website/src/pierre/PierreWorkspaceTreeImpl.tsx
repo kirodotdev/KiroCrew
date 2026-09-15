@@ -20,7 +20,7 @@ import type {
   ContextMenuOpenContext as FileTreeContextMenuOpenContext,
 } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
-import { AtSign, FileDiff, FolderOpen } from 'lucide-react'
+import { AtSign, FileDiff, FolderOpen, Upload } from 'lucide-react'
 import { api } from '../api/client'
 import ErrorNotice from '../components/ErrorNotice'
 import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
@@ -40,15 +40,20 @@ type TreeEntryKind = 'file' | 'dir'
  *  anchor, the outside-click wash, and open/close (the portal root's
  *  `data-file-tree-context-menu-root` marker is the library's documented way to
  *  keep a portaled surface counting as "inside"); this renders only the item
- *  list: the built-in "Add to chat" action, plus any row an installed app
- *  contributes for the `tree-context` surface (row click already opens a file,
- *  so the menu deliberately carries no Open duplicate). Every action closes the
- *  menu itself so focus returns to the row. */
-function TreeContextMenu({ item, context, root, onAddToContext, contribItems, onError }: {
+ *  list: the built-in "Add to chat" action, the built-in "Upload
+ *  files…" action (DIRECTORY rows only — mirrors the drag target), plus any
+ *  row an installed app contributes for the `tree-context` surface (row click
+ *  already opens a file, so the menu deliberately carries no Open duplicate).
+ *  Every action closes the menu itself so focus returns to the row. */
+function TreeContextMenu({ item, context, root, onAddToContext, onUploadRequest, contribItems, onError }: {
   item: FileTreeContextMenuItem
   context: FileTreeContextMenuOpenContext
   root: string
   onAddToContext?: (absPath: string, kind: TreeEntryKind) => void
+  /** Right-click "Upload files…" on a directory row: hands the host the
+   *  ABSOLUTE directory path so it can open the OS file picker and upload
+   *  the selection into it. Absent → the row is not rendered. */
+  onUploadRequest?: (absDirPath: string) => void
   /** Contributed `tree-context` rows, resolved by the PARENT (which already holds
    *  the `['apps']` query) and passed down. Deliberately a prop rather than a hook
    *  call here: this component mounts inside Pierre's context-menu slot, and a
@@ -88,6 +93,15 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
     context.close()
     run()
   }
+  // Which rows this OPEN of the menu actually renders — "Add to chat" only
+  // when the host supplied it, "Upload files…" only on a directory row when
+  // the host supplied that. A row with neither renders nothing (handled by
+  // the parent's `renderContextMenu` gate below, but re-checked here too:
+  // this same component instance answers every row the tree opens a menu
+  // for, and a FILE row must never show the directory-only upload action
+  // even when the host wired it for other rows).
+  const showAddToContext = !!onAddToContext
+  const showUpload = isDir && !!onUploadRequest
   // Focus the first item on open. Pierre's own open path calls `item.focus()`
   // on the tree ROW, never on this slotted content, so a keyboard user who
   // opens the menu (Shift+F10 / the ContextMenu key) would otherwise be left
@@ -106,13 +120,15 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
       ?? menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]'))?.focus()
   }, [])
   // The shared role="menu" keyboard contract (#6231). The item count is no longer
-  // fixed: the built-in row is gated on `onAddToContext` and an installed app may
-  // contribute any number of rows its `when` admits, so this menu can hold one row
-  // or several and the arrows do real navigation whenever it holds more than one.
-  // Honouring the contract per-surface-by-item-count is how surfaces drift anyway —
-  // an arrow inside an open menu must be consumed rather than scrolling the tree
-  // behind it, Tab must stay contained (#2533), and IME composition keys must not
-  // reach the menu at all, all true whatever the count. `enabled: true`
+  // fixed: the built-in "Add to chat" row is gated on `onAddToContext`, the
+  // built-in "Upload files…" row is gated on `onUploadRequest` AND a directory
+  // row, and an installed app may contribute any number of rows its `when`
+  // admits — so this menu can hold one row or several and the arrows do real
+  // navigation whenever it holds more than one. Honouring the contract
+  // per-surface-by-item-count is how surfaces drift anyway — an arrow inside
+  // an open menu must be consumed rather than scrolling the tree behind it,
+  // Tab must stay contained (#2533), and IME composition keys must not reach
+  // the menu at all, all true whatever the count. `enabled: true`
   // unconditionally because Pierre only mounts this component while the menu is open.
   // focusFirstOnOpen: false — the firstItemRef effect above already owns focus
   // entry (it must, because Pierre focuses the tree ROW, not this slotted
@@ -192,10 +208,11 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
       window.removeEventListener('resize', onDismiss)
     }
   }, [context])
-  // Render nothing rather than an empty bordered popup: with no host row AND no
-  // app row that its `when` admits for this node, there is nothing to show and
-  // no menuitem for the focus effect to land on.
-  if (!onAddToContext && rows.length === 0) return null
+  // Render nothing rather than an empty bordered popup: with no host row, no
+  // upload row (absent handler, or a file row), AND no app row that its
+  // `when` admits for this node, there is nothing to show and no menuitem for
+  // the focus effect to land on.
+  if (!showAddToContext && !showUpload && rows.length === 0) return null
   return createPortal(
     <div
       ref={menuRef}
@@ -204,17 +221,30 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
       style={pos ? { top: pos.top, left: pos.left } : { top: context.anchorRect.bottom + 2, left: context.anchorRect.left, visibility: 'hidden' }}
       className="fixed z-50 min-w-[176px] max-w-[min(420px,calc(100vw-2rem))] rounded-lg border border-border bg-bg-elevated p-1 shadow-lg"
     >
-      {onAddToContext && (
+      {showAddToContext && (
         <div
           ref={firstItemRef}
           role="menuitem"
           tabIndex={-1}
           className={itemCls}
-          onClick={activate(() => onAddToContext(abs, isDir ? 'dir' : 'file'))}
-          onKeyDown={activate(() => onAddToContext(abs, isDir ? 'dir' : 'file'))}
+          onClick={activate(() => onAddToContext?.(abs, isDir ? 'dir' : 'file'))}
+          onKeyDown={activate(() => onAddToContext?.(abs, isDir ? 'dir' : 'file'))}
         >
           <AtSign className="lucide-inline text-muted" />
           {i18nT('pages.chat.fileBrowserRail.ctx_add_to_chat')}
+        </div>
+      )}
+      {showUpload && (
+        <div
+          ref={showAddToContext ? undefined : firstItemRef}
+          role="menuitem"
+          tabIndex={-1}
+          className={itemCls}
+          onClick={activate(() => onUploadRequest?.(abs))}
+          onKeyDown={activate(() => onUploadRequest?.(abs))}
+        >
+          <Upload className="lucide-inline text-muted" />
+          {i18nT('pages.chat.fileBrowserRail.ctx_upload_files')}
         </div>
       )}
       {/* App-contributed rows (contributes.fileMenuItems, surface 'tree-context').
@@ -237,7 +267,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
         return (
           <div
             key={`${mi.app}:${mi.id}`}
-            ref={!onAddToContext && idx === 0 ? firstItemRef : undefined}
+            ref={!showAddToContext && !showUpload && idx === 0 ? firstItemRef : undefined}
             role="menuitem"
             tabIndex={-1}
             className={itemCls}
@@ -266,7 +296,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
   }
 }
 
-export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext, searchQuery, mode = 'all', selectedPath, persistExpansion = false }: {
+export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext, onUploadRequest, searchQuery, mode = 'all', selectedPath, persistExpansion = false }: {
   projectDir: string
   onFileOpen?: (absPath: string) => void
   /** Right-click "Add to context" on a row: hands the host the ABSOLUTE path
@@ -275,6 +305,10 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
    *  rendered, and the context menu opens only if an app contributes a
    *  'tree-context' row this node matches. */
   onAddToContext?: (absPath: string, kind: TreeEntryKind) => void
+  /** Right-click "Upload files…" on a DIRECTORY row: hands the host the
+   *  ABSOLUTE directory path so it can open the OS file picker and upload the
+   *  selection into it. Absent → no upload row on any menu. */
+  onUploadRequest?: (absDirPath: string) => void
   /** Forwarded into the tree's search session (null clears it). */
   searchQuery?: string | null
   /** 'all' renders the full workspace; 'changed' renders only the files with
@@ -548,6 +582,8 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // query, so it must come through the ref too.
   const onAddToContextRef = useRef(onAddToContext)
   onAddToContextRef.current = onAddToContext
+  const onUploadRequestRef = useRef(onUploadRequest)
+  onUploadRequestRef.current = onUploadRequest
   const rootRef = useRef(root)
   rootRef.current = root
   // Ref'd like the two above so this callback stays identity-stable: Pierre takes
@@ -562,6 +598,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
         context={ctx}
         root={rootRef.current}
         onAddToContext={onAddToContextRef.current}
+        onUploadRequest={onUploadRequestRef.current}
         contribItems={treeItemsRef.current}
         onError={setActionError}
       />
@@ -618,11 +655,12 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
         model={model}
         className="pierre-tree"
         style={{ height: '100%', flex: 1, minHeight: 0 }}
-        // Wired only when there is a host to hand the row to: `hasContextMenu`
+        // Wired only when there is a host to hand SOME row to: `hasContextMenu`
         // (FileTree's own renderContextMenu != null check) forces the menu
-        // enabled unconditionally, so passing it regardless of onAddToContext
-        // would open a menu whose only action closes itself and does nothing.
-        renderContextMenu={(onAddToContext || treeItems.length > 0) ? renderContextMenu : undefined}
+        // enabled unconditionally, so passing it with no handler at all would
+        // open a menu whose only actions are absent (TreeContextMenu itself
+        // renders null in that case, per row).
+        renderContextMenu={(onAddToContext || onUploadRequest || treeItems.length > 0) ? renderContextMenu : undefined}
       />
     </div>
   )
