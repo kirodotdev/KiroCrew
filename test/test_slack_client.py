@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -123,6 +124,35 @@ class TestMockSlackClient:
         c = MockSlackClient()
         await c.upload_file("C1", "", "/tmp/f.txt", "f.txt", "f.txt")
         assert c.actions[-1][1]["thread_ts"] == ""
+
+
+class TestRealSlackClientPosts:
+    @staticmethod
+    def _client() -> tuple[RealSlackClient, AsyncMock]:
+        post = AsyncMock(side_effect=[{"ts": "1.000"}, {"ts": "2.000"}])
+        client = RealSlackClient.__new__(RealSlackClient)
+        client._web = SimpleNamespace(chat_postMessage=post)
+        client._channel_team = {}
+        return client, post
+
+    @pytest.mark.asyncio
+    async def test_client_msg_id_reaches_both_chat_post_message_shapes(self) -> None:
+        client, post = self._client()
+        await client.post_blocks(
+            "C1",
+            [{"type": "section", "text": {"type": "mrkdwn", "text": "parent"}}],
+            "parent",
+            client_msg_id="00000000-0000-5000-8000-000000000001",
+        )
+        await client.post_message(
+            "C1",
+            "overflow",
+            "1.000",
+            client_msg_id="00000000-0000-5000-8000-000000000002",
+        )
+
+        assert post.await_args_list[0].kwargs["client_msg_id"].endswith("0001")
+        assert post.await_args_list[1].kwargs["client_msg_id"].endswith("0002")
 
 
 class TestFileDownloadGuards:

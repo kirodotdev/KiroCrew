@@ -1648,7 +1648,7 @@ class TestCronChannelDelivery:
         """No originating conversation ⇒ the Slack branch runs exactly as before."""
         transport = _channel_transport()
         orch = self._orch(transport)
-        job = _job(id="jc4", name="slack probe", session_key="", created_by="U_OWNER")
+        job = _job(id="jc4", name="slack probe", session_key="", created_by="U0123456789")
 
         with patch.object(gw, "_resolve_channel_target", self._target):
             async with _cron_message_cb(orch, result_text="slack bound") as callback:

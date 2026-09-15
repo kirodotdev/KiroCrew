@@ -162,7 +162,7 @@ class TestDriftPrevention:
     """Test that 'every' jobs use scheduled_ts for last_run_ts."""
 
     @pytest.mark.asyncio
-    async def test_every_job_uses_scheduled_ts(self):
+    async def test_every_job_uses_scheduled_ts(self, tmp_path):
         """After execution, last_run_ts should be the pre-jitter time."""
         import time
 
@@ -174,7 +174,9 @@ class TestDriftPrevention:
             created_ts=time.time() - 7200,
         )
 
-        svc = CronService()
+        svc = CronService(base_dir=tmp_path)
+        svc._jobs = [job]
+        svc._save()
         svc._on_job = None  # no-op execution
 
         before = time.time()
@@ -182,15 +184,17 @@ class TestDriftPrevention:
         with patch.object(CronService, "_compute_jitter", return_value=0.1):
             await svc._run_job_isolated(job)
         after = time.time()
+        persisted = svc.get_job(job.id)
+        assert persisted is not None
 
         # last_run_ts should be ~before (scheduled time), not after+jitter
-        assert before <= job.last_run_ts <= after
+        assert before <= persisted.last_run_ts <= after
         # The key invariant: last_run_ts should NOT include jitter delay
         # With 0.1s jitter, the difference should be negligible
-        assert job.last_run_ts < before + 0.5
+        assert persisted.last_run_ts < before + 0.5
 
     @pytest.mark.asyncio
-    async def test_cron_job_uses_post_execution_ts(self):
+    async def test_cron_job_uses_post_execution_ts(self, tmp_path):
         """Cron-expression jobs should use post-execution time (no drift issue)."""
         import time
 
@@ -202,14 +206,18 @@ class TestDriftPrevention:
             created_ts=time.time() - 7200,
         )
 
-        svc = CronService()
+        svc = CronService(base_dir=tmp_path)
+        svc._jobs = [job]
+        svc._save()
         svc._on_job = None
 
         with patch.object(CronService, "_compute_jitter", return_value=0.0):
             await svc._run_job_isolated(job)
 
         # Cron jobs set last_run_ts in _execute (post-execution)
-        assert job.last_run_ts is not None
+        persisted = svc.get_job(job.id)
+        assert persisted is not None
+        assert persisted.last_run_ts is not None
 
 
 class TestComputeJitterWildcardMinute:

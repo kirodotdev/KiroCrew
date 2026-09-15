@@ -26,12 +26,14 @@ import hashlib
 import json
 import logging
 import math
+import os
 import random
 import re
 import threading
 import time
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -646,6 +648,26 @@ class CronJob:
     last_error: str | None = None
     created_ts: float = 0.0
     delete_after_run: bool = False
+    # Durable compare-and-swap generation for EXECUTION-OWNED state only.
+    # Schedule/configuration, delivery-destination, acknowledgement and owner
+    # edits deliberately do not advance it: a run may merge its progress into
+    # the latest record while preserving those newer fields. Result/outbox,
+    # delivery ownership, schedule progress, retry/failure, auto-pause and owed
+    # state do advance it, so a stale runtime can never replay those fields.
+    # The persisted name is retained for store compatibility.
+    record_generation: int = 0
+    # Runtime-only: the durable execution generation this run started from.
+    # -1 is the unbound value used by direct, loop-less callers in tests/CLI
+    # helpers; production binds it before any awaited work.
+    run_origin_generation: int = -1
+    # Runtime-only config snapshot for the few completion transitions whose
+    # meaning depends on configuration. Execution never copies schedule or
+    # user pause fields wholesale. It may park a completed one-shot only while
+    # schedule + enablement still match this snapshot; a concurrent reschedule
+    # or pause/resume remains authoritative.
+    run_origin_schedule: CronSchedule | None = None
+    run_origin_enabled: bool | None = None
+    run_origin_user_paused: bool | None = None
     # Runtime-only (never serialized): set by the gateway when THIS run was
     # refused by the fire-time governance gate. A denied run is a policy
     # state, not a completed run: a one-shot delete_after_run job is RETAINED
@@ -665,6 +687,38 @@ class CronJob:
     # read solely where a one-shot would otherwise be consumed by a run it never
     # had. Reset at the start of every run.
     run_never_started: bool = False
+    # A launch skipped because the RUNNING INSTALL was replaced mid-update:
+    # the run never started AND its schedule must stay owed. Unlike a bare
+    # run_never_started (overlap/starvation, where the tick was genuinely
+    # spent), _execute neither advances last_run_ts nor fires the at-job
+    # disable path when this is set, so the replacement gateway sees the
+    # job exactly as due as it was before the drained process touched it.
+    # In-memory only (reset at the start of every run, never merged).
+    keep_overdue: bool = False
+    # POSITIVE dispatch confirmation: the callback sets this at the moment
+    # side effects become possible (script launch awaited / agent prompt
+    # streamed). A cancellation BEFORE it is a run that never happened —
+    # the owed-debt handler restores the debt — while a cancellation after
+    # it keeps the debt consumed (side effects may exist; a restored debt
+    # would replay them). run_never_started alone cannot make this call:
+    # a cancel during session/context setup leaves it False without
+    # anything having run. In-memory only, reset per run.
+    run_dispatched: bool = False
+    # This run consumed an owed cron occurrence (owed_fire was True at run
+    # start and stayed consumed through finalization). In-memory only —
+    # read by the merge-failure hook so a lost merge can queue the CLEAR
+    # direction too (disk still says owed; without the clear the
+    # replacement gateway would duplicate the already-run occurrence).
+    owed_consumed: bool = False
+    # A cron-expression job's occurrence was owed when the running install
+    # was pruned. Unlike 'every' (still due: last_run_ts untouched) and
+    # 'at' (still due: at_ts in the past), a cron-expression job is only
+    # due while the CURRENT minute matches, so a slow update handoff would
+    # silently lose the occurrence. PERSISTED so the replacement gateway
+    # dispatches the make-up run once: _is_due treats an owed job as due
+    # regardless of the minute, and the make-up run consumes the marker
+    # (reset at the start of every run, merged to disk).
+    owed_fire: bool = False
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
@@ -693,6 +747,46 @@ class CronJob:
     # "unknown" and renders the pre-stamp header unchanged, so rows already on
     # disk keep deduping against their historical spelling.
     last_result_stamp: str = ""
+    # The exact result generation whose first user-visible delivery was
+    # acknowledged. PERSISTED with the result and compared by equality, not by
+    # content hash: an owed make-up run can produce different wording when it is
+    # accidentally replayed, while this generation identity stays tied to the
+    # one delivery that already happened. Zero is the legacy/unset value.
+    last_delivered_result_ts: float = 0.0
+    # Durable pre-delivery ownership. A runtime claims the freshly produced
+    # generation before contacting any external transport; another live runtime
+    # must stand down. PID + process-start identity permits takeover only after
+    # the owner is provably stale, so an interrupted-but-undelivered result stays
+    # retryable without opening concurrent double-send.
+    delivery_claim_result_ts: float = 0.0
+    delivery_claim_owner_pid: int = 0
+    delivery_claim_owner_start: str = ""
+    # Persisted outbox identity. While this equals last_result_ts and differs
+    # from last_delivered_result_ts, the stored result must be delivered before
+    # any new agent turn is started. Claim release never clears it; only a
+    # confirmed settlement does.
+    pending_delivery_result_ts: float = 0.0
+    # Transport acknowledgement observed for this result, but the durable
+    # delivered tombstone has not committed yet. Recovery retries settlement
+    # only (never transport or provider work), then continues the owed run.
+    acknowledged_delivery_result_ts: float = 0.0
+    # Durable Slack multipart outbox. The rendered parts are snapshotted before
+    # the first send so a restart under different rendering code resumes the
+    # exact bytes. The cursor counts acknowledged parts; channel + parent thread
+    # identity keep every continuation on the original delivery.
+    delivery_slack_parts: list[str] = field(default_factory=list)
+    delivery_slack_completed_parts: int = 0
+    delivery_slack_channel: str = ""
+    delivery_slack_parent_ts: str = ""
+    # Runtime-only: this callback produced or retried a result but no external
+    # surface durably acknowledged it. The scheduler restores incoming owed_fire
+    # on both normal return and cancellation so the pending outbox is retried.
+    delivery_unconfirmed: bool = False
+    # Runtime-only (never serialized): the persisted result generation this run
+    # observed before set_run_result replaced it. Delivery settlement uses it as
+    # a CAS origin so a drained/stale runtime cannot publish or merge over a
+    # newer gateway's result.
+    result_origin_ts: float = 0.0
     # Runtime-only (never serialized): True once THIS run produced a result
     # via set_run_result(). For AGENT jobs ``last_result`` is a cross-run
     # context-carry field that result-less runs deliberately leave in place
@@ -818,6 +912,39 @@ class CronJob:
     secret_env_pending_pin: str = ""
     secret_env_pending_ts: float = 0.0
 
+    def snapshot_for_run(self) -> CronJob:
+        """Return the detached state an execution exclusively owns.
+
+        The registry object is the persistence source for user edits. A run
+        mutates this copy until its locked delivery/merge transactions publish
+        execution-owned fields back into the latest registry record.
+        """
+        return deepcopy(self)
+
+    def delivery_route_identity(self) -> tuple[str | None, str | None, str, str, bool]:
+        """Return the configuration whose change requires destination re-resolution."""
+        return (self.channel, self.thread_ts, self.created_by, self.session_key, self.silent)
+
+    def bind_run_origin(self) -> None:
+        """Snapshot the durable execution/config state this run starts from."""
+        self.run_origin_generation = self.record_generation
+        self.run_origin_schedule = CronSchedule(
+            kind=self.schedule.kind,
+            every_secs=self.schedule.every_secs,
+            at_ts=self.schedule.at_ts,
+            cron_expr=self.schedule.cron_expr,
+        )
+        self.run_origin_enabled = self.enabled
+        self.run_origin_user_paused = self.user_paused
+
+    def run_record_generation(self) -> int:
+        """Return the durable execution generation this run may merge from."""
+        return (
+            self.run_origin_generation
+            if self.run_origin_generation >= 0
+            else self.record_generation
+        )
+
     def set_run_result(self, value: str) -> None:
         """Record a result produced by the CURRENT run.
 
@@ -829,6 +956,15 @@ class CronJob:
         produce a new result.
         """
         self.last_result = value
+        # Capture once per run. A callback may refine its result more than once,
+        # but every refinement belongs to the same delivery generation and must
+        # retain the disk origin observed before the first write.
+        if not self.result_produced:
+            self.result_origin_ts = self.last_result_ts
+            self.delivery_slack_parts = []
+            self.delivery_slack_completed_parts = 0
+            self.delivery_slack_channel = ""
+            self.delivery_slack_parent_ts = ""
         self.result_produced = True
         # Stamped and RENDERED here rather than at injection time so all of a
         # run's injection sites emit one identical header -- see
@@ -1745,6 +1881,82 @@ def bind_cron_memory(job: CronJob) -> None:
             job.member_id = store_cfg.owner_member
 
 
+_RUNTIME_ONLY_JOB_FIELDS = frozenset(
+    {
+        "fire_time_denied",
+        "run_never_started",
+        "keep_overdue",
+        "run_dispatched",
+        "owed_consumed",
+        "run_origin_generation",
+        "run_origin_schedule",
+        "run_origin_enabled",
+        "run_origin_user_paused",
+        "delivery_unconfirmed",
+        "result_origin_ts",
+        "result_produced",
+        "failure_recorded",
+    }
+)
+
+# One ownership boundary for concurrent cron writes. These are the only durable
+# fields an execution may supersede, and therefore the only fields that advance
+# record_generation. Everything else belongs to configuration, acknowledgement,
+# delivery destination, or session ownership and composes with an in-flight run.
+_EXECUTION_OWNED_JOB_FIELDS = frozenset(
+    {
+        "auto_paused",
+        "last_run_ts",
+        "last_status",
+        "last_error",
+        "owed_fire",
+        "last_result",
+        "last_result_ts",
+        "last_result_stamp",
+        "last_delivered_result_ts",
+        "delivery_claim_result_ts",
+        "delivery_claim_owner_pid",
+        "delivery_claim_owner_start",
+        "pending_delivery_result_ts",
+        "acknowledged_delivery_result_ts",
+        "delivery_slack_parts",
+        "delivery_slack_completed_parts",
+        "delivery_slack_channel",
+        "delivery_slack_parent_ts",
+        "last_posted_hash",
+        "consecutive_dupes",
+        "last_posted_at",
+        "last_failure_hash",
+        "last_failure_at",
+        "consecutive_failures",
+        "last_retry_count",
+        "last_retry_run_ts",
+    }
+)
+
+
+_DELIVERY_CONFIGURATION_FIELDS = (
+    "name",
+    "channel",
+    "thread_ts",
+    "created_by",
+    "session_key",
+    "silent",
+)
+
+
+def _refresh_delivery_configuration(job: CronJob, current: CronJob) -> None:
+    """Rebind a detached run to the latest presentation and destination config."""
+    for field_name in _DELIVERY_CONFIGURATION_FIELDS:
+        setattr(job, field_name, getattr(current, field_name))
+
+
+def _job_execution_payload(job: CronJob) -> dict[str, Any]:
+    """Canonical execution-owned payload guarded by ``record_generation``."""
+    payload = asdict(job)
+    return {field_name: payload[field_name] for field_name in _EXECUTION_OWNED_JOB_FIELDS}
+
+
 def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> CronJob:
     """Build one :class:`CronJob` from its serialized record.
 
@@ -1921,9 +2133,24 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         last_error=_guard_opt_str("last_error"),
         created_ts=_guard_num("created_ts", 0.0),
         delete_after_run=j.get("delete_after_run", False),
+        record_generation=max(int(_guard_num("record_generation", 0)), 0),
+        # Strict identity check: a legacy/hand-edited store carrying the
+        # STRING "false" is truthy and would dispatch the job outside its
+        # schedule on every load.
+        owed_fire=j.get("owed_fire") is True,
         last_result=_guard_opt_str("last_result"),
         last_result_ts=_guard_num("last_result_ts", 0.0),
         last_result_stamp=_guard_str("last_result_stamp"),
+        last_delivered_result_ts=_guard_num("last_delivered_result_ts", 0.0),
+        delivery_claim_result_ts=_guard_num("delivery_claim_result_ts", 0.0),
+        delivery_claim_owner_pid=int(_guard_num("delivery_claim_owner_pid", 0)),
+        delivery_claim_owner_start=_guard_str("delivery_claim_owner_start"),
+        pending_delivery_result_ts=_guard_num("pending_delivery_result_ts", 0.0),
+        acknowledged_delivery_result_ts=_guard_num("acknowledged_delivery_result_ts", 0.0),
+        delivery_slack_parts=_str_list("delivery_slack_parts"),
+        delivery_slack_completed_parts=int(_guard_num("delivery_slack_completed_parts", 0)),
+        delivery_slack_channel=_guard_str("delivery_slack_channel"),
+        delivery_slack_parent_ts=_guard_str("delivery_slack_parent_ts"),
         context_enabled=j.get("context_enabled", False),
         agent_id=_selector_str("agent_id"),
         # member_id / memory_store are memory-identity selectors: they decide
@@ -1993,6 +2220,12 @@ class CronService:
         self._path = self._dir / _CRONS_FILE
         self._on_job = on_job
         self._jobs: list[CronJob] = []
+        # Canonical EXECUTION-OWNED payload from the last successful load/save,
+        # per job. _save compares against it to advance record_generation only
+        # when result/outbox/schedule-progress/retry/failure/owed state changes.
+        # Configuration, acknowledgement, destination and owner edits therefore
+        # compose with an in-flight run instead of invalidating its progress.
+        self._execution_baselines: dict[str, dict[str, Any]] = {}
         self._timer_task: asyncio.Task[None] | None = None
         # True only for the span of an in-flight _on_timer() dispatch pass
         # (set/cleared there). _arm_timer() checks this to avoid cancelling
@@ -2062,6 +2295,24 @@ class CronService:
         # a completed one-shot is always
         # eventually removed and can never re-fire in the meantime.
         self._pending_removals: set[str] = set()
+        # Owed cron occurrences whose result merge hit sustained store
+        # contention (CronStoreBusy): the DESIRED debt state (job_id ->
+        # owed_fire) is queued here and re-persisted by the next timer tick's
+        # locked transaction (or the final stop() drain), mirroring
+        # _pending_removals. Both directions travel: True re-persists a debt
+        # the merge lost, False clears stale on-disk debt after a make-up run
+        # whose merge was lost (preventing a duplicate occurrence). A drain
+        # whose save fails restores its claimed entries (newer states win).
+        self._pending_owed_fires: dict[str, bool] = {}
+        # Jobs quiesced on THIS drained (pruned-install) process: launch
+        # attempts for them fail identically forever, so the due-scan skips
+        # them regardless of what a store reload says. A per-JOB-OBJECT
+        # enabled=False is not enough — every tick's _sync() replaces
+        # self._jobs with fresh disk copies (enabled=True on disk by
+        # design, so the REPLACEMENT gateway retries), resurrecting the
+        # quiesce. Process-lifetime by intent: never persisted, never
+        # cleared — this process can never launch again.
+        self._pruned_quiesced: set[str] = set()
         # True while a critical-posture episode is deferring scheduled
         # firings (see _on_timer). Log-throttle state only: the INFO line
         # fires once per deferral episode, not once per deferred tick.
@@ -2208,6 +2459,18 @@ class CronService:
         if self._running_tasks:
             await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
             self._running_tasks.clear()
+        # Final owed-fires drain: the deferral's normal drain is the NEXT
+        # timer tick, but a drained (pruned-install) gateway is by definition
+        # about to shut down — this stop may be the last chance to put the
+        # debt on disk where the replacement gateway can see it. Off the loop
+        # (the drain takes the bounded store lock) and best-effort: a store
+        # still contended here loses the debt, but the window collapses from
+        # "until the next tick that never comes" to one lock acquisition.
+        if self._pending_owed_fires:
+            try:
+                await asyncio.to_thread(self._drain_owed_fires_with_lock)
+            except Exception:
+                logger.exception("Final owed-fires drain failed during stop()")
 
     # ── Reaper ──
 
@@ -3588,6 +3851,85 @@ class CronService:
         # never extend the store-lock hold past the CronStoreBusy timeout.
         return sorted(to_remove)
 
+    def quiesce_pruned(self, job_id: str) -> None:
+        """Mark a job un-launchable on this drained (pruned-install) process.
+
+        Survives store reloads (unlike a job object's in-memory ``enabled``,
+        which every ``_sync`` replaces with the on-disk copy) and is never
+        persisted — the on-disk job stays enabled for the replacement
+        gateway. Process-lifetime by intent; there is no un-quiesce.
+        """
+        self._pruned_quiesced.add(job_id)
+
+    def run_is_manual(self, job_id: str) -> bool:
+        """Whether the in-flight run of ``job_id`` was manually triggered.
+
+        Read by the pruned-launch bookkeeping: a manual trigger (run_job /
+        cron trigger) that fails on a pruned install must NOT persist an
+        owed occurrence — the schedule never owed that run, and a paused
+        job resumed later would execute it unscheduled.
+        """
+        meta = self._job_run_meta.get(job_id)
+        return bool(meta and meta[1] == "manual")
+
+    def _drain_owed_fires_with_lock(self) -> None:
+        """Take the store lock, sync, and drain owed fires. WORKER-THREAD ONLY.
+
+        The shutdown-path wrapper around :meth:`_drain_pending_owed_fires_locked`
+        for callers not already inside a locked transaction.
+        """
+        with self._file_lock():
+            self._sync()
+            self._drain_pending_owed_fires_locked()
+
+    def _drain_pending_owed_fires_locked(self) -> None:
+        """Re-persist owed-fire states whose result merge was lost.
+        MUST hold the store lock; callers not already inside a synced
+        transaction use :meth:`_drain_owed_fires_with_lock`.
+
+        Mirrors :meth:`_drain_pending_removals_locked`: the queue is claimed
+        with a single-bytecode tuple swap (atomic under the GIL against the
+        event-loop adder), missing ids are dropped, and the save happens
+        once iff a queued id is still present. Carries the DESIRED debt
+        state in both directions (True re-persists a lost debt, False clears
+        stale debt a completed make-up run consumed). A save failure restores
+        the claimed entries — without clobbering anything newer queued
+        meanwhile — so a later drain retries instead of silently losing the
+        state. Under ``_load_failed`` the job list is unknown rather than
+        empty, so the queue is left intact for a later tick instead of being
+        claimed.
+        """
+        if not self._pending_owed_fires:
+            return
+        if self._load_failed:
+            return
+        pending, self._pending_owed_fires = self._pending_owed_fires, {}
+        # NO changed-check against the in-memory job: an entry is only
+        # queued after a merge FAILED, so the in-memory object (which
+        # already carries the desired state) cannot stand in for the
+        # divergent disk state — skipping the save on "no diff" is exactly
+        # how stale on-disk debt survives to double-run an occurrence.
+        matched = False
+        for j in self._jobs:
+            desired = pending.get(j.id)
+            if desired is not None:
+                j.owed_fire = desired
+                matched = True
+        if not matched:
+            return
+        try:
+            self._save()
+        except Exception:
+            # Restore the claim so a later drain retries; an entry re-queued
+            # by a newer run meanwhile carries newer state and wins.
+            for jid, desired in pending.items():
+                self._pending_owed_fires.setdefault(jid, desired)
+            raise
+        logger.info(
+            "Re-persisted %d owed-fire state(s) after merge contention",
+            len(pending),
+        )
+
     def _bump_grant_epochs_for(self, removed_ids: set[str]) -> None:
         """Kill the secret grants of jobs about to be deleted from the store.
 
@@ -4508,6 +4850,13 @@ class CronService:
         for job in self._jobs:
             if not job.enabled or job.id in self._executing:
                 continue
+            if job.id in self._pruned_quiesced:
+                # The due-scan skips quiesced jobs, so letting one drive the
+                # wake computation would return 0 for an overdue job the
+                # scan then ignores — an empty scan that re-arms immediately,
+                # in a zero-delay loop, for the drained gateway's remaining
+                # lifetime.
+                continue
             if job.schedule.kind == "every" and job.schedule.every_secs:
                 last = job.last_run_ts or job.created_ts
                 next_run = last + job.schedule.every_secs
@@ -4642,6 +4991,15 @@ class CronService:
             with self._file_lock():
                 self._sync()
                 drained = self._drain_pending_removals_locked()
+                try:
+                    self._drain_pending_owed_fires_locked()
+                except Exception:
+                    # The drain requeued its claim before re-raising, so the
+                    # debt state is intact for a later attempt — but the tick
+                    # itself must proceed: aborting the scan here would make
+                    # a DUE cron-expression job miss its matching minute over
+                    # an unrelated persistence failure.
+                    logger.exception("Owed-fire drain failed; tick continues")
         except CronStoreBusy:
             logger.debug("Cron timer tick: store busy, using in-memory snapshot")
         except OSError as exc:
@@ -4676,7 +5034,10 @@ class CronService:
             due = [
                 j
                 for j in snapshot
-                if j.enabled and j.id not in self._executing and self._is_due(j, now)
+                if j.enabled
+                and j.id not in self._executing
+                and j.id not in self._pruned_quiesced
+                and self._is_due(j, now)
             ]
 
             # An empty due-scan can only end the tick when no deferral episode is
@@ -4771,6 +5132,13 @@ class CronService:
 
     async def _run_job_isolated(self, job: CronJob) -> None:
         """Execute a single job and merge results back to disk."""
+        # The registry object is concurrently persisted by dashboard/MCP/CLI
+        # edits. Mutating it during execution lets an unrelated save serialize
+        # a half-produced result and invalidate the run before it can claim an
+        # outbox. The run owns only this detached snapshot; locked transactions
+        # below merge its execution fields into the latest canonical record.
+        job = job.snapshot_for_run()
+        job.bind_run_origin()
         meta = self._job_run_meta.get(job.id)
         started_at = meta[0] if meta else time.time()
         trigger = meta[1] if meta else "scheduled"
@@ -4886,14 +5254,15 @@ class CronService:
             except Exception:
                 logger.debug("push_refresh failed on job end", exc_info=True)
             if not reaped and not cancelled:
-                # For 'every' jobs, use started_at to prevent cumulative drift.
-                # `_execute` bound this run's retry count to the `last_run_ts` it
-                # stamped; moving that stamp has to move the binding with it, or
-                # the pair disagrees for every completed `every` run and the
-                # Schedule page never shows a count. Only a bound pair moves: a
-                # run that timed out never reached `_execute`'s stamp, so its
-                # pair is (previous run, this run) and stays mismatched.
-                if job.schedule.kind == "every":
+                # For 'every' jobs, use started_at to prevent cumulative drift
+                # unless the run is keep_overdue (pruned-install skip):
+                # _execute deliberately left last_run_ts untouched so the
+                # replacement gateway retries the owed run immediately, and
+                # stamping started_at here would silently re-consume it.
+                # `_execute` also bound this run's retry count to the
+                # `last_run_ts` it stamped; moving that stamp has to move the
+                # binding with it, or the Schedule page never shows a count.
+                if job.schedule.kind == "every" and not job.keep_overdue:
                     if job.last_retry_run_ts == job.last_run_ts:
                         job.last_retry_run_ts = started_at
                     job.last_run_ts = started_at
@@ -4918,6 +5287,16 @@ class CronService:
                     await asyncio.to_thread(self._merge_job_result, job)
                 except Exception:
                     logger.exception("Failed to merge result for job '%s'", job.name)
+                    # A lost merge normally self-heals on the next run — but an
+                    # owed cron occurrence has no next run to re-persist it (the
+                    # replacement gateway only sees the debt on disk). Queue the
+                    # DESIRED state: True to re-persist a lost debt, False to
+                    # clear stale on-disk debt a completed make-up run consumed
+                    # (else the replacement duplicates the occurrence).
+                    if job.owed_fire:
+                        self._pending_owed_fires[job.id] = True
+                    elif job.owed_consumed:
+                        self._pending_owed_fires[job.id] = False
                 # Record history
                 try:
                     status = "success" if job.last_status == "ok" else "failure"
@@ -5017,13 +5396,19 @@ class CronService:
             if now < job.schedule.at_ts:
                 return False
         elif job.schedule.kind == "cron" and job.schedule.cron_expr:
-            tz = _job_tz(job)
-            dt = datetime.fromtimestamp(now, tz=tz)
-            if not cron_expr_matches(job.schedule.cron_expr, dt):
-                return False
-            # Don't re-fire within the same UTC minute (immune to DST ambiguity)
-            if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
-                return False
+            # An occurrence owed from a pruned-install skip is due regardless
+            # of the current minute: the matching minute passed while no
+            # gateway could launch anything, and losing it silently is the
+            # data loss the marker exists to prevent. skip_dates below still
+            # applies.
+            if not job.owed_fire:
+                tz = _job_tz(job)
+                dt = datetime.fromtimestamp(now, tz=tz)
+                if not cron_expr_matches(job.schedule.cron_expr, dt):
+                    return False
+                # Don't re-fire within the same UTC minute (immune to DST ambiguity)
+                if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
+                    return False
         else:
             return False
         # Skip dates check (evaluated in job's local timezone, applies to all schedule types)
@@ -5117,10 +5502,43 @@ class CronService:
         # everything after the await) cannot leak a half-spent budget into the
         # next run's retry allowance.
         retries = 0
+        job.keep_overdue = False
+        job.owed_consumed = False
+        job.run_dispatched = False
+        job.delivery_unconfirmed = False
+        # Starting a run consumes an owed cron occurrence: the make-up run IS
+        # the occurrence. Snapshot the incoming debt first — a run that never
+        # actually starts because of a SELF-CLEARING state (overlap, pool
+        # starvation) must not consume it, so the epilogue restores it for
+        # run_never_started. A fire-time POLICY denial deliberately DROPS
+        # the debt instead (an owed job is due on every poll, so restoring
+        # under a persistent denial would refire unboundedly). The
+        # pruned-skip callback re-sets the debt itself when the launch fails
+        # on the replaced install.
+        owed_debt = job.owed_fire
+        job.owed_fire = False
         try:
             if self._on_job:
                 try:
                     await self._on_job(job)
+                except asyncio.CancelledError:
+                    # A stop()/reap cancellation: restore the debt when the
+                    # run provably never happened — no POSITIVE dispatch
+                    # confirmation yet (cancel during session/context setup),
+                    # OR a path that guarantees nothing ran recorded
+                    # run_never_started (overlap refusal, pool-queue wait,
+                    # vet deny; these can fire after the dispatch marker is
+                    # set, which is why both signals are consulted). Past
+                    # dispatch with nothing guaranteeing non-execution, side
+                    # effects may exist: keep the debt consumed and queue the
+                    # durable clear (the reaper's terminal merge does not
+                    # carry owed_fire).
+                    if not job.run_dispatched or job.run_never_started or job.delivery_unconfirmed:
+                        job.owed_fire = owed_debt or job.owed_fire
+                    elif owed_debt:
+                        job.owed_consumed = True
+                        self._pending_owed_fires[job.id] = False
+                    raise
                 finally:
                     retries = int(getattr(job, "_transient_attempts", 0) or 0)
                     job._transient_attempts = 0  # type: ignore[attr-defined]
@@ -5159,6 +5577,33 @@ class CronService:
             job.last_error = str(exc)
             logger.error("Cron job '%s' failed: %s", job.name, exc)
 
+        # Restore un-run debt ONLY for a run that never started (overlap,
+        # pool starvation) — states that clear on their own, so the retry is
+        # bounded. A fire-time POLICY denial does NOT restore: the denial can
+        # persist indefinitely, and an owed job is due on every poll, so a
+        # restored debt would refire (and write history) every 30 seconds
+        # for as long as the policy holds. The denied occurrence is dropped;
+        # the job resumes at its next scheduled occurrence once policy
+        # allows, and the denial itself is operator-visible state.
+        if job.run_never_started or job.delivery_unconfirmed:
+            job.owed_fire = owed_debt or job.owed_fire
+
+        # Record whether this run consumed an incoming debt: the merge-failure
+        # hook queues the clear direction from it, so a contended merge cannot
+        # leave stale debt on disk to double-run the occurrence.
+        job.owed_consumed = owed_debt and not job.owed_fire
+
+        # A pruned-install skip must leave the schedule exactly as owed as it
+        # found it: the drained process cannot run anything ever again, so
+        # advancing last_run_ts would delay the replacement gateway's retry,
+        # and the fired/parked disable below would durably lose a plain
+        # at-job's only execution. The refire loop this would otherwise cause
+        # on the drained process is quiesced by the in-memory enabled=False
+        # in _record_pruned_launch_skip, which the merge never persists for
+        # the shapes it retains.
+        if job.keep_overdue:
+            return
+
         job.last_run_ts = time.time()
         # Retry telemetry is stamped HERE, with the `last_run_ts` it describes,
         # so the two can never disagree for a run that completed. Stamping it
@@ -5183,6 +5628,385 @@ class CronService:
         if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
             job.enabled = False
 
+    @staticmethod
+    def _delivery_owner_identity() -> tuple[int, str]:
+        pid = os.getpid()
+        return pid, platform_compat.get_process_start_id(pid) or ""
+
+    @staticmethod
+    def _delivery_claim_owner_is_live(pid: int, start: str) -> bool:
+        """True unless the recorded process generation is provably stale."""
+        if pid <= 0:
+            return False
+        liveness = platform_compat.pid_liveness(pid)
+        if liveness != platform_compat.PID_ALIVE:
+            # An unsignalable process may still be alive; fail closed rather
+            # than stealing its delivery claim.
+            return liveness == platform_compat.PID_UNSIGNALABLE
+        if not start:
+            return True
+        observed = platform_compat.get_process_start_id(pid)
+        return observed is None or observed == start
+
+    def claim_result_delivery(self, job: CronJob) -> bool:
+        """Atomically own one result before contacting an external transport.
+
+        A different live process generation keeps its claim. A dead/recycled
+        owner may be replaced, which preserves retry of a result that never
+        reached a transport. The result itself is not marked delivered here;
+        only :meth:`settle_result_delivery`, after positive transport evidence,
+        clears the owed occurrence.
+
+        WORKER-THREAD ONLY. The gateway calls this through ``asyncio.to_thread``.
+        """
+        if not job.result_produced or not job.last_result_ts:
+            return False
+        owner_pid, owner_start = self._delivery_owner_identity()
+        with self._file_lock():
+            # The executing job is usually the same object held in self._jobs.
+            # set_run_result has already mutated it in memory. Force a disk
+            # reload so this transaction starts from the durable pre-run record,
+            # then copy only the result outbox + ownership fields below. Status,
+            # dedup and owed_fire remain untouched until confirmed settlement.
+            self._reset_fingerprint()
+            self._sync()
+            if self._load_failed:
+                raise self._unreadable_error()
+            target = next((candidate for candidate in self._jobs if candidate.id == job.id), None)
+            if target is None or target.last_delivered_result_ts == job.last_result_ts:
+                return False
+            route_before = job.delivery_route_identity()
+            _refresh_delivery_configuration(job, target)
+            if job.delivery_route_identity() != route_before:
+                # Destination/owner changed after validation. Let the gateway
+                # resolve the new route before this transaction creates an
+                # outbox whose concrete recipient has not been checked.
+                return False
+            if target.record_generation != job.run_record_generation():
+                return False
+            if target.last_result_ts not in (job.result_origin_ts, job.last_result_ts):
+                return False
+            if target.delivery_claim_result_ts:
+                same_owner = (
+                    target.delivery_claim_owner_pid == owner_pid
+                    and target.delivery_claim_owner_start == owner_start
+                )
+                same_claim = target.delivery_claim_result_ts == job.last_result_ts and same_owner
+                if same_claim:
+                    return True
+                if not same_owner and self._delivery_claim_owner_is_live(
+                    target.delivery_claim_owner_pid,
+                    target.delivery_claim_owner_start,
+                ):
+                    return False
+            target.last_result = job.last_result
+            target.last_result_ts = job.last_result_ts
+            target.last_result_stamp = job.last_result_stamp
+            target.pending_delivery_result_ts = job.last_result_ts
+            target.acknowledged_delivery_result_ts = job.acknowledged_delivery_result_ts
+            target.delivery_claim_result_ts = job.last_result_ts
+            target.delivery_claim_owner_pid = owner_pid
+            target.delivery_claim_owner_start = owner_start
+            self._save()
+
+        job.run_origin_generation = target.record_generation
+        job.pending_delivery_result_ts = job.last_result_ts
+        job.delivery_claim_result_ts = job.last_result_ts
+        job.delivery_claim_owner_pid = owner_pid
+        job.delivery_claim_owner_start = owner_start
+        return True
+
+    def release_result_delivery_claim(self, job: CronJob) -> bool:
+        """Release this process's exact unacknowledged delivery claim."""
+        owner_pid, owner_start = self._delivery_owner_identity()
+        with self._file_lock():
+            self._sync()
+            if self._load_failed:
+                return False
+            target = next((candidate for candidate in self._jobs if candidate.id == job.id), None)
+            if target is None:
+                return False
+            if not (
+                target.delivery_claim_result_ts == job.last_result_ts
+                and target.delivery_claim_owner_pid == owner_pid
+                and target.delivery_claim_owner_start == owner_start
+            ):
+                return False
+            origin_is_current = target.record_generation == job.run_record_generation()
+            target.delivery_claim_result_ts = 0.0
+            target.delivery_claim_owner_pid = 0
+            target.delivery_claim_owner_start = ""
+            self._save()
+
+        if origin_is_current:
+            job.run_origin_generation = target.record_generation
+        job.delivery_claim_result_ts = 0.0
+        job.delivery_claim_owner_pid = 0
+        job.delivery_claim_owner_start = ""
+        return True
+
+    def result_delivery_is_current(self, job: CronJob) -> bool:
+        """Whether *job* may still deliver its freshly produced result.
+
+        The check is a pre-delivery stale-runtime fence. ``set_run_result``
+        remembers the result generation read before this run replaced it; the
+        disk record must still name either that origin or this exact result.
+        A different generation means another gateway won the handoff, while an
+        equal ``last_delivered_result_ts`` means this exact result already
+        reached a user. Both cases refuse a second delivery.
+
+        WORKER-THREAD ONLY. The gateway calls this through ``asyncio.to_thread``.
+        """
+        if not job.result_produced or not job.last_result_ts:
+            return False
+        with self._file_lock():
+            self._sync()
+            if self._load_failed:
+                raise self._unreadable_error()
+            target = next((candidate for candidate in self._jobs if candidate.id == job.id), None)
+            if target is None:
+                return False
+            if target.record_generation != job.run_record_generation():
+                return False
+            if target.last_delivered_result_ts == job.last_result_ts:
+                return False
+            if target.last_result_ts not in (job.result_origin_ts, job.last_result_ts):
+                return False
+            _refresh_delivery_configuration(job, target)
+            return True
+
+    def checkpoint_result_delivery(
+        self,
+        job: CronJob,
+        *,
+        parts: list[str],
+        completed_parts: int,
+        channel: str,
+        parent_ts: str,
+    ) -> bool:
+        """Persist exact Slack multipart progress for the claimed result.
+
+        A cursor may stay put (idempotent retry) or advance, never move
+        backwards or beyond the snapshotted part list. The final cursor records
+        whole-result acknowledgement; settlement remains the only transition
+        that clears the outbox and owed occurrence.
+
+        WORKER-THREAD ONLY. The gateway calls this through ``asyncio.to_thread``.
+        """
+        if not job.result_produced or not job.last_result_ts:
+            return False
+        if not parts or completed_parts < 0 or completed_parts > len(parts):
+            return False
+        owner_pid, owner_start = self._delivery_owner_identity()
+        with self._file_lock():
+            self._sync()
+            if self._load_failed:
+                raise self._unreadable_error()
+            target = next((candidate for candidate in self._jobs if candidate.id == job.id), None)
+            if target is None or target.record_generation != job.run_record_generation():
+                return False
+            owns_claim = (
+                target.delivery_claim_result_ts == job.last_result_ts
+                and target.delivery_claim_owner_pid == owner_pid
+                and target.delivery_claim_owner_start == owner_start
+            )
+            if not owns_claim or target.pending_delivery_result_ts != job.last_result_ts:
+                return False
+            if target.delivery_slack_parts and target.delivery_slack_parts != parts:
+                return False
+            if target.delivery_slack_completed_parts > completed_parts:
+                return False
+            if target.delivery_slack_channel and target.delivery_slack_channel != channel:
+                return False
+            if target.delivery_slack_parent_ts and target.delivery_slack_parent_ts != parent_ts:
+                return False
+            target.delivery_slack_parts = list(parts)
+            target.delivery_slack_completed_parts = completed_parts
+            target.delivery_slack_channel = channel
+            target.delivery_slack_parent_ts = parent_ts
+            if completed_parts == len(parts):
+                target.acknowledged_delivery_result_ts = job.last_result_ts
+            self._save()
+
+        job.run_origin_generation = target.record_generation
+        job.delivery_slack_parts = list(parts)
+        job.delivery_slack_completed_parts = completed_parts
+        job.delivery_slack_channel = channel
+        job.delivery_slack_parent_ts = parent_ts
+        if completed_parts == len(parts):
+            job.acknowledged_delivery_result_ts = job.last_result_ts
+        return True
+
+    def settle_result_delivery(self, job: CronJob, result_hash: str) -> bool:
+        """Durably acknowledge one confirmed user-visible result delivery.
+
+        The result bytes, their run identity, the dedup anchor, and the owed-fire
+        clear commit in ONE locked save. The origin comparison is a CAS: a stale
+        runtime may settle its own result only while the store still names the
+        generation it observed, never after a replacement gateway has published
+        another result. Repeating the settlement for the same generation is
+        idempotent.
+
+        The pre-delivery claim writes the result outbox and ownership, but does
+        not consume the occurrence. Therefore a cancellation/failure before any
+        delivery can release the owner while the stored result and owed occurrence
+        remain retryable. Once a surface acknowledges its first message, this
+        settlement commits the delivered tombstone and cleared debt together.
+
+        WORKER-THREAD ONLY. The gateway calls this through ``asyncio.to_thread``.
+        """
+        if not job.result_produced or not job.last_result_ts:
+            return False
+        owner_pid, owner_start = self._delivery_owner_identity()
+        committed_at = job.last_posted_at or time.time()
+        with self._file_lock():
+            self._sync()
+            if self._load_failed:
+                raise self._unreadable_error()
+            target = next((candidate for candidate in self._jobs if candidate.id == job.id), None)
+            if target is None:
+                return False
+            if target.record_generation != job.run_record_generation():
+                return False
+            if target.delivery_slack_parts and (
+                target.delivery_slack_completed_parts != len(target.delivery_slack_parts)
+                or target.acknowledged_delivery_result_ts != job.last_result_ts
+            ):
+                return False
+            if target.last_delivered_result_ts == job.last_result_ts:
+                # A repeated completion callback for the same acknowledged
+                # result is success, not a reason to re-open delivery.
+                committed_at = target.last_posted_at
+            else:
+                owns_claim = (
+                    target.delivery_claim_result_ts == job.last_result_ts
+                    and target.delivery_claim_owner_pid == owner_pid
+                    and target.delivery_claim_owner_start == owner_start
+                )
+                if not owns_claim:
+                    return False
+                if target.last_result_ts not in (job.result_origin_ts, job.last_result_ts):
+                    return False
+                target.last_result = job.last_result
+                target.last_result_ts = job.last_result_ts
+                target.last_result_stamp = job.last_result_stamp
+                target.last_delivered_result_ts = job.last_result_ts
+                target.last_posted_hash = result_hash
+                target.consecutive_dupes = 0
+                target.last_posted_at = committed_at
+                target.delivery_claim_result_ts = 0.0
+                target.delivery_claim_owner_pid = 0
+                target.delivery_claim_owner_start = ""
+                target.pending_delivery_result_ts = 0.0
+                target.acknowledged_delivery_result_ts = 0.0
+                target.delivery_slack_parts = []
+                target.delivery_slack_completed_parts = 0
+                target.delivery_slack_channel = ""
+                target.delivery_slack_parent_ts = ""
+                # Delivery is positive evidence that an owed make-up occurrence
+                # happened. Clearing it in this same commit prevents a crash or
+                # replacement from regenerating and re-delivering the result.
+                target.owed_fire = False
+                self._save()
+
+        # Mirror the COMMITTED state onto the executor-owned object only after
+        # the atomic save. Its later _merge_job_result call then agrees with the
+        # durable record instead of trying to restore stale debt or dedup state.
+        job.run_origin_generation = target.record_generation
+        job.last_delivered_result_ts = job.last_result_ts
+        job.last_posted_hash = result_hash
+        job.consecutive_dupes = 0
+        job.last_posted_at = committed_at
+        job.delivery_claim_result_ts = 0.0
+        job.delivery_claim_owner_pid = 0
+        job.delivery_claim_owner_start = ""
+        job.pending_delivery_result_ts = 0.0
+        job.acknowledged_delivery_result_ts = 0.0
+        job.delivery_slack_parts = []
+        job.delivery_slack_completed_parts = 0
+        job.delivery_slack_channel = ""
+        job.delivery_slack_parent_ts = ""
+        job.delivery_unconfirmed = False
+        job.owed_fire = False
+        return True
+
+    def settle_result_dashboard_only(self, job: CronJob) -> bool:
+        """Atomically finish a result that has no permitted external destination.
+
+        The dashboard notification and run history already own this result. This
+        transition publishes the result generation and clears ``owed_fire`` in
+        the same locked save even when no delivery claim was needed. It does not
+        advance ``last_delivered_result_ts`` or the external dedup anchor.
+
+        A claim owned by this process is accepted for pending-result recovery; a
+        different owner's claim is left untouched. Current routing is refreshed
+        under the lock so a concurrent destination edit wins instead of having
+        its newly-routable result discarded.
+
+        WORKER-THREAD ONLY. The gateway calls this through ``asyncio.to_thread``.
+        """
+        if not job.result_produced or not job.last_result_ts:
+            return False
+        owner_pid, owner_start = self._delivery_owner_identity()
+        with self._file_lock():
+            self._sync()
+            if self._load_failed:
+                raise self._unreadable_error()
+            target = next((candidate for candidate in self._jobs if candidate.id == job.id), None)
+            if target is None or target.record_generation != job.run_record_generation():
+                return False
+            route_before = job.delivery_route_identity()
+            _refresh_delivery_configuration(job, target)
+            if job.delivery_route_identity() != route_before:
+                return False
+            if target.last_delivered_result_ts == job.last_result_ts:
+                return False
+            if target.last_result_ts not in (job.result_origin_ts, job.last_result_ts):
+                return False
+            owns_claim = (
+                target.delivery_claim_result_ts == job.last_result_ts
+                and target.delivery_claim_owner_pid == owner_pid
+                and target.delivery_claim_owner_start == owner_start
+            )
+            if target.delivery_claim_result_ts and not owns_claim:
+                return False
+            if target.pending_delivery_result_ts not in (0.0, job.last_result_ts):
+                return False
+            # A partial or whole transport acknowledgement is never dashboard-only:
+            # its pinned destination and remaining settlement stay authoritative.
+            if target.delivery_slack_completed_parts or (
+                target.acknowledged_delivery_result_ts == job.last_result_ts
+            ):
+                return False
+            target.last_result = job.last_result
+            target.last_result_ts = job.last_result_ts
+            target.last_result_stamp = job.last_result_stamp
+            target.delivery_claim_result_ts = 0.0
+            target.delivery_claim_owner_pid = 0
+            target.delivery_claim_owner_start = ""
+            target.pending_delivery_result_ts = 0.0
+            target.acknowledged_delivery_result_ts = 0.0
+            target.delivery_slack_parts = []
+            target.delivery_slack_completed_parts = 0
+            target.delivery_slack_channel = ""
+            target.delivery_slack_parent_ts = ""
+            target.owed_fire = False
+            self._save()
+
+        job.run_origin_generation = target.record_generation
+        job.delivery_claim_result_ts = 0.0
+        job.delivery_claim_owner_pid = 0
+        job.delivery_claim_owner_start = ""
+        job.pending_delivery_result_ts = 0.0
+        job.acknowledged_delivery_result_ts = 0.0
+        job.delivery_slack_parts = []
+        job.delivery_slack_completed_parts = 0
+        job.delivery_slack_channel = ""
+        job.delivery_slack_parent_ts = ""
+        job.delivery_unconfirmed = False
+        job.owed_fire = False
+        return True
+
     def _merge_job_result(self, job: CronJob) -> None:
         """Merge a single job's runtime state back to disk.
 
@@ -5195,8 +6019,65 @@ class CronService:
         """
         with self._file_lock():
             self._sync()
+            if self._load_failed:
+                # _sync degrades an unreadable store to an EMPTY job list
+                # without raising, so falling through would silently skip
+                # the whole merge (job.id not in by_id) and return normally.
+                # Degrade rather than raise — the raise must reach USER
+                # mutations only, never the job runner (see
+                # test_a_background_writer_degrades_instead_of_crashing) —
+                # but do NOT swallow owed state: queue the desired owed_fire
+                # so the tick/stop drains re-persist it once the store is
+                # readable again (the drain itself refuses under
+                # _load_failed, so recovery waits for a readable store).
+                if job.owed_fire:
+                    self._pending_owed_fires[job.id] = True
+                elif job.owed_consumed:
+                    self._pending_owed_fires[job.id] = False
+                # A completed delete_after_run one-shot owes its removal too:
+                # returning without queueing it would re-fire the completed
+                # job once the store heals. Same guards as the base path's
+                # delete_owed derivation; defer_removal is the existing
+                # durable queue for exactly this (its drain also refuses
+                # under _load_failed, so the delete lands with recovery).
+                if job.delete_after_run and not (
+                    job.fire_time_denied or job.run_never_started or job.delivery_unconfirmed
+                ):
+                    self.defer_removal(job.id)
+                logger.warning(
+                    "Cron store unreadable during result merge; runtime "
+                    "state for '%s' not persisted%s",
+                    job.name,
+                    (
+                        " (owed occurrence queued for recovery)"
+                        if job.id in self._pending_owed_fires
+                        else ""
+                    ),
+                )
+                return
             by_id = {j.id: j for j in self._jobs}
-            if job.id in by_id:
+            target = by_id.get(job.id)
+            stale_execution_generation = bool(
+                target is not None and target.record_generation != job.run_record_generation()
+            )
+            stale_result_origin = bool(
+                target is not None
+                and job.result_produced
+                and target.last_result_ts not in (job.result_origin_ts, job.last_result_ts)
+            )
+            stale_runtime = stale_execution_generation or stale_result_origin
+            if stale_runtime:
+                logger.info(
+                    "Cron: refusing stale execution merge for '%s' "
+                    "(execution_origin=%s, execution_current=%s, "
+                    "result_origin=%s, result_current=%s)",
+                    job.name,
+                    job.run_record_generation(),
+                    target.record_generation if target is not None else None,
+                    job.result_origin_ts,
+                    target.last_result_ts if target is not None else None,
+                )
+            if job.id in by_id and not stale_runtime:
                 by_id[job.id].last_run_ts = job.last_run_ts
                 by_id[job.id].last_status = job.last_status
                 by_id[job.id].last_error = job.last_error
@@ -5205,10 +6086,31 @@ class CronService:
                 # sole authority for user-controlled pause/resume state.
                 # Propagate the fired/parked disable for at-jobs — including a
                 # fire-time-DENIED one (parked disabled instead of deleted so
-                # it cannot refire every tick yet stays re-enableable).
-                if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
-                    by_id[job.id].enabled = job.enabled
-                    by_id[job.id].user_paused = not job.enabled
+                # it cannot refire every tick yet stays re-enableable). A
+                # keep_overdue (pruned-install) skip is excluded: its disable
+                # is a drained-process quiesce only, and the on-disk job must
+                # stay enabled for the replacement gateway to retry.
+                target = by_id[job.id]
+                # `enabled`/`user_paused` and `schedule` are configuration-owned.
+                # The one execution transition that may touch them is parking a
+                # completed at-job. Apply it only while those exact fields still
+                # match the run-start snapshot; a concurrent reschedule or
+                # pause/resume wins. `target is job` is the no-reload fast path
+                # where this execution owns the live object itself.
+                one_shot_config_is_current = target is job or (
+                    job.run_origin_schedule is not None
+                    and target.schedule == job.run_origin_schedule
+                    and target.enabled == job.run_origin_enabled
+                    and target.user_paused == job.run_origin_user_paused
+                )
+                if (
+                    job.schedule.kind == "at"
+                    and one_shot_config_is_current
+                    and not job.keep_overdue
+                    and (not job.delete_after_run or job.fire_time_denied)
+                ):
+                    target.enabled = job.enabled
+                    target.user_paused = not job.enabled
                 # auto_paused is execution-owned (repeated-failure auto-pause and
                 # its reset on success), so propagate it for every job — unlike
                 # `enabled`, which must not be clobbered for recurring jobs. Also
@@ -5217,29 +6119,60 @@ class CronService:
                 by_id[job.id].auto_paused = job.auto_paused
                 if job.auto_paused and not by_id[job.id].user_paused:
                     by_id[job.id].enabled = False
-                by_id[job.id].last_result = job.last_result
-                # Both stamp fields travel WITH last_result. _sync() above
-                # replaced this list with the disk copies, so by_id[job.id] is
-                # a different object than `job` and every field a run produces
-                # has to be copied explicitly. Omitting these persisted the new
-                # result under the PREVIOUS run's stamp, so after a reload
-                # /to-chat rendered a header the executor never wrote and
-                # append_if_absent duplicated the row instead of collapsing it.
-                by_id[job.id].last_result_ts = job.last_result_ts
-                by_id[job.id].last_result_stamp = job.last_result_stamp
-                by_id[job.id].last_posted_hash = job.last_posted_hash
-                by_id[job.id].consecutive_dupes = job.consecutive_dupes
-                by_id[job.id].last_posted_at = job.last_posted_at
-                by_id[job.id].last_failure_hash = job.last_failure_hash
-                by_id[job.id].last_failure_at = job.last_failure_at
-                by_id[job.id].consecutive_failures = job.consecutive_failures
-                # Same shape as the other runtime->disk copies on this call: a
-                # field `_execute` sets on the in-memory `job` is invisible after
-                # reload unless copied here explicitly. A cancelled run never
-                # reached the stamp in `_execute`, so on it these still hold the
-                # last completed run's values and the copy changes nothing.
-                by_id[job.id].last_retry_count = job.last_retry_count
-                by_id[job.id].last_retry_run_ts = job.last_retry_run_ts
+                if not stale_runtime:
+                    target = by_id[job.id]
+                    target_result_before = target.last_result_ts
+                    target_delivery_before = target.last_delivered_result_ts
+                    # A delivery tombstone already paired with the target's
+                    # current result is authoritative unless the executor carries
+                    # that exact same tombstone. Identity equality, not numeric
+                    # ordering: wall-clock rollback must not make a newer
+                    # generation look older and re-open delivery.
+                    preserve_target_delivery = bool(
+                        target_delivery_before
+                        and target_delivery_before == target_result_before
+                        and target_delivery_before != job.last_delivered_result_ts
+                    )
+                    target.last_result = job.last_result
+                    # Both stamp fields travel WITH last_result. _sync() above
+                    # replaced this list with the disk copies, so target is a
+                    # different object than `job` after an external write and
+                    # every field a run produces has to be copied explicitly.
+                    target.last_result_ts = job.last_result_ts
+                    target.last_result_stamp = job.last_result_stamp
+                    if not preserve_target_delivery:
+                        target.last_delivered_result_ts = job.last_delivered_result_ts
+                        target.last_posted_hash = job.last_posted_hash
+                        target.consecutive_dupes = job.consecutive_dupes
+                        target.last_posted_at = job.last_posted_at
+                        target.pending_delivery_result_ts = job.pending_delivery_result_ts
+                        target.acknowledged_delivery_result_ts = job.acknowledged_delivery_result_ts
+                        target.delivery_slack_parts = list(job.delivery_slack_parts)
+                        target.delivery_slack_completed_parts = job.delivery_slack_completed_parts
+                        target.delivery_slack_channel = job.delivery_slack_channel
+                        target.delivery_slack_parent_ts = job.delivery_slack_parent_ts
+                    target.last_failure_hash = job.last_failure_hash
+                    target.last_failure_at = job.last_failure_at
+                    target.consecutive_failures = job.consecutive_failures
+                    # Same shape as the other runtime->disk copies on this call:
+                    # a field `_execute` sets on the in-memory `job` is invisible
+                    # after reload unless copied here explicitly. A cancelled run
+                    # never reached the stamp in `_execute`, so these retain the
+                    # last completed run's values and the copy changes nothing.
+                    target.last_retry_count = job.last_retry_count
+                    target.last_retry_run_ts = job.last_retry_run_ts
+                    # A confirmed delivery is the stronger fact only for a run
+                    # that actually produced this result generation. A pruned or
+                    # otherwise never-started run carries the previous result
+                    # timestamps unchanged while setting a fresh owed occurrence;
+                    # timestamp equality alone must not consume that new debt.
+                    if (
+                        job.result_produced
+                        and target.last_delivered_result_ts == job.last_result_ts
+                    ):
+                        target.owed_fire = False
+                    else:
+                        target.owed_fire = job.owed_fire
             # A fire-time-DENIED run is a policy refusal, not a completed run:
             # deleting the one-shot here would make the documented
             # resume-on-policy-loosening semantic impossible for at-jobs.
@@ -5256,8 +6189,11 @@ class CronService:
             # unreadable store to an empty job list WITHOUT raising, so presence
             # is exactly what a corrupt store destroys, and the deferred queue
             # below then never fired for a delete that was still owed on disk.
-            delete_owed = job.delete_after_run and not (
-                job.fire_time_denied or job.run_never_started
+            delete_owed = (
+                job.delete_after_run
+                and not stale_runtime
+                and not job.delivery_unconfirmed
+                and not (job.fire_time_denied or job.run_never_started)
             )
             removed_one_shot = False
             restore: list[tuple[CronJob, str]] = []
@@ -5804,6 +6740,7 @@ class CronService:
         self._load_failed = False
         if not self._path.exists():
             self._jobs = []
+            self._execution_baselines = {}
             self._reset_fingerprint()
             return
         try:
@@ -5822,6 +6759,7 @@ class CronService:
                     "Failed to load cron store: document is not an object with a jobs list"
                 )
                 self._jobs = []
+                self._execution_baselines = {}
                 self._reset_fingerprint()
                 self._load_failed = True
                 return
@@ -5852,6 +6790,7 @@ class CronService:
                         entry_exc,
                     )
             self._jobs = jobs
+            self._execution_baselines = {job.id: _job_execution_payload(job) for job in jobs}
             # Fingerprint from the stat taken BEFORE the read: if a writer
             # replaced the file between our stat and read we may have loaded the
             # newer content under an older fingerprint, which only costs one
@@ -5876,6 +6815,7 @@ class CronService:
             # fresh install still loads silently rather than warning.
             logger.warning("Failed to load cron store: %s", exc)
             self._jobs = []
+            self._execution_baselines = {}
             self._reset_fingerprint()
             self._load_failed = True
 
@@ -5997,6 +6937,7 @@ class CronService:
         _ack_job_locked                 _file_lock  ack_job_async → to_thread; sync
         _unack_job_locked               _file_lock  unack_job_async → to_thread; sync
         _merge_job_result               _file_lock  _run_job_isolated → to_thread; BACKGROUND
+        checkpoint_result_delivery      _file_lock  cron gateway → to_thread; BACKGROUND
         _merge_terminal_state_locked    _file_lock  _force_reap / cancel → to_thread; BACKGROUND
         _drain_pending_removals_locked    (caller)  _tick_scan_locked holds _file_lock; BACKGROUND
         _load (self._jobs = …)            (caller)  _sync() under _file_lock; else construction/start
@@ -6011,6 +6952,16 @@ class CronService:
         """
         if self._load_failed:
             raise self._unreadable_error()
+        next_generations: dict[str, int] = {}
+        next_baselines: dict[str, dict[str, Any]] = {}
+        for job in self._jobs:
+            payload = _job_execution_payload(job)
+            baseline = self._execution_baselines.get(job.id)
+            generation = max(job.record_generation, 0)
+            if baseline is None or payload != baseline:
+                generation += 1
+            next_generations[job.id] = generation
+            next_baselines[job.id] = payload
         self._dir.mkdir(parents=True, exist_ok=True)
         data = {
             "version": _STORE_VERSION,
@@ -6030,9 +6981,21 @@ class CronService:
                     "last_error": j.last_error,
                     "created_ts": j.created_ts,
                     "delete_after_run": j.delete_after_run,
+                    "record_generation": next_generations[j.id],
+                    "owed_fire": j.owed_fire,
                     "last_result": j.last_result,
                     "last_result_ts": j.last_result_ts,
                     "last_result_stamp": j.last_result_stamp,
+                    "last_delivered_result_ts": j.last_delivered_result_ts,
+                    "delivery_claim_result_ts": j.delivery_claim_result_ts,
+                    "delivery_claim_owner_pid": j.delivery_claim_owner_pid,
+                    "delivery_claim_owner_start": j.delivery_claim_owner_start,
+                    "pending_delivery_result_ts": j.pending_delivery_result_ts,
+                    "acknowledged_delivery_result_ts": j.acknowledged_delivery_result_ts,
+                    "delivery_slack_parts": j.delivery_slack_parts,
+                    "delivery_slack_completed_parts": j.delivery_slack_completed_parts,
+                    "delivery_slack_channel": j.delivery_slack_channel,
+                    "delivery_slack_parent_ts": j.delivery_slack_parent_ts,
                     "context_enabled": j.context_enabled,
                     "agent_id": j.agent_id,
                     "member_id": j.member_id,
@@ -6080,6 +7043,9 @@ class CronService:
         from kiro_crew.atomic_write import atomic_write
 
         atomic_write(self._path, json.dumps(data, indent=2))
+        for job in self._jobs:
+            job.record_generation = next_generations[job.id]
+        self._execution_baselines = next_baselines
         # Refresh the (mtime_ns, size) fingerprint so _sync recognizes this as
         # our own write and does not reload it back over the in-memory state.
         self._record_fingerprint()

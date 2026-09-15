@@ -384,6 +384,8 @@ def test_non_string_execution_selector_skips_record(tmp_path, field) -> None:
         {"agent_sequence": None},
         {"skip_dates": [20260101]},
         {"skip_dates": None},
+        {"delivery_slack_parts": [1]},
+        {"delivery_slack_parts": None},
     ],
     ids=[
         "name",
@@ -401,6 +403,8 @@ def test_non_string_execution_selector_skips_record(tmp_path, field) -> None:
         "agent_seq_explicit_null",
         "skip_dates_member",
         "skip_dates_explicit_null",
+        "delivery_parts_member",
+        "delivery_parts_explicit_null",
     ],
 )
 def test_non_string_required_or_list_fields_skip_record(tmp_path, mutate) -> None:
@@ -603,7 +607,16 @@ def test_compute_next_run_ts_never_returns_non_finite(tmp_path) -> None:
 _NUMERIC_FIELD_DEFAULTS = {
     "last_run_ts": None,
     "created_ts": 0.0,
+    "record_generation": 0,
+    "run_origin_generation": -1,
     "last_result_ts": 0.0,
+    "last_delivered_result_ts": 0.0,
+    "delivery_claim_result_ts": 0.0,
+    "delivery_claim_owner_pid": 0,
+    "pending_delivery_result_ts": 0.0,
+    "acknowledged_delivery_result_ts": 0.0,
+    "delivery_slack_completed_parts": 0,
+    "result_origin_ts": 0.0,
     "last_posted_at": 0.0,
     "last_failure_at": 0.0,
     "secret_env_pending_ts": 0.0,
