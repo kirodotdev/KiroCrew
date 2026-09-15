@@ -310,6 +310,15 @@ def test_empty_diff_runs_nothing(gate, monkeypatch) -> None:
     assert "CI" in plan.reason
 
 
+def test_empty_diff_dry_run_defers_full_suite_to_ci(gate, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(gate, "changed_files", lambda base: [])
+    rc = gate.main(["--dry-run"])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "(full)" not in err
+    assert "deferred to CI" in err
+
+
 def test_meta_diff_does_not_run_full(gate, monkeypatch) -> None:
     """A scripts/ (meta) change gets its related set, not the full gate."""
     monkeypatch.setattr(gate, "changed_files", lambda base: ["scripts/clean.sh"])
@@ -330,7 +339,7 @@ def test_evidence_only_diff_runs_nothing(gate, monkeypatch) -> None:
     )
     plan = gate.build_plan(_args())
     assert plan.commands == []
-    assert "CI" in plan.reason
+    assert "deferred to CI" in plan.reason
 
 
 def test_both_surfaces_does_not_run_full(gate, monkeypatch) -> None:

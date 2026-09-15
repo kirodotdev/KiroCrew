@@ -267,13 +267,15 @@ def build_plan(args: argparse.Namespace) -> Plan:
             "not a substitute for a diff the gate cannot see."
         )
     if not paths:
-        return Plan("no changes vs merge-base -- nothing related to run (the full suite runs in CI)")
+        return Plan(
+            "no changes vs merge-base -- nothing related to run (full suite deferred to CI)"
+        )
 
     frontend, meta, backend = classify(paths)
     if not (frontend or meta or backend):
         return Plan(
             "only ignored evidence paths changed -- nothing related to run "
-            "(the full suite runs in CI)"
+            "(full suite deferred to CI)"
         )
 
     plan = Plan(
