@@ -71,10 +71,7 @@ from urllib.parse import quote
 # to the gateway lives in ``mcp_core``. Importing it costs 341ms/40MB in this
 # process (measured) — under ``mcp_computer``'s own import cost, because
 # mcp_core's heavy dependencies are function-local.
-from kiro_crew.dashboard.chat_folders import (
-    _folder_owner_app,
-    _subtree_holds_foreign_folder,
-)
+from kiro_crew.dashboard.chat_folders import _folder_owner_app
 from kiro_crew.mcp_core import (
     _get,
     _patch,
@@ -730,62 +727,6 @@ def _free_slot_order(siblings: list[dict], index: int) -> int | None:
     # separated only by the name tie-break, which no order value can get between.
     if high - low >= 2:
         return low + (high - low) // 2
-    return None
-
-
-def _positioning_ownership_error(
-    folders: list[dict], *, moved_id: str, order_writes: list[tuple[str, int]], caller_app: str
-) -> str | None:
-    """Refuse an app a positioning call that would relocate anything it does not own.
-
-    ONE predicate over everything a position can relocate, rather than a check per
-    case. The set has three parts and each was found the hard way:
-
-    * **The moved folder.** The endpoint's ownership rule for a foreign folder keys
-      on a reparent, and a pure reposition deliberately sends no ``parent_id``.
-    * **Its subtree.** Positioning takes the descendants with it, so relocating a
-      folder that contains the person's relocates theirs — the reason the endpoint
-      refuses the same shape on a reparent, reached one level down.
-    * **Every renumbered sibling.** A renumber can write a single FOREIGN row, and
-      that row need not be the moved folder.
-
-    The last part is why the endpoint cannot answer this alone: positioning is
-    RELATIVE. Renumbering the app's own siblings around a foreign row changes where
-    that row renders without ever writing to it, so no request exists to refuse.
-    Authorization for a composed operation belongs where the composition happens.
-
-    ``_folder_owner_app`` and ``_subtree_holds_foreign_folder`` are imported from the
-    endpoint rather than restated here, so this cannot drift from the rule the
-    endpoint will apply to the writes this function is authorizing.
-    """
-    if not caller_app:
-        return None
-    moved = next((f for f in folders if str(f.get("id")) == moved_id), {})
-    if _folder_owner_app(moved) != caller_app:
-        return (
-            "Error: this app does not own the folder it is positioning, so the "
-            "position is refused. An app may reorder only its own folders; ask the "
-            "person to set the order of theirs."
-        )
-    if _subtree_holds_foreign_folder(folders, root_id=moved_id, request_app=caller_app):
-        return (
-            "Error: this folder contains folders this app does not own, and "
-            "positioning it moves everything inside it, so the position is refused. "
-            "Ask the person to set the order."
-        )
-    by_id = {str(f.get("id")): f for f in folders}
-    foreign = [
-        fid
-        for fid, _pos in order_writes
-        if fid != moved_id and _folder_owner_app(by_id.get(fid, {})) != caller_app
-    ]
-    if foreign:
-        return (
-            f"Error: positioning this folder would renumber {len(foreign)} sibling "
-            "folder(s) this app does not own, so the move is refused rather than "
-            "half-applied. Move it without `before`/`after`, or ask the person to "
-            "set the order."
-        )
     return None
 
 
@@ -1696,19 +1637,30 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     for i, f in enumerate(placed)
                     if _chat_folder_order(f) != i
                 ]
+            # The moved folder itself must be owned — the ONE ownership clause the
+            # write paths cannot re-derive, so it stays in the tool. Positioning is
+            # RELATIVE: renumbering the app's OWN siblings around a folder changes
+            # where that folder renders WITHOUT writing to it (when its own order is
+            # unchanged, `own_pos` is None and no PATCH names it). A caller could
+            # then reposition a folder it does not own by writing only rows it does,
+            # and every write the reorder endpoint sees would be legitimately owned,
+            # leaving nothing for it to refuse. The sibling-row and subtree clauses
+            # of the old predicate genuinely moved to the write paths (the reorder
+            # endpoint re-authorizes each row AND its subtree under the lock); only
+            # this moved-folder clause has no write to hang off, so it is checked
+            # here, before any write, exactly as the base did. A plain reparent is
+            # not gated here because it always writes to the moved folder, so the
+            # PATCH endpoint's own ownership check refuses it.
             if caller_app:
-                # Checked HERE, before the first write, because the endpoint judges
-                # each PATCH on its own: a refusal landing after the move would
-                # leave the person's sidebar in an order nobody chose, with nothing
-                # to roll it back with.
-                refusal = _positioning_ownership_error(
-                    chat_folders,
-                    moved_id=fld_id,
-                    order_writes=order_writes,
-                    caller_app=caller_app,
+                moving_owner = _folder_owner_app(
+                    next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
                 )
-                if refusal:
-                    return refusal
+                if moving_owner != caller_app:
+                    return (
+                        "Error: this app does not own the folder it is positioning, "
+                        "so the position is refused. An app may reorder only its own "
+                        "folders; ask the person to set the order of theirs."
+                    )
 
         # The moved folder's own position rides along with the reparent: one write
         # for the row this call is about, so the common case stays a single request.
@@ -1722,7 +1674,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if current_parent != dest_id:
             move_body["parent_id"] = dest_id
         own_pos = next((pos for fid, pos in order_writes if fid == fld_id), None)
-        if own_pos is not None:
+        # A renumber writes several sibling rows, and those cannot be made atomic
+        # one PATCH at a time: a refusal partway would leave the person's sidebar
+        # in an order nobody chose. So the moved folder's own position folds into
+        # the reparent PATCH ONLY when it is the single row to write (a free slot
+        # existed); when siblings must be renumbered too, the whole set — moved
+        # folder included — goes through the atomic reorder endpoint below, and
+        # the reparent PATCH carries parent_id alone.
+        sibling_writes = [(sid, pos) for sid, pos in order_writes if sid != fld_id]
+        if own_pos is not None and not sibling_writes:
             move_body["order"] = own_pos
         if move_body:
             d = _patch(f"/api/chat/folders/{fld_id}", move_body, session_key=caller_key)
@@ -1737,27 +1697,37 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         moved: list[dict] = [f for f in chat_folders if str(f.get("id")) != fld_id]
         moved.append({**d, "id": fld_id})
         dest_path = _chat_folder_paths(moved).get(fld_id) or "(top level)"
-        for sib_id, pos in order_writes:
-            if sib_id == fld_id:
-                continue
-            shifted = _patch(f"/api/chat/folders/{sib_id}", {"order": pos}, session_key=caller_key)
+        if sibling_writes:
+            # The renumber, in ONE atomic request. The endpoint applies the whole
+            # list under the folder-store lock, all-or-none, re-validating this
+            # app's ownership of EVERY row inside that lock the way a single PATCH
+            # does — so ownership lives with the lock-holder rather than a
+            # tool-layer pre-check here, and a refusal leaves the stored order
+            # untouched instead of half-applied. The moved folder's own order
+            # joins the batch here (it is not folded into the reparent PATCH
+            # above), so its position relative to the renumbered siblings lands
+            # in the same transaction.
+            reorder_body = [{"id": sid, "order": pos} for sid, pos in order_writes]
+            shifted = _post(
+                "/api/chat/folders/reorder",
+                {"orders": reorder_body},
+                session_key=caller_key,
+            )
             if shifted.get("error"):
-                # The move itself landed and is not in doubt; only the sequence of
-                # the remaining siblings is. Say which half held so the caller can
-                # finish it instead of re-moving a folder that already arrived.
-                #
-                # Same split as the success wording: with the parent unchanged there
-                # was no move to report, and "moved to <the folder's own path>" would
-                # describe a reparent that did not happen — in the one message a
-                # caller reads while deciding what to retry.
+                # The reparent (if any) landed and is not in doubt; the ordering
+                # did not — and, being atomic, left the stored order untouched
+                # rather than partway. Say which half held so the caller can
+                # re-run to finish, matching the success wording's move/reposition
+                # split.
                 landed = (
                     f"Repositioned folder (id={fld_id})"
                     if current_parent == dest_id
                     else f"Moved folder (id={fld_id}) to `{dest_path}`"
                 )
                 return redact(
-                    f"{landed}, but ordering stopped partway: {shifted['error']}. "
-                    "Re-run the same call to finish positioning it."
+                    f"{landed}, but ordering was refused: {shifted['error']}. "
+                    "The stored order is unchanged. Re-run the same call to finish "
+                    "positioning it."
                 )
         if anchor_id:
             side = "before" if before_ref else "after"

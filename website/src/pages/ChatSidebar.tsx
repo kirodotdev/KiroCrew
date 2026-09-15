@@ -5327,6 +5327,12 @@ function ChatSidebar({
     const rootOnly = current.filter(f => !f.parent_id)
     const changes = computeReorderedFolders(rootOnly, activeId, overId)
     if (!changes.length) return
+    // Snapshot the pre-drag order of exactly the rows this drag renumbers, so a
+    // rejected write can be rolled back field-scoped rather than by restoring a
+    // whole-list snapshot (which would clobber a concurrent rename/move).
+    const before = new Map(
+      changes.map(c => [c.id, current.find(f => f.id === c.id)?.order]),
+    )
     // Optimistic update
     queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old =>
       (old ?? []).map(f => {
@@ -5334,8 +5340,23 @@ function ChatSidebar({
         return c ? { ...f, order: c.order } : f
       })
     )
-    // Persist
-    changes.forEach(c => api.updateChatFolder(c.id, { order: c.order }))
+    // Persist as ONE atomic request. The endpoint applies the whole renumber
+    // under the folder-store lock, all-or-none, so a mid-sequence failure
+    // leaves the stored order untouched instead of half-applied — the reason a
+    // per-row PATCH loop is wrong here. On failure, roll back only the rows
+    // this drag set, and only where the cache still holds its optimistic
+    // value, then re-sync from the server.
+    api.reorderChatFolders(changes).catch((e) => {
+      setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')))
+      queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old =>
+        (old ?? []).map(f => {
+          if (!before.has(f.id)) return f
+          const c = changes.find(ch => ch.id === f.id)
+          return c && f.order === c.order ? { ...f, order: before.get(f.id) as number } : f
+        })
+      )
+      queryClient.invalidateQueries({ queryKey: ['chat-folders'] })
+    })
   }, [queryClient])
   // Re-parent a folder: move it into `parentId`, or to the top level (null).
   // Client-side guards mirror the server (self/descendant targets rejected)

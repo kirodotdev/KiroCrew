@@ -275,6 +275,14 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_tags.py::api_chat_tag_column_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_columns_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_slot_drop": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # chat_folders.py: the reorder endpoint carries a bounded list of folder
+    # ids and integer orders, capped at the folder ceiling, so it takes a
+    # per-route byte ceiling sized from that entry budget rather than the
+    # shared default (a max-size flat-tree reorder exceeds 64 KB).
+    "chat_folders.py::api_chat_folder_reorder": (
+        "_MAX_REORDER_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # ---- tranche 3 ----
     # chat_handlers.py: control-field slot mutations take the cap; the sites
     # that carry a chat message, queued-edit text, follow-up prompts, or

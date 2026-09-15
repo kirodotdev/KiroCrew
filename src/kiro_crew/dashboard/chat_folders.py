@@ -17,6 +17,7 @@ from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot, derive_caller_app
 from kiro_crew.executors import subprocess_executor
@@ -933,15 +934,17 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             if request_app and dest is not None and _folder_owner_app(dest) != request_app:
                 return False, "forbidden_parent"
         if (
-            reparenting
-            and request_app
+            request_app
+            and (reparenting or "order" in changes)
             and _subtree_holds_foreign_folder(folders, root_id=fid, request_app=request_app)
         ):
-            # A move takes the whole subtree with it, so a folder the person
-            # nested inside this one would be relocated by an app's write. Only
-            # the reparent is gated: a rename, a colour or a collapse changes
-            # nothing about where the descendants sit. Checked for a move to the
-            # top level too -- "" is still a move.
+            # A move OR a reposition relocates the whole subtree with it, so a
+            # folder the person nested inside this one would be relocated by an
+            # app's write. Both a reparent and an order change are gated: a
+            # rename, a colour or a collapse changes nothing about where the
+            # descendants sit, but a reposition changes where the subtree
+            # renders exactly as a reparent does. Checked for a move to the top
+            # level too -- "" is still a move.
             return False, "foreign_descendant"
         target.update(changes)
         if not target.get("color"):
@@ -1016,6 +1019,191 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         resources=fid,
     )
     return web.json_response(folder)
+
+
+#: The most rows one reorder request may carry. A reorder writes one row per
+#: sibling touched, and the store itself is capped at :data:`MAX_CHAT_FOLDERS`,
+#: so a request naming more entries than there can be folders is malformed
+#: rather than large. The cap is the folder ceiling, not a smaller number: a
+#: person renumbering a flat tree of the maximum size sends exactly that many
+#: rows in one legitimate drag.
+_MAX_REORDER_ENTRIES = MAX_CHAT_FOLDERS
+
+#: Byte ceiling for a reorder body, sized from the entry cap rather than the
+#: shared 64 KB default: a legitimate max-size flat-tree reorder carries
+#: :data:`_MAX_REORDER_ENTRIES` entries, each ``{"id": "<uuid>", "order": <int>}``
+#: comfortably under 256 bytes with its JSON envelope, so 500 rows can exceed
+#: the shared default. The bound is that entry budget, so the largest legal
+#: request is admitted while an oversized body is rejected before decoding.
+_MAX_REORDER_BODY_BYTES = _MAX_REORDER_ENTRIES * 256
+
+
+async def api_chat_folder_reorder(request: web.Request) -> web.Response:
+    """POST /api/chat/folders/reorder — set several folders' ``order`` atomically.
+
+    The one way to express a reorder as a SINGLE transaction. ``PATCH
+    /api/chat/folders/{id}`` takes one row per request, so a caller renumbering
+    several siblings issues N requests with no transaction between them: a
+    failure partway leaves the tree carrying a mix of old and new ``order``
+    numbers until the action is repeated. This endpoint applies the whole list
+    in one ``mutate_folders`` pass under the folder-store lock, all-or-none — so
+    a rejected row leaves the stored order exactly as it was, never half-applied.
+
+    Body: ``{"orders": [{"id": str, "order": int}, ...]}``. Every entry is
+    validated into a pending map BEFORE the lock is taken (the same shape
+    discipline ``api_chat_folder_update`` uses for its single row), so a
+    malformed request is a 400 that never touches the store.
+
+    Ownership is re-decided per row INSIDE the lock, exactly as ``_apply`` does
+    for one row: an app may reorder only the folders it owns, and a batch naming
+    one it does not is refused whole. Row ownership is not the whole rule —
+    repositioning a folder relocates its whole subtree, so a row the app owns
+    whose descendants include the person's is refused too, the same violation
+    the reparent PATCH refuses one level down. Both live here because the reorder
+    that composes these writes is the one place under the lock that sees the
+    subtree, so a positioning caller states the whole renumber as a single batch
+    and relies on this endpoint to authorize it.
+
+    Reorder touches only ``order``: it never reparents, renames, recolors or
+    retags. A row naming a folder absent from the store is a 404 for the whole
+    batch (the reorder the caller computed describes a tree that has since
+    shifted), so no partial renumber lands against a shifted tree.
+    """
+    state: DashboardState = request.app["state"]
+    if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
+    request_app = _effective_request_app(state, request)
+    body, body_err = await read_bounded_json(request, max_bytes=_MAX_REORDER_BODY_BYTES)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    raw_orders = body.get("orders")
+    if not isinstance(raw_orders, list):
+        return web.json_response(
+            {"error": "orders must be an array", "code": "orders_not_array"}, status=400
+        )
+    if len(raw_orders) > _MAX_REORDER_ENTRIES:
+        return web.json_response(
+            {"error": "too many folders in one reorder", "code": "orders_too_many"}, status=400
+        )
+    # Validate every entry into an id -> order map BEFORE the lock is taken, the
+    # same shape discipline api_chat_folder_update applies to its single row: a
+    # malformed batch is a 400 that never touches the store. Last-writer-wins on
+    # a duplicate id, matching how the store tolerates two rows sharing a number.
+    pending: dict[str, int] = {}
+    for entry in raw_orders:
+        if not isinstance(entry, dict):
+            return web.json_response(
+                {"error": "each order entry must be an object", "code": "order_entry_invalid"},
+                status=400,
+            )
+        fid = str(entry.get("id") or "")
+        if not fid:
+            return web.json_response(
+                {"error": "each order entry needs an id", "code": "order_id_missing"}, status=400
+            )
+        # A non-numeric, null, or non-finite order is caller error, not a server
+        # fault — matching the single-row PATCH, which skips such a field. Here
+        # the field IS the request, so a bad value is a 400 rather than a
+        # silent skip: a caller sending it meant to move the row, and dropping
+        # it would leave that row where the reorder did not want it.
+        try:
+            pending[fid] = int(entry["order"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return web.json_response(
+                {"error": "each order must be an integer", "code": "order_not_int"}, status=400
+            )
+
+    if not pending:
+        # An empty reorder changes nothing; report success without a store write.
+        return web.json_response({"ok": True})
+
+    def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
+        by_id = {f["id"]: f for f in folders}
+        # Re-find and re-authorize EVERY row under the lock before mutating any,
+        # so the pass is all-or-none: a missing or foreign row aborts with the
+        # store untouched, never half-renumbered. Mirrors _apply's single-row
+        # re-find + ownership check, applied to each entry.
+        for fid, _order in pending.items():
+            target = by_id.get(fid)
+            if target is None:
+                return False, "not_found"
+            if request_app and _folder_owner_app(target) != request_app:
+                return False, "not_owned"
+            # Ownership of the row itself is not the whole rule: repositioning a
+            # folder relocates its whole subtree, so a row the app owns whose
+            # descendants include the person's relocates theirs — the same
+            # violation the reparent PATCH refuses one level down, reached here
+            # for a position that sends no parent_id. The reorder that composes
+            # these writes is the only place that sees the subtree, so the
+            # subtree rule is enforced here, per row, before any write lands.
+            if request_app and _subtree_holds_foreign_folder(
+                folders, root_id=fid, request_app=request_app
+            ):
+                return False, "subtree_not_owned"
+        changed = False
+        for fid, order in pending.items():
+            target = by_id[fid]
+            if target.get("order") != order:
+                target["order"] = order
+                changed = True
+        return changed, ""
+
+    err = await state.mutate_folders(_apply)
+    if err == "not_found":
+        # A folder named in the batch is absent from the store: it was deleted
+        # between the caller reading the tree and this write. The reorder
+        # describes a tree that has since changed, so none of it lands.
+        return web.json_response(
+            {"error": "a folder in the reorder no longer exists", "code": "folder_not_found"},
+            status=404,
+        )
+    if err == "not_owned":
+        # One row named a folder this app does not own. Refused whole, and
+        # distinguished only in the audit — the same one code for the caller
+        # api_chat_folder_update uses, so the response reports no folder as
+        # foreign.
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.folder_reorder",
+            outcome="denied",
+            source="app_isolation",
+            resources=",".join(list(pending)[:10]),
+            error="app cannot reorder a folder it does not own",
+        )
+        return web.json_response(
+            {"error": "this app does not own one of those folders", "code": "folder_not_owned"},
+            status=403,
+        )
+    if err == "subtree_not_owned":
+        # A row the app owns has descendants the person owns. Repositioning it
+        # relocates theirs, which is the reparent-path violation reached one
+        # level down, so the whole batch is refused with the store untouched.
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.folder_reorder",
+            outcome="denied",
+            source="app_isolation",
+            resources=",".join(list(pending)[:10]),
+            error="app cannot reposition a folder whose subtree holds the person's",
+        )
+        return web.json_response(
+            {
+                "error": "one of those folders contains folders this app does not own",
+                "code": "folder_not_owned",
+            },
+            status=403,
+        )
+    state.push_slots_update()
+    source, caller = _audit_origin(request)
+    sel().log_api_access(
+        caller=caller,
+        operation="chat.folder_reorder",
+        outcome="allowed",
+        source=source,
+        resources=",".join(list(pending)[:10]),
+    )
+    return web.json_response({"ok": True})
 
 
 async def api_chat_folder_delete(request: web.Request) -> web.Response:

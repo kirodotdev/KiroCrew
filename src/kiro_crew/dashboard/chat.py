@@ -37,6 +37,7 @@ from kiro_crew.dashboard.chat_folder_scaffold import (  # noqa: F401
 from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     api_chat_folder_create,
     api_chat_folder_delete,
+    api_chat_folder_reorder,
     api_chat_folder_update,
     api_chat_folders,
     api_chat_slot_folder,

@@ -44,6 +44,11 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/project-scaffold/scan", chat.api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", chat.api_chat_folders_scaffold)
     app.router.add_patch("/api/chat/folders/{id}", chat.api_chat_folder_update)
+    # Atomic multi-folder reorder — one transaction for a whole sidebar drag or
+    # tool renumber, so a partial failure cannot leave a mix of old and new
+    # order numbers. Registered BEFORE the "{id}" delete so its literal path is
+    # not shadowed by the id parameter.
+    app.router.add_post("/api/chat/folders/reorder", chat.api_chat_folder_reorder)
     app.router.add_delete("/api/chat/folders/{id}", chat.api_chat_folder_delete)
     app.router.add_patch("/api/chat/slots/{slot}/folder", chat.api_chat_slot_folder)
     app.router.add_patch("/api/chat/slots/{slot}/pin", chat.api_chat_slot_pin)
