@@ -5081,14 +5081,14 @@ class _ChatSlot:
 
     @property
     def display_title(self) -> str:
-        """Title for UI display. Shows ``NEW_SESSION_TITLE`` while the slot is
-        still on its untouched default key (untitled) — covering brand-new
-        empty sessions and the window before the LLM title lands — otherwise
-        the real title. Slots with a meaningful non-key title (plan, cron,
-        fork, slack) are unaffected since their title != key.
+        """Title for UI display. Shows ``NEW_SESSION_TITLE`` whenever no title
+        exists, or while the slot is still on its untouched default key — covering
+        brand-new empty sessions, peer-owned empty titles, and the window before
+        the LLM title lands. Otherwise returns the real title. Slots with a
+        meaningful non-key title (plan, cron, fork, slack) are unaffected.
         """
-        if not self._titled and (
-            not self.title or self.title == self.key or _SLOT_KEY_TITLE_RE.match(self.title)
+        if not self.title or (
+            not self._titled and (self.title == self.key or _SLOT_KEY_TITLE_RE.match(self.title))
         ):
             return NEW_SESSION_TITLE
         return self.title

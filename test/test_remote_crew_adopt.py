@@ -40,8 +40,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
 import kiro_crew
+from kiro_crew.dashboard import chat_persistence
 from kiro_crew.dashboard import handlers_instances as hi
 from kiro_crew.dashboard import remote_adopt as ra
+from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 
 _SECRET = "AKIAIOSFODNN7EXAMPLE"
 
@@ -812,8 +814,80 @@ class TestInheritedMetadata:
         )
 
         slot = state._slots[body["key"]]
-        assert slot.title != "My name for it"
+        assert slot.title == ""
+        assert slot.title != body["key"]
         assert slot._titled is True
+        assert body["title"] == slot.display_title == "New Session…"
+
+    async def test_an_empty_peer_title_pin_survives_history_rehydration(self, tmp_path, no_mint):
+        """The peer's empty name stays final across the real persistence path."""
+        from kiro_crew.dashboard.chat import _rehydrate_slot_from_history
+
+        mgr = _manager(slots=[_peer_row(title="")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+        slot = state._slots[body["key"]]
+        assert chat_persistence._save_slot_to_history(state, slot, force=True) is True
+
+        restored_state = _bound_state(tmp_path, mgr)
+        restored = _rehydrate_slot_from_history(restored_state, slot.key)
+
+        assert restored is not None
+        assert restored._titled is True
+        assert restored._title_origin == "user"
+        assert restored.title == ""
+        assert restored.display_title == NEW_SESSION_TITLE
+
+    async def test_an_empty_peer_title_pin_survives_history_resume(self, tmp_path, no_mint):
+        """The resume endpoint ignores the client's key placeholder for a pinned empty name."""
+        from aiohttp.test_utils import TestClient, TestServer
+        from chat_test_helpers import _make_app
+
+        mgr = _manager(slots=[_peer_row(title="")], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+        slot = state._slots[body["key"]]
+        assert chat_persistence._save_slot_to_history(state, slot, force=True) is True
+        del state._slots[slot.key]
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                f"/api/chat/slots/{slot.key}/resume",
+                json={"key": f"dashboard:{slot.key}", "title": slot.key},
+            )
+
+        assert resp.status == 200
+        resumed = state._slots[slot.key]
+        assert resumed._titled is True
+        assert resumed._title_origin == "user"
+        assert resumed.title == ""
+        assert resumed.display_title == NEW_SESSION_TITLE
+
+    async def test_an_ordinary_untitled_local_slot_stays_auto_titlable_after_rehydration(
+        self, tmp_path
+    ):
+        """A restored untitled local slot reads as untitled, not as a user rename.
+
+        ``list_sessions()`` fabricates a display title from the first user
+        message for every session it lists, so ``_apply_recent_session`` reads
+        finality from the persisted header, where an untitled slot carries no
+        ``user`` origin. Treating the fabricated excerpt as the title pins it as
+        a manual rename and the auto-titler never touches the row again.
+        """
+        state = _bound_state(tmp_path, _manager())
+        slot = state.get_or_create_slot("chat-local")
+        slot.append("user", "hello", "msg msg-u")
+        assert chat_persistence._save_slot_to_history(state, slot, force=True) is True
+
+        restored_state = _bound_state(tmp_path, _manager())
+        assert chat_persistence.restore_recent_sessions(restored_state, window_minutes=0) == 1
+        restored = restored_state._slots[slot.key]
+
+        assert restored._titled is False
+        assert restored._title_origin == ""
+        assert restored.display_title == NEW_SESSION_TITLE
 
     async def test_the_peers_agent_wins_over_a_caller_supplied_one(self, tmp_path, no_mint):
         """Same rule for the agent, and for the same reason.

@@ -488,6 +488,17 @@ class TestRehydration:
         assert slot._title_refresh_mark == 8
 
     @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"title": 1},
+            {"title": 1, "title_origin": "user"},
+            {"title_origin": "user"},
+        ],
+    )
+    def test_invalid_or_missing_persisted_title_is_not_final(self, metadata):
+        assert chat_persistence._persisted_title_is_titled(metadata) is False
+
+    @pytest.mark.parametrize(
         "titled,stored,expected",
         [
             (True, "auto", "auto"),

@@ -128,6 +128,18 @@ def _rehydrate_title_refresh_mark(stored: object) -> int:
     return 0
 
 
+def _persisted_title_is_titled(metadata: Mapping[str, object]) -> bool:
+    """Return whether persisted metadata marks a title as final.
+
+    A user-origin marker is independently authoritative for an empty title. This
+    preserves a peer-owned empty name without pinning ordinary untitled slots.
+    """
+    title = metadata.get("title")
+    return (isinstance(title, str) and bool(title)) or (
+        title == "" and metadata.get("title_origin") == "user"
+    )
+
+
 def _rehydrate_slot_title(
     slot: _ChatSlot,
     raw_title: str,
@@ -1022,11 +1034,12 @@ def _rehydrate_slot_from_history(
         # author is trusted-ish (our own kiro process), but the generation input
         # is user content, so a prompt injection could craft a title with an
         # exfiltration URL or leaked credential.
-        raw_title = meta.get("title") or slot_name
+        _stored_title = meta.get("title")
+        raw_title = _stored_title if isinstance(_stored_title, str) else slot_name
         _rehydrate_slot_title(
             slot,
             raw_title,
-            titled=bool(meta.get("title")),
+            titled=_persisted_title_is_titled(meta),
             metadata=meta,
         )
         if meta.get("created_at"):
@@ -1595,11 +1608,12 @@ def _apply_recent_session(
     # Titles can be LLM-generated (auto-title) and are surfaced on the
     # dashboard — apply the same redaction as assistant content. Matches
     # the treatment in _rehydrate_slot_from_history above.
-    raw_title = session.get("title", slot_name)
+    _stored_title = meta.get("title")
+    raw_title = _stored_title if isinstance(_stored_title, str) else session.get("title", slot_name)
     _rehydrate_slot_title(
         slot,
         raw_title,
-        titled=bool(session.get("title")),
+        titled=_persisted_title_is_titled(meta),
         metadata=meta,
     )
     if meta.get("created_at"):
@@ -3058,18 +3072,16 @@ def _save_slot_to_history(
                 }
                 if slot.title and slot.title != slot.key:
                     fields["title"] = slot.title
-                    # Persist the title's provenance next to it (mirrors the
-                    # full save): without it rehydration conservatively
-                    # re-classifies an auto title as "user" and locks the
-                    # refresh out.
-                    _origin = getattr(slot, "_title_origin", "")
-                    if _origin:
-                        fields["title_origin"] = _origin
                     _mark = getattr(slot, "_title_refresh_mark", 0)
                     if _mark:
                         fields["title_refresh_mark"] = _mark
                 else:
                     fields["title"] = ""
+                # Provenance is independently meaningful for an empty title:
+                # ``user`` pins a peer-owned empty name across a restart.
+                _origin = getattr(slot, "_title_origin", "")
+                if _origin:
+                    fields["title_origin"] = _origin
                 if slot.agent:
                     fields["agent"] = slot.agent
                 if slot.workspace:
@@ -3368,17 +3380,16 @@ def _save_slot_to_history(
             meta_line["memory_mode"] = slot.memory_mode
             if slot.title and slot.title != slot.key:
                 meta_line["title"] = slot.title
-                # Persist the title's provenance next to it (mirrors
-                # _persist_title): without this, the canonical full save would
-                # strip the field and rehydration would conservatively
-                # re-classify an auto title as "user" after restart —
-                # permanently locking the background refresh out.
-                _origin = getattr(slot, "_title_origin", "")
-                if _origin:
-                    meta_line["title_origin"] = _origin
                 _mark = getattr(slot, "_title_refresh_mark", 0)
                 if _mark:
                     meta_line["title_refresh_mark"] = _mark
+            else:
+                meta_line["title"] = ""
+            # Provenance is independently meaningful for an empty title:
+            # ``user`` pins a peer-owned empty name across a restart.
+            _origin = getattr(slot, "_title_origin", "")
+            if _origin:
+                meta_line["title_origin"] = _origin
             if slot.agent:
                 meta_line["agent"] = slot.agent
             meta_line["model"] = slot.model
