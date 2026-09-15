@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 _SHELL_ACTIVE_CHARS = frozenset("$`(){}<>|;&\n\r")
 
 
-# Used to *split* a command into independently-evaluatable segments.
+# Splits a command into independently-evaluatable segments.
 # Splits on every shell separator that can chain commands or carve out a
 # subshell:
 #   ;  - sequential
@@ -601,7 +601,7 @@ def _argv_programs(tokens: "list[str]") -> "list[str]":
 
     Walks the argv tracking command boundaries (``_ends_argv``) and skipping
     leading ``VAR=value`` assignments, which precede the program rather than being
-    it.  Used to ask "what command is this name an argument OF?" -- the difference
+    it.  Asks "what command is this name an argument OF?" -- the difference
     between ``echo <name> <verb>`` (data) and ``ssh host <name> <verb>`` (executed).
     """
     programs: list[str] = []
@@ -1638,7 +1638,7 @@ def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterato
 # comment marker the span walk has to recognise. Bash reads ``case`` / ``esac`` as
 # reserved only when they stand alone, so ``lowercase)`` must not arm the pattern
 # rule, and ``a#b`` must not open a comment.
-_SHELL_WORD_BREAK = frozenset(" \t\n;&|()<>")
+_SHELL_WORD_BREAK = frozenset(" \t\n;&|()<>`")
 
 
 def _skip_continuations(text: str, index: int) -> int:
@@ -1711,6 +1711,18 @@ def _in_command_position(text: str, index: int) -> bool:
     argument and must not disarm the pattern rule. Parity matters -- ``\\\\`` then a
     newline is a literal backslash followed by a real newline, which does separate.
     """
+    k = _prev_significant(text, index)
+    return k < 0 or text[k] in ";&|(\n"
+
+
+def _prev_significant(text: str, index: int) -> int:
+    """Offset of the previous REAL character before *index*, or -1.
+
+    Blanks are stepped over, and a backslash-newline pair is a line
+    CONTINUATION the shell removes while reading, so it is stepped over too --
+    but only an ODD run of backslashes folds; an even run leaves a literal
+    backslash before a real newline, which separates.
+    """
     k = index - 1
     while k >= 0:
         if text[k] in " \t":
@@ -1724,7 +1736,150 @@ def _in_command_position(text: str, index: int) -> bool:
                 k -= slashes + 1
                 continue
         break
-    return k < 0 or text[k] in ";&|(\n"
+    return k
+
+
+#: Reserved words after which bash still reads the NEXT word in command
+#: position.  ``case`` is a reserved word ONLY in command position, so
+#: ``if true; then case x in ...`` must arm the pattern rule while
+#: ``echo case`` must not -- and the hand-through is INHERITED: ``then`` only
+#: passes command position when it stands in command position itself
+#: (``echo then case ...`` is three arguments).  Block ENDERS (``fi``,
+#: ``done``, ``}``, ``esac``) are deliberately absent: bash refuses a keyword
+#: directly after them (``fi case ...`` is a syntax error, measured), so not
+#: arming there is exact.  Cross-pinned against
+#: ``argv_floor._SHELL_RESERVED_WORDS`` by test, so the two keyword tables
+#: cannot drift apart silently.
+_KEEPS_COMMAND_POSITION = frozenset(
+    {"if", "then", "else", "elif", "while", "until", "do", "!", "{", "time", "coproc"}
+)
+
+
+def _prev_word(text: str, index: int) -> "tuple[str, int] | None":
+    """The FOLDED word ending just before *index* and its start offset, else None.
+
+    None means the previous real character is a separator or absent -- the
+    caller has already classified those through :func:`_prev_significant`.
+    Word boundaries are :data:`_SHELL_WORD_BREAK`, the same set the forward
+    walk reads, so the two directions cannot disagree about where a word ends.
+
+    A backslash-newline pair INSIDE the word is a line continuation bash
+    removes while reading, so ``th\\`` + newline + ``en`` is the one word
+    ``then`` and is returned folded -- stopping at the raw newline would read
+    the fragment ``en``, misclassify the keeper, and reopen the early-close
+    under-scan on ``th\\<newline>en case x in x) ...``.  Only the innermost
+    pair of an ODD backslash run folds; an even run is escaped literal
+    backslashes before a REAL newline, which separates.  The start offset is
+    the first fragment's, so chained walks resume before the whole word.
+    """
+    k = _prev_significant(text, index)
+    if k < 0 or text[k] in _SHELL_WORD_BREAK:
+        return None
+    parts: "list[str]" = []
+    seg_end = k + 1
+    while k >= 0:
+        ch = text[k]
+        if ch == "\n":
+            slashes = 0
+            while k - 1 - slashes >= 0 and text[k - 1 - slashes] == "\\":
+                slashes += 1
+            if slashes % 2 == 1:
+                # Fold the innermost ``\\<newline>`` pair away; any even
+                # remainder stays as literal word characters.
+                parts.append(text[k + 1 : seg_end])
+                k -= 2
+                seg_end = k + 1
+                continue
+            break
+        if ch in _SHELL_WORD_BREAK:
+            break
+        k -= 1
+    parts.append(text[k + 1 : seg_end])
+    return ("".join(reversed(parts)), k + 1)
+
+
+def _arms_case_context(text: str, index: int, in_case_body: bool = False) -> bool:
+    """True if the standalone ``case`` at *index* can be bash's reserved word.
+
+    bash recognises ``case`` only in command position, and every measured
+    non-command position -- ``echo case``, ``v=1 case``, ``command case``,
+    ``eval case``, a redirect-target prefix -- either treats it as data or
+    refuses the line outright, so the pattern-paren rule must not arm there:
+    arming spans the body past the ``)`` bash actually closes on, which is the
+    over-scan (false-positive) direction on ordinary commands that merely say
+    the word.  Command position is CHAINED, not spelling-matched: a reserved
+    word hands it through only when it holds it itself, a ``function NAME`` /
+    ``coproc NAME`` prefix passes it to the definition body, and a POSIX
+    ``f()`` definition (empty parens, blanks allowed) restores it -- all forms
+    bash was measured spanning.  Every ambiguity ARMS: an over-armed span only
+    feeds the extractors more text, while a missed arm reopens the early-close
+    truncation this rule exists to prevent.
+
+    *in_case_body* is the caller's live case counter: inside an armed case, a
+    ``)`` before this word is a PATTERN TERMINATOR and the word opens the
+    clause body -- command position (``case a in a) case b in ...`` spans in
+    bash, and missing that arm desynchronises the flat counter into a span
+    SHORTER than the ungated walk: the inner ``esac`` eats the outer arm and
+    the outer's next pattern paren closes the body).
+    Outside a case, the same ``)`` is a substitution closer mid-arguments
+    (``echo $(foo) case x in y`` -- data) or a subshell join bash refuses, so
+    not arming there is exact and keeps the over-arm fix.
+    """
+    at = index
+    for _ in range(8):
+        if _in_command_position(text, at):
+            return True
+        k = _prev_significant(text, at)
+        # _in_command_position returned False, so text[k] is a real char
+        # outside ";&|(\n".
+        ch = text[k]
+        if ch == "`":
+            return True  # a backtick opens a command substitution body
+        if ch in "<>":
+            # A redirect prefix before a compound command is a bash syntax
+            # error (measured): the line never runs, so not arming is exact.
+            return False
+        if ch == ")":
+            if in_case_body:
+                return True  # the ``)`` is a pattern terminator -- clause body
+            # ``f() case`` / ``f ( ) case``: an EMPTY paren pair after a word
+            # is a function definition whose body is command position (both
+            # spellings measured spanning).  A subshell needs a separator
+            # before another command, so content between the parens means no.
+            j = _prev_significant(text, k)
+            if j >= 0 and text[j] == "(":
+                return True
+            return False
+        prev = _prev_word(text, at)
+        if prev is None:
+            return False
+        w, start = prev
+        if "\\" in w:
+            return True  # folded spelling -- undecidable cheaply, arm (long is safe)
+        if w.startswith("-"):
+            # An OPTION word is transparent: the decision rests on what
+            # precedes it.  ``time -p case`` / ``time -- case`` then chain to
+            # ``time`` (a keeper -- bash's grammar reads the reserved word
+            # there, so the arm fails long on the substitution spelling its
+            # own parser refuses), while ``echo -n case`` chains to ``echo``
+            # and correctly stays data.
+            at = start
+            continue
+        two_back = _prev_word(text, start)
+        if two_back is not None and two_back[0] in ("function", "coproc"):
+            # *w* is the definition/coproc NAME.  This check runs BEFORE
+            # keeper semantics because bash accepts any reserved word as a
+            # ``function`` name (``function do`` / ``function time`` parse,
+            # measured) -- reading such a name as the keeper would chain to
+            # ``function``, which keeps nothing, refuse the arm, and truncate
+            # the substitution body at the pattern ``)`` bash spans past.
+            at = two_back[1]
+            continue
+        if w in _KEEPS_COMMAND_POSITION:
+            at = start  # inherited: the keeper must hold position itself
+            continue
+        return False
+    return True  # chain too deep to decide -- arm, the long direction
 
 
 def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
@@ -1755,9 +1910,12 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     keeps a ``(x|y)`` pattern balanced-neutral as well. ARMING is generous and
     DISARMING is strict on purpose: missing a real ``case`` closes the body EARLY,
     which is the bypass, while missing a real ``esac`` only runs it long, which is
-    imprecision. So ``case`` arms on any standalone word and ``esac`` disarms only
-    in command position -- an ``esac`` passed to a command as an ARGUMENT would
-    otherwise end the rule early and let the next paren close.
+    imprecision. So ``case`` arms on any standalone word IN COMMAND POSITION
+    (:func:`_arms_case_context` -- bash only reads the reserved word there, so
+    ``echo case x in y`` does not arm on ordinary commands, and every
+    undecidable position still arms) and ``esac`` disarms only in command
+    position -- an ``esac`` passed to a command as an ARGUMENT would otherwise
+    end the rule early and let the next paren close.
 
     ``proven`` is False when the parens never balance before the text ends. The
     caller must fail CLOSED on that: for an extractor the safe reading is the
@@ -1789,7 +1947,7 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
                 state, ansi = 0, False
                 jumped = True
                 break
-            if _word_at(text, off, "case"):
+            if _word_at(text, off, "case") and _arms_case_context(text, off, cases > 0):
                 cases += 1
                 continue
             if _word_at(text, off, "esac") and _in_command_position(text, off):
