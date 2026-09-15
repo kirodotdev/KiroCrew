@@ -14,16 +14,17 @@ import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { shallowEqual } from 'react-redux'
+import { shallowEqual, useStore } from 'react-redux'
 import { settingsPath } from '../components/settingsPath'
 import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
 import { useAppDispatch, useAppSelector } from '../store'
+import type { RootState } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectAutomationForSlot } from '../store/chatSlice'
-import { sseSlotTitle, setSidebarOrder, slotIsRemoteBound } from '../store/dashboardSlice'
+import { sseSlotTitle, setSidebarOrder, fetchSlots, slotIsRemoteBound } from '../store/dashboardSlice'
 import { useDigitModifierHeld, jumpLabelFor, IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -2981,6 +2982,10 @@ function ChatSidebar({
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
+  // Read-only store handle for point-in-time reads inside async callbacks (the
+  // rename-recovery compare-and-set below). useAppSelector subscribes and would
+  // re-render; useStore().getState() reads the live value without subscribing.
+  const store = useStore<RootState>()
   const ime = useImeGuard()
   const isMobile = useIsMobile()
 
@@ -3310,6 +3315,9 @@ function ChatSidebar({
   // Framer layoutId `scope` note below.
   const [renameScope, setRenameScope] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  // Set when the server refuses a rename; rendered through the sidebar-root
+  // ErrorNotice cluster so the revert (below) never happens silently.
+  const [renameError, setRenameError] = useState('')
   const cancelRenameRef = useRef(false)
   const renameInputRef = useRef<HTMLTextAreaElement | null>(null)
   // The rename field is a wrapping, auto-growing <textarea> (not a single-line
@@ -3346,12 +3354,50 @@ function ChatSidebar({
   }, [])
   const onRenameCommit = useCallback((key: string, value: string) => {
     if (!cancelRenameRef.current && value.trim()) {
-      dispatch(sseSlotTitle({ key, title: value.trim() }))
-      api.renameSlot(key, value.trim()).catch(() => { queryClient.invalidateQueries({ queryKey: ['chat-slots'] }) })
+      const refused = value.trim()
+      dispatch(sseSlotTitle({ key, title: refused }))
+      // Recovery on a refused rename must go through Redux: slot titles live in
+      // the dashboard slice (written by `sseSlots` / `fetchSlots.fulfilled`),
+      // and no React Query is registered on a plain ['chat-slots'] key, so an
+      // invalidateQueries there is a no-op that leaves the optimistic
+      // `sseSlotTitle` value on screen.
+      //
+      // Recover the ONE refused slot, not the whole list: `fetchSlots()` runs
+      // `applySlots`, a whole-list replace that would overwrite a fresher
+      // `sseSlotTitle` frame for ANY OTHER slot that arrived while the recovery
+      // read was in flight (crash-data-loss anchor). We fetch the server list,
+      // take only this slot's server title, and write it back via `sseSlotTitle`.
+      //
+      // The write is a compare-and-set: only revert while the store title is
+      // STILL the refused optimistic value. If an authoritative frame
+      // (`sseSlots` / `sseSlotTitle`) has since changed this slot's title, the
+      // equality breaks and we yield to that newer truth instead of stomping it.
+      // The refused value is the exact string this handler wrote, so any newer
+      // frame carries a different string; the only false match is the server
+      // independently renaming to the identical string, which is cosmetically
+      // the same result. Mirrors the proven ChatPage inline-rename recovery.
+      api.renameSlot(key, refused).catch(async e => {
+        setRenameError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))
+        const stillRefused = () =>
+          store.getState().dashboard.slots.find(s => s.key === key)?.title === refused
+        try {
+          const server = (await queryClient.fetchQuery({
+            queryKey: ['chat-slots'], queryFn: () => api.chatSlots(), staleTime: 0, gcTime: 0,
+          })).find((s: { key: string; title?: string }) => s.key === key)
+          if (server?.title !== undefined && stillRefused()) {
+            dispatch(sseSlotTitle({ key, title: server.title }))
+          }
+        } catch {
+          // The recovery read itself failed (e.g. transport down). Leave the
+          // optimistic title in place rather than guessing; the failure is
+          // already surfaced via ErrorNotice, and the next authoritative frame
+          // reconciles it. See the transport-failure note in the PR body.
+        }
+      })
     }
     cancelRenameRef.current = false
     setRenamingSlot(null)
-  }, [dispatch, queryClient])
+  }, [dispatch, queryClient, store])
   // Input modality tracker for menu-close focus handling: true while the most
   // recent interaction was a keyboard press. Capture-phase listeners so Radix's
   // own handlers can't reorder around us.
@@ -3823,7 +3869,11 @@ function ChatSidebar({
     mutationFn: ({ model, skipRunning }: { model: string; skipRunning: boolean }) =>
       api.chatSlotsModel(model, skipRunning),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['chat-slots'] })
+      // The sidebar reads slot.model from the Redux dashboard slice; no React
+      // Query is registered on ['chat-slots'], so invalidating it was a no-op
+      // and the switched models only refreshed on the next 5s sseSlots push.
+      // fetchSlots() re-reads the server truth now.
+      dispatch(fetchSlots())
       // Partial failure: the endpoint returns 200 with a non-empty `failed`
       // list when some slots' resets raised. Surface it and keep the panel
       // open instead of silently closing on a partial success.
@@ -4424,7 +4474,11 @@ function ChatSidebar({
   })
   const dropSlotMutation = useMutation({
     mutationFn: ({ slot, columnId }: { slot: string; columnId: string }) => api.dropSlotToColumn(slot, columnId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-slots'] }),
+    // Board lanes filter by slot.tags from the Redux dashboard slice; the drop
+    // changes tag membership. ['chat-slots'] has no registered query, so the
+    // invalidate was a no-op and the moved row only landed in its new lane on
+    // the next sseSlots push. fetchSlots() re-reads slot.tags now.
+    onSuccess: () => dispatch(fetchSlots()),
     onError: (e) => setBoardError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   /** Lanes the board does not have yet. Drives the seeding write and the menu
@@ -7978,6 +8032,18 @@ function ChatSidebar({
         onDismiss={() => setNewChatError('')}
         className="mx-2 mt-2 shrink-0"
         testId="new-chat-error"
+      />
+      {/* A refused rename: the editor is already closed and the title has been
+       *  reverted to the server value by the recovery refetch, so there is no
+       *  unsaved draft left to lose and the hand-off is safe. Dismissable: the
+       *  failure is a moment, not a state. */}
+      <ErrorNotice
+        title={i18nT('pages.chatPage.could_not_rename_session')}
+        message={renameError}
+        askAgent
+        onDismiss={() => setRenameError('')}
+        className="mx-2 mt-2 shrink-0"
+        testId="rename-error"
       />
       <LayoutGroup id="chat-slots">
         {/* An instance that is CONNECTED but did not answer contributes no rows.
