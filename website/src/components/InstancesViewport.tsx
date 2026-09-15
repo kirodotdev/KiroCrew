@@ -34,6 +34,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { Trans } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
@@ -120,6 +121,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       }
     : undefined
   const dispatch = useAppDispatch()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const warm = useAppSelector(s => s.instances.warm)
   const activeId = useAppSelector(s => s.instances.activeId)
@@ -405,6 +407,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         ) {
           dispatch(setActiveId(target))
         }
+      } else if (data.type === 'mc-navigate') {
+        // An embedded pane (KiroPrerequisiteGate's EmbeddedSigninPending screen)
+        // asks the parent SPA to open the Remote Instances settings page so the
+        // user can find their device code or generate a new one.  Purpose-fixed
+        // like mc-set-crew-pin: the message carries no path and this is the one
+        // destination it can reach, so a pane cannot drive the parent to an
+        // arbitrary route.  The SENDER is already origin-validated above.  We
+        // switch to Local first so the navigation target is visible: without that
+        // the soft-navigate lands underneath this viewport's opaque overlay and
+        // the user sees no change.
+        dispatch(setActiveId(null))
+        navigate('/settings/instances')
       } else if (data.type === 'mc-set-crew-pin') {
         // A pin was toggled inside an embedded pane. It has no access to the
         // parent's preference store from its own iframe realm, so it relays the

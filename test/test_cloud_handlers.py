@@ -999,3 +999,197 @@ class TestProvisionerSeam:
         )
         assert resp.status == 202
         assert provider.asked == []
+
+
+class _FakeLoginPrompt:
+    """Stand-in for cloud.login.LoginPrompt — only the fields the route reads."""
+
+    def __init__(self, *, url="", code="", ports=None, already_logged_in=False):
+        self.url = url
+        self.code = code
+        self.ports = ports or []
+        self.already_logged_in = already_logged_in
+
+
+class TestSigninRefresh:
+    """POST /api/cloud/launch/{id}/signin/refresh — restart the device-code flow
+    on an already-provisioned instance whose sign-in code went stale."""
+
+    async def test_missing_job_is_404(self, tmp_path):
+        resp = await hc.api_cloud_launch_signin_refresh(
+            _req("POST", "/api/cloud/launch/nope/signin/refresh",
+                 state=_state(tmp_path), match_info={"id": "nope"})
+        )
+        assert resp.status == 404
+        assert _body(resp)["code"] == "launch_job_not_found"
+
+    async def test_no_instance_yet_is_409(self, tmp_path):
+        """No SSM target exists until the instance is provisioned, so a refresh
+        before that cannot run — 409, not a 502 from a doomed SSM call."""
+        state = _state(tmp_path)
+        job = state.cloud_launch_store.create(profile="dev", region="us-east-1", size_key="light")
+        # PENDING job, no instance_id yet.
+        resp = await hc.api_cloud_launch_signin_refresh(
+            _req("POST", f"/api/cloud/launch/{job.id}/signin/refresh", state=state,
+                 match_info={"id": job.id})
+        )
+        assert resp.status == 409
+        assert _body(resp)["code"] == "instance_not_ready"
+
+    async def test_cancelled_job_is_409(self, tmp_path):
+        state = _state(tmp_path)
+        job = state.cloud_launch_store.create(profile="dev", region="us-east-1", size_key="light")
+        job.instance_id = "i-0abc123456789def0"
+        job.status = lj.CANCELLED
+        state.cloud_launch_store.save(job)
+        resp = await hc.api_cloud_launch_signin_refresh(
+            _req("POST", f"/api/cloud/launch/{job.id}/signin/refresh", state=state,
+                 match_info={"id": job.id})
+        )
+        assert resp.status == 409
+        assert _body(resp)["code"] == "instance_not_ready"
+
+    async def test_success_returns_fresh_code_and_persists_it(self, tmp_path, monkeypatch):
+        from kiro_crew.cloud import login as login_mod
+
+        state = _state(tmp_path)
+        job = state.cloud_launch_store.create(profile="dev", region="us-east-1", size_key="light")
+        job.instance_id = "i-0abc123456789def0"
+        job.status = lj.DONE
+        job.signin_detected = True  # stale from an old confirmed check
+        state.cloud_launch_store.save(job)
+
+        captured = {}
+
+        def _fake_start(instance_id, profile="", region="", **_kw):
+            captured.update(instance_id=instance_id, profile=profile, region=region)
+            return _FakeLoginPrompt(url="https://sign.in/xyz", code="WXYZ-1234")
+
+        monkeypatch.setattr(login_mod, "start_device_login", _fake_start)
+
+        resp = await hc.api_cloud_launch_signin_refresh(
+            _req("POST", f"/api/cloud/launch/{job.id}/signin/refresh", state=state,
+                 match_info={"id": job.id})
+        )
+
+        assert resp.status == 200
+        signin = _body(resp)["signin"]
+        assert signin["code"] == "WXYZ-1234"
+        assert signin["url"] == "https://sign.in/xyz"
+        # The instance's own coordinates drive the SSM call.
+        assert captured == {
+            "instance_id": "i-0abc123456789def0", "profile": "dev", "region": "us-east-1",
+        }
+        # The fresh code is persisted and the stale confirmed flag is re-armed.
+        stored = state.cloud_launch_store.get(job.id)
+        assert stored is not None
+        assert stored.signin is not None and stored.signin.code == "WXYZ-1234"
+        assert stored.signin_detected is False
+
+    async def test_already_logged_in_race_reports_success_not_a_code(self, tmp_path, monkeypatch):
+        """The user may approve the OLD code between the click and the SSM run;
+        surface that as success rather than an unneeded new code."""
+        from kiro_crew.cloud import login as login_mod
+
+        state = _state(tmp_path)
+        job = state.cloud_launch_store.create(profile="dev", region="us-east-1", size_key="light")
+        job.instance_id = "i-0abc123456789def0"
+        job.status = lj.DONE
+        state.cloud_launch_store.save(job)
+
+        monkeypatch.setattr(
+            login_mod, "start_device_login",
+            lambda *a, **k: _FakeLoginPrompt(already_logged_in=True),
+        )
+
+        resp = await hc.api_cloud_launch_signin_refresh(
+            _req("POST", f"/api/cloud/launch/{job.id}/signin/refresh", state=state,
+                 match_info={"id": job.id})
+        )
+        assert resp.status == 200
+        assert _body(resp)["already_logged_in"] is True
+
+    async def test_no_device_code_is_502(self, tmp_path, monkeypatch):
+        """A social-login path with no device-code URL cannot be shown as a code;
+        surface it as an upstream error the user can act on."""
+        from kiro_crew.cloud import login as login_mod
+
+        state = _state(tmp_path)
+        job = state.cloud_launch_store.create(profile="dev", region="us-east-1", size_key="light")
+        job.instance_id = "i-0abc123456789def0"
+        job.status = lj.DONE
+        state.cloud_launch_store.save(job)
+
+        monkeypatch.setattr(
+            login_mod, "start_device_login",
+            lambda *a, **k: _FakeLoginPrompt(url="", code=""),
+        )
+
+        resp = await hc.api_cloud_launch_signin_refresh(
+            _req("POST", f"/api/cloud/launch/{job.id}/signin/refresh", state=state,
+                 match_info={"id": job.id})
+        )
+        assert resp.status == 502
+        assert _body(resp)["code"] == "no_device_code"
+
+    async def test_ssm_failure_is_502(self, tmp_path, monkeypatch):
+        from kiro_crew.cloud import login as login_mod
+
+        state = _state(tmp_path)
+        job = state.cloud_launch_store.create(profile="dev", region="us-east-1", size_key="light")
+        job.instance_id = "i-0abc123456789def0"
+        job.status = lj.DONE
+        state.cloud_launch_store.save(job)
+
+        def _boom(*a, **k):
+            raise RuntimeError("ssm timed out")
+
+        monkeypatch.setattr(login_mod, "start_device_login", _boom)
+
+        resp = await hc.api_cloud_launch_signin_refresh(
+            _req("POST", f"/api/cloud/launch/{job.id}/signin/refresh", state=state,
+                 match_info={"id": job.id})
+        )
+        assert resp.status == 502
+        assert _body(resp)["code"] == "signin_refresh_failed"
+
+    async def test_worker_advancing_to_done_mid_refresh_is_not_reverted(
+        self, tmp_path, monkeypatch
+    ):
+        """TOCTOU: the job is read as awaiting_signin, but a worker finishes the
+        launch (advancing it to DONE) while start_device_login runs over SSM.
+        Persisting the pre-await snapshot would revert the durable job to
+        awaiting_signin with an obsolete code, discarding the worker's result.
+        The re-read guard must detect the advance, leave the stored job DONE, and
+        report the login as already handled."""
+        from kiro_crew.cloud import login as login_mod
+
+        state = _state(tmp_path)
+        job = state.cloud_launch_store.create(profile="dev", region="us-east-1", size_key="light")
+        job.instance_id = "i-0abc123456789def0"
+        job.status = lj.AWAITING_SIGNIN
+        state.cloud_launch_store.save(job)
+
+        def _fake_start(instance_id, profile="", region="", **_kw):
+            # A worker finishes the launch during the multi-second SSM call.
+            advanced = state.cloud_launch_store.get(job.id)
+            advanced.status = lj.DONE
+            advanced.signin = None
+            state.cloud_launch_store.save(advanced)
+            return _FakeLoginPrompt(url="https://sign.in/late", code="LATE-9999")
+
+        monkeypatch.setattr(login_mod, "start_device_login", _fake_start)
+
+        resp = await hc.api_cloud_launch_signin_refresh(
+            _req("POST", f"/api/cloud/launch/{job.id}/signin/refresh", state=state,
+                 match_info={"id": job.id})
+        )
+
+        assert resp.status == 200
+        assert _body(resp)["already_logged_in"] is True
+        # Durable state is NOT reverted: the job stays DONE and the obsolete code
+        # is not written back over the worker's finished launch.
+        stored = state.cloud_launch_store.get(job.id)
+        assert stored is not None
+        assert stored.status == lj.DONE
+        assert stored.signin is None

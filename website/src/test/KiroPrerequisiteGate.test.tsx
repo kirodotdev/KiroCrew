@@ -13,6 +13,12 @@ vi.mock('../utils/clipboard', () => ({
   copyCode: vi.fn(),
 }))
 
+// Default to "not embedded" (matches jsdom's window.self === window.top), so the
+// render-based cases below are unaffected; one predicate test flips it to true.
+vi.mock('../lib/embedded', () => ({
+  isEmbeddedPane: vi.fn(() => false),
+}))
+
 vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error {
     status: number
@@ -31,6 +37,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { api, ApiError } from '../api/client'
+import { isEmbeddedPane } from '../lib/embedded'
 
 function status(overrides: Partial<KiroPrerequisiteStatus> = {}): KiroPrerequisiteStatus {
   return {
@@ -81,6 +88,24 @@ describe('KiroPrerequisiteGate', () => {
     expect(kiroPrerequisiteIsBlocking(status({ initial_setup_complete: true }))).toBe(false)
     expect(kiroPrerequisiteIsBlocking(status({ setup_allowed: false }))).toBe(false)
     expect(kiroPrerequisiteIsBlocking(undefined)).toBe(false)
+  })
+
+  it('only keeps polling an embedded pane while it is a genuine first run', () => {
+    // The embedded branch must match the render: EmbeddedSigninPending shows only
+    // on a first run (initial_setup_complete false). A RETURNING pane whose CLI
+    // went unauthenticated null-renders, so blocking it would poll the host every
+    // 5s forever behind no visible gate.
+    vi.mocked(isEmbeddedPane).mockReturnValue(true)
+    const embeddedFirstRun = status({ installed: true, authenticated: false })
+    expect(kiroPrerequisiteIsBlocking(embeddedFirstRun)).toBe(true)
+
+    const embeddedReturning = status({
+      installed: true,
+      authenticated: false,
+      initial_setup_complete: true,
+    })
+    expect(kiroPrerequisiteIsBlocking(embeddedReturning)).toBe(false)
+    vi.mocked(isEmbeddedPane).mockReturnValue(false)
   })
 
   it('forces a real host probe on the blocking gate, not a latched read', async () => {

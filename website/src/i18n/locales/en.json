@@ -4612,7 +4612,13 @@
       "then_the_dashboard_will_open_automatically": ", then\n              the dashboard will open automatically.",
       "try_again": "Try again",
       "we_could_not_check_kiro_cli": "We could not check Kiro CLI.",
-      "your_crew_is_almost_ready": "Your crew is almost ready."
+      "your_crew_is_almost_ready": "Your crew is almost ready.",
+      "embedded_signin_pending_eyebrow": "SIGN IN NEEDED",
+      "embedded_signin_pending_headline": "Finish signing in to Kiro",
+      "embedded_signin_pending_body": "This instance is set up and waiting for you to approve a sign-in code. Go to Settings → Remote Instances in your local dashboard to find the code — or generate a new one if it expired.",
+      "embedded_open_remote_settings": "Open Remote Instances settings",
+      "embedded_check_again": "Check again",
+      "embedded_signin_pending_footnote": "Once you approve the code, this page refreshes automatically."
     },
     "logEntry": {
       "cancelled": "Cancelled",
@@ -8695,7 +8701,7 @@
         "finish_prereqs": "Finish the AWS setup above to enable this.",
         "launch_failed_title": "Launch failed",
         "sign_in_to_kiro": "Sign in to Kiro",
-        "sign_in_hint": "Approve a code in your browser to finish setup.",
+        "sign_in_hint": "Approve the code in your browser to finish setup. The code expires in about 10 minutes.",
         "your_code": "Your code: {{code}}",
         "open_sign_in": "Open sign-in page",
         "launch_done": "Done — your new instance is ready and now appears in Your instances.",
@@ -8707,7 +8713,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB disk",
         "start": "Start",
         "start_crew": "Start {{name}}",
-        "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the instance.",
+        "sign_in_unconfirmed": "The sign-in code may have expired. Use the one below if it still works, or generate a new one.",
         "more_actions": "More actions for {{name}}",
         "edit_settings": "Edit settings",
         "edit_crew": "Edit {{name}}",
@@ -8727,7 +8733,12 @@
         "provisioner_choose": "Where should the new instance run?",
         "provisioner_stale_choice": "The instance type you used before ({{label}} was chosen for you) is no longer offered by this gateway.",
         "provisioner_none_drawable": "This gateway offers no way to create an instance that this dashboard can draw. Update the dashboard, or ask your administrator which provisioner to use.",
-        "provisioners_unavailable": "Could not read which ways of creating an instance this gateway offers. The built-in AWS launcher is shown."
+        "provisioners_unavailable": "Could not read which ways of creating an instance this gateway offers. The built-in AWS launcher is shown.",
+        "generate_new_code": "Generate new code",
+        "generating_new_code": "Generating…",
+        "new_code_error": "Could not generate a new code. You can try again or sign in from the instance terminal.",
+        "already_logged_in_after_refresh": "Already signed in! Connect the instance to start using it.",
+        "instance_registered_hint": "Your instance is registered — find it under Your instances once you've signed in."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Inbound webhooks",

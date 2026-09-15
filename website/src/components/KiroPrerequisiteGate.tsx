@@ -11,6 +11,7 @@ import {
   LogIn,
   Package,
   RefreshCw,
+  Settings,
   ShieldCheck,
 } from 'lucide-react'
 import {
@@ -28,6 +29,7 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { copyToClipboard } from '../utils/clipboard'
 import { Badge, Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
+import { isEmbeddedPane } from '../lib/embedded'
 
 import { i18nT } from '../i18n/t'
 const QUERY_KEY = ['kiro-prerequisite'] as const
@@ -58,6 +60,21 @@ export function kiroPrerequisiteIsBlocking(
   if (!status || status.ready) return false
   // A non-owner cannot probe and is shown the "owner must finish setup" screen.
   if (status.setup_allowed === false) return false
+  // When running as an embedded remote-instance pane, the CLI is installed but
+  // not yet authenticated — keep polling so the gate clears the moment the user
+  // approves the device code without requiring them to press "Check again".
+  // Gated on !initial_setup_complete to match the render: EmbeddedSigninPending
+  // only shows on a genuine first run (a returning, unauthenticated pane
+  // null-renders), so blocking-polling a returning pane would poll forever with
+  // no gate on screen.
+  if (
+    isEmbeddedPane()
+    && status.installed
+    && !status.authenticated
+    && !status.initial_setup_complete
+  ) {
+    return true
+  }
   return !status.initial_setup_complete
 }
 
@@ -68,6 +85,84 @@ export function asSentence(message: string): string {
   const trimmed = message.trim()
   if (!trimmed) return trimmed
   return /[.!?:;…]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
+/**
+ * Shown when the SPA is running as an embedded remote-instance pane and kiro-cli
+ * is installed but not yet authenticated.  The generic first-run "Install + Sign in"
+ * screen is wrong here — the user already set up the instance; they just need to
+ * approve the device code that was sent during launch.  This screen:
+ *
+ *  - tells them what to do (go to Settings → Remote Instances in the local dashboard)
+ *  - offers a "Check again" button so the gate clears without a page reload
+ *  - uses a postMessage to navigate the parent dashboard to the settings page when
+ *    the user clicks the link, because a cross-origin iframe cannot navigate its parent
+ */
+function EmbeddedSigninPending({
+  retrying,
+  onRetry,
+}: {
+  retrying: boolean
+  onRetry: () => void
+}) {
+  const handleOpenSettings = () => {
+    // The parent (InstancesViewport) validates the origin on every postMessage it
+    // receives.  This one navigates the parent SPA — not a new tab — so the user
+    // lands on Remote Instances settings without leaving the pane context. Like
+    // its sibling mc-set-crew-pin the message is purpose-fixed: it carries no
+    // path, and the handler navigates to its own hardcoded destination.
+    try {
+      window.parent.postMessage({ type: 'mc-navigate' }, '*')
+    } catch {
+      // If postMessage fails for any reason (e.g. same-origin or sandboxed), fall
+      // back to opening the settings page in a new tab.  That is less seamless but
+      // still actionable — the button must never be a dead end.
+      window.open('/settings/instances', '_blank')
+    }
+  }
+
+  return (
+    <main className={SCRIM_CLASS} aria-label={i18nT('components.kiroPrerequisiteGate.embedded_signin_pending_headline')}>
+      <div className={PANEL_CLASS}>
+        <ShellAside
+          copy={{
+            ariaLabel: i18nT('components.kiroPrerequisiteGate.embedded_signin_pending_headline'),
+            panelHeadline: i18nT('components.kiroPrerequisiteGate.embedded_signin_pending_headline'),
+            panelBody: i18nT('components.kiroPrerequisiteGate.embedded_signin_pending_body'),
+            panelFootnote: i18nT('components.kiroPrerequisiteGate.embedded_signin_pending_footnote'),
+          }}
+        />
+        <section className={SECTION_CLASS}>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <div className="my-auto w-full px-6 py-8 sm:px-10 sm:py-10">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
+                <LogIn className="lucide-inline" />
+              </div>
+              <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
+                {i18nT('components.kiroPrerequisiteGate.embedded_signin_pending_eyebrow')}
+              </p>
+              <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+                {i18nT('components.kiroPrerequisiteGate.embedded_signin_pending_headline')}
+              </h1>
+              <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+                {i18nT('components.kiroPrerequisiteGate.embedded_signin_pending_body')}
+              </p>
+              <div className="mt-6 flex flex-wrap items-center gap-3">
+                <SendBtn type="button" onClick={handleOpenSettings}>
+                  <Settings className="lucide-inline" />
+                  {i18nT('components.kiroPrerequisiteGate.embedded_open_remote_settings')}
+                </SendBtn>
+                <Btn type="button" disabled={retrying} onClick={onRetry}>
+                  <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
+                  {i18nT('components.kiroPrerequisiteGate.embedded_check_again')}
+                </Btn>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  )
 }
 
 // Shared full-screen chrome for every gate state. This is the SAME container the
@@ -977,6 +1072,20 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   }
   if (prerequisite.setup_allowed === false) {
     return <OwnerSetupRequired retrying={retrying} onRetry={retryStatus} />
+  }
+  // When running as an embedded remote-instance pane, the CLI is installed but
+  // the device-code sign-in was not completed in time.  Show a purpose-built
+  // screen instead of the generic first-run install+sign-in flow, which would
+  // tell the user to install something that is already installed and would not
+  // point them at the Remote Instances settings where their code lives.
+  //
+  // Placed AFTER the established-install bail-out (initial_setup_complete)
+  // deliberately: a RETURNING user whose CLI became unauthenticated sees the
+  // normal null-render instead of a launch-specific prompt.  This fires only on
+  // a genuine first-time-through-the-gate state (initial_setup_complete is
+  // false) where the CLI is present but not signed in.
+  if (isEmbeddedPane() && status.installed && !status.authenticated) {
+    return <EmbeddedSigninPending retrying={retrying} onRetry={retryStatus} />
   }
   // A first-run install whose probe genuinely could not verify the CLI (not the
   // sandbox/timeout/acp branches above, which have their own screens): the

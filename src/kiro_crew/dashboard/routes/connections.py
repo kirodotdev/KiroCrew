@@ -155,6 +155,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/cloud/launch/{id}", handlers_cloud.api_cloud_launch_get)
     app.router.add_post("/api/cloud/launch/{id}/cancel", handlers_cloud.api_cloud_launch_cancel)
     app.router.add_post("/api/cloud/launch/{id}/signin", handlers_cloud.api_cloud_launch_signin)
+    app.router.add_post(
+        "/api/cloud/launch/{id}/signin/refresh", handlers_cloud.api_cloud_launch_signin_refresh
+    )
     app.router.add_post("/api/cloud/{tag}/stop", handlers_cloud.api_cloud_stop)
     app.router.add_post("/api/cloud/{tag}/start", handlers_cloud.api_cloud_start)
     app.router.add_delete("/api/cloud/{tag}", handlers_cloud.api_cloud_destroy)

@@ -603,11 +603,15 @@ function PrereqRow({
 }
 
 /** The launch-in-progress card (setup tab): 4 steps + device-code sign-in. */
-function LaunchProgressCard({ job, onCancel, onSignin, cancelling }: {
+function LaunchProgressCard({ job, onCancel, onSignin, onSigninRefresh, cancelling, refreshingSignin, signinRefreshFailed, alreadyLoggedIn }: {
   job: LaunchJob
   onCancel: (id: string) => void
   onSignin: (id: string) => void
+  onSigninRefresh: (id: string) => void
   cancelling: boolean
+  refreshingSignin: boolean
+  signinRefreshFailed: boolean
+  alreadyLoggedIn: boolean
 }) {
   const terminal = isTerminal(job)
   // The gateway deliberately KEEPS job.signin when the sign-in wait ran out (it is
@@ -660,28 +664,75 @@ function LaunchProgressCard({ job, onCancel, onSignin, cancelling }: {
       {(job.status === 'awaiting_signin' || unconfirmedSignin) && (
         <div className="mt-3 rounded-md border border-accent-subtle bg-bg-elevated px-3 py-2.5">
           <div className="text-[13px] font-medium text-text-strong">{i18nT('pages.settings.remoteCrewPanel.sign_in_to_kiro')}</div>
-          <div className="text-[12px] text-muted mt-0.5">
-            {unconfirmedSignin
-              ? i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')
-              : i18nT('pages.settings.remoteCrewPanel.sign_in_hint')}
-          </div>
-          {signin ? (
-            <div className="mt-2 flex items-center gap-3 flex-wrap">
-              <code className="rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[13px] text-accent">
-                {i18nT('pages.settings.remoteCrewPanel.your_code', { code: signin.code })}
-              </code>
-              <a className="inline-flex items-center gap-1.5 text-accent text-[13px] font-medium hover:underline" href={signin.url} target="_blank" rel="noreferrer">
-                <ExternalLink size={13} /> {i18nT('pages.settings.remoteCrewPanel.open_sign_in')}
-              </a>
+          {alreadyLoggedIn ? (
+            // Race: the user approved the old code between clicking "generate new
+            // code" and the SSM run completing. Show success rather than a new code
+            // they do not need.
+            <div className="text-[12px] text-ok mt-0.5 flex items-center gap-1.5">
+              <CheckCircle size={12} /> {i18nT('pages.settings.remoteCrewPanel.already_logged_in_after_refresh')}
             </div>
           ) : (
-            <div className="mt-2">
-              <Btn onClick={() => onSignin(job.id)}>
-                <ExternalLink className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.open_sign_in')}
-              </Btn>
-            </div>
+            <>
+              <div className="text-[12px] text-muted mt-0.5">
+                {unconfirmedSignin
+                  ? i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')
+                  : i18nT('pages.settings.remoteCrewPanel.sign_in_hint')}
+              </div>
+              {signin ? (
+                <div className="mt-2 flex items-center gap-3 flex-wrap">
+                  <code className="rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[13px] text-accent">
+                    {i18nT('pages.settings.remoteCrewPanel.your_code', { code: signin.code })}
+                  </code>
+                  <a className="inline-flex items-center gap-1.5 text-accent text-[13px] font-medium hover:underline" href={signin.url} target="_blank" rel="noreferrer">
+                    <ExternalLink size={13} /> {i18nT('pages.settings.remoteCrewPanel.open_sign_in')}
+                  </a>
+                </div>
+              ) : (
+                <div className="mt-2">
+                  <Btn onClick={() => onSignin(job.id)}>
+                    <ExternalLink className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.open_sign_in')}
+                  </Btn>
+                </div>
+              )}
+              {/* "Generate new code" — shown whenever a code is displayed (active
+                  sign-in or unconfirmed), so a user whose code expired can get a
+                  fresh one without cancelling and re-launching the instance. */}
+              <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+                <Btn
+                  onClick={() => onSigninRefresh(job.id)}
+                  disabled={refreshingSignin}
+                  aria-label={i18nT('pages.settings.remoteCrewPanel.generate_new_code')}
+                >
+                  <RefreshCw size={12} className={refreshingSignin ? 'animate-spin' : ''} />
+                  {refreshingSignin
+                    ? i18nT('pages.settings.remoteCrewPanel.generating_new_code')
+                    : i18nT('pages.settings.remoteCrewPanel.generate_new_code')}
+                </Btn>
+              </div>
+              {signinRefreshFailed && (
+                // No hand-off: this card sits over the live setup form (name,
+                // host, size are still filled in), so ErrorNotice's agent
+                // hand-off — which navigates to the chat and unmounts the form —
+                // would discard those inputs. Inline variant, no askAgent.
+                <ErrorNotice
+                  variant="inline"
+                  className="mt-1.5"
+                  message={i18nT('pages.settings.remoteCrewPanel.new_code_error')}
+                />
+              )}
+            </>
           )}
         </div>
+      )}
+
+      {/* When the job is done but sign-in was not confirmed, the instance IS
+          registered and ready to connect once the user finishes sign-in. Point
+          them at the "Your instances" tab so they know where to find it. */}
+      {job.status === 'done' && (job.signin || !job.signin_detected) && !alreadyLoggedIn && (
+        <p className="mt-2 text-[12px] text-muted flex items-center gap-1.5">
+          <CheckCircle size={11} className="text-ok shrink-0" />
+          {i18nT('pages.settings.remoteCrewPanel.instance_registered_hint')}
+        </p>
       )}
 
       {/* No hand-off: this card sits in the setup flow whose form fields
@@ -1089,6 +1140,15 @@ export function RemoteCrewPanel() {
     mutationFn: (id: string) => api.cloudLaunchSignin(id),
     onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
     onSettled: () => { if (activeLaunchId) void queryClient.invalidateQueries({ queryKey: ['cloud', 'launch', activeLaunchId] }) },
+  })
+  const signinRefreshMutation = useMutation({
+    mutationFn: (id: string) => api.cloudLaunchSigninRefresh(id),
+    onSuccess: (_result, id) => {
+      // Refresh the job card so the new code is shown immediately.
+      void queryClient.invalidateQueries({ queryKey: ['cloud', 'launch', id] })
+      void queryClient.invalidateQueries({ queryKey: ['cloud', 'launches'] })
+    },
+    onError: (_e: unknown) => { /* error shown inline on the card via signinRefreshError */ },
   })
   // Takes its body as VARIABLES rather than closing over the form state: a
   // registered provisioner's form owns its own inputs, and the core cannot read
@@ -1693,6 +1753,10 @@ export function RemoteCrewPanel() {
               cancelling={cancelMutation.isPending && cancelMutation.variables === activeJob.id}
               onCancel={id => cancelMutation.mutate(id)}
               onSignin={id => signinMutation.mutate(id)}
+              onSigninRefresh={id => signinRefreshMutation.mutate(id)}
+              refreshingSignin={signinRefreshMutation.isPending}
+              signinRefreshFailed={signinRefreshMutation.isError}
+              alreadyLoggedIn={signinRefreshMutation.data?.already_logged_in === true}
             />
           )}
         </div>

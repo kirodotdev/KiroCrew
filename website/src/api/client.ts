@@ -2904,6 +2904,8 @@ export const api = {
   // there is no pending prompt (surfaced as ApiError(409) to the caller).
   cloudLaunchSignin: (id: string) =>
     post('/api/cloud/launch/' + encodeURIComponent(id) + '/signin').then(j) as Promise<{ signin: CloudLaunchSignin }>,
+  cloudLaunchSigninRefresh: (id: string) =>
+    post('/api/cloud/launch/' + encodeURIComponent(id) + '/signin/refresh').then(j) as Promise<{ signin?: CloudLaunchSignin; already_logged_in?: boolean }>,
   // The gateway resolves the stack from the tag but needs the launch's AWS
   // coordinates: a crew created under a non-default profile/region is invisible
   // to the default ones, so omitting them makes stop/start/destroy fail. destroy
