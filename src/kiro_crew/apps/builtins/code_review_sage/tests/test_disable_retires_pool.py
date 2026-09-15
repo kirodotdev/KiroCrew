@@ -109,12 +109,19 @@ def _register_pool_retirement(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clean_run_state():
-    """`_RUNS` and `_CANCELLED` are process memory shared across the worker."""
+    """`_RUNS`, `_CANCELLED` and the consolidation claims are process memory
+    shared across the worker."""
     R._RUNS[:] = []
     R._CANCELLED.clear()
+    R._CONSOLIDATING.clear()
+    R._CANCELLED_NS.clear()
+    R._CONSOLIDATE_STATE.clear()
     yield
     R._RUNS[:] = []
     R._CANCELLED.clear()
+    R._CONSOLIDATING.clear()
+    R._CANCELLED_NS.clear()
+    R._CONSOLIDATE_STATE.clear()
 
 
 def _live_run(run_id: str) -> dict:
@@ -209,10 +216,11 @@ async def test_a_review_queued_before_disable_cannot_rebuild_the_pool_after_it(
 
     ``shutdown_pool`` drops the singleton, and ``get_pool`` recreates it on the
     very next call (``if _POOL is None or _POOL._closed: _POOL = ReviewPool()``).
-    So a run that was already accepted, and was only waiting its turn on
-    ``_RUN_LOCK``, used to wake up after the disable and simply build a new pool —
-    standing a fresh agent runtime back up and running review turns for a
-    permission the operator had withdrawn while it waited.
+    So a run that was already accepted, and is only waiting its turn on
+    ``_RUN_LOCK``, wakes up after the disable with nothing but that singleton
+    check between it and a brand-new pool — a fresh agent runtime stood back up,
+    running review turns for a permission the operator withdrew while it waited.
+    The ``_CANCELLED`` recheck under the lock is what refuses the wake-up.
     """
     _register_pool_retirement(monkeypatch)
 
@@ -626,3 +634,706 @@ async def test_admission_reopens_after_the_transition_completes(
 
     assert reopened["status"] == 200
     assert reopened["registered"]
+
+
+# ── The /post seam: a finished review must not post after the disable ──
+
+
+class _StubPostRequest:
+    """The parts of ``web.Request`` that ``_handle_run_post`` reads."""
+
+    def __init__(self, run_id: str, body: dict | None = None) -> None:
+        self.match_info = {"run_id": run_id}
+        self.query: dict[str, str] = {}
+        self._body = body if body is not None else {}
+
+    async def json(self) -> dict:
+        return self._body
+
+
+def _done_run(run_id: str) -> dict:
+    """A run in the state a reviewed-but-unposted review is in: terminal, with
+    recorded findings waiting on the user's deliberate post action."""
+    return {
+        "run_id": run_id,
+        "status": "done",
+        "changes": ["https://example.test/pr/1"],
+        "change_ids": ["change-1"],
+    }
+
+
+def _stub_posting_io(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[str]]:
+    """Keep the poster off disk and off the real pool; report what it reaches.
+
+    Returns ``(created, posted)``: pool constructions, and per-change posts.
+    ``_release_claims`` is left REAL so the in-flight claim table is exercised
+    and cleaned on every terminal path, the way production relies on.
+    """
+    created: list[str] = []
+    posted: list[str] = []
+
+    class _FakePool:
+        async def begin_batch(self) -> None:
+            pass
+
+        async def end_batch(self) -> None:
+            pass
+
+    def _fake_get_pool():
+        created.append("get_pool")
+        return _FakePool()
+
+    monkeypatch.setattr(R.review_pool, "get_pool", _fake_get_pool)
+    monkeypatch.setattr(R.review_pool, "shutdown_pool", _noop_async)
+    monkeypatch.setattr(R.review_pool, "make_sync_dispatch", lambda loop, pool: None, raising=False)
+
+    def _fake_post_recorded(cid, link, **kwargs):
+        posted.append(str(cid))
+        return {"post_ok": True, "posted_keys": ["k1"]}
+
+    monkeypatch.setattr(R.review_driver, "post_recorded", _fake_post_recorded, raising=False)
+    monkeypatch.setattr(R, "_save_runs", _noop_async)
+    monkeypatch.setattr(R, "_notify_posted", _noop_async)
+    monkeypatch.setattr(R, "_record_reviewed", lambda run: None)
+    monkeypatch.setattr(R, "_pending_comment_count", lambda *a, **k: 1)
+    return created, posted
+
+
+@pytest.mark.asyncio
+async def test_a_finished_run_cannot_post_once_the_app_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE BLOCKER, /post form: disable closes EVERY admission path, and a
+    finished review's post action is one of them.
+
+    A reviewed-but-unposted run is terminal — not ``_is_live`` — so the disable
+    hook's cancellation scan has nothing to mark. Without its own admission
+    check, ``/post`` on that run fires ``_post_comments_bg``, which rebuilds the
+    retired pool via ``get_pool()`` and writes to the pull request on an
+    authority the operator has withdrawn. The refusal must come from the
+    admission boundary itself — the same 403 the review entry points give.
+    """
+    _register_pool_retirement(monkeypatch)
+    created, posted = _stub_posting_io(monkeypatch)
+
+    enabled = {"value": True}
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: enabled["value"], raising=False)
+
+    run = _done_run("run-done")
+    R._RUNS.insert(0, run)
+
+    # The disable completes the way handle_disable_app runs it: hook fired and
+    # flag written under one hold of the lifecycle lock.
+    async with app_lifecycle_lock(APP_NAME):
+        await teardown.notify_app_disabled(APP_NAME)
+        enabled["value"] = False
+
+    try:
+        response = await R._handle_run_post(cast(web.Request, _StubPostRequest("run-done")))
+        if R._TASKS:
+            await asyncio.gather(*list(R._TASKS))
+
+        assert (
+            response.status == 403
+        ), f"a disabled app admitted a /post request (HTTP {response.status})"
+        assert created == [], "the poster rebuilt the retired pool after the disable"
+        assert posted == [], "comments were posted after authority was withdrawn"
+        assert not run.get("posting"), "a refused run must not be left flagged as posting"
+    finally:
+        R._INFLIGHT.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_finished_run_posts_normally_while_the_app_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative control, and the one that stops the admission check from being a
+    blanket refusal: with nothing disabled the same run posts its findings."""
+    _register_pool_retirement(monkeypatch)
+    created, posted = _stub_posting_io(monkeypatch)
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: True, raising=False)
+
+    run = _done_run("run-done")
+    R._RUNS.insert(0, run)
+
+    try:
+        response = await R._handle_run_post(cast(web.Request, _StubPostRequest("run-done")))
+        if R._TASKS:
+            await asyncio.gather(*list(R._TASKS))
+
+        assert (
+            response.status == 200
+        ), f"an enabled app refused a legitimate /post (HTTP {response.status})"
+        assert created == ["get_pool"], "the poster must reach the pool exactly once"
+        assert posted == ["change-1"], "the finding must land on the pull request"
+        assert not run.get("posting"), "posting must be cleared on completion"
+    finally:
+        R._INFLIGHT.clear()
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_post_stops_at_the_pool_seam_when_disable_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE BLOCKER's other half: admission alone cannot close the window.
+
+    A ``/post`` admitted while the app is enabled sets ``posting`` — which is
+    what makes the run ``_is_live`` — and hands the work to a task. A disable
+    landing between the admission and that task's first step marks the run
+    cancelled; the poster must honour the mark BEFORE ``get_pool()``, or it
+    stands the retired pool straight back up.
+
+    The ordering is deterministic, not scheduled: the hook's marks land with no
+    await in the way, and the poster task has not taken its first step until
+    the module task set is drained below.
+    """
+    _register_pool_retirement(monkeypatch)
+    created, posted = _stub_posting_io(monkeypatch)
+
+    enabled = {"value": True}
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: enabled["value"], raising=False)
+
+    run = _done_run("run-done")
+    R._RUNS.insert(0, run)
+
+    try:
+        response = await R._handle_run_post(cast(web.Request, _StubPostRequest("run-done")))
+        assert response.status == 200, "the enabled admission itself must succeed"
+
+        # The disable lands before the poster's first step.
+        async with app_lifecycle_lock(APP_NAME):
+            await teardown.notify_app_disabled(APP_NAME)
+            enabled["value"] = False
+
+        assert "run-done" in R._CANCELLED, (
+            "the disable hook must mark an admitted post — ``posting`` is what "
+            "makes the run live to its scan"
+        )
+
+        if R._TASKS:
+            await asyncio.gather(*list(R._TASKS))
+
+        assert created == [], "the poster rebuilt the retired pool after the disable"
+        assert posted == [], "comments were posted after authority was withdrawn"
+        assert not run.get("posting"), "a cancelled post must clear the posting flag"
+        assert run.get("post_error"), "the run must say why nothing was posted"
+    finally:
+        R._INFLIGHT.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_cancellation_mark_does_not_refuse_the_next_posting_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mark speaks for the posting cycle a disable interrupted, not for the
+    run forever. Admission is mutually exclusive with any disable, so a mark
+    still standing for a terminal, not-posting run is stale by construction —
+    consumed at admission, or the run could never post again after a re-enable.
+    """
+    _register_pool_retirement(monkeypatch)
+    created, posted = _stub_posting_io(monkeypatch)
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: True, raising=False)
+
+    run = _done_run("run-done")
+    R._RUNS.insert(0, run)
+    R._CANCELLED.add("run-done")
+
+    try:
+        response = await R._handle_run_post(cast(web.Request, _StubPostRequest("run-done")))
+        if R._TASKS:
+            await asyncio.gather(*list(R._TASKS))
+
+        assert (
+            response.status == 200
+        ), f"a stale mark refused a legitimate /post (HTTP {response.status})"
+        assert created == ["get_pool"] and posted == [
+            "change-1"
+        ], "the re-admitted run must post its findings"
+        assert "run-done" not in R._CANCELLED, "the stale mark must be consumed"
+    finally:
+        R._INFLIGHT.clear()
+
+
+# ── The consolidation seam: a merge must not rebuild the pool after disable ──
+
+
+class _StubConsolidateRequest:
+    """The parts of ``web.Request`` that ``_handle_consolidate`` reads."""
+
+    def __init__(self, body: dict | None = None) -> None:
+        self._body = body if body is not None else {}
+
+    async def json(self) -> dict:
+        return self._body
+
+
+def _stub_consolidation_io(monkeypatch: pytest.MonkeyPatch, tmp_path) -> list[str]:
+    """Keep the merge off disk and off the real pool; report pool constructions."""
+    created: list[str] = []
+
+    class _FakePool:
+        async def begin_batch(self) -> None:
+            pass
+
+        async def end_batch(self) -> None:
+            pass
+
+    def _fake_get_pool():
+        created.append("get_pool")
+        return _FakePool()
+
+    monkeypatch.setattr(R.review_pool, "get_pool", _fake_get_pool)
+    monkeypatch.setattr(R.review_pool, "shutdown_pool", _noop_async)
+    monkeypatch.setattr(
+        R.review_pool,
+        "make_sync_dispatch",
+        lambda loop, pool: (lambda task: {"ok": True}),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        R.review_driver, "build_consolidation_task", lambda *a, **k: {}, raising=False
+    )
+    monkeypatch.setattr(R.learning, "_namespace_dir", lambda ns, root: str(tmp_path), raising=False)
+    monkeypatch.setattr(
+        R.learning, "common_file", lambda root, ns: str(tmp_path / "live.md"), raising=False
+    )
+    monkeypatch.setattr(
+        R.learning, "candidate_file", lambda root, ns: str(tmp_path / "cand.md"), raising=False
+    )
+    monkeypatch.setattr(R.learning, "list_candidate", lambda root, ns: [], raising=False)
+    monkeypatch.setattr(R.learning, "candidate_count", lambda root, ns: 1, raising=False)
+    return created
+
+
+@pytest.mark.asyncio
+async def test_a_consolidation_cannot_be_admitted_once_the_app_is_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """THE BLOCKER, consolidation form: the merge runs a worker turn on the same
+    pool reviews use, and it reaches ``get_pool()`` with no run id for the
+    disable hook's ``_RUNS`` scan to mark. Without its own admission check, a
+    disabled app's consolidate request rebuilds the retired pool and spends an
+    agent turn on authority the operator has withdrawn.
+    """
+    _register_pool_retirement(monkeypatch)
+    created = _stub_consolidation_io(monkeypatch, tmp_path)
+
+    enabled = {"value": True}
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: enabled["value"], raising=False)
+
+    async with app_lifecycle_lock(APP_NAME):
+        await teardown.notify_app_disabled(APP_NAME)
+        enabled["value"] = False
+
+    response = await R._handle_consolidate(cast(web.Request, _StubConsolidateRequest()))
+    if R._TASKS:
+        await asyncio.gather(*list(R._TASKS))
+
+    assert (
+        response.status == 403
+    ), f"a disabled app admitted a consolidation (HTTP {response.status})"
+    assert created == [], "the merge rebuilt the retired pool after the disable"
+    assert not R._CONSOLIDATING, "a refused consolidation must not hold its claim"
+
+
+@pytest.mark.asyncio
+async def test_a_consolidation_runs_normally_while_the_app_is_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Negative control: with nothing disabled the merge reaches the pool and
+    the namespace claim is released when it finishes."""
+    _register_pool_retirement(monkeypatch)
+    created = _stub_consolidation_io(monkeypatch, tmp_path)
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: True, raising=False)
+
+    response = await R._handle_consolidate(cast(web.Request, _StubConsolidateRequest()))
+    if R._TASKS:
+        await asyncio.gather(*list(R._TASKS))
+
+    assert (
+        response.status == 200
+    ), f"an enabled app refused a legitimate consolidation (HTTP {response.status})"
+    assert created == ["get_pool"], "the merge must reach the pool exactly once"
+    assert not R._CONSOLIDATING, "the claim must be released when the merge ends"
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_consolidation_stops_at_the_pool_seam_when_disable_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """THE BLOCKER's other half, consolidation form: a merge admitted while the
+    app is enabled hands the work to a task; a disable landing before that
+    task's first step must stop the worker on the near side of ``get_pool()``.
+    The claim in ``_CONSOLIDATING`` is what the disable hook can see — it plays
+    the role ``posting`` plays for the /post seam.
+    """
+    _register_pool_retirement(monkeypatch)
+    created = _stub_consolidation_io(monkeypatch, tmp_path)
+
+    enabled = {"value": True}
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: enabled["value"], raising=False)
+
+    response = await R._handle_consolidate(cast(web.Request, _StubConsolidateRequest()))
+    assert response.status == 200, "the enabled admission itself must succeed"
+
+    # The disable lands before the merge task's first step; the hook's marks
+    # land with no await in the way.
+    async with app_lifecycle_lock(APP_NAME):
+        await teardown.notify_app_disabled(APP_NAME)
+        enabled["value"] = False
+
+    if R._TASKS:
+        await asyncio.gather(*list(R._TASKS))
+
+    assert created == [], "the merge rebuilt the retired pool after the disable"
+    assert not R._CONSOLIDATING, "a cancelled merge must release its claim"
+    ns_state = R._CONSOLIDATE_STATE.get(R.learning.DEFAULT_NAMESPACE) or {}
+    assert ns_state.get("error"), "the state must say why the merge did not run"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_namespace_mark_does_not_refuse_the_next_consolidation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A mark speaks for the merge a disable interrupted, not for the namespace
+    forever: admitted again after a re-enable, the same namespace merges."""
+    _register_pool_retirement(monkeypatch)
+    created = _stub_consolidation_io(monkeypatch, tmp_path)
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: True, raising=False)
+
+    R._CANCELLED_NS.add(R.learning.DEFAULT_NAMESPACE)
+
+    response = await R._handle_consolidate(cast(web.Request, _StubConsolidateRequest()))
+    if R._TASKS:
+        await asyncio.gather(*list(R._TASKS))
+
+    assert (
+        response.status == 200
+    ), f"a stale mark refused a legitimate consolidation (HTTP {response.status})"
+    assert created == ["get_pool"], "the re-admitted merge must reach the pool"
+    assert R.learning.DEFAULT_NAMESPACE not in R._CANCELLED_NS, "the stale mark must be consumed"
+
+
+@pytest.mark.asyncio
+async def test_a_disable_during_the_claim_read_still_stops_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE BLOCKER, fourth form: the lock wait is not the only suspension.
+
+    ``_claim_changes_under_lock`` runs off-loop, so a disable can land while an
+    admitted run is inside that read: the hook marks the run and retires the
+    pool, and the resumed task's very next step is ``get_pool()``. The
+    cancellation check must read the mark AFTER the claim returns — a check
+    taken before the claim is blind to this window.
+
+    Ordering is by threading events, the same shape the in-flight-enabled-read
+    test uses: the claim read is held open, the disable completes while it is
+    held, and only then is the read released. The timeout is a watchdog so a
+    regression fails the suite instead of hanging it, never the mechanism.
+    """
+    _register_pool_retirement(monkeypatch)
+
+    created: list[str] = []
+    reviewed: list[str] = []
+
+    class _FakePool:
+        async def begin_batch(self) -> None:
+            reviewed.append("begin_batch")
+
+        async def end_batch(self) -> None:
+            pass
+
+    def _fake_get_pool():
+        created.append("get_pool")
+        return _FakePool()
+
+    monkeypatch.setattr(R.review_pool, "get_pool", _fake_get_pool)
+
+    async def _fake_shutdown_pool() -> None:
+        created.append("shutdown_pool")
+
+    monkeypatch.setattr(R.review_pool, "shutdown_pool", _fake_shutdown_pool)
+    monkeypatch.setattr(R, "_release_claims", lambda run: None)
+    monkeypatch.setattr(R, "_save_runs", _noop_async)
+    monkeypatch.setattr(R, "_notify_finished", _noop_async)
+    monkeypatch.setattr(R, "_collect_delivered", lambda run, summary: None)
+    monkeypatch.setattr(R, "_make_progress", lambda run: None)
+
+    def _fake_run_review(changes, **kwargs):
+        reviewed.append("run_review")
+        return {"ok": True, "changes": len(changes), "result_records": 1, "deep_reviewed": 1}
+
+    monkeypatch.setattr(R.review_driver, "run_review", _fake_run_review, raising=False)
+
+    in_claim = threading.Event()
+    release_claim = threading.Event()
+
+    def _held_open_claim(run: dict, changes: list[str]) -> list[str]:
+        in_claim.set()
+        assert release_claim.wait(timeout=30), "the disable never released the claim read"
+        return changes
+
+    monkeypatch.setattr(R, "_claim_changes_under_lock", _held_open_claim)
+
+    c_run = _live_run("run-C")
+    R._RUNS.insert(0, c_run)
+
+    task = asyncio.create_task(R._run_review_bg(c_run, ["change-1"]))
+    assert await asyncio.to_thread(in_claim.wait, 30), "the run never reached the claim read"
+
+    # The operator disables while the claim read is in flight; the hook's marks
+    # land and the pool is retired before the read is allowed to return.
+    await teardown.notify_app_disabled(APP_NAME)
+    release_claim.set()
+    await task
+
+    assert "shutdown_pool" in created, "the disable hook must still retire the pool"
+    assert (
+        "get_pool" not in created
+    ), "a run whose claim read straddled the disable rebuilt the pool after it"
+    assert reviewed == [], "no review work may run after the disable"
+    assert c_run.get("status") == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_post_does_not_postpone_the_disable_behind_a_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The admission boundary must not invert into a hostage: a ``/post``
+    waiting for ``_RUN_LOCK`` behind an unrelated review must not be holding
+    the lifecycle lock while it waits, or the operator's disable queues behind
+    that entire review — the active reviewer RETAINS authority for exactly the
+    span the disable was meant to end.
+
+    The interleaving: A holds ``_RUN_LOCK`` the way a running review does; a
+    /post on a finished run arrives and waits; the operator disables. The
+    disable must complete while A still holds the lock, and the /post must
+    then be refused on the state the operator left behind. The wait_for
+    timeouts are watchdogs so a regression fails the suite instead of hanging
+    it; the ordering itself is by locks and events only.
+    """
+    _register_pool_retirement(monkeypatch)
+    created, posted = _stub_posting_io(monkeypatch)
+
+    enabled = {"value": True}
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: enabled["value"], raising=False)
+
+    run = _done_run("run-done")
+    R._RUNS.insert(0, run)
+
+    a_holds = asyncio.Event()
+    a_may_release = asyncio.Event()
+
+    async def _run_a() -> None:
+        async with R._RUN_LOCK:
+            a_holds.set()
+            await a_may_release.wait()
+
+    a_task = asyncio.create_task(_run_a())
+    await a_holds.wait()
+
+    try:
+        post_task = asyncio.create_task(
+            R._handle_run_post(cast(web.Request, _StubPostRequest("run-done")))
+        )
+        await asyncio.sleep(0)  # let the /post reach its first suspension
+
+        async def _disable() -> None:
+            async with app_lifecycle_lock(APP_NAME):
+                await teardown.notify_app_disabled(APP_NAME)
+                enabled["value"] = False
+
+        # The disable must complete while A still holds `_RUN_LOCK`.
+        await asyncio.wait_for(_disable(), timeout=5)
+
+        a_may_release.set()
+        await a_task
+        response = await asyncio.wait_for(post_task, timeout=5)
+        if R._TASKS:
+            await asyncio.gather(*list(R._TASKS))
+
+        assert response.status == 403, (
+            "the /post that waited across the disable was admitted " f"(HTTP {response.status})"
+        )
+        assert created == [], "the poster rebuilt the retired pool after the disable"
+        assert posted == [], "comments were posted after authority was withdrawn"
+        assert not run.get("posting"), "a refused run must not be left flagged as posting"
+    finally:
+        a_may_release.set()
+        R._INFLIGHT.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_app_never_contacts_the_provider_for_a_repo_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE BLOCKER, /review-repo form: the provider read comes before any run
+    exists. ``_admit`` gates run REGISTRATION, but ``_handle_review_repo``
+    lists the repository's open PRs — provider contact on the app's authority —
+    and an already-reviewed repository answers 200 ``noop`` before a run is
+    ever built for ``_admit`` to refuse. A disabled app must refuse at the top,
+    before the provider is touched; ``_admit`` stays the atomic gate for the
+    run itself.
+    """
+    _register_pool_retirement(monkeypatch)
+    monkeypatch.setattr(R, "_save_runs", _noop_async)
+
+    contacted: list[str] = []
+
+    async def _fake_list_repo_prs(repo: str):
+        contacted.append(repo)
+        return "acme/example", []
+
+    monkeypatch.setattr(R, "_list_repo_prs", _fake_list_repo_prs)
+
+    enabled = {"value": True}
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: enabled["value"], raising=False)
+
+    async with app_lifecycle_lock(APP_NAME):
+        await teardown.notify_app_disabled(APP_NAME)
+        enabled["value"] = False
+
+    response = await R._handle_review_repo(
+        cast(web.Request, _StubConsolidateRequest({"repo": "https://github.com/acme/example"}))
+    )
+
+    assert response.status == 403, f"a disabled app served /review-repo (HTTP {response.status})"
+    assert contacted == [], "a disabled app contacted the provider"
+    assert R._RUNS == [], "a refused repo review must not be registered as a run"
+
+
+@pytest.mark.asyncio
+async def test_a_repo_review_answers_normally_while_the_app_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative control: with nothing disabled the same request reaches the
+    provider and answers the already-reviewed repository with a noop."""
+    _register_pool_retirement(monkeypatch)
+    monkeypatch.setattr(R, "_save_runs", _noop_async)
+
+    contacted: list[str] = []
+
+    async def _fake_list_repo_prs(repo: str):
+        contacted.append(repo)
+        return "acme/example", []
+
+    monkeypatch.setattr(R, "_list_repo_prs", _fake_list_repo_prs)
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: True, raising=False)
+
+    response = await R._handle_review_repo(
+        cast(web.Request, _StubConsolidateRequest({"repo": "https://github.com/acme/example"}))
+    )
+
+    assert (
+        response.status == 200
+    ), f"an enabled app refused a legitimate /review-repo (HTTP {response.status})"
+    assert contacted == [
+        "https://github.com/acme/example"
+    ], "the enabled path must reach the provider exactly once"
+
+
+async def _drive_merge_dispatch_race(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, *, disable_mid_dispatch: bool
+) -> dict:
+    """Drive a consolidation whose worker dispatch straddles a disable.
+
+    The dispatch runs off-loop, held open on a threading event; the disable
+    completes while it is held (or never fires, for the control); only then is
+    the worker allowed to return its merge. Reports whether the merge was
+    APPLIED — the persisted-state mutation — and what the namespace state says.
+    """
+    _register_pool_retirement(monkeypatch)
+    created = _stub_consolidation_io(monkeypatch, tmp_path)
+
+    in_dispatch = threading.Event()
+    release_dispatch = threading.Event()
+
+    def _held_open_dispatch(task: dict) -> dict:
+        in_dispatch.set()
+        assert release_dispatch.wait(timeout=30), "the disable never released the dispatch"
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        R.review_pool, "make_sync_dispatch", lambda loop, pool: _held_open_dispatch, raising=False
+    )
+    # A merge the worker DID produce: non-empty, parseable, apply-ready.
+    monkeypatch.setattr(
+        R.hooks,
+        "safe_read_file_bytes_nolink",
+        lambda *a, **k: b"pattern: real merge",
+        raising=False,
+    )
+    monkeypatch.setattr(R.learning, "parse_patterns", lambda merged: [{"id": "p1"}], raising=False)
+
+    applied: list[str] = []
+
+    def _fake_apply(merged, root, ns, cand_ids):
+        applied.append(ns)
+        return {"ok": True, "patterns_now": 1, "consolidated_from_candidate": 1}
+
+    monkeypatch.setattr(R.learning, "consolidate_apply", _fake_apply, raising=False)
+
+    enabled = {"value": True}
+    monkeypatch.setattr(R, "is_app_enabled", lambda _name: enabled["value"], raising=False)
+
+    response = await R._handle_consolidate(cast(web.Request, _StubConsolidateRequest()))
+    assert response.status == 200, "the enabled admission itself must succeed"
+
+    merge_task = asyncio.gather(*list(R._TASKS))
+    assert await asyncio.to_thread(in_dispatch.wait, 30), "the merge never reached its dispatch"
+
+    if disable_mid_dispatch:
+        async with app_lifecycle_lock(APP_NAME):
+            await teardown.notify_app_disabled(APP_NAME)
+            enabled["value"] = False
+
+    release_dispatch.set()
+    await merge_task
+
+    ns = R.learning.DEFAULT_NAMESPACE
+    return {
+        "created": created,
+        "applied": applied,
+        "state": dict(R._CONSOLIDATE_STATE.get(ns) or {}),
+        "claim_released": ns not in R._CONSOLIDATING,
+        "mark_left": ns in R._CANCELLED_NS,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_disable_during_the_merge_dispatch_stops_the_apply(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """THE BLOCKER, consolidation's second half: the top-of-function recheck
+    cannot see a disable that lands while the worker turn is in flight. The
+    APPLY is the persisted-state mutation — it rewrites the ruleset and clears
+    the staged candidates, destroying the only copy of pending learnings on an
+    authority the operator has withdrawn — and it happens entirely after the
+    dispatch returns, so the mark must be re-read on the near side of
+    ``consolidate_apply``. Refusing there leaves the ruleset and the staged
+    candidates untouched for a later re-enable.
+    """
+    out = await _drive_merge_dispatch_race(monkeypatch, tmp_path, disable_mid_dispatch=True)
+
+    assert out["applied"] == [], (
+        "a merge dispatched before the disable applied its result after it — "
+        "persisted learning state mutated on withdrawn authority"
+    )
+    assert out["state"].get("error"), "the state must say why the merge did not land"
+    assert out["claim_released"], "a refused merge must release its claim"
+    assert not out["mark_left"], "the mark spoke for this merge and must be consumed"
+
+
+@pytest.mark.asyncio
+async def test_a_merge_applies_normally_when_no_disable_lands(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Negative control: the same held-open dispatch with no disable applies
+    its merge exactly once."""
+    out = await _drive_merge_dispatch_race(monkeypatch, tmp_path, disable_mid_dispatch=False)
+
+    assert out["applied"] == [
+        R.learning.DEFAULT_NAMESPACE
+    ], "the enabled path must apply the merge exactly once"
+    assert not out["state"].get("error"), "a clean merge must not report an error"
+    assert out["claim_released"], "the claim must be released when the merge ends"
