@@ -1011,7 +1011,7 @@
     },
     "devFleet": {
       "manifest": {
-        "description": "A control panel for working on Kiro Crew itself. Lists every feature worktree alongside its pull request state, commit count, and disk usage, and can bring any of them up as a pod: a complete preview instance on its own port with its own data directory, so you can click through an unfinished change without disturbing your live gateway. It also handles the chores around that — pulling main and rebuilding, rebasing a branch, streaming pod logs, and pruning worktrees whose work has already merged.",
+        "description": "A control panel for working on Kiro Crew itself. Lists every feature worktree alongside its pull request state, commit count, and disk usage, and can bring any of them up as a pod: a complete preview instance on its own port with its own data directory, so you can click through an unfinished change without disturbing your live gateway. It also handles the chores around that — pulling main and rebuilding, rebasing a branch, streaming pod logs, and pruning worktrees whose work has already merged. Enabling it also lets AGENT sessions start and stop pods through the pod tools, which means code from a worktree an agent can write runs outside the agent's sandbox, as you.",
         "display_name": "Dev Fleet",
         "highlight_1": "Bring up any worktree as an isolated pod on its own port and data directory, leaving your live gateway untouched",
         "highlight_2": "Fleet view with per-branch PR status, commit counts, and disk usage",
