@@ -211,10 +211,12 @@ class TestCatalog:
             security.compute_effective_denied(security.BUILTIN_DENIED_RULES, (), False, (), ())
         )
 
-        # ── Closed: every dressing that leaves the name in the text ──
+        # ── Closed: the dressings the quote-normalized view removes ──
         # Quoting and empty-string splices are normalized by the Pass-2
         # quote-normalized view; an absolute path, an `env` prefix, and a
-        # nested interpreter all still carry the literal word.
+        # nested interpreter all still carry the literal word ADJACENT to the
+        # verb, which is what the pattern actually requires. Presence of the
+        # name in the text is NOT the test -- see the brace case below.
         for blocked in (
             "tailscale funnel 3000",
             '"tailscale" funnel 3000',
@@ -228,13 +230,34 @@ class TestCatalog:
                 blocked, denied_regexes=effective
             ), f"tailscale exposure not blocked: {blocked!r}"
 
-        # ── Open: the name is produced by an expansion the text does not spell ──
-        # Denying these needs the program position, not more pattern text.
+        # ── Open: the matcher never sees the name adjacent to the verb ──
+        # Two different reasons, and the first four are the ones the spec's
+        # scope paragraph describes: a shell resolves a parameter expansion or a
+        # command substitution before it resolves the program, so the name is
+        # not in the text at all. Denying those needs the program position,
+        # after resolution, which this tier does not have.
+        #
+        # The brace forms are here for a DIFFERENT reason and the distinction
+        # matters, because an earlier version of this test filed them under
+        # "closed" on the strength of the name being present. It is: bash
+        # expands `{tailscale,} funnel 3000` to exactly `tailscale funnel 3000`
+        # with no empty argv element. What the matcher needs is the name
+        # ADJACENT to the verb, and `_deny_segment_views` normalizes quotes,
+        # splices, escapes and whitespace runs but not brace expansion, so the
+        # `{`/`,}` sits between them and no pattern matches.
+        #
+        # That is a property of the tier, not of this family: `{rm,} -rf /` and
+        # `aws s3 {rb,} s3://b --force` are allowed too, against rules this
+        # change did not write. Closing it means teaching the shared
+        # quote-normalized view to expand braces, which moves all 117 rules at
+        # once and belongs in its own change rather than riding along here.
         for open_case in (
             't=tailscale; "$t" funnel 3000',
             "TS=tailscale; $TS funnel 3000",
             "$(echo tailscale) funnel 3000",
             "`echo tailscale` funnel 3000",
+            "{tailscale,} funnel 3000",
+            "tailscale {funnel,} 3000",
         ):
             assert not security.is_denied(open_case, denied_regexes=effective), (
                 "an indirection case is now denied -- move it into the closed set above "
