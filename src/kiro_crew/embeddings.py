@@ -1297,6 +1297,61 @@ def embedding_rebuild_generation(memory: dict | None = None) -> str:
     return value if isinstance(value, str) else ""
 
 
+def embedding_model_for_signature(signature: str | None) -> dict[str, object] | None:
+    """Name the model behind *signature* as ``{"model_id", "dim"}``, or None.
+
+    A signature is a one-way hash, so the human-readable identity has to be
+    recovered from the identities this process can actually vouch for: the
+    bundled model (the provable owner of every un-versioned vector) and the
+    ACTIVE backend (constructed, never loaded -- ``model_id``/``dim`` are set at
+    construction). A signature matching neither is left unnamed rather than
+    guessed. ``memory export`` ships this beside ``embedding_space_sig`` so a
+    reader can see which model produced the payload's vectors and an importer
+    can cross-check the two.
+    """
+    if not isinstance(signature, str) or not signature:
+        return None
+    if signature == default_embedding_space_signature():
+        return {"model_id": _MODEL_ID, "dim": _DEFAULT_DIM}
+    try:
+        backend = get_shared_embedder()
+        model_id, dim = backend.model_id, backend.dim
+    except Exception:
+        return None
+    try:
+        if embedding_space_signature(model_id, dim) == signature:
+            return {"model_id": model_id, "dim": dim}
+    except UnicodeEncodeError:
+        # A hand-edited ``embed_model_id`` can carry a lone-surrogate escape
+        # that a strict UTF-8 encode refuses; an identity the hash cannot even
+        # encode owns no signature, and must not abort a read-only export.
+        return None
+    return None
+
+
+def embedding_model_matches_signature(model: object, signature: str) -> bool:
+    """Whether a payload's declared ``embedding_model`` produces *signature*.
+
+    False for a malformed declaration as well as a mismatching one: an importer
+    that is handed a model identity has to be able to verify the vectors were
+    produced under it, and a declaration it cannot verify is not a match.
+    """
+    if not isinstance(model, dict):
+        return False
+    model_id, dim = model.get("model_id"), model.get("dim")
+    if not isinstance(model_id, str) or not model_id or len(model_id) > 512:
+        return False
+    if isinstance(dim, bool) or not isinstance(dim, int) or not 0 < dim <= 65_536:
+        return False
+    try:
+        return embedding_space_signature(model_id, dim) == signature
+    except UnicodeEncodeError:
+        # ``json.loads`` accepts lone-surrogate escapes that a strict UTF-8
+        # encode refuses; a declaration the hash cannot even encode is not a
+        # match, and must not turn a read-only pre-check into a crashed import.
+        return False
+
+
 def store_embedding_space_is_stale(store: "_ReconcilableStore") -> bool:
     """True when *store*'s vectors were NOT produced by the active backend.
 

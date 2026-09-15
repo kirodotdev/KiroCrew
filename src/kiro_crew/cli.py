@@ -2627,6 +2627,14 @@ Examples:
         action="store_true",
         help="Also include the markdown layer (preferences, projects, daily history)",
     )
+    mem_export.add_argument(
+        "--no-vectors",
+        action="store_true",
+        help=(
+            "Omit embedding vectors (import then re-embeds rows on the gateway's next "
+            "sweep); a much smaller payload for piped backups"
+        ),
+    )
     mem_sub.add_parser("migrate", help="Migrate legacy markdown memory to vector store")
     mem_backup = mem_sub.add_parser("backup", help="Back up active memory stores now")
     mem_backup.add_argument(

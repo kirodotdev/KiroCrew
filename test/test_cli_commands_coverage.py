@@ -16,10 +16,12 @@ Follows the style already established by ``test_cli.py`` (``argparse.Namespace``
 from __future__ import annotations
 
 import argparse
+import base64
 import dataclasses
 import io
 import json
 import os
+import struct
 import subprocess
 import sys
 import urllib.error
@@ -1874,6 +1876,124 @@ class TestMemoryCli:
         assert json.loads(out_file.read_text())["episodic"] == []
         assert "Exported to" in capsys.readouterr().out
 
+    def test_export_ships_vectors_as_lists_with_a_space_signature(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        blob = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
+        monkeypatch.setattr(
+            cc,
+            "embedding_model_for_signature",
+            lambda sig: {"model_id": "my-model", "dim": 4} if sig == "space-1" else None,
+        )
+        with _MemHarness() as h:
+            h.store.get_all_semantic.return_value = [
+                {"key": "a", "embedding": blob},
+                {"key": "b", "embedding": None},
+            ]
+            h.store.get_episodic_list.return_value = [
+                {"id": "e1", "text": "an episode", "embedding": blob},
+                {"id": "e2", "text": "another", "embedding": None},
+            ]
+            h.store.get_events.return_value = []
+            h.store.recorded_embedding_space.return_value = "space-1"
+            cc._memory_cmd(_ns(mem_action="export", output=None))
+            h.store.get_episodic_list.assert_called_once_with(limit=10000, include_embedding=True)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["embedding_space_sig"] == "space-1"
+        assert payload["embedding_model"] == {"model_id": "my-model", "dim": 4}
+        rows = {r["key"]: r for r in payload["semantic"]}
+        assert rows["a"]["embedding"] == base64.b64encode(blob).decode("ascii")
+        assert "embedding" not in rows["b"]
+        episodes = {r["id"]: r for r in payload["episodic"]}
+        assert episodes["e1"]["embedding"] == base64.b64encode(blob).decode("ascii")
+        assert "embedding" not in episodes["e2"]
+
+    def test_export_signs_legacy_unversioned_vectors_with_the_bundled_space(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A store with vectors but no recorded signature predates space
+        versioning; every such vector came from the bundled model, so the
+        export names that space rather than shipping them unsigned."""
+        from kiro_crew import embeddings
+
+        with _MemHarness() as h:
+            h.store.get_all_semantic.return_value = []
+            h.store.get_episodic_list.return_value = []
+            h.store.get_events.return_value = []
+            h.store.recorded_embedding_space.return_value = None
+            h.store.has_stored_embeddings.return_value = True
+            cc._memory_cmd(_ns(mem_action="export", output=None))
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["embedding_space_sig"] == embeddings.default_embedding_space_signature()
+        assert payload["embedding_model"] == {
+            "model_id": embeddings._MODEL_ID,
+            "dim": embeddings._DEFAULT_DIM,
+        }
+
+        # ...but an empty unsigned store has nothing to attribute.
+        with _MemHarness() as h:
+            h.store.get_all_semantic.return_value = []
+            h.store.get_episodic_list.return_value = []
+            h.store.get_events.return_value = []
+            h.store.recorded_embedding_space.return_value = None
+            h.store.has_stored_embeddings.return_value = False
+            cc._memory_cmd(_ns(mem_action="export", output=None))
+        assert json.loads(capsys.readouterr().out)["embedding_space_sig"] is None
+
+    def test_export_streams_the_pinned_shape_byte_for_byte(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The writer streams rows instead of materializing one payload string;
+        its output must still equal ``json.dumps(..., indent=2, default=str)``
+        of the decoded payload -- the shape every consumer pins."""
+        monkeypatch.setattr(cc, "embedding_model_for_signature", lambda sig: None)
+        blob = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
+        semantic = [{"key": f"k{i}", "value_json": '"v\nw"', "embedding": blob} for i in range(3)]
+        episodic = [
+            {"id": f"e{i}", "text": "t", "tags": '["x"]', "embedding": blob} for i in range(3)
+        ]
+        events = [{"kind": "create", "n": 1}]
+        out_file = tmp_path / "out.json"
+        with _MemHarness() as h:
+            h.store.get_all_semantic.return_value = [dict(r) for r in semantic]
+            h.store.get_episodic_list.return_value = [dict(r) for r in episodic]
+            h.store.get_events.return_value = events
+            h.store.recorded_embedding_space.return_value = "space-1"
+            cc._memory_cmd(_ns(mem_action="export", output=str(out_file)))
+        encoded = base64.b64encode(blob).decode("ascii")
+        expected = json.dumps(
+            {
+                "semantic": [{**r, "embedding": encoded} for r in semantic],
+                "episodic": [{**r, "embedding": encoded} for r in episodic],
+                "events": events,
+                "embedding_space_sig": "space-1",
+                "embedding_model": None,
+            },
+            indent=2,
+            default=str,
+        )
+        assert out_file.read_text(encoding="utf-8") == expected
+        assert "Exported to" in capsys.readouterr().out
+
+    def test_export_no_vectors_ships_the_old_weight_payload(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """``--no-vectors``: no ``embedding`` keys, no episodic vector read, and
+        an unsigned payload (there is nothing for a signature to scope)."""
+        blob = struct.pack("4f", 0.1, 0.2, 0.3, 0.4)
+        with _MemHarness() as h:
+            h.store.get_all_semantic.return_value = [{"key": "a", "embedding": blob}]
+            h.store.get_episodic_list.return_value = [{"id": "e1", "text": "t", "embedding": blob}]
+            h.store.get_events.return_value = []
+            h.store.recorded_embedding_space.return_value = "space-1"
+            cc._memory_cmd(_ns(mem_action="export", output=None, no_vectors=True))
+            h.store.get_episodic_list.assert_called_once_with(limit=10000, include_embedding=False)
+        payload = json.loads(capsys.readouterr().out)
+        assert "embedding" not in payload["semantic"][0]
+        assert "embedding" not in payload["episodic"][0]
+        assert payload["embedding_space_sig"] is None
+        assert payload["embedding_model"] is None
+
     def test_migrate_prints_counts(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _MemHarness() as h:
             h.store.migrate_from_markdown.return_value = {
@@ -1905,6 +2025,114 @@ class TestMemoryCli:
             cc._memory_cmd(_ns(mem_action="import", file=str(src)))
         h.store.import_memory.assert_called_once_with({"semantic": []})
         assert "Import complete" in capsys.readouterr().out
+
+    def test_import_prints_the_unembedded_caveat_only_when_rows_landed_null(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src = tmp_path / "in.json"
+        src.write_text(json.dumps({"semantic": []}), encoding="utf-8")
+        with _MemHarness() as h:
+            h.store.import_memory.return_value = {
+                "semantic": 5,
+                "episodic": 0,
+                "skipped": 0,
+                "semantic_unembedded": 2,
+            }
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        out = capsys.readouterr().out
+        assert "Semantic rows without a vector: 2" in out
+        assert "re-embed sweep" in out
+
+        with _MemHarness() as h:
+            h.store.import_memory.return_value = {
+                "semantic": 5,
+                "episodic": 0,
+                "skipped": 0,
+                "semantic_unembedded": 0,
+            }
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        out = capsys.readouterr().out
+        assert "re-embed sweep" not in out
+
+    def test_import_names_the_payloads_model_when_its_space_was_not_carried(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src = tmp_path / "in.json"
+        src.write_text(
+            json.dumps(
+                {
+                    "embedding_space_sig": "space-1",
+                    "embedding_model": {"model_id": "their-model", "dim": 768},
+                    "episodic": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with _MemHarness() as h:
+            h.store.recorded_embedding_space.return_value = "space-2"
+            h.store.import_memory.return_value = {
+                "semantic": 0,
+                "episodic": 3,
+                "skipped": 0,
+                "semantic_unembedded": 0,
+                "episodic_unembedded": 3,
+            }
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        out = capsys.readouterr().out
+        assert "Episodic rows without a vector: 3" in out
+        assert "produced by their-model (dim 768)" in out
+        assert "re-embed sweep" in out
+
+        # The two fields are attacker-controlled file content: control
+        # sequences are scrubbed before they reach the terminal.
+        src.write_text(
+            json.dumps(
+                {
+                    "embedding_space_sig": "space-1",
+                    "embedding_model": {"model_id": "evil\x1b]0;pwned\x07model", "dim": "\x1b[2J7"},
+                    "episodic": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with _MemHarness() as h:
+            h.store.recorded_embedding_space.return_value = "space-2"
+            h.store.import_memory.return_value = {
+                "semantic": 0,
+                "episodic": 1,
+                "skipped": 0,
+                "semantic_unembedded": 0,
+                "episodic_unembedded": 1,
+            }
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        out = capsys.readouterr().out
+        assert "\x1b" not in out and "\x07" not in out
+        assert "produced by evilmodel (dim 7)" in out
+
+        # Same payload into a store recording the SAME space: no mismatch line.
+        src.write_text(
+            json.dumps(
+                {
+                    "embedding_space_sig": "space-1",
+                    "embedding_model": {"model_id": "their-model", "dim": 768},
+                    "episodic": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with _MemHarness() as h:
+            h.store.recorded_embedding_space.return_value = "space-1"
+            h.store.import_memory.return_value = {
+                "semantic": 0,
+                "episodic": 3,
+                "skipped": 0,
+                "semantic_unembedded": 0,
+                "episodic_unembedded": 1,
+            }
+            cc._memory_cmd(_ns(mem_action="import", file=str(src)))
+        out = capsys.readouterr().out
+        assert "produced by" not in out
+        assert "re-embed sweep" in out
 
     def test_unknown_action_prints_usage_and_closes(
         self, capsys: pytest.CaptureFixture[str]
