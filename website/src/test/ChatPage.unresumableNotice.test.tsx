@@ -209,7 +209,7 @@ describe('unresumable-resume notice on the chat pane (#5925)', () => {
     await renderWith({ key: 'member-ada', title: 'Ada', surface: 'member', reason: 'surface' })
 
     const notice = await screen.findByTestId('unresumable-resume-error')
-    expect(notice.textContent).toContain('Crew Members')
+    expect(notice.textContent).toContain('Crew')
     expect(notice.textContent).not.toContain('member session')
   })
 })

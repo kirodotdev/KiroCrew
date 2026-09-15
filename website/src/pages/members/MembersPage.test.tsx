@@ -34,6 +34,10 @@ vi.mock('../../api/client', () => ({
     // keeps the chat-style Summary row out of the menu so the Crew summary tab
     // is the one summary these cases see.
     sessionSummary: vi.fn(() => Promise.resolve({ enabled: false })),
+    // The empty crew asks the registry whether there is anyone to hire; the
+    // default answers "only `default`" so the plain empty state is what every
+    // other case sees.
+    kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [{ name: 'default' }] })),
   },
 }))
 
@@ -214,6 +218,7 @@ beforeEach(() => {
   // outlives clearAllMocks); a leaked rejection renders the roster's patrol
   // error alert into every later case.
   vi.mocked(api.autonudgeList).mockImplementation(() => Promise.resolve({ enabled: true, loops: [] }))
+  vi.mocked(api.kirocrewAgents).mockImplementation(() => Promise.resolve({ agents: [{ name: 'default' }] }))
   // The remembered member must not leak between cases.
   localStorage.clear()
   // The side panel's tab strip is a module-level, persisted store; a tab
@@ -232,7 +237,7 @@ describe('MembersPage roster', () => {
   it('shows the empty state when no crews exist', async () => {
     await renderPage([])
     expect(
-      await screen.findByText(/No crew members yet/i),
+      await screen.findByText(/No crewmates yet/i),
     ).toBeInTheDocument()
   })
 
@@ -240,9 +245,9 @@ describe('MembersPage roster', () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
     renderWithProviders(<MembersPage />)
     expect(
-      await screen.findByText(/Could not load the member roster/i),
+      await screen.findByText(/Could not load the crewmate roster/i),
     ).toBeInTheDocument()
-    // No roster to count: the header says so with a dash, never "0 members"
+    // No roster to count: the header says so with a dash, never "0 crewmates"
     // above a failure it would contradict.
     expect(screen.getByTestId('member-count')).toHaveTextContent('\u2014')
     expect(screen.getByTestId('member-count')).not.toHaveTextContent(/members/i)
@@ -276,7 +281,7 @@ describe('MembersPage roster cache (React Query)', () => {
     utils.rerender(page)
     expect(roster().getByText('oncall')).toBeInTheDocument()
     expect(roster().getByText('research')).toBeInTheDocument()
-    expect(screen.queryByText(/No crew members yet/i)).toBeNull()
+    expect(screen.queryByText(/No crewmates yet/i)).toBeNull()
     // The roster carries its own 30s staleTime (membersRosterQuery), which
     // wins over the test client's 0: a return inside that window is served
     // from cache with NO refetch — that is the request the user stopped
@@ -370,7 +375,7 @@ describe('MembersPage roster cache (React Query)', () => {
     expect(await rosterRow('research')).toBeInTheDocument()
     // In place: the row that was already there never left the screen.
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/No crew members yet/i)).toBeNull()
+    expect(screen.queryByText(/No crewmates yet/i)).toBeNull()
   })
 
   it('a refetch failure after a good read keeps the last roster instead of flipping to the error state', async () => {
@@ -382,7 +387,7 @@ describe('MembersPage roster cache (React Query)', () => {
     })
     await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/Could not load the member roster/i)).toBeNull()
+    expect(screen.queryByText(/Could not load the crewmate roster/i)).toBeNull()
   })
 })
 
@@ -403,7 +408,7 @@ describe('MembersPage thread', () => {
     })
     const { queryClient } = await renderPage([row()], 'kirocrew', { thread: new Error(rawReason) })
     const notice = await screen.findByTestId('member-thread-error')
-    expect(notice).toHaveTextContent(/Could not open this member's conversation/i)
+    expect(notice).toHaveTextContent(/Could not open this crewmate's conversation/i)
     expect(notice).not.toHaveTextContent('Private memory database is unreadable')
     expect(queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({
       slot_key: '', failed: true, errorReport: report,
@@ -487,7 +492,7 @@ describe('MembersPage thread', () => {
     // the failing POST is the auto-open itself.
     await renderPage([row()], 'kirocrew', { thread: new Error('Create private memory in the member editor.') })
     expect(
-      await screen.findByText(/Could not open this member's conversation/i),
+      await screen.findByText(/Could not open this crewmate's conversation/i),
     ).toBeInTheDocument()
     // Non-API exceptions have no journal report; do not invent a diagnostic
     // object or leak an unredacted thrown message into the localized banner.
@@ -554,7 +559,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     const drawer = await screen.findByTestId('member-crew-summary')
     expect(drawer).toHaveTextContent('kirocrew')
     expect(drawer).toHaveTextContent('claude-opus-5')
-    expect(drawer).toHaveTextContent('This member uses its current memory (V1).')
+    expect(drawer).toHaveTextContent('Uses the current shared memory (V1), not a private store.')
     expect(drawer).not.toHaveTextContent('Private memory (V2) starts empty in a new chat')
     expect(drawer).not.toHaveTextContent('Existing data and chats stay.')
     expect(within(drawer).getByRole('button', { name: 'Set up private memory' })).toBeVisible()
@@ -566,7 +571,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     ])
     fireEvent.click(await screen.findByText('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
-    expect(drawer).toHaveTextContent(/only this member can use it/i)
+    expect(drawer).toHaveTextContent(/used only by its owner/i)
     expect(screen.getByRole('button', { name: 'Manage memory' })).toBeInTheDocument()
   })
 
@@ -577,10 +582,10 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     ])
     fireEvent.click(await screen.findByText('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
-    expect(drawer).toHaveTextContent('This member uses its current memory (V1).')
+    expect(drawer).toHaveTextContent('Uses the current shared memory (V1), not a private store.')
     expect(drawer).not.toHaveTextContent('Private memory (V2) starts empty in a new chat')
     expect(within(drawer).getByRole('button', { name: 'Set up private memory' })).toBeVisible()
-    expect(drawer).not.toHaveTextContent(/only this member can use it/i)
+    expect(drawer).not.toHaveTextContent(/used only by its owner/i)
   })
 
   it.each([
@@ -593,8 +598,8 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     const drawer = await screen.findByTestId('member-crew-summary')
     expect(drawer).toHaveTextContent(reason)
     expect(drawer).not.toHaveTextContent(/unavailable or belongs/i)
-    expect(drawer).not.toHaveTextContent(/This member uses its current memory \(V1\)\./)
-    expect(drawer).not.toHaveTextContent(/only this member can use it/i)
+    expect(drawer).not.toHaveTextContent(/Uses the current shared memory \(V1\), not a private store\./)
+    expect(drawer).not.toHaveTextContent(/used only by its owner/i)
     fireEvent.click(screen.getByRole('button', { name: 'Open crew manager' }))
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=oncall')
   })
@@ -624,7 +629,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     // Ahead of the pinned Changes / Artifacts / Files block, not merely present.
     expect(tabs[0]).toBe(screen.getByTestId('side-panel-leading-tab'))
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
-    expect(tabs[0]).toHaveAccessibleName(/crew summary/i)
+    expect(tabs[0]).toHaveAccessibleName(/crewmate summary/i)
     // Structure, not label: no nested button means no close (or transfer) control.
     expect(tabs[0].querySelectorAll('button')).toHaveLength(0)
     // The chat page's own Summary (session summary) is a different tab and
@@ -661,7 +666,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(within(menu).getByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument()
     expect(within(menu).getByRole('menuitem', { name: 'Side Chat' })).toBeInTheDocument()
     // And the leading tab is never offered there: it is permanent, not a view.
-    expect(within(menu).queryByRole('menuitem', { name: /crew summary/i })).toBeNull()
+    expect(within(menu).queryByRole('menuitem', { name: /crewmate summary/i })).toBeNull()
   })
 
   it('withholds the views this page cannot feed: no Changes chip, no Pins / Issues / Links / Summary rows', async () => {
@@ -685,7 +690,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     await screen.findByTestId('member-crew-summary')
     // Pinned block: Crew summary, Artifacts, Files — and NOT Changes.
     expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual([
-      'Crew summary', 'Artifacts', 'Files',
+      'Crewmate summary', 'Artifacts', 'Files',
     ])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
@@ -787,7 +792,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     fireEvent.click(await rosterRow('oncall'))
     // In flight: thread still renders the cached key, panel is summary-only.
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crewmate summary']),
     )
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     // Confirmed: the slot-bound views return.
@@ -821,7 +826,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     ;(api.memberThread as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
     fireEvent.click(await rosterRow('oncall'))
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crewmate summary']),
     )
     // …while its BODY is the same mounted element, on the same key — not
     // unmounted, not re-keyed to the empty slot.
@@ -873,13 +878,13 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crewmate summary']),
     )
     act(() => { resolveFirst({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: false }) })
     // Still unbound after the stale answer: the refusal stands, no slot-bound views.
     await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
     expect(screen.getByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary'])
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crewmate summary'])
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
 
@@ -890,9 +895,9 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     // confirmed slot, only the slot-free Crew summary is on the strip and the
     // + menu offers nothing slot-bound.
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { thread: new Error('409') })
-    await screen.findByText(/Could not open this member's conversation/i)
+    await screen.findByText(/Could not open this crewmate's conversation/i)
     expect(await screen.findByTestId('member-crew-summary')).toBeInTheDocument()
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary'])
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crewmate summary'])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
@@ -921,7 +926,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crewmate summary']),
     )
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
@@ -1019,9 +1024,27 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
   it('the empty roster\'s call to action lands on the same create form as the header "+"', async () => {
     await renderPage([])
     const cta = await screen.findByTestId('member-empty-cta')
-    expect(cta).toHaveTextContent('Add member')
+    expect(cta).toHaveTextContent('Add a Crewmate')
     fireEvent.click(cta)
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
+  })
+
+  it('the empty roster names the hire path for existing rows only when the registry holds more than `default`', async () => {
+    // Fresh install: `default` alone -- the plain empty state, no pointer.
+    const fresh = await renderPage([])
+    await screen.findByTestId('member-empty-cta')
+    await waitFor(() => expect(api.kirocrewAgents).toHaveBeenCalled())
+    expect(screen.queryByTestId('member-empty-templates')).toBeNull()
+    fresh.unmount()
+    // Upgrader (or a package's agents): the rows are templates now, and the
+    // line says so -- and says the CTA is how they come back.
+    vi.mocked(api.kirocrewAgents).mockImplementation(() =>
+      Promise.resolve({ agents: [{ name: 'default' }, { name: 'Nia' }] }),
+    )
+    await renderPage([])
+    const line = await screen.findByTestId('member-empty-templates')
+    expect(line).toHaveTextContent(/listed as Agent templates/)
+    expect(line).toHaveTextContent(/hiring one by name/)
   })
 
   // The fold is by LOCAL calendar day (`groupActivityDays` floors each entry
@@ -1143,7 +1166,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     await screen.findByTestId('member-wake-error')
     // "Nothing wakes this member" would be a false statement about the member
     // when the request simply failed.
-    expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
+    expect(screen.queryByText(/nothing wakes this crewmate/i)).toBeNull()
   })
 
   it('a saturated activity window renders counters as floors (N+), never exact claims', async () => {
@@ -1608,14 +1631,14 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
     expect(screen.getByTestId('member-wake-patrol')).toHaveTextContent(/auto patrol/i)
     expect(screen.getByTestId('member-wake-patrol')).toHaveTextContent(/every 20m/i)
-    expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
+    expect(screen.queryByText(/nothing wakes this crewmate/i)).toBeNull()
   })
 
   it('without a live patrol the Wake sources empty line still renders', async () => {
     await openDrawerWith({ loops: [loop({ active: false, stopped_reason: 'manual' })] })
     await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
     expect(screen.queryByTestId('member-wake-patrol')).toBeNull()
-    expect(screen.getByText(/nothing wakes this member/i)).toBeInTheDocument()
+    expect(screen.getByText(/nothing wakes this crewmate/i)).toBeInTheDocument()
   })
 
   it('a failed registry read renders the error state, never the affirmative empty state', async () => {
@@ -1731,8 +1754,8 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     const btn = await screen.findByTestId('member-edit-name-button')
     expect(btn.tagName).toBe('BUTTON')
     // The label names what the click does — the whole editor, not the builder.
-    expect(btn).toHaveAccessibleName('Edit member')
-    expect(btn).toHaveAttribute('title', 'Edit member')
+    expect(btn).toHaveAccessibleName('Edit crewmate')
+    expect(btn).toHaveAttribute('title', 'Edit crewmate')
     expect(btn.querySelector('svg')).not.toBeNull()
     // It sits INSIDE the title row, right AFTER the name — never a
     // header-level peer (docked wide, the header carries no panel control at
@@ -1847,7 +1870,7 @@ describe('MembersPage default member, memory and URL', () => {
     // opened on arrival, its thread mounted, and the URL says so.
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-fresh-talker')
     expect(api.memberThread).toHaveBeenCalledWith('fresh-talker')
-    expect(screen.queryByText(/Pick a member/i)).toBeNull()
+    expect(screen.queryByText(/Pick a crewmate/i)).toBeNull()
     expect(currentUrl()).toBe('/members?member=fresh-talker')
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('fresh-talker')
   })
@@ -1936,7 +1959,7 @@ describe('MembersPage default member, memory and URL', () => {
     // Leads with the swap, names the gone member, and wears the warn tone —
     // this line is what stops a message going to the wrong member.
     expect(notice).toHaveTextContent(/^Showing alpha/)
-    expect(notice).toHaveTextContent('“ghost” is no longer on the roster')
+    expect(notice).toHaveTextContent("“ghost” isn't on the roster")
     expect(notice.className).toContain('text-warn')
     expect(screen.queryByRole('alert')).toBeNull()
     expect(currentUrl()).toBe('/members?member=alpha')
@@ -2158,7 +2181,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(api.memberThread).not.toHaveBeenCalled()
       // The roster is the answer surface here, so the notice sits above it.
       const notice = screen.getByTestId('member-gone-roster-notice')
-      expect(notice).toHaveTextContent('“ghost” is no longer on the roster')
+      expect(notice).toHaveTextContent("“ghost” isn't on the roster")
       expect(notice).toHaveAttribute('role', 'status')
       // Tapping a member retires it.
       fireEvent.click(await rosterRow('beta'))

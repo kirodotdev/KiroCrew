@@ -115,11 +115,14 @@ async def test_fork_collision_gets_numeric_suffix(tmp_path):
     _write_template(agents_dir, "mytemplate")
     # An unrelated file already owns the sanitized crew name.
     _write_template(agents_dir, "design-crew")
-    # Crew name "design crew" sanitizes to "design-crew", which is taken.
+    # The typed crew name "design crew" is re-keyed to the id "design-crew" by
+    # the loader's identity migration; the copy's filename derives from that id,
+    # which the unrelated template already owns.
     _seed_config("design crew", "mytemplate")
+    assert "design-crew" in KiroCrewConfig.load().agents
 
     with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
-        resp = await api_agent_fork(_fork_request("mytemplate", {"crew": "design crew"}))
+        resp = await api_agent_fork(_fork_request("mytemplate", {"crew": "design-crew"}))
 
     assert resp.status == 200
     body = json.loads(resp.text)
@@ -234,10 +237,15 @@ async def test_fork_stale_binding_409(tmp_path):
 
 @pytest.mark.asyncio
 async def test_fork_bounds_overlong_crew_name(tmp_path):
-    """A 200-char crew name must yield a bounded copy filename, not OSError."""
+    """The longest crew id the grammar admits must yield a bounded copy filename.
+
+    64 is the member-id cap (a longer key is re-keyed by the loader's identity
+    migration, so a 200-char crew cannot reach this route); it still
+    exceeds the 48-char filename base, which is what this pins.
+    """
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
-    crew = "c" * 200
+    crew = "c" * 64
     _write_template(agents_dir, "mytemplate")
     _seed_config(crew, "mytemplate")
 

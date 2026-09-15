@@ -83,7 +83,7 @@ export function parseSort(raw: string | null): MemberSort {
 }
 
 export interface RosterQuery {
-  /** Free-text needle against the member name (case-insensitive, trimmed). */
+  /** Free-text needle against the member label, id and role (case-insensitive, trimmed). */
   search: string
   starredOnly: boolean
   source: MemberSourceFilter
@@ -91,14 +91,26 @@ export interface RosterQuery {
   sort: MemberSort
 }
 
-interface RosterRowLike { name: string; starred?: boolean; source?: unknown; last_active_ts?: number }
+interface RosterRowLike { name: string; display_name?: string; role?: string; starred?: boolean; source?: unknown; last_active_ts?: number }
+
+/** The label a person reads for a member: its display name, else its id.
+ *  The server already resolves the fallback; the `|| name` here only covers a
+ *  row from an older gateway that omits the field. ONE function so the row,
+ *  the drawer, the sort and the search cannot disagree about what a member is
+ *  called. */
+export function memberLabel(m: { name: string; display_name?: string }): string {
+  return m.display_name || m.name
+}
 
 /** Most-recently-active first (like any IM member list); never-talked members
- *  fall to the bottom alphabetically. `name` is a plain locale-aware sort. */
+ *  fall to the bottom alphabetically. `name` is a plain locale-aware sort over
+ *  the LABEL — what the user reads — with the id as the tiebreak so two members
+ *  sharing a label keep a stable order. */
 export function sortRoster<M extends RosterRowLike>(members: readonly M[], sort: MemberSort): M[] {
   const out = [...members]
-  if (sort === 'name') return out.sort((a, b) => compareText(a.name, b.name))
-  return out.sort((a, b) => (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name))
+  const byLabel = (a: M, b: M) => compareText(memberLabel(a), memberLabel(b)) || compareText(a.name, b.name)
+  if (sort === 'name') return out.sort(byLabel)
+  return out.sort((a, b) => (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || byLabel(a, b))
 }
 
 /** True when `query` narrows the roster by something other than the typed
@@ -123,7 +135,18 @@ export function narrowRoster<M extends RosterRowLike>(
       (!query.starredOnly || !!m.starred) &&
       matchesSource(m, query.source) &&
       (query.status.size === 0 || matchesStatus(signalsOf(m), query.status)) &&
-      (!q || m.name.toLowerCase().includes(q)),
+      (!q || matchesSearch(m, q)),
+  )
+}
+
+/** The typed needle matches the label, the id, or the role — a user who
+ *  remembers "the triage one" finds a member renamed "Checkout", and one who
+ *  typed the id finds it under any label. */
+function matchesSearch(m: RosterRowLike, needle: string): boolean {
+  return (
+    memberLabel(m).toLowerCase().includes(needle) ||
+    m.name.toLowerCase().includes(needle) ||
+    (m.role ?? '').toLowerCase().includes(needle)
   )
 }
 

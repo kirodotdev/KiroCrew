@@ -61,6 +61,7 @@ from kiro_crew.mcp_shared import (
     run_mcp_stdio_loop,
 )
 from kiro_crew.mcp_tools import build_tool_list, dispatch
+from kiro_crew.member_identity import members_named
 from kiro_crew.members import record_activity
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import is_legacy_slack_key, legacy_key
@@ -2344,11 +2345,29 @@ def _do_select_crew(crew: str) -> str:
             ensure_ascii=False,
         )
     if crew not in cfg.agents:
-        available = ", ".join(sorted(cfg.agents)) or "(none)"
-        return json.dumps(
-            {"error": f"unknown crew '{crew}'", "available": available},
-            ensure_ascii=False,
-        )
+        # A crew is addressed by its id (the ``agents`` key). A caller holding
+        # the member's DISPLAY NAME instead — typically the free-text name that
+        # WAS the key before the id split minted one from it, still spelled that
+        # way in a stale skill or steering file — resolves when exactly one
+        # member carries that name. Two members with the same display name is
+        # legal, so an ambiguous handle names the candidate ids instead of
+        # picking one: routing to the wrong member's memory is the worse
+        # failure.
+        by_name = members_named(crew, {n: c.display_name for n, c in cfg.agents.items()})
+        if len(by_name) == 1:
+            crew = by_name[0]
+        else:
+            available = ", ".join(sorted(cfg.agents)) or "(none)"
+            payload: dict[str, str] = {
+                "error": f"unknown crew '{crew}'",
+                "available": available,
+            }
+            if by_name:
+                payload["error"] = (
+                    f"ambiguous crew '{crew}': {len(by_name)} members carry that "
+                    f"display name — select one by id: {', '.join(sorted(by_name))}"
+                )
+            return json.dumps(payload, ensure_ascii=False)
     try:
         b = resolve_agent_bindings(cfg, crew, validate_memory_files=False)
     except UnknownMemoryStore as exc:

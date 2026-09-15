@@ -16,7 +16,7 @@ import { i18nT } from '../i18n/t'
  * SETTINGS_REGISTRY. Declared above `LEGACY_ID_EXACT` because that table
  * maps the card's previous id onto it.
  */
-export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.crew-members'
+export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.crew'
 
 /**
  * Legacy highlight-id migrations. Registry ids are `<tab>.<kebab-label>`, so
@@ -47,10 +47,12 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // The pin toggle's label moved from "prompt" to "turn" vocabulary, shifting
   // the derived id with it.
   'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
-  // The Feature Previews crew card was relabeled from "Crew Members and Crew
-  // Mode" to "Crew Members" when Crew Mode retired; the flag and the card are
-  // the same ones, only the label (and so the id) narrowed.
+  // The Feature Previews crew card's label narrowed twice ("Crew Members and
+  // Crew Mode" when Crew Mode retired, then "Crew" with the crewmate
+  // terminology); the flag and the card are the same ones, only the label (and
+  // so the id) changed, so both earlier ids still land on it.
   'developer.crew-members-and-crew-mode': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
+  'developer.crew-members': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
 }
 
 /** Current registry ids, for fail-safe legacy rewrites below. */

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { Brain, Copy, LockKeyhole, History, SlidersHorizontal, BookOpen, ArrowUpRight } from 'lucide-react'
 import { api } from '../../api/client'
+import { membersRosterQuery } from '../../api/membersQuery'
 import { Card, CardTitle, Btn, Input } from '../../components/ui'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
 import MemoryRecordsEditor, { MEMORY_RECORD_LABELS } from './MemoryRecordsEditor'
@@ -105,6 +106,11 @@ export default function MemberMemoryPanel({ store, summary, onDirtyChange }: { s
   const navigate = useNavigate()
   const leave = useGuardedLeave()
   const privateMemory = summary.memory_version === 2 && !!summary.owner_member
+  // A member conversation exists for a CREWMATE only (explicit enrollment):
+  // a plain crew with private memory is a session agent, so the door to
+  // `/members?member=` is offered only when the owner is on the roster.
+  const roster = useQuery({ ...membersRosterQuery, enabled: privateMemory })
+  const ownerIsCrewmate = privateMemory && !!roster.data?.some(row => row.name === summary.owner_member)
   const legacyMemory = summary.is_default || (
     !summary.owner_member
     && (summary.memory_version === 1 || (summary.memory_version == null && summary.lineage === 'v1'))
@@ -154,9 +160,29 @@ export default function MemberMemoryPanel({ store, summary, onDirtyChange }: { s
       </div>
     </Card>
     {!privateMemory && !summary.is_default && <p className="text-[13px] text-muted">{t('pages.kiroCrewAgentsPage.private_memory_legacy')}</p>}
+    {/* A plain crew with private memory gets no conversation door (that is a
+        crewmate's); one muted line says so, so two stores side by side do not
+        read as one page missing a button for no reason. Only once the roster
+        has answered -- an unanswered read is not "not a crewmate". */}
+    {privateMemory && roster.isSuccess && !ownerIsCrewmate && (
+      <p className="text-[13px] text-muted" data-testid="member-memory-no-conversation">{t('memoryV2.no_conversation_plain')}</p>
+    )}
+    {/* The roster read decides whether the conversation door is offered; when
+        it fails, the door is withheld and the page must say why rather than
+        look like a plain crew's. The hand-off is offered only while nothing
+        on this page is unsaved: it navigates away, and a dirty draft here is
+        exactly what it would destroy. */}
+    {privateMemory && roster.isError && (
+      <ErrorNotice
+        message={t('pages.membersPage.roster_load_failed')}
+        variant="inline"
+        askAgent={!dirty}
+        testId="member-memory-roster-error"
+      />
+    )}
     <Tabs value={section} layoutId={`member-memory-sections-${store}`} onValueChange={selectSection}>
       <div className="mb-4 border-b border-border pb-3"><TabsList aria-label={t('memoryV2.title', { member: summary.owner_member || summary.name })} className="w-full sm:w-fit"><TabsTrigger value="memories" className="min-h-11 flex-1 justify-center sm:flex-none"><Brain className="lucide-inline" />{t('memoryV2.tab_memories')}</TabsTrigger><TabsTrigger value="profile" className="min-h-11 flex-1 justify-center sm:flex-none"><BookOpen className="lucide-inline" />{t('memoryV2.tab_profile')}</TabsTrigger><TabsTrigger value="recovery" className="min-h-11 flex-1 justify-center sm:flex-none"><History className="lucide-inline" />{t('memoryV2.tab_recovery')}</TabsTrigger></TabsList></div>
-      <TabsContent value="memories" forceMount hidden={section !== 'memories'}><MemoryRecordsEditor store={store} privateMemory={privateMemory} onDirtyChange={setRecordsDirty} onRecovery={() => selectSection('recovery')} emptyActions={<>{privateMemory && <Btn className="min-h-11" onClick={openMember}><ArrowUpRight className="lucide-inline" />{t('memoryV2.open_member')}</Btn>}</>} /></TabsContent>
+      <TabsContent value="memories" forceMount hidden={section !== 'memories'}><MemoryRecordsEditor store={store} privateMemory={privateMemory} onDirtyChange={setRecordsDirty} onRecovery={() => selectSection('recovery')} emptyActions={<>{ownerIsCrewmate && <Btn className="min-h-11" onClick={openMember}><ArrowUpRight className="lucide-inline" />{t('memoryV2.open_member')}</Btn>}</>} /></TabsContent>
       <TabsContent value="profile" forceMount hidden={section !== 'profile'} className="space-y-4">{visited.has('profile') && <><p className="text-[13px] text-muted">{t('memoryV2.profile_hint')}</p><MemoryDocCard docKey="preferences" store={store} title={t('pages.overview.memoryTab.preferences')} rows={7} placeholder={t('pages.overview.memoryTab.loading')} read={api.memoryPreferences} write={api.saveMemoryPreferences} onDirtyChange={value => setDirtyDocs(old => old.preferences === value ? old : { ...old, preferences: value })} /><MemoryDocCard docKey="projects" store={store} title={t('pages.overview.memoryTab.projects')} rows={7} placeholder={t('pages.overview.memoryTab.loading')} read={api.memoryProjects} write={api.saveMemoryProjects} onDirtyChange={value => setDirtyDocs(old => old.projects === value ? old : { ...old, projects: value })} /></>}</TabsContent>
       <TabsContent value="recovery" forceMount hidden={section !== 'recovery'} className="space-y-4">{visited.has('recovery') && <><p className="text-[13px] text-muted">{t('memoryV2.recovery_hint')}</p><MemoryBackupsCard store={store} privateMemory={privateMemory} /><MemoryRetiredCard store={store} privateMemory={privateMemory} /><details onToggle={event => setAdvanced(event.currentTarget.open)}><summary className="cursor-pointer rounded-lg border border-border p-3 text-[13px] text-muted"><SlidersHorizontal className="lucide-inline mr-2" />{t('memoryV2.advanced')}</summary>{advanced && <div className="mt-3"><MemoryCarveCard store={store} /></div>}</details></>}</TabsContent>
     </Tabs>

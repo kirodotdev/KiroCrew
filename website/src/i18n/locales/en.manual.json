@@ -3319,7 +3319,7 @@
     "settings": "Settings",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Crew Members"
+    "crew_members": "Crew"
   },
   "pages": {
     "aidlc": {
@@ -4171,8 +4171,8 @@
       "columns_load_failed": "Could not load board columns",
       "folder_update_failed": "Folder update failed",
       "board_update_failed": "Board update failed",
-      "open_crew_members": "Crew Members",
-      "open_crew_members_desc": "Opens the Crew Members page — each member is a standing agent with its own thread.",
+      "open_crew_members": "Crew",
+      "open_crew_members_desc": "Opens the Crew page — each crewmate is a standing agent with its own thread.",
       "open_crew_members_gated_desc": "Opens Settings first, to turn this preview on — the page is not available until you do."
     },
     "connectionsPage": {
@@ -4511,10 +4511,10 @@
       "discard_also_crew_edits": "The crew's other unsaved edits are thrown away with it.",
       "editor_options_load_failed": "Couldn't load the crew editor's workspace, template, and memory store options.",
       "template_edit_later_note": "Pick the closest starting point — you can switch this agent's template anytime after creating.",
-      "template_edit_later_note_member": "Pick the closest starting point — you can switch this member's template anytime after creating.",
-      "private_memory_auto": "This member starts with its own empty private memory. Global Memory V1 stays unchanged.",
-      "private_memory_owned": "Private Memory V2 — only this member can use it.",
-      "private_memory_legacy": "This member uses its current memory (V1).",
+      "template_edit_later_note_member": "Pick the closest starting point — you can switch this crewmate's template anytime after hiring.",
+      "private_memory_auto": "Starts with its own empty private memory. Global Memory V1 stays unchanged.",
+      "private_memory_owned": "Private Memory V2 — used only by its owner.",
+      "private_memory_legacy": "Uses the current shared memory (V1), not a private store.",
       "private_memory_legacy_confirm": "Private memory (V2) starts empty in a new chat. This member cannot return to its previous memory. Existing data and chats stay.",
       "initialize_private_memory": "Create private memory",
       "manage_private_memory": "Manage memory",
@@ -6247,12 +6247,12 @@
           "webhooks_summary": "Another system can start your agent for you — CI, a review bot, a deploy pipeline — by sending a message with an access token you create on the Webhooks page.",
           "webhooks_where": "A new Webhooks page opens from the “Open Webhooks” link that appears on this card in Settings once this is on; it stays out of the sidebar until the page is finished. Turning it off only hides the page again; tokens you created are kept.",
           "webhooks_media_page": "The Webhooks page: token list on the left, the “Let an outside system wake up your agent” setup on the right.",
-          "crew_summary": "Crew Members lists every agent you have and what each is driving now, with a thread per member. Unrelated to “Chat on a crew” below, which is about another machine.",
-          "crew_where": "“Crew Members” appears in the sidebar under Sessions once this is on; the New menu’s entry opens it, or this card while off.",
-          "crew_media_members": "The Crew Members page, with one member selected and its activity panel open."
+          "crew_summary": "Crew lists every crewmate you have and what each is driving now, with a thread per crewmate. Unrelated to “Chat on a crew” below, which is about another machine.",
+          "crew_where": "“Crew” appears in the sidebar under Sessions once this is on; the New menu’s entry opens it, or this card while off.",
+          "crew_media_members": "The Crew page (Your Crewmates), with one crewmate selected and its activity panel open."
         },
-        "crew_members": "Crew Members",
-        "crew_members_desc": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
+        "crew_members": "Crew",
+        "crew_members_desc": "The Crew page: every crewmate you have, each with its own thread. Unrelated to “Chat on a crew” below, which is about another machine. Still being built, so it is not offered until you turn this on."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",
@@ -6728,10 +6728,10 @@
     "filter_all": "All",
     "clear_search": "Clear search",
     "remembered_count": "Saved memories: {{count}}",
-    "private_status": "Private to this member · Memory V2",
+    "private_status": "Private to its owner · Memory V2",
     "source_unknown": "Source not recorded",
     "copy_limit": "Select up to 50 items",
-    "empty_title": "A fresh start for this member",
+    "empty_title": "A fresh start: nothing remembered yet",
     "empty_body": "Private memory grows as you work. Copy selected memories here; the source stays unchanged.",
     "no_matches": "No memories match your search",
     "no_matches_hint": "Try another phrase or clear the filters.",
@@ -6749,8 +6749,9 @@
     "facts_label": "Facts",
     "rules_label": "Lessons",
     "experiences_label": "Experiences",
-    "memory_kinds_explanation": "Facts save details. Lessons guide the member’s work. Experiences are events the member can recall.",
-    "open_member": "Open member conversation",
+    "memory_kinds_explanation": "Facts save details. Lessons guide the owner’s work. Experiences are events the owner can recall.",
+    "open_member": "Open crewmate conversation",
+    "no_conversation_plain": "This agent is not a crewmate, so it has no conversation of its own to open. Hire it from the Crew page to give it one.",
     "retry_read": "Retry memory access",
     "cancel_restore": "Cancel staged restore",
     "restore_cancelled": "Staged restore cancelled. Current memory and backup are unchanged.",

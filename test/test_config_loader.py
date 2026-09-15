@@ -48,6 +48,7 @@ from kiro_crew.config.loader import (
     validate_kiro_agent_references,
     workspace_dir_for,
 )
+from kiro_crew.member_identity import is_valid_member_id
 from kiro_crew.memory_stores import (
     UnknownMemoryStore,
     memory_store_name_defect,
@@ -679,6 +680,12 @@ _safe_name_st = st.text(
     max_size=15,
 )
 
+# An ``agents`` map KEY is a member id and must sit inside the member-id grammar
+# (no leading/trailing ``-``/``_``): a key outside it is deliberately re-keyed by
+# the load-time migration (``MIGRATE_MEMBER_IDS``), so a property that asserts
+# "every key survives the load verbatim" has to generate keys the grammar admits.
+_member_id_st = _safe_name_st.filter(is_valid_member_id)
+
 # Memory-store names are stricter than the generic identifier alphabet above: a
 # store name becomes a single path segment, so ``memory_store_name_defect``
 # refuses an underscore, an outer hyphen and a Windows device basename. Such a
@@ -768,12 +775,12 @@ _kirocrew_config_st = st.builds(
     dashboard=_dashboard_config_st,
     hooks=st.just({}),
     agents=st.dictionaries(
-        keys=_safe_name_st,
+        keys=_member_id_st,
         values=_kirocrew_agent_config_st,
         min_size=0,
         max_size=3,
     ),
-    default_agent=st.one_of(st.just(""), _safe_name_st),
+    default_agent=st.one_of(st.just(""), _member_id_st),
     workspaces=st.dictionaries(
         keys=_safe_name_st,
         values=_workspace_config_st,
@@ -1463,7 +1470,7 @@ class TestAgentWorkspaceBindingsProperties:
     # Feature: agent-workspace-bindings, Property 8: Kiro agent validation warnings
     @given(
         agents_data=st.dictionaries(
-            keys=_safe_name_st,
+            keys=_member_id_st,
             values=st.builds(
                 KiroCrewAgentConfig,
                 kiro_agent=st.text(min_size=0, max_size=20),
@@ -1615,7 +1622,7 @@ class TestAgentWorkspaceBindingsProperties:
     # Feature: agent-workspace-bindings, Property 2: Agents parsing with duplicate kiro_agent values
     @given(
         agents_data=st.dictionaries(
-            keys=_safe_name_st,
+            keys=_member_id_st,
             values=st.fixed_dictionaries(
                 {
                     "kiro_agent": st.sampled_from(["kirocrew", "oncall-agent", "custom", ""]),
@@ -2132,7 +2139,7 @@ class TestMultiAgentOrchestrationProperties:
     # Feature: multi-agent-orchestration, Property 3: Existing agents preserved on load
     @given(
         agents_data=st.dictionaries(
-            keys=_safe_name_st,
+            keys=_member_id_st,
             values=st.fixed_dictionaries(
                 {
                     "kiro_agent": st.text(min_size=1, max_size=15),

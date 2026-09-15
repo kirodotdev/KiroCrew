@@ -7610,6 +7610,48 @@
       "defaultValue": "kirocrew"
     },
     {
+      "path": "agents.*.display_name",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Display Name",
+      "help": "What the member is called on every surface. Free text, renamed freely with zero blast radius. Empty means the member's id (the agents map key) is its label. The id itself is system-minted from the display name at creation and never changes.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "agents.*.role",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Role",
+      "help": "The member's job title, e.g. 'Oncall Triage Engineer'. Supplied by the template it was hired from; optional (typed or empty) for a hand-made member.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "agents.*.legacy_key",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Legacy Key",
+      "help": "The agents-map key this row had before the member-id migration re-keyed it (a name outside the member-id grammar). Written once by the migration, never by a user; the durable handle a config.local.json row still keyed by that string is read under, so an overlay the loader never rewrites keeps following the member through renames. Empty for every row created with a well-formed id.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.starred",
       "kind": "core",
       "type": "boolean",

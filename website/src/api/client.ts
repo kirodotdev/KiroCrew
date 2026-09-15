@@ -2301,14 +2301,39 @@ export interface WebhookTestResult {
   error?: string
 }
 
+/** Answer of POST /api/members. */
+export interface HireMemberResult {
+  ok?: boolean
+  error?: string
+  code?: string
+  /** The minted member id — what `/members?member=` resolves. A hire is
+   *  atomic (the copy exists before the row, the row is published bound to
+   *  it), so a 200 always means the member owns its copy; the roster row is
+   *  the read path for the binding and the label. */
+  id?: string
+}
+
 /** One row of GET /api/members — a global crew as a Crew Members roster entry.
  *  Crew-record fields (kiro_agent, workspace, memory_store, model, …) are
  *  spread verbatim from the backend dataclass; only the fields the page reads
  *  are typed here, and extras pass through untyped by design so a new backend
  *  field is not a frontend break. */
 export interface MemberRosterRow {
-  /** Crew name — the display identity and the agent the DM thread pins to. */
+  /** The member's ID — the crew record key, the agent the DM thread pins to,
+   *  and the handle every route addresses. System-minted, immutable. Read
+   *  `display_name` for anything a person sees. */
   name: string
+  /** What the user calls the member. Server-resolved: the id when the record
+   *  stores no label, so a consumer never re-implements the fallback. Free
+   *  rename via PUT /api/agents/{name} { display_name }. */
+  display_name?: string
+  /** Job title, e.g. "Oncall Triage Engineer". Optional for a hand-made member. */
+  role?: string
+  /** When `kiro_agent` is this member's OWN copy (copy-on-hire, or the editor's
+   *  first-edit fork), the template that copy was made from; '' when the member
+   *  is bound to a shared template directly. Lets the drawer say
+   *  "reviewer — customized copy" instead of presenting the copy's stem as a template. */
+  template_origin?: string
   /** Stable path-safe slug deriving the member dir and the slot key. */
   slug: string
   /** The pinned DM thread's slot key ('' until first open / unbound). */
@@ -3086,6 +3111,12 @@ export const api = {
     fetch('/api/agents/resolved-model?agent=' + encodeURIComponent(agent)).then(j),
   syncKirocrewAgents: () => post('/api/agents/sync', {}).then(j),
   createKirocrewAgent: (body: object) => post('/api/agents', body).then(j),
+  /** Hire a crewmate from a local Custom Agent file: `source` and a non-blank
+   *  `display_name` are required (the name is the owner's; a missing or blank
+   *  one is 400 `missing_display_name` before anything is written). Creates
+   *  the wrapper row (id minted from the name), copies the source definition
+   *  into a member-owned agent file and enrolls the crewmate, atomically. */
+  hireMember: (body: object) => post('/api/members', body).then(j) as Promise<HireMemberResult>,
   // Crew Members page — roster of GLOBAL crews with DM-thread binding and the
   // cheap live-status fields the backend can answer without IO (richer live
   // detail rides the already-subscribed WS `slots` frames).

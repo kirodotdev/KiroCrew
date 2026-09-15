@@ -7,6 +7,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { api, type WebhookTokenEntry } from '../api/client'
+import { memberLabel } from './members/rosterFilter'
 import { useProvider } from '../providers'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { FOLDER_COLOR_PALETTE } from '../components/folderColorCatalog'
@@ -45,6 +46,11 @@ import { i18nT } from '../i18n/t'
 
 // An example input value, independent of the display language.
 const HEX_COLOR_EXAMPLE = '#4f8ef7'
+
+// Server-side cap on a member's display name and role (member_identity.DISPLAY_NAME_MAX_LEN).
+// Mirrored on the inputs so the browser stops the user at the bound instead of the
+// server refusing the submit (the server never truncates: an over-long value is a 400).
+const MEMBER_LABEL_MAX_LEN = 80
 import ErrorNotice from '../components/ErrorNotice'
 /** Common shape returned by the agent/workspace mutation endpoints. */
 interface AgentMutationResult {
@@ -56,7 +62,11 @@ interface AgentMutationResult {
 
 /** Fields sent when creating a crew. */
 interface CreatePayload {
+  /** What the user typed. The server mints the crew's id from it (a name
+   *  already inside the id grammar IS the id) and stores the typed text as
+   *  the display name. */
   name: string
+  role: string
   kiro_agent: string
   workspace: string
   memory_store: string
@@ -64,21 +74,27 @@ interface CreatePayload {
   session_color: string
 }
 
-/** Editable fields sent when updating an existing agent binding. */
+/** Editable fields sent when updating an existing agent binding. Every field
+ *  but `avatar` is present only when THIS editor changed it: the server writes
+ *  the keys the body carries, so an echo would revert what another surface
+ *  committed meanwhile (a rename, a rebind, a cleared pin). */
 interface AgentUpdatePayload {
-  kiro_agent: string
-  workspace: string
-  memory_store: string
+  /** Rename = this field only; the record key never moves. */
+  display_name?: string
+  role?: string
+  kiro_agent?: string
+  workspace?: string
+  memory_store?: string
   /** Free-text routing intent for orchestrator crew selection. */
-  triggers: string
+  triggers?: string
   /** '' = inherit (the kiro template's pin, then the global fallback). */
-  model: string
+  model?: string
   /** '' = inherit the global default effort. Otherwise one of the levels the
    *  backend accepts (low..max); a level is only honoured on a model that
    *  supports effort at all. */
-  reasoning_effort: string
+  reasoning_effort?: string
   /** Default session color (#rrggbb hex) for new sessions. '' = no default. */
-  session_color: string
+  session_color?: string
   /** The face this save commits. Three spellings the backend tells apart:
    *  a record pins a face; `null` is an explicit RESET to the name-derived face;
    *  `{}` says this save has no opinion about the face at all, and on a crew
@@ -697,9 +713,14 @@ function CrewCard({ agent, isDefault, shared, onOpen }: {
           {/* Kept to a single line: a wrapping badge row made this header one
               line taller than its neighbours', which knocked the binding grids
               out of alignment across the row. The name truncates and the
-              badges hold their size, so the row can never wrap. */}
+              badges hold their size, so the row can never wrap. The id beside
+              a renamed member is a bordered mono chip, not a second grey word:
+              read cold, two adjacent grey tokens (id + source badge) were a
+              guess, and a label+id pair beside an id-only card read as one
+              member. The chip says "this is an identifier" without a caption. */}
           <div className="flex items-center gap-2 min-w-0">
-            <span className="truncate font-mono text-[14px] font-semibold text-text-strong">{agent.name}</span>
+            <span className={`truncate text-[14px] font-semibold text-text-strong ${memberLabel(agent) === agent.name ? 'font-mono' : ''}`} data-testid="crew-card-label">{memberLabel(agent)}</span>
+            {memberLabel(agent) !== agent.name && <span className="shrink-0 truncate max-w-[40%] rounded border border-border bg-bg-elevated px-1 font-mono text-[11px] text-muted" title={i18nT('pages.kiroCrewAgentsPage.agent_id')} aria-label={`${i18nT('pages.kiroCrewAgentsPage.agent_id')}: ${agent.name}`} data-testid="crew-card-id">{agent.name}</span>}
             {isDefault && <Badge variant="ok" className="shrink-0">{i18nT('pages.kiroCrewAgentsPage.default_2')}</Badge>}
             {agent.source && agent.source !== 'kirocrew' && <SourceBadge source={agent.source} />}
           </div>
@@ -785,11 +806,12 @@ function CrewRow({ agent, isDefault, shared, onOpen }: {
             <div className="flex items-center gap-2 min-w-0">
               <Clickable
                 onClick={onOpen}
-                aria-label={i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: agent.name })}
-                className="truncate rounded font-mono text-[12.5px] font-semibold text-text-strong focus-ring"
+                aria-label={i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: memberLabel(agent) })}
+                className={`truncate rounded text-[12.5px] font-semibold text-text-strong focus-ring ${memberLabel(agent) === agent.name ? 'font-mono' : ''}`}
               >
-                {agent.name}
+                {memberLabel(agent)}
               </Clickable>
+              {memberLabel(agent) !== agent.name && <span className="shrink-0 truncate max-w-[30%] rounded border border-border bg-bg-elevated px-1 font-mono text-[11px] text-muted" title={i18nT('pages.kiroCrewAgentsPage.agent_id')} aria-label={`${i18nT('pages.kiroCrewAgentsPage.agent_id')}: ${agent.name}`} data-testid="crew-row-id">{agent.name}</span>}
               {isDefault && <Badge variant="ok" className="shrink-0">{i18nT('pages.kiroCrewAgentsPage.default_2')}</Badge>}
               {agent.source && agent.source !== 'kirocrew' && <SourceBadge source={agent.source} />}
             </div>
@@ -820,6 +842,20 @@ function CrewRow({ agent, isDefault, shared, onOpen }: {
       </TableCell>
     </TableRow>
   )
+}
+
+/** True when a 409 `agent_exists` body says the taken id belongs to a row that
+ *  is NOT a crewmate (`existing.crewmate === false`). Anything else -- no body,
+ *  another code, an older server -- is false, so the caller falls back to the
+ *  plain "already exists" sentence rather than promising a remedy that may not
+ *  apply. */
+export function collidesWithSessionAgent(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown; existing?: { crewmate?: unknown } }
+    return parsed.code === 'agent_exists' && parsed.existing?.crewmate === false
+  } catch {
+    return false
+  }
 }
 
 export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } = {}) {
@@ -915,6 +951,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [memoryStore, setMemoryStore] = useState('default')
   const [triggers, setTriggers] = useState('')
   const [sessionColor, setSessionColor] = useState('')
+  /** Identity wrapper fields. `displayName` is the label a person reads (the
+   *  id when the record stores none); `role` the job title. */
+  const [displayName, setDisplayName] = useState('')
+  const [role, setRole] = useState('')
   const [editModel, setEditModel] = useState(INHERIT_MODEL)
   const [editEffort, setEditEffort] = useState('')
   /** Draft avatar override. null = the name-derived face (no override). */
@@ -1012,6 +1052,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setName(''); setKiroAgent(''); setWorkspace('default'); setMemoryStore('default')
     setTriggers('')
     setSessionColor('')
+    setRole('')
     setSheet(origin ? { mode: 'create', origin } : { mode: 'create' })
   }, [])
   /** The page's own "New crew" entries: no origin, the form closes back onto
@@ -1025,6 +1066,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setKiroAgent(a.kiro_agent); setWorkspace(a.workspace); setMemoryStore(a.memory_store)
     setTriggers(a.triggers || '')
     setSessionColor(a.session_color || '')
+    setDisplayName(a.display_name || a.name)
+    setRole(a.role || '')
     setEditModel(a.model || INHERIT_MODEL)
     setEditEffort(a.reasoning_effort || '')
     // Normalized through the same coercion the renderer applies, so the dirty
@@ -1217,27 +1260,60 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   }, [refetchWorkspaces])
 
   const createMut = useMutation({
-    mutationFn: ({ epoch: _epoch, ...data }: CreatePayload & { epoch: number }) => api.createKirocrewAgent(data),
+    // Two verbs behind one form. From the crew manager the form CREATES a
+    // crew: a plain row bound to a shared template, a session agent. From the
+    // Crew page ("Add a Crewmate") it HIRES: the same fields -- the template
+    // picked, the name typed, Hire pressed -- go to POST /api/members, which
+    // copies the template into the crewmate's own definition, gives it private
+    // memory and enrolls it, so the roster the form returns to actually lists
+    // what was just added. A plain create there would land on a Crew page that
+    // omits the row and says it is not on the roster.
+    mutationFn: ({ epoch: _epoch, ...data }: CreatePayload & { epoch: number }) =>
+      fromMembers
+        ? api.hireMember({
+            source: { kind: 'local', agent: data.kiro_agent },
+            display_name: data.name,
+            role: data.role,
+            workspace: data.workspace,
+            triggers: data.triggers,
+            session_color: data.session_color,
+          }).then((r): AgentMutationResult => ({ error: r.error, name: r.id }))
+        : api.createKirocrewAgent(data),
     onSuccess: (r: AgentMutationResult, vars) => {
       refetchAgents()
-      // The Members roster sent the user here to add a member; the member now
-      // exists, so the next step they want is its thread, not the crew list.
-      // Only for the panel the write was fired from (see settleFor). Exact
-      // name, not slug — MembersPage's `?member=` resolves by name.
+      // The Crew page sent the user here to add a crewmate; the crewmate now
+      // exists and is enrolled, so the next step they want is its thread, not
+      // the crew list. Only for the panel the write was fired from (see
+      // settleFor).
       if (fromMembers && !r.error && vars.epoch === sheetEpoch.current) {
         dismissSheet()
-        navigate(`/members?member=${encodeURIComponent(vars.name)}`)
+        // By the MINTED id the hire answered with, not the typed text: for
+        // "case competition" the id is "case-competition", and the roster's
+        // `?member=` resolves by id.
+        navigate(`/members?member=${encodeURIComponent(r.name || vars.name)}`)
         return
       }
       settleFor(vars.epoch, r.error)
     },
     onError: (e: Error, vars) => {
       // The server's wording is the crew manager's ("Agent 'x' already
-      // exists"); inside the member-titled form the same outcome is said in
-      // the form's own word. 409 is the create route's one "name taken"
-      // answer, so the status is the signal, not the message text.
+      // exists"); inside the crewmate-titled form the same outcome is said in
+      // the form's own word. 409 is the one "name taken" answer of both the
+      // create and the hire, so the status is the signal, not the message text.
       if (fromMembers && e instanceof ApiError && e.status === 409) {
-        settleFor(vars.epoch, i18nT('pages.kiroCrewAgentsPage.member_already_exists', { name: vars.name }))
+        // The 409 names the colliding row's KIND (`existing.crewmate`). "A
+        // crewmate named X already exists" is false when X is a plain crew or
+        // a template the upgrade left un-enrolled -- the upgrader hiring their
+        // own agent under its own name, the most natural input after the empty
+        // roster said "hire one by name" -- and that case has a remedy worth
+        // naming. Unknown kind (an older body, a slug collision) keeps the
+        // plain sentence.
+        settleFor(
+          vars.epoch,
+          collidesWithSessionAgent(e.body)
+            ? i18nT('pages.kiroCrewAgentsPage.member_id_taken_by_agent', { name: vars.name })
+            : i18nT('pages.kiroCrewAgentsPage.member_already_exists', { name: vars.name }),
+        )
         return
       }
       settleFor(vars.epoch, e.message || (fromMembers ? i18nT('pages.kiroCrewAgentsPage.failed_to_create_member') : i18nT('pages.kiroCrewAgentsPage.failed_to_create_agent')))
@@ -1289,7 +1365,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // 'kirocrew' default: that default is what silently turns a new crew into an
     // alias for the DEFAULT agent (#1684).
     if (!kiroAgent) { setSheetHint(i18nT('pages.kiroCrewAgentsPage.agent_template_is_required')); return }
-    createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: 'default', triggers, session_color: sessionColor, epoch: sheetEpoch.current })
+    createMut.mutate({ name: n, role: role.trim(), kiro_agent: kiroAgent, workspace, memory_store: 'default', triggers, session_color: sessionColor, epoch: sheetEpoch.current })
   }
 
   /** Template switches from the definition pane persist IMMEDIATELY. The
@@ -1398,19 +1474,38 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // post-save close.
     const epoch = sheetEpoch.current
     const name = editing
+    // EVERY field rides only when THIS editor changed it, compared against the
+    // record the sheet loaded (`editingAgent`, normalized the way `openEdit`
+    // seeded the inputs, so like is compared with like). The server writes
+    // exactly the keys the body carries, so an untouched value is not echoed
+    // back over what another surface committed while this sheet was open --
+    // a rename from the members page, a rebind from a second tab, a model pin
+    // cleared elsewhere -- since an echo would silently revert it. Clears are
+    // edits and still ride: a label cleared to the id (the server stores ''),
+    // a model set back to INHERIT_MODEL (normalized to '' server-side), an
+    // effort or colour emptied -- each differs from the loaded value, so it is
+    // in the body, and a skipped field never makes clearing impossible.
+    // `avatar` below always rides (its `{}` spelling IS "nothing to say"),
+    // which also keeps a save off the server's binding-only fast path.
+    const saved = editingAgent
+    const nextDisplayName = displayName.trim() || name
+    const changed = <T,>(next: T, loaded: T | undefined): boolean => !saved || next !== loaded
+    const displayNameEdited = changed(nextDisplayName, saved && (saved.display_name || saved.name))
+    const roleEdited = changed(role.trim(), saved && (saved.role || ''))
     const data = {
-      kiro_agent: kiroAgent,
-      workspace,
-      memory_store: memoryStore,
-      triggers,
-      // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
-      // clearing a pin is a real write rather than a skipped field.
-      model: editModel,
-      // Sent unconditionally for the same reason as `model`: '' is a real
-      // value (clear the pin), so a skipped field would make clearing
-      // impossible.
-      reasoning_effort: editEffort,
-      session_color: sessionColor,
+      ...(displayNameEdited ? { display_name: nextDisplayName } : {}),
+      ...(roleEdited ? { role: role.trim() } : {}),
+      ...(changed(kiroAgent, saved?.kiro_agent) ? { kiro_agent: kiroAgent } : {}),
+      ...(changed(workspace, saved?.workspace) ? { workspace } : {}),
+      ...(changed(memoryStore, saved?.memory_store) ? { memory_store: memoryStore } : {}),
+      ...(changed(triggers, saved && (saved.triggers || '')) ? { triggers } : {}),
+      ...(changed(editModel, saved && (saved.model || INHERIT_MODEL)) ? { model: editModel } : {}),
+      ...(changed(editEffort, saved && (saved.reasoning_effort || ''))
+        ? { reasoning_effort: editEffort }
+        : {}),
+      ...(changed(sessionColor, saved && (saved.session_color || ''))
+        ? { session_color: sessionColor }
+        : {}),
     }
     // Three spellings, and the difference between the last two is load-bearing:
     // a draft the user built; `null` when they explicitly RESET (see
@@ -1517,7 +1612,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   }
 
   const filtered = agents.filter(a =>
-    !filter || (a.name + ' ' + a.kiro_agent + ' ' + a.workspace + ' ' + a.memory_store).toLowerCase().includes(filter.toLowerCase())
+    !filter || (a.name + ' ' + (a.display_name || '') + ' ' + (a.role || '') + ' ' + a.kiro_agent + ' ' + a.workspace + ' ' + a.memory_store).toLowerCase().includes(filter.toLowerCase())
   )
 
   /** Workspaces and memory stores that more than one crew points at. Surfacing
@@ -1638,6 +1733,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
     if (triggers !== (editingAgent.triggers || '')) out.add('routing')
     if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
+    if ((displayName.trim() || editingAgent.name) !== (editingAgent.display_name || editingAgent.name)) out.add('overview')
+    if (role.trim() !== (editingAgent.role || '')) out.add('overview')
     // Every tier in one comparison: ghost traits normalize through
     // ghostTraitsFrom (flat record, stable key order), an image override through
     // imageAvatarFrom and a pack through packAvatarFrom — so a picture pick, a
@@ -1683,7 +1780,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (schedDraft) out.add('schedules')
     if (capabilityDirty) out.add('capabilities')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft, editAvatar, capabilityDirty])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, displayName, role, schedDraft, editAvatar, capabilityDirty])
 
   /** Rail-driven pane changes route through here: leaving the schedules pane
    *  while a schedule draft is open asks before destroying the typed work
@@ -1993,9 +2090,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             />
           )}
           <div className="flex-1" />
+          {/* The crew manager's own create, in ITS page's vocabulary: an agent.
+              "Add a Crewmate" belongs to the Crew page's door, whose form hires;
+              this button creates a plain crew that enrolls nobody, and a
+              crewmate label on it promised a teammate that never reached the
+              roster. */}
           <SendBtn onClick={openCreate} data-testid="new-crew">
             <Plus className="lucide-inline" aria-hidden="true" />
-            {i18nT('pages.kiroCrewAgentsPage.add_crew_member')}
+            {i18nT('pages.kiroCrewAgentsPage.add_agent')}
           </SendBtn>
         </div>
 
@@ -2068,13 +2170,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             ))}
             <Clickable
               onClick={openCreate}
-              aria-label={i18nT('pages.kiroCrewAgentsPage.add_crew_member')}
+              aria-label={i18nT('pages.kiroCrewAgentsPage.add_agent')}
               className="flex min-h-[150px] flex-col items-center justify-center gap-2 rounded-lg border
                          border-dashed border-border-strong text-muted transition-colors focus-ring
                          hover:border-accent hover:bg-accent-subtle hover:text-accent"
             >
               <Plus className="lucide-inline" aria-hidden="true" />
-              <span className="text-[13px]">{i18nT('pages.kiroCrewAgentsPage.add_crew_member')}</span>
+              <span className="text-[13px]">{i18nT('pages.kiroCrewAgentsPage.add_agent')}</span>
             </Clickable>
           </div>
         )}
@@ -2088,11 +2190,12 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
              accessible name on its own — it has to say what you are doing to it.
              An explicit aria-label outranks Radix's aria-labelledby, and the
              DialogTitle still has to EXIST or Radix warns. */
-          /* Asked for from the Crew Members roster, the form speaks that
-             page's vocabulary: "Add crew member", the action the user pressed,
-             not "Create Agent" — the app never says the two are one thing. */
+          /* Asked for from the Crew page, the form speaks that page's
+             vocabulary -- "Add a Crewmate", the action the user pressed, and it
+             hires; opened from this page it is "Add an agent" and creates a
+             plain crew. The app never says the two are one thing. */
           aria-label={creating
-            ? i18nT('pages.kiroCrewAgentsPage.add_crew_member')
+            ? i18nT(fromMembers ? 'pages.kiroCrewAgentsPage.add_crew_member' : 'pages.kiroCrewAgentsPage.add_agent')
             : i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: editing })}
           /* Radix closes on an outside pointerdown and on Escape. Dismissing
              mid-write is DELIBERATELY still allowed: the sheetEpoch/settleFor
@@ -2134,8 +2237,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   <CrewStateAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} onImageError={() => setError(i18nT(packAvatarFrom(editAvatar) ? 'components.avatarBuilder.pack_load_failed' : 'components.avatarBuilder.image_load_failed'))} />
                 </CrewAvatarButton>
               )}
-              <DialogTitle className="flex-1 font-mono">
-                {creating ? i18nT('pages.kiroCrewAgentsPage.add_crew_member') : editing}
+              <DialogTitle className={creating || !editingAgent?.display_name || editingAgent.display_name === editing ? 'flex-1 font-mono' : 'flex-1'}>
+                {creating ? i18nT(fromMembers ? 'pages.kiroCrewAgentsPage.add_crew_member' : 'pages.kiroCrewAgentsPage.add_agent') : (editingAgent?.display_name || editing)}
+                {!creating && editingAgent?.display_name && editingAgent.display_name !== editing && (
+                  <span className="ml-2 rounded border border-border bg-bg-elevated px-1 font-mono text-[12px] font-normal text-muted" title={i18nT('pages.kiroCrewAgentsPage.agent_id')} aria-label={`${i18nT('pages.kiroCrewAgentsPage.agent_id')}: ${editing}`} data-testid="crew-editor-id">{editing}</span>
+                )}
               </DialogTitle>
               {!creating && editingAgent?.source && <SourceBadge source={editingAgent.source} />}
             </div>
@@ -2177,7 +2283,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               <div className="flex flex-col gap-6">
                 <section className="flex flex-col gap-3">
                   <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.identity')}</h3>
-                  <Field label={i18nT('pages.kiroCrewAgentsPage.name')}>
+                  <Field label={i18nT('pages.kiroCrewAgentsPage.name')} hint={i18nT('pages.kiroCrewAgentsPage.name_is_display_name_hint')}>
                     <Input
                       placeholder={i18nT('pages.kiroCrewAgentsPage.e_g_oncall')}
                       value={name}
@@ -2185,7 +2291,17 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                       // sent; editing the name answers it, so the notice goes
                       // and the Create button reads as safe to press again.
                       onChange={e => { setName(e.target.value); setError('') }}
+                      maxLength={MEMBER_LABEL_MAX_LEN}
                       autoFocus
+                    />
+                  </Field>
+                  <Field label={i18nT('pages.kiroCrewAgentsPage.role')} hint={i18nT('pages.kiroCrewAgentsPage.role_hint')}>
+                    <Input
+                      placeholder={i18nT('pages.kiroCrewAgentsPage.role_placeholder')}
+                      value={role}
+                      onChange={e => setRole(e.target.value)}
+                      maxLength={MEMBER_LABEL_MAX_LEN}
+                      data-testid="crew-role-input"
                     />
                   </Field>
                 </section>
@@ -2232,6 +2348,33 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                     : 'flex min-w-0 flex-1 flex-col gap-3.5 overflow-y-auto px-5 py-4'}
                 >
                   {pane === 'overview' && (
+                    <>
+                      {/* Identity wrapper on the LANDING pane: what you call the
+                          crew and its job title, the two things a user opening
+                          the editor "to rename it" is looking for. The id
+                          (`editing`, pinned in the header) never changes — a
+                          rename here is display_name only, so nothing keyed on
+                          the crew (member dir, DM thread, crons, webhooks) moves. */}
+                      <div className="grid gap-3 sm:grid-cols-2" data-testid="crew-identity-fields">
+                        <Field label={i18nT('pages.kiroCrewAgentsPage.display_name')} hint={i18nT('pages.kiroCrewAgentsPage.display_name_hint', { id: editing })}>
+                          <Input
+                            value={displayName}
+                            onChange={e => setDisplayName(e.target.value)}
+                            placeholder={editing}
+                            maxLength={MEMBER_LABEL_MAX_LEN}
+                            data-testid="crew-display-name-input"
+                          />
+                        </Field>
+                        <Field label={i18nT('pages.kiroCrewAgentsPage.role')} hint={i18nT('pages.kiroCrewAgentsPage.role_hint')}>
+                          <Input
+                            value={role}
+                            onChange={e => setRole(e.target.value)}
+                            placeholder={i18nT('pages.kiroCrewAgentsPage.role_placeholder')}
+                            maxLength={MEMBER_LABEL_MAX_LEN}
+                            data-testid="crew-role-input"
+                          />
+                        </Field>
+                      </div>
                     <CrewOverviewPane
                       // The largest face in the editor opens the builder too, so
                       // the hub does not teach the opposite lesson from the
@@ -2258,6 +2401,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                       webhooksUnknown={webhooksQuery.isError}
                       onNavigate={goToPane}
                     />
+                    </>
                   )}
 
                   {editing && <CrewCapabilitiesPane

@@ -153,19 +153,19 @@ describe('MembersPage filters', () => {
     // The menu trigger is the sidebar's 24px filter button, docked in the field.
     const trigger = screen.getByTestId('member-filter-menu')
     expect(trigger.className).toMatch(/\bw-6\b/)
-    expect(trigger.getAttribute('aria-label')).toBe('Sort and filter members')
+    expect(trigger.getAttribute('aria-label')).toBe('Sort and filter crewmates')
   })
 
   it('header reads "N of M" while a filter narrows the list, plain count otherwise', async () => {
     await renderPage()
-    expect(screen.getByTestId('member-count')).toHaveTextContent('5 members')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('5 crewmates')
     await openFilters()
     fireEvent.click(screen.getByTestId('member-filter-starred'))
-    expect(screen.getByTestId('member-count')).toHaveTextContent('1 of 5 members')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('1 of 5 crewmates')
     fireEvent.click(screen.getByTestId('member-filter-starred'))
     // The search box is not a "filter" for this purpose: it is transient.
     fireEvent.change(screen.getByTestId('member-search'), { target: { value: 'pkg' } })
-    expect(screen.getByTestId('member-count')).toHaveTextContent('5 members')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('5 crewmates')
   })
 
   it('starred-only keeps just the starred rows and persists the toggle', async () => {
@@ -236,7 +236,7 @@ describe('MembersPage filters', () => {
     fireEvent.click(screen.getByTestId('member-filter-source-package'))
     expect(names()).toEqual([])
     expect(screen.getByTestId('member-filtered-out')).toBeInTheDocument()
-    expect(screen.queryByText(/No crew members yet/i)).toBeNull()
+    expect(screen.queryByText(/No crewmates yet/i)).toBeNull()
     fireEvent.click(screen.getByTestId('member-filters-clear'))
     expect(names()).toHaveLength(5)
     expect(localStorage.getItem('mc-members-starred-only')).toBe('0')
@@ -265,7 +265,7 @@ describe('MembersPage filters', () => {
     // A second status widens the set (OR), so a member in either state shows.
     fireEvent.click(screen.getByTestId('member-filter-status-unread'))
     expect(names()).toEqual(['conductor', 'pkg-a'])
-    expect(screen.getByTestId('member-count')).toHaveTextContent('2 of 4 members')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('2 of 4 crewmates')
     fireEvent.click(screen.getByTestId('member-filter-status-working'))
     // Only "unread" left and nothing is unread: the filters, not the roster, emptied the list.
     expect(names()).toEqual([])
@@ -342,7 +342,7 @@ describe('MembersPage star', () => {
     const notice = await screen.findByTestId('member-star-error')
     expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'false')
     // Localized copy, not the raw server text.
-    expect(notice).toHaveTextContent("Could not update this member's star.")
+    expect(notice).toHaveTextContent("Could not update this crewmate's star.")
     expect(notice).not.toHaveTextContent('Forbidden')
     // The journaled report is recovered from the THROWN message (not the
     // localized one) and handed to ErrorNotice explicitly, so the agent
@@ -350,7 +350,7 @@ describe('MembersPage star', () => {
     expect(findReport).toHaveBeenCalledWith('Forbidden')
     const noticeProps = (ErrorNoticeMock as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]
     expect(noticeProps?.report).toEqual(FAKE_REPORT)
-    expect(noticeProps?.message).toBe("Could not update this member's star.")
+    expect(noticeProps?.message).toBe("Could not update this crewmate's star.")
     // A later successful toggle clears the stale notice.
     fireEvent.click(screen.getByTestId('member-star-pkg-b'))
     await waitFor(() => expect(screen.queryByTestId('member-star-error')).toBeNull())

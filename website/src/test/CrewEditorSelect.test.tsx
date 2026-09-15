@@ -243,7 +243,7 @@ async function openEditor(name: string): Promise<HTMLElement> {
 /** Open the editor dialog in create mode and return the dialog element. */
 async function openCreate(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'Add crew member' })
+  return await screen.findByRole('dialog', { name: 'Add an agent' })
 }
 
 describe('crew editor — collision warning', () => {
@@ -330,7 +330,7 @@ describe('crew editor — collision warning', () => {
     expect(within(panel).queryByText(/Also used by/)).not.toBeInTheDocument()
     const memoryField = within(panel).getByText('Memory Store', { exact: true }).parentElement!
     expect(within(memoryField).getByText('default', { exact: true })).toBeVisible()
-    expect(within(panel).getByText(/This member uses its current memory \(V1\)\./)).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
+    expect(within(panel).getByText(/Uses the current shared memory \(V1\), not a private store\./)).toHaveTextContent(/^Uses the current shared memory \(V1\), not a private store\.$/)
     expect(within(panel).queryByText(/This member cannot return to its previous memory/)).toBeNull()
     const create = within(panel).getByRole('button', { name: 'Create private memory' })
     expect(create).toBeEnabled()
@@ -347,7 +347,7 @@ describe('crew editor — collision warning', () => {
     expect(within(panel).queryByText('Creating private memory…')).toBeNull()
     expect(view.queryClient.getQueryData(['member-thread', 'oncall'])).toBeUndefined()
     expect(within(panel).getByText('member-oncall-new', { exact: true })).toBeVisible()
-    expect(within(panel).queryByText(/This member uses its current memory \(V1\)\./)).toBeNull()
+    expect(within(panel).queryByText(/Uses the current shared memory \(V1\), not a private store\./)).toBeNull()
     // Workspace sharing remains visible without claiming shared memory access.
     fireEvent.click(within(sheet).getByTestId('crew-rail-overview'))
     expect(within(sheet).getByTestId('crew-wire-workspace')).toHaveTextContent('Shared')
@@ -379,7 +379,7 @@ describe('crew editor — collision warning', () => {
     await waitFor(() => expect(within(sheet).getByTestId('crew-sheet-error')).toHaveTextContent('zzq-private-provision-refused'))
     expect(mockApi.updateKirocrewAgent).toHaveBeenCalledExactlyOnceWith('oncall', { provision_memory: true })
     expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('core-ws')
-    expect(within(sheet).getByText(/This member uses its current memory \(V1\)\./)).toBeVisible()
+    expect(within(sheet).getByText(/Uses the current shared memory \(V1\), not a private store\./)).toBeVisible()
     expect(within(sheet).getByRole('button', { name: 'Create private memory' })).toBeEnabled()
     expect(view.queryClient.getQueryData(['member-thread', 'oncall'])).toEqual({ slot_key: 'member-oncall-v1' })
   })
@@ -427,7 +427,7 @@ describe('crew editor — collision warning', () => {
 
     expect(within(panel).getByText(reason, { exact: true })).toBeVisible()
     expect(within(panel).queryByText(/Open the crew manager/i)).toBeNull()
-    expect(within(panel).queryByText(/This member uses its current memory \(V1\)\./)).toBeNull()
+    expect(within(panel).queryByText(/Uses the current shared memory \(V1\), not a private store\./)).toBeNull()
     expect(within(panel).queryByRole('button', { name: 'Create private memory' })).toBeNull()
     expect(within(panel).queryByRole('button', { name: 'Manage memory' })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
@@ -455,7 +455,7 @@ describe('crew editor — keyboard (via a binding select)', () => {
     // the right thing, and it is why this is asserted through the DOM rather than
     // by role: the editor must still be MOUNTED (the form is not destroyed) even
     // though it is hidden from AT.
-    const editorEl = document.querySelector('[aria-label="Add crew member"]')
+    const editorEl = document.querySelector('[aria-label="Add an agent"]')
     expect(editorEl).toBeTruthy()
     expect(editorEl!.closest('[aria-hidden="true"]')).toBeTruthy()
 
@@ -468,12 +468,12 @@ describe('crew editor — keyboard (via a binding select)', () => {
       expect(screen.queryByRole('dialog', { name: 'Create Workspace' })).not.toBeInTheDocument(),
     )
     // ...and with the nested layer gone the editor is exposed to AT again.
-    expect(screen.getByRole('dialog', { name: 'Add crew member' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Add an agent' })).toBeInTheDocument()
 
     // Once the nested dialog is gone the editor owns Escape again.
     pressEscape()
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Add crew member' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'Add an agent' })).not.toBeInTheDocument(),
     )
   })
 })

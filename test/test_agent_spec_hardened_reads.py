@@ -927,14 +927,17 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         # the merge+sanitize applies to the current disk state, not a stale
         # pre-lock snapshot.
         ("api_agent_detail", "dashboard"),
-        # Fork/publish create closures re-read the SOURCE inside the lock too —
+        # The publish create closure re-reads the SOURCE inside the lock too —
         # the pre-lock snapshot can miss a concurrent refresh's writes (GPT
         # round-10 stale-copy finding).
-        ("api_agent_fork", "dashboard"),
         ("api_agent_publish", "dashboard"),
         ("api_agents_sync", "dashboard"),
         # The fork/publish endpoints share _load_template_specs, which forwards
-        # its ``operation`` argument -- each caller still names itself.
+        # its ``operation`` argument -- each caller still names itself. The
+        # fork's in-lock source re-read lives in _write_private_copy, the one
+        # private-copy writer the fork route ("api_agent_fork") and the member
+        # hire ("member.hire") share; it forwards ``operation`` the same way.
+        ("forward:operation", "dashboard"),
         ("forward:operation", "dashboard"),
     ],
     "kiro_crew/dashboard/handlers/hooks.py": [("api_kiro_hooks", "dashboard")],

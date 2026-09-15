@@ -425,3 +425,158 @@ async def test_provisioning_pause_preserves_v2_admission_binding_and_memory_mana
         assert auth.read_private_session_store(session_key) == store
 
     await asyncio.to_thread(check_existing_memory)
+
+
+@pytest.mark.asyncio
+async def test_an_enrolled_members_record_follows_its_store_when_private_memory_is_provisioned(
+    monkeypatch,
+):
+    """The crewmate record names the row's store as its GENERATION (the roster
+    matches on it). Provisioning private memory for an enrolled member on the
+    shared store changes that store; the record must move with the row, or a
+    legitimate memory upgrade would drop the crewmate off the roster."""
+    from kiro_crew import agent_state
+    from kiro_crew.dashboard.handlers.members import enrolled_member_ids
+
+    cfg = await asyncio.to_thread(
+        _environment, monkeypatch, "linux", "kas", "auto", "namespace", False
+    )
+    cfg.agent.acp_backend = "codex"
+    await asyncio.to_thread(cfg.save)
+    agent_state.set_crewmate_record("reviewer", generation="default", template="t", hired_at="")
+    # A record of ANOTHER generation is a recreated row's, not this one's: it stays.
+    agent_state.set_crewmate_record("bystander", generation="member-old", template="t", hired_at="")
+    assert enrolled_member_ids(KiroCrewConfig.load()) == ["reviewer"]
+    async with TestClient(TestServer(_app(monkeypatch))) as client:
+        response = await client.put("/api/agents/reviewer", json={"provision_memory": True})
+        assert response.status == 200, await response.text()
+        store = (await response.json())["memory_store"]
+    assert store != "default"
+    record = agent_state.get_crewmate_record("reviewer", strict=True)
+    assert record is not None and record["generation"] == store and record["template"] == "t"
+    assert enrolled_member_ids(await asyncio.to_thread(KiroCrewConfig.load)) == ["reviewer"]
+    assert agent_state.get_crewmate_record("bystander")["generation"] == "member-old"
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_crewmate_through_the_crew_manager_un_enrolls_it(monkeypatch):
+    """The delete route removes the row; the enrollment record goes with it, so
+    a row recreated under the same id (same store name included) is a session
+    agent until a hire enrolls it -- never the deleted crewmate revived."""
+    from kiro_crew import agent_state
+    from kiro_crew.dashboard.handlers.members import enrolled_member_ids
+
+    cfg = await asyncio.to_thread(
+        _environment, monkeypatch, "linux", "kas", "auto", "namespace", False
+    )
+    cfg.agent.acp_backend = "codex"
+    await asyncio.to_thread(cfg.save)
+    agent_state.set_crewmate_record("reviewer", generation="default", template="t", hired_at="")
+    app = _app(monkeypatch)
+    app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.delete("/api/agents/reviewer")
+        assert response.status == 200, await response.text()
+    assert agent_state.get_crewmate_record("reviewer", strict=True) is None
+    loaded = await asyncio.to_thread(KiroCrewConfig.load)
+    assert "reviewer" not in loaded.agents
+    # Recreated under the same id, on the same shared store: not a crewmate.
+    loaded.agents["reviewer"] = KiroCrewAgentConfig()
+    await asyncio.to_thread(loaded.save)
+    assert enrolled_member_ids(await asyncio.to_thread(KiroCrewConfig.load)) == []
+
+
+@pytest.mark.asyncio
+async def test_a_sidecar_failure_after_the_store_landed_keeps_the_crewmate_on_the_roster(
+    monkeypatch,
+):
+    """Phase two of the record's store move fails (the sidecar write raises
+    after the config write landed): the save still answers 200 and the
+    crewmate is STILL on the roster, because phase one staged the new store on
+    the record before the config write. On the one-step form the record stays
+    at the old generation while the row is on the new store, and the member is
+    off the roster with no save that could repair it."""
+    from kiro_crew import agent_state
+    from kiro_crew.dashboard.handlers.members import enrolled_member_ids
+
+    cfg = await asyncio.to_thread(
+        _environment, monkeypatch, "linux", "kas", "auto", "namespace", False
+    )
+    cfg.agent.acp_backend = "codex"
+    await asyncio.to_thread(cfg.save)
+    agent_state.set_crewmate_record("reviewer", generation="default", template="t", hired_at="")
+
+    def _phase_two_fails(*_args, **_kwargs):
+        raise OSError("sidecar busy")
+
+    monkeypatch.setattr(handlers.agent_state, "move_crewmate_generation", _phase_two_fails)
+    async with TestClient(TestServer(_app(monkeypatch))) as client:
+        response = await client.put("/api/agents/reviewer", json={"provision_memory": True})
+        assert response.status == 200, await response.text()
+        store = (await response.json())["memory_store"]
+    assert store != "default"
+    record = agent_state.get_crewmate_record("reviewer", strict=True)
+    assert record is not None and record["generation"] == "default"
+    assert record["pending_generation"] == store
+    assert enrolled_member_ids(await asyncio.to_thread(KiroCrewConfig.load)) == ["reviewer"]
+    # The next legitimate change finalizes the landed store before staging.
+    assert agent_state.stage_crewmate_generation("reviewer", old=store, new="member-next") is True
+    record = agent_state.get_crewmate_record("reviewer", strict=True)
+    assert record["generation"] == store and record["pending_generation"] == "member-next"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_crewmate_record_refuses_the_store_change(monkeypatch):
+    """Phase one cannot read the sidecar: the save is refused (503
+    ``members_unavailable``) with the row unchanged on its prior store -- a
+    write that landed without the record following would strand an enrolled
+    member off the roster."""
+    from kiro_crew import agent_state
+    from kiro_crew.dashboard.handlers.members import enrolled_member_ids
+
+    cfg = await asyncio.to_thread(
+        _environment, monkeypatch, "linux", "kas", "auto", "namespace", False
+    )
+    cfg.agent.acp_backend = "codex"
+    await asyncio.to_thread(cfg.save)
+    agent_state.set_crewmate_record("reviewer", generation="default", template="t", hired_at="")
+
+    def _unreadable(*_args, **_kwargs):
+        raise ValueError("sidecar corrupt")
+
+    monkeypatch.setattr(handlers.agent_state, "stage_crewmate_generation", _unreadable)
+    async with TestClient(TestServer(_app(monkeypatch))) as client:
+        response = await client.put("/api/agents/reviewer", json={"provision_memory": True})
+        assert response.status == 503, await response.text()
+        assert (await response.json())["code"] == "members_unavailable"
+    loaded = await asyncio.to_thread(KiroCrewConfig.load)
+    assert loaded.agents["reviewer"].memory_store == "default"
+    assert enrolled_member_ids(loaded) == ["reviewer"]
+    assert agent_state.get_crewmate_record("reviewer", strict=True)["generation"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_the_delete_clears_only_the_record_of_the_row_it_removed(monkeypatch):
+    """The record is cleared AFTER the delete's lock is released, so a hire in
+    another gateway may already have re-hired the id with a fresh store and
+    enrolled it. The clear is scoped to the deleted row's generation, read
+    under the lock: the new crewmate's record stays."""
+    from kiro_crew import agent_state
+
+    cfg = await asyncio.to_thread(
+        _environment, monkeypatch, "linux", "kas", "auto", "namespace", False
+    )
+    cfg.agent.acp_backend = "codex"
+    await asyncio.to_thread(cfg.save)
+    # The record on disk is a re-hire's (another generation), as it would be
+    # when the concurrent hire landed between this delete's write and its clear.
+    agent_state.set_crewmate_record(
+        "reviewer", generation="member-reviewer-rehired", template="t", hired_at=""
+    )
+    app = _app(monkeypatch)
+    app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.delete("/api/agents/reviewer")
+        assert response.status == 200, await response.text()
+    record = agent_state.get_crewmate_record("reviewer", strict=True)
+    assert record is not None and record["generation"] == "member-reviewer-rehired"

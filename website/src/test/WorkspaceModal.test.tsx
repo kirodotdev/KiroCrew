@@ -110,7 +110,7 @@ beforeEach(() => {
  *  every workspace-modal path goes through here first. */
 async function openCrewSheet(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'Add crew member' })
+  return await screen.findByRole('dialog', { name: 'Add an agent' })
 }
 
 /** Open the workspace select inside the editor panel and click the

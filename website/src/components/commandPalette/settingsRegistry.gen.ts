@@ -1348,10 +1348,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "developer.crew-members",
-    "label": "Crew Members",
+    "id": "developer.crew",
+    "label": "Crew",
     "labelKey": "pages.developer.featurePreviewsTab.crew_members",
-    "description": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on.",
+    "description": "The Crew page: every crewmate you have, each with its own thread. Unrelated to “Chat on a crew” below, which is about another machine. Still being built, so it is not offered until you turn this on.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1

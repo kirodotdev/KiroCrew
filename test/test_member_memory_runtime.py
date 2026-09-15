@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from member_memory_helpers import patch_private_memory_supported
 
+from kiro_crew import agent_state
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.cron import CronJob, CronService, resolve_cron_memory
 from kiro_crew.history import ConversationLog
@@ -383,6 +384,12 @@ async def test_roster_does_not_present_missing_private_declarations_as_v1(tmp_pa
     del cfg.memory_stores[reviewer]
     cfg.agents["legacy"] = KiroCrewAgentConfig()
     cfg.save()
+    # The roster lists ENROLLED crewmates only: enroll the three stand-ins with
+    # the store each row now carries (the record's generation).
+    for name in ("writer", "reviewer", "legacy"):
+        agent_state.set_crewmate_record(
+            name, generation=cfg.agents[name].memory_store, template="t", hired_at=""
+        )
     async with TestClient(TestServer(_make_members_app(_make_state(tmp_path)))) as client:
         response = await client.get("/api/members")
         assert response.status == 200, await response.text()
@@ -450,6 +457,8 @@ async def test_owner_member_open_pins_only_its_unambiguous_canonical_session(
     from kiro_crew.members import DM_SLOT_MODE, member_slot_key, write_dm_binding
 
     writer, reviewer = member_stores
+    # The thread route resolves the slug among ENROLLED crewmates only.
+    agent_state.set_crewmate_record("writer", generation=writer, template="t", hired_at="")
     state = _make_state(tmp_path)
     legacy_slot_key = member_slot_key("writer")
     slot_key = member_slot_key("writer", "" if prior == "private" else writer)
@@ -472,8 +481,11 @@ async def test_owner_member_open_pins_only_its_unambiguous_canonical_session(
     elif prior == "collision":
         cfg = KiroCrewConfig.load()
         cfg.agents["Writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
-        provision_member_memory(cfg, "Writer")
+        other = provision_member_memory(cfg, "Writer")
         cfg.save()
+        # A same-slug colleague collides only as a CREWMATE: an un-enrolled row
+        # of that slug has no thread to share.
+        agent_state.set_crewmate_record("Writer", generation=other, template="t", hired_at="")
     elif prior == "foreign":
         bind_private_session_store(key, reviewer)
     async with TestClient(TestServer(_make_members_app(state))) as client:

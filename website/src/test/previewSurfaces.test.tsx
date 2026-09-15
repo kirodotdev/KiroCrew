@@ -378,13 +378,13 @@ describe('Settings > Developer > Feature Previews', () => {
     // label names the page the flag holds so it stops sharing a bare "Crew"
     // with that neighbour, which a newcomer could not tell apart.
     renderTab()
-    expect(screen.getByRole('switch', { name: /^crew members$/i }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: /^crew$/i }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('persists the crew opt-in under its own key, leaving webhooks alone', async () => {
     renderTab()
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew members$/i }).click()
+      screen.getByRole('switch', { name: /^crew$/i }).click()
     })
     expect(localStorage.getItem(PREVIEW_CREW)).toBe('1')
     // Two flags, two keys: a shared write would release both features at once.
@@ -411,7 +411,7 @@ describe('Settings > Developer > Feature Previews', () => {
       Array.from(container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'))
     expect(realButtons()).toHaveLength(0)
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew members$/i }).click()
+      screen.getByRole('switch', { name: /^crew$/i }).click()
     })
     expect(realButtons()).toHaveLength(0)
     // The webhooks card still HAS its link, so this is an asymmetry on purpose

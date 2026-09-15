@@ -142,6 +142,17 @@ def _members_app(state) -> web.Application:
     return app
 
 
+def _enroll_all(fake) -> None:
+    """The roster lists ENROLLED crewmates only (the explicit-enrollment
+    contract): give every stand-in row the record a confirmed hire writes."""
+    from kiro_crew import agent_state
+
+    for name, row in fake.agents.items():
+        agent_state.set_crewmate_record(
+            name, generation=row.memory_store, template="t", hired_at=""
+        )
+
+
 class TestRosterExposesFilterKeys:
     @pytest.mark.asyncio
     async def test_roster_rows_carry_source_and_starred(self, tmp_path):
@@ -153,6 +164,7 @@ class TestRosterExposesFilterKeys:
             default_agent="conductor",
             memory_stores={},
         )
+        _enroll_all(fake)
         state = _make_state(tmp_path)
         with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):
             async with TestClient(TestServer(_members_app(state))) as client:
@@ -178,6 +190,7 @@ class TestRosterExposesFilterKeys:
             default_agent="weird",
             memory_stores={},
         )
+        _enroll_all(fake)
         state = _make_state(tmp_path)
         with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):
             async with TestClient(TestServer(_members_app(state))) as client:

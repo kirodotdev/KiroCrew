@@ -13,7 +13,7 @@ import { useLocation } from 'react-router-dom'
 import type { MemoryStoreSummary } from '../types'
 
 const { api } = vi.hoisted(() => ({ api: {
-  memoryStores: vi.fn(), memoryRecords: vi.fn(), memoryEditPreview: vi.fn(), memoryEditPreviewPage: vi.fn(), memoryEditApply: vi.fn(), memoryRecordsRefresh: vi.fn(), memoryRecordHistory: vi.fn(), memberMemoryPage: vi.fn(), memorySeed: vi.fn(), memoryRecall: vi.fn(),
+  members: vi.fn(), memoryStores: vi.fn(), memoryRecords: vi.fn(), memoryEditPreview: vi.fn(), memoryEditPreviewPage: vi.fn(), memoryEditApply: vi.fn(), memoryRecordsRefresh: vi.fn(), memoryRecordHistory: vi.fn(), memberMemoryPage: vi.fn(), memorySeed: vi.fn(), memoryRecall: vi.fn(),
   vectorSemanticWrite: vi.fn(), vectorSemanticDelete: vi.fn(), vectorEpisodicDelete: vi.fn(),
   memoryPreferences: vi.fn(), memoryProjects: vi.fn(), memoryHistory: vi.fn(),
   saveMemoryPreferences: vi.fn(), saveMemoryProjects: vi.fn(),
@@ -66,6 +66,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   window.history.replaceState({}, '', `/settings/overview?view=memory&store=${MEMBER_STORE}`)
   api.memoryStores.mockResolvedValue({ stores, active: 'default' })
+  // The roster the panel reads to offer a member conversation: the stores' owners are crewmates by default.
+  api.members.mockResolvedValue({ members: [{ name: 'reviewer', display_name: 'reviewer' }, { name: 'writer', display_name: 'writer' }] })
   api.memberMemoryPage.mockImplementation(async (store: string, table: string, offset: number) => ({ entries: offset ? [] : store === 'default' ? table === 'semantic' ? [
     { key: 'global.selected', value_json: 'Selected source knowledge' },
     { key: 'global.unselected', value_json: 'Unselected source knowledge' },
@@ -125,10 +127,10 @@ describe('private member memory lifecycle', () => {
 
     await screen.findByRole('heading', { name: `Memory for ${LEGACY_STORE}` })
     expect(screen.getByText('Memory V1', { exact: true })).toBeVisible()
-    const guidance = screen.getByText(/This member uses its current memory \(V1\)\./)
-    expect(guidance).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
+    const guidance = screen.getByText(/Uses the current shared memory \(V1\), not a private store\./)
+    expect(guidance).toHaveTextContent(/^Uses the current shared memory \(V1\), not a private store\.$/)
     expect(screen.queryByText(/This member cannot return to its previous memory/)).toBeNull()
-    expect(screen.queryByText('Private to this member · Memory V2')).toBeNull()
+    expect(screen.queryByText('Private to its owner · Memory V2')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
     expect(api.memberMemoryPage).toHaveBeenCalledWith(LEGACY_STORE, 'semantic', 0)
   })
@@ -243,22 +245,57 @@ describe('private member memory lifecycle', () => {
         queryClient.invalidateQueries({ queryKey: ['memory-records', MEMBER_STORE] }),
       ])
     })
-    await screen.findByText('A fresh start for this member')
+    await screen.findByText('A fresh start: nothing remembered yet')
     expect(screen.getByRole('button', { name: 'Copy memories', exact: true })).toBe(copy)
     expect(copy).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Open member conversation' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Open crewmate conversation' })).toBeVisible()
+    expect(screen.queryByTestId('member-memory-no-conversation')).toBeNull()
     expect(api.memorySeed).not.toHaveBeenCalled()
   })
 
   it('opens an empty member’s exact conversation without copying global memory', async () => {
     api.memberMemoryPage.mockResolvedValue({ entries: [] })
+    api.members.mockResolvedValue({ members: [{ name: 'Review & QA', display_name: 'Review & QA' }] })
     api.memoryStores.mockResolvedValue({ stores: stores.map(s => s.name === MEMBER_STORE ? { ...s, owner_member: 'Review & QA', semantic_count: 0, episodic_count: 0 } : s), active: 'default' })
     renderWithProviders(<><MemoryTab refreshTrigger={0} /><RouteLocation /></>)
-    await screen.findByText('A fresh start for this member')
-    fireEvent.click(screen.getByRole('button', { name: 'Open member conversation' }))
+    await screen.findByText('A fresh start: nothing remembered yet')
+    fireEvent.click(await screen.findByRole('button', { name: 'Open crewmate conversation' }))
     expect(screen.getByTestId('route-location')).toHaveTextContent('/members?member=Review%20%26%20QA')
     expect(api.memorySeed).not.toHaveBeenCalled()
     expect(api.memberMemoryPage.mock.calls.every(call => call[0] === MEMBER_STORE)).toBe(true)
+  })
+
+  it('offers no member conversation for a private memory whose owner is not a crewmate', async () => {
+    // Explicit enrollment: a plain crew with private memory is a session agent.
+    // The Crew roster does not list it, so the door to its thread is not shown.
+    api.memberMemoryPage.mockResolvedValue({ entries: [] })
+    api.members.mockResolvedValue({ members: [] })
+    api.memoryStores.mockResolvedValue({ stores: stores.map(s => s.name === MEMBER_STORE ? { ...s, owner_member: 'Review & QA', semantic_count: 0, episodic_count: 0 } : s), active: 'default' })
+    renderWithProviders(<><MemoryTab refreshTrigger={0} /><RouteLocation /></>)
+    await screen.findByText('A fresh start: nothing remembered yet')
+    await waitFor(() => expect(api.members).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: 'Open crewmate conversation' })).toBeNull()
+    // ...and the page says WHY, in one muted line, so a store with the door and
+    // one without do not read as the same page missing a button.
+    expect(screen.getByTestId('member-memory-no-conversation')).toHaveTextContent('not a crewmate')
+    expect(screen.getByRole('button', { name: 'Copy memories', exact: true })).toBeEnabled()
+  })
+
+  it('reports a failed roster read instead of silently withholding the conversation door', async () => {
+    // The door is decided by the roster; a failed read is not "not a crewmate".
+    // The page says the roster could not be loaded (the shared notice, with
+    // the agent hand-off: nothing on the page is unsaved) and shows neither
+    // the door nor the "not a crewmate" line.
+    api.memberMemoryPage.mockResolvedValue({ entries: [] })
+    api.members.mockRejectedValue(new Error('roster down'))
+    api.memoryStores.mockResolvedValue({ stores: stores.map(s => s.name === MEMBER_STORE ? { ...s, owner_member: 'Review & QA', semantic_count: 0, episodic_count: 0 } : s), active: 'default' })
+    renderWithProviders(<><MemoryTab refreshTrigger={0} /><RouteLocation /></>)
+    await screen.findByText('A fresh start: nothing remembered yet')
+    const notice = await screen.findByTestId('member-memory-roster-error')
+    expect(notice).toHaveTextContent('Could not load the crewmate roster.')
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open crewmate conversation' })).toBeNull()
+    expect(screen.queryByTestId('member-memory-no-conversation')).toBeNull()
   })
 
   it('explains and retries a listing-marked unavailable store, with a direct recovery action', async () => {
@@ -267,7 +304,7 @@ describe('private member memory lifecycle', () => {
     api.memberMemoryPage.mockRejectedValue(Object.assign(new Error('Private database is missing; restore this member backup'), { status: 409 }))
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await screen.findByText('Private database is missing; restore this member backup')
-    expect(screen.queryByText('A fresh start for this member')).toBeNull()
+    expect(screen.queryByText('A fresh start: nothing remembered yet')).toBeNull()
     expect(screen.queryByText(FACT.value_json)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Recovery', exact: true }))
     await waitFor(() => expect(api.memoryBackups).toHaveBeenCalledWith(MEMBER_STORE))
@@ -710,7 +747,7 @@ describe('private member memory lifecycle', () => {
     expect(await screen.findByText('Older needle knowledge')).toBeInTheDocument()
     expect(api.memberMemoryPage).toHaveBeenCalledWith(MEMBER_STORE, 'semantic', 0, 'needle')
     expect(api.memberMemoryPage).toHaveBeenCalledWith(MEMBER_STORE, 'episodic', 0, 'needle')
-    expect(screen.queryByText('A fresh start for this member')).toBeNull()
+    expect(screen.queryByText('A fresh start: nothing remembered yet')).toBeNull()
   })
 
   it.each(['member', 'copy'] as const)('preserves server-normalized text matches in the %s search', async surface => {
@@ -772,7 +809,7 @@ describe('private member memory lifecycle', () => {
   it('filters experiences without mixing in facts and returns to all memories', async () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
-    expect(screen.getByText('Facts save details. Lessons guide the member’s work. Experiences are events the member can recall.', { exact: true })).toBeVisible()
+    expect(screen.getByText('Facts save details. Lessons guide the owner’s work. Experiences are events the owner can recall.', { exact: true })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: /^Experiences/ }))
     expect(await screen.findByText(EPISODE.text)).toBeInTheDocument()
     expect(screen.queryByText(FACT.value_json)).toBeNull()

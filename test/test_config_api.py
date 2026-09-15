@@ -22,6 +22,7 @@ from kiro_crew.config.schema import (
     SCHEMA_REGISTRY,
     config_entry_to_dict,
 )
+from kiro_crew.member_identity import is_valid_member_id
 
 
 @pytest.fixture(autouse=True)
@@ -254,6 +255,13 @@ def _seed_config() -> dict:
 # ---------------------------------------------------------------------------
 
 
+_member_id_st = st.text(
+    alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"),
+    min_size=1,
+    max_size=30,
+).filter(is_valid_member_id)
+
+
 class TestAgentCrudProperties:
     """Property-based tests for KiroCrew Agent CRUD round-trips."""
 
@@ -261,11 +269,13 @@ class TestAgentCrudProperties:
     # **Validates: Requirements 4.1, 4.2**
     @settings(deadline=None)
     @given(
-        name=st.text(
-            alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="_-"),
-            min_size=1,
-            max_size=30,
-        ),
+        # A crew KEY is a member id: the create route mints it from the typed
+        # name (member_identity.py), and for a name inside the id grammar the
+        # id IS the name, which is the round trip these properties pin. A name
+        # outside it (a space, a non-ASCII letter, a leading `-`) is a
+        # different contract -- typed text kept as display_name, key minted --
+        # pinned by test_member_identity.py.
+        name=_member_id_st,
         kiro_agent=st.sampled_from(["kirocrew", "oncall", "research", "coding"]),
         workspace=st.sampled_from(["default", "oncall", "research"]),
         memory_store=st.sampled_from(["default", "", "oncall-kb", "research-mem"]),
@@ -411,11 +421,13 @@ class TestAgentCrudProperties:
     # **Validates: Requirements 4.4**
     @settings(deadline=None)
     @given(
-        name=st.text(
-            alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="_-"),
-            min_size=1,
-            max_size=30,
-        ),
+        # A crew KEY is a member id: the create route mints it from the typed
+        # name (member_identity.py), and for a name inside the id grammar the
+        # id IS the name, which is the round trip these properties pin. A name
+        # outside it (a space, a non-ASCII letter, a leading `-`) is a
+        # different contract -- typed text kept as display_name, key minted --
+        # pinned by test_member_identity.py.
+        name=_member_id_st,
     )
     @pytest.mark.asyncio
     async def test_crud_delete_round_trip(self, name: str) -> None:

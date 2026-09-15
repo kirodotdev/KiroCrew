@@ -49,9 +49,9 @@ describe('column resize grip — one component on both pages', () => {
 
   it('renders the sidebar bar recipe: 6px hit strip carrying a 2px rounded accent-on-hover bar', () => {
     const { getByRole, getByTestId } = render(
-      <ResizeHandle handleProps={NOOP_HANDLE} label="Resize member list" inset={12} />,
+      <ResizeHandle handleProps={NOOP_HANDLE} label="Resize crewmate list" inset={12} />,
     )
-    const strip = getByRole('separator', { name: 'Resize member list' })
+    const strip = getByRole('separator', { name: 'Resize crewmate list' })
     expect(strip.getAttribute('aria-orientation')).toBe('vertical')
     expect(strip.style.touchAction).toBe('none')
     expect(strip.className).toMatch(/\bw-1\.5\b/)

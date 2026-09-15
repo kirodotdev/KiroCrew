@@ -44,6 +44,19 @@ OTHER = "other-agent"
 
 
 def _fake_config(names, default=CREW):
+    # The routes address ENROLLED crewmates only (explicit enrollment): a row in
+    # ``agents`` is a session agent until a confirmed hire records it. These
+    # fixtures stand in for hired members, so every row is enrolled with the
+    # generation the stand-in row carries.
+    from kiro_crew import agent_state
+
+    for name in names:
+        agent_state.set_crewmate_record(
+            name,
+            generation=KiroCrewAgentConfig(kiro_agent=name).memory_store,
+            template="t",
+            hired_at="",
+        )
     return SimpleNamespace(
         agents={name: KiroCrewAgentConfig(kiro_agent=name) for name in names},
         default_agent=default,
@@ -393,6 +406,13 @@ class TestMemberRoutes:
             patch_private_memory_supported(monkeypatch)
             await asyncio.to_thread(provision_member_memory, cfg, CREW)
         await asyncio.to_thread(cfg.save)
+        # Enrolled on the generation the row ended up with (the provisioned
+        # private store when there is one).
+        from kiro_crew import agent_state
+
+        agent_state.set_crewmate_record(
+            CREW, generation=cfg.agents[CREW].memory_store, template="t", hired_at=""
+        )
         state = _make_state(tmp_path)
         frames = []
         monkeypatch.setattr(state, "_slots_broadcast_lock", None)

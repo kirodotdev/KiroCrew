@@ -85,7 +85,7 @@ function Harness({ closable, slot = 'member-radar', hidden }: { closable: boolea
       onActiveTabChange={(id) => { shown = id }}
       leadingTab={{
         id: LEADING_ID,
-        title: 'Crew summary',
+        title: 'Crewmate summary',
         icon: <span data-testid="leading-icon" />,
         render: () => <div data-testid="leading-body">radar summary</div>,
       }}
@@ -116,7 +116,7 @@ describe('SidePanel leading tab', () => {
     // Leading + the three pinned views, and nothing else on a fresh strip.
     expect(rendered).toHaveLength(1 + PINNED_VIEWS.length)
     expect(rendered[0]).toBe(screen.getByTestId('side-panel-leading-tab'))
-    expect(nameOf(rendered[0])).toBe('Crew summary')
+    expect(nameOf(rendered[0])).toBe('Crewmate summary')
     expect(screen.getByTestId('leading-icon')).toBeInTheDocument()
     expect(rendered[0].querySelectorAll('button')).toHaveLength(0)
     // Not a Reorder item: the draggable list holds only the dynamic tabs.
@@ -138,7 +138,7 @@ describe('SidePanel leading tab', () => {
     )
     const menu = screen.getByRole('menu')
     expect(menu.querySelector('[role="menuitem"]')).toBeTruthy()
-    expect(screen.queryByRole('menuitem', { name: /crew summary/i })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: /crewmate summary/i })).toBeNull()
     // The per-chat Terminal IS offered — the whole menu model carries over.
     expect(screen.getByRole('menuitem', { name: 'Terminal' })).toBeTruthy()
   })
@@ -182,7 +182,7 @@ describe('SidePanel leading tab', () => {
   it('hiddenViews withdraws a view from the pinned block and the + menu alike', () => {
     renderPanel({ closable: false, hidden: new Set<SidePanelWithholdable>(['changes', 'pins', 'issues']) })
     // Pinned block: Changes is gone; Artifacts and Files remain, after the leading chip.
-    expect(chips().map(nameOf)).toEqual(['Crew summary', 'Artifacts', 'Files'])
+    expect(chips().map(nameOf)).toEqual(['Crewmate summary', 'Artifacts', 'Files'])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },

@@ -21,6 +21,7 @@ from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import _get_skills
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.exfil import URL_SECRET_PARAM_RE
 from kiro_crew.sel import sel as _sel
 from kiro_crew.skill_providers.base import ProviderRegistry, SkillProvider, provider_available
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
@@ -32,23 +33,11 @@ logger = logging.getLogger(__name__)
 _SAFE_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 
-# Credential-bearing URL query/fragment parameters. ``redact_credentials`` matches
-# credential SHAPES (AKIA…, xoxb-…, PEM headers) and ``redact_exfiltration_urls``
-# is a length/entropy heuristic, so a SHORT opaque value in a conventionally-named
-# parameter -- ``?api_key=abc123`` -- slips past both. Provider and
-# package-manager output is exactly where such a URL appears (an endpoint echoed
-# on failure), so here the parameter NAME is the signal, not the value's shape.
-# The `(?!\[REDACTED)` guard skips a value an earlier layer already replaced.
-# Without it, `?token=AKIA…` (which `redact_credentials` turns into
-# `?token=[REDACTED: credential]`) gets re-matched: the value class stops at the
-# space, so only `[REDACTED:` is replaced and the label is left mangled as
-# `[REDACTED] credential]`. The secret was gone either way — this keeps the
-# message readable.
-_URL_SECRET_PARAM_RE = re.compile(
-    r"(?i)\b(access_token|refresh_token|id_token|api[-_]?key|auth|token|"
-    r"password|passwd|secret|signature|sig|credential)"
-    r"(=|%3D)(?!\[REDACTED)[^\s&#\"']+"
-)
+# The credential-bearing URL parameter scrub is the security package's
+# (``URL_SECRET_PARAM_RE``), shared with the member-id migration's
+# ``carries_sensitive_text`` so a provider string and a member id are judged
+# by one rule.
+_URL_SECRET_PARAM_RE = URL_SECRET_PARAM_RE
 
 
 def _redact_external(text: str) -> str:

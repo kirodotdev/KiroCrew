@@ -59,7 +59,7 @@ export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
  *
  * This flag used to hold a second door too — the "New Crew Mode chat" entry in
  * the sidebar's create menu. Crew Mode retired in favour of the Members page,
- * and that menu entry is now "Crew Members": rendered whatever this flag says,
+ * and that menu entry is now "Crew": rendered whatever this flag says,
  * it opens `/members` when the flag is on and, when off, the Settings card that
  * turns it on (`ChatSidebar.openCrewMembers`). The flag therefore gates only the
  * page and where the entry lands, never whether the entry exists — a user who

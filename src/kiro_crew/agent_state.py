@@ -41,7 +41,7 @@ import os
 import stat
 import threading
 from pathlib import Path
-from typing import Iterator, MutableMapping
+from typing import Iterator, Mapping, MutableMapping
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
@@ -522,6 +522,283 @@ def clear_fork_info(name: str) -> None:
         else:
             data.pop(name, None)
         _write(data)
+
+
+def rename_private_owner(old: str, new: str) -> int:
+    """Re-attribute every private copy owned by crew *old* to *new*; return the count.
+
+    The member-id migration (``config.loader.MIGRATE_MEMBER_IDS``) re-keys an
+    ``agents`` row; a private copy whose lineage still names the OLD key would
+    then read as another crew's copy and every write to it -- a save, a
+    publish, a reset -- would be refused. Runs under the sidecar lock, reads
+    strict (a corrupt sidecar propagates rather than being erased) and is
+    idempotent: an entry already naming *new* is left as it is, so the locked
+    migration pass can retry it.
+    """
+    if not old or not new or old == new:
+        return 0
+    with _locked():
+        data = _read(strict=True)
+        moved = 0
+        for entry in data.values():
+            if isinstance(entry, dict) and entry.get(_PRIVATE_TO) == old:
+                entry[_PRIVATE_TO] = new
+                moved += 1
+        if moved:
+            _write(data)
+        return moved
+
+
+#: Sidecar key of the member-id migration's pending moves. Outside the agent-name
+#: grammar (a ``::`` prefix), so it can never collide with an agent's entry; the
+#: mapping sits under ``moves`` so the entry carries no fork field and every
+#: per-agent reader skips it. Lives HERE, in the sealed sidecar, because the
+#: moves authorize ownership renames: a marker an agent could write would let a
+#: forged pair re-own another member's private state.
+_PENDING_MEMBER_MOVES_KEY = "::pending_member_id_moves"
+
+
+def get_pending_member_moves() -> dict[str, str]:
+    """The member-id migration's pending ``{old key: minted id}`` pairs, or ``{}``.
+
+    Strict: the caller is a migration pass deciding ownership renames, and
+    "cannot read" must surface rather than read as "nothing pending".
+    """
+    with _lock:
+        entry = _read(strict=True).get(_PENDING_MEMBER_MOVES_KEY)
+    moves = entry.get("moves") if isinstance(entry, dict) else None
+    if not isinstance(moves, dict):
+        return {}
+    return {str(k): v for k, v in moves.items() if isinstance(k, str) and isinstance(v, str) and v}
+
+
+def set_pending_member_moves(moves: dict[str, str]) -> None:
+    """Record pending moves (merged into any pairs an earlier pass left)."""
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(_PENDING_MEMBER_MOVES_KEY)
+        current = entry.get("moves") if isinstance(entry, dict) else None
+        merged = dict(current) if isinstance(current, dict) else {}
+        merged.update({str(k): str(v) for k, v in moves.items()})
+        data[_PENDING_MEMBER_MOVES_KEY] = {"moves": merged}
+        _write(data)
+
+
+def discard_pending_member_moves(moves: Mapping[str, str]) -> int:
+    """Drop exactly the given ``{old key: minted id}`` pairs; return how many went.
+
+    Pair-specific on purpose: two migration passes can overlap (two gateways,
+    or a pass in one process while another replays), and a pass that finished
+    ITS renames must not erase a pair another pass recorded and has not
+    finished -- a dropped pair is a rename nobody retries, and the store keeps
+    the legacy owner for good. A pair is removed only when the stored id still
+    matches the one the caller renamed to; the entry goes when it empties.
+    """
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(_PENDING_MEMBER_MOVES_KEY)
+        current = entry.get("moves") if isinstance(entry, dict) else None
+        if not isinstance(current, dict):
+            return 0
+        dropped = 0
+        for old, new in moves.items():
+            if current.get(old) == new:
+                del current[old]
+                dropped += 1
+        if not dropped:
+            return 0
+        if current:
+            data[_PENDING_MEMBER_MOVES_KEY] = {"moves": current}
+        else:
+            data.pop(_PENDING_MEMBER_MOVES_KEY, None)
+        _write(data)
+        return dropped
+
+
+#: Sidecar key of the crewmate ENROLLMENT record: ``{"members": {<id>: {...}}}``.
+#: A crewmate exists only after the owner picked a template, named it and
+#: confirmed; that confirmation is what writes an entry here, inside the hire's
+#: locked publication, and the fire is what removes it. Roster membership is
+#: decided by THIS record -- never by a row's presence in ``config.agents``, its
+#: source, its display name, a member directory or a session that used it --
+#: so a template synced from a file, a built-in, an app's materialized agent or
+#: a plain crew stays a session agent until it is hired. Outside the agent-name
+#: grammar (``::`` prefix) like the pending-moves record, and in the SEALED
+#: sidecar for the same reason: a record an agent could write would let a
+#: config edit enroll a member the owner never hired.
+_CREWMATES_KEY = "::crewmates"
+
+
+def _crewmate_entries(data: dict) -> dict[str, dict]:
+    entry = data.get(_CREWMATES_KEY)
+    members = entry.get("members") if isinstance(entry, dict) else None
+    if not isinstance(members, dict):
+        return {}
+    return {
+        str(k): v
+        for k, v in members.items()
+        if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("generation"), str)
+    }
+
+
+def record_covers_store(record: dict | None, store: str) -> bool:
+    """Whether enrollment *record* is the record OF a row whose private store
+    is *store*: its ``generation`` names it, or its ``pending_generation`` does
+    -- the store a legitimate change through the API is moving the row to
+    (see :func:`stage_crewmate_generation`). One predicate for every reader,
+    so the row is covered at every point of that move, crash included."""
+    if not isinstance(record, dict) or not store:
+        return False
+    return record.get("generation") == store or record.get("pending_generation") == store
+
+
+def get_crewmate_record(member_id: str, *, strict: bool = False) -> dict | None:
+    """The enrollment record of *member_id*: ``{"generation", "template",
+    "hired_at"}``, or ``None`` when no hire ever enrolled it. ``strict`` raises
+    on an unreadable sidecar (a caller deciding membership for a WRITE must not
+    read "cannot verify" as "not a member")."""
+    with _lock:
+        data = _read(strict=strict)
+    rec = _crewmate_entries(data).get(member_id)
+    return dict(rec) if rec else None
+
+
+def all_crewmate_records(*, strict: bool = False) -> dict[str, dict]:
+    """Every enrollment record, ``{id: record}`` (one read; the roster's form)."""
+    with _lock:
+        data = _read(strict=strict)
+    return {k: dict(v) for k, v in _crewmate_entries(data).items()}
+
+
+def set_crewmate_record(member_id: str, *, generation: str, template: str, hired_at: str) -> None:
+    """Enroll *member_id*: the hire's confirmed publication records the private
+    store *generation* the row was minted with (a row recreated under the same
+    id with another store is NOT this crewmate), the *template* it was hired
+    from and when. Strict on the record: an unreadable sidecar refuses the
+    enrollment rather than overwriting whatever it held."""
+    if not member_id or not generation:
+        raise ValueError("a crewmate record needs the member id and its generation")
+    with _locked():
+        data = _read(strict=True)
+        members = _crewmate_entries(data)
+        members[member_id] = {
+            "generation": generation,
+            "template": str(template or ""),
+            "hired_at": str(hired_at or ""),
+        }
+        data[_CREWMATES_KEY] = {"members": members}
+        _write(data)
+
+
+def clear_crewmate_record(member_id: str, *, generation: str | None = None) -> bool:
+    """Un-enroll *member_id* (the fire, the delete); True when a record went.
+
+    With *generation*, only a record of THAT generation goes: a hire unwinding
+    its own failed attempt must not remove the record of a concurrent hire
+    that won the same id in another gateway (its row is the one on disk, its
+    generation is its own store)."""
+    with _locked():
+        data = _read(strict=True)
+        members = _crewmate_entries(data)
+        record = members.get(member_id)
+        if record is None:
+            return False
+        if generation is not None and not record_covers_store(record, generation):
+            return False
+        del members[member_id]
+        if members:
+            data[_CREWMATES_KEY] = {"members": members}
+        else:
+            data.pop(_CREWMATES_KEY, None)
+        _write(data)
+        return True
+
+
+def rename_crewmate_record(old: str, new: str) -> bool:
+    """Follow the member-id migration: a record keyed by a re-keyed row's old
+    id moves to the minted id (idempotent; a record already under *new* wins)."""
+    if not old or not new or old == new:
+        return False
+    with _locked():
+        data = _read(strict=True)
+        members = _crewmate_entries(data)
+        if old not in members or new in members:
+            return False
+        members[new] = members.pop(old)
+        data[_CREWMATES_KEY] = {"members": members}
+        _write(data)
+        return True
+
+
+def stage_crewmate_generation(member_id: str, *, old: str, new: str) -> bool:
+    """Phase one of following a crewmate's private store when the ROW's store
+    legitimately changes through the API (the crew editor provisioning private
+    memory for a member on the shared store, or rebinding it). Called BEFORE
+    the config write: the record keeps ``generation == old`` and gains
+    ``pending_generation == new``, so whichever store the row is on when the
+    process dies -- the write never happened, or happened and phase two did
+    not -- :func:`record_covers_store` still covers it and the crewmate stays
+    on the roster. A pending generation an earlier move never finalized is
+    finalized here first when it is the store the row is now on. ONLY a record
+    that covers *old* is touched: a record of another generation belongs to a
+    row that was deleted and recreated. True when staged."""
+    if not member_id or not old or not new or old == new:
+        return False
+    with _locked():
+        data = _read(strict=True)
+        members = _crewmate_entries(data)
+        record = members.get(member_id)
+        if not isinstance(record, dict) or not record_covers_store(record, old):
+            return False
+        staged = dict(record)
+        if staged.get("generation") != old:
+            staged["generation"] = old  # the earlier move's write landed; own it
+        staged["pending_generation"] = new
+        members[member_id] = staged
+        data[_CREWMATES_KEY] = {"members": members}
+        _write(data)
+        return True
+
+
+def move_crewmate_generation(member_id: str, *, old: str, new: str) -> bool:
+    """Phase two, after the config write landed: the record's generation
+    becomes *new* and the pending mark goes. Accepts a record still at *old*
+    and one whose pending generation is *new* (the staged form); anything
+    else is another row's record and stays. True when it moved."""
+    if not member_id or not old or not new or old == new:
+        return False
+    with _locked():
+        data = _read(strict=True)
+        members = _crewmate_entries(data)
+        record = members.get(member_id)
+        if not isinstance(record, dict):
+            return False
+        if record.get("generation") != old and record.get("pending_generation") != new:
+            return False
+        moved = {k: v for k, v in record.items() if k != "pending_generation"}
+        moved["generation"] = new
+        members[member_id] = moved
+        data[_CREWMATES_KEY] = {"members": members}
+        _write(data)
+        return True
+
+
+def unstage_crewmate_generation(member_id: str, *, new: str) -> bool:
+    """Drop a staged move whose config write did not land (the row is still on
+    its prior store, which ``generation`` still names). True when a pending
+    mark of *new* went."""
+    if not member_id or not new:
+        return False
+    with _locked():
+        data = _read(strict=True)
+        members = _crewmate_entries(data)
+        record = members.get(member_id)
+        if not isinstance(record, dict) or record.get("pending_generation") != new:
+            return False
+        members[member_id] = {k: v for k, v in record.items() if k != "pending_generation"}
+        data[_CREWMATES_KEY] = {"members": members}
+        _write(data)
+        return True
 
 
 def all_fork_info() -> dict[str, dict]:

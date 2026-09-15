@@ -259,6 +259,12 @@ def _fake_config(description="Watches new issues", triggers="new GitHub issues")
             kiro_agent="kirocrew-autofix", description=description, triggers=triggers
         )
     }
+    # The rules write is a crewmate route: the stand-in row is enrolled.
+    from kiro_crew import agent_state
+
+    agent_state.set_crewmate_record(
+        CREW, generation=cfg.agents[CREW].memory_store, template="t", hired_at=""
+    )
     return cfg
 
 
@@ -838,6 +844,12 @@ class TestMemberRulesRoutes:
             CREW: KiroCrewAgentConfig(kiro_agent="a"),
             "Code_Reviewer": KiroCrewAgentConfig(kiro_agent="b"),
         }
+        from kiro_crew import agent_state
+
+        for name, row in cfg.agents.items():  # both hired: the collision is between crewmates
+            agent_state.set_crewmate_record(
+                name, generation=row.memory_store, template="t", hired_at=""
+            )
         async with TestClient(TestServer(_make_rules_app())) as client:
             with (
                 patch(

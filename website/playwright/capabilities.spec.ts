@@ -61,7 +61,7 @@ test.describe('Capabilities Page — /capabilities', () => {
 
     // The trailing dashed tile is the roster's second entry point into the
     // create sheet, so it is part of the contract rather than decoration.
-    await expect(page.getByLabel('Add crew member', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('Add an agent', { exact: true })).toBeVisible()
   })
 
   test('switching to Skills tab renders skills content', async ({ page }) => {
@@ -89,7 +89,7 @@ test.describe('Capabilities Page — /capabilities', () => {
 
     try {
       await page.getByTestId('new-crew').click()
-      const createSheet = page.getByRole('dialog', { name: 'Add crew member' })
+      const createSheet = page.getByRole('dialog', { name: 'Add an agent' })
       await expect(createSheet).toBeVisible({ timeout: 5000 })
 
       // The Name field's label is a <span>, not a <label for>, so the input has

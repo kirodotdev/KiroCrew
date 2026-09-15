@@ -202,11 +202,17 @@ def test_private_identity_in_committed_wal_is_read_without_changing_memory(membe
 
 def test_member_store_and_error_text_cannot_inject_terminal_controls(members, capsys):
     cfg, home, _private_store, writes = members
-    name = "untrusted\x1b[2J\nmember"
+    typed = "untrusted\x1b[2J\nmember"
     store = "missing\x1b[2J\nstore"
-    cfg.agents[name] = KiroCrewAgentConfig(memory_store=store)
+    cfg.agents[typed] = KiroCrewAgentConfig(memory_store=store)
     cfg.save()
     cfg = KiroCrewConfig.load()
+    # The member-id migration re-keys a name outside the id grammar (control
+    # characters included) to a minted id and keeps the typed text as the
+    # display name, so the doctor addresses the row by that id; the store
+    # name is not a member id and reaches the doctor verbatim.
+    name = "untrusted-2J-member"
+    assert name in cfg.agents and typed not in cfg.agents
     before = _snapshot(home)
     issues: list[str] = []
 

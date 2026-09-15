@@ -104,13 +104,13 @@ describe('memory record editing in both lineages', () => {
   ])('explains an empty $store with its actual ownership', async ({ store, privateMemory }) => {
     records = []
     renderWithProviders(<MemoryRecordsEditor store={store} privateMemory={privateMemory} />)
-    await screen.findByText(privateMemory ? 'A fresh start for this member' : 'No memories yet')
+    await screen.findByText(privateMemory ? 'A fresh start: nothing remembered yet' : 'No memories yet')
     if (privateMemory) {
       expect(screen.getByText(/the source stays unchanged/)).toBeVisible()
       expect(screen.queryByText('No memories yet')).toBeNull()
     } else {
       expect(screen.getByText('Saved facts, lessons, and experiences appear here.')).toBeVisible()
-      expect(screen.queryByText('A fresh start for this member')).toBeNull()
+      expect(screen.queryByText('A fresh start: nothing remembered yet')).toBeNull()
       expect(screen.queryByText(/Private memory grows/)).toBeNull()
       expect(screen.queryByText(/the source stays unchanged/)).toBeNull()
     }

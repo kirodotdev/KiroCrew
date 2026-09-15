@@ -232,6 +232,45 @@ def test_dashboard_playwright_suite() -> None:
                     return data
 
                 update_config_locked(gw.home / "config.json", mutate=_seed_legacy_members)
+                # Explicit enrollment: a row in ``config.agents`` is a session
+                # agent, not a crewmate. The legacy members this scenario is
+                # about are PRIOR HIRES on the shared V1 store -- what an
+                # upgraded install carries -- so seed their enrollment record
+                # in the gateway's own sealed sidecar (``agent_state``
+                # ``::crewmates``; the generation is the row's store, which a
+                # later private-memory setup moves along). The sidecar is this
+                # throwaway home's; nothing here touches an operator install.
+                sidecar = gw.home / "agent_model_state.json"
+                state_doc = (
+                    json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else {}
+                )
+                crewmates = state_doc.setdefault("::crewmates", {}).setdefault("members", {})
+                for name in legacy_members:
+                    crewmates[name] = {
+                        "generation": "default",
+                        "template": "kirocrew",
+                        "hired_at": "",
+                    }
+                sidecar.write_text(
+                    json.dumps(state_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                )
+                os.chmod(sidecar, 0o600)
+                # A local agent file the specs can HIRE from (``POST /api/members``
+                # copies it into the crewmate's own file): the isolated
+                # ``KIRO_HOME`` is ``<home>/kiro``, so its agents dir is owned by
+                # this harness too.
+                agents_dir = gw.home / "kiro" / "agents"
+                agents_dir.mkdir(parents=True, exist_ok=True)
+                (agents_dir / "memory-e2e-template.json").write_text(
+                    json.dumps(
+                        {
+                            "name": "memory-e2e-template",
+                            "description": "A template the member-memory specs hire crewmates from.",
+                            "prompt": "You are a test crewmate.",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 env = dict(os.environ)
                 env.update(
                     {
@@ -298,16 +337,12 @@ def test_floor_accepts_a_run_at_the_floor(tmp_path: Path) -> None:
 
 def test_floor_counts_flaky_as_executed(tmp_path: Path) -> None:
     """CI runs retries:2, so a flake absorbed by a retry still ran."""
-    report = _write_report(
-        tmp_path, expected=MIN_EXECUTED_SPECS - 1, flaky=1, skipped=0
-    )
+    report = _write_report(tmp_path, expected=MIN_EXECUTED_SPECS - 1, flaky=1, skipped=0)
     _assert_suite_not_darkened(report)  # must not raise
 
 
 def test_floor_rejects_a_collapsed_spec_count(tmp_path: Path) -> None:
-    report = _write_report(
-        tmp_path, expected=MIN_EXECUTED_SPECS - 1, flaky=0, skipped=0
-    )
+    report = _write_report(tmp_path, expected=MIN_EXECUTED_SPECS - 1, flaky=0, skipped=0)
     with pytest.raises(AssertionError, match="specs executed, floor is"):
         _assert_suite_not_darkened(report)
 
@@ -322,7 +357,5 @@ def test_floor_fails_when_the_report_is_missing(tmp_path: Path) -> None:
     """A missing report must fail loudly, not pass for lack of evidence."""
     # pytest.fail raises Failed, which derives from BaseException, so a plain
     # `pytest.raises(Exception)` would not catch it.
-    with pytest.raises(
-        pytest.fail.Exception, match="could not read Playwright JSON report"
-    ):
+    with pytest.raises(pytest.fail.Exception, match="could not read Playwright JSON report"):
         _assert_suite_not_darkened(tmp_path / "absent.json")

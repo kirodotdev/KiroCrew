@@ -44,6 +44,25 @@ async function member(request: APIRequestContext, role: string) {
   return { name, store: created.memory_store as string }
 }
 
+// A CREWMATE, not a plain crew: only a named hire enrolls a member, and only an
+// enrolled member is on the Crew roster and has a member conversation. The
+// harness plants `memory-e2e-template.json` in the isolated agents dir to hire from.
+async function crewmate(request: APIRequestContext, role: string) {
+  const name = `memory-e2e-${role}-${randomUUID().slice(0, 8)}`
+  const nameless = await request.post('/api/members', { data: { source: { kind: 'local', agent: 'memory-e2e-template' } } })
+  expect(nameless.status(), 'a hire without a name is refused before anything is written').toBe(400)
+  const response = await request.post('/api/members', { data: { source: { kind: 'local', agent: 'memory-e2e-template' }, display_name: name } })
+  expect(response.ok(), await response.text()).toBeTruthy()
+  const hired = await response.json() as { ok: boolean; id: string }
+  expect(hired).toMatchObject({ ok: true, id: name })
+  const roster = await request.get('/api/members')
+  expect(roster.ok(), await roster.text()).toBeTruthy()
+  const row = ((await roster.json()).members as { name: string; memory_store: string }[]).find(candidate => candidate.name === name)
+  expect(row, 'The hired crewmate must be on the roster').toBeDefined()
+  expect(row!.memory_store).toMatch(/^member-/)
+  return { name, store: row!.memory_store }
+}
+
 async function rows(request: APIRequestContext, store: string, q = '') {
   const response = await request.get('/api/memory/semantic', { params: { store, limit: 100, q } })
   expect(response.ok(), await response.text()).toBeTruthy()
@@ -112,8 +131,11 @@ test('switching memory stores keeps a draft until the owner explicitly discards 
 
 test('member memory copy, correction and forgetting persist without changing V1 or another member', async ({ page, request }, testInfo) => {
   test.setTimeout(90000)
-  const target = await member(request, 'reviewer')
-  const other = await member(request, 'writer')
+  // Crewmates, not plain crews: the memory page offers "Open member
+  // conversation" (asserted below) only for a member on the Crew roster, and
+  // only a named hire puts one there.
+  const target = await crewmate(request, 'reviewer')
+  const other = await crewmate(request, 'writer')
   expect(target.store).not.toBe(other.store)
   expect(await rows(request, target.store)).toEqual([])
   expect(await rows(request, other.store)).toEqual([])
@@ -189,7 +211,7 @@ test('member memory copy, correction and forgetting persist without changing V1 
 
   await openMemory(page, other)
   await expect(page.getByText(corrected, { exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Open member conversation', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open crewmate conversation', exact: true })).toBeVisible()
   expect(await rows(request, other.store)).toEqual([])
   await page.screenshot({ path: testInfo.outputPath('member-memory-separate-empty-member.png'), fullPage: false, animations: 'disabled' })
   await openMemory(page, target)
@@ -319,7 +341,7 @@ test('private backup staging can be cancelled and a replaced experience can be r
 
 test('an empty private memory opens its exact member conversation and reuses the persisted thread after reload', async ({ page, request }, testInfo) => {
   test.setTimeout(90000)
-  const owner = await member(request, 'conversation')
+  const owner = await crewmate(request, 'conversation')
   const readOwner = async () => {
     const response = await request.get('/api/members')
     expect(response.ok(), await response.text()).toBeTruthy()
@@ -342,7 +364,7 @@ test('an empty private memory opens its exact member conversation and reuses the
   )
   await openMemory(page, owner)
   const opened = waitForThread()
-  await page.getByRole('button', { name: 'Open member conversation', exact: true }).click()
+  await page.getByRole('button', { name: 'Open crewmate conversation', exact: true }).click()
   const response = await opened
   expect(response.ok(), await response.text()).toBeTruthy()
   const binding = await response.json() as { member: string; slug: string; slot_key: string }
@@ -351,7 +373,8 @@ test('an empty private memory opens its exact member conversation and reuses the
   await expect(page).toHaveURL(url => url.pathname === '/members' && url.searchParams.get('member') === owner.name)
   const memberHeader = page.getByTestId('member-thread-header')
   await expect(memberHeader.getByText(owner.name, { exact: true })).toBeVisible()
-  await expect(memberHeader.getByRole('button', { name: 'Edit member', exact: true })).toBeAttached()
+  // The header's name control: the crew-editor door in step 1, the in-place rename pencil from step 6 on.
+  await expect(memberHeader.locator('[data-testid="member-edit-name-button"], [data-testid="member-rename-button"]')).toHaveCount(1)
   await expect(page.getByPlaceholder(/message/i)).toBeVisible()
 
   const panelToggle = page.getByTestId('member-panel-toggle')
@@ -500,7 +523,7 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
     const freshThread = page.waitForResponse(response =>
       response.request().method() === 'POST' && /\/api\/members\/[^/]+\/thread$/.test(new URL(response.url()).pathname),
     )
-    await page.getByRole('button', { name: 'Open member conversation', exact: true }).click()
+    await page.getByRole('button', { name: 'Open crewmate conversation', exact: true }).click()
     const fresh = await freshThread.then(response => response.json() as Promise<{ slot_key: string }>)
     expect(fresh.slot_key).not.toBe(slotKey)
     await expect(page).toHaveURL(url => url.pathname === '/members' && url.searchParams.get('member') === name)

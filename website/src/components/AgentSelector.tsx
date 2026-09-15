@@ -26,12 +26,22 @@ export interface KiroCrewAgent {
    *  older payloads predate the field, and it falls back to `description`. */
   triggers?: string
   source: string
+  /** What the user calls the crew. Server-resolved to `name` when the record
+   *  stores no label; `name` itself is the immutable id every route addresses.
+   *  Optional: older payloads predate the identity split. */
+  display_name?: string
+  /** Job title from the template it was hired from; optional for a hand-made crew. */
+  role?: string
   /** Default session color (#rrggbb hex) applied to new sessions using this
    *  agent. Empty or absent means no agent color. */
   session_color?: string
   /** Per-crew avatar override, verbatim from the backend. `{}`/absent means
    *  the face is derived from the crew name; interpreted by ghostTraitsFrom. */
   avatar?: unknown
+  /** Explicit enrollment: true for a hired crewmate (the sealed record), false for an
+   *  agent template or a plain crew a session can run without hiring. The pickers
+   *  group on it; picking a template never creates a crewmate. */
+  crewmate?: boolean
 }
 
 interface Props {

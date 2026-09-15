@@ -16,6 +16,42 @@ const agents: AgentItem[] = [
 ]
 
 describe('AgentDropdownList', () => {
+  it('groups hired crewmates apart from agent templates, crewmates first and by their name', () => {
+    // Two kinds of selection: a crewmate is an existing identity (its own thread
+    // and memory); a template starts a session and enrolls nobody. The list says
+    // which is which, and picking either is just `onSelect(id)` -- no hire here.
+    const onSelect = vi.fn()
+    render(
+      <AgentDropdownList
+        agents={[
+          ...agents,
+          { name: 'Payments-triage', source: 'kirocrew', crewmate: true, display_name: 'Payments triage' },
+        ]}
+        activeAgent="kirocrew"
+        defaultAgent="kirocrew"
+        onSelect={onSelect}
+      />,
+    )
+    const groups = screen.getAllByTestId(/^agent-group-/)
+    expect(groups.map(g => g.getAttribute('data-testid'))).toEqual(['agent-group-crewmates', 'agent-group-templates'])
+    expect(screen.getByText('Crewmates')).toBeInTheDocument()
+    expect(screen.getByText('Agent templates')).toBeInTheDocument()
+    // The crewmate reads by its display name, with the id beside it.
+    const crewmates = screen.getByTestId('agent-group-crewmates')
+    expect(crewmates).toHaveTextContent('Payments triage')
+    expect(crewmates).toHaveTextContent('Payments-triage')
+    expect(screen.getByTestId('agent-group-templates')).toHaveTextContent('builtin')
+    fireEvent.click(screen.getByText('Payments triage'))
+    expect(onSelect).toHaveBeenCalledWith('Payments-triage')
+  })
+
+  it('keeps the Agent templates heading when nothing is a crewmate, so rows never change kind after the first hire', () => {
+    render(<AgentDropdownList agents={agents} activeAgent="kirocrew" defaultAgent="kirocrew" onSelect={() => {}} />)
+    expect(screen.queryByText('Crewmates')).toBeNull()
+    expect(screen.getByText('Agent templates')).toBeInTheDocument()
+    expect(screen.getAllByTestId(/^agent-group-/)).toHaveLength(1)
+  })
+
   it('renders all agents', () => {
     render(<AgentDropdownList agents={agents} activeAgent="kirocrew" defaultAgent="kirocrew" onSelect={() => {}} />)
     expect(screen.getAllByText('kirocrew').length).toBeGreaterThan(0)

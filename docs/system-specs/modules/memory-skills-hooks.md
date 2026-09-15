@@ -1117,6 +1117,22 @@ instead of downgrading the same file to V1. None of these rows is written on the
 default v1 lineage, because adding rows to the operator's own `memory.db` is the
 one thing this seam exists to avoid.
 
+**Ownership follows a re-keyed member id.** The three durable owner records (the
+config `memory_stores[*].owner_member`, the manifest's `owner_member`, the
+`memory_meta` owner row) all name the `agents` key, so the config loader's
+`MIGRATE_MEMBER_IDS` migration -- which re-keys a row whose key is outside the
+member-id grammar (see `config.md`, *Crew member identity*) -- renames all three:
+the config record in the same document delta, the manifest and the database row via
+`memory_stores.rename_private_owner(store, old, new)`, called inside the locked
+write-back before the document is written. Each rename applies only where the record
+still names the old id, so a retried migration is a no-op and a record naming a third
+member is left alone (the ownership mismatch it leaves is then the correct verdict).
+The database row is renamed before the manifest, and a manifest write that fails
+reverts the row, so a locked or read-only database -- which raises and aborts the
+config write -- leaves both records under the old owner; the next load retries the
+whole migration from a whole store. Only a missing `memory_meta` table is tolerated,
+because that is a legacy V1 file with no owner row to rename.
+
 **Whole-install portability remains separate from member recovery.** The existing
 snapshot and export/import components enumerate the global files and workspace
 trees; they do not include per-member stores. Members now have dedicated full

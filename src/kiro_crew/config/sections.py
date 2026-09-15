@@ -3406,6 +3406,37 @@ class KiroCrewAgentConfig:
         default="kirocrew",
         metadata=_meta("Source", "Agent origin: kirocrew or builtin."),
     )
+    display_name: str = field(
+        default="",
+        metadata=_meta(
+            "Display Name",
+            "What the member is called on every surface. Free text, renamed "
+            "freely with zero blast radius. Empty means the member's id (the "
+            "agents map key) is its label. The id itself is system-minted from "
+            "the display name at creation and never changes.",
+        ),
+    )
+    role: str = field(
+        default="",
+        metadata=_meta(
+            "Role",
+            "The member's job title, e.g. 'Oncall Triage Engineer'. Supplied by "
+            "the template it was hired from; optional (typed or empty) for a "
+            "hand-made member.",
+        ),
+    )
+    legacy_key: str = field(
+        default="",
+        metadata=_meta(
+            "Legacy Key",
+            "The agents-map key this row had before the member-id migration "
+            "re-keyed it (a name outside the member-id grammar). Written once by "
+            "the migration, never by a user; the durable handle a "
+            "config.local.json row still keyed by that string is read under, so "
+            "an overlay the loader never rewrites keeps following the member "
+            "through renames. Empty for every row created with a well-formed id.",
+        ),
+    )
     starred: bool = field(
         default=False,
         metadata=_meta(

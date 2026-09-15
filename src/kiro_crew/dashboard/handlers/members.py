@@ -19,20 +19,27 @@ or opening threads that speak as them).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from collections.abc import Collection
+from datetime import datetime, timezone
 
 from aiohttp import web
 
 import kiro_crew.dashboard.handlers as _h
+import kiro_crew.dashboard.handlers.agents as _agents_handlers
+from kiro_crew import agent_state
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig, default_project_dir
 from kiro_crew.dashboard.chat_persistence import (
     pin_private_agent_store,
     rehydrate_slot_from_history_async,
 )
-from kiro_crew.dashboard.chat_utils import effective_session_key
+from kiro_crew.dashboard.chat_utils import drained, effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
+from kiro_crew.member_identity import effective_display_name
 from kiro_crew.members import MemberSlugError
 from kiro_crew.validation import _AGENT_NAME_RE
 
@@ -101,16 +108,69 @@ async def _deny_app_caller(request: web.Request, operation: str) -> web.Response
     return web.json_response({"error": "not found", "code": "not_found"}, status=404)
 
 
-def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
+def enrolled_member_ids(cfg: KiroCrewConfig, *, strict: bool = False) -> list[str]:
+    """The ids on the roster: ``config.agents`` rows with a crewmate ENROLLMENT
+    record whose generation is the row's private store, in config order.
+
+    Membership is decided by the record alone (``agent_state.all_crewmate_records``,
+    written by a confirmed hire inside its locked publication, removed by the
+    fire) -- never by a row's presence in ``config.agents``, its source, its
+    display name, a member directory or a session that used it. So ``default``,
+    a built-in, an app's materialized agent, a file the agent sync registered
+    and a plain crew-manager crew all stay session agents until the owner hires
+    them by name. A record that does not cover the row's store
+    (``agent_state.record_covers_store``: its generation, or the generation a
+    store change through the API is moving it to) is a record of a member that
+    was deleted and recreated under the same id: not this row.
+
+    Nothing is enrolled on upgrade. No build before this one wrote a mark that
+    only a hire could have written -- an earlier hire verb's private copy and
+    ``member-`` store are exactly what the crew editor's fork and private-memory
+    provisioning give a plain crew -- so every pre-existing row, that class
+    included, stays a session agent until the owner hires it by name; nothing
+    is deleted, retired or rebound.
+
+    ``strict`` raises on an unreadable sidecar: a route about to WRITE for a
+    member must not read "cannot verify" as "not a member", and the roster
+    GET refuses the same way (503 ``members_unavailable``) so a corrupt record
+    renders as the page's load error, never as a fresh install's empty crew.
+    A lenient read logs and answers no members -- for callers that only
+    DECORATE (a sidebar badge, a lineage caption) and have an honest empty.
+    """
+    try:
+        records = agent_state.all_crewmate_records(strict=strict)
+    except (OSError, ValueError):
+        if strict:
+            raise
+        logger.warning("crewmate record unreadable; the roster lists no members", exc_info=True)
+        return []
+    out: list[str] = []
+    for name, row in cfg.agents.items():
+        if not isinstance(name, str) or not _AGENT_NAME_RE.match(name):
+            continue
+        if agent_state.record_covers_store(records.get(name), row.memory_store):
+            out.append(name)
+    return out
+
+
+def _member_names_for_slug(cfg: KiroCrewConfig | Collection[str], slug: str) -> list[str]:
     """Crew names whose derived slug equals *slug*, in config order.
 
     Config order is insertion order, so "first name wins" is deterministic for
     a colliding slug. Names failing the agent-name grammar are skipped rather
     than matched: they cannot have been created through the validated CRUD
     surface, so a hand-edited config row never becomes addressable here.
+    *cfg* is the parsed config or, inside a locked write, the raw document's
+    ``agents`` map (its keys are the names).
     """
+    # Duck-typed on ``agents``: the parsed config, or the lightweight stand-ins
+    # the DM-thread tests hand the routes; a bare collection is the names.
+    agents = getattr(cfg, "agents", None)
+    names: Collection[str] = agents if agents is not None else cfg  # type: ignore[assignment]
     out: list[str] = []
-    for name in cfg.agents:
+    for name in names:
+        if not isinstance(name, str):
+            continue
         if not _AGENT_NAME_RE.match(name):
             continue
         try:
@@ -129,6 +189,22 @@ def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
 _SOURCE_KIROCREW = "kirocrew"
 _SOURCE_BUILTIN = "builtin"
 _SOURCE_PACKAGE = "package"
+
+
+def _identity_text(value: object) -> str:
+    """Bound a wrapper identity string for the roster: text only, redacted.
+
+    ``display_name``, ``role`` and the template link are user- or
+    template-author-typed and live in a hand-editable, agent-writable config,
+    so they get the same treatment as the roster's message preview: the
+    credential / exfiltration-URL redactors run over the text before it ships.
+    The create and rename routes already REFUSE a credential-shaped label, so
+    for a value written through the API this is a no-op; it exists for the
+    value that was not. Non-strings (a hand-edited object) render as "".
+    """
+    if not isinstance(value, str):
+        return ""
+    return _redact_external(value)
 
 
 def normalize_member_source(raw: object) -> str:
@@ -156,14 +232,42 @@ async def api_members(request: web.Request) -> web.Response:
     state: DashboardState | None = request.app.get("state")
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
 
+    # One sidecar read for the whole roster: which bound agent files are a
+    # member's OWN copy, and of what. Lenient like the agents roster -- a
+    # corrupt sidecar degrades to "no lineage shown", never to no roster.
+    try:
+        forks = await asyncio.to_thread(agent_state.all_fork_info)
+    except (OSError, ValueError):
+        logger.warning("fork sidecar unreadable; members roster shows no lineage", exc_info=True)
+        forks = {}
+
+    # Explicit enrollment decides the roster (see enrolled_member_ids): a
+    # template the sync registered, a built-in or ``default`` is a session
+    # agent, not a crewmate. Strict, like every member write: an unreadable
+    # record must not read as "nobody is enrolled" on the one surface the
+    # user looks at -- that is the fresh-install empty state wearing a
+    # corruption. The page already renders ``roster_load_failed`` for a 5xx.
+    try:
+        roster_ids = await asyncio.to_thread(enrolled_member_ids, cfg, strict=True)
+    except (OSError, ValueError):
+        logger.warning("crewmate record unreadable; refusing the roster read", exc_info=True)
+        return web.json_response(
+            {"error": "the crewmate record could not be read", "code": "members_unavailable"},
+            status=503,
+        )
     rows: list[dict] = []
-    for name, agent_cfg in cfg.agents.items():
-        if not _AGENT_NAME_RE.match(name):
-            continue
+    for name in roster_ids:
+        agent_cfg = cfg.agents[name]
         try:
             slug = members_mod.slug_for_name(name)
         except MemberSlugError:
             continue
+        # The binding is free text in a hand-editable config: a non-string
+        # (`kiro_agent: []`) must not turn the roster read into a 500 -- the
+        # row lists with no lineage, like an unreadable sidecar does.
+        bound_to = agent_cfg.kiro_agent
+        fork = forks.get(bound_to) if isinstance(bound_to, str) else None
+        template_origin = fork["forked_from"] if fork and fork.get("private_to") == name else ""
         store = agent_cfg.memory_store
         record = getattr(cfg, "memory_stores", {}).get(store)
         version = getattr(record, "memory_version", 1 if store == "default" else None)
@@ -206,6 +310,25 @@ async def api_members(request: web.Request) -> web.Response:
                 # operator's opt-out from being routed to at all.
                 "description": agent_cfg.description,
                 "triggers": agent_cfg.triggers,
+                # Wrapper identity (member_identity.py). `name` above is the
+                # member's ID -- the key every other route addresses -- and
+                # `display_name` is what the user reads and renames; the server
+                # resolves the "" -> id fallback so no page re-implements it.
+                # `role` is the job title. Where the member came from is the
+                # normalized `source` above; nothing re-derives it here.
+                "display_name": _identity_text(
+                    effective_display_name(name, agent_cfg.display_name)
+                ),
+                "role": _identity_text(agent_cfg.role),
+                # Lineage: when `kiro_agent` is this member's own copy (the
+                # hire's copy-on-hire, or the editor's first-edit fork), the
+                # template it was copied FROM -- so the drawer can say
+                # "reviewer — own copy" instead of showing the copy's stem as
+                # if it were a template. "" when the member is bound to a
+                # shared template directly. The value is a DECLARED template
+                # name -- text a package or a hand-edited spec wrote -- so it
+                # takes the same redactor as the other identity fields.
+                "template_origin": _identity_text(template_origin),
             }
         )
 
@@ -347,7 +470,20 @@ async def api_member_thread(request: web.Request) -> web.Response:
     # slug takes the thread. An uncorroborated binding resolves to that same
     # crew here — but only far enough to look up its slot; the branches below
     # refuse the open rather than rebinding the slug to it.
-    slug_owners = _member_names_for_slug(cfg, slug)
+    # Enrolled members only: a template or a plain crew that derives this slug
+    # is not a member and cannot acquire a DM thread through this route. Strict
+    # on the record -- this route creates the binding.
+    def _enrolled_owners() -> list[str]:
+        return _member_names_for_slug(enrolled_member_ids(cfg, strict=True), slug)
+
+    try:
+        slug_owners = await asyncio.to_thread(_enrolled_owners)
+    except (OSError, ValueError):
+        logger.warning("crewmate record unreadable; refusing the thread open", exc_info=True)
+        return web.json_response(
+            {"error": "the crewmate record could not be read", "code": "members_unavailable"},
+            status=503,
+        )
     if binding is not None and binding.get("member") in slug_owners:
         member_name = binding["member"]
     elif slug_owners:
@@ -838,7 +974,15 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
     # Config load does filesystem reads + validation — off-loop, like every
     # other handler's config access on a request path.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    if member not in cfg.agents:
+    try:
+        enrolled = await asyncio.to_thread(enrolled_member_ids, cfg, strict=True)
+    except (OSError, ValueError):
+        logger.warning("crewmate record unreadable; refusing the rules write", exc_info=True)
+        return web.json_response(
+            {"error": "the crewmate record could not be read", "code": "members_unavailable"},
+            status=503,
+        )
+    if member not in enrolled:
         return web.json_response(
             {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
         )
@@ -846,7 +990,7 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
     # applies the agent-name grammar filter and tolerates MemberSlugError, so
     # a hand-edited config key that is not a valid agent name can neither
     # crash this scan nor manufacture a phantom collision.
-    colliding = _member_names_for_slug(cfg, slug)
+    colliding = _member_names_for_slug(enrolled, slug)
     if colliding != [member]:
         return web.json_response(
             {
@@ -902,3 +1046,286 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         # cold session picks the new rules up at its next start regardless.
         logger.debug("could not flag member session for reinjection", exc_info=True)
     return web.json_response({"slug": slug, "ok": True})
+
+
+#: Sources a hire may name. ``local`` copies an installed Kiro custom-agent
+#: file (``~/.kiro/agents/<agent>.json``); a store template is a later rollout
+#: step and is refused here by name so a client written against it fails
+#: loudly rather than silently hiring from the wrong place.
+_HIRE_SOURCE_KINDS = frozenset({"local"})
+
+
+async def api_member_hire(request: web.Request) -> web.Response:
+    """POST /api/members — hire a crew member from a local Custom Agent file.
+
+    The one hire verb of the wrapper design, source ``local`` (the "adopt"
+    path). Body::
+
+        {"source": {"kind": "local", "agent": "reviewer"},  # installed agent file
+         "display_name": "Checkout triage",          # optional: what you call them
+         "role": "Oncall Triage Engineer",           # optional job title
+         "workspace": "default", "triggers": "", "session_color": ""}  # optional
+
+    **Named before it exists**: ``display_name`` is REQUIRED -- a missing or
+    blank one is 400 ``missing_display_name`` (a non-string
+    ``invalid_display_name``) before anything is minted, copied, provisioned
+    or enrolled; there is no fallback to the role or the source file. The row
+    is the owner's; a typed name that collides is 409
+    ``agent_exists``, the user's to resolve.
+
+    ATOMIC: the member either exists with its own copy of the source, or does
+    not exist at all -- and at no moment is a row bound to the SHARED source
+    readable. Three steps:
+
+    1. **Resolve the source** before anything is written: an agent name that
+       matches no installed file is a 404 here, not a member bound to nothing.
+    2. **Copy-on-hire.** Inside the create's config-lock hold, before the row
+       exists, the source definition is copied into a member-owned agent file
+       (``name`` = the copy's stem, derived from the minted member id) through
+       the same private-copy writer the crew editor's first-edit fork uses.
+       Lineage lands in the agent_state sidecar, so the fork refresh keeps the
+       copy's machine-maintained plumbing current.
+    3. **Publish the wrapper row** through the same validated create path
+       ``POST /api/agents`` uses -- the id is minted from ``display_name``,
+       private memory is provisioned -- ALREADY bound to the copy.
+
+    The copy comes first because a row bound to the shared source, even for
+    the moment between a create and a fork, is a row a concurrent thread open
+    can resolve and run a session against, and that session would keep using
+    the shared template after the hire completed -- the exact hazard this
+    verb exists to remove. A source that vanished between 1 and 2 answers 404
+    with nothing written; a row that fails to persist after the copy unwinds
+    the copy (file and lineage). A caller wanting a shared binding has
+    ``POST /api/agents``.
+
+    Two members hired from one file therefore coexist: each owns its own copy
+    and its own row.
+    """
+    denied = await require_owner_dashboard_request(request, "member.hire")
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
+    source = body.get("source")
+    if not isinstance(source, dict):
+        return web.json_response(
+            {"error": "source must be an object {kind, agent}", "code": "invalid_source"},
+            status=400,
+        )
+    kind = source.get("kind")
+    # ``isinstance`` before the membership test: a list or object here is
+    # unhashable and would turn the frozenset lookup into a 500.
+    if not isinstance(kind, str) or kind not in _HIRE_SOURCE_KINDS:
+        return web.json_response(
+            {
+                "error": f"source.kind must be one of {sorted(_HIRE_SOURCE_KINDS)}",
+                "code": "unsupported_source_kind",
+            },
+            status=400,
+        )
+    agent = source.get("agent")
+    # The template-name grammar (the source is a FILE the installed listing
+    # offers, dots included -- ``reviewer.v2`` -- and the row is bound to the
+    # copy, not to it), checked before the name reaches any lookup: the create
+    # path re-checks it, but refusing here keeps the error about the SOURCE
+    # rather than about a "kiro_agent" the caller never spelled.
+    if not isinstance(agent, str) or not _agents_handlers._TEMPLATE_NAME_RE.match(agent.strip()):
+        return web.json_response(
+            {"error": "source.agent must name an installed agent", "code": "invalid_source_agent"},
+            status=400,
+        )
+    # Step 1: the source must exist NOW. The create path deliberately tolerates
+    # a missing template (a crew may be bound ahead of an install); a hire may
+    # not, because its promise is a copy of that file.
+    try:
+        source_spec, _source_name, _taken, _path = await asyncio.to_thread(
+            _agents_handlers._load_template_specs,
+            _agents_handlers.kiro_agents_dir_path(),
+            agent,
+            "api_member_hire",
+        )
+    except _agents_handlers._AmbiguousTemplateName:
+        return web.json_response(
+            {
+                "error": f"'{agent}' matches more than one template file; rename one first.",
+                "code": "ambiguous_template_name",
+            },
+            status=409,
+        )
+    if source_spec is None:
+        return web.json_response(
+            {"error": f"Template '{agent}' not found", "code": "template_not_found"}, status=404
+        )
+    # The optional text fields must be TEXT. The create core validates the
+    # identity fields and the colour but stores `workspace`, `description`
+    # and `triggers` as given, and a non-string there is a member that
+    # persists and then breaks on use: a list `workspace` raises when the
+    # thread opens, a list `description` raises inside `route_crew`. Refused
+    # here, before anything is written, naming the field.
+    for text_field in ("workspace", "description", "triggers", "session_color"):
+        if text_field in body and not isinstance(body[text_field], str):
+            return web.json_response(
+                {
+                    "error": f"{text_field} must be a string",
+                    "code": f"invalid_{text_field}",
+                },
+                status=400,
+            )
+    # Allowlist, never a spread of the hire body into the create body: the
+    # create route accepts fields a hire must not set (memory_store, source
+    # tag, avatar image commits).
+    create_body: dict[str, object] = {
+        "role": body.get("role", ""),
+        "kiro_agent": agent,
+        "workspace": body.get("workspace", "default"),
+        "memory_store": "default",
+        "triggers": body.get("triggers", ""),
+        "session_color": body.get("session_color", ""),
+        "description": body.get("description", ""),
+    }
+    named = _hire_name(body)
+    if isinstance(named, web.Response):
+        return named
+    create_body.update(named)
+    # Steps 2..3 are ONE transaction: a cancellation mid-way (a gateway
+    # shutdown, a client that closed the request) must not leave a copy without
+    # its row, or a row half-published. The transaction is drained to its own
+    # end before a cancellation is re-raised.
+    return await drained(_hire_transaction(request, agent, create_body))
+
+
+async def _hire_transaction(
+    request: web.Request, agent: str, create_body: dict[str, object]
+) -> web.Response:
+    """Steps 2..3 of a hire; see :func:`api_member_hire`. Run under ``drained``."""
+    # Steps 2 and 3 are ONE config-lock hold inside the create: the copy is
+    # made first, then the row is published already bound to it. No moment
+    # exists in which a row bound to the shared source can be read.
+    hired_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _enroll(member_id: str, generation: str) -> None:
+        # ENROLLMENT: the sealed-sidecar record that makes the row a crewmate
+        # (enrolled_member_ids), written inside the create's publication with
+        # the generation it minted; the create unwinds it if the row fails.
+        agent_state.set_crewmate_record(
+            member_id, generation=generation, template=agent, hired_at=hired_at
+        )
+
+    created = await _agents_handlers._create_crew(
+        request, create_body, copy_source=agent, admit=_slug_collision_refusal, enroll=_enroll
+    )
+    if created.status != 200:
+        return created
+    created_payload = _own_payload(created)
+    member_id = created_payload.get("name")
+    copy_name = created_payload.get("kiro_agent")
+    if not (isinstance(member_id, str) and member_id and isinstance(copy_name, str) and copy_name):
+        # Our own create route answering a shape this handler does not know is
+        # a bug, and one this handler must not paper over with defaults.
+        logger.error("hire: the create route answered an unknown shape: %r", created_payload)
+        return web.json_response(
+            {"error": "create answered without an id", "code": "hire_incomplete"}, status=500
+        )
+    try:
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="member.hire",
+            outcome="success",
+            source="dashboard",
+            resources=f"{member_id} <- {agent} ({copy_name})",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for member.hire failed", exc_info=True)
+    # What a caller reads and nothing else: the minted id (what `/members?member=`
+    # resolves). The copy the member is bound to, its label, store and source
+    # are read back from the roster row.
+    return web.json_response({"ok": True, "id": member_id})
+
+
+def _hire_name(body: dict) -> dict[str, object] | web.Response:
+    """The create's ``display_name`` for a hire body.
+
+    A crewmate is named by the owner, before it exists: ``display_name`` is
+    REQUIRED and must not be blank or whitespace. There is no fallback to the
+    role or to the source file -- a hire that arrives without a name is
+    refused (400 ``missing_display_name``) before anything is minted, copied
+    or written. The name
+    may equal the role when the owner typed it; spaces and Unicode are kept as
+    display text (the id is minted separately).
+    """
+    raw = body.get("display_name")
+    if raw is not None and not isinstance(raw, str):
+        return web.json_response(
+            {"error": "display_name must be a string", "code": "invalid_display_name"},
+            status=400,
+        )
+    if not isinstance(raw, str) or not raw.strip():
+        return web.json_response(
+            {
+                "error": "display_name is required: name the crewmate before hiring it",
+                "code": "missing_display_name",
+            },
+            status=400,
+        )
+    return {"display_name": raw}
+
+
+def _slugmates(cfg: KiroCrewConfig | Collection[str], candidate: str) -> tuple[str, list[str]]:
+    """The slug *candidate* would take and the OTHER members already on it."""
+    try:
+        slug = members_mod.slug_for_name(candidate)
+    except MemberSlugError:
+        return "", []
+    return slug, [n for n in _member_names_for_slug(cfg, slug) if n != candidate]
+
+
+def _slug_collision_refusal(
+    cfg: KiroCrewConfig | Collection[str], candidate: str
+) -> web.Response | None:
+    """Refuse a hire whose minted id would share its slug with another member.
+
+    The slug (`members.slug_for_name`) is lossy -- ``Foo`` and ``foo`` share
+    one -- and it keys everything a member lives in: ``members/<slug>/``
+    (activity, briefing), its rules and its DM binding. Two members on one
+    slug would inherit each other's briefing and be refused their thread and
+    rules as a collision; a hire is where that can still be said before
+    anything exists. Runs as the create's ``admit`` hook: INSIDE the
+    config-lock hold against the snapshot the row is published from, and
+    AGAIN inside the cross-process locked publication against the document's
+    ``agents`` map as it is on disk -- two processes' pre-lock checks could
+    both pass for ``Triage`` and ``triage`` and then serialize into two rows
+    on one slug; only the check at the write sees what the other process did.
+    """
+    slug, others = _slugmates(cfg, candidate)
+    if not others:
+        return None
+    return web.json_response(
+        {
+            "error": (
+                f"'{candidate}' would share its member space with '{others[0]}' "
+                f"(both shorten to '{slug}'); choose a name that shortens differently"
+            ),
+            "code": "slug_collision",
+        },
+        status=409,
+    )
+
+
+def _own_payload(response: web.Response) -> dict:
+    """Decode the JSON body one of OUR handlers just built, or ``{}``.
+
+    The hire route composes the create and fork cores through their HTTP
+    shells; their bodies are this package's own contract, pinned by tests, so
+    an undecodable one is a bug, not input to tolerate.
+    """
+    try:
+        payload = json.loads(response.text or "{}")
+    except ValueError:  # pragma: no cover - our own handler's JSON
+        return {}
+    return payload if isinstance(payload, dict) else {}

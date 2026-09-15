@@ -580,6 +580,50 @@ class TestUploadedAvatarEndpoints:
         assert _pending_avatar_path(seeded_agent) is None
 
     @pytest.mark.asyncio
+    async def test_crew_delete_reaps_the_avatar_inside_its_locked_publication(self, seeded_agent):
+        """The files go INSIDE the delete's cross-process lock hold (the write's
+        ``after_write``), not after it: once the hold is released another
+        gateway can recreate the id and commit a picture under the same digest
+        stem, and a cleanup landing then would delete the new crew's avatar.
+        Observed through the locked writer: the avatar files (and the crewmate
+        record) are gone by the time ``update_config_locked`` returns."""
+        from unittest.mock import patch
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew import agent_state
+        from kiro_crew.dashboard.handlers import agents as handlers
+        from kiro_crew.dashboard.handlers.agents import _pending_avatar_path
+
+        real = handlers.update_config_locked
+        seen: dict[str, object] = {}
+
+        def observing(*, mutate, after_write=None, **kwargs):
+            def wrapped(doc):
+                assert after_write is not None, "the delete publishes no after_write"
+                after_write(doc)
+                seen["avatar_gone_inside_hold"] = self._stored(seeded_agent) is None
+                seen["record_gone_inside_hold"] = (
+                    agent_state.get_crewmate_record(seeded_agent, strict=True) is None
+                )
+
+            return real(mutate=mutate, after_write=wrapped, **kwargs)
+
+        async with TestClient(TestServer(self._app())) as client:
+            await self._commit(client, seeded_agent, _PNG)
+            await client.post(f"/api/agents/{seeded_agent}/avatar", data=self._form(_JPG))
+            store = KiroCrewConfig.load().agents[seeded_agent].memory_store
+            agent_state.set_crewmate_record(
+                seeded_agent, generation=store, template="t", hired_at=""
+            )
+            with patch.object(handlers, "update_config_locked", observing):
+                resp = await client.delete(f"/api/agents/{seeded_agent}")
+                assert resp.status == 200
+        assert seen == {"avatar_gone_inside_hold": True, "record_gone_inside_hold": True}
+        assert self._stored(seeded_agent) is None
+        assert _pending_avatar_path(seeded_agent) is None
+
+    @pytest.mark.asyncio
     async def test_get_requires_config_to_select_the_image(self, seeded_agent):
         """A leftover file with a non-image field must not stay retrievable."""
         from aiohttp.test_utils import TestClient, TestServer
