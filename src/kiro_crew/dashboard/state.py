@@ -33,6 +33,7 @@ from kiro_crew.config.loader import (
     resolve_effective_agent,
 )
 from kiro_crew.constants import (
+    CRON_NOTIFY_PREFIX,
     OPTIONS_RE_LINE,
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
@@ -2628,7 +2629,7 @@ NEW_SESSION_TITLE = "New Session…"
 _SLOT_KEY_TITLE_RE = re.compile(r"(?:dashboard_)?chat-\d+-\d+$")
 
 # Cron notification wrapper format — used by handlers.py (create), chat.py (detect), ChatPage.tsx (render)
-CRON_NOTIFY_PREFIX = "[Cron notification from "
+# CRON_NOTIFY_PREFIX is imported from constants (platform/core must not import this layer).
 CRON_NOTIFY_END = "[End of cron notification]"
 CRON_NOTIFY_RE = re.compile(rf'^{re.escape(CRON_NOTIFY_PREFIX)}"(.*)"\]')
 # Both sub-agent markers, for the checks that must treat either shape as a system
@@ -4836,6 +4837,8 @@ class _ChatSlot:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        principal_surface: str = "",
+        principal_raw_id: str = "",
     ) -> str:
         return self._queue_repository.queue_append(
             self,
@@ -4844,6 +4847,8 @@ class _ChatSlot:
             meta,
             directive_user_origin=directive_user_origin,
             directive_channel_origin=directive_channel_origin,
+            principal_surface=principal_surface,
+            principal_raw_id=principal_raw_id,
         )
 
     def _note_enqueue(self) -> None:
@@ -4860,6 +4865,8 @@ class _ChatSlot:
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        principal_surface: str = "",
+        principal_raw_id: str = "",
     ) -> str:
         return self._queue_repository.queue_insert(
             self,
@@ -4872,6 +4879,8 @@ class _ChatSlot:
             on_irreversibly_consumed,
             directive_user_origin,
             directive_channel_origin,
+            principal_surface=principal_surface,
+            principal_raw_id=principal_raw_id,
         )
 
     def queue_pop(self, index: int = 0) -> dict[str, Any]:
@@ -4896,6 +4905,8 @@ class _ChatSlot:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        principal_surface: str = "",
+        principal_raw_id: str = "",
     ) -> bool:
         return self._queue_repository.queue_edit_by_id(
             self,
@@ -4903,6 +4914,8 @@ class _ChatSlot:
             content,
             directive_user_origin=directive_user_origin,
             directive_channel_origin=directive_channel_origin,
+            principal_surface=principal_surface,
+            principal_raw_id=principal_raw_id,
         )
 
     def queue_promote_by_id(self, queue_id: str) -> bool:

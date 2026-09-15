@@ -1634,6 +1634,8 @@ class TestRouteLinkedThread:
             meta=ANY,
             directive_user_origin=True,
             directive_channel_origin=True,
+            principal_surface="slack",
+            principal_raw_id="U1",
         )
         slot.append.assert_called_once()
         state.push_slots_update.assert_called_once()

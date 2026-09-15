@@ -11,7 +11,7 @@ import stat as stat_module
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypedDict
 
 from kiro_crew import mcp_apps_render, model_registry, resource_status, session_directive
 from kiro_crew.acp.client import (
@@ -384,6 +384,84 @@ def _bind_private_slot_memory(
             "Open the member from Members or create a new conversation for private memory."
         )
     bind_private_session_store(session_key, memory_store)
+
+
+class DashboardPrincipalKwargs(TypedDict, total=False):
+    """Keyword-only bind args for ``_run_chat``; empty when unbound."""
+
+    _principal_surface: str
+    _principal_raw_id: str
+
+
+def dashboard_user_origin(request: Any) -> bool:
+    """True only for a positively authenticated dashboard human.
+
+    An empty app claim is not enough: loopback internal-secret callers
+    also have no app and must not inherit ``dashboard+{owner}``.
+    """
+    return request.get("is_dashboard_user") is True
+
+
+def dashboard_principal_kwargs(
+    state: Any, *, user_origin: bool, request: Any = None
+) -> DashboardPrincipalKwargs:
+    """Bind args for an authenticated dashboard caller, or ``{}``.
+
+    ``raw_id`` is the verified ``request["user"]`` claim from token auth.
+    ``state.owner_id`` is not a substitute: an allow-listed token must
+    not inherit the configured owner principal.
+    """
+    if not user_origin:
+        return {}
+    claim = request.get("user") if request is not None else None
+    if not isinstance(claim, str) or not claim.strip():
+        return {}
+    return {"_principal_surface": "dashboard", "_principal_raw_id": claim.strip()}
+
+
+class QueueBindKwargs(TypedDict, total=False):
+    """Queue-item identity fields; empty when unbound. Typed so ``**`` into
+    ``queue_append`` / ``queue_edit_by_id`` names exactly these two keys."""
+
+    principal_surface: str
+    principal_raw_id: str
+
+
+def queue_bind_kwargs(principal: DashboardPrincipalKwargs) -> QueueBindKwargs:
+    """Queue-item fields for a bound principal, or ``{}``.
+
+    Drain reads ``_principal_surface`` / ``_principal_raw_id`` off the
+    entry. Without these, a queued human turn hits the clear branch of
+    :func:`publish_turn_identity` even when ``_directive_user_origin``
+    is true.
+    """
+    surface = principal.get("_principal_surface", "")
+    raw_id = principal.get("_principal_raw_id", "")
+    if not surface or not raw_id:
+        return {}
+    return {"principal_surface": surface, "principal_raw_id": raw_id}
+
+
+def consumed_queue_principal(consumed: list[Any]) -> tuple[str, str]:
+    """Single agreed surface/raw_id from every drained item, or empty.
+
+    Mixed principals fail closed. Any item that omitted identity also
+    fails closed so a merge cannot inherit a sibling's stamp.
+    """
+    ids: set[tuple[str, str]] = set()
+    if not consumed:
+        return "", ""
+    for item in consumed:
+        if not isinstance(item, dict):
+            return "", ""
+        surface = item.get("_principal_surface")
+        raw_id = item.get("_principal_raw_id")
+        if not (isinstance(surface, str) and surface and isinstance(raw_id, str) and raw_id):
+            return "", ""
+        ids.add((surface, raw_id))
+    if len(ids) != 1:
+        return "", ""
+    return next(iter(ids))
 
 
 def _empty_auto_continue_enabled() -> bool:
@@ -6142,6 +6220,11 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         "_directive_user_origin": directive_user_origin,
         "_directive_channel_origin": directive_channel_origin,
     }
+    if directive_user_origin:
+        _q_surface, _q_raw_id = consumed_queue_principal(consumed)
+        if _q_surface and _q_raw_id:
+            _run_kwargs["_principal_surface"] = _q_surface
+            _run_kwargs["_principal_raw_id"] = _q_raw_id
     if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:
@@ -6389,6 +6472,8 @@ async def _run_chat(
     # injections never set it.
     _directive_self_wake: bool = False,
     _directive_channel_origin: bool = False,
+    _principal_surface: str | None = None,
+    _principal_raw_id: str | None = None,
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -7094,6 +7179,8 @@ async def _run_chat(
                     _directive_user_origin=_directive_user_origin,
                     _directive_self_wake=_directive_self_wake,
                     _directive_channel_origin=_directive_channel_origin,
+                    _principal_surface=_principal_surface,
+                    _principal_raw_id=_principal_raw_id,
                 )
             elif status == "blocked":
                 sel().log_tool_invocation(
@@ -7797,6 +7884,11 @@ async def _run_chat(
 
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
+        # Dashboard turns stay unbound: a queued follow-up, a linked Slack
+        # reply, or another tab can steer the same slot, and binding the
+        # opener would run that later speaker under the opener's credentials.
+        # Channel exclusive-speaker binds happen on the channel dispatcher.
+        # Publish-without-bind clears leftover principal metadata.
         await publish_turn_identity(state.sessions, session_key)
 
         # ── @prompt expansion: resolve @name to SOP/prompt content ──

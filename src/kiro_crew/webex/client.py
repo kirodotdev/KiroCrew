@@ -229,6 +229,10 @@ class WebexInbound:
     #: Card-action inputs, when this envelope came from an Adaptive Card submit
     #: rather than a typed message. Empty for an ordinary message.
     card_inputs: Mapping[str, Any] | None = None
+    #: Trusted injector provenance. Unattended synthetics (AutoNudge) set
+    #: this False so the dispatcher omits ``principal_raw_id``. A
+    #: user-typed nudge-shaped prefix still binds.
+    bind_principal: bool = True
 
 
 def hydra_id(raw_id: str, resource_type: str = "MESSAGE", cluster: str = _DEFAULT_CLUSTER) -> str:

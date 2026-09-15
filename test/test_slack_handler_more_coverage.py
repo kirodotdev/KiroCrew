@@ -1246,12 +1246,7 @@ class _Slot:
         }
 
     def queue_append(
-        self,
-        text,
-        *,
-        meta=None,
-        directive_user_origin,
-        directive_channel_origin,
+        self, text, *, meta=None, directive_user_origin, directive_channel_origin, **_kw
     ):
         assert directive_user_origin is True
         assert directive_channel_origin is True
@@ -1286,12 +1281,7 @@ class TestLinkedThreadRouting:
         ran: list[str] = []
 
         async def _fake_run_chat(
-            state,
-            slot,
-            text,
-            *,
-            _directive_user_origin,
-            _directive_channel_origin,
+            state, slot, text, *, _directive_user_origin, _directive_channel_origin, **_kw
         ):
             assert _directive_user_origin is True
             assert _directive_channel_origin is True
