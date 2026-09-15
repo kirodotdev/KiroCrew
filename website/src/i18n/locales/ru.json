@@ -15507,6 +15507,7 @@
       "session_open_error_named": "Не удалось открыть «{{name}}».",
       "session_open_error": "Не удалось открыть сеанс.",
       "session_gone_open_failed_named": "Сеанс «{{name}}» удалён, его нельзя открыть.",
+      "truncated_chars": "...({{count}} символов усечено — полный вывод после перезагрузки)",
       "truncated": "...(усечено)"
     }
   },

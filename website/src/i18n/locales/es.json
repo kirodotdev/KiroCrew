@@ -15310,6 +15310,7 @@
       "session_open_error_named": "No se pudo abrir “{{name}}”.",
       "session_open_error": "No se pudo abrir la sesión.",
       "session_gone_open_failed_named": "«{{name}}» se eliminó y no se puede abrir.",
+      "truncated_chars": "…({{count}} caracteres truncados: salida completa al recargar)",
       "truncated": "…(truncado)"
     }
   },
