@@ -2292,15 +2292,53 @@ class ConversationLog:
             generation = int(meta.get("rotation_generation", 0) or 0)
             return list(messages[offset:]), len(messages), generation
 
+    def fence_consolidation(self, key: str) -> int:
+        """Put every message currently on disk behind ``last_consolidated``.
+
+        The consolidator calls this for a transcript it has classified as
+        private (remote executor, incognito or temporary memory mode) instead
+        of :meth:`snapshot_for_consolidation`: the rows must never reach the
+        consolidator, so this reads only their COUNT and the rotation
+        generation, then applies the count as the consolidated offset through
+        :meth:`mark_consolidated`. Count, generation and the marker write all
+        happen under ONE :meth:`_locked` hold (the lock is re-entrant), so no
+        append or rotation can land between the count and the write and pair a
+        stale offset with a fresh generation.
+
+        The write is what makes the skip durable. Both privacy markers are
+        slot-owned and clear when the slot unbinds from its peer or its memory
+        mode returns to normal; a later pass then reads the header as local, but
+        the fenced rows sit behind the offset and only rows appended after the
+        transition consolidate. It also stops the idle sweep re-classifying the
+        same private key every tick, because the sweep skips keys with no
+        unconsolidated rows. Returns the total message count that is now behind
+        the marker; nothing is written when the marker already covers it.
+        """
+        with self._locked(key):
+            total = len(self._read_messages(key))
+            meta = self._read_metadata(key)
+            generation = int(meta.get("rotation_generation", 0) or 0)
+            try:
+                offset = int(meta.get("last_consolidated", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                offset = 0
+            if total > offset:
+                self.mark_consolidated(key, total, generation)
+            return total
+
     def mark_consolidated(self, key: str, offset: int, generation: int | None = None) -> None:
         """Rewrite metadata line with updated ``last_consolidated`` offset.
 
         *offset* is an absolute message index captured by the caller BEFORE a
-        (potentially slow) LLM consolidation call. *generation* is the rotation
-        generation counter (:meth:`rotation_generation`) captured at the same
-        moment. It advances on anything that changes the content under a
-        consolidation in flight, and each case makes the caller's *offset*
-        meaningless in a different way:
+        (potentially slow) LLM consolidation call, or -- via
+        :meth:`fence_consolidation` -- the current total of a transcript the
+        consolidator deliberately skips as private. ``last_consolidated``
+        therefore means "every row below this index is settled": either
+        distilled into memory, or fenced off from it on purpose. *generation*
+        is the rotation generation counter (:meth:`rotation_generation`)
+        captured at the same moment as *offset*. It advances on anything that
+        changes the content under a consolidation in flight, and each case
+        makes the caller's *offset* meaningless in a different way:
 
         * A **rotation** truncated the file to its newest messages and reset
           ``last_consolidated`` to 0, so every surviving index shifted by the
