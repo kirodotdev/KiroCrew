@@ -42,6 +42,7 @@ from kiro_crew.monitoring.models import (
     MonitorCreationSurface,
     MonitorState,
 )
+from kiro_crew.platform import PlatformCompositionError, redact_via_context
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -520,6 +521,29 @@ def banner_unsupported_for(slot_key: str, banner: Any) -> str | None:
     )
 
 
+def _scrub_policy_unavailable() -> bool:
+    """True when the active credential policy cannot scrub, so nothing may be written.
+
+    Both authorizers mutate and then hand a nudge loop back to a caller that
+    SERIALIZES it through a fail-closed projection. Without this gate a request
+    reached the store, COMMITTED, and only then raised while rendering the
+    response: HTTP 500 with the mutation persisted and audited as a success, so a
+    retry applies it twice. Asking ONCE up front -- before the critical
+    ``invoked`` audit and before the mutation -- turns that into an audited 503.
+
+    ``redact_via_context("")`` is the probe: the shim calls
+    ``current_context().credentials.redact(text)`` with no short-circuit, so
+    composition is exercised regardless of the text, and an empty string scrubs
+    nothing real. Only ``PlatformCompositionError`` counts -- every other adapter
+    failure already degrades inside the shim, so the projection still succeeds.
+    """
+    try:
+        redact_via_context("")
+    except PlatformCompositionError:
+        return True
+    return False
+
+
 async def authorize_and_update_nudge(
     *,
     svc: Any,
@@ -640,6 +664,14 @@ async def authorize_and_update_nudge(
     # unattended.
     if active is not None and not isinstance(active, bool):
         return _deny("active must be a boolean", 400)
+
+    # After the 400s above, deliberately: a malformed request should still learn
+    # WHAT is malformed rather than be told the policy is unavailable.
+    if _scrub_policy_unavailable():
+        return _deny(
+            "Safety checks are temporarily unavailable, so this goal cannot be saved. If this keeps happening, restart Kiro Crew.",
+            503,
+        )
 
     def _critical_invoked_audit() -> None:
         sel().log_tool_invocation(
@@ -968,6 +1000,13 @@ async def authorize_and_add_nudge(
         admission_check = _dashboard_admission
     if len(message) > 8000:
         return _deny("message too long (max 8000 chars)", 400)
+    # BEFORE the sentinel unlink below, which is unconditional: probing afterwards
+    # destroyed an operator's live stop file and only then refused the arm.
+    if _scrub_policy_unavailable():
+        return _deny(
+            "Safety checks are temporarily unavailable, so this goal cannot be saved. If this keeps happening, restart Kiro Crew.",
+            503,
+        )
     if monitor is None:
         get_by_slot = getattr(svc, "get_by_slot", None)
         existing = get_by_slot(slot_key) if callable(get_by_slot) else None
