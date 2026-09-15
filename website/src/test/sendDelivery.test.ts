@@ -118,3 +118,68 @@ describe('readSendReceipt', () => {
     }
   })
 })
+
+/**
+ * A 2xx an INTERMEDIARY wrote is not a receipt the endpoint wrote.
+ *
+ * An SSO/auth proxy whose session has lapsed answers the send POST itself, with a
+ * login page: a 2xx whose body is not JSON. That took `unknown`'s deliberately
+ * silent branch, so the composer — cleared at submit — dropped the user's text
+ * with no error row and nothing on screen saying so.
+ *
+ * The distinguishing evidence is PROVENANCE, never "the body would not parse":
+ * a truncated reply from the endpoint itself still means the turn may have run,
+ * and handing that payload back duplicates it (#4217 / #5672).
+ */
+describe('readSendReceipt provenance', () => {
+  const res = (
+    ok: boolean,
+    json: () => Promise<unknown>,
+    extra: { redirected?: boolean; contentType?: string } = {},
+  ) => ({
+    ok,
+    json,
+    redirected: extra.redirected,
+    headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? extra.contentType ?? null : null) },
+  })
+  const notJson = () => Promise.reject(new Error('unexpected token < in JSON'))
+
+  it('refuses a 2xx the browser was REDIRECTED to, so the payload is handed back', async () => {
+    // `POST /api/chat` never redirects, so a redirected answer came from wherever
+    // the chain ended — a login form, not the gateway.
+    expect((await readSendReceipt(res(true, notJson, { redirected: true }))).outcome).toBe('refused')
+  })
+
+  it('refuses a 2xx that answers in HTML, the proxy shape with no redirect', async () => {
+    // Some proxies serve the login page directly on the original URL.
+    expect((await readSendReceipt(res(true, notJson, { contentType: 'text/html; charset=utf-8' }))).outcome).toBe('refused')
+    // Case and leading whitespace are the intermediary's choice, not a signal.
+    expect((await readSendReceipt(res(true, notJson, { contentType: ' TEXT/HTML' }))).outcome).toBe('refused')
+  })
+
+  it('KEEPS unknown for an unreadable 2xx from the endpoint itself (#5672 must not regress)', async () => {
+    // The truncated-JSON case: not redirected, and the content type is the
+    // endpoint's own. Delivery is plausible, so the payload must NOT come back.
+    expect((await readSendReceipt(res(true, notJson, { contentType: 'application/json' }))).outcome).toBe('unknown')
+    // No provenance information at all is also not evidence of interception.
+    expect((await readSendReceipt(res(true, notJson))).outcome).toBe('unknown')
+  })
+
+  it('leaves a readable receipt alone even when redirected', async () => {
+    // The check guards only the unreadable branch: a body that parsed is the
+    // endpoint's verdict and outranks any guess about who served it.
+    expect((await readSendReceipt(res(true, async () => ({ ok: true }), { redirected: true }))).outcome).toBe('accepted')
+  })
+
+  it('does not warn on the intercepted branch, which the user can now see', async () => {
+    // The console line exists for the branch that shows nothing. This one
+    // reports an error row and refills the composer, so it earns no warning.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await readSendReceipt(res(true, notJson, { redirected: true }))
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
