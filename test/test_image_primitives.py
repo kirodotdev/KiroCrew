@@ -26,6 +26,10 @@ class TestRuntimeModelParam:
         rt = AcpRuntime(model="gpt-5.6-sol")
         assert rt._model == "gpt-5.6-sol"
 
+    def test_model_accepts_provider_qualified_effort(self):
+        rt = AcpRuntime(model="gpt-6-astra[high]")
+        assert rt._model == "gpt-6-astra[high]"
+
     def test_model_rejects_flag_injection(self):
         # A leading dash could be parsed as a CLI flag by kiro-cli — rejected.
         with pytest.raises(ValueError, match="Invalid model identifier"):

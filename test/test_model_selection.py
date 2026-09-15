@@ -14,7 +14,13 @@ class TestModelValidation:
     """Model name pattern validation in SPAWN_RUN_SCHEMA."""
 
     def test_valid_model_names(self):
-        for name in ["claude-opus-4.8", "deepseek-3.2", "auto", "claude-haiku-4.5"]:
+        for name in [
+            "claude-opus-4.8",
+            "deepseek-3.2",
+            "auto",
+            "claude-haiku-4.5",
+            "gpt-6-astra[high]",
+        ]:
             result = validate_tool_args({"task": "x", "model": name}, SPAWN_RUN_SCHEMA)
             assert result["model"] == name
 
@@ -32,8 +38,9 @@ class TestSpawnRunModelParam:
     """Model param is threaded through to the POST body."""
 
     def test_model_passed_in_post_body(self):
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCREW_SESSION_KEY": "sess"}
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "sess"}),
         ):
             mock_post.return_value = {"id": "agent1"}
             _call_tool("spawn_run", {"task": "test", "model": "deepseek-3.2"})
@@ -41,8 +48,9 @@ class TestSpawnRunModelParam:
             assert body["model"] == "deepseek-3.2"
 
     def test_no_model_omits_from_body(self):
-        with patch("kiro_crew.mcp_core._post") as mock_post, patch.dict(
-            "os.environ", {"KIROCREW_SESSION_KEY": "sess"}
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "sess"}),
         ):
             mock_post.return_value = {"id": "agent1"}
             _call_tool("spawn_run", {"task": "test"})
