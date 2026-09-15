@@ -1079,10 +1079,15 @@ export function RemoteCrewPanel() {
     onMutate: () => { setActionErr(null); setDiagNote(null); setDiagReport(null) },
     onSuccess: (st, id) => {
       const code = st.diagnosis?.code
-      const reason = st.diagnosis?.reason || st.error
-      // A healthy verdict is only healthy when the tunnel has no error of its own:
-      // `status.error` is the tunnel's live failure, and the ladder result is the
-      // last RUN, so an `ok` beside a set `error` is stale and must not win.
+      // Displayed text, most specific first: a NEGATIVE ladder verdict names the
+      // broken link, so it wins; otherwise the tunnel's live `status.error`; and
+      // only then a healthy verdict's own reason. The ladder result is the last
+      // RUN, so a stale "All checks passed" must never label a red notice whose
+      // real cause is the live error.
+      const failing = st.diagnosis && !st.diagnosis.ok ? st.diagnosis : undefined
+      const reason = failing?.reason || st.error || st.diagnosis?.reason
+      // A verdict is only healthy / merely-not-connected when the tunnel has no
+      // error of its own; an `ok` or `not_connected` beside a set `error` is stale.
       const kind: 'ok' | 'info' | 'warn' =
         code === 'ok' && !st.error ? 'ok' : code === 'not_connected' && !st.error ? 'info' : 'warn'
       if (reason) setDiagNote({ kind, text: `${id}: ${reason}` })
@@ -1090,16 +1095,18 @@ export function RemoteCrewPanel() {
       // no-failure path is what clears its de-dup signature, so skipping the call
       // on a healthy diagnose would leave the signature standing and suppress the
       // next identical failure. It returns null when there is nothing to describe.
-      // The reason is only offered as the fallback message when it describes a
-      // failure — the recorder already refuses an `ok` diagnosis.reason, and
-      // handing it back through `fallbackMessage` would defeat that guard and
-      // journal "All checks passed" as an error (#11110).
+      // For a non-failure (`ok`, `not_connected`) the status is handed over
+      // WITHOUT its diagnosis and with an empty fallback: the recorder treats any
+      // not-ok verdict as a failure, and `not_connected` is `ok: false` with a
+      // benign "click Connect" reason, so passing it through would journal a
+      // non-failure as a system error — the same defect as #11110 by another path.
       const inst = instances.find(i => i.id === id)
+      const { diagnosis: _omitted, ...withoutDiagnosis } = st
       setDiagReport(reportInstanceFailure({
         id,
         name: inst?.name || id,
         transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
-        status: st,
+        status: kind === 'warn' ? st : withoutDiagnosis,
         stage: 'connect',
         fallbackMessage: kind === 'warn' ? reason || '' : '',
       }))
