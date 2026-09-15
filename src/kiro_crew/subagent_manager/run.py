@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from ..subagent import (
-        _AGENT_NAME_RE,
         _CANCEL_RESUME_PREFIX,
         _MAX_ERROR_DETAIL_LEN,
         _ON_DONE_TIMEOUT,
@@ -75,6 +74,7 @@ if TYPE_CHECKING:
         fire_tool_hooks,
         hook_gate_kwargs,
         identity_grant_covers_child,
+        is_registered_agent_name,
         is_runtime_death,
         logger,
         name_grant,
@@ -1358,7 +1358,7 @@ class RunEventCoordinator(ManagerComponent):
             )
         # Intentionally check info.agent (not resolved `agent`) so only
         # explicitly requested agents skip _SYSTEM_PREFIX (defense-in-depth).
-        named_agent = bool(info.agent and _AGENT_NAME_RE.fullmatch(info.agent))
+        named_agent = bool(info.agent and is_registered_agent_name(info.agent))
         raw_task = info._raw_task or info.task
         message = raw_task if named_agent else (_SYSTEM_PREFIX + raw_task)
         if info._cancel_retry_used and (info.streaming_text or info.tool_count > 0):

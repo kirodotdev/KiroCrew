@@ -56,6 +56,7 @@ from kiro_crew.execution_context import (
     stricter_memory_mode,
     tighten_live_session_execution,
 )
+from kiro_crew.external_text import redact_external_text
 from kiro_crew.history import (
     is_incognito_transcript,
     transcript_lock_stems,
@@ -721,13 +722,14 @@ def _broadcast_compaction_result(
 
 def _emit_agent_assignment(slot_key: str, agent: str, outcome: str = "applied") -> None:
     """Emit a SEL audit event when an agent is set, changed, or rejected on a slot."""
+    safe_agent = redact_external_text(agent)
     sel().log(
         SecurityEvent(
             event_id=uuid.uuid4().hex,
             timestamp=datetime.now(tz=timezone.utc).isoformat(),
             event_type="agent_assignment",
             caller_identity=f"dashboard:{slot_key}",
-            agent=agent,
+            agent=safe_agent,
             source="dashboard",
             operation="slot_agent_set",
             outcome=outcome,

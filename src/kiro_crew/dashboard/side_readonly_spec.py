@@ -53,7 +53,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.validation import _AGENT_NAME_RE
+from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
 
@@ -183,12 +183,12 @@ def derive_readonly_spec(
     ``model`` and every other key are untouched: mounting a tool is not
     approving it, and the reads the side chat exists for go through the gate.
     """
-    if not _AGENT_NAME_RE.match(base_name or ""):
+    if not is_registered_agent_name(base_name):
         raise ReadOnlySpecError(
             "unsafe_name", f"agent name {base_name!r} is not a valid agent name"
         )
     derived_name = readonly_agent_name(base_name, source_id)
-    if not _AGENT_NAME_RE.match(derived_name):
+    if not is_registered_agent_name(derived_name):
         raise ReadOnlySpecError(
             "unsafe_name", f"derived name {derived_name!r} exceeds the agent-name grammar"
         )

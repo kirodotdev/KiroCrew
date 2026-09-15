@@ -31,7 +31,7 @@ from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.validation import _AGENT_NAME_RE
+from kiro_crew.validation import _AGENT_NAME_RE, is_registered_agent_name
 
 logger = logging.getLogger(__name__)
 
@@ -233,13 +233,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     status=400,
                 )
 
-    # model maps to agent name — validate
     agent = model
-    if not _AGENT_NAME_RE.match(agent):
-        return web.json_response(
-            {"error": {"message": "invalid model/agent name", "type": "invalid_request_error"}},
-            status=400,
-        )
 
     prompt = _flatten_messages(messages)
     if not prompt:
@@ -260,36 +254,76 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             {"error": {"message": "id must be a string", "type": "invalid_request_error"}},
             status=400,
         )
-    if slot_id and not _AGENT_NAME_RE.match(slot_id):
+    normalized_slot_id = _normalize_slot_key(slot_id) if slot_id else ""
+    if request.get("app", "") and normalized_slot_id.casefold().startswith(
+        members_mod.DM_SLOT_KEY_PREFIX
+    ):
+        sel().log_api_access(
+            caller=request.get("app", ""),
+            operation="openai_compat.chat",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={normalized_slot_id}",
+            error="app cannot access member slots",
+        )
+        return web.json_response(
+            {
+                "error": {"message": "not found", "type": "invalid_request_error"},
+                "code": "not_found",
+            },
+            status=404,
+        )
+    existing_member_slot = None
+    if slot_id:
+        existing = state._slots.get(normalized_slot_id)
+        if existing and existing.mode == members_mod.DM_SLOT_MODE:
+            existing_member_slot = existing
+    if existing_member_slot is not None and not members_mod.is_dispatchable_member_name(
+        existing_member_slot.agent
+    ):
+        sel().log_api_access(
+            caller=request.remote or "",
+            operation="openai_compat.chat",
+            outcome="denied",
+            source="member_pin",
+            resources=f"slot={existing_member_slot.key}",
+            error="stored member pin is not dispatchable",
+        )
+        return web.json_response(
+            {
+                "error": {
+                    "message": "this thread's crew name cannot be dispatched",
+                    "type": "invalid_request_error",
+                    "code": "member_pin_mismatch",
+                },
+                "code": "member_pin_mismatch",
+            },
+            status=409,
+        )
+    if slot_id and not _AGENT_NAME_RE.fullmatch(slot_id) and existing_member_slot is None:
         return web.json_response(
             {"error": {"message": "invalid id (slot name)", "type": "invalid_request_error"}},
+            status=400,
+        )
+    member_pin_match = members_mod.member_pin_matches(
+        getattr(existing_member_slot, "mode", None),
+        getattr(existing_member_slot, "agent", None),
+        agent,
+    )
+    if (
+        not is_registered_agent_name(agent)
+        and not member_pin_match
+        # A configured free-form member name is a valid ``model``; an off-grammar
+        # string that is not a member is refused before any slot is created.
+        and not await asyncio.to_thread(members_mod.is_configured_dispatchable_member, agent)
+    ):
+        return web.json_response(
+            {"error": {"message": "invalid model/agent name", "type": "invalid_request_error"}},
             status=400,
         )
     completion_id = _make_id()
 
     if slot_id:
-        # App tokens get ONE uniform answer for the whole member-* space,
-        # BEFORE any existence check: an app can never own a member slot, so
-        # the reservation 409 for a missing key next to the ownership 404
-        # for an existing one would let an app enumerate member threads.
-        if request.get("app", "") and _normalize_slot_key(slot_id).startswith(
-            members_mod.DM_SLOT_KEY_PREFIX
-        ):
-            sel().log_api_access(
-                caller=request.get("app", ""),
-                operation="openai_compat.chat",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={slot_id}",
-                error="app cannot access member slots",
-            )
-            return web.json_response(
-                {
-                    "error": {"message": "not found", "type": "invalid_request_error"},
-                    "code": "not_found",
-                },
-                status=404,
-            )
         # Membership must be checked on the canonical (filename-charset) key —
         # get_or_create_slot folds unsafe chars, so a raw slot_id may map to an
         # existing slot even when the raw string is absent from _slots.
@@ -420,11 +454,6 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 status=409,
             )
         if slot.mode == "member":
-            # Registry-drift fail-closed, mirroring the chat_send path: a
-            # deleted crew's thread must not dispatch — the resolver would
-            # fall back to the default agent and reply under the deleted
-            # member's identity (a caller sending the matching stale agent
-            # name passes the pin check above but still hits this).
             _member_cfg = await asyncio.to_thread(KiroCrewConfig.load)
             if slot.agent not in _member_cfg.agents:
                 sel().log_api_access(
@@ -446,11 +475,6 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     },
                     status=409,
                 )
-            # Binding-drift fail-closed, also mirroring chat_send: a live
-            # member slot whose dm.json was deleted or corrupted must refuse
-            # the send — dispatching would persist a transcript that restore
-            # skips and thread-open refuses (orphaned the moment the slot
-            # dies). Same rare-send thread-IO budget as the registry check.
             if slot.key.startswith(members_mod.DM_SLOT_KEY_PREFIX):
                 _send_binding = await asyncio.to_thread(
                     members_mod.read_dm_binding_for_slot, slot.key

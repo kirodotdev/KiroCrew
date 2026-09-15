@@ -191,8 +191,29 @@ ALLOWED_HOOK_EVENTS = frozenset(
     }
 )
 
-# Valid agent name pattern (alphanumeric, hyphens, underscores)
-_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]$")
+_AGENT_NAME_RE = re.compile(r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]|[a-zA-Z0-9])\Z")
+
+TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])\Z")
+
+#: The union of the two identifier grammars, as one pattern for ``FieldSpec``:
+#: a tool argument that names a registered agent SPEC (``spawn_run(agent=...)``,
+#: ``cron_add(agent=...)``) admits a published dotted template exactly as the
+#: read-side resolvers do. Crew MEMBERS are not named through these fields --
+#: ``crew`` / ``member_id`` carry them, unpatterned -- so this stays an
+#: identifier grammar. Keep in step with :func:`is_registered_agent_name`.
+REGISTERED_AGENT_NAME_RE = re.compile(
+    r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]"
+    r"|[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]"
+    r"|[a-zA-Z0-9])\Z"
+)
+
+
+def is_registered_agent_name(value: object) -> bool:
+    """Return whether *value* can name a registered agent spec."""
+    return isinstance(value, str) and bool(
+        _AGENT_NAME_RE.fullmatch(value) or TEMPLATE_NAME_RE.fullmatch(value)
+    )
+
 
 # Artifact slug grammar — mirrors kiro_crew.artifacts._SLUG_RE (kept here so
 # consumers outside the store module share one public definition). Used to
@@ -1092,13 +1113,13 @@ SPAWN_RUN_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("task", str, max_len=MAX_MEDIUM_STRING),
         FieldSpec("tasks", list, item_type=str, item_max_len=MAX_MEDIUM_STRING),
-        FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+        FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=REGISTERED_AGENT_NAME_RE),
         FieldSpec(
             "agents",
             list,
             item_type=str,
             item_max_len=MAX_SHORT_STRING,
-            item_pattern=_AGENT_NAME_RE,
+            item_pattern=REGISTERED_AGENT_NAME_RE,
         ),
         # 0 = "not set" → falls through to config default via `0 or config_value`.
         # Bounded by the same ceiling the config loader clamps
@@ -1158,7 +1179,7 @@ SPAWN_CONTINUE_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("conversation", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
-        FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+        FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=REGISTERED_AGENT_NAME_RE),
         FieldSpec("max_turns", int, min_val=0, max_val=SUBAGENT_MAX_TURNS_CEILING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
     ],
@@ -2761,7 +2782,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("at", (int, float), min_val=0, max_val=4102444800),  # up to 2100
         FieldSpec("delay", (int, float), min_val=1, max_val=86400 * 30),  # 1s to 30 days
         FieldSpec("at_time", str, max_len=100),
-        FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+        FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=REGISTERED_AGENT_NAME_RE),
         FieldSpec("member_id", str, max_len=MAX_SHORT_STRING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
         FieldSpec("silent", bool),
@@ -3497,7 +3518,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("message", str, max_len=MAX_CRON_MESSAGE),
             FieldSpec("cron_expr", str, max_len=100),
             FieldSpec("every", int, min_val=60, max_val=86400 * 30),
-            FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+            FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=REGISTERED_AGENT_NAME_RE),
             FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
             FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
             FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),

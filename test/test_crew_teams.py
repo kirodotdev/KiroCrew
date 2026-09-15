@@ -18,6 +18,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import crew_teams as teams
+from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewAgentConfig
 
 RADAR = "Radar"
@@ -88,7 +89,7 @@ class TestTeamsStore:
         """The largest document the caps allow must still read back; a write
         that would exceed the read cap is refused BEFORE it lands, so a valid
         sequence of writes cannot leave the store unreadable."""
-        widest = "x" * 63
+        widest = "x" * (teams.MEMBER_NAME_MAX_CHARS - 1)
         assert teams.max_document_bytes() <= teams.TEAMS_FILE_MAX_BYTES
         crews = {f"{widest[:-4]}{i:04d}" for i in range(teams.TEAM_MEMBERS_MAX)}
         team = teams.create_team(
@@ -106,6 +107,17 @@ class TestTeamsStore:
                 )
         assert exc.value.code == "teams_too_large"
         assert teams.teams_path().read_bytes() == before
+
+    def test_member_names_are_display_names_not_identifiers(self):
+        """A crew is whatever the roster lists: ``dr. eggbot`` (a space, a dot)
+        and a name past the old 64-character identifier grammar are members;
+        the bound is the display-name cap the roster itself applies."""
+        long_ok = "n" * teams.MEMBER_NAME_MAX_CHARS
+        crews = {"dr. eggbot", "雷达", long_ok}
+        team = teams.create_team("Docs", sorted(crews), known=lambda: crews)
+        assert set(team.members) == crews
+        assert set(teams.read_teams()[0].members) == crews
+        assert teams.MEMBER_NAME_MAX_CHARS == members_mod.MEMBER_NAME_MAX_CHARS
 
     def test_prune_unknown_drops_names_no_registry_holds(self):
         """A crew removed by a path that did not call drop_member (the CLI, a
@@ -982,6 +994,30 @@ class TestTeamsRoutes:
                 assert resp.status == 200
                 resp = await client.get("/api/teams")
                 assert await resp.json() == {"teams": []}
+
+    @pytest.mark.asyncio
+    async def test_registry_view_admits_roster_names_and_refuses_unsafe_ones(self):
+        """``_known_crews`` is the roster's filter: a free-form display name is
+        a known crew; a stored name the roster hides (credential-shaped, or one
+        failing the display-name rule) is ``unknown_member`` on every write."""
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        eggbot, hidden = "dr. eggbot", "AKIAIOSFODNN7EXAMPLE"
+        cfg = KiroCrewConfig()
+        cfg.agents = {
+            name: KiroCrewAgentConfig(kiro_agent="kirocrew") for name in (eggbot, hidden, RADAR)
+        }
+        patched = patch("kiro_crew.dashboard.handlers.teams.KiroCrewConfig.load", return_value=cfg)
+        with _as_owner(), patched:
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.post(
+                    "/api/teams", json={"name": "Lab", "members": [eggbot, RADAR]}
+                )
+                assert resp.status == 201, await resp.text()
+                assert (await resp.json())["team"]["members"] == [eggbot, RADAR]
+                resp = await client.post("/api/teams", json={"name": "Vault", "members": [hidden]})
+                assert resp.status == 400, await resp.text()
+                assert (await resp.json())["code"] == "unknown_member"
 
     @pytest.mark.asyncio
     async def test_an_owner_write_records_the_allow_in_sel(self):

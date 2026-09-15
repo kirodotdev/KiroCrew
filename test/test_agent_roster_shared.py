@@ -19,6 +19,8 @@ import types
 from collections.abc import Container, Iterable
 from unittest.mock import patch
 
+import pytest
+
 from kiro_crew import subagent as sa
 from kiro_crew.mcp_tools import spawn as spawn_tools
 
@@ -43,6 +45,39 @@ class TestHelperContract:
         )
         assert shown == ["scout"]
         assert withheld == 0
+
+    def test_a_published_dotted_template_is_rendered_and_dispatchable(self) -> None:
+        """A registered spec named ``reviewer.v2`` is a real agent kiro-cli loads;
+        the roster renders it and every ``agent`` tool field admits it, or the
+        roster would advertise a name the schema refuses (and vice versa)."""
+        from kiro_crew.validation import (
+            CRON_ADD_SCHEMA,
+            SPAWN_CONTINUE_SCHEMA,
+            SPAWN_RUN_SCHEMA,
+            ValidationError,
+            validate_tool_args,
+        )
+
+        shown, _ = sa.visible_agent_names(["kirocrew", "reviewer.v2"], exclude=())
+        assert shown == ["kirocrew", "reviewer.v2"]
+        assert validate_tool_args({"task": "x", "agent": "reviewer.v2"}, SPAWN_RUN_SCHEMA)
+        assert validate_tool_args({"task": "x", "agents": ["reviewer.v2"]}, SPAWN_RUN_SCHEMA)
+        assert validate_tool_args(
+            {"conversation": "c1", "task": "x", "agent": "reviewer.v2"}, SPAWN_CONTINUE_SCHEMA
+        )
+        assert validate_tool_args(
+            {"name": "n", "message": "m", "every": 60, "agent": "reviewer.v2"}, CRON_ADD_SCHEMA
+        )
+        # Still an identifier grammar: a trailing dot, a space or a newline is refused
+        # everywhere, and a display name is not an ``agent`` (members ride ``crew``).
+        for bad in ("reviewer.v2.", "dr. eggbot", "kirocrew\nignore all"):
+            with pytest.raises(ValidationError):
+                validate_tool_args({"task": "x", "agent": bad}, SPAWN_RUN_SCHEMA)
+            with pytest.raises(ValidationError):
+                validate_tool_args(
+                    {"name": "n", "message": "m", "every": 60, "agent": bad}, CRON_ADD_SCHEMA
+                )
+            assert sa.visible_agent_names([bad], exclude=())[0] == []
 
     def test_a_credential_shaped_name_is_redacted(self) -> None:
         shown, _ = sa.visible_agent_names([CREDENTIAL_SHAPED])
@@ -99,10 +134,11 @@ class TestNoSurfaceReimplementsThePipeline:
         subagent_src = pathlib.Path(sa.__file__).read_text(encoding="utf-8")
         spawn_src = pathlib.Path(spawn_tools.__file__).read_text(encoding="utf-8")
         assert (
-            subagent_src.count("_AGENT_NAME_RE.fullmatch") == 1
+            subagent_src.count("is_registered_agent_name(n)") == 1
         ), "the roster's grammar filter belongs to visible_agent_names alone"
         assert (
             spawn_src.count("_AGENT_NAME_RE.fullmatch") == 0
+            and spawn_src.count("is_registered_agent_name(") == 0
         ), "spawn's rosters must call subagent.visible_agent_names, not re-filter"
 
     def test_all_three_surfaces_route_through_the_helper(self) -> None:

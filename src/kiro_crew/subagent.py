@@ -186,7 +186,7 @@ from kiro_crew.subagent_wait_reasons import (  # noqa: F401 - re-exported: the g
     QUEUED_REASON_LOW_MEMORY,
     QUEUED_REASON_POSTURE_CRITICAL,
 )
-from kiro_crew.validation import _AGENT_NAME_RE
+from kiro_crew.validation import _AGENT_NAME_RE, is_registered_agent_name
 
 # Standalone ClaudeCodeProvider removed (KiroACP-only). Name kept as None so the
 # legacy isinstance guards short-circuit; which seam serves a session is answered
@@ -283,8 +283,9 @@ def visible_agent_names(
     copies drift, so the SAFETY half lives here where a fourth surface cannot
     omit it:
 
-    * **Grammar.** Every name must match ``_AGENT_NAME_RE`` before it is
-      rendered. This is the load-bearing filter, not a tidiness check: an agent
+    * **Grammar.** Every name must match the registered-agent grammar
+      (``is_registered_agent_name``: the slot grammar or a published dotted
+      template) before it is rendered. This is the load-bearing filter, not a tidiness check: an agent
       spec's ``name`` field is taken verbatim by
       ``agent_discovery._global_agent_info`` with no validation, so a spec can
       declare a name containing a newline plus instruction-shaped text -- which
@@ -307,7 +308,7 @@ def visible_agent_names(
     kept = [
         redact_via_context(n)
         for n in names
-        if n and n not in exclude and _AGENT_NAME_RE.fullmatch(n)
+        if n and n not in exclude and is_registered_agent_name(n)
     ]
     if limit is None or len(kept) <= limit:
         return kept, 0
