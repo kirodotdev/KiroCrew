@@ -18,6 +18,8 @@ import {
   type ReactNode,
 } from 'react'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
+import { AcceptedBodyUnreadable, ApiError } from '../api/apiError'
+import { AppApiPermissionError } from './apiError'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -389,7 +391,7 @@ export function useChatLauncher(): {
 // adding it to the top-level imports (apps get React from import map)
 import React from 'react'
 
-function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: string): AppApi {
+function createScopedApi(allowedPaths: string[], appName: string, sessionKey: string | undefined, appLabel: string): AppApi {
   const check = (path: string): string => {
     // Reject absolute and protocol-relative URLs to prevent SSRF. Backslashes
     // are rejected too: the URL parser treats `\` like `/`, so `/\evil.com` or
@@ -403,7 +405,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
     const normalized = parsed.pathname
     const allowed = allowedPaths.some(p => normalized === p || normalized.startsWith(p.endsWith('/') ? p : p + '/'))
     if (!allowed) {
-      throw new Error(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`)
+      throw new AppApiPermissionError(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`, appLabel)
     }
     return normalized + parsed.search
   }
@@ -429,7 +431,9 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
       // iframe copy of this SDK — detection is a no-op and the throw below is
       // unchanged either way.
       noteStaleOwnerResponse(res.status, text)
-      throw new Error(`API ${res.status}: ${text}`)
+      // The dashboard's own typed error: status + body, with the `API <status>:
+      // <body>` message apps have always seen. One spelling for "scoped non-2xx".
+      throw new ApiError(res.status, `API ${res.status}: ${text}`, text)
     }
     // An empty-body response is not JSON — res.json() would throw a SyntaxError
     // (e.g. a 204 No Content on DELETE, or a 200 with an empty body and no
@@ -439,11 +443,24 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
     if (res.status === 204 || res.status === 205) {
       return undefined as T
     }
-    const text = await res.text()
+    // Past this point the server has ACCEPTED the request; a body that cannot
+    // be read (stream cut) or parsed is a lost receipt, not a failed request.
+    // Tag it so a send path can tell it from a request that never left (which
+    // `fetch` also reports as a `TypeError`) and not offer a duplicate retry.
+    let text: string
+    try {
+      text = await res.text()
+    } catch (e) {
+      throw new AcceptedBodyUnreadable(e)
+    }
     if (text.trim() === '') {
       return undefined as T
     }
-    return JSON.parse(text) as T
+    try {
+      return JSON.parse(text) as T
+    } catch (e) {
+      throw new AcceptedBodyUnreadable(e)
+    }
   }
 
   return {
@@ -469,6 +486,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
 
 export function AppApiProvider({
   appName,
+  appDisplayName,
   appVersion = '0.0.0',
   allowedApiPaths,
   allowedEvents,
@@ -480,6 +498,13 @@ export function AppApiProvider({
   children,
 }: {
   appName: string
+  /**
+   * What the user calls this app (the manifest's display name). `appName` is
+   * the app's ID and stays the key for permissions, event scoping and the
+   * developer-facing warnings; this is only for copy shown to the USER -- the
+   * permission-denied refusal row names the app by it. Omitted, the id is used.
+   */
+  appDisplayName?: string
   appVersion?: string
   allowedApiPaths: string[]
   allowedEvents: string[]
@@ -503,7 +528,7 @@ export function AppApiProvider({
   const apiKey = JSON.stringify(allowedApiPaths)
   const eventsKey = JSON.stringify(allowedEvents)
   const value = React.useMemo<AppSdkContextValue>(() => ({
-    api: createScopedApi(allowedApiPaths, appName, sessionKey),
+    api: createScopedApi(allowedApiPaths, appName, sessionKey, appDisplayName || appName),
     info: {
       name: appName,
       version: appVersion,
@@ -514,7 +539,7 @@ export function AppApiProvider({
     navigate: navigateFn,
     notify: notifyFn,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [appName, appVersion, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn])
+  }), [appName, appDisplayName, appVersion, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

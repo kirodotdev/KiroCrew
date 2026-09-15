@@ -765,6 +765,12 @@ export interface SideQueueEntry {
   raw?: boolean
 }
 
+/** A notice that describes a STANDING state; `restoredDraft` marks the variant
+ *  that says "your text is back in the composer" -- only that one is retired
+ *  when the draft is emptied. */
+export interface SideStandingNotice { text: string; restoredDraft: boolean }
+export interface SideSendStatus { error?: string; notice?: SideStandingNotice }
+
 export interface SideState {
   messages: SideMessage[]
   lastRunId?: string
@@ -776,6 +782,14 @@ export interface SideState {
    *  Set by whichever convergence path lands first; cleared once consumed, so a
    *  lost HTTP response cannot mean lost text and neither path double-applies. */
   releasedText?: string
+  /** The last send's outcome that the panel must still show for this slot: a
+   *  framed failure line and/or a standing "delivery unconfirmed" notice. Kept
+   *  in the store beside `releasedText` rather than in the panel, so it lives
+   *  and dies with the text it explains -- a hand-back that survives a slot
+   *  switch or an unmount reappears WITH its "check the transcript before
+   *  resending" warning, and slot A's status never shows while slot B is
+   *  displayed. Cleared by the next submit to this slot. */
+  sendStatus?: SideSendStatus
   /** Queue ids that have reached a TERMINAL state (drained or cancelled).
    *  A submit's HTTP callback can run after the frame that removed its entry,
    *  and re-pushing then shows a card the server no longer has — one that 404s
@@ -5162,6 +5176,34 @@ const chatSlice = createSlice({
         side.removedQueueIds = retired.slice(-MAX_RETIRED_QUEUE_IDS)
       }
     },
+    /** Set or clear (`null`) parts of the slot's send status. */
+    sideSendStatus(state, action: PayloadAction<{ slot: string; error?: string | null; notice?: SideStandingNotice | null }>) {
+      const { slot, error, notice } = action.payload
+      if (isUnsafeKey(slot)) return
+      // A status is the outcome of a send the user just made, so a panel that
+      // has no state yet (a FIRST send into a fresh side panel, whose transcript
+      // is only ever created lazily by the first SSE frame) gets one here --
+      // otherwise the very first send's "not confirmed" notice would be dropped
+      // on the floor, and that is exactly the send with no row to fall back on.
+      // Clearing nothing is fine when there is nothing to clear.
+      // Optional chaining on purpose: this is dispatched from ChatPage's slash
+      // path too, whose test stores seed only the fields they exercise.
+      if (!state.slotSide?.[slot]) {
+        if (error == null && notice == null) return
+        if (state.slotSideClosed) delete state.slotSideClosed[slot]
+        const parentTurnCount = slot === state.activeSlot
+          ? (state.messages ?? []).filter(m => m.role === 'user' || m.role === 'assistant').length
+          : 0
+        state.slotSide ??= {}
+        state.slotSide[safeKey(slot)] = { messages: [], openedAtTurnCount: parentTurnCount, createdAt: new Date().toISOString() }
+      }
+      const side = state.slotSide[slot]
+      const next: SideSendStatus = { ...side.sendStatus }
+      if (error !== undefined) { if (error === null) delete next.error; else next.error = error }
+      if (notice !== undefined) { if (notice === null) delete next.notice; else next.notice = notice }
+      if (next.error === undefined && next.notice === undefined) delete side.sendStatus
+      else side.sendStatus = next
+    },
     sideReleaseConsumed(state, action: PayloadAction<{ slot: string; consumed: string }>) {
       const { slot, consumed } = action.payload
       const side = state.slotSide[slot]
@@ -6823,7 +6865,7 @@ export const {
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun, reconcileWorkflowRuns,
-  sseSideResult, sseSideQueue, sideReleaseConsumed, sideClose, sideOptimisticAppend, sideOptimisticRollback,
+  sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideOptimisticAppend, sideOptimisticRollback,
 } = chatSlice.actions
 
 export function selectAutomationForSlot(

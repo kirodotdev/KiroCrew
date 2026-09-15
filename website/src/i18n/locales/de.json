@@ -122,6 +122,7 @@
   },
   "api": {
     "client": {
+      "accepted_body_unreadable": "Der Server hat die Anfrage angenommen, aber die Antwort konnte nicht gelesen werden.",
       "paste_token_url_or_raw_token": "Token-URL oder Roh-Token einfügen…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Vom Tunnel-Edge gedrosselt (HTTP 429) — zu viele Anfragen in kurzer Folge. Das Dashboard versucht es automatisch erneut; falls das anhält, warte ein paar Sekunden und lade die Seite neu.",
       "session_expired": "Sitzung abgelaufen.",
@@ -247,6 +248,8 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "Agent arbeitet...",
+      "app_not_allowed_to_send_named": "{{app}} darf keine Chatnachrichten senden – die App deklariert in ihren Berechtigungen keinen Chat-Zugriff.",
+      "server_refused_with_status": "Der Server hat sie abgelehnt (HTTP {{status}}) – versuche es gleich noch einmal.",
       "chat_message": "Chat-Nachricht",
       "message": "Nachricht...",
       "send": "Senden",
@@ -10155,7 +10158,8 @@
       "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
       "run_in_terminal_liveness_probe_failed_error": "Der Befehl wurde nicht an das neue Terminal gesendet. Seine Shell läuft möglicherweise noch, daher bleibt der Tab geöffnet.",
       "run_in_terminal_shell_alive_error": "Der Befehl wurde nicht an das neue Terminal gesendet, aber seine Shell läuft — der Tab bleibt geöffnet, damit Sie den Befehl dort ausführen können.",
-      "run_in_terminal_dispatch_rolled_back_error": "Der Befehl wurde nicht an das neue Terminal gesendet, daher wurde dieses Terminal geschlossen."
+      "run_in_terminal_dispatch_rolled_back_error": "Der Befehl wurde nicht an das neue Terminal gesendet, daher wurde dieses Terminal geschlossen.",
+      "delivery_unconfirmed_option": "Zustellung nicht bestätigt — prüfe den Verlauf und tippe den Vorschlag erneut an, falls er fehlt."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

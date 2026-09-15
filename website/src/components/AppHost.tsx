@@ -298,6 +298,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
     <AppErrorBoundary appName={app.name} onReset={() => setResetKey(k => k + 1)}>
       <AppApiProvider
         appName={app.name}
+        appDisplayName={appDisplayName(app)}
         appVersion={app.manifest?.version || app.version}
         allowedApiPaths={allowedApi}
         allowedEvents={allowedEvents}
