@@ -14607,6 +14607,7 @@
       "show_controls": "コントロールを表示"
     },
     "membersPage": {
+      "drawer_delegated_working": "委任したタスクを実行中",
       "agent_template": "エージェントテンプレート",
       "configuration": "設定",
       "crew_summary": "メンバー概要",

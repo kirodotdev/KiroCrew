@@ -744,6 +744,10 @@ class TestPinEnforcement:
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner._maybe_auto_title", AsyncMock())
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.generate_session_summary", AsyncMock())
+        monkeypatch.setattr(
+            "kiro_crew.config.loader._materialized_kiro_agent",
+            lambda name, project_dir=None: name if name == switch_to else "",
+        )
         context = SimpleNamespace(
             ensure_store=AsyncMock(return_value=object()),
             build_message=lambda text, *args, **kwargs: (text, None),

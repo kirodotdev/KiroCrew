@@ -715,6 +715,110 @@ class TestMemberMemoryUserFlows:
         assert log._path(old_key).read_bytes() == old_bytes
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("awaiting_approval", [False, True])
+    async def test_open_active_private_thread_reuses_assignment_without_interrupting(
+        self, owner_crud_app, tmp_path, monkeypatch, awaiting_approval
+    ):
+        from unittest.mock import AsyncMock
+
+        from chat_test_helpers import _make_state
+
+        from kiro_crew.dashboard.handlers import members as handlers
+        from kiro_crew.member_memory_auth import read_private_session_store
+
+        cfg, store = await asyncio.to_thread(_new_member)
+        await asyncio.to_thread(persist_member_config, cfg, "reviewer", create=True)
+        state = _make_state(tmp_path)
+        owner_crud_app["state"] = state
+        owner_crud_app.router.add_post("/api/members/{slug}/thread", handlers.api_member_thread)
+        pin = AsyncMock(wraps=handlers.pin_private_agent_store)
+        monkeypatch.setattr(handlers, "pin_private_agent_store", pin)
+        async with TestClient(TestServer(owner_crud_app)) as client:
+            response = await client.post("/api/members/reviewer/thread")
+            assert response.status == 200, await response.text()
+            first = await response.json()
+            slot = state._slots[first["slot_key"]]
+            key = f"dashboard:{slot.key}"
+            pin.reset_mock()
+            task = asyncio.current_task()
+            approval = asyncio.get_running_loop().create_future()
+            slot.task = task
+            if awaiting_approval:
+                slot._approval_futures["pending-test"] = approval
+            original_history_flag = slot._memory_assignment_from_history
+            try:
+                response = await client.post("/api/members/reviewer/thread")
+                assert response.status == 200, await response.text()
+                assert await response.json() == first
+                assert slot.task is task
+                assert not approval.done()
+                assert slot.memory_store == store
+                assert slot._memory_assignment_from_history == original_history_flag
+                assert await asyncio.to_thread(read_private_session_store, key) == store
+                pin.assert_not_awaited()
+            finally:
+                slot.task = None
+                slot._approval_futures.pop("pending-test", None)
+                approval.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "invalid", ["missing", "different", "unreadable", "slot_store", "linked"]
+    )
+    async def test_open_active_private_thread_refuses_unverified_identity(
+        self, owner_crud_app, tmp_path, monkeypatch, invalid
+    ):
+        from unittest.mock import AsyncMock
+
+        from chat_test_helpers import _make_state
+
+        from kiro_crew import member_memory_auth
+        from kiro_crew.dashboard.handlers import members as handlers
+
+        cfg, store = await asyncio.to_thread(_new_member)
+        await asyncio.to_thread(persist_member_config, cfg, "reviewer", create=True)
+        state = _make_state(tmp_path)
+        owner_crud_app["state"] = state
+        owner_crud_app.router.add_post("/api/members/{slug}/thread", handlers.api_member_thread)
+        async with TestClient(TestServer(owner_crud_app)) as client:
+            response = await client.post("/api/members/reviewer/thread")
+            assert response.status == 200, await response.text()
+            slot = state._slots[(await response.json())["slot_key"]]
+            key = f"dashboard:{slot.key}"
+            real_read = member_memory_auth.read_private_session_store
+
+            def read(session_key):
+                if session_key == key:
+                    if invalid == "missing":
+                        return None
+                    if invalid == "different":
+                        return "another-private-store"
+                    if invalid == "unreadable":
+                        raise OSError("protected identity is unreadable")
+                return real_read(session_key)
+
+            monkeypatch.setattr(member_memory_auth, "read_private_session_store", read)
+            pin = AsyncMock(wraps=handlers.pin_private_agent_store)
+            monkeypatch.setattr(handlers, "pin_private_agent_store", pin)
+            if invalid == "slot_store":
+                slot.memory_store = "another-private-store"
+            if invalid == "linked":
+                slot.linked_session_key = "dashboard:unrelated"
+            original_store = slot.memory_store
+            original_link = slot.linked_session_key
+            slot.task = asyncio.current_task()
+            try:
+                response = await client.post("/api/members/reviewer/thread")
+                assert response.status == (503 if invalid == "unreadable" else 409)
+                assert slot.running
+                assert slot.memory_store == original_store
+                assert slot.linked_session_key == original_link
+                assert await asyncio.to_thread(real_read, key) == store
+                pin.assert_not_awaited()
+            finally:
+                slot.task = None
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("busy", ["turn", "children"])
     async def test_opt_in_refuses_active_member_work_before_configuration_change(
         self, owner_crud_app, tmp_path, busy

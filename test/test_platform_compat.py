@@ -11,6 +11,7 @@ output we can assert directly), and the process-helper return contracts.
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import json
 import logging
@@ -380,6 +381,45 @@ class TestRenameNoReplace:
         monkeypatch.setattr(pc, "_RENAME_NOREPLACE_FN", None)
         with pytest.raises(NotImplementedError):
             pc.rename_noreplace("source", "target", src_dir_fd=-1, dst_dir_fd=-1)
+
+    @pytest.mark.skipif(not pc.IS_LINUX, reason="renameat2 syscall fallback is Linux-only")
+    def test_syscall_fallback_builds_working_callable_on_known_arch(self, tmp_path):
+        # glibc < 2.28 (e.g. Amazon Linux 2, glibc 2.26) lacks the renameat2
+        # wrapper symbol, so the primitive must be reachable via the raw
+        # syscall() seam. Build that callable explicitly and prove it enforces
+        # the no-replace contract, independent of which path import-time chose.
+        import platform as _platform
+
+        if _platform.machine() not in pc._SYS_RENAMEAT2_BY_MACHINE:
+            pytest.skip(f"no SYS_renameat2 mapping for {_platform.machine()}")
+        libc = ctypes.CDLL(None, use_errno=True)
+        fn = pc._build_renameat2_via_syscall(libc)
+        assert fn is not None
+
+        first = tmp_path / "first"
+        first.mkdir()
+        (first / "payload").write_text("published")
+        parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            rc = fn(parent_fd, b"first", parent_fd, b"published", 1)  # RENAME_NOREPLACE
+            assert rc == 0
+            assert (tmp_path / "published" / "payload").read_text() == "published"
+
+            # Occupied destination must refuse (EEXIST), not clobber.
+            (tmp_path / "loser").mkdir()
+            ctypes.set_errno(0)
+            rc = fn(parent_fd, b"loser", parent_fd, b"published", 1)
+            assert rc != 0
+            assert ctypes.get_errno() == errno.EEXIST
+        finally:
+            os.close(parent_fd)
+
+    def test_syscall_fallback_returns_none_on_unknown_arch(self, monkeypatch):
+        # An unmapped architecture must fail closed rather than issue a
+        # wrong-numbered syscall.
+        monkeypatch.setattr(pc.platform, "machine", lambda: "totally-made-up-arch")
+        libc = ctypes.CDLL(None, use_errno=True)
+        assert pc._build_renameat2_via_syscall(libc) is None
 
 
 class TestProcessHelpers:

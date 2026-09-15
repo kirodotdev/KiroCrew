@@ -41,7 +41,7 @@ def test_sessions_a_few_reaches_each_session_bucket() -> None:
         cutoff = 2_000_000_000.0 - 60.0
         for key, session in listed.items():
             metadata = log.get_metadata(key)
-            prefetched_metadata, messages, _ = _prefetch_recent_session(
+            prefetched_metadata, messages, _, _agent = _prefetch_recent_session(
                 log,
                 key,
                 session,

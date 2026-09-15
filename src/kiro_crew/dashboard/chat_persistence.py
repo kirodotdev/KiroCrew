@@ -71,10 +71,11 @@ from kiro_crew.history import (
     transcript_sort_key,
     update_metadata_off_loop,
 )
-from kiro_crew.memory_stores import named_store_or_empty
+from kiro_crew.memory_stores import UnknownMemoryStore, named_store_or_empty
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_agent_selection import session_agent_selection_name
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
@@ -401,6 +402,24 @@ def _sanitize_open_slot_key(raw: object) -> str | None:
     return _normalize_slot_key(raw)
 
 
+def _restored_agent_name(session_key: str, meta: dict) -> str:
+    """Restore the protected choice without granting private-memory admission.
+
+    History can retain a provisional agent after an interrupted switch. The
+    protected record is the committed choice; the runner still verifies its
+    namespace, revision and independent private-store assignment before use.
+    An unreadable record leaves the transcript display intact, and the runner's
+    strict read refuses execution rather than treating that display as authority.
+    """
+    try:
+        selected = session_agent_selection_name(session_key)
+    except UnknownMemoryStore:
+        logger.warning("Could not read restored agent selection for %s", session_key, exc_info=True)
+        selected = None
+    agent = meta.get("agent")
+    return selected or (agent if isinstance(agent, str) else "")
+
+
 def _prefetch_rehydrate_inputs(
     conv_log: ConversationLog,
     history_key: str,
@@ -408,7 +427,9 @@ def _prefetch_rehydrate_inputs(
     adopt_closed: bool = False,
     kiro_model_map: dict[str, str] | None = None,
     with_status: bool = False,
-) -> tuple[dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None]:
+) -> tuple[
+    dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None
+]:
     """Read everything :func:`_rehydrate_slot_from_history` needs, off the loop.
 
     The one prefetch seam shared by every async restore path — the metadata line,
@@ -425,7 +446,7 @@ def _prefetch_rehydrate_inputs(
     retries", and treating the second as the first is what silently discards a
     live tab.
 
-    Returns ``(meta, readable, messages, model_map, member_identity)``.
+    Returns ``(meta, readable, messages, model_map, member_identity, agent)``.
     *messages* and *model_map* are ``None`` when there is nothing to build — no
     metadata, an unreadable read, or a session closed with ✕ that the caller did
     not opt to adopt — so a caller can decide without a second disk round trip.
@@ -438,7 +459,7 @@ def _prefetch_rehydrate_inputs(
     else:
         meta, readable = conv_log.get_metadata(history_key), True
     if not readable or not meta or (meta.get("closed") and not adopt_closed):
-        return meta or {}, readable, None, None, None
+        return meta or {}, readable, None, None, None, None
     return (
         meta,
         readable,
@@ -447,6 +468,7 @@ def _prefetch_rehydrate_inputs(
         # The transcript key is "dashboard:" + slot name; identity is a
         # property of the slot name.
         _member_restore_identity(history_key.removeprefix("dashboard:")),
+        _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta),
     )
 
 
@@ -486,11 +508,13 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
             # These reads MUST stay inside the per-tab guard. The async driver
             # has no except at its call site either, so anything escaping here
             # aborts dashboard startup and costs every LATER tab too.
-            meta, readable, messages, model_map, member_identity = _prefetch_rehydrate_inputs(
-                state.conversation_log,
-                slot_transcript_key(key),
-                kiro_model_map=kiro_model_map,
-                with_status=True,
+            meta, readable, messages, model_map, member_identity, agent = (
+                _prefetch_rehydrate_inputs(
+                    state.conversation_log,
+                    slot_transcript_key(key),
+                    kiro_model_map=kiro_model_map,
+                    with_status=True,
+                )
             )
             restored += _apply_restored_open_slot(
                 state,
@@ -500,6 +524,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
                 messages=messages,
                 model_map=model_map,
                 member_identity=member_identity,
+                agent=agent,
                 unrestored=unrestored,
             )
         except Exception:
@@ -596,6 +621,7 @@ def _apply_restored_open_slot(
     model_map: dict[str, str] | None,
     unrestored: set[str],
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
+    agent: str | None = None,
     conv_log: ConversationLog | None = None,
     started: float | None = None,
 ) -> int:
@@ -660,6 +686,7 @@ def _apply_restored_open_slot(
         _prefetched_meta=meta,
         _prefetched_messages=messages,
         _prefetched_member_identity=member_identity,
+        _prefetched_agent=agent,
     )
     return 1 if slot is not None else 0
 
@@ -745,12 +772,14 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                 continue
             try:
                 started = time.time()
-                meta, readable, messages, model_map, member_identity = await asyncio.to_thread(
-                    _prefetch_rehydrate_inputs,
-                    conv_log,
-                    slot_transcript_key(key),
-                    kiro_model_map=kiro_model_map,
-                    with_status=True,
+                meta, readable, messages, model_map, member_identity, agent = (
+                    await asyncio.to_thread(
+                        _prefetch_rehydrate_inputs,
+                        conv_log,
+                        slot_transcript_key(key),
+                        kiro_model_map=kiro_model_map,
+                        with_status=True,
+                    )
                 )
                 restored += _apply_restored_open_slot(
                     state,
@@ -760,6 +789,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                     messages=messages,
                     model_map=model_map,
                     member_identity=member_identity,
+                    agent=agent,
                     unrestored=unrestored,
                     # Opts into the post-hop re-checks (close tombstone +
                     # deletion): this driver's read ran in a worker thread, so
@@ -806,10 +836,11 @@ def _pin_private_agent_assignment(
     conversation_log=None,
     native_context: bool = False,
 ) -> str:
-    """Pin an owner-selected member, never a name recovered from history.
+    """Pin an authorized member selection, never a name recovered from history.
 
-    Callers must positively authorize the owner request before using this
-    helper. Legacy members keep their declared V1 memory until owner opt-in.
+    Callers must authorize the owner's request or its session-control creation
+    before using this helper. The session-control route rejects private callers
+    from these aggregate controls. Legacy members keep their declared V1 memory.
     """
     selected = agent or config.default_agent
     if selected == "default":
@@ -902,6 +933,7 @@ def _rehydrate_slot_from_history(
     _prefetched_meta: dict | None = None,
     _prefetched_messages: list[dict] | None = None,
     _prefetched_member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
+    _prefetched_agent: str | None = None,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
 
@@ -1041,8 +1073,12 @@ def _rehydrate_slot_from_history(
         slot._memory_assignment_from_history = True
         # Member keys keep the binding-derived agent/mode: transcript metadata
         # is the operator-editable file the pin must not re-derive from.
-        if meta.get("agent") and _member_identity is None:
-            slot.agent = meta["agent"]
+        if _member_identity is None:
+            slot.agent = (
+                _prefetched_agent
+                if _prefetched_agent is not None
+                else _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta)
+            )
         if meta.get("model"):
             # _normalize_model handles deprecation renames. For claude_code sessions,
             # also map a pre-migration raw provider id back to the canonical key so it
@@ -1415,7 +1451,7 @@ async def rehydrate_slot_from_history_async(
     conv_log = state.conversation_log
 
     started = time.time()
-    _meta, _readable, messages, model_map, _member_id = await asyncio.to_thread(
+    _meta, _readable, messages, model_map, _member_id, agent = await asyncio.to_thread(
         _prefetch_rehydrate_inputs,
         conv_log,
         history_key,
@@ -1473,6 +1509,7 @@ async def rehydrate_slot_from_history_async(
         _prefetched_meta=meta,
         _prefetched_messages=messages,
         _prefetched_member_identity=_member_id,
+        _prefetched_agent=agent,
     )
 
 
@@ -1498,14 +1535,14 @@ def _prefetch_recent_session(
     *,
     folders_only: bool,
     cutoff: float | None,
-) -> tuple[dict | None, list[dict] | None, tuple[str, str] | None]:
+) -> tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None]:
     """Read one candidate session's metadata + transcript, off the loop.
 
     Applies the selection filters BETWEEN the two reads so a session that is
     going to be skipped never pays for its transcript walk — the metadata read is
     what the filters need, and it is the cheap one.
 
-    Returns ``(None, None, None)`` for a session this pass must skip (not
+    Returns ``(None, None, None, None)`` for a session this pass must skip (not
     folder'd / pinned under ``folders_only``, closed with ✕, or outside the
     mtime window). The third element is the prefetched
     ``_member_restore_identity`` answer — dm.json is file IO too, and the apply
@@ -1526,20 +1563,27 @@ def _prefetch_recent_session(
         # deleted. ``_rehydrate_slot_from_history`` already refuses on empty
         # metadata for exactly this reason ("don't create a phantom slot"); this
         # makes the recent-sessions path agree with it.
-        return None, None, None
+        return None, None, None, None
     has_folder = bool(meta.get("folder_id"))
     has_pin = bool(meta.get("pinned"))
     if folders_only and not has_folder and not has_pin:
-        return None, None, None
+        return None, None, None, None
     if meta.get("closed"):
-        return None, None, None
+        return None, None, None, None
     if not has_folder and not has_pin:
         if cutoff is not None and session.get("modified", 0) < cutoff:
-            return None, None, None
+            return None, None, None, None
     return (
         meta,
         conv_log.read_messages_chained(key),
         _member_restore_identity(_recent_session_slot_name(key) or ""),
+        _restored_agent_name(
+            str(
+                meta.get("linked_session_key")
+                or slot_transcript_key(_recent_session_slot_name(key) or key)
+            ),
+            meta,
+        ),
     )
 
 
@@ -1555,6 +1599,7 @@ def _apply_recent_session(
     kiro_model_map: dict[str, str],
     restore_cfg: "KiroCrewConfig | None",
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
+    agent: str | None = None,
 ) -> None:
     """Build the slot for one prefetched recent session.
 
@@ -1614,8 +1659,14 @@ def _apply_recent_session(
     slot._memory_assignment_from_history = True
     # Member keys keep the binding-derived agent/mode: transcript metadata is
     # the operator-editable file the pin must not re-derive from.
-    if meta.get("agent") and _member_identity is None:
-        slot.agent = meta["agent"]
+    if _member_identity is None:
+        slot.agent = (
+            agent
+            if agent is not None
+            else _restored_agent_name(
+                str(meta.get("linked_session_key") or slot_transcript_key(slot_name)), meta
+            )
+        )
     if meta.get("model"):
         # Canonicalize a pre-migration claude_code provider id to the
         # canonical dropdown key (no-op for other providers); reuse the
@@ -1805,7 +1856,7 @@ def _restore_recent_sessions_steps(
         slot_name = _recent_session_slot_name(key)
         if slot_name is None or slot_name in state._slots:
             continue
-        meta, messages, _member_id = _prefetch_recent_session(
+        meta, messages, _member_id, agent = _prefetch_recent_session(
             conv_log, key, s, folders_only=folders_only, cutoff=cutoff
         )
         if meta is None or messages is None:
@@ -1821,6 +1872,7 @@ def _restore_recent_sessions_steps(
             kiro_model_map=kiro_model_map,
             restore_cfg=_restore_cfg,
             member_identity=_member_id,
+            agent=agent,
         )
         restored += 1
         # One yield point per restored session (see _restore_open_slots_steps).
@@ -1879,7 +1931,7 @@ async def restore_recent_sessions_async(
             if slot_name is None or slot_name in state._slots:
                 continue
             started = time.time()
-            meta, messages, _member_id = await asyncio.to_thread(
+            meta, messages, _member_id, agent = await asyncio.to_thread(
                 _prefetch_recent_session,
                 conv_log,
                 key,
@@ -1948,6 +2000,7 @@ async def restore_recent_sessions_async(
                 kiro_model_map=kiro_model_map,
                 restore_cfg=_restore_cfg,
                 member_identity=_member_id,
+                agent=agent,
             )
             restored += 1
             await asyncio.sleep(0)

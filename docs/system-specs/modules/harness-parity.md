@@ -127,6 +127,14 @@ and the absence of a mechanism is not something a source scan can see. The
 
 ## The CI half
 
+KAS's harness opts into managed MCP readiness with its session-scoped status and
+tool-tag notifications. The runtime asks that declaration before replacing the
+best-effort drain with the bounded barrier described in
+[acp-client.md](acp-client.md#kas-managed-mcp-readiness). Kiro retains its exact
+legacy notification declaration and drain; KAS readiness neither changes its
+timeout policy nor introduces a new Kiro startup failure. The notification
+contract and outbound-wire parity tests pin both sides.
+
 The added-line gate that enforces Group B on a diff is
 [../../ci/harness-parity-gate.md](../../ci/harness-parity-gate.md). The
 structural invariants (Groups A and C) are pinned by

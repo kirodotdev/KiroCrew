@@ -34,6 +34,7 @@ import pytest
 from spawn_test_helpers import strip_spawn_shim
 
 from kiro_crew.acp.client import _OVERSIZE_DRAIN_MAX_BYTES
+from kiro_crew.acp.harness import SessionExtras
 from kiro_crew.acp.runtime import (
     _REQUEST_TIMEOUT,
     _SESSION_NEW_TIMEOUT,
@@ -65,8 +66,703 @@ from kiro_crew.acp.types import (
     METHOD_SET_MODE,
     JsonRpcMessage,
 )
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 
 # ── Harness ──
+
+
+@pytest.fixture
+def kas_readiness_wire(monkeypatch, tmp_path):
+    """Real demux and session startup; only the subprocess and clock are fake."""
+    from types import SimpleNamespace
+
+    import kiro_crew.acp.runtime as runtime_mod
+    import kiro_crew.acp.session_handle as sh
+
+    rt, reader, proc = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    rt._can_load_session = True
+    rt._work_dir = tmp_path
+    clock = [0.0]
+    monkeypatch.setattr(sh, "time", SimpleNamespace(time=time.time, monotonic=lambda: clock[0]))
+    monkeypatch.setattr(rt, "_session_start_budget", AsyncMock(return_value=30.0))
+    monkeypatch.setattr(
+        rt,
+        "_kas_custom_agents",
+        AsyncMock(
+            return_value=SessionExtras(
+                custom_agents=[
+                    {
+                        "id": "worker",
+                        "tools": ["@kirocrew-core", "@kirocrew-dashboard"],
+                        "mcpServers": {"kirocrew-core": {}, "external": {}},
+                    },
+                    {"id": "inactive", "mcpServers": {"kirocrew-work": {}}},
+                ]
+            )
+        ),
+    )
+    sent = asyncio.Queue()
+    reads = asyncio.Queue()
+    proc.stdin.write.side_effect = lambda raw: sent.put_nowait(json.loads(raw))
+    original_init = AcpSessionHandle.__init__
+
+    def observe_queue(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        get = self._queue.get
+
+        async def observed_get():
+            reads.put_nowait(None)
+            return await get()
+
+        monkeypatch.setattr(self._queue, "get", observed_get)
+
+    monkeypatch.setattr(AcpSessionHandle, "__init__", observe_queue)
+
+    async def take(queue):
+        return await asyncio.wait_for(queue.get(), timeout=3.0)
+
+    def status(
+        state="connecting", sid="ready-session", *, origin="client", extra_servers=(), **extra
+    ):
+        # ``origin=None`` reproduces the captured kiro-cli 2.18.0 wire: no
+        # ``_meta`` on ANY entry, not a foreign origin on one of them.
+        meta = (
+            {}
+            if origin is None
+            else {"_meta": {"kiro": {"resource": {"source": {"origin": origin}}}}}
+        )
+        _feed(
+            reader,
+            {
+                "method": "_kiro/mcp/status",
+                "params": {
+                    "sessionId": sid,
+                    "servers": [
+                        {"name": "kirocrew-core", "status": state, **meta, **extra},
+                        {"name": "kirocrew-dashboard", "status": "connected", **meta},
+                        {"name": "external", "status": "failed", "errorMessage": "irrelevant"},
+                        *({"name": name, "status": "connected", **meta} for name in extra_servers),
+                    ],
+                },
+            },
+        )
+
+    def tags(*names, sid="ready-session"):
+        _feed(
+            reader,
+            {
+                "method": "_kiro/tools/didChange",
+                "params": {
+                    "sessionId": sid,
+                    "tags": [{"source": "mcp", "tag": f"@{name}/some_tool"} for name in names],
+                },
+            },
+        )
+
+    async def handshake(
+        resume,
+        *,
+        switch=True,
+        pre_ready=False,
+        pre_frames=(),
+        injected=None,
+        session_key="",
+        agent_name="worker",
+    ):
+        kwargs = {"cwd": tmp_path, "agent": agent_name, "session_key": session_key}
+        servers = injected if injected is not None else [{"name": "kirocrew-dashboard"}]
+        if resume:
+            # Load gets the session injection through the existing overlay seam.
+            monkeypatch.setattr(
+                runtime_mod,
+                "pooled_session_servers",
+                lambda *_: servers,
+            )
+            start = rt.load_session("", "ready-session", **kwargs)
+        else:
+            start = rt.create_session(mcp_servers=servers, **kwargs)
+        task = asyncio.create_task(start)
+        request = await take(sent)
+        assert request["method"] == (METHOD_SESSION_LOAD if resume else METHOD_SESSION_NEW)
+        # The projection reaches the wire with the ACTIVE agent's hoistable
+        # managed declarations carried in the session-level array instead of the
+        # block (``hoist_managed_servers``); everything else is byte-identical.
+        projection = rt._kas_custom_agents.return_value.custom_agents
+        sent_agents = request["params"]["_meta"]["kiro"]["customAgents"]
+        assert len(sent_agents) == len(projection)
+        wire_names = [entry["name"] for entry in request["params"]["mcpServers"]]
+        assert len(wire_names) == len(set(wire_names)), "a name must appear once on the wire"
+        for sent_agent, projected in zip(sent_agents, projection):
+            hoisted = {
+                name
+                for name, entry in (projected.get("mcpServers") or {}).items()
+                if projected.get("id") == agent_name
+                and name in KIROCREW_BIN_MCP_SERVERS
+                and isinstance(entry.get("command"), str)
+                and entry.get("command")
+                and name not in {e["name"] for e in servers}
+            }
+            expected = dict(projected)
+            kept = {
+                k: v for k, v in (projected.get("mcpServers") or {}).items() if k not in hoisted
+            }
+            if kept:
+                expected["mcpServers"] = kept
+            else:
+                expected.pop("mcpServers", None)
+            assert sent_agent == expected
+            for name in hoisted:
+                assert name in wire_names
+                element = next(e for e in request["params"]["mcpServers"] if e["name"] == name)
+                assert element["type"] == "stdio"
+                assert element["command"] == projected["mcpServers"][name]["command"]
+                assert element["env"] == [
+                    {"name": k, "value": str(v)}
+                    for k, v in (projected["mcpServers"][name].get("env") or {}).items()
+                ]
+        if pre_ready:
+            status("connected")
+            tags("kirocrew-core", "kirocrew-dashboard")
+        for frame in pre_frames:
+            _feed(reader, frame)
+        _feed(
+            reader,
+            {
+                "id": request["id"],
+                "result": {
+                    "sessionId": "ready-session",
+                    "modes": {
+                        "currentModeId": "before" if switch else agent_name,
+                        "availableModes": [{"id": agent_name}],
+                    },
+                },
+            },
+        )
+        mode = await take(sent)
+        assert mode["method"] == METHOD_SET_MODE
+        _feed(reader, {"id": mode["id"], "result": {}})
+        return task
+
+    return SimpleNamespace(
+        runtime=rt,
+        reader=reader,
+        sent=sent,
+        reads=reads,
+        take=take,
+        clock=clock,
+        status=status,
+        tags=tags,
+        handshake=handshake,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+@pytest.mark.parametrize("revoked", [False, True], ids=["valid", "revoked"])
+async def test_derived_worker_identity_keeps_freshness_and_readiness(
+    kas_readiness_wire, monkeypatch, tmp_path, resume, revoked
+):
+    from kiro_crew import agent, agent_state
+    from kiro_crew.acp.harness import harness_for
+    from kiro_crew.config import paths as paths_mod
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: agents_dir)
+    monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: agents_dir)
+    monkeypatch.setattr(agent_state, "config_dir", lambda: tmp_path / "derived-state")
+    default = agents_dir / "kirocrew.json"
+    spec = {
+        "name": "kirocrew",
+        "prompt": "Complete the assigned work.",
+        "tools": ["@kirocrew-core"],
+        "mcpServers": {"kirocrew-core": {"command": "unused"}},
+    }
+    default.write_text(json.dumps(spec), encoding="utf-8")
+    await asyncio.to_thread(agent._install_worker_agent)
+    key = "subagent:derived-worker"
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras(
+        "kirocrew-worker", work_dir=tmp_path, session_key=key
+    )
+    assert extras.derived_spec_snapshot is not None
+    for server in ("kirocrew-core", "kirocrew-work"):
+        assert extras.custom_agents[0]["mcpServers"][server]["env"]["KIROCREW_SESSION_KEY"] == key
+    wire = kas_readiness_wire
+    monkeypatch.setattr(wire.runtime, "_kas_custom_agents", AsyncMock(return_value=extras))
+    terminate = AsyncMock()
+    monkeypatch.setattr(wire.runtime, "terminate_session", terminate)
+    if revoked:
+        # The host will receive the old payload. Ready MCP reports must not
+        # authorize it after the owner's source grants have changed.
+        spec["mcpServers"] = {}
+        default.write_text(json.dumps(spec), encoding="utf-8")
+
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(
+            resume,
+            pre_ready=revoked,
+            injected=[],
+            session_key=key,
+            agent_name="kirocrew-worker",
+        )
+        wire.runtime._kas_custom_agents.assert_awaited_once_with(
+            "kirocrew-worker", member_dispatch=False, session_key=key
+        )
+        if revoked:
+            wire.status("connected", extra_servers=("kirocrew-work",))
+            wire.tags("kirocrew-core", "kirocrew-work")
+            with pytest.raises(AcpRuntimeError, match="changed during worker load"):
+                await asyncio.wait_for(start, 3.0)
+            terminate.assert_awaited_once_with("ready-session")
+        else:
+            await wire.take(wire.reads)
+            wire.clock[0] = 7.0
+            wire.status()
+            await wire.take(wire.reads)
+            assert not start.done()
+            wire.status("connected", extra_servers=("kirocrew-work",))
+            await wire.take(wire.reads)
+            assert not start.done(), "a fresh template still needs actual tool exposure"
+            wire.tags("kirocrew-core", "kirocrew-work")
+            await asyncio.wait_for(start, 3.0)
+            terminate.assert_not_awaited()
+        assert wire.sent.empty(), "startup must not issue a prompt"
+    finally:
+        if start is not None:
+            if not start.done():
+                start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        reader_task.cancel()
+        await asyncio.gather(reader_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+@pytest.mark.parametrize("pre_ready", [False, True], ids=["cold", "stale-mode"])
+async def test_kas_readiness_delays_prompt_until_active_managed_tools(
+    kas_readiness_wire, monkeypatch, resume, pre_ready
+):
+    """The first prompt cannot race core when startup takes more than six seconds."""
+    import kiro_crew.acp.session_handle as sh
+
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 6.0)
+    wire = kas_readiness_wire
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(
+            resume, pre_ready=pre_ready, session_key="subagent:readiness-worker"
+        )
+        wire.runtime._kas_custom_agents.assert_awaited_once_with(
+            "worker", member_dispatch=False, session_key="subagent:readiness-worker"
+        )
+        # Two pre-mode snapshots must be consumed without satisfying this activation.
+        for _ in range(3 if pre_ready else 1):
+            await wire.take(wire.reads)
+        wire.clock[0] = 7.0
+        wire.status()
+        await wire.take(wire.reads)
+        assert not start.done()
+        assert wire.sent.empty()
+
+        wire.status("connected", sid="other-session")
+        wire.tags("kirocrew-core", "kirocrew-dashboard", sid="other-session")
+        wire.status("connected", sid=None)
+        wire.tags("kirocrew-core", "kirocrew-dashboard", sid=None)
+        wire.status("connected", origin="global")
+        wire.tags("kirocrew-dashboard")
+        for _ in range(3):
+            await wire.take(wire.reads)
+        await wire.take(wire.reads)
+        assert not start.done()
+
+        wire.status("connected")
+        await wire.take(wire.reads)
+        assert not start.done(), "Connected transport alone does not establish tool exposure"
+        wire.tags("kirocrew-core", "kirocrew-dashboard")
+        handle = await asyncio.wait_for(start, 3.0)
+        assert wire.sent.empty()
+
+        async def collect():
+            return [event async for event in handle.prompt("ready")]
+
+        turn = asyncio.create_task(collect())
+        try:
+            request = await wire.take(wire.sent)
+            assert request["method"] == "session/prompt"
+            _feed(wire.reader, {"id": request["id"], "result": {"stopReason": "end_turn"}})
+            await asyncio.wait_for(turn, 3.0)
+            assert wire.sent.empty()
+        finally:
+            if not turn.done():
+                turn.cancel()
+            await asyncio.gather(turn, return_exceptions=True)
+    finally:
+        if start is not None and not start.done():
+            start.cancel()
+        if start is not None:
+            await asyncio.gather(start, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+@pytest.mark.parametrize(
+    "state",
+    [
+        "failed",
+        "disabled",
+        "authorization",
+        "timeout",
+        "unreported",
+        "missing-catalog",
+        "legacy-provenance",
+    ],
+)
+async def test_kas_readiness_refuses_failure_or_missing_report(kas_readiness_wire, resume, state):
+    from kiro_crew.acp.session_handle import AcpRequestTimeout
+
+    wire = kas_readiness_wire
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(resume)
+        await wire.take(wire.reads)
+        if state in ("timeout", "missing-catalog"):
+            wire.clock[0] = 31.0
+            wire.status("connected" if state == "missing-catalog" else "connecting")
+        elif state == "unreported":
+            wire.clock[0] = 31.0
+            _feed(
+                wire.reader, {"method": "session/update", "params": {"sessionId": "ready-session"}}
+            )
+        elif state == "authorization":
+            wire.status(
+                "connecting", failedAuthorization=True, errorMessage="authorization required"
+            )
+        elif state == "legacy-provenance":
+            # Captured kiro-cli 2.18.0: connected with a catalog, tag to follow,
+            # no origin anywhere. ``kirocrew-core`` reached the backend only via
+            # the agent block (the fixture injects just ``kirocrew-dashboard``),
+            # so it is refused before the timeout, naming the limit.
+            wire.status("connected", origin=None, tools=[{"name": "ping", "disabled": False}])
+            wire.tags("kirocrew-core", "kirocrew-dashboard")
+        else:
+            wire.status(state, errorMessage="managed test failure")
+        expected = (
+            AcpRequestTimeout
+            if state in ("timeout", "unreported", "missing-catalog")
+            else AcpRuntimeError
+        )
+        if not resume:
+            deletion = await wire.take(wire.sent)
+            assert deletion["method"] == "_kiro/session/delete"
+            assert deletion["params"] == {"sessionId": "ready-session"}
+            _feed(wire.reader, {"id": deletion["id"], "result": {}})
+        with pytest.raises(expected, match="kirocrew-core") as raised:
+            await asyncio.wait_for(start, 3.0)
+        if state == "legacy-provenance":
+            assert "connected without provenance" in str(raised.value)
+            assert "reports no MCP server origin" in str(raised.value)
+        assert wire.sent.empty(), "A failed startup must not prompt or delete a retained session"
+        assert "ready-session" not in wire.runtime._session_queues
+    finally:
+        if start is not None and not start.done():
+            start.cancel()
+        if start is not None:
+            await asyncio.gather(start, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_kas_readiness_accepts_provenance_less_wire_for_injected_servers(
+    kas_readiness_wire, resume
+):
+    """Captured kiro-cli 2.18.0 (``2.18.0-newload-global+session.json``): a
+    session-level injection connects as the session's own server on new and
+    load with no ``_meta`` anywhere. Injected names are therefore trusted on a
+    provenance-less snapshot; connection plus tag exposure is still required.
+    """
+    wire = kas_readiness_wire
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(
+            resume, injected=[{"name": "kirocrew-core"}, {"name": "kirocrew-dashboard"}]
+        )
+        await wire.take(wire.reads)
+        wire.status("connecting", origin=None)
+        await wire.take(wire.reads)
+        assert not start.done()
+        wire.status("connected", origin=None, tools=[{"name": "ping", "disabled": False}])
+        await wire.take(wire.reads)
+        assert not start.done(), "Connected transport alone does not establish tool exposure"
+        wire.tags("kirocrew-core", "kirocrew-dashboard")
+        handle = await asyncio.wait_for(start, 3.0)
+        assert set(handle.mcp_session_report().payload()["ready"]) == {
+            "kirocrew-core",
+            "kirocrew-dashboard",
+        }
+        assert wire.sent.empty(), "startup must not issue a prompt"
+    finally:
+        if start is not None and not start.done():
+            start.cancel()
+        if start is not None:
+            await asyncio.gather(start, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_kas_default_managed_core_is_hoisted_and_ready_on_provenance_less_wire(
+    kas_readiness_wire, monkeypatch, resume
+):
+    """The ordinary install: ``kirocrew-core`` declared only by the agent spec,
+    nothing stubbed. The runtime carries the projected declaration in the
+    session-level array (``2.18.0-payload-probe.json``: that payload connects
+    Crew's own server past colliding global and workspace entries on new and
+    load), so the provenance-less wire reads it as injected and startup completes.
+    """
+    from kiro_crew.acp.kas_agents import to_client_custom_agent
+
+    wire = kas_readiness_wire
+    projected = to_client_custom_agent(
+        "worker",
+        {
+            "tools": ["@kirocrew-core"],
+            "allowedTools": [],
+            "mcpServers": {"kirocrew-core": {"command": "kirocrew", "args": ["mcp"]}},
+        },
+        "Test worker",
+        session_key="subagent:default-worker",
+    )
+    monkeypatch.setattr(
+        wire.runtime,
+        "_kas_custom_agents",
+        AsyncMock(return_value=SessionExtras(custom_agents=[projected])),
+    )
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(resume, session_key="subagent:default-worker")
+        sent = wire.runtime._kas_custom_agents.call_args
+        assert sent.kwargs["session_key"] == "subagent:default-worker"
+        await wire.take(wire.reads)
+        wire.status("connected", origin=None, tools=[{"name": "ping", "disabled": False}])
+        await wire.take(wire.reads)
+        assert not start.done(), "exposure is still required for an injected server"
+        wire.tags("kirocrew-core", "kirocrew-dashboard")
+        handle = await asyncio.wait_for(start, 3.0)
+        assert set(handle.mcp_session_report().payload()["ready"]) == {
+            "kirocrew-core",
+            "kirocrew-dashboard",
+        }
+        assert set(handle.mcp_session_report().payload()["configured"]) == {
+            "kirocrew-core",
+            "kirocrew-dashboard",
+        }
+        assert wire.sent.empty(), "startup must not issue a prompt"
+    finally:
+        if start is not None and not start.done():
+            start.cancel()
+        if start is not None:
+            await asyncio.gather(start, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_kas_readiness_accepts_pre_response_reports_for_unchanged_mode(
+    kas_readiness_wire, resume
+):
+    wire = kas_readiness_wire
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(resume, switch=False, pre_ready=True)
+        handle = await asyncio.wait_for(start, 3.0)
+        report = handle.mcp_session_report().payload()
+        assert set(report["ready"]) == {"kirocrew-core", "kirocrew-dashboard"}
+        assert wire.sent.empty()
+    finally:
+        if start is not None and not start.done():
+            start.cancel()
+        if start is not None:
+            await asyncio.gather(start, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+@pytest.mark.parametrize(
+    "tools,excluded,catalog_state,needs_tag",
+    [
+        (["read"], [], "enabled", False),
+        (["*"], ["@kirocrew-core"], "enabled", False),
+        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "enabled", False),
+        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "empty", False),
+        (
+            ["@kirocrew-core"],
+            ["@kirocrew-core/memory_recall", "@kirocrew-core/learn_add"],
+            "enabled",
+            False,
+        ),
+        (["@kirocrew-core/memory_recall"], [], "disabled", False),
+        (["*"], [], "disabled", False),
+        (["@kirocrew-core"], ["@kirocrew-core/learn_add"], "enabled", True),
+    ],
+    ids=[
+        "no-server-grant",
+        "excluded-server",
+        "excluded-selected-tool",
+        "excluded-selected-tool-empty-catalog",
+        "excluded-all-tools",
+        "disabled-selected-tool",
+        "disabled-all-tools",
+        "unapproved-recall-still-needs-exposure",
+    ],
+)
+async def test_kas_readiness_respects_projected_tool_restrictions(
+    kas_readiness_wire, monkeypatch, resume, tools, excluded, catalog_state, needs_tag
+):
+    """A declared server with intentionally hidden tools must still connect."""
+    from kiro_crew.acp.kas_agents import to_client_custom_agent
+
+    wire = kas_readiness_wire
+    projected = to_client_custom_agent(
+        "worker",
+        {
+            "tools": tools,
+            "excludedTools": excluded,
+            "allowedTools": [],
+            "mcpServers": {"kirocrew-core": {"command": "unused-test-mcp"}},
+        },
+        "Test worker",
+        member_dispatch=True,
+    )
+    original = json.loads(json.dumps(projected))
+    monkeypatch.setattr(
+        wire.runtime,
+        "_kas_custom_agents",
+        AsyncMock(return_value=SessionExtras(custom_agents=[projected])),
+    )
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    catalog = [
+        {"name": name, "disabled": catalog_state == "disabled"}
+        for name in ("memory_recall", "learn_add")
+        if catalog_state != "empty"
+    ]
+    try:
+        start = await wire.handshake(resume)
+        await wire.take(wire.reads)
+        wire.status("connecting", tools=[])
+        wire.tags("kirocrew-dashboard")
+        for _ in range(2):
+            await wire.take(wire.reads)
+        assert not start.done(), "A restricted tool policy does not waive connection readiness"
+        wire.status("connected", tools=catalog)
+        if needs_tag:
+            await wire.take(wire.reads)
+            assert not start.done(), "Approval policy does not remove exposure requirements"
+            wire.tags("kirocrew-core", "kirocrew-dashboard")
+        handle = await asyncio.wait_for(start, 3.0)
+        assert set(handle.mcp_session_report().payload()["ready"]) == {
+            "kirocrew-core",
+            "kirocrew-dashboard",
+        }
+        assert projected == original, "Readiness must not change the projected grants"
+        assert wire.sent.empty()
+    finally:
+        if start is not None and not start.done():
+            start.cancel()
+        if start is not None:
+            await asyncio.gather(start, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+@pytest.mark.parametrize("managed", [False, True], ids=["external-only", "managed-and-external"])
+async def test_kas_readiness_preserves_external_init_side_effects(
+    kas_readiness_wire, monkeypatch, caplog, resume, managed
+):
+    """OAuth/config/failure information survives without gating managed readiness."""
+    wire = kas_readiness_wire
+    oauth = {
+        "method": METHOD_MCP_OAUTH_REQUEST,
+        "params": {
+            "sessionId": "ready-session",
+            "serverName": "external-auth",
+            "oauthUrl": "https://example.com/authorize",
+        },
+    }
+    if not managed:
+        monkeypatch.setattr(
+            wire.runtime,
+            "_kas_custom_agents",
+            AsyncMock(
+                return_value=SessionExtras(
+                    custom_agents=[{"id": "worker", "mcpServers": {"external-auth": {}}}]
+                )
+            ),
+        )
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    caplog.set_level("INFO", logger="kiro_crew.acp.session_handle")
+    try:
+        start = await wire.handshake(resume, pre_frames=[oauth], injected=None if managed else [])
+        # The pre-mode OAuth frame is still captured; it cannot arm readiness.
+        for _ in range(2):
+            await wire.take(wire.reads)
+        cfg = [{"id": "effort", "options": ["low", "high"]}]
+        _feed(wire.reader, oauth)  # duplicated notifications stay deduplicated
+        _feed(
+            wire.reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "ready-session",
+                    "update": {"sessionUpdate": "config_option_update", "configOptions": cfg},
+                },
+            },
+        )
+        _feed(
+            wire.reader,
+            {
+                "method": "_kiro.dev/mcp/server_init_failure",
+                "params": {
+                    "sessionId": "ready-session",
+                    "serverName": "external-failed",
+                    "error": "external initialization failed",
+                },
+            },
+        )
+        if managed:
+            for _ in range(3):
+                await wire.take(wire.reads)
+            assert not start.done()
+            wire.status("connected")
+            wire.tags("kirocrew-core", "kirocrew-dashboard")
+        handle = await asyncio.wait_for(start, 3.0)
+        assert handle._config_options == cfg
+        assert handle.pop_pending_oauth_requests() == [
+            {"serverName": "external-auth", "oauthUrl": "https://example.com/authorize"}
+        ]
+        assert handle.pop_pending_oauth_requests() == []
+        assert "external-failed" in handle.mcp_session_report().payload()["failed"]
+        assert "MCP server init failure on ready-session: external-failed" in caplog.text
+        assert wire.sent.empty()
+    finally:
+        if start is not None and not start.done():
+            start.cancel()
+        if start is not None:
+            await asyncio.gather(start, return_exceptions=True)
+        await _stop_reader(reader_task)
 
 
 @pytest.fixture(autouse=True)
@@ -4419,7 +5115,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False):
+        async def _fake_agents(agent, *, member_dispatch=False, session_key=""):
             from kiro_crew.acp.harness import SessionExtras
 
             return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
@@ -4463,7 +5159,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False):
+        async def _fake_agents(agent, *, member_dispatch=False, session_key=""):
             from kiro_crew.acp.harness import SessionExtras
 
             return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
@@ -4498,7 +5194,7 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False):
+        async def _fake_agents(agent, *, member_dispatch=False, session_key=""):
             from kiro_crew.acp.harness import SessionExtras
 
             calls.append(agent)

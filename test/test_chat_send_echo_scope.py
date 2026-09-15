@@ -104,6 +104,12 @@ async def test_user_echo_reaches_only_authorized_ws_clients(
         observer = await client.ws_connect(
             "/api/ws", params={"token": token_auth.generate_token("local-app", app=_APP)}
         )
+        # The upgrade precedes asynchronous warm-up and scope loading. The
+        # initial slots frames prove both connections are registered for echoes.
+        initial_ws = await asyncio.wait_for(
+            asyncio.gather(owner.receive_json(), observer.receive_json()), timeout=5
+        )
+        assert all(frame["type"] == "slots" for frame in initial_ws)
         stream = await client.get(
             "/api/stream", params={"token": token_auth.generate_token("local-app", app=_APP)}
         )

@@ -10,9 +10,18 @@ every background task.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
-from kiro_crew.acp.runtime import AcpRuntime
+from kiro_crew.acp.runtime import (
+    _TERMINATE_TIMEOUT,
+    AcpRequestTimeout,
+    AcpRuntime,
+    AcpRuntimeError,
+)
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     METHOD_KAS_SESSION_DELETE,
@@ -75,3 +84,90 @@ class TestTeardownIsStillBestEffort:
         monkeypatch.setattr(runtime, "_send_and_await", boom)
         await runtime.terminate_session("sess-1")
         assert "sess-1" not in runtime._session_queues
+
+
+def _readiness_subject(tmp_path, monkeypatch, wait_mcp_ready):
+    """Build one failed KAS session beside an unaffected resident sibling."""
+    import kiro_crew.acp.runtime as runtime_mod
+
+    runtime = _runtime(tmp_path, ACP_BACKEND_KAS)
+    runtime._process = object()  # type: ignore[assignment]
+    failed_queue = asyncio.Queue()
+    sibling_queue = asyncio.Queue()
+    runtime._session_queues.update(failed=failed_queue, sibling=sibling_queue)
+    send = AsyncMock(return_value={})
+    monkeypatch.setattr(runtime, "_send_and_await", send)
+    monkeypatch.setattr(runtime_mod, "required_managed_servers", lambda *_a, **_k: {"core"})
+    monkeypatch.setattr(runtime_mod, "active_custom_agent", lambda *_a, **_k: None)
+    handle = SimpleNamespace(session_id="failed", wait_mcp_ready=wait_mcp_ready)
+    return runtime, handle, send, sibling_queue
+
+
+def _assert_readiness_cleanup(runtime, send, sibling_queue, *, resumed):
+    assert runtime._session_queues == {"sibling": sibling_queue}
+    if resumed:
+        send.assert_not_awaited()
+    else:
+        send.assert_awaited_once_with(
+            METHOD_KAS_SESSION_DELETE,
+            {"sessionId": "failed"},
+            timeout=_TERMINATE_TIMEOUT,
+        )
+
+
+class TestReadinessFailureLifetime:
+    """Fresh failures are disposable; resumed KAS history is not."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("resumed", [False, True], ids=["new", "load"])
+    @pytest.mark.parametrize(
+        "failure_type",
+        [AcpRuntimeError, AcpRequestTimeout],
+        ids=["readiness-error", "timeout"],
+    )
+    async def test_failure_cleans_up_for_the_session_lifetime(
+        self, tmp_path, monkeypatch, resumed, failure_type
+    ):
+        failure = failure_type("managed MCP startup failed")
+        runtime, handle, send, sibling_queue = _readiness_subject(
+            tmp_path,
+            monkeypatch,
+            AsyncMock(side_effect=failure),
+        )
+        params = {"sessionId": "failed"} if resumed else {}
+
+        with pytest.raises(failure_type) as caught:
+            await runtime._wait_managed_mcp(handle, params, "worker", 30.0, 0)
+
+        assert caught.value is failure
+        _assert_readiness_cleanup(runtime, send, sibling_queue, resumed=resumed)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("resumed", [False, True], ids=["new", "load"])
+    async def test_cancellation_cleans_up_for_the_session_lifetime(
+        self, tmp_path, monkeypatch, resumed
+    ):
+        entered = asyncio.Event()
+
+        async def wait_mcp_ready(*_a, **_k):
+            entered.set()
+            await asyncio.wait_for(asyncio.Event().wait(), timeout=10.0)
+
+        runtime, handle, send, sibling_queue = _readiness_subject(
+            tmp_path,
+            monkeypatch,
+            wait_mcp_ready,
+        )
+        params = {"sessionId": "failed"} if resumed else {}
+        task = asyncio.create_task(runtime._wait_managed_mcp(handle, params, "worker", 30.0, 0))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5.0)
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5.0)
+
+        _assert_readiness_cleanup(runtime, send, sibling_queue, resumed=resumed)

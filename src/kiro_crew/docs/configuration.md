@@ -110,10 +110,15 @@ the same displays.
   unauthenticated session, and Kiro Crew only sends a model the session
   advertised, so a session may simply run KAS's own default model.
 
+KAS reports managed MCP startup through session-scoped `_kiro/mcp/status` and
+`_kiro/tools/didChange` notifications. Kiro Crew waits for the selected agent's
+required managed servers and tool exposure before its first prompt, including
+after resume. Tools intentionally excluded by the agent remain excluded; their
+absence does not block startup. Failure or missing readiness produces a startup
+error within the configured session-start timeout.
+
 **Signals with no KAS analog** (documented so they are not mistaken for gaps):
-KAS has no `clear/status` notification, and its MCP methods (`_kiro/mcp/status`,
-`_kiro/mcp/toggle`) are request-side only — it emits no MCP server-init
-notification for Kiro Crew to surface. A resumable-session existence probe would
+KAS has no `clear/status` notification. A resumable-session existence probe would
 use KAS's `_kiro/session/list` (which returns the full `sessions[]` to search by
 id); that is deferred to the session-lifecycle work, not the display path.
 

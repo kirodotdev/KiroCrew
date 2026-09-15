@@ -54,6 +54,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
     resolve_effective_model,
 )
+from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.connections import get_visible_providers
 from kiro_crew.constants import strip_control_comments
 from kiro_crew.context import prepare_store_vectors
@@ -107,6 +108,7 @@ from kiro_crew.dashboard.chat_utils import (
     _validate_tool_name,
     build_recovery_requeue,
     chunk_generation,
+    drained_to_thread,
     effective_session_key,
     expire_slack_options,
     is_harness_slash_command,
@@ -279,6 +281,13 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError, SpeculativeResumeRefused
+from kiro_crew.session_agent_selection import (
+    record_agent_selection,
+    record_provider_agent_switch,
+    resolve_session_agent_bindings,
+    restore_agent_selection,
+    session_agent_selection_kind,
+)
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
@@ -1115,6 +1124,11 @@ def _default_session_model(
     if slot.model or agent_model or cfg is None:
         return ""
     try:
+        kind = session_agent_selection_kind(
+            effective_session_key(slot), slot.agent or cfg.default_agent
+        )
+        if kind == "template":
+            return resolve_effective_model(cfg, slot.agent or None, selection_kind=kind)
         return resolve_effective_model(cfg, slot.agent or None)
     except Exception:  # noqa: BLE001 — includes StopIteration; see docstring
         logger.warning("Failed to resolve the default model for slot %s", slot.key, exc_info=True)
@@ -4574,7 +4588,7 @@ def schedule_eager_spawn(
 
 async def _recover_app_agent_binding(
     cfg: "KiroCrewConfig", slot: "_ChatSlot", *, project: str | None
-) -> Any:
+) -> ResolvedBindings:
     """Re-register an app-owned slot's resources from source, then re-resolve.
 
     The last recovery rung for an app slot whose agent stayed unresolved after
@@ -4621,7 +4635,14 @@ async def _recover_app_agent_binding(
             exc_info=True,
         )
     selected_agent = slot.agent
-    bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, selected_agent or None, project)
+    bindings = await asyncio.to_thread(
+        resolve_session_agent_bindings,
+        resolve_agent_bindings,
+        cfg,
+        effective_session_key(slot),
+        selected_agent or None,
+        project,
+    )
     if slot.agent != selected_agent:
         raise _MemoryUnavailable(
             "memory_unavailable: agent changed during recovery; retry the turn"
@@ -4744,7 +4765,13 @@ async def _eager_spawn(
             try:
                 cfg = KiroCrewConfig.load()
                 loaded_cfg = cfg
-                bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, _bound[0] or None)
+                bindings = await asyncio.to_thread(
+                    resolve_session_agent_bindings,
+                    resolve_agent_bindings,
+                    cfg,
+                    session_key,
+                    _bound[0] or None,
+                )
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
                 agent_model = normalize_agent_model(bindings.model)
@@ -4772,7 +4799,11 @@ async def _eager_spawn(
                             exc_info=True,
                         )
                     bindings = await asyncio.to_thread(
-                        resolve_agent_bindings, cfg, _bound[0] or None
+                        resolve_session_agent_bindings,
+                        resolve_agent_bindings,
+                        cfg,
+                        session_key,
+                        _bound[0] or None,
                     )
                     kiro_agent = bindings.kiro_agent
                     crew_alias = bindings.resolved_alias
@@ -4782,6 +4813,8 @@ async def _eager_spawn(
                         kiro_agent = bindings.kiro_agent
                         crew_alias = bindings.resolved_alias
                         agent_model = normalize_agent_model(bindings.model)
+                if bindings.selection_kind == "template":
+                    crew_alias = ""
                 resolved_ok = bindings.requested_resolved
                 await asyncio.to_thread(
                     _require_session_memory_assignment, session_key, bindings.memory_store_name
@@ -4872,6 +4905,13 @@ async def _eager_spawn(
             # turn or a slot mutation may therefore have landed after the
             # initial gate. Nothing is registered yet, so simply stand down;
             # the current owner will allocate from its current bindings.
+            if (
+                state.get_slot(slot.key) is not slot
+                or slot.running
+                or _slot_binding(slot) != _bound
+            ):
+                return
+            await asyncio.to_thread(record_agent_selection, session_key, _bound[0], bindings)
             if (
                 state.get_slot(slot.key) is not slot
                 or slot.running
@@ -7317,6 +7357,7 @@ async def _run_chat(
         # failure (see `provider_name`), and the default-model resolve below
         # needs the loaded object.
         loaded_cfg: KiroCrewConfig | None = None
+        bindings: ResolvedBindings | None = None
         # Read the provider into a local alongside the other bindings. Both model
         # branches below need it, and `cfg` is only bound inside the try — a
         # malformed config raises, the except swallows it, and touching
@@ -7372,8 +7413,10 @@ async def _run_chat(
                 selected_binding[1], operation="chat_turn", source="unknown"
             )
             bindings = await asyncio.to_thread(
+                resolve_session_agent_bindings,
                 resolve_agent_bindings,
                 cfg,
+                session_key,
                 selected_binding[0] or None,
                 selected_binding[1] or None,
             )
@@ -7412,8 +7455,10 @@ async def _run_chat(
                         exc_info=True,
                     )
                 bindings = await asyncio.to_thread(
+                    resolve_session_agent_bindings,
                     resolve_agent_bindings,
                     cfg,
+                    session_key,
                     selected_binding[0] or None,
                     selected_binding[1] or None,
                 )
@@ -7431,6 +7476,9 @@ async def _run_chat(
                     crew_alias = bindings.resolved_alias
                     memory_store = bindings.memory_store_name
                     agent_model = normalize_agent_model(bindings.model)
+            # A fallback alias supplies defaults, not this template's member identity.
+            if bindings.selection_kind == "template":
+                crew_alias = ""
             _app_agent_unresolved = bool(slot._app) and not bindings.requested_resolved
             if slot.agent and not slot._app and not bindings.requested_resolved:
                 from kiro_crew.memory_stores import UnknownMemoryStore
@@ -7512,6 +7560,12 @@ async def _run_chat(
             await prepare_store_vectors(
                 state.context_builder, memory_store, session_key=session_key
             )
+        _require_current_binding()
+        if bindings is not None:
+            await asyncio.to_thread(
+                record_agent_selection, session_key, selected_binding[0], bindings
+            )
+            _require_current_binding()
 
         # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
         # self-heal must NOT run the default agent — that generic-substitution is
@@ -10732,7 +10786,45 @@ async def _run_chat(
                     # out of a turn that must not continue.
                     break
                 elif new_agent:
+                    # A live provider event can change a template selection.
+                    # Restore cannot infer that authority from a different
+                    # transcript name, including a partially persisted switch.
+                    needs_session_reset = True
+                    _produced_visible_output = True
+                    _require_current_binding()
+                    switch_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                    _require_current_binding()
+                    switch_writer = asyncio.create_task(
+                        asyncio.to_thread(
+                            record_provider_agent_switch,
+                            switch_cfg,
+                            session_key,
+                            slot.agent or None,
+                            new_agent,
+                            slot.project or None,
+                        )
+                    )
+                    switch_change = None
+                    switch_cancelled = None
+                    try:
+                        while True:
+                            try:
+                                switch_change = await asyncio.shield(switch_writer)
+                                break
+                            except asyncio.CancelledError as exc:
+                                if switch_writer.cancelled():
+                                    raise
+                                # Closing the turn cannot abandon a thread that
+                                # may still publish a different durable agent.
+                                switch_cancelled = exc
+                        if switch_cancelled is not None:
+                            raise switch_cancelled
+                        _require_current_binding()
+                    except (Exception, asyncio.CancelledError):
+                        await drained_to_thread(restore_agent_selection, session_key, switch_change)
+                        raise
                     slot.agent = new_agent
+                    selected_binding = _current_binding()
                     assistant_text = ""
                     _wsred.reset()
                     _produced_visible_output = True
@@ -10745,7 +10837,6 @@ async def _run_chat(
                         "slot_agent_switch",
                         {"slot": slot.key, "agent": new_agent},
                     )
-                    needs_session_reset = True
             elif event.kind == EVENT_MCP_OAUTH_REQUEST:
                 # kiro-cli emits this notification when an MCP server's token
                 # has expired or never existed. Surface as an inline banner —

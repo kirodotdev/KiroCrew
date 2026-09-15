@@ -4434,7 +4434,20 @@ def _validate_private_memory_hardlinks(layout: _PrivateMemoryLayout | None = Non
 
 def _prepare_private_log_dir(layout: _PrivateMemoryLayout | None = None) -> str:
     try:
-        _validate_private_memory_hardlinks(layout)
+        for attempt in range(3):
+            try:
+                _validate_private_memory_hardlinks(layout)
+                break
+            except (FileNotFoundError, RuntimeError) as exc:
+                # Gateway atomic writes can retire a .tmp file between the
+                # directory snapshot and stat. Recheck the entire boundary;
+                # never skip an unverified path or accept an incomplete scan.
+                # Sanitized scan errors retain the filesystem cause.
+                disappeared = isinstance(exc, FileNotFoundError) or isinstance(
+                    exc.__cause__, FileNotFoundError
+                )
+                if not disappeared or attempt == 2:
+                    raise
     except OSError as exc:
         raise RuntimeError("memory_unavailable: cannot verify protected memory hardlinks") from exc
     home = config_dir().resolve()

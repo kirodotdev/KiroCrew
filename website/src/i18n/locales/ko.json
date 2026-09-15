@@ -14607,6 +14607,7 @@
       "show_controls": "컨트롤 표시"
     },
     "membersPage": {
+      "drawer_delegated_working": "위임한 작업 실행 중",
       "agent_template": "에이전트 템플릿",
       "configuration": "구성",
       "crew_summary": "멤버 요약",

@@ -462,6 +462,18 @@ class TestTheSpawnEndpointActuallyDelegates:
         assert 'args.get("crew")' in src, "the handler must READ the field"
         assert 'body["crew"] = crew' in src, "and FORWARD it to the endpoint"
 
+    def test_the_advertised_tool_accepts_a_named_member(self):
+        from jsonschema import validate
+
+        from kiro_crew.mcp_tools import spawn as spawn_tool
+
+        tool = next(item for item in spawn_tool.schemas() if item["name"] == "spawn_run")
+        schema = tool["inputSchema"]
+        assert "crew" in schema["properties"]
+        validate({"task": "fix the bug", "crew": "coding crew"}, schema)
+        validate({"task": "fix the bug"}, schema)
+        assert "private memory" in schema["properties"]["crew"]["description"]
+
     def test_no_guidance_still_tells_the_model_to_use_agent_for_a_crew(self):
         """`spawn_run(agent=<crew>)` is accepted and runs on the DEFAULT store, so
         guidance saying so is a leak the docs teach. The `select_crew` tool text

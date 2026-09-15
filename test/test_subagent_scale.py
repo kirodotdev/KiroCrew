@@ -133,6 +133,7 @@ def _mock_sessions() -> MagicMock:
     sessions.get_pid = MagicMock(return_value=None)
     sessions.get_approval_policy = MagicMock(return_value="auto")
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     sessions.has_session = MagicMock(return_value=True)
     sessions.release = MagicMock()
     sessions.reset = AsyncMock()

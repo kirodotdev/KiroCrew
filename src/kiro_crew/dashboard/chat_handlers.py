@@ -60,6 +60,7 @@ from kiro_crew.dashboard.chat_persistence import (
     COLOR_HEX_RE,
     _attach_variants,
     _rehydrate_slot_title,
+    _restored_agent_name,
     _restored_mode,
     _validate_autocompact_pct,
     get_reasoning_effort_values,
@@ -99,12 +100,14 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_meta_for_role,
     _remove_queued_by_id,
     _sync_dashboard_slots,
+    drained_to_thread,
     effective_session_key,
     history_corpus_unreadable,
     slot_history_key,
     subagents_attached,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.remote_adopt import (
     ADOPT_PEER_MODE_UNKNOWN,
     ADOPT_TARGET_UNKNOWN,
@@ -151,6 +154,7 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import carry_provenance, is_incognito_transcript, transcript_stems
+from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
@@ -166,6 +170,13 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import SecurityEvent, sel
+from kiro_crew.session_agent_selection import (
+    SelectionChange,
+    record_agent_selection,
+    resolve_session_agent_bindings,
+    restore_agent_selection,
+    session_agent_selection_name,
+)
 from kiro_crew.session_summary import count_user_turns_in_records
 from kiro_crew.trust_patterns import (
     base_consent_pattern,
@@ -183,6 +194,7 @@ from kiro_crew.validation import (
 
 if TYPE_CHECKING:  # circular at runtime: autonudge -> dashboard.chat -> chat_handlers
     from kiro_crew.autonudge import NudgeLoop
+    from kiro_crew.config.sections import ResolvedBindings
 
 logger = logging.getLogger(__name__)
 
@@ -521,8 +533,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
                 def _compare_bindings():
                     return (
-                        resolve_agent_bindings(
-                            _cfg, compared_binding[0], compared_binding[1] or None
+                        resolve_session_agent_bindings(
+                            resolve_agent_bindings,
+                            _cfg,
+                            compared_binding[3],
+                            compared_binding[0],
+                            compared_binding[1] or None,
                         ),
                         resolve_agent_bindings(_cfg, agent, compared_binding[1] or None),
                     )
@@ -837,10 +853,17 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     effective_session_key(slot),
                     len(slot.messages),
                 )
+                selection_change = None
                 try:
                     cfg = await asyncio.to_thread(KiroCrewConfig.load)
                     assigned_store = await pin_private_agent_store(
                         state, assignment[3], assignment[0], cfg
+                    )
+                    chosen = await asyncio.to_thread(
+                        resolve_agent_bindings, cfg, assignment[0], assignment[1] or None
+                    )
+                    selection_change = await _record_explicit_agent_selection(
+                        assignment[3], assignment[0], chosen
                     )
                 except Exception as exc:
                     from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
@@ -858,9 +881,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                         len(slot.messages),
                     )
                 ):
+                    await drained_to_thread(
+                        restore_agent_selection, assignment[3], selection_change
+                    )
                     return web.json_response(
                         {
-                            "error": "slot changed during member assignment",
+                            "error": "Could not save the member assignment. Try again.",
                             "code": "session_rebound",
                         },
                         status=409,
@@ -2464,9 +2490,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # credential to open and run sessions on the owner's crew. Deny-by-default:
         # a positive owner assertion, not the absence of an app claim.
         from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-        from kiro_crew.dashboard.handlers.source_providers import (
-            is_owner_dashboard_request,
-        )
 
         if not is_owner_dashboard_request(request):
             sel().log_api_access(
@@ -2691,6 +2714,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         except RemoteTurnError as exc:
             return web.json_response({"error": str(exc), "code": "remote_bind_failed"}, status=502)
 
+    # Binding resolution checks memory readiness. A fresh conversation gets
+    # the same bounded recovery grace as its first turn, before any slot or
+    # protected assignment is published.
+    if not instance_id and existing_slot is None and is_owner_dashboard_request(request):
+        try:
+            await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
+        except MemoryStartupUnavailable as exc:
+            return web.json_response({"error": str(exc), "code": "store_unavailable"}, status=503)
+
     # Resolve workspace from agent bindings
     workspace = "default"
     cfg = None
@@ -2812,7 +2844,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # any client sees already carries the folder, title, artifact binding and
     # project. Otherwise each of those is a separate post-create correction the
     # UI renders as a jump.
-    with state.suspend_slots_push():
+    async with contextlib.AsyncExitStack() as creation_stack:
+        creation_stack.enter_context(state.suspend_slots_push())
         try:
             slot = state.get_or_create_slot(
                 name,
@@ -2830,6 +2863,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=409)
+        if is_new_slot and cfg is not None and not instance_id:
+            if is_owner_dashboard_request(request):
+                # Take the slot lock before the newborn's first await: a later
+                # same-name member pick changes its namespace without changing
+                # the agent/project strings checked after publication.
+                await creation_stack.enter_async_context(slot._lock)
         if remote_slot_key and not is_new_slot:
             # The name was free when the binding gates ran, but `create_peer_slot`
             # awaits the peer and a concurrent create took it inside that window,
@@ -3029,32 +3068,45 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 cfg_proj = ""
             slot.project = cfg_proj or default_project_dir(workspace)
         if is_new_slot and cfg is not None and not instance_id:
-            from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-
             if is_owner_dashboard_request(request):
                 assignment_key = effective_session_key(slot)
                 assignment_agent = slot.agent
+                assignment_project = slot.project
+                await creation_stack.enter_async_context(_slot_switch_session_lock(assignment_key))
+                selection_change = None
                 try:
                     assigned_store = await pin_private_agent_store(
                         state, assignment_key, agent, cfg
+                    )
+                    chosen = await asyncio.to_thread(
+                        resolve_agent_bindings, cfg, assignment_agent, assignment_project or None
+                    )
+                    selection_change = await _record_explicit_agent_selection(
+                        assignment_key,
+                        assignment_agent,
+                        chosen,
                     )
                 except Exception as exc:
                     from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 
                     return _store_unavailable_response(slot.memory_store, exc)
+                if (
+                    state._slots.get(slot.key) is not slot
+                    or effective_session_key(slot) != assignment_key
+                    or slot.agent != assignment_agent
+                    or slot.project != assignment_project
+                ):
+                    await drained_to_thread(
+                        restore_agent_selection, assignment_key, selection_change
+                    )
+                    return web.json_response(
+                        {
+                            "error": "Could not save the member assignment. Try again.",
+                            "code": "session_rebound",
+                        },
+                        status=409,
+                    )
                 if assigned_store:
-                    if (
-                        state._slots.get(slot.key) is not slot
-                        or effective_session_key(slot) != assignment_key
-                        or slot.agent != assignment_agent
-                    ):
-                        return web.json_response(
-                            {
-                                "error": "slot changed during member assignment",
-                                "code": "session_rebound",
-                            },
-                            status=409,
-                        )
                     slot.memory_store = assigned_store
         # The adopted session's history, appended before the first frame and before
         # the persist below — list appends only, the read and the redaction pass
@@ -6065,6 +6117,32 @@ async def _apply_remote_pick_locked(
     return web.json_response({"ok": True, control: value, "remote": True})
 
 
+async def _record_explicit_agent_selection(
+    session_key: str, agent_name: str | None, bindings: ResolvedBindings
+) -> SelectionChange | None:
+    """Drain an authorized selection and its rollback before honoring cancellation."""
+    writer = asyncio.create_task(
+        asyncio.to_thread(record_agent_selection, session_key, agent_name, bindings, replace=True)
+    )
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            change = await asyncio.shield(writer)
+            break
+        except asyncio.CancelledError as exc:
+            if writer.cancelled():
+                raise
+            cancelled = exc
+        except Exception:
+            if cancelled is not None:
+                raise cancelled from None
+            raise
+    if cancelled is not None:
+        await drained_to_thread(restore_agent_selection, session_key, change)
+        raise cancelled
+    return change
+
+
 class _CommitToken(str):
     """A ``str`` whose per-request IDENTITY marks commit ownership.
 
@@ -6209,6 +6287,31 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_agent", session_key)
         if denied is not None:
             return denied
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        owner_request = is_owner_dashboard_request(request)
+        if not owner_request:
+            # Permitted chat users keep template and legacy V1 choices, but
+            # cannot authorize private-memory admission. Refuse a V2 choice
+            # before any slot, provider or history mutation.
+            try:
+                choice_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                await warm_project_agent_names(
+                    slot.project or None, operation="api_chat_slot_agent", source="dashboard"
+                )
+                choice = await asyncio.to_thread(
+                    resolve_agent_bindings, choice_cfg, agent_name, slot.project or None
+                )
+            except Exception as exc:
+                from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+                return _store_unavailable_response(slot.memory_store, exc)
+            choice_store = choice_cfg.memory_stores.get(choice.memory_store_name)
+            if choice_store is not None and choice_store.memory_version == 2:
+                denied = await require_owner_dashboard_request(request, "chat.slot_agent")
+                if denied is not None:
+                    return denied
         if agent_name != slot.agent:
             from kiro_crew.member_memory_auth import read_private_session_store
 
@@ -6234,6 +6337,12 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+        try:
+            prior_selection = await asyncio.to_thread(session_agent_selection_name, session_key)
+        except Exception as exc:
+            from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+            return _store_unavailable_response(slot.memory_store, exc)
         # Never reset under an in-flight turn (the model handler's policy,
         # and the _cancel_target subtlety): a RUNNING turn owns a captured
         # identity because ``linked_session_key`` is mutable, so the key
@@ -6312,128 +6421,161 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         assignment_resolved = False
         try:
             cfg = KiroCrewConfig.load()
-            if agent_name:
-                # Resolve by the name being STORED, which is exactly the name dispatch
-                # will resolve later (`chat_runner` -> resolve_agent_bindings(
-                # slot.agent)). Looking it up as an alias first and taking THAT
-                # alias's workspace disagrees with dispatch whenever the two differ:
-                # a name that is merely some alias's `kiro_agent` target, or a
-                # materialized app agent, dispatches with the DEFAULT bindings while
-                # the slot records the alias's workspace. A materialized agent
-                # matches no alias at all, which leaves the slot on the PREVIOUS
-                # agent's project.
-                # Resolve WITH the captured project scope (warmed off-loop first) so a
-                # project agent counts as resolved rather than falling back.
-                await warm_project_agent_names(
-                    pre_await_project or None, operation="api_chat_slot_agent", source="dashboard"
-                )
+            # Resolve by the name being STORED, which is exactly the name dispatch
+            # will resolve later (`chat_runner` -> resolve_agent_bindings(
+            # slot.agent)). Looking it up as an alias first and taking THAT
+            # alias's workspace disagrees with dispatch whenever the two differ:
+            # a name that is merely some alias's `kiro_agent` target, or a
+            # materialized app agent, dispatches with the DEFAULT bindings while
+            # the slot records the alias's workspace. A materialized agent
+            # matches no alias at all, which leaves the slot on the PREVIOUS
+            # agent's project.
+            # Resolve WITH the captured project scope (warmed off-loop first) so a
+            # project agent counts as resolved rather than falling back.
+            await warm_project_agent_names(
+                pre_await_project or None, operation="api_chat_slot_agent", source="dashboard"
+            )
+            if owner_request:
                 bindings = await asyncio.to_thread(
                     resolve_agent_bindings, cfg, agent_name, pre_await_project or None
                 )
-                assignment_resolved = bindings.requested_resolved
-                ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
-                new_workspace = ws_name
-                workspace = ws_name
-                new_memory_store = bindings.memory_store_name
-                # A project-scope agent exists only inside slot.project: kiro-cli
-                # resolves --agent against $PWD/.kiro/agents, so resetting the
-                # project here would make the very agent just selected unresolvable
-                # on the next turn (slot advertises it, default answers — the
-                # silent substitution this resolution exists to remove). Aliases keep the
-                # reset: their project comes from their own workspace bindings.
-                is_project_agent = agent_name not in cfg.agents and agent_name in (
-                    cached_project_agent_names(slot.project or None) or frozenset()
+            else:
+                bindings = await asyncio.to_thread(
+                    resolve_agent_bindings,
+                    cfg,
+                    agent_name,
+                    pre_await_project or None,
+                    selection_kind=choice.selection_kind,
                 )
-                if not is_project_agent:
-                    # A slot filed into a project-linked folder keeps that
-                    # folder's directory rather than the new agent's workspace
-                    # default: the link is an explicit choice about where this
-                    # chat's tools run, and `api_chat_slot_create` already
-                    # prefers it over the workspace default — an agent pick must
-                    # not silently undo it. Resolved through the SAME helper as
-                    # the create path, which walks the parent_id chain (so a
-                    # project inherited from an ancestor folder counts too) and
-                    # RE-VALIDATES the stored path instead of trusting
-                    # folders.json: a directory recorded there can since have
-                    # been moved, or become sensitive, and this value becomes
-                    # the agent subprocess's cwd. Off the loop, as the helper's
-                    # docstring requires (realpath/isdir priming).
-                    folder_project = ""
-                    if slot.folder_id:
-                        try:
-                            # REVALIDATED against the id the snapshot was taken
-                            # for. `read_folders` and the off-loop resolve are two
-                            # awaits, and a concurrent assignment can file this
-                            # slot into a folder CREATED after the snapshot -- whose
-                            # id is then absent from it, resolving to nothing and
-                            # committing the workspace default as this chat's
-                            # directory. One retry is enough for an assignment that
-                            # has already landed; a slot being reassigned faster
-                            # than that has no stable answer to commit, so it keeps
-                            # the documented fall-through.
-                            folder_error: str | None = ""
-                            for _ in range(2):
-                                folder_id_at_read = slot.folder_id
-                                if not folder_id_at_read:
-                                    break
-                                folder_snapshot = await state.read_folders(
-                                    lambda folders: [dict(folder) for folder in folders]
-                                )
-                                folder_project, folder_error = await asyncio.to_thread(
-                                    _resolve_folder_project_dir,
-                                    folder_snapshot,
-                                    folder_id_at_read,
-                                )
-                                if slot.folder_id == folder_id_at_read:
-                                    break
-                                # Reassigned mid-resolve: what came back describes a
-                                # folder other than the one this slot now holds, so
-                                # it is discarded rather than committed.
-                                folder_project, folder_error = "", ""
-                            if folder_error:
-                                # Deliberately NOT the create path's 400: that
-                                # validator also rejects a directory that no
-                                # longer exists, so failing the request here
-                                # would make the agent permanently unswitchable
-                                # for any folder whose project was moved or
-                                # deleted. Fall through to the workspace default.
-                                logger.warning(
-                                    "Slot %s folder project unusable (%s); "
-                                    "falling back to the workspace default",
-                                    name,
-                                    folder_error,
-                                )
-                                folder_project = ""
-                        except Exception:
-                            # Same fall-through for an unreadable or corrupt
-                            # folder store: letting it reach the outer handler
-                            # would leave the workspace advanced with the
-                            # project stale — a half-applied switch.
+                selected_store = cfg.memory_stores.get(bindings.memory_store_name)
+                if selected_store is not None and selected_store.memory_version == 2:
+                    # The member may have moved to V2 during resolution. No
+                    # derived fields, reset or history write has committed yet.
+                    if slot.agent is committed_agent:
+                        slot.agent = prior_agent
+                    denied = await require_owner_dashboard_request(request, "chat.slot_agent")
+                    if denied is not None:
+                        return denied
+            assignment_resolved = bindings.requested_resolved
+            ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
+            new_workspace = ws_name
+            workspace = ws_name
+            new_memory_store = bindings.memory_store_name
+            # A project-scope agent exists only inside slot.project: kiro-cli
+            # resolves --agent against $PWD/.kiro/agents, so resetting the
+            # project here would make the very agent just selected unresolvable
+            # on the next turn (slot advertises it, default answers — the
+            # silent substitution this resolution exists to remove). Aliases keep the
+            # reset: their project comes from their own workspace bindings.
+            is_project_agent = agent_name not in cfg.agents and agent_name in (
+                cached_project_agent_names(slot.project or None) or frozenset()
+            )
+            if not is_project_agent:
+                # A slot filed into a project-linked folder keeps that
+                # folder's directory rather than the new agent's workspace
+                # default: the link is an explicit choice about where this
+                # chat's tools run, and `api_chat_slot_create` already
+                # prefers it over the workspace default — an agent pick must
+                # not silently undo it. Resolved through the SAME helper as
+                # the create path, which walks the parent_id chain (so a
+                # project inherited from an ancestor folder counts too) and
+                # RE-VALIDATES the stored path instead of trusting
+                # folders.json: a directory recorded there can since have
+                # been moved, or become sensitive, and this value becomes
+                # the agent subprocess's cwd. Off the loop, as the helper's
+                # docstring requires (realpath/isdir priming).
+                folder_project = ""
+                if slot.folder_id:
+                    try:
+                        # REVALIDATED against the id the snapshot was taken
+                        # for. `read_folders` and the off-loop resolve are two
+                        # awaits, and a concurrent assignment can file this
+                        # slot into a folder CREATED after the snapshot -- whose
+                        # id is then absent from it, resolving to nothing and
+                        # committing the workspace default as this chat's
+                        # directory. One retry is enough for an assignment that
+                        # has already landed; a slot being reassigned faster
+                        # than that has no stable answer to commit, so it keeps
+                        # the documented fall-through.
+                        folder_error: str | None = ""
+                        for _ in range(2):
+                            folder_id_at_read = slot.folder_id
+                            if not folder_id_at_read:
+                                break
+                            folder_snapshot = await state.read_folders(
+                                lambda folders: [dict(folder) for folder in folders]
+                            )
+                            folder_project, folder_error = await asyncio.to_thread(
+                                _resolve_folder_project_dir,
+                                folder_snapshot,
+                                folder_id_at_read,
+                            )
+                            if slot.folder_id == folder_id_at_read:
+                                break
+                            # Reassigned mid-resolve: what came back describes a
+                            # folder other than the one this slot now holds, so
+                            # it is discarded rather than committed.
+                            folder_project, folder_error = "", ""
+                        if folder_error:
+                            # Deliberately NOT the create path's 400: that
+                            # validator also rejects a directory that no
+                            # longer exists, so failing the request here
+                            # would make the agent permanently unswitchable
+                            # for any folder whose project was moved or
+                            # deleted. Fall through to the workspace default.
                             logger.warning(
-                                "Failed to resolve folder project for slot %s", name, exc_info=True
+                                "Slot %s folder project unusable (%s); "
+                                "falling back to the workspace default",
+                                name,
+                                folder_error,
                             )
                             folder_project = ""
-                    if folder_project:
-                        new_project = folder_project
-                    elif ws_name not in ("default", cfg.default_workspace):
-                        # Only a workspace the agent RESOLVED TO DELIBERATELY may
-                        # retarget the project. Two names fail that test and both
-                        # have to be excluded:
-                        #
-                        # * the literal "default" — `_workspace_name_for_dir`
-                        #   answers it both for an agent bound to no workspace and
-                        #   for one naming a workspace absent from the config;
-                        # * `cfg.default_workspace` — on an install that renames
-                        #   its default, the resolver falls back to that NAME, so
-                        #   the same "no deliberate choice" case arrives spelled
-                        #   differently and a literal-only gate lets it through.
-                        #
-                        # Either way the agent expressed no workspace preference,
-                        # and retargeting on a fallback discards the directory the
-                        # user chose and runs the next turn's tools elsewhere.
-                        new_project = default_project_dir(workspace)
+                    except Exception:
+                        # Same fall-through for an unreadable or corrupt
+                        # folder store: letting it reach the outer handler
+                        # would leave the workspace advanced with the
+                        # project stale — a half-applied switch.
+                        logger.warning(
+                            "Failed to resolve folder project for slot %s", name, exc_info=True
+                        )
+                        folder_project = ""
+                if folder_project:
+                    new_project = folder_project
+                elif ws_name not in ("default", cfg.default_workspace):
+                    # Only a workspace the agent RESOLVED TO DELIBERATELY may
+                    # retarget the project. Two names fail that test and both
+                    # have to be excluded:
+                    #
+                    # * the literal "default" — `_workspace_name_for_dir`
+                    #   answers it both for an agent bound to no workspace and
+                    #   for one naming a workspace absent from the config;
+                    # * `cfg.default_workspace` — on an install that renames
+                    #   its default, the resolver falls back to that NAME, so
+                    #   the same "no deliberate choice" case arrives spelled
+                    #   differently and a literal-only gate lets it through.
+                    #
+                    # Either way the agent expressed no workspace preference,
+                    # and retargeting on a fallback discards the directory the
+                    # user chose and runs the next turn's tools elsewhere.
+                    new_project = default_project_dir(workspace)
+        except asyncio.CancelledError:
+            if slot.agent is committed_agent:
+                slot.agent = prior_agent
+            raise
         except Exception:
             logger.warning("Failed to resolve agent bindings for %r", agent_name, exc_info=True)
+
+        if not assignment_resolved and prior_selection is not None:
+            # A failed lookup cannot commit a name while retaining a different
+            # protected selection. Leave the established conversation usable.
+            if slot.agent is committed_agent:
+                slot.agent = prior_agent
+            from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+            from kiro_crew.memory_stores import UnknownMemoryStore
+
+            return _store_unavailable_response(
+                slot.memory_store, UnknownMemoryStore("Conversation agent selection is unavailable")
+            )
 
         # Derived fields commit BEFORE the reset too, compare-and-set against
         # the pre-await baseline: a send landing during the reset teardown
@@ -6635,19 +6777,49 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # the slot's TRANSCRIPT (the .jsonl the restart scan reads), not the
         # live session the reset above addressed — the same history-vs-session
         # split ``_cancel_target`` documents.
-        if state.conversation_log:
+        conversation_log = state.conversation_log
+        if conversation_log:
+
+            async def _rollback_history_selection() -> None:
+                _rollback_switch()
+                try:
+                    await drained_to_thread(
+                        conversation_log.update_metadata,
+                        _history_key_for(name),
+                        {"agent": str(slot.agent)},
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to restore agent metadata for slot %s", name, exc_info=True
+                    )
+                finally:
+                    state.push_slots_update()
+
             try:
                 # update_metadata enters _locked (flock + os.close); those are
                 # blocking-on-loop-prohibited, so offload to a worker thread rather
                 # than run them on the event loop (a wedged peer must never freeze
                 # chat/WS/heartbeat).
-                await asyncio.to_thread(
-                    state.conversation_log.update_metadata,
+                await drained_to_thread(
+                    conversation_log.update_metadata,
                     _history_key_for(name),
                     {"agent": agent_name},
                 )
+            except asyncio.CancelledError:
+                # Drain the writer before restoring history, and retain both
+                # switch locks until restoration settles.
+                await _rollback_history_selection()
+                raise
             except Exception:
                 logger.warning("Failed to persist agent for slot %s", name, exc_info=True)
+                await _rollback_history_selection()
+                return web.json_response(
+                    {
+                        "error": "Could not save the agent selection. Try again.",
+                        "code": "history_unavailable",
+                    },
+                    status=503,
+                )
 
         if effective_session_key(slot) != session_key:
             # A binding can land during the metadata await too — the rebound
@@ -6664,7 +6836,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             _rollback_switch()
             if state.conversation_log:
                 try:
-                    await asyncio.to_thread(
+                    await drained_to_thread(
                         state.conversation_log.update_metadata,
                         _history_key_for(name),
                         {"agent": str(slot.agent)},
@@ -6678,17 +6850,55 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 status=409,
             )
 
-        # Only an explicit owner choice can admit an unbound restored member.
-        # Keep this after the final await and rollback checks: transcript agent
-        # metadata and internal callers are not private-memory authority.
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+        # Every authorized choice must update both durable records. Only an
+        # owner choice can also admit an unbound restored member.
+        if slot.agent is committed_agent and assignment_resolved:
+            selection_change = None
+            selection_error = None
 
-        if (
-            slot.agent is committed_agent
-            and assignment_resolved
-            and is_owner_dashboard_request(request)
-        ):
-            slot._memory_assignment_from_history = False
+            async def _rollback_owner_selection() -> None:
+                _rollback_switch()
+                try:
+                    await drained_to_thread(restore_agent_selection, session_key, selection_change)
+                finally:
+                    # The protected drain may re-raise cancellation. History
+                    # must still settle before the slot/session locks release.
+                    if state.conversation_log:
+                        await drained_to_thread(
+                            state.conversation_log.update_metadata,
+                            _history_key_for(name),
+                            {"agent": str(slot.agent)},
+                        )
+
+            try:
+                selection_change = await _record_explicit_agent_selection(
+                    session_key, agent_name, bindings
+                )
+            except asyncio.CancelledError:
+                await _rollback_owner_selection()
+                raise
+            except Exception as exc:
+                selection_error = exc
+            if selection_error is not None or (
+                state._slots.get(slot.key) is not slot
+                or slot.agent is not committed_agent
+                or effective_session_key(slot) != session_key
+            ):
+                await _rollback_owner_selection()
+                if selection_error is not None:
+                    from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+                    return _store_unavailable_response(slot.memory_store, selection_error)
+                return web.json_response(
+                    {
+                        "error": "Could not save the agent selection. Try again.",
+                        "code": "session_rebound",
+                    },
+                    status=409,
+                )
+            # A non-owner choice cannot authorize a later private-memory
+            # migration either; a protected private assignment must exist.
+            slot._memory_assignment_from_history = not owner_request
 
         # Snapshot the response's workspace LAST, immediately before leaving
         # the lock: the metadata await above yields the event loop, so a
@@ -9328,6 +9538,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             # and refuses — fail-closed, never fail-open.
             meta = {k: v for k, v in meta.items() if k not in ("closed", "closed_at")}
 
+    restored_agent = await asyncio.to_thread(
+        _restored_agent_name, _resume_session_identity(state, history_key), meta
+    )
     # Re-check after the await: a concurrent resume can publish the slot while we
     # are suspended, and the publish below would skip the ownership gate above.
     resume_resp = await _live_slot_resume_response(state, request, history_key, name)
@@ -9597,8 +9810,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # guard already 409s that shape, so this arm only defends a same-request
     # inconsistency.
     if _member_binding is None:
-        if meta.get("agent"):
-            slot.agent = meta["agent"]
+        slot.agent = restored_agent
         # Same fold as the two persistence loaders: a retired mode (``crew``)
         # comes back as plain chat, so the ``surface`` this handler returns is
         # one the chat page can render rather than a value it dropped.

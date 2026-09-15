@@ -885,6 +885,7 @@ def _lessons_request(
     body: dict | None = None,
     *,
     claims: dict[str, object] | None = None,
+    private_store: str | None = None,
 ) -> MagicMock:
     """One request shape for all three routes: a session key, plus a body for the two
     that read one. The empty query string is what the dashboard sends — a
@@ -913,13 +914,14 @@ def _lessons_request(
 
         # A real protected publication and signature model the trusted MCP
         # connection; the caller-supplied session header alone grants nothing.
+        store = private_store or (CODING if session_key == _SILO_SESSION_KEY else "")
         publish_member_session_pid(
             os.getpid(),
             session_key,
-            memory_store=CODING if session_key == _SILO_SESSION_KEY else "",
+            memory_store=store,
         )
         proof = issue_member_session_proof(session_key, os.getpid())
-        if session_key == _SILO_SESSION_KEY:
+        if store:
             assert proof
             request.headers[PROOF_HEADER] = proof
     request.get.side_effect = identity.get
@@ -977,6 +979,35 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
     was never stood up (``ensure_store`` not awaited, or unable to answer), and a
     prepared silo that simply holds no rows yet.
     """
+
+    async def test_a_private_subagent_writes_and_recalls_only_its_own_lessons(self, silos) -> None:
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        key = "subagent:worker-a"
+        await asyncio.to_thread(create_agent_folder, "worker-a", memory_store=CODING)
+        state = await _dashboard_state(silos, silos.home / "sessions", key, CODING)
+        state._slots = {}
+        state.sessions.has_session.side_effect = lambda candidate: candidate == key
+        silos.global_lessons.save(_operator_lesson())
+        # The exact child key has a live allocation. Protected session/PID
+        # bindings and store resolution run unchanged after that gate.
+        with patch.object(cron, "_sel"):
+            created = await cron.api_lessons_create(
+                _lessons_request(
+                    state,
+                    key,
+                    {"rule": _CREW_RULE, "category": "preference"},
+                    private_store=CODING,
+                )
+            )
+            listed = await cron.api_lessons(_lessons_request(state, key, private_store=CODING))
+
+        assert created.status == 200, created.text
+        assert listed.status == 200, listed.text
+        assert [row["rule"] for row in json.loads(listed.text)["lessons"]] == [_CREW_RULE]
+        assert [lesson.rule for lesson in silos.global_lessons.load_all()] == [_OPERATOR_RULE]
+        assert silos.global_vectors.get_lessons() == []
+        assert ctx.ContextBuilder.get_lessons_for(memory_store=EMAIL).load_all() == []
 
     @pytest.mark.parametrize("route", ["list", "create", "delete"])
     @pytest.mark.parametrize(

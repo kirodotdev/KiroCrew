@@ -19,6 +19,11 @@ implementation companion to the design doc (Pippin `kirocrew/MVTDhLpm2SSW`).
 > (`~/.kiro/agents/*.json`) is **out of scope**: KiroCrew enforces its own
 > ceiling at its own gate even when the kiro side grants more.
 
+Subagent admission checks explicit target names. When execution resolves an
+omitted name from the original conversation or parent session, the runner also
+checks that effective name against the parent's `capabilities.spawn` agent scope
+before provider allocation, using the same evaluator and app identity.
+
 ## The four archetypes (one composition algebra each)
 
 Every governed control is exactly one of four shapes. The evaluator dispatches

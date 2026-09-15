@@ -99,6 +99,65 @@ def _run_memory_identity_path(agent_id: str) -> Path:
     return path
 
 
+def _run_agent_identity_path(agent_id: str) -> Path:
+    """Keep template authority beside memory in the sandbox-readonly run tree."""
+    path = _run_memory_identity_path(agent_id).with_name("agent.json")
+    if path.resolve() != path:
+        raise ValueError("resume_failed: protected agent template path is redirected")
+    return path
+
+
+def write_run_agent(agent_id: str, agent: str | None, *, kind: str = "template") -> None:
+    """Publish a selected template/member; None explicitly withholds inheritance."""
+    if agent is not None and (
+        not isinstance(agent, str)
+        or kind not in ("template", "member")
+        or (kind == "member" and not agent)
+    ):
+        raise ValueError("resume_failed: effective agent template is invalid")
+    path = _run_agent_identity_path(agent_id)
+    for directory in (path.parent.parent, path.parent):
+        platform_compat.make_owner_only_dir(directory)
+        platform_compat.restrict_dir_to_owner(directory)
+    _atomic_write(path, {"agent": agent, "kind": kind if agent is not None else None, "version": 2})
+    platform_compat.restrict_to_owner(path)
+
+
+def read_run_agent_selection(agent_id: str) -> tuple[str, str]:
+    """Restore a namespace without guessing from current config or diagnostics."""
+    path = _run_agent_identity_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ValueError(
+            "resume_failed: protected agent template unavailable; supply agent explicitly"
+        ) from exc
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("version")) is not int
+        or payload["version"] not in (1, 2)
+    ):
+        raise ValueError("resume_failed: protected agent template is invalid")
+    agent = payload.get("agent")
+    if agent is None:
+        raise ValueError(
+            "resume_failed: protected agent template unavailable; supply agent explicitly"
+        )
+    if not isinstance(agent, str):
+        raise ValueError("resume_failed: protected agent template is invalid")
+    if payload["version"] == 1:
+        if agent:
+            raise ValueError(
+                "resume_failed: protected agent template unavailable: legacy namespace "
+                "is ambiguous; supply agent explicitly"
+            )
+        return "template", ""
+    kind = payload.get("kind")
+    if kind not in ("template", "member") or (kind == "member" and not agent):
+        raise ValueError("resume_failed: protected agent template selection is invalid")
+    return kind, agent
+
+
 def _read_cleanup_identities_file(agent_id: str) -> list[dict[str, object]]:
     path = _protect_cleanup_identities_path(agent_id)
     try:
@@ -372,6 +431,7 @@ def create_agent_folder(
     context_groups: str = "",
     memory_store: str = "",
     memory_mode: str = "persistent",
+    app: str = "",
 ) -> Path:
     """Create ``~/.kiro/crew/subagents/{id}/`` with ``state.json``.
 
@@ -400,7 +460,12 @@ def create_agent_folder(
             platform_compat.restrict_dir_to_owner(directory)
         _atomic_write(
             memory_path,
-            {"memory_store": memory_store, "memory_mode": memory_mode, "version": 2},
+            {
+                "memory_store": memory_store,
+                "memory_mode": memory_mode,
+                "app": app,
+                "version": 2,
+            },
         )
         platform_compat.restrict_to_owner(memory_path)
     d = _agent_dir(agent_id)
@@ -464,6 +529,22 @@ def tighten_run_memory_mode(agent_id: str, memory_mode: str) -> str:
             _atomic_write(path, payload)
             platform_compat.restrict_to_owner(path)
         return effective
+
+
+def read_run_app(agent_id: str) -> str:
+    """Restore the app owner; absence is unknown, never a person-owned run."""
+    path = _run_memory_identity_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ValueError("protected app ownership unavailable; start a new conversation") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 2
+        or not isinstance(payload.get("app"), str)
+    ):
+        raise ValueError("protected app ownership unavailable; start a new conversation")
+    return payload["app"]
 
 
 def read_run_memory_store(agent_id: str, *, validate_memory_files: bool = True) -> str:

@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew.subagent_persistence import (
     _CLEANUP_IDENTITY_LOCK,
     _LIVE_CLEANUP_IDENTITIES,
@@ -17,12 +18,15 @@ from kiro_crew.subagent_persistence import (
     list_orphans,
     mark_delivered,
     prune_stale_tombstones,
+    read_run_agent_selection,
+    read_run_app,
     read_state,
     read_tombstone,
     record_slow_command,
     remember_live_cleanup_identity,
     update_state,
     write_result_chunk,
+    write_run_agent,
     write_tombstone,
 )
 
@@ -65,6 +69,146 @@ class TestCreateAgentFolder:
         path = create_agent_folder("abc123", task="t2")
         state = json.loads((path / "state.json").read_text(encoding="utf-8"))
         assert state["task"] == "t2"
+
+
+class TestProtectedRunAgent:
+
+    @pytest.mark.parametrize(
+        "kind,agent", [("template", "worker"), ("template", ""), ("member", "worker")]
+    )
+    def test_selection_kind_survives_writable_diagnostics(self, agent_root, kind, agent):
+        import kiro_crew.subagent_persistence as sp
+
+        create_agent_folder("selected", agent="diagnostic")
+        write_run_agent("selected", agent, kind=kind)
+        update_state("selected", agent="different-name")
+        assert read_run_agent_selection("selected") == (kind, agent)
+        payload = json.loads(sp._run_agent_identity_path("selected").read_text(encoding="utf-8"))
+        assert payload == {"version": 2, "kind": kind, "agent": agent}
+
+    @pytest.mark.parametrize("agent", ["worker", "removed-member"])
+    def test_nonempty_legacy_selection_is_ambiguous(self, agent_root, agent):
+        import kiro_crew.subagent_persistence as sp
+
+        create_agent_folder("legacy")
+        sp._run_agent_identity_path("legacy").write_text(
+            json.dumps({"version": 1, "agent": agent}), encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="legacy namespace is ambiguous"):
+            read_run_agent_selection("legacy")
+
+    def test_empty_legacy_selection_keeps_default_template(self, agent_root):
+        import kiro_crew.subagent_persistence as sp
+
+        create_agent_folder("legacy")
+        sp._run_agent_identity_path("legacy").write_text(
+            '{"version":1,"agent":""}', encoding="utf-8"
+        )
+        assert read_run_agent_selection("legacy") == ("template", "")
+
+    @pytest.mark.parametrize(
+        "kind,agent",
+        [("unknown", "worker"), ("member", ""), (None, "worker"), ("template", [])],
+    )
+    def test_invalid_selection_cannot_replace_authority(self, agent_root, kind, agent):
+        create_agent_folder("selected")
+        write_run_agent("selected", "worker")
+        with pytest.raises(ValueError, match="effective agent template is invalid"):
+            write_run_agent("selected", agent, kind=kind)
+        assert read_run_agent_selection("selected") == ("template", "worker")
+
+    def test_unknown_lineage_replaces_prior_authority(self, agent_root):
+        create_agent_folder("template")
+        write_run_agent("template", "prior-worker")
+        write_run_agent("template", None)
+        with pytest.raises(ValueError, match="protected agent template unavailable"):
+            read_run_agent_selection("template")
+
+    @pytest.mark.parametrize("agent", ["worker", ""])
+    def test_template_survives_writable_state_changes(self, agent_root, agent):
+        path = create_agent_folder("template", agent=agent)
+        write_run_agent("template", agent)
+        update_state("template", agent="conductor")
+        assert read_run_agent_selection("template")[1] == agent
+        (path / "state.json").unlink()
+        assert read_run_agent_selection("template")[1] == agent
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            None,
+            "{",
+            "[]",
+            '{"version":1}',
+            '{"version":1,"agent":null}',
+            '{"version":2,"agent":"worker"}',
+            '{"version":2,"kind":"member","agent":""}',
+            '{"version":2,"kind":"other","agent":"worker"}',
+            '{"version":2,"kind":[],"agent":"worker"}',
+            '{"version":true,"kind":"template","agent":""}',
+        ],
+    )
+    def test_missing_or_invalid_authority_refuses(self, agent_root, payload):
+        import kiro_crew.subagent_persistence as sp
+
+        create_agent_folder("template", agent="conductor")
+        if payload is not None:
+            sp._run_agent_identity_path("template").write_text(payload, encoding="utf-8")
+        with pytest.raises(ValueError, match="resume_failed: protected agent template"):
+            read_run_agent_selection("template")
+
+    def test_redirected_authority_refuses(self, agent_root, tmp_path):
+        import kiro_crew.subagent_persistence as sp
+
+        redirected = tmp_path / "redirected"
+        redirected.mkdir()
+        (redirected / "agent.json").write_text(
+            '{"version":1,"agent":"conductor"}', encoding="utf-8"
+        )
+        protected = sp._run_agent_identity_path("template").parent
+        protected.parent.mkdir(parents=True, exist_ok=True)
+        make_dir_link(protected, redirected)
+        with pytest.raises(ValueError, match="redirected"):
+            read_run_agent_selection("template")
+        with pytest.raises(ValueError, match="redirected"):
+            write_run_agent("template", "worker")
+        assert json.loads((redirected / "agent.json").read_text())["agent"] == "conductor"
+
+    def test_run_deletion_removes_template_authority(self, agent_root):
+        import kiro_crew.subagent_persistence as sp
+
+        create_agent_folder("template")
+        write_run_agent("template", "worker")
+        path = sp._run_agent_identity_path("template")
+        assert path.exists()
+        delete_agent_folder("template")
+        assert not path.exists()
+
+
+class TestProtectedRunApp:
+    @pytest.mark.parametrize("app", ["", "example-app"])
+    def test_ownership_survives_writable_state_changes(self, agent_root, app):
+        path = create_agent_folder("app-owner", app=app)
+        update_state("app-owner", app="another-app")
+        assert read_run_app("app-owner") == app
+        (path / "state.json").unlink()
+        assert read_run_app("app-owner") == app
+
+    @pytest.mark.parametrize(
+        "payload",
+        [None, "{", "[]", '{"version":2}', '{"version":2,"app":null}', '{"version":1,"app":""}'],
+    )
+    def test_missing_or_invalid_ownership_is_not_unscoped(self, agent_root, payload):
+        import kiro_crew.subagent_persistence as sp
+
+        create_agent_folder("app-owner", app="example-app")
+        path = sp._run_memory_identity_path("app-owner")
+        if payload is None:
+            path.unlink()
+        else:
+            path.write_text(payload, encoding="utf-8")
+        with pytest.raises(ValueError, match="protected app ownership unavailable"):
+            read_run_app("app-owner")
 
 
 # ── update_state ─────────────────────────────────────────────────────
@@ -721,6 +865,8 @@ class TestSpawnCreatesFolder:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
 
         async def _empty_stream(*_a, **_kw):
             return
@@ -732,6 +878,7 @@ class TestSpawnCreatesFolder:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
 
         ctx = MagicMock()
         ctx.build_message = MagicMock(return_value=("built_message", None))
@@ -784,6 +931,8 @@ class TestSpawnCreatesFolder:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
 
         async def _empty_stream(*_a, **_kw):
             return
@@ -795,6 +944,7 @@ class TestSpawnCreatesFolder:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
 
         ctx = MagicMock()
         ctx.build_message = MagicMock(return_value=("built_message", None))
@@ -850,6 +1000,8 @@ class TestResultStreamingToAgentFolder:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
 
         async def _stream_chunks(*_a, **_kw):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="hello ")
@@ -862,6 +1014,7 @@ class TestResultStreamingToAgentFolder:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -903,6 +1056,8 @@ class TestPerTurnStateUpdates:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
         provider.session_id = "session-live"
 
         async def _stream(*_a, **_kw):
@@ -914,6 +1069,7 @@ class TestPerTurnStateUpdates:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -954,6 +1110,8 @@ class TestPerTurnStateUpdates:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
         provider.approve_tool = AsyncMock()
 
         async def _stream(*_a, **_kw):
@@ -969,6 +1127,7 @@ class TestPerTurnStateUpdates:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1091,6 +1250,8 @@ class TestTombstoneOnAbnormalExit:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
         provider.approve_tool = AsyncMock()
 
         async def _many_tools(*_a, **_kw):
@@ -1105,6 +1266,7 @@ class TestTombstoneOnAbnormalExit:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1156,6 +1318,8 @@ class TestTombstoneOnAbnormalExit:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
 
         async def _ok(*_a, **_kw):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")
@@ -1167,6 +1331,7 @@ class TestTombstoneOnAbnormalExit:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1204,6 +1369,8 @@ class TestFolderCleanupOnSuccess:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
 
         async def _ok(*_a, **_kw):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")
@@ -1215,6 +1382,7 @@ class TestFolderCleanupOnSuccess:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1253,6 +1421,8 @@ class TestFolderCleanupOnSuccess:
         provider.start = AsyncMock()
         provider.shutdown = AsyncMock()
         provider.context_usage_pct = lambda: 0.0
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
 
         async def _ok(*_a, **_kw):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="done")
@@ -1264,6 +1434,7 @@ class TestFolderCleanupOnSuccess:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -1953,14 +2124,20 @@ class TestProtectedMemoryMode:
             create_agent_folder("privacy-damaged", memory_mode="persistent")
         assert (record.read_bytes() if record.exists() else None) == original
 
-    def test_tightening_does_not_recreate_run_state(self, agent_root):
+    @pytest.mark.parametrize("kind", ["template", "member"])
+    def test_tightening_preserves_run_state_and_identity(self, agent_root, kind):
         from kiro_crew.subagent_persistence import read_run_memory_mode, tighten_run_memory_mode
 
-        folder = create_agent_folder("mode-only-update", task="keep this original task")
+        folder = create_agent_folder(
+            "mode-only-update", task="keep this original task", app="example-app"
+        )
+        write_run_agent("mode-only-update", "worker", kind=kind)
         before = (folder / "state.json").read_bytes()
         assert tighten_run_memory_mode("mode-only-update", "temporary") == "temporary"
         assert tighten_run_memory_mode("mode-only-update", "persistent") == "temporary"
         assert read_run_memory_mode("mode-only-update") == "temporary"
+        assert read_run_app("mode-only-update") == "example-app"
+        assert read_run_agent_selection("mode-only-update") == (kind, "worker")
         assert (folder / "state.json").read_bytes() == before
 
 

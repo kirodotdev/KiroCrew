@@ -194,6 +194,10 @@ class NotificationAliases:
     """Methods that arrive while a session is initializing and must be staged
     until the session exists, rather than dropped as ownerless."""
 
+    mcp_readiness: bool = False
+    """Opt into the session-scoped status/catalog barrier. Hosts without these
+    snapshots keep their existing best-effort initialization drain."""
+
 
 # ── Seam 6: teardown ──
 
@@ -328,6 +332,7 @@ class HarnessAdapter(abc.ABC):
         work_dir: str | Path | None,
         mcp_gateway_overlay: Any = None,
         member_dispatch: bool = False,
+        session_key: str = "",
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 

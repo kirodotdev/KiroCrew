@@ -131,6 +131,12 @@ from the live `kirocrew` binary, strips stale remote-transport fields (`url`,
 gateway is actually running under while preserving the user's own env keys.
 User customizations such as `autoApprove` are preserved.
 
+For KAS native managed servers, session projection supplies the actual gateway
+listener port and the allocation-time caller session key. These values come
+from the gateway rather than the editable agent environment. Native tools keep
+their own session identity and reach the serving instance on a non-default port;
+third-party servers receive neither value.
+
 An entry may also carry a **`spec_gate`** — a predicate consulted at spec
 EMISSION time. `kirocrew-computer` is the one row that has one, and the
 distinction it draws is the difference between a capability that advertises no

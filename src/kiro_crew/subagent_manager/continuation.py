@@ -346,6 +346,23 @@ class ContinuationCoordinator(ManagerComponent):
                 ),
             )
             return info
+        # The old registry record can disappear after eviction or restart. A
+        # follow-up must retain its app profile before admission and before it
+        # can establish the canonical HTTP caller. Writable state is not proof
+        # that a legacy run belonged to the dashboard user.
+        try:
+            original = self._manager._agents.get(conv_id)
+            app = original.app if original is not None else self._persistence.read_run_app(conv_id)
+            if not isinstance(app, str):
+                raise ValueError("protected app ownership unavailable; start a new conversation")
+        except (OSError, ValueError) as exc:
+            return SubagentInfo(
+                id=_preassigned_id or uuid.uuid4().hex[:8],
+                task=_redact(task),
+                done=True,
+                parent_session_key=parent_session_key,
+                error=f"resume_failed: {exc}",
+            )
         # Promote the run's retention through the single choke point:
         # state.json keep=True (tombstone pruner skips deletion),
         # the SessionManager continuable cache, and the TTL registry entry.
@@ -411,6 +428,7 @@ class ContinuationCoordinator(ManagerComponent):
             # follow-up reads the global store -- a split nothing reports.
             memory_store=memory_store,
             _memory_mode=_memory_mode,
+            app=app,
         )
 
     def _inherited_memory_store_impl(self, conv_id: str) -> str:

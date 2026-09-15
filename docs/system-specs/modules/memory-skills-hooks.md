@@ -39,6 +39,13 @@ Unverifiable calls return `403 member_session_unverified`; they never access
 global memory instead. See [security](security.md#overview) for the filesystem
 and caller-proof boundary.
 
+Subagent memory calls require the full `subagent:<run-id>` key's live allocation,
+including the original key reused by a continuation. Dashboard slots, restriction
+markers and retained transcripts cannot answer for a stopped child. The admitted
+protected memory mode must permit the operation. Recognition does not select a
+private store: the protected process/session proof above still supplies that
+authority.
+
 The hidden proof-signing key is staged as 32 owner-only bytes and fsynced before
 atomic publication without replacement. Concurrent creators adopt the first
 valid key. A crash before publication leaves the final name absent; corrupt
@@ -3184,7 +3191,11 @@ consolidator's constructor:
   the resolved binding is not the default store.** ABSENCE means global, so a default
   user's metadata line stays byte-identical and a session carrying no such key is
   unambiguously global rather than "global as of whenever it was saved". The birth dict is
-  the only record for a session that is created and then sits idle.
+  the only transcript record for a session that is created and then sits idle.
+  For a private V2 member, authorized creation also pins the protected session
+  assignment before writing that dict. This keeps an empty newborn transcript
+  from being mistaken for unverified V1 history on its first turn or after restart.
+  A pre-existing unverified transcript or native session still refuses creation.
 - `memory_store` is in `history.SLOT_OWNED_META_KEYS`, so current slot metadata
   owns its presence or absence instead of carrying a stale historical value
   forward. Private member bindings themselves are immutable.

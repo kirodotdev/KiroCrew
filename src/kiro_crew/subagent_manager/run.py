@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING
 
 from ..subagent_persistence import (
     publish_live_cleanup_identity,
+    read_run_agent_selection,
     remember_live_cleanup_identity,
+    write_run_agent,
 )
 from ._component import ManagerComponent
 
@@ -51,6 +53,8 @@ if TYPE_CHECKING:
         _subagent_default_effort,
         _subagent_default_model,
         _timeout_context,
+        _validate_agent,
+        _vet_spawn_governance,
         acp_error_is_transient,
         advance_fallback_candidate,
         agent_dir_for_display,
@@ -80,7 +84,9 @@ class RunEventCoordinator(ManagerComponent):
     """Own run transitions while state remains facade-owned."""
 
     _publish_identity = staticmethod(publish_live_cleanup_identity)
+    _read_run_agent = staticmethod(read_run_agent_selection)
     _remember_identity = staticmethod(remember_live_cleanup_identity)
+    _write_run_agent = staticmethod(write_run_agent)
     __slots__ = ()
 
     def _effective_turn_limit_impl(self, info: SubagentInfo) -> int:
@@ -246,6 +252,10 @@ class RunEventCoordinator(ManagerComponent):
                 conversation_key=conversation_key,
             )
         )
+        await self._await_identity_write(info, writer)
+
+    async def _await_identity_write(self, info: SubagentInfo, writer: asyncio.Future[None]) -> None:
+        """Keep a protected writer owned by the run through cancellation."""
         try:
             await asyncio.shield(writer)
         except asyncio.CancelledError:
@@ -763,9 +773,43 @@ class RunEventCoordinator(ManagerComponent):
                     source="subagent",
                     resources=f"subagent_id={info.id}",
                 )
-        # Inherit agent from parent session when not explicitly specified
-        agent = info.agent or self._manager._sessions.get_agent(info.parent_session_key)
+        # A continuation keeps the gateway-recorded selection, even when a
+        # different parent submits the follow-up. state.json is agent writable
+        # and cannot authorize a template, including after eviction/restart.
+        agent = info.agent
+        selection = ("template", agent)
+        recorded_selection: tuple[str, str] | None = None
+        if info.conversation_key:
+            conv_id = info.conversation_key.removeprefix("subagent:")
+            try:
+                recorded_selection = await asyncio.to_thread(self._read_run_agent, conv_id)
+            except (OSError, ValueError):
+                # An explicit override can run without known lineage, but it
+                # cannot become authority for later implicit continuations.
+                if not agent:
+                    raise
+            else:
+                if not agent:
+                    selection = recorded_selection
+        elif not agent:
+            selection = self._manager._sessions.get_agent_selection(info.parent_session_key)
+        if (
+            not isinstance(selection, tuple)
+            or len(selection) != 2
+            or selection[0] not in ("template", "member")
+            or not isinstance(selection[1], str)
+            or (selection[0] == "member" and not selection[1])
+        ):
+            raise ValueError("resume_failed: effective agent template is invalid")
+        kind, agent = selection
         if not info.agent and agent:
+            # Admission could only check the omitted name. Check the actual
+            # target against the caller's policy before allocating its provider.
+            denial = await asyncio.to_thread(
+                _vet_spawn_governance, info.parent_session_key, agent, app=info.app
+            )
+            if denial:
+                raise RuntimeError(f"spawn refused by governance: {denial}")
             sel().log_api_access(
                 caller=f"subagent:{info.id}",
                 operation="subagent.agent_inheritance",
@@ -773,7 +817,50 @@ class RunEventCoordinator(ManagerComponent):
                 source="subagent",
                 resources=f"subagent_id={info.id},inherited_agent={agent}",
             )
-        extra_kwargs: dict[str, Any] = {}
+        # Each follow-up may itself be continued, including after restart.
+        # Preserve the conversation selection independently of this turn's
+        # effective override; unknown lineage must stay unknown.
+        effective_cwd = info.cwd or str(getattr(self._manager._sessions, "_pool_cwd", "") or "")
+        if kind == "member":
+            from kiro_crew.config.loader import resolve_agent_bindings
+            from kiro_crew.memory_stores import named_store_or_empty
+
+            member = agent
+
+            def member_template() -> str:
+                cfg = KiroCrewConfig.load()
+                bindings = resolve_agent_bindings(
+                    cfg, member, effective_cwd, selection_kind="member"
+                )
+                if not bindings.requested_resolved or bindings.resolved_alias != member:
+                    raise ValueError("resume_failed: selected member is unavailable")
+                if named_store_or_empty(bindings.memory_store_name) != named_store_or_empty(
+                    info.memory_store
+                ):
+                    raise ValueError("memory_unavailable: selected member assignment changed")
+                return bindings.kiro_agent
+
+            agent = await asyncio.to_thread(member_template)
+        if kind == "member" or (info.conversation_key and not info.agent):
+            agent, error, code = await asyncio.to_thread(_validate_agent, agent, effective_cwd)
+            if error:
+                info.error_code = code
+                raise RuntimeError(error)
+        durable_selection = recorded_selection if info.conversation_key else selection
+        await self._await_identity_write(
+            info,
+            asyncio.ensure_future(
+                asyncio.to_thread(
+                    self._write_run_agent,
+                    info.id,
+                    durable_selection[1] if durable_selection is not None else None,
+                    kind=durable_selection[0] if durable_selection is not None else "template",
+                )
+            ),
+        )
+        extra_kwargs: dict[str, Any] = {
+            "crew_agent": selection[1] if kind == "member" else "",
+        }
         # An explicit per-spawn model wins; otherwise fall back to the
         # configured sub-agent role model (agent.role_models['subagent']). When
         # that role is unpinned the helper returns "" so we omit the kwarg and
@@ -818,7 +905,9 @@ class RunEventCoordinator(ManagerComponent):
         if info.keep:
             self._manager._sessions.mark_continuable(session_key)
             self._manager._conversations[session_key] = time.time()
-        use_session_sharing = (not info.keep) and self._manager._should_use_session_sharing(info)
+        use_session_sharing = (
+            kind == "template" and not info.keep and self._manager._should_use_session_sharing(info)
+        )
         # A per-spawn or per-role model / reasoning-effort override cannot be
         # applied to the parent's already-started shared runtime (it was spawned
         # with the parent's model and cannot switch model per session). Force the
@@ -869,14 +958,17 @@ class RunEventCoordinator(ManagerComponent):
                 str(client.session_id or "") if hasattr(client, "session_id") else ""
             )
             cleanup_provider = self._manager._provider_label_of(client)
-            cleanup_cwd = ""
-            if is_cc:
-                cleanup_cwd = info.cwd
-                if not cleanup_cwd:
-                    inner = getattr(client, "client", None)
-                    work_dir = getattr(inner, "_work_dir", None)
-                    if work_dir:
-                        cleanup_cwd = str(work_dir)
+            # Continuations use this record to recover their project on every
+            # backend, even when continuing a follow-up after gateway restart.
+            provider_cwd = getattr(client, "cwd", "")
+            cleanup_cwd = (
+                provider_cwd if isinstance(provider_cwd, str) and provider_cwd else info.cwd
+            )
+            if not cleanup_cwd and is_cc:
+                inner = getattr(client, "client", None)
+                work_dir = getattr(inner, "_work_dir", None)
+                if work_dir:
+                    cleanup_cwd = str(work_dir)
             setattr(info, "_session_id", cleanup_session_id)
             setattr(info, "_session_provider", cleanup_provider)
             setattr(info, "_session_cwd", cleanup_cwd)
@@ -1074,6 +1166,8 @@ class RunEventCoordinator(ManagerComponent):
         # acquisition, together with mutable retention intent.
         try:
             state_update: dict[str, object] = {
+                # Diagnostics only; continuation uses the protected agent.json.
+                "agent": agent,
                 "session_id": str(getattr(info, "_session_id", "")),
                 "provider": str(getattr(info, "_session_provider", "")),
                 # Model provenance (requested_model/resolved_model) is NOT

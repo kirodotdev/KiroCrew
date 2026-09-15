@@ -115,6 +115,46 @@ def test_private_workspace_hardlink_refusal_includes_configured_external_store(h
     assert source.read_text() == "workspace memory"
 
 
+@pytest.mark.parametrize("has_alias", [False, True])
+def test_private_scan_rechecks_an_atomic_write_retired_between_list_and_stat(
+    home, monkeypatch, has_alias
+):
+    staging = home / "memory-publish.tmp"
+    staging.write_text("protected content")
+    if has_alias:
+        (home.parent / "exposed-alias").hardlink_to(staging)
+    original_stat = Path.stat
+    retired = False
+
+    def retire_at_stat(path, *args, **kwargs):
+        nonlocal retired
+        if path == staging and not retired:
+            retired = True
+            staging.replace(home / "memory.db")
+            raise FileNotFoundError("atomic publication retired the staging name")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", retire_at_stat)
+    if has_alias:
+        with pytest.raises(RuntimeError, match="protected memory has a hardlink"):
+            sandbox._prepare_private_log_dir()
+        assert not (home / "memory_stores" / ".execution-logs").exists()
+    else:
+        assert Path(sandbox._prepare_private_log_dir()).is_dir()
+    assert retired
+
+
+def test_private_scan_repeated_disappearance_still_refuses_before_log_creation(home, monkeypatch):
+    from unittest.mock import Mock
+
+    scan = Mock(side_effect=FileNotFoundError("unstable protected tree"))
+    monkeypatch.setattr(sandbox, "_validate_private_memory_hardlinks", scan)
+    with pytest.raises(RuntimeError, match="cannot verify protected memory hardlinks"):
+        sandbox._prepare_private_log_dir()
+    assert scan.call_count == 3
+    assert not (home / "memory_stores" / ".execution-logs").exists()
+
+
 def test_private_workspace_layout_refuses_dangling_implicit_alias(home):
     target = home.parent / "absent-workspace"
     target.mkdir()

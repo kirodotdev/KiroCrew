@@ -23,10 +23,12 @@ from chat_test_helpers import (
     _make_ready_kiro_prerequisite,
     _make_state,
 )
+from dashboard_owner_helpers import as_owner
 from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO, TurnUsage
 from kiro_crew.agent_sdk.capabilities import capabilities_for
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_runner import _tool_call_ws_payload
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
@@ -6591,7 +6593,7 @@ class TestTokenPersistenceBackfill:
         # branch was unreachable in production while the test mocked it green. The
         # client here is a bare AsyncMock, so it is given the claude backend's
         # record below -- a real CC session's client resolves the same one.
-        _cc_cfg = MagicMock()
+        _cc_cfg = KiroCrewConfig()
         _cc_cfg.dashboard.merge_queued_messages = False
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.KiroCrewConfig.load", lambda: _cc_cfg)
 
@@ -7851,7 +7853,7 @@ class TestRuntimeWiring:
             lambda cfg, ws_dir: "oncall-ws",
         )
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "oncall"})
             data = await resp.json()
             assert resp.status == 200
@@ -7885,7 +7887,7 @@ class TestRuntimeWiring:
         monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", _boom)
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom)
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "oncall"})
             data = await resp.json()
             assert resp.status == 200
@@ -7961,7 +7963,7 @@ class TestRuntimeWiring:
             lambda cfg, ws_dir: "research-ws",
         )
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
             data = await resp.json()
             # Success with a warning — the switch happened; only the old
@@ -8223,7 +8225,7 @@ class TestRuntimeWiring:
             lambda cfg, ws_dir: "research-ws",
         )
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
             data = await resp.json()
             assert resp.status == 200
@@ -8271,7 +8273,7 @@ class TestRuntimeWiring:
         monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", _boom)
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", _boom)
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
             assert resp.status == 200
             assert seen_during_reset == ["research"]
@@ -8313,7 +8315,7 @@ class TestRuntimeWiring:
         conv.update_metadata = MagicMock(side_effect=_pick_lands_during_persist)
         state.conversation_log = conv
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
             data = await resp.json()
             assert resp.status == 200
@@ -8372,7 +8374,7 @@ class TestRuntimeWiring:
             lambda ws: "/workspace/dev",
         )
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "dev"})
             assert resp.status == 200
             assert slot.project == "/workspace/dev"
@@ -8477,7 +8479,7 @@ class TestRuntimeWiring:
         mock_cfg.agents = {}
         monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "new-agent"})
             assert resp.status == 200
             data = await resp.json()
@@ -17653,11 +17655,17 @@ class TestEmptyResponseRetry:
         state.sessions.mark_provider_switch_replay.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_agent_switch_turn_no_empty_response_error(self, tmp_path: Path) -> None:
+    async def test_agent_switch_turn_no_empty_response_error(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
         """Agent switch turns set assistant_text='' but should NOT trigger the empty-response notice."""
         from kiro_crew.providers.base import EVENT_AGENT_SWITCHED, EVENT_COMPLETE, LLMEvent
 
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.config.loader._materialized_kiro_agent",
+            lambda name, project_dir=None: name if name == "new-agent" else "",
+        )
 
         async def _stream(msg):
             yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text="new-agent")

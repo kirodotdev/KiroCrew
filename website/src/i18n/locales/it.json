@@ -14991,6 +14991,7 @@
       "show_controls": "Mostra i controlli"
     },
     "membersPage": {
+      "drawer_delegated_working": "Attività delegate in esecuzione",
       "agent_template": "Modello di agente",
       "configuration": "Configurazione",
       "crew_summary": "Riepilogo membro",

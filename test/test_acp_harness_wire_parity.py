@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
     METHOD_SET_MODE,
+    JsonRpcMessage,
 )
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "acp_harness_wire"
@@ -125,6 +126,35 @@ async def _capture(backend: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
             return {"sessionId": "pinned-new-sid", "modes": _MODES}
         if method == METHOD_SESSION_LOAD:
             return {"modes": _MODES}
+        if method == METHOD_SET_MODE and backend == ACP_BACKEND_KAS:
+            sid = params["sessionId"]
+            for notification, payload in (
+                (
+                    "_kiro/mcp/status",
+                    {
+                        "servers": [
+                            {
+                                "name": entry["name"],
+                                "status": "connected",
+                                "_meta": {"kiro": {"resource": {"source": {"origin": "client"}}}},
+                            }
+                            for entry in _MCP_ROSTER
+                        ]
+                    },
+                ),
+                (
+                    "_kiro/tools/didChange",
+                    {
+                        "tags": [
+                            {"source": "mcp", "tag": f"@{entry['name']}/tool"}
+                            for entry in _MCP_ROSTER
+                        ]
+                    },
+                ),
+            ):
+                rt._session_queues[sid].put_nowait(
+                    JsonRpcMessage(method=notification, params={"sessionId": sid, **payload})
+                )
         return {}
 
     monkeypatch.setattr(rt, "_send_and_await", _fake_send)
@@ -146,7 +176,7 @@ async def _capture(backend: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     # are comparable and neither moves with the host's gateway configuration.
     monkeypatch.setattr(runtime_mod, "pooled_session_servers", lambda overlay, agent: _MCP_ROSTER)
 
-    async def _fake_kas_agents(agent, *, member_dispatch=False):
+    async def _fake_kas_agents(agent, *, member_dispatch=False, session_key=""):
         # The real projection reads ~/.kiro/agents; the GATE it is behind is what
         # this capture is about, so the payload is pinned and the gate is not.
         from kiro_crew.acp.harness import SessionExtras

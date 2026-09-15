@@ -15184,6 +15184,7 @@
       "show_controls": "Показать управление"
     },
     "membersPage": {
+      "drawer_delegated_working": "Выполняются делегированные задачи",
       "agent_template": "Шаблон агента",
       "configuration": "Конфигурация",
       "crew_summary": "Сводка участника",

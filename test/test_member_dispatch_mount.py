@@ -292,7 +292,15 @@ class TestRuntimeMemberThreading:
             session_servers_mod, "injection_server_names", lambda _o, _a: frozenset()
         )
 
-        def _capture(_dir, agent, _spec, *, stub_server_names=frozenset(), member_dispatch=False):
+        def _capture(
+            _dir,
+            agent,
+            _spec,
+            *,
+            stub_server_names=frozenset(),
+            member_dispatch=False,
+            session_key="",
+        ):
             seen.append(member_dispatch)
             return [{"id": agent}]
 
@@ -360,7 +368,15 @@ class TestMemberServerJoinsSubtraction:
         )
         seen: list[frozenset] = []
 
-        def _capture(_dir, agent, _spec, *, stub_server_names=frozenset(), member_dispatch=False):
+        def _capture(
+            _dir,
+            agent,
+            _spec,
+            *,
+            stub_server_names=frozenset(),
+            member_dispatch=False,
+            session_key="",
+        ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
 
@@ -389,7 +405,15 @@ class TestMemberServerJoinsSubtraction:
         )
         seen: list[frozenset] = []
 
-        def _capture(_dir, agent, _spec, *, stub_server_names=frozenset(), member_dispatch=False):
+        def _capture(
+            _dir,
+            agent,
+            _spec,
+            *,
+            stub_server_names=frozenset(),
+            member_dispatch=False,
+            session_key="",
+        ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
 

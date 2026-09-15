@@ -14799,6 +14799,7 @@
       "show_controls": "Steuerung anzeigen"
     },
     "membersPage": {
+      "drawer_delegated_working": "Delegierte Aufgaben laufen",
       "agent_template": "Agent-Vorlage",
       "configuration": "Konfiguration",
       "crew_summary": "Crew-Übersicht",

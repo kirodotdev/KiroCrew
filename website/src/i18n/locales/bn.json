@@ -14800,6 +14800,7 @@
       "show_controls": "কন্ট্রোল দেখাও"
     },
     "membersPage": {
+      "drawer_delegated_working": "অর্পিত কাজ চলছে",
       "agent_template": "এজেন্ট টেমপ্লেট",
       "configuration": "কনফিগারেশন",
       "crew_summary": "সদস্যের সারসংক্ষেপ",

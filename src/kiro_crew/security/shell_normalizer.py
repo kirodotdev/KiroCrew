@@ -2308,10 +2308,17 @@ def _self_tokens(text_lower: str) -> "list[str]":
     the lone case and leaves the escaped run intact, matching bash.
     """
     try:
-        return _resolve_function_aliases(
-            _resolve_local_assignments(
-                normalize_shell_command(_fold_line_continuations(text_lower))
+        # shlex treats bare newlines as whitespace, which joins separate
+        # commands into one argv. Preserve those boundaries after folding
+        # continuations; quoted newlines remain part of their operand.
+        command = _fold_line_continuations(text_lower)
+        if "\n" in command:
+            command = "".join(
+                " ; " if step.active and step.char == "\n" else step.text
+                for step in _iter_shell_chars(command)
             )
+        return _resolve_function_aliases(
+            _resolve_local_assignments(normalize_shell_command(command))
         )
     except Exception:
         return []

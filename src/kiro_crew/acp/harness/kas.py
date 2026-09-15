@@ -1,7 +1,7 @@
 """The KAS relay, reached through kiro-cli's own ACP transport.
 
-KAS shares kiro-cli's binary and its ``_kiro.dev`` notification vocabulary, and
-differs from it on four things that matter.
+KAS shares kiro-cli's binary, but reports MCP readiness through session-scoped
+``_kiro/mcp/status`` and ``_kiro/tools/didChange`` snapshots.
 
 It takes no ``--agent`` flag, so the agent definition travels on every session
 start and has to be re-sent on resume. Its ``protocolVersion`` is an integer, not
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,9 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     KAS_CLIENT_CAPABILITIES,
+    METHOD_KAS_MCP_STATUS,
     METHOD_KAS_SESSION_DELETE,
+    METHOD_KAS_TOOLS_CHANGED,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
@@ -131,6 +134,7 @@ class KasHarness(MembershipHarness):
         work_dir: str | Path | None,
         mcp_gateway_overlay: Any = None,
         member_dispatch: bool = False,
+        session_key: str = "",
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -216,6 +220,7 @@ class KasHarness(MembershipHarness):
                     spec,
                     stub_server_names=stubbed,
                     member_dispatch=member_dispatch,
+                    session_key=session_key,
                 ),
                 snapshot,
             )
@@ -272,7 +277,12 @@ class KasHarness(MembershipHarness):
 
     @property
     def notification_aliases(self) -> NotificationAliases:
-        return KIRO_FAMILY_ALIASES
+        return replace(
+            KIRO_FAMILY_ALIASES,
+            mcp_init=KIRO_FAMILY_ALIASES.mcp_init
+            + (METHOD_KAS_MCP_STATUS, METHOD_KAS_TOOLS_CHANGED),
+            mcp_readiness=True,
+        )
 
     # ── Seam 6: teardown ──
 

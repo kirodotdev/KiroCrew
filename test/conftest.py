@@ -763,6 +763,14 @@ def _isolate_kiro_window_cache():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_advertised_model_cache(_floor_monkeypatch):
+    """Keep one session's advertised model spellings inside its own test."""
+    from kiro_crew import model_registry
+
+    _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+
+
+@pytest.fixture(autouse=True)
 def _isolate_message_entry_cache():
     """Give every test an EMPTY ``chat_persistence`` persisted-entry cache.
 

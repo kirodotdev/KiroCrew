@@ -2478,6 +2478,41 @@ class TestNameAsDataIsNotAnInvocation:
         assert _denied_by(cmd) is not None
 
 
+class TestSelfProtectionCommandBoundaries:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "awk '{print $1}'\ncat \"$KIROCREW_SCRATCH/log\"\ngrep -E PASS report",
+            "printf x | awk '{print $1}'\n"
+            'python3 verify/audit_logs.py > "$KIROCREW_SCRATCH/audit.txt"\n'
+            'grep -E "PASS|FAIL" "$KIROCREW_SCRATCH/audit.txt"',
+            "awk '{print $1}'\r\ncat \"$KIROCREW_SCRATCH/log\"\r\ngrep -E PASS report",
+            "bash -c \"printf x | awk '{print \\$1}'\n"
+            'cat \\"\\$KIROCREW_SCRATCH/log\\"\ngrep -E PASS report"',
+        ],
+    )
+    def test_later_command_is_not_an_awk_argument(self, command):
+        # shlex removes an unquoted newline. Losing that boundary made the
+        # formatting program look like a dynamic kill command targeting the
+        # later command's scratch path.
+        assert _denied_by(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"printf x | awk '{{print $1}}'\n{_PK} -f {_NAME}",
+            f"printf x | awk '{{print $1}}'\n{_K} $(pgrep -f {_NAME})",
+            f"{_PK} \\\n-f {_NAME}",
+            f"{_PK} -f 'first\n{_NAME}'",
+            f'{_PK} -f "first\n{_NAME}"',
+            f'{_PK} -f "$x\n{_NAME}"',
+            f"P={_PK}\n$P -f {_NAME}",
+        ],
+    )
+    def test_real_kill_keeps_its_target(self, command):
+        assert _denied_by(command) == _RULE_KILL
+
+
 class TestSelfProtectionKillTargetScoping:
     """The kill rule matches the kill TARGET, not co-occurrence.
 

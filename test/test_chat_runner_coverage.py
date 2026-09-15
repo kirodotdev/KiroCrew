@@ -27,6 +27,7 @@ import json
 import os
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -43,6 +44,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
@@ -4328,17 +4330,16 @@ class TestRunChatPlanGate:
 
 
 def _bindings(*, kiro_agent, resolved_alias, requested_resolved):
-    """A minimal ResolvedBindings stand-in for the app-agent dispatch guard.
-
-    Only the fields ``_run_chat`` reads off the resolve result are populated;
-    ``model`` is a real ``str`` so ``normalize_agent_model`` stays happy.
-    """
-    return SimpleNamespace(
+    """Real bindings for a materialized app template or its cold fallback."""
+    return ResolvedBindings(
+        workspace_dir=Path("workspace"),
         kiro_agent=kiro_agent,
         resolved_alias=resolved_alias,
         memory_store_name="default",
+        effective_memory_config={},
         model="",
         requested_resolved=requested_resolved,
+        selection_kind="template" if requested_resolved else "member",
     )
 
 

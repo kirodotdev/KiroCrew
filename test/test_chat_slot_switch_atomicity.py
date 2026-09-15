@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.chat import (
     api_chat_slot_agent,
@@ -112,7 +113,7 @@ class TestPrivateChatMemberSwitch:
         state, slot, key = private_switch_state
         before = (slot.agent, slot.memory_store, slot.workspace, slot.project)
         metadata = await asyncio.to_thread(state.conversation_log.get_metadata, key)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
             # A retry cannot gradually mutate the slot or erase the permanent pin.
             for _ in range(2):
                 response = await client.post(
@@ -136,7 +137,7 @@ class TestPrivateChatMemberSwitch:
         slot.linked_session_key = key
         slot.key = "linked-alias"
         state._slots = {slot.key: slot}
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
             response = await client.post(
                 f"/api/chat/slots/{slot.key}/agent", json={"agent": "reviewer"}
             )
@@ -149,7 +150,7 @@ class TestPrivateChatMemberSwitch:
     async def test_same_member_reset_stays_available(self, private_switch_state):
         state, slot, key = private_switch_state
         with patch(f"{MOD}.warm_project_agent_names", new_callable=AsyncMock):
-            async with TestClient(TestServer(_make_app(state))) as client:
+            async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
                 response = await client.post(
                     f"/api/chat/slots/{slot.key}/agent", json={"agent": "writer"}
                 )
@@ -165,7 +166,7 @@ class TestPrivateChatMemberSwitch:
             "kiro_crew.member_memory_auth.read_private_session_store",
             side_effect=ValueError("invalid binding"),
         ):
-            async with TestClient(TestServer(_make_app(state))) as client:
+            async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
                 response = await client.post(
                     f"/api/chat/slots/{slot.key}/agent", json={"agent": "reviewer"}
                 )
@@ -1472,7 +1473,7 @@ class TestLinkedSlotSessionKey:
         state = _mock_state(slot, provider=None)
         state.sessions.reset = AsyncMock(return_value=True)
         state.conversation_log = MagicMock()
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
             resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
             assert resp.status == 200
             assert slot.agent == "new-agent"
@@ -1539,7 +1540,7 @@ class TestLinkedSlotSessionKey:
             return True
 
         state.sessions.reset = AsyncMock(side_effect=_reset_and_rebind)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
             resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
             data = await resp.json()
             assert resp.status == 409
@@ -1679,7 +1680,7 @@ class TestLinkedSlotSessionKey:
         busy.has_active_turn.side_effect = [False, False, True]
         state.sessions.get_provider = MagicMock(return_value=busy)
         state.sessions.reset = AsyncMock(return_value=False)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
             resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
             data = await resp.json()
             assert resp.status == 409
@@ -1733,7 +1734,7 @@ class TestLinkedSlotSessionKey:
 
         log.update_metadata = MagicMock(side_effect=_persist_and_rebind)
         state.conversation_log = log
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
             resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
             data = await resp.json()
             assert resp.status == 409
@@ -1768,7 +1769,7 @@ class TestLinkedSlotSessionKey:
             return True
 
         state.sessions.reset = AsyncMock(side_effect=_reset_concurrent_write_and_rebind)
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
             resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
             data = await resp.json()
             assert resp.status == 409
@@ -2005,7 +2006,7 @@ class TestAliasSlotSwitchSerialization:
         state = _mock_state(slot, provider=None)
         state.sessions.reset = AsyncMock(return_value=True)
         state.conversation_log = MagicMock()
-        async with TestClient(TestServer(_make_app(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
             async with _slot_switch_session_lock(_LINKED_KEY):
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/alias-a/agent", json={"agent": "new-agent"})

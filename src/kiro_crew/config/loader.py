@@ -6022,10 +6022,14 @@ def resolve_crew_identity(
     return ""
 
 
-def _resolve_agent_selection(config, agent_name=None, project_dir=None):
+def _resolve_agent_selection(config, agent_name=None, project_dir=None, *, selection_kind=""):
     """Select a config record/template without accessing any memory files."""
-    alias_hit = bool(agent_name) and agent_name in config.agents
-    passthrough = "" if alias_hit else _materialized_kiro_agent(agent_name, project_dir)
+    alias_hit = selection_kind != "template" and bool(agent_name) and agent_name in config.agents
+    passthrough = (
+        ""
+        if alias_hit or selection_kind == "member"
+        else _materialized_kiro_agent(agent_name, project_dir)
+    )
     requested_resolved = (not agent_name) or alias_hit or bool(passthrough)
     if alias_hit:
         alias = agent_name
@@ -6039,13 +6043,15 @@ def _resolve_agent_selection(config, agent_name=None, project_dir=None):
     return config.agents.get(alias), alias, passthrough, requested_resolved
 
 
-def resolve_agent_identity(config, agent_name=None) -> tuple[str, str, str]:
+def resolve_agent_identity(config, agent_name=None, *, selection_kind="") -> tuple[str, str, str]:
     """Alias, provider template and model pin for display/configuration only.
 
     This does not authorize memory access. Runtime callers must resolve the full
     bindings; a model chip remains inspectable while private memory is unavailable.
     """
-    record, alias, passthrough, _ = _resolve_agent_selection(config, agent_name)
+    record, alias, passthrough, _ = _resolve_agent_selection(
+        config, agent_name, selection_kind=selection_kind
+    )
     return (
         alias,
         passthrough or (record.kiro_agent if record else config.agent.default_agent),
@@ -6059,6 +6065,7 @@ def resolve_agent_bindings(
     project_dir: str | None = None,
     *,
     validate_memory_files: bool = True,
+    selection_kind: str = "",
 ) -> ResolvedBindings:
     """Resolve workspace, memory store, and kiro agent for a session.
 
@@ -6080,7 +6087,7 @@ def resolve_agent_bindings(
     import dataclasses as _dc
 
     agent_cfg, resolved_alias, passthrough, requested_resolved = _resolve_agent_selection(
-        config, agent_name, project_dir
+        config, agent_name, project_dir, selection_kind=selection_kind
     )
     if agent_cfg is None:
         logger.warning("No agents configured, using bare defaults")
@@ -6090,6 +6097,7 @@ def resolve_agent_bindings(
             effective_memory_config=_dc.asdict(config.memory),
             kiro_agent=passthrough or config.agent.default_agent,
             requested_resolved=requested_resolved,
+            selection_kind="template" if passthrough else "",
         )
 
     # Resolve workspace
@@ -6133,12 +6141,15 @@ def resolve_agent_bindings(
         model=normalize_agent_model(agent_cfg.model),
         requested_resolved=requested_resolved,
         resolved_alias=resolved_alias,
+        selection_kind="template" if passthrough else "member",
     )
 
 
 def resolve_effective_model(
     config: KiroCrewConfig,
     agent_name: str | None = None,
+    *,
+    selection_kind: str = "",
 ) -> str:
     """Return the model a new session on *agent_name* would start with.
 
@@ -6156,7 +6167,9 @@ def resolve_effective_model(
     caller holds it. Returns ``""`` when every tier defers, meaning the backend
     picks (kiro-cli's own ``chat.defaultModel``).
     """
-    _, kiro_agent, model_pin = resolve_agent_identity(config, agent_name)
+    _, kiro_agent, model_pin = resolve_agent_identity(
+        config, agent_name, selection_kind=selection_kind
+    )
     if model_pin:
         return model_pin
     if kiro_agent and kiro_agent != "kirocrew":

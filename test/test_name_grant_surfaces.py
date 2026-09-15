@@ -332,6 +332,8 @@ class TestSubagentSurface:
         sessions = MagicMock()
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
         sessions.get_approval_policy = MagicMock(return_value="")
+        sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.release_subagent_runtime = AsyncMock()
 
         ctx = MagicMock()

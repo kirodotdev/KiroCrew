@@ -29,7 +29,11 @@ kiro-cli does not have this problem: it reads the spec off disk itself via
 Filtering by the stub set keeps the no-double-registration guarantee (a stubbed
 server is still declared exactly once, by the injection that outranks this block)
 while never leaving the session with nothing. Two fields are dropped on the way
-through — see :func:`_project_mcp_servers`.
+through — see :func:`_project_mcp_servers`. The runtime then carries the ACTIVE
+agent's projected managed entries in the session-level array itself
+(:func:`hoist_managed_servers`), the declaration site the captured 2.18.0 release
+honours over a same-named global or workspace server and every probed release
+reports as the session's own.
 
 ``model`` is deliberately NOT projected: the model is set through its own
 protocol verb, so it has exactly one owner rather than being pinned in two places
@@ -51,6 +55,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -326,6 +331,7 @@ def _project_mcp_servers(
     spec: dict[str, Any],
     agent_id: str,
     stub_server_names: frozenset[str],
+    session_key: str = "",
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
 
@@ -378,6 +384,20 @@ def _project_mcp_servers(
         projected.pop("autoApprove", None)
         managed = name in MANAGED_MCP_SERVER_NAMES
         withheld = _withhold_credential_fields(projected, managed=managed)
+        if managed:
+            # Native MCP children do not inherit the gateway's environment.
+            # Take the live listener from the gateway, never from an editable
+            # spec: private sandboxes cannot discover it through host PIDs.
+            bound_port = os.environ.get("KIROCREW_BOUND_PORT", "")
+            if (
+                1 <= len(bound_port) <= 5
+                and bound_port.isascii()
+                and bound_port.isdecimal()
+                and 0 < int(bound_port) < 65536
+            ):
+                projected.setdefault("env", {})["KIROCREW_PORT"] = bound_port
+            if session_key:
+                projected.setdefault("env", {})["KIROCREW_SESSION_KEY"] = session_key
         if withheld:
             logger.info(
                 "agent %r: not relaying %s for MCP server %r — the field can carry "
@@ -439,6 +459,7 @@ def to_client_custom_agent(
     *,
     stub_server_names: frozenset[str] = frozenset(),
     member_dispatch: bool = False,
+    session_key: str = "",
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -535,7 +556,7 @@ def to_client_custom_agent(
         if entries:
             out["resources"] = entries
 
-    mcp_servers = _project_mcp_servers(spec, agent_id, stub_server_names)
+    mcp_servers = _project_mcp_servers(spec, agent_id, stub_server_names, session_key)
     if mcp_servers:
         out["mcpServers"] = mcp_servers
 
@@ -607,6 +628,7 @@ def build_kas_custom_agents(
     *,
     stub_server_names: frozenset[str] = frozenset(),
     member_dispatch: bool = False,
+    session_key: str = "",
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
@@ -641,5 +663,105 @@ def build_kas_custom_agents(
             prompt,
             stub_server_names=stub_server_names,
             member_dispatch=member_dispatch,
+            session_key=session_key,
         )
     ]
+
+
+#: The keys a projected stdio declaration may carry and still be reproduced
+#: exactly by :func:`kiro_crew.acp.session_mcp.acp_server_element`. Anything
+#: else on a managed entry is a user customization with no session-level
+#: carrier -- ``disabled`` (must not launch), ``disabledTools`` (a user guard),
+#: ``timeout`` -- so an entry carrying one stays where that field is honoured.
+_HOISTABLE_ENTRY_KEYS = frozenset({"command", "args", "env", "type"})
+
+
+def hoist_managed_servers(
+    custom_agents: list[dict[str, Any]] | None,
+    agent_id: str,
+    session_servers: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+    """Carry the ACTIVE agent's managed declarations in the session-level array.
+
+    Captured released kiro-cli 2.18.0 honours a session-level ``mcpServers``
+    entry over a same-named global or workspace ``mcp.json`` server on
+    ``session/new`` and ``session/load`` alike, while an agent-block declaration
+    loses to the global one there, and it stamps no status provenance. The
+    retained 2.20.0 capture proves a session-level injection reports
+    ``origin: client`` and reaches readiness; its same-name collision behaviour
+    was not probed. The session-level array is therefore the one declaration site
+    whose connected report is positively the session's own on both, and Crew's
+    managed servers -- the ones whose env carries this session's key -- belong
+    there rather than in the block, exactly as the member dispatch server already
+    travels.
+
+    Pure and non-mutating: returns a new agents list (the active descriptor
+    shallow-copied with the hoisted names removed from ``mcpServers``) and a new
+    array (the caller's entries first, then the hoisted elements by name). The
+    entries hoisted are the ALREADY projected ones -- credential fields withheld,
+    ``autoApprove`` dropped, ``KIROCREW_PORT``/``KIROCREW_SESSION_KEY`` applied
+    -- so no spec is re-read and the source snapshot is untouched.
+
+    What is NOT hoisted, each deliberately:
+
+    * a name the caller's array already carries -- a broker stub or the member
+      dispatch entry is authoritative and a name must appear once;
+    * a non-managed server -- third-party declarations are not this seam's;
+    * an inactive agent's block -- it must not widen the active session's tool
+      surface or carry another identity's key;
+    * an entry with a key outside :data:`_HOISTABLE_ENTRY_KEYS`, a ``type``
+      other than ``stdio``, or no usable command -- a restriction, a registry
+      marker or a malformed entry keeps the block path, where it is honoured.
+
+    The agent's ``tools`` / ``excludedTools`` / ``permissions`` are untouched:
+    ``@server`` refs resolve wherever the server was declared, which is the same
+    property ``member_dispatch`` already relies on for ``@kirocrew-dashboard``.
+    """
+    if not custom_agents:
+        # The kiro path (no wire payload) returns here without importing the
+        # agent/config translation machinery below as a side effect.
+        return custom_agents, session_servers
+    from kiro_crew.acp.session_mcp import acp_server_element
+
+    taken = {
+        str(entry.get("name"))
+        for entry in session_servers
+        if isinstance(entry, dict) and entry.get("name")
+    }
+    hoisted: list[dict[str, Any]] = []
+    out_agents: list[dict[str, Any]] = []
+    for descriptor in custom_agents:
+        declared = descriptor.get("mcpServers") if descriptor.get("id") == agent_id else None
+        if not isinstance(declared, dict):
+            out_agents.append(descriptor)
+            continue
+        remaining: dict[str, Any] = {}
+        for name, entry in declared.items():
+            keep = True
+            if (
+                name in MANAGED_MCP_SERVER_NAMES
+                and name not in taken
+                and isinstance(entry, dict)
+                and set(entry) <= _HOISTABLE_ENTRY_KEYS
+                and entry.get("type", "stdio") == "stdio"
+            ):
+                element = acp_server_element(name, entry)
+                if element is not None:
+                    hoisted.append(element)
+                    taken.add(name)
+                    keep = False
+            if keep:
+                remaining[name] = entry
+        if len(remaining) == len(declared):
+            out_agents.append(descriptor)
+            continue
+        copied = dict(descriptor)
+        if remaining:
+            copied["mcpServers"] = remaining
+        else:
+            del copied["mcpServers"]
+        out_agents.append(copied)
+    if not hoisted:
+        return custom_agents, session_servers
+    hoisted.sort(key=lambda element: element["name"])
+    return out_agents, [*session_servers, *hoisted]

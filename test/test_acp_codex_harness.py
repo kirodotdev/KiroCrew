@@ -371,6 +371,7 @@ class TestSessionExtras:
             {"work_dir": None},
             {"work_dir": "/w", "member_dispatch": True},
             {"work_dir": "/w", "mcp_gateway_overlay": object()},
+            {"work_dir": "/w", "session_key": "subagent:worker"},
         ):
             assert (await adapter.session_extras("a", **kwargs)).custom_agents is None
 

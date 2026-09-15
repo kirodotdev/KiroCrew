@@ -2175,6 +2175,229 @@ def test_created_session_inherits_the_callers_workspace(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture
+def private_dispatch(tmp_path, monkeypatch):
+    from member_memory_helpers import patch_private_memory_supported
+
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.memory_stores import provision_member_memory
+
+    patch_private_memory_supported(monkeypatch)
+    cfg = KiroCrewConfig.load()
+    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="write")
+    store = provision_member_memory(cfg, "writer")
+    cfg.save()
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-conductor")
+    return state, caller, store
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_created_private_worker_can_start_after_birth_history(private_dispatch, tmp_path, restored):
+    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    state, caller, store = private_dispatch
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    child = state.get_slot(created["target"])
+    key = _key(child)
+    log = state.conversation_log
+    assert log.has_log(key), "the test must exercise the persisted-at-birth path"
+    if restored:
+        log = ConversationLog(base_dir=tmp_path)
+    # This is the first-turn guard that rejected the conductor's newly created
+    # worker: even an empty metadata-only transcript counts as previous history.
+    _bind_private_slot_memory(key, store, restored=restored, conversation_log=log)
+    assert read_private_session_store(key) == store
+    assert log.get_metadata(key)["memory_store"] == store
+
+
+def test_private_worker_assignment_precedes_birth_history(private_dispatch, monkeypatch):
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    state, caller, store = private_dispatch
+    log = state.conversation_log
+    real_update = log.update_metadata
+    assignments = []
+    loop_threads = []
+
+    def persist(key, metadata):
+        loop_threads.append(threading.get_ident())
+        assignments.append(read_private_session_store(key))
+        return real_update(key, metadata)
+
+    monkeypatch.setattr(log, "update_metadata", persist)
+    asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert assignments == [store]
+    assert loop_threads and threading.get_ident() not in loop_threads
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_created_template_keeps_namespace_after_member_discovery(tmp_path, monkeypatch, explicit):
+    from member_memory_helpers import patch_private_memory_supported
+
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, resolve_agent_bindings
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import provision_member_memory
+    from kiro_crew.session_agent_selection import resolve_session_agent_bindings
+
+    patch_private_memory_supported(monkeypatch)
+    template = "dispatched-template"
+    monkeypatch.setattr(
+        loader,
+        "_materialized_kiro_agent",
+        lambda name, project_dir=None: template if name == template else "",
+    )
+    cfg = KiroCrewConfig.load()
+    assert template not in cfg.agents
+    cfg.save()
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-conductor", agent=template)
+    created = asyncio.run(
+        sc.create_session(
+            state,
+            caller_session_key=_key(caller),
+            agent=template if explicit else "",
+        )
+    )
+    child = state.get_slot(created["target"])
+    key = _key(child)
+    assert state.conversation_log.get_metadata(key)["agent"] == template
+
+    # Discovery imports the same template as a private roster member before
+    # this empty conversation's first turn. The earlier choice must survive.
+    cfg = KiroCrewConfig.load()
+    cfg.agents[template] = KiroCrewAgentConfig(kiro_agent=template)
+    member_store = provision_member_memory(cfg, template)
+    cfg.save()
+    cfg = KiroCrewConfig.load()
+    assert resolve_agent_bindings(cfg, template, child.project).memory_store_name == member_store
+    chosen = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, key, template, child.project
+    )
+    assert chosen.memory_store_name == "default"
+    assert chosen.selection_kind == "template"
+    assert read_private_session_store(key) is None
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+@pytest.mark.parametrize("started_turn", [False, True])
+def test_failed_private_birth_retains_its_permanent_assignment(
+    private_dispatch, monkeypatch, preexisting, started_turn
+):
+    from kiro_crew.dashboard.chat_runner import _require_session_memory_assignment
+    from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+    from kiro_crew.memory_stores import UnknownMemoryStore
+    from kiro_crew.session_agent_selection import session_agent_selection_kind
+
+    state, caller, store = private_dispatch
+    before = set(state._slots)
+    child_name = "chat-failed-private-birth"
+    key = f"dashboard:{child_name}"
+    monkeypatch.setattr("kiro_crew.dashboard.state._mint_slot_key", lambda *args: child_name)
+    if preexisting:
+        bind_private_session_store(key, store)
+
+    def fail_history(requested_key, metadata):
+        assert requested_key == key
+        assert read_private_session_store(key) == store
+        if started_turn:
+            _require_session_memory_assignment(key, store)
+            state._slots[child_name].append("user", "work already started", "msg msg-u")
+        raise OSError("birth metadata could not be written")
+
+    monkeypatch.setattr(state.conversation_log, "update_metadata", fail_history)
+    with pytest.raises(OSError, match="birth metadata"):
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert set(state._slots) == (before | {child_name} if started_turn else before)
+    # The birth was authorized and its slot was already addressable. History
+    # failure cannot prove no turn consumed this identity, so the lifetime pin
+    # must remain; neither Global nor another member may adopt the key later.
+    assert read_private_session_store(key) == store
+    assert session_agent_selection_kind(key, "writer") == "member"
+    _require_session_memory_assignment(key, store)
+    for other in ("default", "another-member-store"):
+        with pytest.raises(UnknownMemoryStore, match="retains its private memory assignment"):
+            _require_session_memory_assignment(key, other)
+
+
+def test_cancelled_private_birth_drains_before_returning(private_dispatch, monkeypatch):
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.session_agent_selection import session_agent_selection_kind
+
+    state, caller, store = private_dispatch
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    keys = []
+    real_update = state.conversation_log.update_metadata
+
+    def blocked_history(key, metadata):
+        keys.append(key)
+        entered.set()
+        assert release.wait(5), "the test must release the birth writer"
+        try:
+            return real_update(key, metadata)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(state.conversation_log, "update_metadata", blocked_history)
+
+    async def exercise():
+        task = asyncio.create_task(
+            sc.create_session(state, caller_session_key=_key(caller), agent="writer")
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), "cancellation must not abandon the history writer"
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+            assert finished.is_set()
+        finally:
+            release.set()
+            if not task.done():
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(exercise())
+    assert len(keys) == 1
+    key = keys[0]
+    child = next(slot for slot in state._slots.values() if _key(slot) == key)
+    assert child._created_by == caller.key
+    assert state.conversation_log.get_metadata(key)["memory_store"] == store
+    assert read_private_session_store(key) == store
+    assert session_agent_selection_kind(key, "writer") == "member"
+
+
+@pytest.mark.parametrize("prior_context", ["history", "native"])
+def test_private_worker_creation_cannot_adopt_an_old_session(
+    private_dispatch, monkeypatch, prior_context
+):
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    state, caller, _store = private_dispatch
+    before = set(state._slots)
+    child_name = "chat-private-worker-collision"
+    key = f"dashboard:{child_name}"
+    monkeypatch.setattr("kiro_crew.dashboard.state._mint_slot_key", lambda *args: child_name)
+    if prior_context == "history":
+        state.conversation_log.update_metadata(key, {"agent": "default"})
+    else:
+        state.sessions.resumable_sid.side_effect = lambda requested: (
+            "old-native-session" if requested == key else None
+        )
+    with pytest.raises(UnknownMemoryStore, match="V1 history"):
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert read_private_session_store(key) is None
+    assert set(state._slots) == before
+
+
 def test_create_checks_the_workspace_binding_even_when_no_agent_is_named(tmp_path, monkeypatch):
     """An omitted agent is not an unchecked agent.
 

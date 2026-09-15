@@ -6276,6 +6276,7 @@
       "failed_to_load_app": "Failed to load app"
     },
     "membersPage": {
+      "drawer_delegated_working": "Delegated work running",
       "setup_in_crew_manager": "Set up private memory"
     }
   },

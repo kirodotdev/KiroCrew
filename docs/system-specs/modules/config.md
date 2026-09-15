@@ -954,6 +954,17 @@ Resolution order:
 3. otherwise `config.default_agent`, then the first available alias, then bare
    defaults.
 
+`selection_kind="template"` restricts an existing conversation to the materialized
+template namespace even if discovery has imported a same-named member.
+`selection_kind="member"` requires the configured alias instead of falling back
+to a same-named template. Both still report an unavailable explicit selection
+through `requested_resolved=False`; neither flag authorizes private memory.
+Dashboard callers obtain this choice from the protected per-session record
+described in [session](session.md#agent-selection-provenance).
+The session resolver rejects a different agent name when a protected record
+exists. Live provider switches publish their validated template choice before
+history changes; ordinary resolution cannot replace provenance from metadata.
+
 Rung 2 exists because an app's agents are materialized into `~/.kiro/agents/` by
 `bridges._register_agents` under a namespaced FILENAME (`<app>--<agent>.json`)
 while the config inside keeps the app's own bare `name`, and **nothing adds them
@@ -999,19 +1010,24 @@ a second directory instead would stall the gateway.
 **filename** and reads at most the one matching spec — resolving every spec's declared
 name would stall Slack on a checkout with many agents.
 
-**Only the warm is offloaded — never `resolve_agent_bindings` itself.** The resolver
-can raise `StopIteration` (its defensive `next(iter(config.agents))` branch on a
-malformed config), and `StopIteration` cannot be delivered through a `Future`:
-asyncio rejects it, so an awaiting caller hangs instead of seeing the error, and the
-`except Exception` that callers rely on never runs. Keeping resolution synchronous
-preserves its exception contract for every call site.
+Dashboard turns and eager allocation offload full binding resolution because it
+also validates protected provenance and private memory files. Their
+`resolve_session_agent_bindings` wrapper converts a resolver's `StopIteration`
+into an explicit unavailable-selection error before it crosses the worker
+Future: asyncio cannot deliver `StopIteration` through that boundary.
 
 `ResolvedBindings` additionally reports `requested_resolved` (whether the
 requested name was honored — False means the default answered) and
-`resolved_alias` (the alias key whose bindings were used). Callers that store a
-name must store `resolved_alias`, never `kiro_agent`: the stored value is
-re-resolved later with aliases matched FIRST, so a physical agent name that also
-happens to be an alias key would dispatch that alias's target instead.
+`resolved_alias` (the alias key whose bindings were used). `selection_kind`
+records whether the explicit selection was a template or member. Callers
+persisting a member name use `resolved_alias`, never its `kiro_agent`; dashboard
+template conversations retain their requested name together with protected
+namespace provenance so later alias discovery cannot change the selection.
+The session resolver also captures `selection_revision` before resolving:
+an empty string observes no protected record, while `None` means the caller
+did not make an observation. Automatic publication checks that revision under
+the writer lock before replacing a record. This transient field guards
+publication; it does not change dispatch identity or grant memory access.
 
 #### App-slot cold-snapshot self-heal & fail-loud (`dashboard/chat_runner._run_chat`)
 The one-turn cold fallback above is acceptable for an ordinary session (the next

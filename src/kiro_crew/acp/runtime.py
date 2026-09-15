@@ -63,10 +63,16 @@ from kiro_crew.acp.harness import (
 )
 from kiro_crew.acp.harness.kas import PROTOCOL_VERSION_KAS
 from kiro_crew.acp.harness.kiro import KIRO_CLI_SUBCMD, PROTOCOL_VERSION
+from kiro_crew.acp.kas_agents import hoist_managed_servers
 from kiro_crew.acp.kas_host_auth import HostAuthCallbackError
 from kiro_crew.acp.kas_transport import (
     KAS_AUTH_CALLBACK_ERROR_CODE,
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
+)
+from kiro_crew.acp.mcp_session_report import (
+    active_custom_agent,
+    required_managed_servers,
+    roster_names,
 )
 from kiro_crew.acp.session_handle import (
     AcpRequestTimeout,
@@ -3373,7 +3379,7 @@ class AcpRuntime:
             raise AcpRuntimeError(str(exc)) from exc
 
     async def _kas_custom_agents(
-        self, agent: str, *, member_dispatch: bool = False
+        self, agent: str, *, member_dispatch: bool = False, session_key: str = ""
     ) -> SessionExtras:
         """The per-session payload for a wire-registered host, and what built it.
 
@@ -3396,6 +3402,7 @@ class AcpRuntime:
             work_dir=getattr(self, "_work_dir", None),
             mcp_gateway_overlay=self._mcp_gateway_overlay,
             member_dispatch=member_dispatch,
+            session_key=session_key,
         )
         return extras
 
@@ -3579,12 +3586,20 @@ class AcpRuntime:
         # so the kiro construction path gains no conditional, no new required
         # argument, and no new failure mode (harness-parity H13).
         kas_extras = await self._kas_custom_agents(
-            active_agent, member_dispatch=bool(member_session_key)
+            active_agent,
+            member_dispatch=bool(member_session_key),
+            session_key=session_key,
         )
         kas_agents = kas_extras.custom_agents
         # The generation the wire payload was built from, or None when this host takes its
         # agent at spawn time. Consumed by the activation bracket below.
         payload_snapshot = kas_extras.derived_spec_snapshot
+        # Crew's managed servers travel in the session-level array, the one
+        # declaration site the captured 2.18.0 release honours over a same-named
+        # global/workspace entry and 2.20.0 reports as the client's own (see
+        # ``hoist_managed_servers``). The kiro path returns None here and is
+        # untouched.
+        kas_agents, mcp_servers = hoist_managed_servers(kas_agents, active_agent, mcp_servers)
         session_work_dir = await self._session_work_dir(cwd)
         # The host's last word on its own tool surface. A host that reads an
         # agent spec passes the list straight back; one that has nothing else
@@ -3738,7 +3753,9 @@ class AcpRuntime:
             # must not arm the drain's idle shortcut while the switched-to
             # agent's own servers may still be booting.
             _ids, _current, _adv = parse_session_modes(resp)
-            mode_switched = bool(_current) and mode_agent != _current
+            mode_switched = mode_agent != _current and (
+                bool(_current) or self._harness.notification_aliases.mcp_readiness
+            )
         elif mode_agent:
             _ids, _current, _adv = parse_session_modes(resp)
             await self.terminate_session(session_id)
@@ -3757,7 +3774,15 @@ class AcpRuntime:
         # A runtime declared MCP-free skips the ceiling — nothing can arm it.
         # After a real mode SWITCH, reports staged during session/new describe
         # the pre-switch roster, so they must not arm the idle shortcut.
-        if self._expect_mcp_reports:
+        if self._harness.notification_aliases.mcp_readiness:
+            await self._wait_managed_mcp(
+                handle,
+                params,
+                active_agent,
+                budget,
+                staged_before_switch if mode_switched else 0,
+            )
+        elif self._expect_mcp_reports:
             await handle.drain_init(
                 stale_report_frames=staged_before_switch if mode_switched else 0
             )
@@ -3955,10 +3980,19 @@ class AcpRuntime:
         payload_snapshot = None
         if self._acp_backend == ACP_BACKEND_KAS:
             kas_extras = await self._kas_custom_agents(
-                active_agent, member_dispatch=bool(member_session_key)
+                active_agent,
+                member_dispatch=bool(member_session_key),
+                session_key=session_key,
             )
             kas_agents = kas_extras.custom_agents
             payload_snapshot = kas_extras.derived_spec_snapshot
+            # Same carriage as create_session: a resumed session re-initializes
+            # its servers, and the managed ones must win the same-name contest
+            # on load exactly as they did on new.
+            kas_agents, mcp_servers = hoist_managed_servers(kas_agents, active_agent, mcp_servers)
+            load_params["mcpServers"] = self._harness.session_mcp_servers(
+                mcp_servers, agent_capabilities=self._agent_capabilities
+            )
             attach_kas_custom_agents(load_params, kas_agents)
         budget = await self._session_start_budget()
         self._session_inits_in_flight += 1
@@ -4069,7 +4103,9 @@ class AcpRuntime:
             # See create_session: after a real mode switch, registration frames
             # staged during session/load describe the pre-switch roster.
             _ids, _current, _adv = parse_session_modes(resp)
-            mode_switched = bool(_current) and mode_agent != _current
+            mode_switched = mode_agent != _current and (
+                bool(_current) or self._harness.notification_aliases.mcp_readiness
+            )
         elif mode_agent:
             # Guard (A) — see create_session. A resumed session always echoes a
             # `modes` list (checked above), so an absent agent means its config
@@ -4090,7 +4126,15 @@ class AcpRuntime:
         # before the queue was registered above, so only genuine init frames
         # remain to drain here. MCP-free runtimes skip the no-report ceiling.
         # After a real mode SWITCH, staged reports are pre-switch — don't arm.
-        if self._expect_mcp_reports:
+        if self._harness.notification_aliases.mcp_readiness:
+            await self._wait_managed_mcp(
+                handle,
+                load_params,
+                active_agent,
+                budget,
+                staged_before_switch if mode_switched else 0,
+            )
+        elif self._expect_mcp_reports:
             await handle.drain_init(
                 stale_report_frames=staged_before_switch if mode_switched else 0
             )
@@ -4101,6 +4145,45 @@ class AcpRuntime:
         return handle
 
     # ── Internal Helpers ──
+
+    async def _wait_managed_mcp(
+        self,
+        handle: AcpSessionHandle,
+        params: dict[str, Any],
+        agent: str,
+        timeout: float,
+        stale_report_frames: int,
+    ) -> None:
+        required = required_managed_servers(params, agent)
+        try:
+            if required:
+                await handle.wait_mcp_ready(
+                    required,
+                    timeout,
+                    stale_report_frames=stale_report_frames,
+                    tool_policy=active_custom_agent(params, agent),
+                    # The names THIS request injected at session level, as sent:
+                    # the one declaration site a provenance-less backend is
+                    # known to honour over a same-named global server.
+                    injected=frozenset(roster_names(params.get("mcpServers"))) & set(required),
+                )
+            else:
+                # An external-only agent still needs the ordinary OAuth/config
+                # drain, even though it has no managed readiness requirement.
+                await handle.drain_init(
+                    stale_report_frames=stale_report_frames,
+                    no_report_ceiling=None if self._expect_mcp_reports else 0.0,
+                )
+        except BaseException:
+            # No handle escapes on failure. A fresh session/new has no history
+            # to preserve, so evict it from the host and reap its MCP children.
+            # KAS has no evict-only verb: session/load is therefore unregistered
+            # locally so its existing native history survives for a later resume.
+            if "sessionId" in params:
+                self.unregister_session(handle.session_id)
+            else:
+                await self.terminate_session(handle.session_id)
+            raise
 
     async def _send_and_await(
         self, method: str, params: dict[str, Any], timeout: float = _REQUEST_TIMEOUT

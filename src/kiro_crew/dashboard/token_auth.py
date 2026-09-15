@@ -1880,21 +1880,41 @@ def _key_segment(session_key: str) -> str:
 def _subagent_owner(subagents: object, agent_id: str) -> str:
     """The app that spawned a subagent, or ``""`` (person-spawned, or no record).
 
-    Reads the live registry mapping directly, which is a plain dict lookup -- no
-    lock and no I/O, so it is safe on the event loop for the same reason the slot
-    lookup is.
+    Uses the same canonical conversation lookup as the missing-record gate.
+    """
+    info = _subagent_caller_record(subagents, agent_id)
+    return str(getattr(info, "app", "") or "") if info is not None else ""
+
+
+def _subagent_caller_record(subagents: object, agent_id: str) -> object | None:
+    """Resolve a run or its unique active continuation from the live registry.
+
+    A continuation registers under a new run id but calls tools under its
+    original conversation key. After eviction or restart that original run
+    can be absent. Only an executing continuation with the exact canonical key
+    can establish the caller; retained files and queued work confer no authority.
+    The original record, when present, keeps its ownership precedence.
     """
     if subagents is None or not agent_id:
-        # An empty id identifies nothing (see ``_cron_job_owner``).
-        return ""
+        return None
     lookup = getattr(subagents, "get", None)
     if lookup is None:
-        return ""
+        return None
     try:
         info = lookup(agent_id)
+        if info is not None:
+            return info
+        conversation_key = f"subagent:{agent_id}"
+        matches = [
+            candidate
+            for candidate in getattr(subagents, "values")()
+            if getattr(candidate, "conversation_key", "") == conversation_key
+            and getattr(candidate, "done", None) is False
+            and getattr(candidate, "queued", None) is False
+        ]
+        return matches[0] if len(matches) == 1 else None
     except Exception:  # noqa: BLE001 - an auth path must never 500 on this
-        return ""
-    return str(getattr(info, "app", "") or "") if info is not None else ""
+        return None
 
 
 def caller_record_is_missing(
@@ -1908,10 +1928,10 @@ def caller_record_is_missing(
     runs for is gone", which is the same thing
     :func:`caller_names_a_missing_slot` says about a ``dashboard:`` key.
 
-    Reachable, and narrowly: a live subagent is always in the registry (only
-    ``done`` records are ever evicted, by ``evict_completed_agents``), and a cron
-    job stays until it is removed -- so this fires when a job is DELETED while its
-    run is still making calls, and the deleted job's app reach must not survive it.
+    A live subagent is registered by run id; an active continuation can establish
+    its canonical conversation key when the original run was evicted or predates
+    this gateway process. A cron job stays until it is removed, and its deleted
+    record's app reach must not survive removal.
 
     Requires the registry to be PRESENT. A surface wired without one (the
     ``--slack-only`` API server) must not have every delegated caller refused
@@ -1954,19 +1974,12 @@ def _cron_job_exists(jobs: object, job_id: str) -> bool:
 
 
 def _subagent_record_exists(subagents: object, agent_id: str) -> bool:
-    """Whether a subagent id is in the registry (plain dict lookup).
+    """Whether the live registry establishes this canonical subagent caller.
 
-    Fails CLOSED on an unreadable registry (no ``get`` / lookup raises): returns
-    ``False`` so the delegated caller is denied rather than escalated. See
-    ``_cron_job_exists`` for the SAX-04 fail-closed rationale.
+    The owner and existence decisions share a resolver, including its refusal
+    of ambiguous continuations and unreadable registries.
     """
-    lookup = getattr(subagents, "get", None)
-    if lookup is None:
-        return False  # unreadable registry: fail closed, see ``_cron_job_exists``
-    try:
-        return lookup(agent_id) is not None
-    except Exception:  # noqa: BLE001 - an auth path must never 500 on this
-        return False
+    return _subagent_caller_record(subagents, agent_id) is not None
 
 
 def caller_names_a_missing_slot(slots: object, session_key: str) -> bool:

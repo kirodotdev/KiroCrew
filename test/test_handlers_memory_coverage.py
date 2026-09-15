@@ -1566,6 +1566,123 @@ class TestMemoryMutationSessionGate:
         assert _body(resp) == {"content": "", "content_redacted": False}
 
 
+@pytest.mark.asyncio
+class TestSubagentMemorySessionRecognition:
+    @pytest.mark.parametrize(
+        "run_id", ["", "../worker", r"..\worker", ".worker", "C:worker", "worker:stream", "a\x00b"]
+    )
+    async def test_invalid_subagent_ids_cannot_reach_the_filesystem(self, monkeypatch, run_id):
+        from kiro_crew.dashboard.handlers.cron import _recognize_session
+        from kiro_crew.history import is_incognito_transcript
+
+        # Model an existing target at every spelling: rejection must come from
+        # key validation, not from an absent file (including Windows ADS paths).
+        exists = MagicMock(return_value=True)
+        with monkeypatch.context() as patched:
+            patched.setattr(Path, "exists", exists)
+            refusal = await _recognize_session(
+                _make_state(),
+                f"subagent:{run_id}",
+                "test.memory",
+                blocks_persisted_mode=is_incognito_transcript,
+            )
+
+        assert refusal is not None
+        assert refusal.status == 400
+        assert _body(refusal)["code"] == "unknown_session"
+        exists.assert_not_called()
+
+    async def test_subagent_history_cannot_replace_a_live_allocation(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers.cron import _recognize_session
+        from kiro_crew.history import ConversationLog, is_incognito_transcript
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        log = ConversationLog(base_dir=tmp_path / "sessions")
+        await asyncio.to_thread(
+            log.update_metadata, "subagent:worker-a", {"memory_store": "default"}
+        )
+
+        refusal = await _recognize_session(
+            _make_state(),
+            "subagent:worker-a",
+            "test.memory",
+            blocks_persisted_mode=is_incognito_transcript,
+        )
+
+        assert refusal is not None
+        assert refusal.status == 400
+        assert _body(refusal)["code"] == "unknown_session"
+
+    @pytest.mark.parametrize(
+        "collision", ["live-slot", "restricted-key", "bare", "dashboard", "cron"]
+    )
+    async def test_a_subagent_cannot_borrow_another_sessions_identity(
+        self, tmp_path, monkeypatch, collision
+    ):
+        from kiro_crew.dashboard.handlers.cron import _recognize_session
+        from kiro_crew.history import ConversationLog, is_incognito_transcript
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        state = _make_state()
+        if collision == "live-slot":
+            state._slots["worker-a"] = SimpleNamespace(memory_mode="persistent")
+        elif collision == "restricted-key":
+            state._restricted_keys.add("subagent:worker-a")
+        else:
+            key = "worker-a" if collision == "bare" else f"{collision}:worker-a"
+            log = ConversationLog(base_dir=tmp_path / "sessions")
+            await asyncio.to_thread(log.update_metadata, key, {"memory_mode": "persistent"})
+
+        refusal = await _recognize_session(
+            state,
+            "subagent:worker-a",
+            "test.memory",
+            blocks_persisted_mode=is_incognito_transcript,
+        )
+
+        assert refusal is not None
+        assert refusal.status == 400
+        assert _body(refusal)["code"] == "unknown_session"
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"_type": "metadata", "memory_mode": "persistent"},
+            {"_type": "metadata", "memory_mode": "incognito"},
+            {"_type": "metadata", "memory_mode": "temporary"},
+            {"_type": "metadata", "memory_mode": "unknown"},
+            {"_type": "metadata", "memory_mode": []},
+            {"role": "user", "content": "not metadata"},
+        ],
+    )
+    async def test_subagent_history_mode_cannot_replace_a_live_allocation(
+        self, tmp_path, monkeypatch, metadata
+    ):
+        from kiro_crew.dashboard.handlers.cron import _recognize_session
+        from kiro_crew.history import is_incognito_transcript
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "subagent_worker-a.jsonl").write_text(
+            json.dumps(metadata) + "\n", encoding="utf-8"
+        )
+        # Neither a saved mode nor a colliding slot can make this child live.
+        state = _make_state()
+        state._slots["worker-a"] = SimpleNamespace(memory_mode="persistent")
+
+        refusal = await _recognize_session(
+            state,
+            "subagent:worker-a",
+            "test.memory",
+            blocks_persisted_mode=is_incognito_transcript,
+        )
+
+        assert refusal is not None
+        assert refusal.status == 400
+        assert _body(refusal)["code"] == "unknown_session"
+
+
 # ---------------------------------------------------------------------------
 # consolidate
 # ---------------------------------------------------------------------------

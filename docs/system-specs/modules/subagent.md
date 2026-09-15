@@ -71,6 +71,77 @@ no session trust or global auto-approval. Result polling reads the complete
 unchanged JSON stream, stops on a failed terminal child, and reports only fixed
 state/reason labels plus missing-file and non-JSON poll counts.
 
+The same protected `memory.json` records the run's `app` owner. An explicit
+empty string identifies a person-owned run; a missing value does not. Continuation
+inherits ownership from the live run or this protected record before spawn
+admission, so both governance and internal HTTP attribution retain the app scope.
+Tightening a run's memory mode preserves its app owner and selected identity.
+It never accepts `state.json` as ownership authority. After eviction or restart,
+older runs without a protected app field refuse continuation with `resume_failed`
+and require a new conversation. Supplying an explicit template cannot bypass
+that refusal.
+
+Continuations retain the original run's selected template or member when `agent`
+is omitted.
+The runner reads `member-memory-bindings/<id>/agent.json` off the event loop and
+validates availability before provider allocation. This record shares the
+sandbox-readonly memory identity tree; `state.json` remains diagnostic and never
+selects an identity. The private record format is version 2, with `kind` equal to
+`template` or `member` and `agent` carrying the selected literal or canonical
+member name. An explicit spawn `agent` selects a template. Initial implicit
+inheritance takes an immutable `(kind, name)` snapshot from SessionManager's
+allocation-owned state: `capability_member` identifies a member even before
+capability enrollment, while non-member allocations retain their template name.
+Neither current roster membership nor provider attribution fields can change
+that namespace. An absent parent retains the default template; malformed or
+unavailable selection on a present parent refuses execution.
+
+An initial run publishes that selection; a follow-up copies the original selection,
+independently of its one-turn override, before allocating a provider. Continuing
+that follow-up, live or after restart, therefore retains the original identity.
+Publication failure refuses execution, and cancellation drains the protected
+writer before finalization. A recorded empty template keeps the default.
+Version-1 nonempty records are ambiguous: earlier writers could record a crew
+alias as a template. They refuse implicit continuation without guessing from
+today's roster. A version-1 empty record retains its default-template meaning.
+An absent, unreadable or invalid protected record likewise refuses implicit
+continuation; the caller can supply an explicit template through normal admission
+and governance checks. When the original selection is unavailable, that explicit
+turn records unknown lineage (`agent: null`, `kind: null`), which refuses later
+implicit continuation.
+It still publishes through the drained writer, including when reusing a
+preassigned run id. Neither writable diagnostics nor the temporary override can
+establish the missing lineage.
+A caller-supplied template overrides the current turn without changing the
+conversation's selection or its independently protected private-memory identity.
+
+Template allocations explicitly pass `crew_agent=""`, including dedicated
+fallback after a shared-runtime failure. A same-named member therefore cannot
+replace a retained template. Member selections resolve strictly in the member
+namespace and must still match the protected memory assignment; a removed member
+or changed assignment refuses rather than selecting a same-named template or
+rebinding memory. Members use dedicated SessionManager allocation with an explicit
+canonical crew claim, preserving capability preparation, generation adoption and
+startup verification. The generated provider template never replaces the durable
+member identity. Missing templates refuse turns that would execute them.
+For an inherited selection, the runner checks its logical name (literal template
+or canonical member) against the caller's spawn policy and app scope before
+allocation. Omitting the name cannot bypass that check.
+
+Continuation tools keep the original `subagent:<conversation-id>` session key,
+while the manager registers each follow-up under its new run id. Internal HTTP
+caller recognition resolves a missing original record through the unique active
+continuation with that exact conversation key. App ownership uses the same
+lookup. A queued or completed continuation cannot replace a missing caller
+record, and private memory still requires its canonical protected session/store
+binding and verified process proof.
+
+Every backend records the provider's actual working directory alongside its
+session id. The next continuation uses this directory even when its target is
+itself a completed follow-up and the gateway has restarted. This uses the common
+provider `cwd` property, falling back to the admitted directory when unavailable;
+the legacy Claude client fallback remains for providers without that property.
+
 ## Constants
 
 | Constant | Value | Purpose |
@@ -613,8 +684,19 @@ Parameters:
 - `cwd` (str, optional): absolute path to launch subagent in. Must be under a configured `subagent_cwd_allowed_roots` entry (default: `~/workspace`, `~/workspaces`, `~/workplace`, `~/workplaces`). Validated via realpath + prefix match. Pool skipped when cwd is set. These roots are a least-privilege allowlist and are never widened automatically: a persisted list whose roots all fail to exist on the host rejects every cwd, and the operator must edit `agent.subagent_cwd_allowed_roots` (or delete the key to take the shipped default). Neither the loader nor the guard stats the configured roots.
 - `max_turns` (int, optional): override tool-call budget for this spawn (default: config or 100)
 - `agent` (str, optional): agent name for the subagent
-- `reasoning_effort` (str, optional): per-call reasoning-effort override (`low`/`medium`/`high`/`xhigh`/`max`), batch-wide like `model`. Precedence: per-call value → `agent.role_efforts['subagent']` pin → provider default; `""`/absent changes nothing. Like a model/effort role pin, a non-empty value forces the dedicated-process path (the parent's shared runtime cannot switch effort per session), so a wide fan-out pays a full process per subagent — and that cost is paid even when the resolved model turns out not to support effort (the level is then dropped at the provider factory). Carried through the stagger queue and the retry endpoint like the context-group flags. NOT inherited by `spawn_continue` — a continuation resolves effort fresh (role pin, else default), the same parity as `model`. When the requested effort cannot take effect, the gateway says so: `/api/spawn` resolves the model the factory's effort gate will see (per-call value, else the subagent role pin, else the session chain for the effective agent — a crew's own model pin, else a non-sentinel global `agent.model`; a named kiro agent's own pin resolves downstream and cannot carry the overlay) and returns an `effort_dropped` reason on the success response, which the tool renders as one attributed line per distinct verdict — subagents sharing an identical verdict (the usual case, since the value is batch-wide) are collapsed into a single line naming all of them, while differing verdicts keep their own attributed lines — including the default case where nothing is pinned and the model resolves to "auto". When the effort WILL apply, the response instead carries an `effort_applied` note naming the resolved model and the family-specific settings key (`reasoning` for GPT, `output_config` for Claude) it is delivered under, rendered the same way — so both outcomes of a requested effort are visible in the tool result. A role-pinned effort that will be dropped (no per-call effort involved) still surfaces in the gateway log at warning level, since the tool caller never asked for it — that warning is emitted by the provider factory's effort gate itself (`config/loader.py`), the single authority that drops the level, so one log line covers every surface that funnels through it (spawn, dashboard slot, cron) and cannot drift from the decision it reports on. The provider factory remains the single dropping authority; the report never rejects or alters a spawn. Per-TASK variation inside one call is deliberately not supported (see issue #2140).
+- `reasoning_effort` (str, optional): per-call reasoning-effort override (`low`/`medium`/`high`/`xhigh`/`max`), batch-wide like `model`. Precedence: per-call value → `agent.role_efforts['subagent']` pin → provider default; `""`/absent changes nothing. Like a model/effort role pin, a non-empty value forces the dedicated-process path (the parent's shared runtime cannot switch effort per session), so a wide fan-out pays a full process per subagent — and that cost is paid even when the resolved model turns out not to support effort (the level is then dropped at the provider factory). Carried through the stagger queue and the retry endpoint like the context-group flags. NOT inherited by `spawn_continue` — a continuation resolves effort fresh (role pin, else default), the same parity as `model`. When the requested effort cannot take effect, the gateway says so: `/api/spawn` resolves the model the factory's effort gate will see (per-call value, else the subagent role pin, else the selected member's own model pin, the provider template's pin, and the global fallback) and returns an `effort_dropped` reason on the success response, which the tool renders as one attributed line per distinct verdict — subagents sharing an identical verdict (the usual case, since the value is batch-wide) are collapsed into a single line naming all of them, while differing verdicts keep their own attributed lines — including the default case where nothing is pinned and the model resolves to "auto". When the effort WILL apply, the response instead carries an `effort_applied` note naming the resolved model and the family-specific settings key (`reasoning` for GPT, `output_config` for Claude) it is delivered under, rendered the same way — so both outcomes of a requested effort are visible in the tool result. A role-pinned effort that will be dropped (no per-call effort involved) still surfaces in the gateway log at warning level, since the tool caller never asked for it — that warning is emitted by the provider factory's effort gate itself (`config/loader.py`), the single authority that drops the level, so one log line covers every surface that funnels through it (spawn, dashboard slot, cron) and cannot drift from the decision it reports on. The provider factory remains the single dropping authority; the report never rejects or alters a spawn. Per-TASK variation inside one call is deliberately not supported (see issue #2140).
 - `include_memory` / `include_lessons` / `include_project` (bool, optional, default `true`): which switchable context groups the subagent inherits, applied to every task in a batch spawn. All-on is byte-identical to the injection a normal session gets, so a caller that omits them changes nothing. `include_memory=false` drops preferences, projects, daily history, semantic and episodic memory, and prior-session provenance — the normal choice for fan-out whose task text is self-contained. `include_lessons=false` additionally drops the user's learned corrections and profile, so keep it on for any subagent that writes code, edits files, or runs git. `include_project=false` drops the docs pointer and the project-directory line. It also drops the injected steering block, but ONLY on the Claude Code backend: on the ACP/kiro backend `kiro-cli --agent` loads the agent's `resources` (including steering globs) itself, which Kiro Crew cannot suppress from here, so steering still reaches an ACP sub-agent regardless of this flag. The conduct group — critical output-format rules, date, agent identity, runtime, workspace identity, and the skills index — is never switchable, because a subagent without it cannot discover its own capabilities or format what it reports back. A subagent is told by name which groups were withheld (`[CONTEXT SCOPE]`) so it reports the gap rather than guessing. Resolved once at spawn, carried through the capacity-queue round-trip and `POST /api/spawn/{id}/retry` like `approval_mode`/`silent`/`keep`. `spawn_continue` does not take the flags but does **inherit** them from the run it continues: a continuation rebuilds session context (`get_or_create` reports `is_new=True` even when it restores the session via `session/load`), so without inheritance a scoped-down run would regain a group on its follow-up turn. See `memory-skills-hooks.md` § Switchable context groups for the section-by-section mapping.
+
+Effort receipts retain the runner's selection namespace. An explicit `agent`,
+including a template already resolved from `crew`, uses an empty crew claim;
+implicit inheritance uses `SessionManager.get_agent_selection()` rather than the
+parent's raw agent string. A member keeps its canonical claim and resolves the
+bound provider template's model when its own model is unpinned. An absent parent
+keeps the default template. If selection or model resolution is unavailable,
+both optional receipt fields are omitted; this is distinct from a successfully
+resolved `auto`, which reports the effort drop. Receipt lookup runs off the event
+loop after the live selection snapshot, never prepares capabilities, and never
+changes submission, allocation, governance, or private-memory authority.
 
 Response semantics:
 - An ID means the submission was accepted. A running subagent returns its durable agent ID; capacity/stagger queueing returns a temporary `qN` receipt that is replaced by the durable ID when the queue drains. Use `spawn_list` or the completion event to discover the durable ID rather than treating the receipt as a result path.

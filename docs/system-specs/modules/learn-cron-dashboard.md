@@ -85,6 +85,13 @@ The `learn_add` MCP tool (backed by `POST /api/lessons`) is subject to session-s
 
    If none match → HTTP 400 `unknown session`.
 
+For `subagent:<run-id>`, the gateway requires the full key's live allocation,
+including the original conversation key used by a continuation. A colliding
+dashboard slot, restriction marker or retained transcript cannot establish that
+session. Its protected admitted memory mode must permit the operation. This
+session-recognition check precedes the protected process/session proof required
+to address private member memory.
+
 A Slack thread keys its session off the **bare** `thread_ts` (e.g. `1781215864.487849`), set in `slack/handler.py` and frozen into the MCP subprocess's `KIROCREW_SESSION_KEY` env var; the `slack:<chan>:<ts>` form is only a `send_message` delivery target, never the session key. Recognising the bare-`thread_ts` shape is required because the session JSONL is written *after* the LLM turn completes, so the first `learn_add` in a fresh Slack thread would otherwise race the flush and fail with `unknown session` until the transcript lands on disk (then succeed minutes later). Dashboard keys are always prefixed (`dashboard:*`, `chat-N-*`), never a bare `digits.digits`, so the regex cannot widen authorization for dashboard or forged keys.
 
 The same first-turn flush race applies to **every** messaging channel, not just Slack: a Telegram/Discord/Webex/WeCom session key is namespaced `{channel}:{conversation_id}` (e.g. `telegram:kirocrew:forum:-100…:18:gen3`) and, post-#232, the transport publishes `session_pid` so the gateway resolves it into `X-Session-Key`. Recognising the whole channel-namespace family via `is_channel_session_key` (not just `slack:`) is therefore the load-bearing acceptance for channel sessions. The `_session_has_persisted_history` fallback alone cannot rescue them: `slot_name = sk.split(":", 1)[-1]` keeps the inner colons (`kirocrew:forum:-100…:18:gen3`) and drops the channel prefix, while the on-disk file is `dashboard_<safe_key>.jsonl` with `:` folded to `_` — so no probed name ever matches. Before this generalization, only `slack:` was accepted, so `learn_add` (and the other `POST /api/lessons` writers) failed with `unknown session` from every non-Slack channel even though the session was fully identified (regression #1268). The `dashboard:`/`cron:`/`hook:`/`subagent:`/`channel:` namespaces are deliberately **not** in `CHANNEL_SESSION_NAMESPACES`, so they resolve through live ownership, slot or persisted-JSONL paths rather than namespace acceptance.
