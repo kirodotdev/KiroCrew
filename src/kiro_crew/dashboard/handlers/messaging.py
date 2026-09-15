@@ -2064,6 +2064,78 @@ def _vet_channel_send(channel_type: str, caller_session: str) -> str:
     return ""
 
 
+#: ``action_id`` on the "Open session" link button. Slack still emits a
+#: ``block_actions`` event when a URL button is clicked, so a stable, recognisable
+#: id keeps the interaction router from logging it as an unknown action; the
+#: ``url`` is what actually opens the tab, and no handler is registered for this id.
+_SESSION_LINK_ACTION_ID = "open_session_link"
+
+
+def _session_link_blocks(url: str) -> list[dict[str, Any]]:
+    """One Block Kit ``actions`` block with an "Open session" link button.
+
+    A URL button opens *url* in the user's browser directly, so it needs no
+    interaction handler. Posted as a trailing follow-up message on the Slack leg
+    (see ``api_send_message``) rather than merged into the caller's own message,
+    so a link Slack rejects fails only this best-effort follow-up and never the
+    message the caller actually asked to send.
+    """
+    return [
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open session"},
+                    "url": url,
+                    "action_id": _SESSION_LINK_ACTION_ID,
+                }
+            ],
+        }
+    ]
+
+
+async def _resolve_session_link_url(
+    state: DashboardState, caller_session: str, declared_session: str
+) -> str:
+    """The deep link to the CALLER's own dashboard session, or ``""``.
+
+    The session is resolved SERVER-SIDE, never from a body field: a cron caller
+    links to the origin session that spawned it (``_channel_delivery_key`` reads
+    the job's stored ``session_key``), and every other caller is identified by
+    the ``X-Session-Key`` header, which ``token_auth`` kernel-attests against the
+    AF_UNIX peer. So the link can only ever point at the session that actually
+    sent the message -- a wrong-session link is structurally impossible.
+
+    The origin follows ``slack.allowlist.send_dashboard_link``'s convention: the
+    live tunnel URL when ``slack.use_tunnel_url`` is set and one is connected,
+    otherwise the configured dashboard origin. Returns ``""`` -- and the caller
+    omits the button -- for a headless caller (no resolvable session) or when no
+    usable origin exists (no tunnel and no dashboard origin). Never raises: a
+    config-read failure degrades to no button, because the message must still go.
+    """
+    session_key = _channel_delivery_key(state, caller_session, declared_session)
+    # The bare slot key the SPA's ``?sid=`` matches: the session key with the
+    # ``dashboard:`` namespace stripped, the same form ``_resolve_session_target``
+    # feeds ``get_slot``.
+    slot_key = session_key.removeprefix("dashboard:")
+    if not slot_key:
+        return ""
+    # Lazy imports: keep the tunnel and backfill modules off this handler
+    # module's import path (it loads at gateway boot) and matches the file's
+    # other deferred imports. The config read is paid only on this opt-in path.
+    from kiro_crew.dashboard.chat_backfill import session_deep_link
+    from kiro_crew.tunnel import get_tunnel_url
+
+    try:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    except Exception:
+        logger.debug("send_message: session-link config load failed", exc_info=True)
+        return ""
+    tunnel_url = get_tunnel_url() if cfg.slack.use_tunnel_url else ""
+    return session_deep_link(cfg.dashboard.url, slot_key, tunnel_url=tunnel_url)
+
+
 async def api_send_message(request: web.Request) -> web.Response:
     """POST /api/send-message — send a message to a chat surface and/or dashboard.
 
@@ -2567,6 +2639,14 @@ async def api_send_message(request: web.Request) -> web.Response:
                     channel_text,
                     channel_type=channel_type,
                 )
+            # Opt-in "Open session" deep-link button: resolved (server-side) only
+            # when the caller asked for it AND this send actually reaches Slack.
+            # Built here, before the post, so the button rides the same Slack leg.
+            session_link_url = ""
+            if body.get("include_session_link") and send_to_slack and state.slack_client:
+                session_link_url = await _resolve_session_link_url(
+                    state, caller_session, declared_session
+                )
             # A separate ``if``, not an ``elif``: ``send_to_slack`` is the single
             # predicate that decides Slack delivery, so it must be false when a
             # channel session took the routing over rather than merely
@@ -2658,6 +2738,24 @@ async def api_send_message(request: web.Request) -> web.Response:
                                         exc_info=True,
                                     )
                         sent_slack = True
+                        # Trailing "Open session" button, posted as its own
+                        # best-effort message so a link Slack rejects can never
+                        # fail the message the caller actually sent (which is
+                        # already delivered above). Threaded with the main post
+                        # when that was a threaded reply.
+                        if session_link_url:
+                            try:
+                                await state.slack_client.post_blocks(
+                                    channel,
+                                    _session_link_blocks(session_link_url),
+                                    "Open session",
+                                    thread_ts=thread_ts,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "send_message: failed to post session-link button",
+                                    exc_info=True,
+                                )
                 except Exception as exc:
                     slack_attempted = True
                     slack_error = str(exc)

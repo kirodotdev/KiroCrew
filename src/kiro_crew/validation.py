@@ -2754,6 +2754,11 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
         FieldSpec("unfurl_media", bool),
         FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
         FieldSpec("reply_broadcast", bool),
+        # Opt-in "Open session" deep-link button on the Slack leg. Declared here
+        # because ``validate_tool_args`` rejects any field the descriptor
+        # advertises but the schema does not declare; the gateway builds the URL
+        # server-side, so nothing but this flag crosses the wire.
+        FieldSpec("include_session_link", bool),
         # Must accept every value ``mcp_tools.messaging._SESSION_TARGETS``
         # advertises: this pattern runs BEFORE the handler, so a value missing
         # here is rejected as malformed even though the tool's own enum offers
