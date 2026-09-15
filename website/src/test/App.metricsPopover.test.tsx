@@ -180,7 +180,7 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
     // The connection dot folds the capsule down to itself, which unmounts every
     // readout including this trigger. A popover left open would then be anchored
     // to a box that no longer exists, with nothing on screen owning it.
-    fireEvent.click(screen.getByLabelText('Gateway connected'))
+    fireEvent.click(screen.getByLabelText(/Gateway connected/i))
 
     expect(screen.queryByLabelText('System metrics')).toBeNull()
     expect(screen.queryByRole('dialog', { name: 'System metrics' })).toBeNull()

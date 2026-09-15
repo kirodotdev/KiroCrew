@@ -76,7 +76,7 @@ describe('App top bar — readout capsule collapse', () => {
 
   it('clicking the connection dot collapses the readouts to just the dot and persists', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    const dot = await screen.findByLabelText('Gateway connected')
+    const dot = await screen.findByLabelText(/Gateway connected/i)
     expect(dot.getAttribute('aria-expanded')).toBe('true')
     // metrics segment visible while expanded (the fork capsule has no
     // enterprise-SSO segment — that SSO flow is stubbed in this fork)
@@ -97,7 +97,7 @@ describe('App top bar — readout capsule collapse', () => {
   it('starts collapsed when the persisted flag is set', async () => {
     safeSetItem('mc-topbar-capsule-collapsed', '1')
     renderWithProviders(<App />, { route: '/chat' })
-    const dot = await screen.findByLabelText('Gateway connected')
+    const dot = await screen.findByLabelText(/Gateway connected/i)
     expect(dot.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByLabelText('System metrics')).toBeNull()
   })
@@ -119,7 +119,7 @@ describe('App top bar — update pill shifts the collapse-ladder budget', () => 
     // conditions are computed independently (App.tsx vs UpdatePill.tsx), so the
     // pill's own mount is asserted alongside the class at every step.
     const { container, store } = renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByLabelText('Gateway connected')
+    await screen.findByLabelText(/Gateway connected/i)
     const group = container.querySelector('.tb-right') as HTMLElement
     expect(group).toBeTruthy()
     expect(group.classList.contains('tb-has-update')).toBe(false)

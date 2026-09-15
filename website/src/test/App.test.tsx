@@ -1352,7 +1352,9 @@ describe('App routing', () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Connection is a colored dot in the unified readout capsule ("Offline"
     // text was removed -- the capsule's red tint is the disconnected signal).
-    expect(screen.getByLabelText('Gateway offline')).toBeInTheDocument()
+    // The dot's accessible name carries the cause; with no auth banner up it
+    // is the reconnecting variant (see #9692).
+    expect(screen.getByLabelText(/Gateway offline/i)).toBeInTheDocument()
   })
 
   it('keeps theme controls available from Settings', () => {
