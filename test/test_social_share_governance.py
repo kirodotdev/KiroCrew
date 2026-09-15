@@ -301,6 +301,7 @@ class TestGovernanceGenerationFrame:
                 folders=[],
                 folders_gen=2,
                 governance_gen=7,
+                slots_gen=3,
             )
         )
         assert frame["governanceGeneration"] == 7

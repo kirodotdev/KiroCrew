@@ -510,6 +510,47 @@ teardown. Its three failure modes surface as their own codes at HTTP 500
 (`nudge_retire_failed`, `app_close_hook_failed`, `history_save_failed`), which is
 why the routes now forward a 500 rather than degrading it to 400.
 
+### Dating a slots snapshot: the server-stamped generation
+
+`close_slot` pops the slot only after the nudge-lock and app-close-hook awaits, so a
+list read issued before the close can be serialized while the closing slot is still
+listed and arrive after it is gone. Nothing else on the wire orders two list replies:
+`api_chat_slot_resume` restores `slot.created_at`, so `created` cannot tell a resumed
+replacement from the original.
+
+Both transports therefore date every snapshot. `_slots_ws_frame` stamps
+`slotsGeneration` on the push and `api_chat_slots` returns the same counter in an
+`X-Slots-Generation` header — a header rather than an envelope key, because that reply
+is a bare list with consumers outside the SPA (`kirocrew_client`, `mcp_dashboard`).
+Each also carries a per-process `slotsEpoch` / `X-Slots-Epoch`: the counter restarts at
+0 in a new gateway, so a generation is comparable only WITHIN an epoch, and a reader
+holding a high count would otherwise refuse every snapshot a restarted gateway sent.
+
+The stamp is drawn BEFORE the rows are read, through `DashboardState.stamped_slots`,
+which is why both emitting paths take it from there rather than calling
+`next_slots_generation` themselves. Serializing first and stamping after leaves a
+window in which a close pops a slot between the two, so the frame would carry pre-pop
+rows under a number drawn later than the post-pop read's — the resurrection restated,
+not fixed. `stamped_slot_rows` draws the number and captures membership as one step, so
+every audience variant of one broadcast serializes from that same tuple.
+
+**Slot identity is explicit on the wire.** A key is reusable, so `created` cannot
+identify an instance. Every slot row, resume and fork reply carries an `incarnation`
+minted per live slot object, and `DELETE /api/chat/slots/{key}` accepts `?incarnation=`
+to name the object the caller meant. `close_slot` re-checks identity after its awaits
+via `_reassert_same_incarnation` and answers `target_replaced` at HTTP 409 rather than
+archiving a replacement that took the key. Rows carry `closing` while a close is in
+flight, and a close-failure reply carries `definitive` to say whether a retry can
+succeed.
+
+**No in-repo consumer ships in this commit.** These fields are additive wire surface.
+The dashboard client that orders snapshots by `(slotsEpoch, slotsGeneration)`, sends the
+row's `incarnation` on DELETE, and holds a closing row hidden lands as a separate
+change. Until it does, `?incarnation=` stays OPTIONAL so existing key-only callers keep
+working — which means a key-only close is ordered by object identity alone, and a caller
+that omits the parameter still cannot distinguish the object it meant from a replacement
+that took the key before the request arrived.
+
 **Authorization is re-asserted at the point of no return.** `authorize_target`
 runs before `close_slot`, but `close_slot` then awaits — auto-nudge retirement
 takes the AutoNudge lock, and the app hook awaits external work — and a target
