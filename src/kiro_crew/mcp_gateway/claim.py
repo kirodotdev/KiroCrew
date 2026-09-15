@@ -111,8 +111,8 @@ def build_claim_frame(
     (``platform_compat.get_process_start_id``) — gatewayd compares it against
     the token it recorded at register time so a claim can never land on a
     connection whose PID was recycled to a different process. ``None`` means
-    "identity unknown" (Windows, unreadable /proc) and is treated by gatewayd
-    as a match, preserving legacy behavior.
+    "identity unknown" (an unreadable /proc read, an unopenable process) and
+    is treated by gatewayd as a match, preserving legacy behavior.
 
     ``stub_session_token`` names ONE of the ACP sessions the runtime hosts
     (:func:`mint_stub_session_token`), so gatewayd re-targets only that

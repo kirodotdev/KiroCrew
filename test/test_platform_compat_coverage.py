@@ -596,6 +596,43 @@ class TestGetProcessStartId:
         monkeypatch.setattr(pc, "process_start_time", lambda pid: None)
         assert pc.get_process_start_id(5) is None
 
+    def test_windows_reads_creation_only_through_the_query_seams(self, monkeypatch):
+        """The arm asks the seam for the CREATION half: the event-loop caller
+        must never sit under the exit-time publication poll, so the read is
+        made in creation-only mode and the handle is released either way."""
+        _fake_windows(monkeypatch)
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        opened: list[int] = []
+        closed: list[int] = []
+        seen_kwargs: dict[str, object] = {}
+
+        def _open(pid: int) -> int | None:
+            opened.append(pid)
+            return 4242
+
+        def _identity(handle: int, **kwargs: object):
+            seen_kwargs.update(kwargs)
+            return (4242, 133_700_000_000_000_000, None)
+
+        monkeypatch.setattr(pc, "_open_process_query_handle", _open)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", _identity)
+        monkeypatch.setattr(pc, "_close_process_handle", lambda handle: closed.append(handle))
+
+        assert pc.get_process_start_id(4242) == "133700000000000000"
+        assert opened == [4242] and closed == [4242]
+        assert seen_kwargs == {"want_exit_time": False}
+
+    def test_windows_unreadable_identity_is_unknown_and_closes_the_handle(self, monkeypatch):
+        _fake_windows(monkeypatch)
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        closed: list[int] = []
+        monkeypatch.setattr(pc, "_open_process_query_handle", lambda _pid: 7)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _handle, **_kw: None)
+        monkeypatch.setattr(pc, "_close_process_handle", lambda handle: closed.append(handle))
+
+        assert pc.get_process_start_id(4242) is None
+        assert closed == [7]
+
     def test_identity_never_contains_a_colon(self, monkeypatch):
         # Callers embed the value in colon-delimited records.
         _fake_libproc(monkeypatch, payload=_bsdinfo(sec=17, usec=1), ret=136)

@@ -116,18 +116,17 @@ def pid_start_token(pid: int) -> str:
     either alone costs a platform:
 
     - :func:`kiro_crew.platform_compat.get_process_start_id` is preferred. It is
-      in-process on every platform it implements (no subprocess) and on macOS
-      reads ``libproc`` at MICROSECOND resolution, where ``process_start_time``'s
-      ``ps -o lstart=`` spelling is only 1-second granular — a pid recycled
+      in-process on every platform (no subprocess): ``/proc`` on Linux,
+      MICROSECOND ``libproc`` resolution on macOS — where ``process_start_time``'s
+      ``ps -o lstart=`` spelling is only 1-second granular, so a pid recycled
       inside the same second would reproduce an identical token there and the
-      guard would silently pass.
-    - :func:`kiro_crew.platform_compat.process_start_time` is the fallback, and
-      it is what keeps **Windows** working: it reads the process creation
-      ``FILETIME`` (100-ns units) through a query-only handle, while
-      ``get_process_start_id`` implements Linux and macOS only and answers
-      ``None`` everywhere else. Without this leg the token is empty on every
-      Windows host, so a pod there could never prove ownership at all — an
-      unsatisfiable requirement rather than a strict one.
+      guard would silently pass — and the process creation ``FILETIME`` through
+      the same query-only handle seams on Windows.
+    - :func:`kiro_crew.platform_compat.process_start_time` is the fallback for a
+      host where the preferred read fails: on Windows it reads the same creation
+      ``FILETIME`` (100-ns units) through the same query-only handle, so both
+      helpers answer the identical token there, and on other POSIX it degrades
+      to ``ps -o lstart=``.
 
     The fallback's value is whitespace-collapsed because the macOS ``ps``
     spelling is space-padded and the reader requires a single token; Windows

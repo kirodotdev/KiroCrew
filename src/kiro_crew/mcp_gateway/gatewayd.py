@@ -1702,8 +1702,8 @@ class _StubConn:
     start token (``platform_compat.get_process_start_id``), the PID-recycle
     guard: a later ``claim`` naming a PID whose token no longer matches is
     targeting a DIFFERENT process that recycled the number, and must not
-    retarget this connection. ``None`` means "identity unknown" (Windows,
-    unreadable /proc) and never counts as a mismatch.
+    retarget this connection. ``None`` means "identity unknown" (an unreadable
+    /proc read, an unopenable process) and never counts as a mismatch.
 
     ``stub_session_token`` names WHICH of the ACP sessions the runtime hosts
     this connection serves (``claim.mint_stub_session_token``). Every PID-keyed
@@ -2139,9 +2139,9 @@ async def _apply_claim(
     # actually claimed; the recorded token identifies the process that owned
     # the PID at register time. Skip a connection only on a DEFINITE mismatch
     # (both tokens known and unequal) — ``None`` on either side means
-    # "identity unknown" (Windows, unreadable /proc, legacy claim frames) and
-    # MUST count as a match, otherwise every claim on those platforms would
-    # be rejected.
+    # "identity unknown" (an unreadable /proc read, an unopenable process,
+    # legacy claim frames) and MUST count as a match, otherwise a claim whose
+    # token cannot be read would be rejected.
     raw_token = frame.get("pid_start_id")
     claim_token = raw_token if isinstance(raw_token, str) else None
     # Pass 1: retarget every eligible connection SYNCHRONOUSLY (no awaits)

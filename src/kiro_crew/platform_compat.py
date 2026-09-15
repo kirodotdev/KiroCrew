@@ -1497,14 +1497,17 @@ def get_process_start_id(pid: int) -> str | None:
     - macOS: ``libproc.proc_pidinfo`` ``pbi_start_tvsec``/``pbi_start_tvusec``
       (microsecond resolution, so processes spawned in the same second do not
       alias — unlike ``ps -o lstart=``, which is 1-second granularity).
-    - Windows: creation FILETIME from a query-only process handle (100 ns).
+    - Windows: creation FILETIME from a query-only process handle (100 ns),
+      read in creation-only mode -- this function runs on the asyncio event
+      loop, and the exit-bound read's publication poll (up to 250 ms on a
+      just-exited process) must never sit under it.
     - Any failure: ``None``, meaning "identity unknown"; identity-sensitive
       callers must refuse authorization when they cannot confirm it.
     """
     if pid <= 0:
         return None
     if sys.platform == "win32":
-        return process_start_time(pid)
+        return _windows_process_start_time(pid, want_exit_time=False)
     if sys.platform == "linux":
         try:
             stat_data = Path(f"/proc/{pid}/stat").read_text()
@@ -2525,8 +2528,42 @@ _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS = 0.25
 _WINDOWS_EXIT_FILETIME_POLL_SECS = 0.002
 
 
-def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None] | None:
-    """Return ``(pid, creation_time, exit_time)`` for an exact process handle."""
+def _windows_process_start_time(pid: int, *, want_exit_time: bool = True) -> str | None:
+    """The Windows identity token for *pid*, or ``None`` when unreadable.
+
+    Opened and closed through the shared seams so this READ and the
+    identity-pinned TERMINATE cannot drift in how they acquire or release the
+    handle -- the difference between the two is the handle's LIFETIME, and that
+    is easier to reason about with one acquisition site.
+
+    ``want_exit_time=False`` is the creation-only mode ``get_process_start_id``
+    uses on the asyncio event loop: it skips the exit-time publication poll, so
+    an identity read never waits for a value it throws away.
+    """
+    handle = _open_process_query_handle(pid)
+    if handle is None:
+        return None
+    try:
+        identity = _windows_process_handle_identity(handle, want_exit_time=want_exit_time)
+    finally:
+        _close_process_handle(handle)
+    # (pid, creation_time, exit_time) -- only the creation half is an
+    # identity; exit_time moves as the process dies.
+    return str(identity[1]) if identity is not None else None
+
+
+def _windows_process_handle_identity(
+    handle: int, *, want_exit_time: bool = True
+) -> tuple[int, int, int | None] | None:
+    """Return ``(pid, creation_time, exit_time)`` for an exact process handle.
+
+    ``want_exit_time=False`` serves identity-only callers: it skips the exit
+    status read and the exit-FILETIME publication poll below, so the read is
+    three non-blocking syscalls even on a just-exited process. That matters
+    because :func:`get_process_start_id` runs on the asyncio event loop, where
+    waiting up to ``_WINDOWS_EXIT_FILETIME_TIMEOUT_SECS`` for an exit time it
+    would throw away would stall everything behind it.
+    """
 
     if not IS_WINDOWS or type(handle) is not int or handle <= 0:
         return None
@@ -2566,13 +2603,25 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
                 )
             )
 
-        if (
-            pid <= 1
-            or not _read_times()
-            or not kernel32.GetExitCodeProcess(
-                process_handle,
-                ctypes.byref(exit_code),
-            )
+        if pid <= 1 or not _read_times():
+            return None
+
+        def _filetime_value(value: "wintypes.FILETIME") -> int:
+            return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+
+        creation_value = _filetime_value(creation)
+        if creation_value <= 0:
+            # Implausible -- treat as unknown rather than a value. A "0" token
+            # would compare equal to every other degenerate read and pass for
+            # the same process, breaking the identity contract.
+            return None
+        if not want_exit_time:
+            # The creation FILETIME is published the moment the process object
+            # exists, so an identity-only read never has to wait on anything.
+            return pid, creation_value, None
+        if not kernel32.GetExitCodeProcess(
+            process_handle,
+            ctypes.byref(exit_code),
         ):
             return None
         still_active = 259
@@ -2583,10 +2632,6 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
         if not active and not _read_times():
             return None
 
-        def _filetime_value(value: "wintypes.FILETIME") -> int:
-            return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
-
-        creation_value = _filetime_value(creation)
         exit_value = _filetime_value(exit_)
         # GetExitCodeProcess reports the exit BEFORE the kernel publishes the
         # exit FILETIME, so a just-terminated process reads back as
@@ -2602,7 +2647,7 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
                 if not _read_times():
                     return None
                 exit_value = _filetime_value(exit_)
-        if creation_value <= 0 or (not active and exit_value <= 0):
+        if not active and exit_value <= 0:
             return None
         return pid, creation_value, None if active else exit_value
     except Exception:
@@ -3670,20 +3715,7 @@ def process_start_time(pid: int) -> str | None:
         except (OSError, ValueError, IndexError):
             return None
     if IS_WINDOWS:
-        # Opened and closed through the shared seams so this READ and the
-        # identity-pinned TERMINATE below cannot drift in how they acquire or
-        # release the handle -- the difference between the two is the handle's
-        # LIFETIME, and that is easier to reason about with one acquisition site.
-        handle = _open_process_query_handle(pid)
-        if handle is None:
-            return None
-        try:
-            identity = _windows_process_handle_identity(handle)
-        finally:
-            _close_process_handle(handle)
-        # (pid, creation_time, exit_time) -- only the creation half is an
-        # identity; exit_time moves as the process dies.
-        return str(identity[1]) if identity is not None else None
+        return _windows_process_start_time(pid)
     ps_bin = trusted_system_bin("ps")
     if ps_bin is None:
         return None
