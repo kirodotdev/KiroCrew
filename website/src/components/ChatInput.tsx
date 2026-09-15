@@ -516,7 +516,11 @@ interface ChatInputProps {
    * chose. A pinned chip has nothing to explain. */
   modelIsInheritedDefault?: boolean
   onAgentClick?: (rect: DOMRect) => void
-  onModelClick?: (rect: DOMRect) => void
+  /** `composerHadFocus` is whether the message editor held focus when the chip
+   *  was pressed, read before the press moved focus onto the chip. The picker
+   *  uses it to hand focus back to the editor after a pick, and only then: a
+   *  user who was not typing does not get the composer focused under them. */
+  onModelClick?: (rect: DOMRect, composerHadFocus: boolean) => void
   onProjectClick?: (rect: DOMRect) => void
   /** App-contributed session controls (contributes.sessionControls in app.json). */
   sessionControls?: {
@@ -1249,6 +1253,12 @@ function ChatInput({
 
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const composerAnchorRef = useRef<HTMLElement | null>(null)
+  // Whether the editor held focus when the model chip was pressed. Taken on
+  // `mousedown`, which runs BEFORE the browser's default action moves focus
+  // onto the chip — by `click` the editor has already lost it. Consumed and
+  // cleared by the chip's `click`, so a keyboard activation (no mousedown; the
+  // chip itself is focused) reads false rather than a stale press.
+  const modelChipPressedFromComposerRef = useRef(false)
   const lexicalControlRef = useRef<ComposerControl | null>(null)
   const [lexicalLoadFailed, setLexicalLoadFailed] = useState(false)
   const [lexicalFailedNoticeDismissed, setLexicalFailedNoticeDismissed] = useState(false)
@@ -4994,7 +5004,15 @@ function ChatInput({
           {onModelClick && modelName && (
             <button
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
-              onClick={e => onModelClick(e.currentTarget.getBoundingClientRect())}
+              onMouseDown={() => {
+                const editor = composerControl()?.getRootElement()
+                modelChipPressedFromComposerRef.current = !!editor && editor.contains(document.activeElement)
+              }}
+              onClick={e => {
+                const composerHadFocus = modelChipPressedFromComposerRef.current
+                modelChipPressedFromComposerRef.current = false
+                onModelClick(e.currentTarget.getBoundingClientRect(), composerHadFocus)
+              }}
               disabled={isRunning}
               data-testid="composer-model-chip"
               // Inherited default: mirror the agent chip -- ` · default` marker on
