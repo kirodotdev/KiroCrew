@@ -10247,7 +10247,11 @@
       "opening_session_locally": "正在此处打开该会话…",
       "opens_here_runs_on_instance": "在此处打开该会话——它的执行仍在 {{name}} 上进行",
       "opens_on_crew_switches_there": "在 {{name}} 上打开 —— 切换到该 Crew，而不是在此处",
-      "remote_instances_list_unavailable": "无法列出远程实例，因此不显示其会话。"
+      "remote_instances_list_unavailable": "无法列出远程实例，因此不显示其会话。",
+      "source_link_actions": "取消关联 PR 或 Issue 标签",
+      "unlink_source_link": "选择要从此会话永久隐藏的 PR 或 Issue 标签。源内容和对话记录保持不变。",
+      "unlink_source_link_confirm": "再次选择以取消关联 “{{label}}”",
+      "unlink_source_link_failed": "无法取消关联，请重试。"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

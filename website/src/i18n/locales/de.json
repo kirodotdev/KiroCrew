@@ -10403,7 +10403,11 @@
       "opening_session_locally": "Diese Sitzung wird hier geöffnet…",
       "opens_here_runs_on_instance": "Öffnet diese Sitzung hier — ihre Ausführung läuft weiter auf {{name}}",
       "opens_on_crew_switches_there": "Öffnet auf {{name}} — wechselt zu dieser Crew, nicht hier",
-      "remote_instances_list_unavailable": "Remote-Instanzen konnten nicht aufgelistet werden, daher werden ihre Sitzungen nicht angezeigt."
+      "remote_instances_list_unavailable": "Remote-Instanzen konnten nicht aufgelistet werden, daher werden ihre Sitzungen nicht angezeigt.",
+      "source_link_actions": "Einen PR- oder Issue-Chip lösen",
+      "unlink_source_link": "Wähle einen PR- oder Issue-Chip, um ihn dauerhaft aus dieser Sitzung auszublenden. Quelle und Gesprächsverlauf bleiben unverändert.",
+      "unlink_source_link_confirm": "Zum Lösen von „{{label}}“ erneut auswählen",
+      "unlink_source_link_failed": "Trennen fehlgeschlagen. Erneut versuchen."
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

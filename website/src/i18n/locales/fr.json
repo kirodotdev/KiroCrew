@@ -10559,7 +10559,11 @@
       "opening_session_locally": "Ouverture de cette session ici…",
       "opens_here_runs_on_instance": "Ouvre cette session ici — son exécution continue sur {{name}}",
       "opens_on_crew_switches_there": "S'ouvre sur {{name}} — bascule vers ce Crew, pas ici",
-      "remote_instances_list_unavailable": "Impossible de lister les instances distantes, leurs sessions ne sont donc pas affichées."
+      "remote_instances_list_unavailable": "Impossible de lister les instances distantes, leurs sessions ne sont donc pas affichées.",
+      "source_link_actions": "Dissocier une puce PR ou ticket",
+      "unlink_source_link": "Sélectionnez une puce PR ou ticket pour la masquer définitivement dans cette session. La source et la transcription restent inchangées.",
+      "unlink_source_link_confirm": "Sélectionnez à nouveau pour dissocier « {{label}} »",
+      "unlink_source_link_failed": "Échec de la dissociation. Réessayez."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

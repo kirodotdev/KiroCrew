@@ -10715,7 +10715,11 @@
       "opening_session_locally": "Открываем этот сеанс здесь…",
       "opens_here_runs_on_instance": "Откроет этот сеанс здесь — его выполнение продолжится на {{name}}",
       "opens_on_crew_switches_there": "Откроется на {{name}} — переключит на этот Crew, а не здесь",
-      "remote_instances_list_unavailable": "Не удалось получить список удалённых экземпляров, поэтому их сеансы не показаны."
+      "remote_instances_list_unavailable": "Не удалось получить список удалённых экземпляров, поэтому их сеансы не показаны.",
+      "source_link_actions": "Отвязать чип PR или задачи",
+      "unlink_source_link": "Выберите чип PR или задачи, чтобы навсегда скрыть его в этом сеансе. Источник и история переписки останутся без изменений.",
+      "unlink_source_link_confirm": "Выберите ещё раз, чтобы отвязать «{{label}}»",
+      "unlink_source_link_failed": "Не удалось отвязать. Повторите попытку."
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
