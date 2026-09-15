@@ -64,7 +64,7 @@ transcripts.
 
 | Command | Description |
 |---------|-------------|
-| `kirocrew service install` | Install and start as system service (sudo on Linux) |
+| `kirocrew service install` | Install and start as an OS service |
 | `kirocrew service uninstall` | Stop and remove system service |
 | `kirocrew service status` | Show service status (systemctl/launchctl) |
 | `kirocrew logs` | Show gateway logs (last 100 lines) |

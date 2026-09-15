@@ -5,8 +5,8 @@ target is recorded in a small pointer file here rather than in the service
 definition, because every service manager makes its own definition expensive to
 mutate in a different way:
 
-* a systemd **system** unit (what ``kirocrew service install`` writes on Linux)
-  lives under ``/etc/systemd/system`` and needs root to change;
+* a systemd unit may be user- or system-scoped, depending on which manager was
+  available when ``kirocrew service install`` ran;
 * a launchd plist only re-reads on ``bootout`` + ``bootstrap``, and the
   ``bootout`` half kills the very process that would have to run the second
   half;

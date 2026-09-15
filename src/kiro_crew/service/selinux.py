@@ -66,9 +66,8 @@ proof it is ever executed. Refusing on "cannot inspect" is the same violation fr
 the other side. So the boundary is left where soundness puts it, and
 :func:`kiro_crew.service.linux.install` covers the residue at the point of failure
 instead: when the unit is written and the first ``systemctl restart`` fails on an
-enforcing host, its error names SELinux as a candidate and prints the same
-user-scope remedy. Nothing is left silently unexplained, and no install that would
-have worked is refused.
+enforcing host, its error names SELinux as a candidate and points to user scope.
+No install that would have worked is refused.
 """
 
 from __future__ import annotations

@@ -151,8 +151,8 @@ choice blob makes the usage line unreadable.
   `gateway`, `service`, `doctor`.
 - Its notes answer the two questions the flat list never did: how `gateway`
   (foreground, dies with the terminal) differs from `service install` (systemd
-  unit / launchd agent, detached, restarts on crash, starts at boot, only one at
-  a time), and that the dashboard on loopback `5476` is the **only** port opened
+  unit / launchd agent, detached, restarts on crash, only one at a time), and
+  that the dashboard on loopback `5476` is the **only** port opened
   — messaging channels connect outbound.
 - `cli.py` sets `help=argparse.SUPPRESS` on the subparsers action to hide
   argparse's listing, passes `cli_help.TOP_USAGE` as the top-level `usage=`
@@ -207,7 +207,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew status` | Show runtime stats from running gateway |
 | `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
 | `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active, otherwise terminates the foreground gateway and respawns it detached). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
-| `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. |
+| `kirocrew service install` | Install the gateway with systemd (Linux, preferring `systemctl --user` and falling back to a system unit) or launchd (macOS). Auto-restarts on crash. |
 | `kirocrew service uninstall` | Stop and remove the systemd unit / launchd plist. |
 | `kirocrew service status` | Show service status (`systemctl status` or `launchctl list`). No sudo required. |
 | `kirocrew logs` | Tail gateway logs from the systemd journal, launchd stdout file, or `~/.kiro/crew/gateway.log`. Hosts without systemd/launchd, including Windows, read the UTF-8 fallback file in Python without requiring `tail`. Read failures exit with file-access/retry guidance instead of an exception traceback. |
@@ -1211,8 +1211,9 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
 `stop`'s service-aware structure:
 
 1. If a systemd/launchd service is active **and** the caller did not
-   pass `--port` explicitly, ask the platform to restart it. On Linux:
-   `sudo systemctl restart kirocrew.service` (single
+   pass `--port` explicitly, ask the platform to restart it. On Linux this is
+   `systemctl --user restart kirocrew.service` for a user unit or
+   `sudo systemctl restart kirocrew.service` for the system fallback (a single
    atomic operation, smaller down-window than stop+start, and the
    supervisor stays in charge of the lifecycle the whole time). On
    macOS: `launchctl unload <plist>` + `launchctl load <plist>` (no
@@ -1262,19 +1263,19 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
 ## Service Management
 
 `kirocrew service {install,uninstall,status}` registers the gateway
-with the OS service manager so it survives SSH disconnects, restarts
-on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
+with the OS service manager so it runs detached and restarts on crash.
+Implemented in `src/kiro_crew/service/`.
 
 - **Linux** (`current_platform() == SYSTEMD`):
-  - Unit file: `/etc/systemd/system/kirocrew.service` (root-owned).
-  - Install: `sudo install` writes the unit, then `sudo systemctl
-    daemon-reload && sudo systemctl enable --now kirocrew.service`.
-    Privilege is resolved per call: already-root (euid 0) skips `sudo`
-    entirely — required on minimal container / `root`-login images that
-    ship no `sudo` binary — and a non-root caller with no `sudo` fails
-    with a clear `ServiceInstallError` rather than an uncaught
-    `FileNotFoundError`.
-  - The gateway runs as `User=$USER Group=$(id -gn)`. Every elevated
+  - A fresh install probes `systemctl --user show-environment`. Success selects
+    `~/.config/systemd/user/kirocrew.service`; failure selects the existing
+    system path at `/etc/systemd/system/kirocrew.service`. Re-running install
+    preserves an existing unit's scope.
+  - User scope writes the unit directly and runs `systemctl --user
+    daemon-reload`, `enable`, and `restart`. The system fallback retains the
+    existing sudo-backed write and control path.
+  - A user unit runs as its manager's account. The system fallback sets
+    `User=$USER Group=$(id -gn)`. Every elevated
     executable is a stock system program, not a kirocrew one; the module
     docstring in `service/linux.py` sits next to the call sites, names the
     current set, and records what escalating the AppArmor step's
@@ -1284,17 +1285,18 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
     into the unit's `Environment=` lines at install time
     (`service_environment()` in `service/common.py`) — this is how
     `KIROCREW_PORT=5477 kirocrew service install` binds a non-default port.
-    The unit also reads `EnvironmentFile=-/etc/kirocrew/kirocrew.env`, an
+    The system fallback also reads
+    `EnvironmentFile=-/etc/kirocrew/kirocrew.env`, an
     operator-editable file the installer seeds create-if-absent (a reinstall
     never clobbers edits). systemd applies the file AFTER — and overriding —
     the baked `Environment=` lines, so editing it and running `sudo systemctl
     restart kirocrew` changes a value (e.g. the port) without reinstalling.
     Uninstall removes the file and its `/etc/kirocrew` directory.
-  - **Credentials are deliberately NOT captured.** Both baked locations are
-    world-readable — the unit lives in root-owned `/etc/systemd/system` and the
-    override file is installed `0644` — so a model credential placed there
-    would be readable by every local user on the host. `service_environment()`
-    therefore carries no credential — its only installer-derived values are
+  - **Credentials are deliberately NOT captured.** Unit files are service
+    definitions, not credential stores; in the system fallback both the unit
+    and its `0644` override file are readable by every local user.
+    `service_environment()` therefore carries no credential — its only
+    installer-derived values are
     `PATH`, `KIROCREW_KIRO_BIN` and `KIROCREW_PORT` (it also returns `HOME`,
     `LANG` and `LC_ALL`) — and a test pins the absence so a future "just
     propagate it" change fails.
@@ -1320,11 +1322,12 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
     lacks a credential; a fall-back login store, or a stopped unit beside a
     foreground `kirocrew gateway`, both leave the host healthy while the check
     fires.
-  - Boot survival via `WantedBy=multi-user.target` (no linger needed —
-    that's a user-service concept; this is system-level).
+  - User units use `WantedBy=default.target`; administrators can enable linger
+    when the service must persist after logout or start before login. The
+    system fallback uses `WantedBy=multi-user.target`.
   - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`.
-  - Logs are read from the journal: `sudo journalctl -u kirocrew -f`,
-    or unprivileged if the user is in `systemd-journal` / `adm`.
+  - Logs use `journalctl --user` for user scope. System scope first tries an
+    unprivileged journal read, then sudo when a TTY is available.
 - **macOS** (`current_platform() == LAUNCHD`):
   - Plist: `~/Library/LaunchAgents/dev.kirocrew.gateway.plist`
   - Install: `launchctl load -w <plist>`. `RunAtLoad=true` and

@@ -2151,14 +2151,12 @@ Examples:
         ),
     )
 
-    # service — install/uninstall/status as a system-level systemd unit (Linux,
-    # /etc/systemd/system/, requires sudo) or launchd LaunchAgent (macOS,
-    # ~/Library/LaunchAgents/, no sudo) so the gateway survives SSH disconnect,
-    # auto-restarts on crash, and auto-starts on boot.
+    # service — install/uninstall/status through systemd (Linux, preferring the
+    # per-user manager) or a launchd LaunchAgent (macOS).
     svc_parser = cli_help.add_command(sub, "service")
     svc_sub = svc_parser.add_subparsers(dest="service_action")
-    svc_sub.add_parser("install", help="Install and start the gateway service (sudo on Linux)")
-    svc_sub.add_parser("uninstall", help="Stop and remove the gateway service (sudo on Linux)")
+    svc_sub.add_parser("install", help="Install and start the gateway service")
+    svc_sub.add_parser("uninstall", help="Stop and remove the gateway service")
     svc_sub.add_parser("status", help="Show service status (systemctl/launchctl)")
 
     # sandbox — the AppArmor grant a DIRECT launch needs. `service install`

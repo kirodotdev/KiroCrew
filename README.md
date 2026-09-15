@@ -469,11 +469,9 @@ unit:
 KIROCREW_PORT=5477 kirocrew service install
 ```
 
-To change it later without reinstalling, edit `/etc/kirocrew/kirocrew.env`
-(created by `service install`) and run `sudo systemctl restart kirocrew`. Units
-installed by releases before v0.2.0 lack the `EnvironmentFile=` directive that
-reads this file — re-run `kirocrew service install` or use a systemd drop-in;
-see [the install guide](docs/guides/install.md#setting-the-service-port).
+For a default user unit, re-run the install command with the new value. The
+system-scope fallback also supports `/etc/kirocrew/kirocrew.env`; see
+[the install guide](docs/guides/install.md#setting-the-service-port).
 
 The desktop app can use this local Gateway or connect to a remote one. For an
 always-on VPS, home server, or cloud VM in your account, follow the

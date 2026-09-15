@@ -38,7 +38,7 @@ from kiro_crew.service.common import (
 
 
 @pytest.fixture(autouse=True)
-def _clear_sudo_user(monkeypatch):
+def _clear_sudo_user(monkeypatch, tmp_path):
     """Keep ``User=`` resolution deterministic across hosts.
 
     ``_current_user()`` prefers ``SUDO_USER`` (so ``sudo … service install``
@@ -48,6 +48,16 @@ def _clear_sudo_user(monkeypatch):
     explicitly themselves.
     """
     monkeypatch.delenv("SUDO_USER", raising=False)
+    # Never probe the developer's real user manager from a unit test. Tests
+    # exercising the new default opt in explicitly.
+    from kiro_crew.service import linux as svc_linux
+
+    monkeypatch.setattr(svc_linux, "_user_manager_available", lambda: False)
+    monkeypatch.setattr(
+        svc_linux,
+        "user_unit_path",
+        lambda: tmp_path / "missing-user.service",
+    )
 
 
 class TestPlatformDetection:
@@ -281,7 +291,51 @@ class TestLinuxUnitRendering:
         # that ends in the (quoted) kirocrew executable followed by gateway.
         assert 'kirocrew" gateway' in unit
 
-    def test_install_writes_unit_via_sudo_install_and_invokes_systemctl(
+    def test_install_prefers_user_manager(self, tmp_path, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        user_unit = tmp_path / "user" / "kirocrew.service"
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "system.service")
+        monkeypatch.setattr(svc_linux, "user_unit_path", lambda: user_unit)
+        monkeypatch.setattr(svc_linux, "_user_manager_available", lambda: True)
+        monkeypatch.setattr(
+            svc_linux.apparmor,
+            "should_install",
+            lambda: (False, "not needed"),
+        )
+
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/usr/local/bin/kirocrew",
+        ), patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=ok
+        ) as run:
+            svc_linux.install()
+
+        unit = user_unit.read_text(encoding="utf-8")
+        assert "User=" not in unit
+        assert "Group=" not in unit
+        assert "EnvironmentFile=" not in unit
+        assert "WantedBy=default.target" in unit
+        called = [list(c.args[0]) for c in run.call_args_list]
+        assert ["systemctl", "--user", "daemon-reload"] in called
+        assert [
+            "systemctl",
+            "--user",
+            "enable",
+            f"{SERVICE_NAME}.service",
+        ] in called
+        assert [
+            "systemctl",
+            "--user",
+            "restart",
+            f"{SERVICE_NAME}.service",
+        ] in called
+        assert not any("sudo" in command for command in called)
+
+    def test_install_falls_back_to_sudo_when_user_manager_is_unavailable(
         self, tmp_path, monkeypatch
     ):
         from kiro_crew.service import linux as svc_linux
@@ -301,7 +355,7 @@ class TestLinuxUnitRendering:
         ) as run:
             svc_linux.install()
 
-        # Four things must happen:
+        # The existing system-scope path remains the fallback:
         # 1) `sudo install -m 0644 -o root -g root <tmp> /etc/systemd/system/kirocrew.service`
         # 2) `sudo systemctl daemon-reload`
         # 3) `sudo systemctl enable kirocrew.service`
@@ -1396,6 +1450,28 @@ class TestLinuxControlPaths:
         assert ["sudo", "systemctl", "daemon-reload"] in called
         assert sentinel.read_text() == "user data"
 
+    def test_user_unit_lifecycle_uses_user_manager(self, tmp_path, monkeypatch):
+        from kiro_crew.service import linux as svc_linux
+
+        unit_path = tmp_path / "kirocrew.service"
+        unit_path.write_text("[Unit]\n", encoding="utf-8")
+        monkeypatch.setattr(svc_linux, "user_unit_path", lambda: unit_path)
+        monkeypatch.setattr(svc_linux, "_user_manager_available", lambda: True)
+        result = MagicMock(returncode=0, stdout="active\n", stderr="")
+        with patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=result
+        ) as run:
+            assert svc_linux.is_active() is True
+            svc_linux.stop()
+            assert svc_linux.restart() is True
+            assert svc_linux.status() == "active\n"
+            svc_linux.uninstall()
+
+        called = [list(c.args[0]) for c in run.call_args_list]
+        assert called
+        assert all(command[:2] == ["systemctl", "--user"] for command in called)
+        assert not unit_path.exists()
+
     def test_is_active_returns_true_when_systemctl_says_active(self):
         from kiro_crew.service import linux as svc_linux
 
@@ -1824,17 +1900,35 @@ class TestRestartCommandHint:
     """`restart_command_hint` returns a command that matches how the
     service is actually installed.
 
-    The bug was the update path and the Slack restart-failure hint both
-    hardcoding ``systemctl --user restart kirocrew``, which fails on the
-    system-level systemd unit. The helper centralises the correct command
-    per platform.
+    The helper follows the installed systemd scope.
     """
 
-    def test_systemd_returns_sudo_systemctl(self, monkeypatch):
+    def test_systemd_user_unit_returns_user_systemctl(self, monkeypatch, tmp_path):
         from kiro_crew.service import common as svc_common
+        from kiro_crew.service import linux as svc_linux
+
+        unit = tmp_path / "kirocrew.service"
+        unit.write_text("[Unit]\n", encoding="utf-8")
+        monkeypatch.setattr(
+            svc_common, "current_platform", lambda: Platform.SYSTEMD
+        )
+        monkeypatch.setattr(svc_linux, "user_unit_path", lambda: unit)
+        assert (
+            svc_common.restart_command_hint()
+            == f"systemctl --user restart {SERVICE_NAME}"
+        )
+
+    def test_systemd_system_unit_returns_sudo_systemctl(self, monkeypatch, tmp_path):
+        from kiro_crew.service import common as svc_common
+        from kiro_crew.service import linux as svc_linux
 
         monkeypatch.setattr(
             svc_common, "current_platform", lambda: Platform.SYSTEMD
+        )
+        monkeypatch.setattr(
+            svc_linux,
+            "user_unit_path",
+            lambda: tmp_path / "missing.service",
         )
         assert svc_common.restart_command_hint() == f"sudo systemctl restart {SERVICE_NAME}"
 
@@ -1853,18 +1947,6 @@ class TestRestartCommandHint:
             svc_common, "current_platform", lambda: Platform.UNSUPPORTED
         )
         assert svc_common.restart_command_hint() == "kirocrew restart"
-
-    def test_never_returns_broken_user_scope_command(self, monkeypatch):
-        """Regression: no platform may emit the broken `systemctl --user`
-        string that was filed against."""
-        from kiro_crew.service import common as svc_common
-
-        for platform in Platform:
-            monkeypatch.setattr(
-                svc_common, "current_platform", lambda p=platform: p
-            )
-            assert "systemctl --user" not in svc_common.restart_command_hint()
-
 
 class TestKirocrewBinOverride:
     def test_service_bin_override_wins_over_which(self, monkeypatch):
@@ -4242,6 +4324,23 @@ class TestInstalledUnitPath:
         unit.write_text("[Unit]\n", encoding="utf-8")
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
         monkeypatch.setattr(controller.linux, "UNIT_PATH", unit)
+        monkeypatch.setattr(
+            controller.linux,
+            "user_unit_path",
+            lambda: tmp_path / "missing-user.service",
+        )
+        assert controller.installed_unit_path() == unit
+
+    def test_systemd_reports_the_user_unit_when_present(self, monkeypatch, tmp_path):
+        unit = tmp_path / "kirocrew.service"
+        unit.write_text("[Unit]\n", encoding="utf-8")
+        monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
+        monkeypatch.setattr(controller.linux, "user_unit_path", lambda: unit)
+        monkeypatch.setattr(
+            controller.linux,
+            "UNIT_PATH",
+            tmp_path / "missing-system.service",
+        )
         assert controller.installed_unit_path() == unit
 
     def test_launchd_reports_the_plist_when_present(self, monkeypatch, tmp_path):
@@ -4254,6 +4353,11 @@ class TestInstalledUnitPath:
     def test_absent_definition_is_not_installed(self, monkeypatch, tmp_path):
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)
         monkeypatch.setattr(controller.linux, "UNIT_PATH", tmp_path / "nope.service")
+        monkeypatch.setattr(
+            controller.linux,
+            "user_unit_path",
+            lambda: tmp_path / "nope-user.service",
+        )
         assert controller.installed_unit_path() is None
 
     def test_unsupported_platform_is_not_installed(self, monkeypatch):

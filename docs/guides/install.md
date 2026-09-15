@@ -645,18 +645,18 @@ kirocrew service status
 kirocrew service uninstall
 ```
 
-On Linux this writes `/etc/systemd/system/kirocrew.service` (sudo is prompted
-for the unit file and the `systemctl` calls; the gateway itself runs as your own
-user, never under sudo). When you are already root — a minimal container or
-`root` login — no `sudo` binary is required. On macOS it writes a launchd plist
-and needs no sudo.
+On Linux, a fresh install first tries the invoking account's user manager. When
+`systemctl --user` is usable it writes
+`~/.config/systemd/user/kirocrew.service` and manages it without sudo. If that
+manager is unavailable, it falls back to the system unit at
+`/etc/systemd/system/kirocrew.service`. An existing unit keeps its current scope
+when the command is re-run. On macOS the command writes a launchd plist.
 
 The gateway runs untrusted agent tools, so it must run as a **non-root** user:
-the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else
-`$USER`), and **refuses to install a `User=root` service**. From a bare `root`
-login (or `sudo` with no `$SUDO_USER`), first create or pick a normal account and
-install as it, e.g. `sudo -u <user> KIROCREW_KIRO_BIN=... kirocrew service
-install` (the official Docker image already runs as the `kirocrew` user).
+run `kirocrew service install` from that user's login session, without sudo. A
+bare-root install is refused. User units start with the user's systemd manager;
+to keep one running after logout and start it before the first login, an
+administrator can enable lingering with `loginctl enable-linger <user>`.
 
 ### SELinux-enforcing hosts with kirocrew under `$HOME`
 
@@ -670,33 +670,24 @@ exhausts its restart limit.
 The binary is fine. `test -x` on it succeeds, the shebang is correct, and the
 permissions are right — the policy's execute check is the only thing that fails,
 which is why `203/EXEC` here looks identical to a genuinely missing or
-non-executable path. `kirocrew service install` therefore asks the loaded policy
-before writing anything, and if the unit provably cannot start it **refuses up
-front** and prints a ready-to-paste per-user unit instead of leaving a
-crash-looping service enabled at every boot.
-
-A per-user unit is not affected, because the per-user systemd manager does not
-run in PID 1's domain. Follow the commands the refusal prints, then manage the
-service with `systemctl --user status|restart kirocrew` and `journalctl --user -u
-kirocrew -f`. Note that `kirocrew service status` / `uninstall` only look at the
-system unit, so they will not see a user unit ([#7165] tracks adding a first-class
-`--user` scope). Installing kirocrew onto a system-labelled path such as
-`/usr/local/bin` also avoids the problem.
-
-[#7165]: https://github.com/kirodotdev/KiroCrew/issues/7165
+non-executable path. The default per-user unit is not affected because its
+manager does not run in PID 1's domain. If no user manager is available and the
+installer must fall back to system scope, it checks the loaded policy and
+refuses before writing a unit that cannot start. Installing kirocrew onto a
+system-labelled path such as `/usr/local/bin` also avoids the system-scope
+restriction.
 
 ### Setting the service port
 
-A system service inherits none of your shell environment, so `export
-KIROCREW_PORT=…` in your shell does **not** reach it. Set the port when you
-install so it is baked into the unit:
+The service captures its environment when installed. Set the port on the
+install command:
 
 ```bash
 KIROCREW_PORT=5477 kirocrew service install
 ```
 
-To change it later without reinstalling, edit the overrides file the installer
-creates and restart:
+For a user unit, re-run that command with the new value. The system-scope
+fallback also creates an overrides file that can be edited without reinstalling:
 
 ```bash
 sudo sed -i 's/^#\?KIROCREW_PORT=.*/KIROCREW_PORT=5477/' /etc/kirocrew/kirocrew.env
@@ -710,9 +701,9 @@ example by a local crew you also run on this host — there is one
 `kirocrew.service` unit, so re-running `service install` updates it in place
 rather than creating a second service).
 
-**The `EnvironmentFile=` directive only exists in units written by v0.2.0 or
-later.** Upgrading the package never rewrites an already-installed unit, so a
-unit installed by an older release (v0.1.3 and earlier) silently ignores
+**For system-scope installs, the `EnvironmentFile=` directive only exists in
+units written by v0.2.0 or later.** Upgrading the package never rewrites an
+already-installed unit, so a system unit installed by an older release silently ignores
 `/etc/kirocrew/kirocrew.env` — editing it changes nothing. Check which kind you
 have:
 
@@ -727,12 +718,16 @@ which works on any unit version.
 
 ### Setting other environment variables (systemd drop-in)
 
-For variables the seeded overrides file does not cover — proxy settings are the
-common case — use a systemd drop-in. Drop-ins are systemd's own override
-mechanism: they apply to the unit no matter which release wrote it, and they
-survive reinstalls, `service install` re-runs, and even
-`kirocrew service uninstall` (which removes the unit but never touches
-`/etc/systemd/system/kirocrew.service.d/`).
+For variables the seeded system-scope file does not cover — proxy settings are
+the common case — use a systemd drop-in. For the default user unit:
+
+```bash
+systemctl --user edit kirocrew
+# Add a [Service] section with Environment= lines, then save.
+systemctl --user restart kirocrew
+```
+
+For the system-scope fallback:
 
 ```bash
 sudo mkdir -p /etc/systemd/system/kirocrew.service.d
@@ -746,10 +741,9 @@ sudo systemctl daemon-reload
 sudo systemctl restart kirocrew
 ```
 
-A new or edited drop-in is not picked up until `systemctl daemon-reload` runs —
-restarting alone is not enough. Verify what the unit resolved to with
-`systemctl cat kirocrew` (drop-ins are printed below the unit) or
-`systemctl show kirocrew --property=Environment`.
+A new or edited system-scope drop-in is not picked up until `systemctl
+daemon-reload` runs — restarting alone is not enough. Inspect a user unit with
+`systemctl --user cat kirocrew`, or a system unit with `systemctl cat kirocrew`.
 
 For remote hosts, see [remote-and-mobile.md](remote-and-mobile.md).
 
@@ -788,11 +782,11 @@ gateway's sandbox probe (#3463) — the directive labels only the unit's own
 top-level process, and the probe runs in a child reached through a fork the
 directive's labelling never reaches. The directive is no longer used.
 
-This uses the sudo prompt `service install` already needs for the unit file, so
-it costs no additional privilege, and it **cannot fail your install**: if the
-profile cannot be written, loaded, or verified, you get a warning and the
-install continues. `kirocrew service uninstall` unloads and removes it, so a
-host is left as it was found rather than carrying an orphaned userns permission.
+Writing and loading this optional profile may prompt for sudo even when the unit
+itself uses `systemctl --user`. It **cannot fail your install**: if the profile
+cannot be written, loaded, or verified, you get a warning and the install
+continues. `kirocrew service uninstall` unloads and removes it, so a host is
+left as it was found rather than carrying an orphaned userns permission.
 
 The installer skips the profile silently, with a reason it can print, when
 AppArmor is not an active LSM, when the sysctl is not `1`, when
@@ -809,8 +803,8 @@ launcher script runs confined too. A launch that does **not** go through that
 path — `python -m kiro_crew`, a different venv's entry point, a re-created venv
 the profile has not been re-pointed at — stays unconfined, and `kirocrew doctor`
 reports the attachment as stale in the re-created-venv case. Prefer running the
-gateway as the service: it pins `ExecStart` to the attached path and restarts on
-boot.
+gateway as the service: it pins `ExecStart` to the attached path and restarts
+after failure.
 
 ### The AppImage (desktop app) needs its own profile
 
@@ -957,11 +951,11 @@ The `kiro-cli` backend did not answer in time. Five common causes:
    recover the slot.
 5. **The host needs a proxy and the service does not have one.** On a
    corporate network, `kiro-cli` must reach its backend through your proxy. A
-   systemd service inherits none of your shell's `HTTPS_PROXY`/`HTTP_PROXY`
+   service does not reliably inherit your shell's `HTTPS_PROXY`/`HTTP_PROXY`
    exports, so a gateway that works when run from your terminal can still time
    out as a service. Set the proxy variables on the unit with a
    [systemd drop-in](#setting-other-environment-variables-systemd-drop-in),
-   then `sudo systemctl daemon-reload && sudo systemctl restart kirocrew`.
+   then restart it with `kirocrew restart`.
    Agent sessions inherit the service environment, so this fixes them. One
    known gap: the first-run setup gate's login probe currently filters proxy
    variables out even when the unit carries them, so it can stay stuck on

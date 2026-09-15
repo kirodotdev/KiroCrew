@@ -31,7 +31,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         "Start here",
         (
             ("gateway", "Start Kiro Crew in this terminal (dashboard + messaging channels)"),
-            ("service", "Run the gateway as a background service that starts on boot"),
+            ("service", "Run the gateway as a background service"),
             ("doctor", "Verify this install and diagnose problems"),
         ),
     ),
@@ -140,11 +140,11 @@ gateway vs. service -- the same server, two lifetimes:
   kirocrew gateway          runs in the foreground and stops on Ctrl-C or when
                             the terminal closes. Best for a first look and for
                             development.
-  kirocrew service install  registers a systemd unit (Linux, needs sudo) or a
-                            launchd agent (macOS) that runs the SAME gateway
-                            detached: it survives logout, restarts on crash and
-                            starts at boot. Then use `kirocrew service status`,
-                            `kirocrew restart`, `kirocrew logs`.
+  kirocrew service install  registers a systemd unit (Linux, preferring your
+                            user manager) or launchd agent (macOS) that runs the
+                            SAME gateway detached and restarts it on crash. Then
+                            use `kirocrew service status`, `kirocrew restart`,
+                            `kirocrew logs`.
   Run only one of them at a time -- both bind the same port.
 
 Ports: the dashboard is the only port Kiro Crew opens, and it binds loopback
@@ -152,7 +152,7 @@ Ports: the dashboard is the only port Kiro Crew opens, and it binds loopback
   connect outbound, so nothing else needs to be reachable. Override the port
   with `kirocrew gateway --port N`, KIROCREW_PORT=N, or the `dashboard.url`
   config value; for the service, set KIROCREW_PORT when you run
-  `service install` (later, edit /etc/kirocrew/kirocrew.env and restart)."""
+  `service install` (re-run it to update a user unit)."""
 
 
 def add_command(

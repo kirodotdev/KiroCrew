@@ -1133,10 +1133,9 @@ def _restart(cli_port: int | None = None) -> None:
        explicitly request a specific port, ask the platform to restart
        it (``systemctl restart`` / ``launchctl kickstart -k``). When the
        service manager REFUSES that restart while the unit is still active
-       (system-scope unit, unprivileged caller / polkit denial), fail loudly
-       naming the privileged command the operator must run — never fall
-       through to the listener path, which cannot see a service gateway
-       bound to a unix socket and would misreport the outcome.
+       fail loudly with the manager-specific command — never fall through to
+       the listener path, which cannot see a service gateway bound to a unix
+       socket and would misreport the outcome.
     2. Otherwise, SIGTERM the foreground gateway via the existing
        lsof+SIGTERM path used by ``kirocrew stop``, then spawn a
        detached replacement and **verify it is serving** before reporting
@@ -1164,16 +1163,14 @@ def _restart(cli_port: int | None = None) -> None:
             return
         if service_controller.is_service_active():
             # The service manager refused the restart while the unit is active
-            # RIGHT NOW — the system-scope unit needs root/polkit privileges
-            # this process does not have ("Interactive authentication
-            # required"). Falling through to the listener path would be worse
+            # RIGHT NOW. Falling through to the listener path would be worse
             # than failing: on a unix-socket deployment nothing listens on TCP,
             # so the fallback finds nothing to stop, spawns a competitor the
             # KIROCREW_HOME lock refuses, and the original gateway keeps
             # running while the command's outcome reads like a restart. Name
-            # the privileged command the operator must run instead. The
-            # active-check runs AFTER the refused restart so a service that
-            # merely stopped in between still falls through below.
+            # the manager-specific command instead. The active-check runs AFTER
+            # the refused restart so a service that merely stopped in between
+            # still falls through below.
             hint = service_controller.manual_restart_hint()
             sel().log_api_access(
                 caller="cli",
@@ -2449,7 +2446,7 @@ def _logs_cmd(args: argparse.Namespace) -> None:
     """Tail gateway logs from the most appropriate source.
 
     Order of preference:
-      1. systemd journal (if the system service is installed on Linux)
+      1. systemd journal (if a user or system service is installed on Linux)
       2. launchd stdout file (macOS)
       3. ``~/.kiro/crew/gateway.log`` (foreground gateway)
     """
@@ -2468,14 +2465,29 @@ def _logs_cmd(args: argparse.Namespace) -> None:
         resources=f"follow={follow} lines={lines} platform={plat.value}",
     )
 
-    if plat == Platform.SYSTEMD and svc_linux.UNIT_PATH.exists():
+    installed_unit = svc_linux.installed_unit_path() if plat == Platform.SYSTEMD else None
+    if installed_unit is not None:
+        user_scope = installed_unit == svc_linux.user_unit_path()
+        base = [
+            "journalctl",
+            *(["--user"] if user_scope else []),
+            "--no-pager",
+            "-u",
+            unit,
+            "-n",
+            str(lines),
+        ]
+        if user_scope:
+            if follow:
+                base.append("-f")
+            os.execvp("journalctl", base)
+
         # Try journalctl unprivileged first — it works if the user is in
         # the `systemd-journal` or `adm` group. Only fall back to sudo
         # journalctl if the unprivileged probe returns no rows. Without
         # this fall-through, `kirocrew logs` would hang on hosts without
         # passwordless sudo, which is a surprising failure mode for a
         # read-only log-viewer.
-        base = ["journalctl", "--no-pager", "-u", unit, "-n", str(lines)]
         probe = subprocess.run(
             ["journalctl", "-u", unit, "-n", "1", "--no-pager"],
             capture_output=True,
