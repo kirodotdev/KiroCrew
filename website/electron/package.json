@@ -29,6 +29,9 @@
   "build": {
     "appId": "com.amazon.kiro.crew",
     "productName": "KiroCrew",
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "icon.icns",
