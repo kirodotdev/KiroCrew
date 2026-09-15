@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="288" viewBox="0 0 1200 288">
+  <defs>
+    <linearGradient id="gd-detail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#334155"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="288" fill="url(#gd-detail)"/>
+  <g opacity="0.5" fill="none" stroke="#475569" stroke-width="2">
+    <path d="M-20 144 H1220"/>
+  </g>
+  <g fill="#64748b" opacity="0.6">
+    <circle cx="60" cy="144" r="5"/>
+    <circle cx="180" cy="144" r="8"/>
+    <circle cx="320" cy="144" r="5"/>
+    <circle cx="440" cy="144" r="7"/>
+    <circle cx="760" cy="144" r="7"/>
+    <circle cx="880" cy="144" r="5"/>
+    <circle cx="1020" cy="144" r="8"/>
+    <circle cx="1140" cy="144" r="5"/>
+  </g>
+  <rect x="470" y="112" width="260" height="64" rx="10" fill="url(#gd-detail)"/>
+  <text x="600" y="156" text-anchor="middle" fill="#94a3b8" font-family="system-ui" font-size="44" font-weight="600">Dev Fleet</text>
+</svg>

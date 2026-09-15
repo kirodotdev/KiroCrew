@@ -1,0 +1,420 @@
+# Onboarding a new ACP harness
+
+[harness-parity.md](harness-parity.md) says what a new harness may **not** do to
+the Kiro path. This file says what it **must** do to land at all, in the order
+the work actually falls out.
+
+The sequence below is derived from onboarding Codex (`ACP_BACKEND_CODEX`), not
+reconstructed from KAS and Claude Code after the fact. That matters, because two
+of the stages here did not exist as stages until a third harness needed them:
+Stage 2 had five capability sets and no tuning channels at all, and Stage 6
+was invisible while every known id happened to be selectable. A harness
+that walks this list will find gaps the list does not predict; when it does, the
+gap belongs here in the same change, as a stage — not in the harness's own
+module as a special case.
+
+## The two landing states
+
+A harness lands in one of two states, and choosing between them is Stage 7, not
+Stage 1:
+
+- **Dormant.** The core can *spell* the id — it is in `ACP_BACKENDS_KNOWN`, it
+  has a provider label, a policy name, and a decided membership in every
+  capability set — but no operator can *choose* it. A dormant harness is not a
+  stub: its spawn path can be complete. It is dormant because something a real
+  session depends on cannot yet answer for it.
+- **Selectable.** The id is in `BASELINE_SELECTABLE_BACKENDS`, or an edition
+  called `register_selectable_backend`, so it renders in the dashboard switch
+  and survives a config load.
+
+Dormant is a legitimate destination, and shipping there deliberately is cheaper
+than a long-lived branch. But it must be *named* as an exception (Stage 7), or
+the narrowing check fails.
+
+## Stage 1 — the vocabulary, in the leaf
+
+Everything a consumer needs to *name* your harness goes in
+`src/kiro_crew/acp_backends.py`, which imports no ACP and therefore may be
+imported by anything:
+
+| Add | Why there |
+|---|---|
+| `ACP_BACKEND_<NAME>` | The id. Never a bare literal at a call site (H5). |
+| membership in `ACP_BACKENDS_KNOWN` | `AcpProvider.__init__` rejects anything outside it (H8), and every capability set is asserted a subset of it. |
+| `PROVIDER_LABEL_<NAME>` in `acp/types.py` | A closed mapping; an absent label means Kiro, so a harness without one persists as a Kiro session and has its transcript pruned for want of a Kiro session file (H11). |
+| an entry in `POLICY_ID_BY_BACKEND` | A governance rule is written by a human as an identifier. The mapping is what makes the id nameable in a deny rule **before** anything registers it — so this is required even for a dormant harness. |
+
+`acp/types.py` re-exports the vocabulary, so existing callers keep their import
+site. Do not define the constants there: it is a forbidden root for the SDK
+boundary gate, and a definition there is a definition consumers cannot reach
+without crossing it.
+
+## Stage 2 — an explicit decision for every capability set
+
+Every capability set needs a decision. **"Inherited the default" is not a decision** — a
+capability is granted by opt-in membership, never by negation (H6), so a set you
+do not think about is a set you have silently opted out of. That is usually
+right, and it must still be deliberate, because the review lane and the tests
+both read the membership as a claim. `ACP_BACKENDS_KNOWN` is not one of them: it
+is the membership floor, not a capability. Neither is
+`backends_retired_by_host_logout()`: whether a host logout may retire your running
+child is a fact about how you sign in, so it is declared in Stage 5 and projected
+from there rather than decided here. It is deliberately not an `ACP_BACKENDS_*` set
+— that naming is vocabulary this module owns, and a derived answer is not
+vocabulary.
+
+| Set | Grants |
+|---|---|
+| `ACP_BACKENDS_SESSION_SHARING` | One process may serve several sessions. Wrong membership hands a second session to a process that cannot hold it. |
+| `ACP_BACKENDS_STEER` | The `_session/steer` extension. A steer sent to a non-implementer answers `-32601`. |
+| `ACP_BACKENDS_INTERNAL_SANDBOX` | The harness sandboxes itself, so Kiro Crew's own wrapper stands down. Security-relevant: wrong membership hands isolation to a layer that never starts (H7). |
+| `ACP_BACKENDS_ACP_RUNTIME` | Driven through `AcpRuntime` rather than its own spawn branch. The FOREGROUND start path reads it through `acp_runtime_backends()`, which returns this set verbatim unless the `KIROCREW_CODEX_ACP_RUNTIME` preview switch (default off) adds codex for one process; the background `_bg` path reads the set itself, so a preview never reaches high-churn handles. The set is the shipped answer either way, so a new harness declares membership here. |
+| `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` | Model switching lands as a config option rather than a protocol call. |
+| `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION` | Reasoning-effort push, same channel shape. |
+| `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` | The ids the harness ADVERTISES are `<model>[<effort>]` pairs its `model` option does not accept whole, so an exhausted spelling ladder falls through to two writes (bare model, then the effort). A non-member's refused bracketed id stays refused: claude's `[1m]` is a context WINDOW that must reach the wire intact, and opencode's `provider/model` ids carry no suffix at all, so neither may inherit a split it never advertised. Membership also gates the "adapter mismatch, not an account restriction" wording in `AcpModelUnavailable`, because "advertised implies entitled" is established only for a harness whose advertised list IS its entitlement. |
+| `ACP_BACKENDS_KIRO_SLASH_COMMANDS` | Receives `_kiro.dev/commands/execute`, **and** gets the workspace `cli.json` overlay written for it. Membership decides both, so a non-member must not collect an overlay it never reads and the membership-gated clear can never remove. |
+| `ACP_BACKENDS_SESSION_MCP_ARRAY` | The harness reads its MCP surface from the `session/new` array rather than from Crew's agent spec. A non-member that is added here gets an empty array and works with every Crew tool silently absent. |
+| `ACP_BACKENDS_MEMBER_DISPATCH` | Crew's member-dispatch tools are mounted into a channel-member session, with the auto-approve grant that goes with them. A harness with no per-session mount to ride is excluded, which withholds only the extra grant. |
+| `ACP_BACKENDS_PRIVATE_MEMORY_MCP` | Direct private member MCP tools execute inside the member's OS sandbox. Kiro, Claude Code and KAS are members. Codex and unknown or merely selectable backends fail before private runtime creation. Membership does not waive the separate OS sandbox checks. |
+| `ACP_BACKENDS_COMPACT` | The manual `/compact` entry points are offered. A non-member refuses the manual command up front rather than stranding the status waiter on a harness that emits no compaction status of its own. |
+| `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` | Membership buys two things, and a harness can need only one. First the CAPTURE: the list the harness advertises at `session/new` is written to the cross-session provider-model cache under the harness's own namespace, which is what `GET /api/models` reads back. Second the FOLD: a stored id is rewritten to the served spelling, at spawn and on a warm-pool `set_model`. A harness whose wire ids are already exact gets a no-op fold, so it joins for the capture alone — which is the whole point when its advertised select is the only source of ids it accepts back (codex). claude joins for both. |
+| `ACP_BACKENDS_SEED_LOCAL_SETTINGS` | A local settings file is seeded at spawn **and re-seeded on `set_model`**, so a warm-pool claim does not leave a stale model or allowlist behind. A harness with no such file is not a member. |
+| `ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD` | The dashboard's MCP sync leaves running sessions alone after a config write, because the harness reconciles the agent file itself. Membership is version-gated per process by `mcp_hot_reload_supported`, not granted by the harness name alone. |
+| `ACP_BACKENDS_STRUCTURED_REFUSAL` | The harness reports a model-side refusal with a **reason** — on the Kiro path a `_kiro.dev/metadata` frame with `stopReason: CONTENT_FILTERED` and a `refusal {category, explanation, recommendedModel}` object — and `acp/_dispatch.parse_refusal` is consulted on that frame. Every harness still lands on the same `RefusalInfo` and the same dashboard card; a non-member's card just has no category line. A harness whose refusal wire carries a reason in a different shape adds a parser and joins here — it must not widen the metadata reader to guess. |
+
+Not every per-harness fact is a membership SET. Which `configId` carries the
+reasoning effort is a per-harness *spelling* -- `effort` for claude-agent-acp,
+`reasoning_effort` for codex-acp -- and it is answered by
+`effort_config_option_id(backend)` in the vocabulary module, defaulting to
+`effort` with a row only for the exception. A new harness that spells it
+differently adds one row there and needs no call-site change, because every
+effort site reads the resolver: the dashboard's live change and the startup
+application of a persisted slot level, the knowledge pool's apply, both
+`get_valid_effort_levels` readers, and the pair split above. Getting this wrong
+fails toward silence rather than an error -- an adapter answering "unknown
+config option" is indistinguishable from one with no effort selector, so every
+one of those callers skips and the session runs an effort the UI does not
+report. Only the function is exported; the table behind it is not, because a
+caller indexing it takes a `KeyError` for exactly the harnesses the default
+exists to serve.
+
+The tuning channels are one set each rather than one "tuning" set, because a
+harness can implement one and not another. If your harness needs a tuning
+channel none of them describes, add a set — do not widen an existing one.
+
+## Stage 3 — the spawn path
+
+This is the irreducible new code, and on the harnesses measured so far it is the
+largest single piece: `acp/client.py` grew between +194 and +806 lines per
+harness. It is not reducible by refactoring, because it is the part that is
+genuinely different.
+
+What a harness needs, using the Codex adapter as the shape:
+
+- **The adapter, and whether one is needed at all.** `codex-acp` exists because
+  the `codex` CLI does not serve ACP — it reads `acp` as a prompt. The adapter is
+  the transport, not an optimization. Establish this before anything else; a
+  harness that speaks ACP natively skips most of this stage.
+- **Binary and package constants** (`CODEX_ACP_BIN`, `CODEX_ACP_NPM_PKG`) and
+  the package entry path.
+- **A hoisted-dependency marker.** An adapter whose own dependencies are missing
+  dies at ESM import time — *after* the child is spawned, which is the worst
+  place to find out.
+- **An explicit env override** (`CODEX_ACP_BIN`), spelled the way the adapter's
+  own documentation spells it.
+- **Resolution order**: project-local `node_modules` first, then global/PATH.
+  Share the root discovery (`_vendored_acp_roots`) and join your own package
+  path onto it. Generalizing that helper is allowed; it is harness-neutral and
+  belongs to no harness. Adding a branch to the Kiro path is not (H13).
+
+Constants an adapter reads *itself* from the ambient environment do not get a
+constant here. Naming one implies a forwarding that does not exist — the Codex
+seam documents exactly this asymmetry against its Claude counterpart, which *is*
+explicitly forwarded.
+
+**If the harness has no permission setting to read back** — it runs every tool
+call unasked and only an extension inside it can raise the dialog the adapter
+forwards — the routing is `VERIFIED_GATE_EXTENSION`, and the spawn path carries a
+fixed sequence that the next such harness repeats verbatim rather than rediscovers
+(the Pi worked example is the first instance; `acp/client.py` names each step):
+
+1. **Ship the extension as package data** (`agent_sdk/gate_extensions/<harness>/`,
+   covered by the existing `setup.cfg` / `MANIFEST.in` globs) and **pin its digest**
+   in the driver (`<HARNESS>_GATE_EXTENSION_SHA256`). Hash and seal the **LF form** of
+   the bytes (`_pi_gate_extension_bytes`): a Windows checkout rewrites the text file
+   CRLF and a raw-bytes digest would refuse every session there. Pin the checkout LF
+   in `.gitattributes` as well; the normalization is what keeps the property off a
+   repo-config line. Editing the extension is a deliberate two-file edit (bytes and
+   pin), and the test that hashes both renderings to the pinned digest is the ratchet.
+2. **Seal a copy** into the sandbox run directory (read-only, per gateway process,
+   rewritten when the bytes differ) and **refuse the temp-dir fallback**
+   (`_pi_gate_run_dir`): the package path is agent-writable on a source install,
+   and a shared directory is rewritable by any same-UID process between seal and
+   exec. Teach the run-dir sweep the artifact family (owner-PID rule, never age).
+3. **Load it through a launcher** the adapter is told to run in place of the harness
+   (its own override variable, `PI_ACP_PI_COMMAND` for pi-acp), written under
+   `mkstemp` and published only after the mode change.
+4. **Read the load back** from the harness's own registry before the first prompt,
+   requiring the probe command AND its source path to be the sealed copy, compared as
+   the same file (`realpath` + `normcase`), and refuse the session otherwise
+   (`gate_extension_issue`).
+5. **Bind the dialog to the session** with a per-session nonce in the child's
+   environment that the extension echoes in its envelope; the dispatch parser trusts
+   an envelope only under that nonce. Forward a shell command and a document body
+   WHOLE; bound other values and mark the call untrusted when cut.
+6. **Guard the unpinned links in band.** The read-back proves the extension LOADED;
+   three links stay the adapter's and the harness's: the adapter honouring its
+   command override, the adapter forwarding the dialog per call, and the harness
+   honouring the extension's block. A `completed` update for a call the gate never
+   asked about, or for one the host DENIED, kills the harness and fails the turn
+   (`_tripwire_pi_gate`); the adapter version is named against the one the contract
+   was observed on, once per process (`_note_pi_adapter_version`).
+
+## Stage 4 — the handshake, as your own literal
+
+Protocol version and client capabilities stay per-harness literals (H10). Give
+your harness its own `PROTOCOL_VERSION_<NAME>` **even when the number is
+identical to an existing one.** That is not duplication: it makes a future
+divergence a one-line edit here instead of a silent downgrade of whichever
+harness happened to move first.
+
+## Stage 5 — the auth declaration
+
+How your harness signs in is one frozen `AgentAuthDeclaration` in
+`src/kiro_crew/agent_sdk/host_auth.py`, plus your column in bucket 3 of
+[agent-host-contract.md](agent-host-contract.md). **That is the whole auth cost.**
+Everything else is a projection of that one literal: the read-gate floor that
+fences your credential and re-anchors it under your own override variables
+(`security/paths.py`), the sandbox credential mask and the single leaf it spares so
+your own child can still authenticate (`agent_sdk/tool_gate.py`), the
+the logout-recycle answer `backends_retired_by_host_logout()`, the `AcpAuthRequired` text
+an operator reads when a session cannot start, the `auth` object on
+`GET /api/acp-backends` (`dashboard/handlers/acp_backend_status.py`), and the
+standing sign-in caveat the backend switch renders from it. You write the
+declaration; you edit none of those.
+
+It belongs after the handshake and before the install probe, because it is the
+sign-in half of the question Stage 6 answers about files — a harness that is
+installed and signed out still dies at `session/new` — and because the floor has
+to be fencing your credential before Stage 7 lets an operator choose you.
+
+| Field | What it commits the host to |
+|---|---|
+| `entitlement_source` | One of `host_identity_store` or `own_credential_file`. The doctor row and the logout policy branch on it, so a third spelling fails a test rather than reading as a harness nobody has an answer for; a harness entitled by the ambient cloud environment adds the third when it exists. |
+| `credential_leaves` | The home-relative leaves you STORE, spliced onto the read-gate floor so an agent's file tools can read none of them. Empty when your entitlement is the host store: those locations are the host's, declared in `identity_stores.py`, and re-declaring them would hand a driver a say over the host's own store. |
+| `home_override_env_vars` | The variables that relocate your credential `$HOME`. Every declared leaf is re-anchored under each of them, which is what keeps a relocated token fenced. |
+| `adapter_own_leaves` | The leaf your own child must still read. A SUBSET of `credential_leaves`, and enforced as one: a driver may only ask the mask to spare a leaf its own declaration put on the floor, and `__post_init__` raises otherwise. Know what you are declaring: the spared leaf is readable by the harness's shell too (same process tree, and the shell gate matches no paths by design), so this is the operator's token for that vendor exposed to the model — the posture every enforced harness ships today, tracked in #10438. Declare `()` if the harness can authenticate without the file (a keyless local model; Linux presents a masked file as empty) and say so in `sign_in_remedy`. |
+| `sign_in_remedy` | A finished sentence, server-owned and rendered verbatim wherever it appears. Untranslated on purpose — a translated per-harness string is a per-harness edit to thirteen locale files by construction, and the harness nobody remembers to add is exactly the one that needs the sentence. |
+| `host_logout_retires_children` | Whether a host logout may retire your already-running children. True only alongside `host_identity_store`; the other pairing is refused, because a logout says nothing about a store you never read. |
+
+The declaration says what you **store**; the host still decides what is **fenced**.
+That is why no field names a path to leave open in general, and why a malformed
+declaration raises at import rather than reaching a floor that fences less than its
+author believed.
+
+`AgentInteractiveLogin` is the optional half, and the absence is the point. A
+harness whose sign-in happens outside the product — in the operator's own terminal,
+or in the harness's own CLI — simply does not implement it, and a consumer finds
+that out with `isinstance` rather than by reading a boolean and then calling a
+method that no-ops. No harness implements it today.
+
+**Silence is not available at this stage.** `test_agent_sdk_host_auth.py` fails
+when a member of `ACP_BACKENDS_KNOWN` has no declaration, and
+`missing_declarations` names the gap. The failure mode that gate closes is a
+harness reaching `BASELINE_SELECTABLE_BACKENDS` without touching the credential
+floor, and then serving sessions with a live agent-readable token that nothing
+fences.
+
+## Stage 6 — the install probe
+
+`agent_sdk/backend_install.py` answers a question selectability does not: *is
+this harness installed on this machine, and if not, what installs it?* It holds
+one `_probe_<name>` per harness in `_PROBES`, each returning a
+`BackendInstallState` naming the missing component and the command that fixes
+it.
+
+**This stage is the gate between dormant and selectable**, and it is the one
+that is easy to skip because nothing fails without it. Nothing fails; the
+operator does. A build that offers a switch with no probe behind it cannot tell
+anyone what was missing when the session failed to start — the switch renders,
+the session dies, and the dashboard has nothing to say.
+
+## Stage 7 — selectability, or a named exception
+
+With Stages 1–6 done, add the id to `BASELINE_SELECTABLE_BACKENDS`.
+
+If it is not done — most often Stage 6 — then the id is in
+`ACP_BACKENDS_KNOWN` but not in the baseline, which is a NARROWING. Name it in
+`NOT_SHIPPED_SELECTABLE` in
+`test_agent_backend_editable.py::test_baseline_ships_every_known_backend`, with
+the reason. An explicit allowlist rather than a relaxed assertion is the point:
+a plain `baseline != known` still fails, so an id may sit outside the baseline
+only by being named.
+
+**Selectability additionally requires a decided MCP projection.** A harness an
+operator can choose is a harness whose sessions have — or provably do not have —
+Kiro Crew's own tools, and that answer is a declared kind in
+`src/kiro_crew/providers/mirrors/registry.py` (`PROJECTIONS`): `native`, `mirror`,
+`external` or `no-channel`. Work the checklist in
+[`providers/mirrors/README.md`](../../../src/kiro_crew/providers/mirrors/README.md)
+("Adding a backend: checklist") as part of this stage, not after it. The kind is
+not a formality and the failure it closes is specific: a session comes up holding
+`tools: ["@kirocrew-core", ...]` with nothing defining `kirocrew-core`, so every
+Crew tool is absent while the harness works and nothing anywhere is red. That
+shipped on four harnesses in a row, because a projection nobody had written was
+spelled the same way as a projection nobody needed.
+
+`no-channel` is a legitimate answer here, on the same terms as dormancy: it must be
+NAMED. A selectable `no-channel` harness has to name the channel that would have to
+exist and its tracking pointer in the declaration, and be named in this document —
+`test_provider_mirrors.py` checks both halves, so a gap recorded in only one of them
+fails. The reader of this file is the human who writes the code; the declaration is
+what the code reads; neither substitutes for the other.
+
+Selectability has exactly one gate, `resolve_selected_backend`, and it logs
+(H4). Do not add a static `enum` to `AgentConfig.acp_backend`: a literal frozen
+at import cannot see a boot-time registration, and `validate_config_data`
+*deletes* an out-of-enum value before the loader ever sees it — which strips a
+registered harness from `config.json` with no degrade log at all.
+
+## Stage 8 — what a live harness additionally touches
+
+Stages 1–7 keep a harness inside `acp/`, `providers/`, and `acp_backends.py`. A
+harness an operator can actually select spills further. Measured across the two
+in-flight live-harness branches, roughly ten files outside those trees:
+
+`dashboard/handlers/agents.py` (the largest, +213 on one branch),
+`mcp_gateway/session_servers.py` (+112), `dashboard/kiro_readiness.py`,
+`dashboard/handlers/kiro_prerequisite.py`, `dashboard/handlers/sessions.py`,
+`agent.py`, `config/loader.py`, `providers/base.py`, `session.py`,
+`subagent.py`, `cli_doctor.py`.
+
+Two rules govern that spill. A capability the session layer reads off a provider
+is declared on `LLMProvider` with a safe default, so an adapter never forces a
+`hasattr` probe onto the Kiro path (H14) — the cost of obeying this is small,
+around +11 lines in `providers/base.py` on the branch that needed it. And the
+`ProviderRegistry` seam takes the addition without a `CONTRACT_VERSION` bump
+(H13); if the Kiro construction path gains a conditional, a required argument,
+or a new failure mode in service of your adapter, the design is wrong, not the
+invariant.
+
+## Gates and tests
+
+Beyond the ordinary suite:
+
+- **`scripts/check_harness_parity.py`** enforces Group B on the lines your diff
+  *adds*, not the whole tree. Six rules, self-tested.
+- **`scripts/check_agent_sdk_boundary.py`** is shrink-only. A new import of
+  `kiro_crew.acp` or `kiro_crew.providers` from a consumer fails even though the
+  existing baseline (`.github/agent-sdk-boundary-baseline.txt`) grandfathers a
+  list of them. This is why Stage 1 puts the vocabulary in a
+  leaf: a consumer naming your constant must not have to cross the boundary to
+  do it.
+- **`test_harness_parity.py`** pins the structural invariants (Groups A and C),
+  so they fail in the ordinary test job rather than a separate gate.
+- **Group D is review-only.** `AUTOSDE.yaml`'s `harness-parity` rule carries
+  H13 and H14 to every AI review lane, because the absence of a mechanism is not
+  something a source scan can see.
+- **`./scripts/docs-lint.sh`** requires every doc to be reachable from its
+  directory index, and checks that line citations still point at what they
+  claim.
+
+Never relax a check to make a red invariant green. If a harness genuinely cannot
+be adapted within these invariants, the correct outcome is that it does not land
+yet — say so in the PR instead of widening a seam.
+
+## Worked example: the Codex seam
+
+The Codex onboarding is a clean instance of stopping at Stage 7:
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_CODEX`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_CODEX`, policy name mapped. |
+| 2 capability sets | Decided for every set: in the model and effort channels, out of the rest. All three channel sets were *created* by this work, which is why the tuning channels are three sets rather than one. |
+| 3 spawn path | Done — adapter, npm package, dep marker, env override, project-local resolution. |
+| 4 handshake | Done — `PROTOCOL_VERSION_CODEX`, its own literal at the same number as Claude's. |
+| 5 auth declaration | Done — `own_credential_file`, `~/.codex/auth.json` on the floor with `CODEX_HOME` re-anchored, that same leaf spared for its own child, `.aws/config` re-exposed read-only, not retired by a host logout, and a two-branch remedy every consumer renders verbatim. |
+| 6 install probe | Done — `_probe_codex` names `codex-acp` and the command that installs it. One component, not two: the adapter ships its own Codex binary. Credentials are deliberately NOT probed: a `missing` verdict disables the switch, and the checkable paths are not the only ones that authenticate a Codex. The sign-in answer is the Stage 5 declaration instead, and every consumer renders its remedy rather than carrying a string of its own. |
+| 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` is empty again, which is the healthy state. |
+| routing | Done — `SESSION_CONFIG`, verified and applied as `mode=read-only` after session/new and before the first prompt, refusing otherwise. |
+| residual | ACP v1 cannot require a prompt for a passive READ, so the sensitive-path block does not see this harness's reads. Mitigated at the OS boundary instead: its child cannot read the credential homes the standard tier leaves open. |
+| 8 live spill | Not reached. |
+
+The lesson worth carrying: the seam is dormant for exactly one reason, that
+reason is written down where the narrowing check reads it, and closing it is a
+single stage rather than a re-litigation. That is the shape to aim for — not
+"complete or nothing", but "incomplete at a named stage".
+
+## Worked example: the OpenCode harness
+
+The first onboarding run with every gate in this document already in place, and
+the one to read for what the stages cost when nothing can be skipped:
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_OPENCODE`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_OPENCODE`, policy name mapped, its own model-registry namespace. |
+| 2 capability sets | Decided for every set, and each decision cites what the harness advertised rather than what it resembles: in the model channel and the advertised-model capture, out of the effort channel (its `session/new` advertises a `mode` select beside `model` and no `effort`), out of steer and both compaction sets (its `sessionCapabilities` are close/fork/list/resume), and — the one decision this run got WRONG — out of the session MCP array, on the grounds that it advertises `http` and `sse` MCP transports and no stdio. That is the failure mode Stage 2's own instruction is meant to prevent, arriving through a door the instruction leaves open: the decision DID cite what the harness advertised rather than what it resembles, and it was still wrong, because ACP's `McpCapabilities` has exactly two boolean fields (`http`, `sse`) and no `stdio` field for any conforming agent to set. Citing an advertisement is not enough; the schema that would carry the claim has to be read too, or an absence that cannot exist is mistaken for a refusal. Corrected by measurement against `opencode acp` 1.18.30 — the element Crew already emits is accepted, the child is spawned, its tools are listed and the element's `env` reaches it — so the harness is IN the set, with a mirror at `providers/mirrors/opencode.py` and a ratchet at `test/test_opencode_session_mcp.py`. The cost of the error was one selectable harness serving every session with none of Crew's own tools, and nothing red. |
+| 3 spawn path | Done — one binary, `opencode acp`, resolved override → mise → PATH. No adapter package and no Node floor, so the ladder is the plain-binary one rather than the entry-script one. |
+| 4 handshake | Done — `PROTOCOL_VERSION_OPENCODE`, its own literal, integer `1`, captured off its own wire. |
+| 5 auth declaration | Done — `own_credential_file`, `~/.local/share/opencode/auth.json` on the floor with `XDG_DATA_HOME` re-anchored, that leaf spared for its own child, not retired by a host logout, and a remedy that names an action without asserting a state (a locally served model needs no sign-in at all). |
+| 6 install probe | Done — `_probe_opencode` names `opencode` and the command that installs it. One component, and here that is not a simplification: the thing that would be missing is the thing that serves ACP. `restart_required` is read from the spawn path's own cache (`opencode_cached_negative()`): the binary resolves now, but this process already cached its absence, so a session started right now still fails until the gateway restarts. |
+| 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` stays empty. |
+| routing | Done, by a NEW mechanism — `VERIFIED_SEEDED_SETTINGS`. The setting travels as inline config in the child's environment, which resolves above the project's own config file, and the harness's own resolved configuration is read back before the first prompt; the session is refused when the required value is not in force. |
+| residual | The read-back establishes the PRECONDITION, not that the harness honours it per tool call — no client-side read can prove that. And ACP v1 still cannot require a prompt for a passive READ, so the OS-boundary credential mask is the compensating control, as it is for Codex. |
+| 8 live spill | Reached — a live turn, and a frame corpus that is live for all seven required classes, `session/request_permission` included: with `permission: ask` in force the harness asked before running `bash`, which is the observation the whole enforcement claim needed. |
+
+Two things this run produced that the checklist did not ask for, and both belong
+in the reading of it. The routing mechanism is one: Stage 2's instruction is to
+decide every set, and the honest decision here was that neither existing routing
+member described this harness — `SEEDED_SETTINGS` is declared-but-unenforced for
+want of a read-back, and this harness has one. Adding a member to the vocabulary is
+a heavier edit than joining a set, and it is the right one when the alternative is
+a guarantee nobody performs.
+
+The other is what onboarding a harness with a *different shape* of credential home
+surfaced. Every earlier harness's override variable stood in for its token's parent
+directory, so the credential floor re-anchored a relocated token by its final
+segment alone. `XDG_DATA_HOME` stands in for `.local/share`, two segments up, so
+that anchoring fenced a path this harness never writes while the real relocated
+token stayed readable. A harness declares the spelling its file takes under an
+override root now. Expect this: the buckets are answered from the harnesses that
+existed when they were written, and a new one whose answer has a different shape
+finds the seam rather than the gap.
+
+## Worked example: the Pi harness
+
+The second run through every gate, and the one to read for what a harness with NO
+permission gate of its own costs — the case none of the routing members described:
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_PI`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_PI`, policy name mapped, its own model-registry namespace. |
+| 2 capability sets | Decided for every set, each on what the harness advertised or what a capture showed: in the model channel and the advertised-model capture (a `model` select whose values are `provider/model` ids out of pi's own `models.json`), out of the effort channel (the option beside it is `thought_level`, a different id and vocabulary), in the harness-owned-sessions set (a `session/load` replays the conversation and answers with `modes`, so NOT in the load-without-modes set), out of steer, out of both compaction sets (a `/compact` built-in exists but its turn shape is unobserved, so the exclusion is conservative and says so), and OUT of the session MCP array for a reason worse than absence — see below. |
+| 3 spawn path | Done — TWO components. The `pi-acp` adapter is resolved on the Node-entry ladder (`PI_ACP_BIN` override → project-local `node_modules` with the SDK marker → mise → PATH) and the `pi` agent on the plain-binary ladder (`PI_ACP_PI_COMMAND` override → mise → PATH). Both are resolved because Crew's gate launcher execs `pi` by absolute path, and the not-found message names whichever half is absent. |
+| 4 handshake | Done — `PROTOCOL_VERSION_PI`, its own literal, integer `1`, captured off pi-acp 0.0.33's wire. |
+| 5 auth declaration | Done — `own_credential_file`, `~/.pi/agent/auth.json` on the floor with `PI_CODING_AGENT_DIR` re-anchored (it moves the whole agent directory, so the default final-segment spelling is right), that leaf spared for its own child, not retired by a host logout, and a remedy that names an action without asserting a state. Verified on disk: a key planted in that file under a scratch `PI_CODING_AGENT_DIR` is what `pi auth check --credentials` reports back. |
+| 6 install probe | Done — `_probe_pi` names whichever of `pi-acp` and `pi` is absent, with the one `npm i -g` that installs both, and reads `restart_required` from BOTH spawn-path caches. |
+| 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` stays empty. |
+| routing | Done, by a NEW mechanism — `VERIFIED_GATE_EXTENSION`. pi runs every tool call unasked by design, and pi-acp sends `session/request_permission` only when an extension inside pi raises a confirm dialog. So Crew ships a pi extension (`agent_sdk/gate_extensions/pi/kiro_crew_tool_gate.ts`, package data) that intercepts every `tool_call` event and raises that dialog with the tool call written into the message as a JSON envelope; a launcher in the sandbox run directory execs the resolved `pi` with `--extension <that file>`, and the adapter is told to run the launcher in place of `pi` through its own `PI_ACP_PI_COMMAND`. The file the launcher names is a sealed copy: the packaged bytes are checked against a digest pinned in the driver at every spawn (over their LF form — a Windows checkout rewrites the text file CRLF, and a raw-bytes digest would refuse every session there; the checkout is pinned LF in `.gitattributes` as well) and written read-only into the sandbox run directory, so a package file rewritten on a source install is refused rather than loaded. Before the first prompt, that exact launcher is run with the adapter's own arguments, asked `get_commands`, and the probe command must be present AND sourced from that copy; the session is refused otherwise. On the client side the dispatch parser reads the envelope back out of the permission frame — only for a session running the extension, and only under the per-session nonce that session put in the pi process's environment for the extension to echo, because on every harness a permission frame's `rawInput` is the model's own tool arguments — so the gate judges the real tool name, kind and arguments rather than a dialog titled "confirm". Both artifacts must live under the real sandbox run directory: the sandbox's temp-dir fallback is a directory any process of the same user can write, so a spawn that would land there is refused rather than gated from a rewritable file. The read-back compares the probe's source path and the sealed copy as the same file (realpath, case-normalized), because pi reports the path in its own spelling. An oversize argument is bounded value by value so `path` always survives; a shell command and a document body (`write`'s `content`, `edit`'s two halves) are never bounded — the deny rules read the command's text verbatim, and the host skips body keys in its command-line scan only while the arguments are intact — so they are forwarded whole, and only an envelope too large to carry at all (200k chars) is refused, never cut. |
+| residual | The read-back establishes that the extension LOADED, not that the adapter forwards its dialog per call — the frame corpus carries that observation, on pi-acp 0.0.33 / pi 0.85.1, and a dispatch-side tripwire guards it in band: a `tool_call_update` that reaches `completed` for an id no envelope named kills the harness and fails the turn, and a `completed` update for a call the host DENIED kills it too, so the three links read off the adapter's and harness's source rather than the read-back (`PI_ACP_PI_COMMAND` honoured; dialogs forwarded; the extension's block honoured) each cost one call when they break, never a silent session. The adapter version is named against the one the contract was observed on, once per process. The extension is Crew's code running inside a third-party process with that process's permissions: a new trust boundary, stated in the `Routing` docstring rather than assumed. And an operator extension that BLOCKS a call before Crew's asks is honoured, not overridden — a denial there is theirs. |
+| 8 live spill | Reached for the frame corpus and the read-back chain (`test_acp_pi_backend.py` drives the real launcher against the real `pi` and requires the registry to name Crew's file, and refuses a copy of the same file elsewhere). A turn through the gateway itself was NOT reachable on the recording host, whose kernel refuses user namespaces: the sandbox floor refuses every enforced harness there, pi included, exactly as designed. |
+
+Two things this run produced that the checklist did not ask for. The first is the
+MCP verdict, which is the reason the array membership matters: pi-acp ACCEPTS the
+`session/new` `mcpServers` array without error and never hands it to the agent —
+its `initialize` advertises `mcpCapabilities` of `http: false` and `sse: false`, and
+a stdio server in the array produced no error and no tool. A harness that refuses
+the array is easy; one that accepts it and does nothing is the state that makes a
+dashboard report tools as mounted on a session where none can be called. It is
+recorded in `providers/mirrors/registry.py` as a `no-channel` projection naming that reason,
+and it is why the extension mechanism — not the MCP array — is the channel anything
+of Crew's reaches pi through today.
+
+The second is the shape of the routing itself. OpenCode's read-back proved a
+SETTING was in force. Pi has no setting, so what is read back is whether Crew's own
+CODE loaded, from Crew's own file — and the source check is not decoration: pi loads
+extensions from the operator's own directories too, and one of theirs registering
+the probe name would otherwise make an absent gate read as present. Expect this
+too: a harness that offers less than the ones before it does not fit a weaker
+version of an existing member, it needs a member that says what is actually
+established.

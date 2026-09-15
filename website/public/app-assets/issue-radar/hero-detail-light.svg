@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" width="1200" height="288" role="img" aria-label="Issue Radar">
+  <defs>
+    <linearGradient id="ir-bg-l" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#eafaf3"/>
+      <stop offset="100%" stop-color="#c9f0e0"/>
+    </linearGradient>
+    <radialGradient id="ir-sweep-l" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#059669" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#059669" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="288" fill="url(#ir-bg-l)"/>
+
+  <!-- Soft decorative orbs -->
+  <circle cx="120" cy="42" r="30" fill="#a7f3d0" opacity="0.45"/>
+  <circle cx="1150" cy="250" r="48" fill="#6ee7b7" opacity="0.3"/>
+  <circle cx="655" cy="272" r="18" fill="#a7f3d0" opacity="0.4"/>
+
+  <!-- Radar (left): the scanning sweep picking up triaged issues -->
+  <g transform="translate(250,144)">
+    <circle r="118" fill="none" stroke="#047857" stroke-width="1.2" opacity="0.18"/>
+    <circle r="95" fill="none" stroke="#047857" stroke-width="1.2" opacity="0.25"/>
+    <circle r="68" fill="none" stroke="#047857" stroke-width="1.2" opacity="0.35"/>
+    <circle r="42" fill="none" stroke="#047857" stroke-width="1.2" opacity="0.45"/>
+    <circle r="16" fill="none" stroke="#047857" stroke-width="1.4" opacity="0.6"/>
+    <line x1="-118" y1="0" x2="118" y2="0" stroke="#047857" stroke-width="1" opacity="0.15"/>
+    <line x1="0" y1="-118" x2="0" y2="118" stroke="#047857" stroke-width="1" opacity="0.15"/>
+    <path d="M0,0 L0,-118 A118,118 0 0,1 102,-59 Z" fill="url(#ir-sweep-l)"/>
+    <line x1="0" y1="0" x2="0" y2="-118" stroke="#059669" stroke-width="2.6" stroke-linecap="round"/>
+    <circle r="4.5" fill="#059669"/>
+    <circle cx="66" cy="-46" r="5" fill="#dc2626"/>
+    <circle cx="-38" cy="26" r="4.5" fill="#f59e0b"/>
+    <circle cx="26" cy="74" r="4" fill="#059669"/>
+    <circle cx="-80" cy="-20" r="4" fill="#059669" opacity="0.5"/>
+    <circle cx="52" cy="40" r="3.5" fill="#059669" opacity="0.5"/>
+  </g>
+
+  <!-- Issue list (center) -->
+  <g>
+    <rect x="430" y="60" width="250" height="46" rx="9" fill="#ffffff" stroke="#a7f3d0" stroke-width="1.5"/>
+    <circle cx="450" cy="83" r="5" fill="#dc2626"/>
+    <rect x="466" y="74" width="150" height="7" rx="3.5" fill="#065f46"/>
+    <rect x="466" y="88" width="96" height="6" rx="3" fill="#6ee7b7"/>
+    <rect x="632" y="75" width="36" height="15" rx="7.5" fill="#fde68a"/>
+
+    <rect x="430" y="121" width="250" height="46" rx="9" fill="#ffffff" stroke="#a7f3d0" stroke-width="1.5"/>
+    <circle cx="450" cy="144" r="5" fill="#f59e0b"/>
+    <rect x="466" y="135" width="120" height="7" rx="3.5" fill="#065f46"/>
+    <rect x="466" y="149" width="72" height="6" rx="3" fill="#6ee7b7"/>
+    <rect x="632" y="136" width="36" height="15" rx="7.5" fill="#bbf7d0"/>
+
+    <rect x="430" y="182" width="250" height="46" rx="9" fill="#ffffff" stroke="#a7f3d0" stroke-width="1.5" opacity="0.7"/>
+    <circle cx="450" cy="205" r="5" fill="#059669" opacity="0.7"/>
+    <rect x="466" y="196" width="134" height="7" rx="3.5" fill="#065f46" opacity="0.6"/>
+    <rect x="466" y="210" width="84" height="6" rx="3" fill="#6ee7b7" opacity="0.6"/>
+  </g>
+
+  <!-- Duplicate detection + linked-PR motif (center-right) -->
+  <g transform="translate(740,90)">
+    <rect x="14" y="14" width="150" height="96" rx="12" fill="#ffffff" stroke="#a7f3d0" stroke-width="1.5" opacity="0.55"/>
+    <rect x="0" y="0" width="150" height="96" rx="12" fill="#ffffff" stroke="#6ee7b7" stroke-width="1.8"/>
+    <circle cx="22" cy="24" r="5" fill="#059669"/>
+    <rect x="36" y="19" width="94" height="7" rx="3.5" fill="#065f46"/>
+    <rect x="20" y="42" width="110" height="6" rx="3" fill="#6ee7b7"/>
+    <rect x="20" y="56" width="80" height="6" rx="3" fill="#6ee7b7"/>
+    <g transform="translate(20,72)">
+      <rect width="76" height="16" rx="8" fill="#d1fae5" stroke="#6ee7b7" stroke-width="1"/>
+      <circle cx="13" cy="8" r="3.6" fill="none" stroke="#047857" stroke-width="1.6"/>
+      <line x1="13" y1="4.4" x2="13" y2="1" stroke="#047857" stroke-width="1.6" stroke-linecap="round"/>
+      <rect x="24" y="5" width="42" height="6" rx="3" fill="#047857" opacity="0.7"/>
+    </g>
+  </g>
+
+  <!-- Ledger check (right): findings kept so nothing is re-investigated -->
+  <g transform="translate(1000,144)">
+    <g opacity="0.5">
+      <rect x="-6" y="-54" width="150" height="13" rx="6.5" fill="#ffffff" stroke="#a7f3d0" stroke-width="1"/>
+      <rect x="-6" y="41" width="150" height="13" rx="6.5" fill="#ffffff" stroke="#a7f3d0" stroke-width="1"/>
+    </g>
+    <rect x="-6" y="-15" width="150" height="30" rx="8" fill="#ffffff" stroke="#6ee7b7" stroke-width="1.5"/>
+    <path d="M6 0 L12 6 L24 -7" stroke="#059669" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="34" y="-4" width="96" height="8" rx="4" fill="#065f46" opacity="0.75"/>
+    <circle cx="150" cy="0" r="26" fill="#059669"/>
+    <circle cx="150" cy="0" r="20" fill="#047857"/>
+    <path d="M138 0 L147 9 L164 -10" stroke="#ffffff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

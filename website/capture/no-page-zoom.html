@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Deliberately NO viewport meta here. The entry script installs one at
+         runtime: the shipped string is read out of index.html so this capture
+         cannot pass against a meta that has drifted from the app's, and the
+         control run installs a permissive one instead. A meta authored here
+         would be a copy that silently goes stale. -->
+    <title>Page zoom capture</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/capture/no-page-zoom.tsx"></script>
+  </body>
+</html>

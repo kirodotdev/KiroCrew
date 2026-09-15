@@ -1,0 +1,346 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # PRs cancel superseded revisions: only a PR's tip commit needs a verdict.
+  # main does not, so let an in-flight run finish instead of killing it.
+  # This does NOT produce a verdict per commit. The group still permits one
+  # pending run, and GitHub evicts that pending run when a newer one queues
+  # (a documented GitHub concurrency behavior). With a ~19min run and a
+  # ~1.4min median merge gap, main gets periodic verdicts instead of none.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-wheel:
+    name: Build Wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Build frontend
+        working-directory: website
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Stage frontend into package
+        run: |
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
+
+      # Build the sdist too, not just the wheel: `--wheel` alone reads
+      # package_data and never evaluates MANIFEST.in, so a MANIFEST regression
+      # that strips the vendored native libs is INVISIBLE to a wheel-only build
+      # here. The release lane builds the published wheel FROM the sdist, so
+      # that regression would first surface at tag push — after it reached main.
+      - name: Build wheel + sdist
+        run: |
+          pip install --upgrade build
+          python -m build
+
+      - name: Verify wheel installs cleanly
+        run: |
+          pip install dist/*.whl
+          kirocrew --version
+
+      # The PR-time vendored-lib gate. Without it the only such gate on a PR is
+      # the pytest guard, which MODELS MANIFEST.in rather than executing it — so
+      # this is what proves the real artifacts. Shared with build-wheel.yml so
+      # the two lanes cannot drift; a gate that diverges stops guarding without
+      # ever failing.
+      - name: Verify vendored native libs survived into the wheel + sdist
+        run: python scripts/verify_vendored_payload.py
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  # Build the real Windows artifact, install it silently, verify the
+  # registration and payload, BOOT THE INSTALLED GATEWAY, and fail if extraction
+  # exceeds the ceiling.
+  #
+  # The backend payload is a REAL python-build-standalone runtime carrying the
+  # wheel build-wheel just produced, not a stub. Before this, the step staged a
+  # two-line `@echo off` batch file as the entire payload and therefore had to
+  # pass `-SkipGatewayValidation`: with no bundled interpreter there was nothing
+  # for the script's gateway leg to launch. The consequence was that the whole
+  # class of defect that leaves an installable-but-unbootable artifact -- a prune
+  # that drops a module the gateway imports, bytecode filtered out of the
+  # payload, a launcher redirecting imports into an empty user cache -- had no
+  # gate on a PR at all. The install-duration ceiling it did enforce was measured
+  # against 40 bytes of batch file, so it proved nothing about a real install
+  # either.
+  #
+  # This is the SAME assembly packaging/build-desktop.sh's build_backend_windows
+  # performs, minus the voice extras: PBS runtime, pip install, the relocatable
+  # bin/kirocrew.cmd shim, then packaging/precompile_windows.py for the measured
+  # gateway import closure. The extras are deliberately omitted -- they add a
+  # pywhispercpp + numpy download for a code path the gateway boot never reaches
+  # -- which is why the pyc floor below is passed explicitly rather than left at
+  # the script's full-bundle default.
+  #
+  # Budget: the added steps are the PBS fetch (~32MB zstd via uv, well under a
+  # minute), the wheel install (a few minutes at most, all deps --prefer-binary)
+  # and the precompile pass (compiles ~1000 sources). NSIS now compresses a real
+  # payload rather than 40 bytes, which is the largest single addition. The job
+  # keeps its 20-minute cap; if the real installer cannot be built, installed and
+  # booted inside that, the artifact users receive has a problem worth failing on.
+  build-windows-installer:
+    name: Build Windows Installer (x64)
+    runs-on: windows-latest
+    # Consumes build-wheel's artifact rather than building its own wheel: that
+    # job already stages the frontend dist into the package before building, so
+    # its wheel is the one users install. Building a second wheel here would add
+    # an npm frontend build to a Windows runner and let the two drift.
+    needs: build-wheel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/electron/package-lock.json
+
+      - name: Install Electron packaging dependencies
+        working-directory: website/electron
+        run: npm ci --no-audit --no-fund
+
+      - name: Download the wheel to bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wheel
+          path: wheelhouse
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # Cache disabled deliberately: an Actions cache is writable from any
+          # branch, and a restored entry would reach the interpreter this job
+          # installs and boots (zizmor cache-poisoning). The PBS fetch is fast
+          # enough that caching it buys little.
+          enable-cache: false
+
+      # The same interpreter provider build-desktop.sh uses (`provision_pbs`),
+      # pinned to the same 3.12 series, so this job exercises the runtime users
+      # actually get rather than the runner's own Python.
+      - name: Assemble a real backend payload from the wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $wheel = @(Get-ChildItem -LiteralPath wheelhouse -File -Filter "*.whl")
+          if ($wheel.Count -ne 1) {
+            throw "Expected exactly one wheel in wheelhouse; found $($wheel.Count)."
+          }
+          uv python install cpython-3.12-windows-x86_64-none
+          $pbs = @(
+            Get-ChildItem -LiteralPath (uv python dir) -Directory |
+              Where-Object { $_.Name -like "cpython-3.12*-windows-x86_64-none" }
+          )
+          if ($pbs.Count -lt 1) {
+            throw "uv installed no cpython-3.12 windows-x86_64 interpreter under $(uv python dir)."
+          }
+          $out = "website/electron/backend-dist/kirocrew-backend"
+          New-Item -ItemType Directory -Force (Split-Path $out) | Out-Null
+          Copy-Item -Recurse -LiteralPath $pbs[0].FullName -Destination $out
+          # PBS marks itself externally managed; pip refuses to install into it
+          # until that marker is gone. build_backend_windows deletes it too.
+          Get-ChildItem -LiteralPath $out -Recurse -File -Filter "EXTERNALLY-MANAGED" |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+          $python = Join-Path $out "python.exe"
+          $env:PYTHONNOUSERSITE = "1"
+          $env:PYTHONPATH = $null
+          & $python -m pip install --prefer-binary --no-warn-script-location `
+            --disable-pip-version-check $wheel[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "pip install of the wheel failed." }
+          # The relocatable launcher shim, byte-identical in shape to the one
+          # build_backend_windows writes: %~dp0 is bin\, so the interpreter
+          # resolves relative to the bundle wherever it lands.
+          New-Item -ItemType Directory -Force (Join-Path $out "bin") | Out-Null
+          Set-Content -Encoding ascii -LiteralPath (Join-Path $out "bin\kirocrew.cmd") `
+            -Value @('@echo off', '"%~dp0..\python.exe" -s -m kiro_crew %*')
+          # Self-containment gate, same as the packaging script's: a missing
+          # dependency must fail here, not at gateway boot.
+          & $python -s -m kiro_crew --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "the bundled backend is NOT self-contained under PYTHONNOUSERSITE=1."
+          }
+          # Ship checked-hash bytecode for the measured gateway import closure,
+          # which is what the script's pyc floor then verifies survived into the
+          # installed artifact.
+          $env:PYTHONDONTWRITEBYTECODE = "1"
+          & $python -s packaging/precompile_windows.py --root $out --module kiro_crew.cli_server
+          if ($LASTEXITCODE -ne 0) { throw "precompiling the gateway import closure failed." }
+          Remove-Item Env:PYTHONDONTWRITEBYTECODE
+
+      - name: Compile unsigned x64 NSIS installer
+        working-directory: website/electron
+        run: npx --no-install electron-builder --win nsis --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      # No -SkipGatewayValidation: the payload above has a real interpreter, so
+      # the script's gateway leg runs and requires /api/ready within its own
+      # 30-second ceiling.
+      #
+      # -MinStartupPycs 750 rather than the script's 1000 default: that default
+      # describes the FULL release bundle, which also carries the voice extras
+      # (pywhispercpp, numpy) this job omits. Measured on the core closure of
+      # kiro_crew.cli_server, precompile emits about 990 sources, so 750 is a
+      # floor with headroom for the win32 closure differing from the measured one
+      # while still catching what the assertion exists for: bytecode filtered out
+      # of the artifact, or the launcher redirecting imports into an empty user
+      # cache, both of which land near zero rather than near 750.
+      - name: Install the artifact, boot the installed gateway, enforce the ceilings
+        shell: pwsh
+        working-directory: website/electron
+        run: '& "$env:GITHUB_WORKSPACE\.github\scripts\test-windows-installer.ps1" -MinStartupPycs 750'
+
+      - name: Upload installer timing
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installer-performance
+          path: |
+            website/electron/runtime-evidence/install-timing.txt
+            website/electron/runtime-evidence/gateway-startup-timing.txt
+            website/electron/runtime-evidence/gateway-stdout.log
+            website/electron/runtime-evidence/gateway-stderr.log
+            website/electron/runtime-evidence/native-install-mode.png
+          if-no-files-found: warn
+
+  # Resolve which desktop platforms a PR builds. Linux (both arches) ALWAYS
+  # builds -- it is comparatively cheap and catches cross-platform bundle
+  # breakage, and cannot be cross-compiled. The macos-15 leg bills at ~10x and
+  # its UNIQUE coverage is macOS packaging (DMG, universal/Rosetta, mac
+  # electron-builder), so on a pull_request it builds only when a macOS-
+  # packaging input changed; push / release events always build it. The release
+  # lane (build-desktop.yml) still ships every platform unconditionally.
+  desktop-matrix:
+    name: Resolve desktop matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      os: ${{ steps.compute.outputs.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            desktop:
+              - 'website/electron/**'
+              - 'website/package.json'
+              - 'website/package-lock.json'
+              # Path-qualified: the script lives in packaging/, and the bare name
+              # matched nothing, so every change to the one file that BUILDS the
+              # macOS app left the macos-15 leg uninstantiated on a PR. `ci.yml`'s
+              # own filter has the qualified form; this copy had drifted.
+              - 'packaging/build-desktop.sh'
+              # Also run by that script, so it is a packaging input too.
+              - 'scripts/stamp-distribution.sh'
+              - 'Makefile'
+              - 'pyproject.toml'
+              - 'setup.cfg'
+              - '.github/workflows/build.yml'
+              - '.github/workflows/build-desktop.yml'
+      - id: compute
+        env:
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          DESKTOP_CHANGED: ${{ steps.filter.outputs.desktop }}
+        run: |
+          # Linux legs are unconditional; macos-15 only when a packaging-relevant
+          # path changed on a PR (always on push / non-PR events).
+          if [ "$IS_PR" != "true" ] || [ "$DESKTOP_CHANGED" = "true" ]; then
+            echo 'os=["macos-15","ubuntu-22.04","ubuntu-22.04-arm"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'os=["ubuntu-22.04","ubuntu-22.04-arm"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  build-desktop:
+    needs: [desktop-matrix]
+    name: Build Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # macOS bills at 10x, so an unbounded hang here is the costliest in the repo.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Resolved by the desktop-matrix job: both Linux arches always (Linux
+        # cannot be cross-compiled -- build-desktop.sh RUNS the interpreter it
+        # provisions -- so each arch needs its own runner), plus macos-15 when a
+        # macOS-packaging input changed or on any non-PR event. build-desktop.yml
+        # stays the release matrix that ships every platform unconditionally.
+        os: ${{ fromJSON(needs.desktop-matrix.outputs.os) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Build desktop app (PBS + uv venv)
+        run: make desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload desktop artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-macos-arm64
+          path: |
+            website/electron/dist/*.dmg
+            website/electron/dist/*.zip
+          if-no-files-found: warn
+
+      - name: Upload desktop artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Arch in the name: both Linux legs match `runner.os == 'Linux'`, and a
+          # shared artifact name makes the two uploads collide.
+          name: desktop-linux-${{ runner.arch }}
+          path: website/electron/dist/*.AppImage
+          if-no-files-found: warn

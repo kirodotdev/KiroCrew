@@ -1,0 +1,515 @@
+"""The ACP driver's half of the machine-local install question.
+
+The layer above (:mod:`kiro_crew.agent_sdk.backend_install`) owns the *contract*
+-- three states, which component a remedy names, how long a verdict is reused.
+This module owns the one thing that contract cannot express without reaching
+into the harness: whether a spawn of that harness would actually **resolve**
+right now.
+
+**It asks through the spawn's own resolvers, never a reimplementation.** A probe
+that hand-rolled a PATH search would agree with the spawn only by coincidence:
+the resolvers here consult an env override, a project-local ``node_modules``,
+mise, and an augmented PATH that includes shims a bare ``shutil.which`` cannot
+see. A second search would tell the operator they are ready and then fail the
+session, which is a worse outcome than saying nothing.
+
+Install queries return plain data -- a bool, a string, a tuple of bools -- so no
+ACP type crosses the boundary. The context bridge additionally returns a narrow
+SDK role protocol, never the concrete provider type. Two consequences are deliberate rather than
+incidental:
+
+* **A resolver that raises is left to raise.** The failed-CHECK verdict belongs
+  to the caller's three-state contract, and swallowing the exception here would
+  hand it a ``False`` indistinguishable from an honest "absent" -- which is
+  exactly the collapse of ``unknown`` into ``missing`` that contract forbids.
+* **The paths themselves are dropped.** Nothing above needs the resolved
+  location, and a returned path is a filesystem detail the SDK would then be
+  tempted to interpret.
+
+Imports that pull runtime machinery (``kiro_crew.acp`` and
+``kiro_crew.sandbox``) are FUNCTION-LOCAL throughout. The ACP package pulls in
+the client and runtime, while the sandbox package pulls in platform composition;
+this module is reached from a dashboard handler on the boot path, so importing
+either at module scope would charge gateway startup for a subsystem used only by
+an explicit action. Call-time lookup also lets tests patch the spawn resolver and
+sandbox posture at their defining modules.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kiro_crew.agent_sdk.context import ContextPromptProvider
+
+__all__ = [
+    "context_provider_of",
+    "projected_session_mcp_servers",
+    "agent_spec_mcp_refs",
+    "claude_adapter_cached_negative",
+    "claude_adapter_install_command",
+    "claude_components_resolve",
+    "derived_agent_permissions",
+    "finish_suspended_spawn",
+    "kiro_cli_resolves",
+    "resolve_pin_spelling",
+    "run_kiro_native_commands",
+]
+
+
+def finish_suspended_spawn(process: object, pid: int, *, label: str) -> bool:
+    """Apply the backend spawn policy, translating its typed failure to a bool."""
+    from kiro_crew.acp.client import AcpError
+    from kiro_crew.acp.client import finish_suspended_spawn as _impl
+
+    try:
+        _impl(process, pid, label=label)  # type: ignore[arg-type]
+    except AcpError:
+        return False
+    return True
+
+
+def resolve_pin_spelling(model_id: str, advertised: object) -> str:
+    """The advertised spelling *model_id* resolves to, or ``""`` when none.
+
+    Thin delegation to :func:`kiro_crew.acp.client.resolve_pin_spelling` — the
+    namespace fold for persisted pins carrying a stale ``<namespace>::``
+    qualifier — so application code (``session.py``'s
+    ``AllocationDeps`` wiring) reaches it through the SDK surface instead of
+    importing the ACP layer (the agent-sdk-boundary gate refuses a new edge).
+    Plain data in, plain data out: a string and a sequence of strings, a string
+    back — no ACP type crosses the boundary. Function-local import for the same
+    reason as every other runtime-machinery import in this module.
+    """
+    from kiro_crew.acp.client import resolve_pin_spelling as _impl
+
+    return _impl(model_id, advertised)  # type: ignore[arg-type]
+
+
+def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dict:
+    """The KAS policy a generated agent spec should carry, from its grant list.
+
+    Deriving from the FILTERED ``allowedTools`` instead of restating a literal
+    means the rules come out byte-identical, a later edit to the grant list
+    carries through, and a ceiling that strips a grant strips its KAS rule with
+    it. ``{"rules": []}`` when nothing qualifies -- the key's mere PRESENCE is
+    what makes KAS load the spec at all, so the empty policy is still a policy.
+
+    Plain data in, plain data out: a list of grant refs and a spec filename
+    (the KAS ``agent_id`` is its stem), a JSON-ready dict back -- no ACP type
+    crosses the boundary. ``allowed_tools`` is typed ``object`` because the
+    wrapped derive owns the validation and fails closed on any non-list
+    (including the absent-key ``None`` a caller reads off a config dict) --
+    narrowing it here would just force casts at call sites for a check the
+    derive already makes. Function-local import for the same boot-path reason
+    as every other function here, though ``kas_permissions`` itself is a leaf
+    that depends on nothing else in the package.
+    """
+    from pathlib import Path
+
+    from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+
+    derived = allowed_tools_to_permissions(allowed_tools, agent_id=Path(agent_filename).stem)
+    return derived if derived is not None else {"rules": []}
+
+
+def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bool]]]:
+    """Per selectable backend: which of *agent*'s ``@server`` refs resolve to nothing.
+
+    The static half of the runtime detector in
+    :mod:`kiro_crew.acp.mcp_ref_guard`, answering before a session exists rather
+    than during one. ``kirocrew doctor`` is the consumer, and it reaches it here
+    for the usual reason: the answer needs the agent spec AND each backend's spec
+    projection, both of which live below the boundary, so a consumer assembling it
+    itself would take three new ACP/providers edges the agent-sdk-boundary gate
+    refuses. The RESOLVER is provider-neutral and needs no delegation --
+    :mod:`kiro_crew.agent_sdk.mcp_refs` is importable directly.
+
+    Returns ``(spec_found, [(backend, unresolved refs, backend has a mirror)])``,
+    sorted by backend id. Plain data only, so no ACP type crosses the boundary,
+    and ``has_mirror`` is the one bit of provenance the caller cannot recover from
+    the refs alone: "no mirror registered" and "a mirror that dropped this ref"
+    are different problems with different remedies.
+
+    **It reads the mirror seam, and that bounds what it can claim.** The wire
+    array comes from ``providers.mirrors.mirror_for`` -- the same seam
+    ``AcpClient._resolve_session_mcp_servers`` composes from -- so a backend whose
+    projection lives OUTSIDE that folder (an ``external`` declaration) reports
+    refs here that its own projection may well carry. ``has_mirror`` is what lets
+    the caller say which case it is instead of collapsing the two, and
+    :func:`backend_mcp_projection` is what says which kind it is.
+
+    ``permission_surface_owned=True`` models the ordinary spawn: the claude mirror
+    withholds its whole array when Crew did not author the session's native
+    permission file, and that is a per-SESSION fact no static check can know.
+    Passing ``False`` would report every ref as unresolved on the one backend
+    whose projection actually works.
+
+    Blocking (reads the spec) and never raises: a backend whose projection cannot
+    be resolved is omitted rather than reported wrongly. Function-local imports
+    for the same boot-path reason as every other function here.
+    """
+    from kiro_crew.acp.session_mcp import agent_spec_snapshot
+    from kiro_crew.acp_backends import selectable_backend_values
+    from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
+    from kiro_crew.providers.mirrors import has_mirror, mirror_for
+
+    spec = agent_spec_snapshot(agent)
+    if not spec:
+        return False, []
+    rows: list[tuple[str, list[str], bool]] = []
+    for backend in selectable_backend_values():
+        try:
+            mirror = mirror_for(backend)
+            wire: list = []
+            if mirror is not None:
+                params = mirror.session_params(agent, permission_surface_owned=True)
+                raw = params.get("mcpServers")
+                wire = list(raw) if isinstance(raw, list) else []
+            unresolved = unresolved_server_refs(spec, wire, backend=backend)
+        except Exception:
+            continue
+        rows.append((backend, unresolved, has_mirror(backend)))
+    return True, sorted(rows)
+
+
+def backend_mcp_projection(backend: str) -> tuple[str, str, str, str] | None:
+    """How *backend* is declared to receive Crew's MCP servers, as plain data.
+
+    Returns ``(kind, channel, tracking, per_tool_deny)`` -- the kind spelled as its
+    wire value (``native`` / ``mirror`` / ``external`` / ``no-channel``) -- or
+    ``None`` for a backend with no declaration, which is a state the parity test
+    refuses rather than one a consumer should render.
+
+    ``per_tool_deny`` is the reach of the spec's per-TOOL MCP restriction on this
+    backend, ``""`` where the declaration carries none (every kind but ``mirror``).
+    It rides along because it answers an operator's question that the other three
+    fields cannot: whether switching ONE tool off removes that tool or the whole
+    server. The kind says the servers arrive; this says what a restriction on them
+    is worth when it does.
+
+    The record's ``reason`` is deliberately NOT projected. It is written for the
+    reader of the registry, at registry length, and the consumer renders the two
+    fields that answer an operator's question instead. A field nothing reads is a
+    field the next caller has to decide whether to trust.
+
+    Here rather than read by the consumer for the reason every function in this
+    module is here: the declaration lives in ``providers/mirrors``, and a consumer
+    importing it would take a boundary edge the agent-sdk-boundary gate refuses.
+    Plain strings only, so no mirror type crosses the boundary and a caller cannot
+    accidentally hold the record.
+
+    Never raises. A build whose registry cannot be imported is a broken tree, and
+    a diagnostic row is not the place to discover it.
+    """
+    try:
+        from kiro_crew.providers.mirrors import projection_for
+
+        declared = projection_for(backend)
+    except Exception:
+        return None
+    reach = declared.per_tool_deny
+    return (
+        str(declared.kind.value),
+        declared.channel,
+        declared.tracking,
+        str(reach.value) if reach is not None else "",
+    )
+
+
+def kiro_cli_resolves() -> bool:
+    """Does kiro-cli resolve, through the resolver ``_resolve_spawn_plan`` calls?
+
+    ``_resolve_kiro_bin`` also enforces the executable-trust snapshot, so a
+    binary that is present but fails that check raises rather than answering a
+    path. That is a failed CHECK, not an absent install, so the exception is
+    propagated for the caller to classify.
+    """
+    from kiro_crew.acp.client import _resolve_kiro_bin
+
+    return bool(_resolve_kiro_bin())
+
+
+def claude_components_resolve() -> tuple[bool, bool]:
+    """``(adapter, claude_cli)`` -- the Claude backend's two halves, separately.
+
+    ``_resolve_claude_acp_bin`` finds the ACP adapter Crew spawns;
+    ``_resolve_claude_code_executable`` finds the Claude CLI handed to it as
+    ``CLAUDE_CODE_EXECUTABLE``. The adapter's own SDK does not search PATH for
+    that second binary, so having one without the other is a real, distinguishable
+    half-install with a different remedy -- which is why this returns two answers
+    rather than one conjunction.
+    """
+    from kiro_crew.acp.client import (
+        _resolve_claude_acp_bin,
+        _resolve_claude_code_executable,
+    )
+
+    adapter_argv, _searched_path = _resolve_claude_acp_bin()
+    return bool(adapter_argv), bool(_resolve_claude_code_executable())
+
+
+def claude_adapter_cached_negative() -> bool:
+    """Has the RUNNING gateway already resolved the adapter as absent?
+
+    ``AcpClient`` resolves the adapter once per process and keeps the answer for
+    the process's whole life (``_claude_acp_argv_cache``, set behind an
+    ``_UNRESOLVED`` sentinel and never invalidated). A fresh resolve can therefore
+    disagree with what a spawn will actually do, and the dangerous direction is
+    exactly the one an operator walks into: a failed Claude session caches
+    ``None``, they install the adapter the panel told them to install, and a fresh
+    probe would report ``installed`` while every subsequent spawn still reuses the
+    cached ``None`` and dies with ``AcpError``.
+
+    So the cache is consulted, not bypassed. Reading it rather than INVALIDATING
+    it is deliberate: invalidation would make a dashboard GET mutate a global on
+    the spawn path, and the honest disclosure ("installed, restart to use it")
+    costs the operator one restart while never promising something that then
+    fails.
+
+    Unresolved (no session has needed the adapter yet) is not a negative -- the
+    next spawn will resolve fresh, so the fresh answer is the true one.
+    """
+    from kiro_crew.acp import client as _client
+
+    cached = getattr(_client, "_claude_acp_argv_cache", None)
+    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
+        return False
+    try:
+        argv, _searched = cached  # type: ignore[misc]
+    except Exception:
+        return False
+    return not argv
+
+
+def codex_adapter_resolves() -> bool:
+    """Whether the codex-acp adapter resolves to a runnable argv.
+
+    ONE component, unlike claude's two: codex-acp ships a compatible Codex binary
+    as an npm dependency and reads ``CODEX_PATH`` itself only to run a DIFFERENT
+    one, so there is no second executable Crew hands it and no half-install to
+    distinguish.
+    """
+    from kiro_crew.acp.client import _resolve_codex_acp_bin
+
+    adapter_argv, _searched_path = _resolve_codex_acp_bin()
+    return bool(adapter_argv)
+
+
+def codex_adapter_cached_negative() -> bool:
+    """Has the RUNNING gateway already resolved the codex adapter as absent?
+
+    Same hazard and same resolution as :func:`claude_adapter_cached_negative`: the
+    argv is resolved once per process behind an ``_UNRESOLVED`` sentinel and never
+    invalidated, so a fresh probe reporting "installed" after an install would
+    disagree with every spawn until a restart. Consulted, never invalidated -- a
+    dashboard GET must not mutate a global on the spawn path.
+    """
+    from kiro_crew.acp import client as _client
+
+    cached = getattr(_client, "_codex_acp_argv_cache", None)
+    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
+        return False
+    try:
+        argv, _searched = cached  # type: ignore[misc]
+    except Exception:
+        return False
+    return not argv
+
+
+def codex_adapter_install_command() -> str:
+    """``npm i -g <adapter package>``, with the package name read from the repo.
+
+    A global install of the SCOPED package puts the UNSCOPED ``codex-acp`` binary
+    on PATH, which is what the resolution ladder looks for -- so this command and
+    that ladder agree by construction rather than by coincidence.
+    """
+    from kiro_crew.acp.client import CODEX_ACP_NPM_PKG
+
+    return f"npm i -g {CODEX_ACP_NPM_PKG}"
+
+
+def opencode_resolves() -> bool:
+    """Whether the OpenCode binary resolves on this host right now.
+
+    One seam, not the adapters' two: this harness serves ACP itself, so the thing
+    that resolves IS the thing that runs, and there is no second executable whose
+    absence would be a different verdict.
+    """
+    from kiro_crew.acp.client import _resolve_opencode_bin
+
+    binary, _searched_path = _resolve_opencode_bin()
+    return bool(binary)
+
+
+def opencode_cached_negative() -> bool:
+    """Has the RUNNING gateway already resolved the opencode binary as absent?
+
+    Same hazard and same resolution as the two adapter seams above: the path is
+    resolved once per process behind an ``_UNRESOLVED`` sentinel and never
+    invalidated, so a probe reporting "installed" after an install would disagree
+    with every spawn until a restart. Consulted, never invalidated -- a dashboard
+    GET must not mutate a global on the spawn path.
+    """
+    from kiro_crew.acp import client as _client
+
+    cached = getattr(_client, "_opencode_bin_cache", None)
+    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
+        return False
+    try:
+        binary, _searched = cached  # type: ignore[misc]
+    except Exception:
+        return False
+    return not binary
+
+
+def opencode_install_command() -> str:
+    """The harness's own installer, read from the spawn path's constant.
+
+    Imported rather than restated for the same reason as the two above: the command
+    an operator is told to run and the binary the ladder searches for must not be
+    able to drift apart.
+    """
+    from kiro_crew.acp.client import OPENCODE_INSTALL_COMMAND
+
+    return OPENCODE_INSTALL_COMMAND
+
+
+def pi_components_resolve() -> tuple[bool, bool]:
+    """``(adapter, pi_cli)`` -- the pi backend's two halves, separately.
+
+    ``_resolve_pi_acp_bin`` finds the adapter Crew spawns; ``_resolve_pi_bin``
+    finds the agent the adapter spawns, which Crew must ALSO resolve because its
+    gate launcher execs it by absolute path. Two answers rather than one
+    conjunction, for the reason the claude seam gives: the two halves are
+    different half-installs with the same remedy but different diagnoses.
+    """
+    from kiro_crew.acp.client import _resolve_pi_acp_bin, _resolve_pi_bin
+
+    adapter_argv, _searched = _resolve_pi_acp_bin()
+    pi_bin, _searched_pi = _resolve_pi_bin()
+    return bool(adapter_argv), bool(pi_bin)
+
+
+def pi_cached_negative() -> bool:
+    """Has the RUNNING gateway already resolved either pi component as absent?
+
+    Two caches, one answer: a cached miss on EITHER component means the next spawn
+    fails regardless of what a fresh probe finds. Consulted, never invalidated, for
+    the reason ``claude_adapter_cached_negative`` gives.
+    """
+    from kiro_crew.acp import client as _client
+
+    unresolved = getattr(_client, "_UNRESOLVED", object())
+    for name in ("_pi_acp_argv_cache", "_pi_bin_cache"):
+        cached = getattr(_client, name, None)
+        if cached is None or cached is unresolved:
+            continue
+        try:
+            found, _searched = cached  # type: ignore[misc]
+        except Exception:
+            continue
+        if not found:
+            return True
+    return False
+
+
+def pi_install_command() -> str:
+    """The one command that installs both pi components, from the spawn path."""
+    from kiro_crew.acp.client import PI_INSTALL_COMMAND
+
+    return PI_INSTALL_COMMAND
+
+
+def claude_adapter_install_command() -> str:
+    """``npm i -g <adapter package>`` -- the adapter's remedy, from the repo.
+
+    The package name is imported rather than restated so it cannot drift from
+    the constant the resolver's own docstring points at.
+    """
+    from kiro_crew.acp.client import CLAUDE_ACP_NPM_PKG
+
+    return f"npm i -g {CLAUDE_ACP_NPM_PKG}"
+
+
+def _native_command_client_factory():
+    """Resolve the direct ACP client at call time so gateway boot stays lazy."""
+    from kiro_crew.acp.client import AcpClient
+
+    return AcpClient
+
+
+async def run_kiro_native_commands(
+    commands: tuple[str, ...],
+    *,
+    work_dir: object,
+    agent: str,
+    session_key: str,
+    timeout_seconds: float,
+) -> tuple[str, list[dict]]:
+    """Run a structured native-command batch and return only plain data.
+
+    One timeout covers readiness and every command. No prompt is sent. ACP
+    exceptions are translated here so no backend type crosses the SDK boundary.
+    """
+    import asyncio
+    import contextlib
+
+    from kiro_crew.acp.client import AcpAuthRequired, AcpError, AcpTimeoutError
+    from kiro_crew.sandbox import configured_sandbox_mode
+
+    sandbox_mode = await asyncio.to_thread(configured_sandbox_mode)
+    client = _native_command_client_factory()(
+        work_dir=work_dir,
+        agent=agent,
+        sandbox_mode=sandbox_mode,
+        session_key=session_key,
+    )
+
+    async def _run() -> list[dict]:
+        await client.ensure_ready()
+        results: list[dict] = []
+        for command in commands:
+            results.append(await client.command_result(command))
+        return results
+
+    try:
+        return "ok", await asyncio.wait_for(_run(), timeout=timeout_seconds)
+    except AcpAuthRequired:
+        return "kiro_auth_required", []
+    except (asyncio.TimeoutError, AcpTimeoutError):
+        return "connection_test_timeout", []
+    except AcpError:
+        return "agent_unreachable", []
+    except Exception:
+        return "connection_test_failed", []
+    finally:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(client.shutdown(), timeout=10.0)
+
+
+def context_provider_of(value: object) -> "ContextPromptProvider | None":
+    """Admit real provider implementations, not mock/proxy-advertised attributes."""
+    from typing import cast
+
+    from kiro_crew.agent_sdk.context import ContextPromptProvider
+    from kiro_crew.providers.base import LLMProvider
+
+    if issubclass(type(value), LLMProvider):
+        return cast(ContextPromptProvider, value)
+    return None
+
+
+def projected_session_mcp_servers(
+    agent: str | None, *, work_dir: "str | Path | None" = None
+) -> list[dict[str, Any]]:
+    """Return the existing filtered session MCP projection as plain data.
+
+    Blocking file reads remain the caller's off-loop responsibility. This does
+    not grant authority or start servers; the provider still owns transport and
+    private-session admission. Errors retain the underlying resolver's behavior.
+    """
+    from kiro_crew.acp.session_mcp import session_mcp_servers
+
+    return session_mcp_servers(agent, work_dir=work_dir)

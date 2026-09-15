@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#065f46"/>
+      <stop offset="100%" stop-color="#064e3b"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity=".45"/>
+      <stop offset="100%" stop-color="#fbbf24" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="270" fill="url(#bg)" rx="8"/>
+  <ellipse cx="240" cy="252" rx="90" ry="9" fill="#34d399" opacity=".12"/>
+  <!-- scan beam sweeping down onto the tree -->
+  <path d="M240 18 L150 120 L330 120 Z" fill="url(#beam)"/>
+  <circle cx="240" cy="18" r="7" fill="#fbbf24" opacity=".9"/>
+  <circle cx="240" cy="18" r="12" fill="none" stroke="#fde68a" stroke-width="1" opacity=".5"/>
+  <!-- root folder -->
+  <path d="M196 108 Q196 102 202 102 L222 102 L230 110 L278 110 Q284 110 284 116 L284 148 Q284 154 278 154 L202 154 Q196 154 196 148 Z" fill="#ecfdf5" fill-opacity=".14" stroke="#6ee7b7" stroke-width="1.5"/>
+  <rect x="208" y="122" width="40" height="4" rx="2" fill="#a7f3d0" opacity=".7"/>
+  <rect x="208" y="132" width="28" height="3" rx="1.5" fill="#a7f3d0" opacity=".4"/>
+  <!-- connectors down to children -->
+  <path d="M240 154 V178 M240 178 H110 V196 M240 178 H370 V196 M240 178 V196" fill="none" stroke="#34d399" stroke-width="1.5" opacity=".6"/>
+  <!-- three child package folders -->
+  <g>
+    <path d="M78 196 Q78 191 83 191 L98 191 L104 197 L137 197 Q142 197 142 202 L142 226 Q142 231 137 231 L83 231 Q78 231 78 226 Z" fill="#ecfdf5" fill-opacity=".1" stroke="#34d399" stroke-width="1"/>
+    <rect x="88" y="207" width="30" height="3" rx="1.5" fill="#6ee7b7" opacity=".6"/>
+    <rect x="88" y="215" width="22" height="2.5" rx="1" fill="#6ee7b7" opacity=".35"/>
+    <circle cx="134" cy="199" r="4.5" fill="#fbbf24"/>
+    <path d="M132 199 l1.6 1.6 3-3.2" stroke="#064e3b" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+  </g>
+  <g>
+    <path d="M208 196 Q208 191 213 191 L228 191 L234 197 L267 197 Q272 197 272 202 L272 226 Q272 231 267 231 L213 231 Q208 231 208 226 Z" fill="#ecfdf5" fill-opacity=".1" stroke="#34d399" stroke-width="1"/>
+    <rect x="218" y="207" width="30" height="3" rx="1.5" fill="#6ee7b7" opacity=".6"/>
+    <rect x="218" y="215" width="22" height="2.5" rx="1" fill="#6ee7b7" opacity=".35"/>
+    <circle cx="264" cy="199" r="4.5" fill="#fbbf24"/>
+    <path d="M262 199 l1.6 1.6 3-3.2" stroke="#064e3b" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+  </g>
+  <g>
+    <path d="M338 196 Q338 191 343 191 L358 191 L364 197 L397 197 Q402 197 402 202 L402 226 Q402 231 397 231 L343 231 Q338 231 338 226 Z" fill="#ecfdf5" fill-opacity=".08" stroke="#34d399" stroke-width="1" stroke-dasharray="4 3"/>
+    <rect x="348" y="207" width="30" height="3" rx="1.5" fill="#6ee7b7" opacity=".45"/>
+    <rect x="348" y="215" width="22" height="2.5" rx="1" fill="#6ee7b7" opacity=".25"/>
+    <rect x="390" y="194.5" width="9" height="9" rx="2" fill="none" stroke="#fbbf24" stroke-width="1.3"/>
+  </g>
+  <!-- manifest glyphs floating at the sides -->
+  <rect x="42" y="72" width="52" height="34" rx="6" fill="#fefce8" opacity=".08" stroke="#fbbf24" stroke-width=".8"/>
+  <rect x="48" y="80" width="26" height="3" rx="1" fill="#fbbf24" opacity=".5"/>
+  <rect x="48" y="87" width="38" height="2" rx="1" fill="#fde68a" opacity=".3"/>
+  <rect x="386" y="62" width="52" height="34" rx="6" fill="#ecfdf5" opacity=".08" stroke="#34d399" stroke-width=".8"/>
+  <rect x="392" y="70" width="26" height="3" rx="1" fill="#34d399" opacity=".5"/>
+  <rect x="392" y="77" width="38" height="2" rx="1" fill="#6ee7b7" opacity=".3"/>
+  <!-- accent dots -->
+  <circle cx="120" cy="48" r="2.5" fill="#fbbf24" opacity=".4"/>
+  <circle cx="352" cy="40" r="2" fill="#34d399" opacity=".4"/>
+  <circle cx="60" cy="238" r="2" fill="#6ee7b7" opacity=".3"/>
+  <circle cx="428" cy="150" r="2" fill="#fbbf24" opacity=".3"/>
+</svg>

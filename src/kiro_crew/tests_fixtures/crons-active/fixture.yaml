@@ -1,0 +1,10 @@
+schema-version: 2026-04-28
+fixture-name: crons-active
+description: |
+  Three cron jobs test deterministic multi-row active filtering and ordering beyond minimal.
+  Two active jobs use weekday 09:00 and hourly expressions, while one paused
+  job uses a weekly expression, covering three distinct expression shapes.
+  Unlike minimal's single active row, this fixture makes ordering and filtering
+  multiple active rows observable. No script cron ships here: a script path is
+  resolved with expanduser, so any literal would point at the operator's real
+  home rather than the pod's isolated one.

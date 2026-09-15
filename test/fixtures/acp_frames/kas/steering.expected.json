@@ -1,0 +1,59 @@
+[
+  {
+    "action": "steer",
+    "frame": "session/update",
+    "session_update": "steering_queued"
+  },
+  {
+    "action": "steer",
+    "frame": "session/update",
+    "session_update": "steering_consumed"
+  },
+  {
+    "action": "steer",
+    "frame": "session/update",
+    "session_update": "steering_cleared"
+  },
+  {
+    "action": "steer",
+    "frame": "session/update",
+    "session_update": "AgentExecutionUserMessageQueued"
+  },
+  {
+    "action": "steer",
+    "frame": "session/update",
+    "session_update": "AgentExecutionSteeringInjected"
+  },
+  {
+    "action": "subagent_activity",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "subagent progress"
+      }
+    ],
+    "frame": "_kiro.dev/session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "subagent progress",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "cancelled"
+  }
+]

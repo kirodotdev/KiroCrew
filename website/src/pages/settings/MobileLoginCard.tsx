@@ -1,0 +1,172 @@
+import { useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
+import { Copy, Smartphone } from 'lucide-react'
+import { api } from '../../api/client'
+import { Btn, Card, CardTitle, Input } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
+import { useAppSelector } from '../../store'
+import { findReport, parseErrorCode } from '../../utils/errorReport'
+import { copyToClipboard } from '../../utils/clipboard'
+
+const mobileLinkErrorCode = (error: unknown): string | undefined =>
+  typeof error === 'object' && error !== null && 'body' in error
+    ? parseErrorCode(typeof error.body === 'string' ? error.body : undefined)
+    : undefined
+
+/**
+ * Handler error code → catalog key, written out in full.
+ *
+ * `api_auth_mobile_link` refuses a mint with seven distinct codes, and four of
+ * them need copy that names an action retrying cannot supply: two are 403s the
+ * caller can only clear by changing session (`restricted_session`,
+ * `caller_session_expired`), one is a configuration gap
+ * (`external_origin_unavailable`), and one is a policy dead end
+ * (`governance_denied`, whose sentence is reused from the
+ * `components.mobileConnect` namespace below). The remaining three —
+ * `bad_origin`, `unauthenticated`, `app_token_forbidden` — are transient, so
+ * they keep the generic retry copy.
+ *
+ * Each key is a plain string literal in an `as const` map rather than a key
+ * assembled at the call site: a constructed key is invisible to every static
+ * tool, so the keys would read as dead and a pruning pass would delete them —
+ * see `src/i18n/dynamicKeys.test.ts`, and `AboutPanel`'s `UPDATE_ERROR_KEYS`
+ * for the same shape.
+ */
+const MOBILE_LINK_ERROR_KEYS = {
+  external_origin_unavailable:
+    'pages.settings.mobileLoginCard.dashboard_url_required_to_create_a_mobile_sign_in_link',
+  restricted_session:
+    'pages.settings.mobileLoginCard.restricted_sessions_cannot_create_a_sign_in_link',
+  caller_session_expired:
+    'pages.settings.mobileLoginCard.session_expired_sign_in_again_to_create_a_link',
+  // Reused across namespaces rather than restated, the way `LINK_ERROR_KEYS` in
+  // `MobileConnectModal` already does: a policy denial is the same dead end this
+  // map exists for -- retrying cannot clear it -- and the sentence for it is
+  // already written and already translated in all 13 catalogs.
+  governance_denied:
+    'components.mobileConnect.phone_connection_is_disabled_by_policy_on_this_dep',
+} as const
+
+export function MobileLoginCard() {
+  const { t } = useTranslation()
+  const [link, setLink] = useState('')
+  const [expiresIn, setExpiresIn] = useState<number | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
+  // The active slot's key rides the request so the server's restricted-session
+  // guard sees the REAL session, not the shared `dashboard:ui` default (which
+  // it treats as unrestricted). Without this an incognito/temporary slot could
+  // mint a durable credential the operator deliberately withheld from it.
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const sessionKey = activeSlot ? `dashboard:${activeSlot}` : undefined
+
+  const createLink = useMutation({
+    mutationFn: () => api.mobileLoginLink(sessionKey),
+    onMutate: () => {
+      setCopied(false)
+      setCopyFailed(false)
+    },
+    onSuccess: result => {
+      setLink(result.url)
+      setExpiresIn(result.expires_in)
+    },
+  })
+
+  const copyLink = async () => {
+    if (!link) return
+    // False = the fallback reported failure; a throw = both paths dead.
+    // Either way the user needs the manual-copy hint, not a false tick.
+    let ok = false
+    try {
+      ok = await copyToClipboard(link)
+    } catch {
+      ok = false
+    }
+    setCopied(ok)
+    setCopyFailed(!ok)
+  }
+
+  return (
+    <Card>
+      <CardTitle>
+        <Smartphone className="lucide-inline" aria-hidden="true" />
+        {t('pages.settings.mobileLoginCard.sign_in_on_mobile')}
+      </CardTitle>
+      <p className="mt-2 text-sm leading-relaxed text-muted">
+        {t('pages.settings.mobileLoginCard.create_a_one_time_link_for_mobile_or_another_browser')}
+      </p>
+      {!link ? (
+        <Btn className="mt-4" type="button" disabled={createLink.isPending} onClick={() => createLink.mutate()}>
+          <Smartphone className="lucide-inline" aria-hidden="true" />
+          {createLink.isPending
+            ? t('pages.settings.mobileLoginCard.creating_link')
+            : t('pages.settings.mobileLoginCard.create_mobile_sign_in_link')}
+        </Btn>
+      ) : (
+        <div className="mt-4">
+          <label className="sr-only" htmlFor="mobile-login-link">
+            {t('pages.settings.mobileLoginCard.mobile_sign_in_link')}
+          </label>
+          <Input
+            id="mobile-login-link"
+            className="w-full font-mono"
+            readOnly
+            value={link}
+            onFocus={event => event.currentTarget.select()}
+          />
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <Btn type="button" onClick={() => void copyLink()}>
+              <Copy className="lucide-inline" aria-hidden="true" />
+              {t('pages.settings.mobileLoginCard.copy_sign_in_link')}
+            </Btn>
+            <Btn type="button" disabled={createLink.isPending} onClick={() => createLink.mutate()}>
+              {createLink.isPending
+                ? t('pages.settings.mobileLoginCard.creating_link')
+                : t('pages.settings.mobileLoginCard.create_new_mobile_sign_in_link')}
+            </Btn>
+            {copied && <span className="text-sm text-ok" role="status">{t('pages.settings.mobileLoginCard.link_copied')}</span>}
+          </div>
+          <p className="mt-3 text-sm leading-relaxed text-muted">
+            {t('pages.settings.mobileLoginCard.send_the_copied_link_to_your_mobile_device_then_open_it')}
+          </p>
+          {expiresIn !== null && (
+            <p className="mt-2 text-sm leading-relaxed text-muted">
+              {t('pages.settings.mobileLoginCard.link_expires_in_minutes', {
+                minutes: Math.ceil(expiresIn / 60),
+              })}
+            </p>
+          )}
+        </div>
+      )}
+      {/* askAgent on: the minted link (if any) is already server-issued and the
+          card holds no draft — and `external_origin_unavailable` is exactly the
+          config gap (dashboard.url) the agent can fix. */}
+      {createLink.isError && (
+        // Hand-off is on: the mint takes no user input, so the only thing this
+        // subtree holds is a read-only generated link that re-minting replaces.
+        // `report` is resolved from the RAW error message, not the copy below:
+        // the journal keys on what `apiFailure` threw, so a lookup by the
+        // translated sentence would miss and the hand-off would carry no
+        // endpoint, status or backend `code`.
+        <ErrorNotice
+          askAgent
+          className="mt-3"
+          report={findReport(createLink.error?.message)}
+          message={t(
+            MOBILE_LINK_ERROR_KEYS[
+              mobileLinkErrorCode(createLink.error) as keyof typeof MOBILE_LINK_ERROR_KEYS
+            ] || 'pages.settings.mobileLoginCard.could_not_create_a_sign_in_link_try_again',
+          )}
+        />
+      )}
+      {copyFailed && (
+        <ErrorNotice
+          className="mt-3"
+          askAgent
+          message={t('pages.settings.mobileLoginCard.copy_failed_select_the_link_and_copy_it_manually')}
+        />
+      )}
+    </Card>
+  )
+}

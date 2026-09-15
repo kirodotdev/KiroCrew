@@ -1,0 +1,23 @@
+{
+  "manifest": {
+    "type": "app",
+    "os": "osx",
+    "name": "KiroCrew.app",
+    "outputs": [{ "label": "macos", "path": "KiroCrew.app" }],
+    "app": {
+      "identifier": "com.amazon.kiro.crew",
+      "embedded_requirements": {},
+      "signing_requirements": {
+        "signing_args": { "entitlements_path": "SIGNING_METADATA/Entitlements.entitlements" },
+        "certificate_type": "developerIDAppDistribution",
+        "team_id": "94KV3E626L"
+      }
+    }
+  },
+  "s3ArtifactLocations": {
+    "bucketAccessRole": "${SIGNER_ACCESS_ROLE_ARN}",
+    "bucket": "${SIGNING_BUCKET}",
+    "inputKey": "${INPUT_KEY}",
+    "outputKey": "${OUTPUT_KEY}"
+  }
+}

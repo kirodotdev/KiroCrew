@@ -1,0 +1,759 @@
+{
+  "name": "kb_golden_v2",
+  "docs": [
+    {
+      "id": "d-deploy-payments-cd-hypothetical",
+      "title": "Payments continuous deployment proposal (hypothetical)",
+      "section_title": "Deploys",
+      "content": "Hypothetically, if the payments service migrated to continuous deployment, the deploy steps would collapse to a single merge: no release branch, no gamma soak, and no manual approval gate. This describes a possible future state, not the current process.",
+      "tags": ["deploy", "payments", "proposal", "hypothetical"]
+    },
+    {
+      "id": "d-deploy-payments",
+      "title": "Payments service deploy runbook",
+      "section_title": "Rollout steps",
+      "content": "To deploy the payments service, push to the release branch, wait for the pipeline to reach the gamma stage, run the smoke suite, then approve the prod promotion. The manual approval gate is required on every payments deploy.",
+      "tags": ["runbook", "deploy", "payments"]
+    },
+    {
+      "id": "d-deploy-payments-rollback",
+      "title": "Payments rollback procedure",
+      "section_title": "Rollback",
+      "content": "A payments deploy is rolled back one-click from the pipeline console. Rollback reverts to the last gamma-approved build and does not require a release branch push or a smoke suite run.",
+      "tags": ["runbook", "deploy", "payments", "rollback"]
+    },
+    {
+      "id": "d-deploy-orders-nocanary-proposal",
+      "title": "Orders canary removal proposal (hypothetical)",
+      "section_title": "Deploys",
+      "content": "Hypothetically, if the orders service dropped its canary step, rollout would become a single full-fleet promotion straight from merge. This proposal was not adopted and describes a possible future state.",
+      "tags": ["deploy", "orders", "proposal", "hypothetical"]
+    },
+    {
+      "id": "d-deploy-orders",
+      "title": "Orders service deploy runbook",
+      "section_title": "Rollout steps",
+      "content": "The orders service rolls out with a canary at 5 percent for 30 minutes, then a full fleet promotion. There is no gamma stage and no manual approval gate on orders.",
+      "tags": ["runbook", "deploy", "orders"]
+    },
+    {
+      "id": "d-deploy-search",
+      "title": "Search service deploy runbook",
+      "section_title": "Rollout steps",
+      "content": "The search service deploys blue/green: the standby stack is built, traffic is shifted 50/50, then cut over fully. Search uses no canary and no gamma stage.",
+      "tags": ["runbook", "deploy", "search"]
+    },
+    {
+      "id": "d-deploy-freeze",
+      "title": "Deploy freeze calendar",
+      "section_title": "Freezes",
+      "content": "Deploys to payments, orders and search are frozen from December 20 to January 2 and during any active Sev-1. The freeze does not apply to rollbacks.",
+      "tags": ["deploy", "freeze", "policy"]
+    },
+    {
+      "id": "d-oncall-rotation",
+      "title": "On-call rotation policy",
+      "section_title": "Escalation",
+      "content": "Primary on-call holds the pager for one week starting Monday. If a page is unacknowledged for 15 minutes it escalates to the secondary, then to the team lead. Swaps must be recorded in the rotation calendar.",
+      "tags": ["oncall", "policy", "escalation"]
+    },
+    {
+      "id": "d-oncall-payments-schedule",
+      "title": "Payments on-call schedule",
+      "section_title": "Schedule",
+      "content": "The payments primary rotates Monday to Monday. Whoever currently holds the payments pager is listed in the rotation calendar, not on this page.",
+      "tags": ["oncall", "payments", "schedule"]
+    },
+    {
+      "id": "d-oncall-handoff",
+      "title": "On-call handoff checklist",
+      "section_title": "Handoff",
+      "content": "At handoff the outgoing primary walks the incoming primary through open incidents, silenced alarms, and any in-flight deploy. Handoff happens Monday morning.",
+      "tags": ["oncall", "handoff"]
+    },
+    {
+      "id": "d-oncall-compensation",
+      "title": "On-call compensation",
+      "section_title": "Pay",
+      "content": "On-call weeks are compensated at a flat weekly stipend. Compensation is handled by payroll and is unrelated to escalation timing or page acknowledgement.",
+      "tags": ["oncall", "pay"]
+    },
+    {
+      "id": "d-retention-2023",
+      "title": "Data retention (2023 policy, superseded)",
+      "section_title": "Log retention",
+      "content": "As of 2023, application logs are retained for 30 days before deletion. This policy applies to all non-audit logs.",
+      "tags": ["retention", "policy", "2023"]
+    },
+    {
+      "id": "d-retention-2024-interim",
+      "title": "Data retention (2024 interim rule)",
+      "section_title": "Log retention",
+      "content": "During 2024 an interim rule retained application logs for 60 days while the longer retention change was under review. The interim rule was superseded in January 2025.",
+      "tags": ["retention", "policy", "2024", "interim"]
+    },
+    {
+      "id": "d-retention-2025",
+      "title": "Data retention (2025 policy, current)",
+      "section_title": "Log retention",
+      "content": "Effective January 2025, application logs are retained for 90 days before deletion, superseding both the 30-day rule and the 60-day interim rule. This is the current policy.",
+      "tags": ["retention", "policy", "2025", "current"]
+    },
+    {
+      "id": "d-retention-audit",
+      "title": "Audit log retention",
+      "section_title": "Audit logs",
+      "content": "Audit logs are retained for seven years in cold storage, regardless of the application log retention period in force.",
+      "tags": ["retention", "audit"]
+    },
+    {
+      "id": "d-retention-metrics",
+      "title": "Metrics retention",
+      "section_title": "Metrics",
+      "content": "Metrics are downsampled after 15 days and deleted after 400 days. Metrics retention is configured separately from log retention.",
+      "tags": ["retention", "metrics"]
+    },
+    {
+      "id": "d-cache-ttl-draft",
+      "title": "Session cache configuration (draft, corrected below)",
+      "section_title": "TTL",
+      "content": "The session cache TTL was documented as 3600 seconds in this early draft. That value was never deployed and is corrected in the current configuration note.",
+      "tags": ["cache", "draft", "session"]
+    },
+    {
+      "id": "d-cache-ttl-current",
+      "title": "Session cache configuration (current)",
+      "section_title": "TTL",
+      "content": "The session cache TTL is 900 seconds. This corrects the earlier draft that stated 3600 seconds. 900 seconds is the value deployed in production.",
+      "tags": ["cache", "current", "correction", "session"]
+    },
+    {
+      "id": "d-cache-api-ttl",
+      "title": "API response cache configuration",
+      "section_title": "TTL",
+      "content": "The API response cache TTL is 60 seconds. This is a different cache from the session cache and was never set to 3600 seconds.",
+      "tags": ["cache", "api"]
+    },
+    {
+      "id": "d-cache-eviction",
+      "title": "Session cache eviction",
+      "section_title": "Eviction",
+      "content": "The session cache evicts least-recently-used entries once it reaches 8 GB. Eviction is independent of the TTL setting.",
+      "tags": ["cache", "eviction", "session"]
+    },
+    {
+      "id": "d-region-wiki",
+      "title": "Primary region (infra wiki)",
+      "section_title": "Regions",
+      "content": "The service's primary region is us-east-1 according to the infrastructure wiki page, last edited in March.",
+      "tags": ["region", "infra", "wiki"]
+    },
+    {
+      "id": "d-region-adr",
+      "title": "Primary region (ADR-042, authoritative)",
+      "section_title": "Regions",
+      "content": "ADR-042 establishes us-west-2 as the primary region for the service, contradicting the older infra wiki claim of us-east-1. The ADR is authoritative whenever sources disagree on a region decision.",
+      "tags": ["region", "adr", "authoritative"]
+    },
+    {
+      "id": "d-region-dr",
+      "title": "Disaster recovery region",
+      "section_title": "Regions",
+      "content": "The disaster recovery region is eu-west-1. The DR region is not the primary region and is not governed by ADR-042.",
+      "tags": ["region", "dr"]
+    },
+    {
+      "id": "d-region-latency",
+      "title": "Regional latency notes",
+      "section_title": "Performance",
+      "content": "Clients in us-east-1 see 40ms higher latency since the primary moved to us-west-2. This note records measurements only and does not decide which region is primary.",
+      "tags": ["region", "performance"]
+    },
+    {
+      "id": "d-dr-plan",
+      "title": "Disaster recovery plan",
+      "section_title": "Recovery",
+      "content": "The disaster recovery plan covers failover steps, an RTO of four hours and an RPO of 15 minutes. This plan does not name the disaster recovery region; the regions pages record that.",
+      "tags": ["dr", "recovery", "plan"]
+    },
+    {
+      "id": "d-doc-precedence",
+      "title": "Documentation precedence",
+      "section_title": "Precedence",
+      "content": "When two documents disagree on an ordinary operational fact, the more recently edited page wins. Architectural decisions are the exception and are governed by their ADR instead.",
+      "tags": ["docs", "precedence"]
+    },
+    {
+      "id": "d-flag-checkout-plan",
+      "title": "New-checkout flag rollout plan (superseded by retraction)",
+      "section_title": "Rollout",
+      "content": "The new-checkout feature flag will be enabled at 100 percent of traffic starting next Tuesday. Rollout proceeds in three ramps: 10 percent, 50 percent, then 100 percent.",
+      "tags": ["feature-flag", "rollout", "checkout"]
+    },
+    {
+      "id": "d-flag-checkout-retracted",
+      "title": "New-checkout flag rollout (RETRACTED)",
+      "section_title": "Status",
+      "content": "RETRACTED: the plan to enable the new-checkout feature flag at 100 percent was withdrawn after a regression was found. Do not rely on the earlier rollout note. The new-checkout flag remains at 0 percent of traffic.",
+      "tags": ["feature-flag", "retracted", "checkout"]
+    },
+    {
+      "id": "d-flag-search-ranking",
+      "title": "Search-ranking flag rollout",
+      "section_title": "Rollout",
+      "content": "The search-ranking feature flag is enabled at 100 percent of traffic. This rollout was completed and was not retracted.",
+      "tags": ["feature-flag", "rollout", "search"]
+    },
+    {
+      "id": "d-flag-registry",
+      "title": "Feature flag registry",
+      "section_title": "Flags",
+      "content": "Every feature flag is listed in the registry with an owning team. The registry records a flag's current percentage but does not record retraction history.",
+      "tags": ["feature-flag", "registry"]
+    },
+    {
+      "id": "d-mfa-sms-draft",
+      "title": "SMS MFA proposal (draft, never adopted)",
+      "section_title": "Authentication",
+      "content": "Draft proposal: allow SMS-based MFA as an alternative for production console access where hardware tokens are impractical. This draft was not adopted; it is retained for historical context only.",
+      "tags": ["security", "mfa", "draft"]
+    },
+    {
+      "id": "d-mfa-baseline",
+      "title": "Security baseline",
+      "section_title": "Authentication",
+      "content": "All production console access requires hardware MFA. Software and SMS factors are not accepted for production. This requirement has been restated in every quarterly security review and remains mandatory.",
+      "tags": ["security", "mfa", "baseline"]
+    },
+    {
+      "id": "d-mfa-audit-q3",
+      "title": "Q3 security audit findings",
+      "section_title": "Access controls",
+      "content": "Audit item AC-3: verified that production console access enforces hardware MFA for all sampled accounts. This independently corroborates the security baseline requirement; no exceptions were found.",
+      "tags": ["security", "mfa", "audit", "q3"]
+    },
+    {
+      "id": "d-mfa-audit-q4",
+      "title": "Q4 security audit findings",
+      "section_title": "Access controls",
+      "content": "Audit item AC-3 was re-verified in Q4: hardware MFA is enforced on production console access, again with no exceptions found. This is the second consecutive audit to confirm the baseline.",
+      "tags": ["security", "mfa", "audit", "q4"]
+    },
+    {
+      "id": "d-mfa-staging",
+      "title": "Staging access policy",
+      "section_title": "Authentication",
+      "content": "Staging console access requires only SSO and does not require hardware MFA. This exception applies to the staging environment only, never to production.",
+      "tags": ["security", "mfa", "staging"]
+    },
+    {
+      "id": "d-db-orders-owner",
+      "title": "Orders database ownership",
+      "section_title": "Ownership",
+      "content": "The orders database is owned by the Fulfillment team. Schema changes require a review from a Fulfillment engineer. The team's Slack channel is fulfillment-eng.",
+      "tags": ["database", "ownership", "orders"]
+    },
+    {
+      "id": "d-fulfillment-contacts",
+      "title": "Fulfillment team contacts",
+      "section_title": "Contacts",
+      "content": "The Fulfillment team lead is Dana Ruiz. Dana approves emergency schema changes outside business hours for the databases the Fulfillment team owns.",
+      "tags": ["contacts", "fulfillment"]
+    },
+    {
+      "id": "d-db-payments-owner",
+      "title": "Payments database ownership",
+      "section_title": "Ownership",
+      "content": "The payments database is owned by the Billing team. Schema changes require a review from a Billing engineer. The team's Slack channel is billing-eng.",
+      "tags": ["database", "ownership", "payments"]
+    },
+    {
+      "id": "d-billing-contacts",
+      "title": "Billing team contacts",
+      "section_title": "Contacts",
+      "content": "The Billing team lead is Sam Okafor. Sam approves emergency schema changes outside business hours for the databases the Billing team owns.",
+      "tags": ["contacts", "billing"]
+    },
+    {
+      "id": "d-schema-change-process",
+      "title": "Schema change process",
+      "section_title": "Process",
+      "content": "A schema change needs a migration plan, a review from the owning team, and a rollback script. The owning team for a database is named on that database's ownership page.",
+      "tags": ["database", "process", "schema"]
+    },
+    {
+      "id": "d-backup-db-schedule",
+      "title": "Database backup schedule",
+      "section_title": "Backups",
+      "content": "Full database backups run nightly at 02:00 UTC. Incremental backups run every four hours. Restores are tested monthly.",
+      "tags": ["backup", "schedule", "database"]
+    },
+    {
+      "id": "d-backup-object-schedule",
+      "title": "Object storage backup schedule",
+      "section_title": "Backups",
+      "content": "Object storage is replicated continuously and snapshotted weekly on Sunday at 03:00 UTC. This schedule is separate from the database backup schedule.",
+      "tags": ["backup", "schedule", "object-storage"]
+    },
+    {
+      "id": "d-backup-restore-drill",
+      "title": "Restore drill results",
+      "section_title": "Drills",
+      "content": "The monthly restore drill completed in 42 minutes against the nightly full backup. The drill cadence is monthly and the last drill passed.",
+      "tags": ["backup", "drill"]
+    },
+    {
+      "id": "d-backup-retention",
+      "title": "Backup retention",
+      "section_title": "Backups",
+      "content": "Full backups are kept for 35 days and incrementals for 7 days. Backup retention is distinct from application log retention.",
+      "tags": ["backup", "retention"]
+    },
+    {
+      "id": "d-incident-severity",
+      "title": "Incident severity definitions",
+      "section_title": "Severity",
+      "content": "Sev-1 is a customer-facing total outage. Sev-2 is major degradation. Sev-3 is minor impact. A Sev-1 requires an incident commander within 10 minutes.",
+      "tags": ["incident", "severity"]
+    },
+    {
+      "id": "d-incident-severity-examples",
+      "title": "Severity examples",
+      "section_title": "Examples",
+      "content": "Examples for triage: a checkout outage counts as Sev-1, and elevated latency without errors counts as Sev-2. This page only lists examples and does not define the severity levels themselves.",
+      "tags": ["incident", "severity", "examples"]
+    },
+    {
+      "id": "d-incident-postmortem",
+      "title": "Postmortem policy",
+      "section_title": "Postmortems",
+      "content": "Every Sev-1 and Sev-2 requires a written postmortem within five business days, reviewed in the weekly operations meeting.",
+      "tags": ["incident", "postmortem"]
+    },
+    {
+      "id": "d-incident-comms",
+      "title": "Incident communications",
+      "section_title": "Comms",
+      "content": "For a Sev-1 the incident commander posts a customer status update every 30 minutes. Internal updates go to the incidents channel.",
+      "tags": ["incident", "comms"]
+    },
+    {
+      "id": "d-secrets-rotation",
+      "title": "Secret rotation policy",
+      "section_title": "Rotation",
+      "content": "Production secrets rotate every 90 days. Rotation is automated; a manual rotation requires a break-glass ticket.",
+      "tags": ["security", "secrets", "rotation"]
+    },
+    {
+      "id": "d-secrets-storage",
+      "title": "Secret storage",
+      "section_title": "Storage",
+      "content": "Secrets live in the managed vault. A secret must never be committed to a repository or written to a log.",
+      "tags": ["security", "secrets", "storage"]
+    },
+    {
+      "id": "d-breakglass",
+      "title": "Break-glass access",
+      "section_title": "Break-glass",
+      "content": "Break-glass grants 60 minutes of elevated production access. It requires a second approver and is fully audited.",
+      "tags": ["security", "break-glass", "access"]
+    },
+    {
+      "id": "d-api-ratelimit",
+      "title": "Public API rate limits",
+      "section_title": "Limits",
+      "content": "The public API allows 1000 requests per minute per key. Bursts up to 2000 requests are allowed for 10 seconds.",
+      "tags": ["api", "rate-limit", "public"]
+    },
+    {
+      "id": "d-api-internal-ratelimit",
+      "title": "Internal API rate limits",
+      "section_title": "Limits",
+      "content": "Internal service-to-service calls allow 10000 requests per minute and are not subject to the public per-key limit.",
+      "tags": ["api", "rate-limit", "internal"]
+    },
+    {
+      "id": "d-api-versioning",
+      "title": "API versioning",
+      "section_title": "Versioning",
+      "content": "The public API is versioned by URL path. A version stays supported for 12 months after its successor ships.",
+      "tags": ["api", "versioning"]
+    },
+    {
+      "id": "d-api-deprecation-2024",
+      "title": "API v1 deprecation (2024 notice, superseded)",
+      "section_title": "Deprecation",
+      "content": "Notice issued in 2024: API v1 will be removed in June 2025. Customers should migrate to v2 before that date.",
+      "tags": ["api", "deprecation", "2024"]
+    },
+    {
+      "id": "d-api-deprecation-2025",
+      "title": "API v1 deprecation (current)",
+      "section_title": "Deprecation",
+      "content": "Updated notice: API v1 removal has moved to June 2026 after customer feedback. This supersedes the 2024 notice that gave June 2025.",
+      "tags": ["api", "deprecation", "2025", "current"]
+    },
+    {
+      "id": "d-cost-budget",
+      "title": "Infrastructure budget",
+      "section_title": "Budget",
+      "content": "The monthly infrastructure budget is 120,000 USD across all services. An overrun above 10 percent requires director approval. Per-service budgets are not tracked separately.",
+      "tags": ["cost", "budget"]
+    },
+    {
+      "id": "d-cost-tagging",
+      "title": "Cost allocation tags",
+      "section_title": "Tagging",
+      "content": "Every resource carries an owner tag and a service tag. Untagged resources are billed to the platform team.",
+      "tags": ["cost", "tagging"]
+    },
+    {
+      "id": "d-onboarding-checklist",
+      "title": "Engineer onboarding checklist",
+      "section_title": "Onboarding",
+      "content": "New engineers receive repository access, a vault role, and an on-call shadow week. This checklist does not cover payroll, benefits or leave.",
+      "tags": ["onboarding", "checklist"]
+    },
+    {
+      "id": "d-hr-pointer",
+      "title": "Where HR policies live",
+      "section_title": "Pointer",
+      "content": "Benefits, leave and payroll policies live in the HR portal. The HR portal is not mirrored into this knowledge base, so its contents are not searchable here.",
+      "tags": ["hr", "pointer"]
+    },
+    {
+      "id": "d-test-policy",
+      "title": "Test policy",
+      "section_title": "Testing",
+      "content": "Every change needs unit tests. Integration tests are additionally required for any change touching the payments pipeline.",
+      "tags": ["testing", "policy"]
+    },
+    {
+      "id": "d-test-flake-policy",
+      "title": "Flaky test policy",
+      "section_title": "Flakes",
+      "content": "A test that fails intermittently is quarantined within 24 hours and must be fixed or deleted within two weeks.",
+      "tags": ["testing", "flake"]
+    },
+    {
+      "id": "d-alarm-thresholds",
+      "title": "Alarm thresholds",
+      "section_title": "Alarms",
+      "content": "The payments error-rate alarm fires at 1 percent sustained over five minutes. The payments latency alarm fires when p99 exceeds 800ms.",
+      "tags": ["monitoring", "alarms", "payments"]
+    },
+    {
+      "id": "d-alarm-routing",
+      "title": "Alarm routing",
+      "section_title": "Routing",
+      "content": "Payments alarms page the payments primary. Search alarms page the search primary. Routing is defined per service and never pages a team lead first.",
+      "tags": ["monitoring", "alarms", "routing"]
+    },
+    {
+      "id": "d-alarm-ack",
+      "title": "Alarm acknowledgement windows",
+      "section_title": "Acknowledgement",
+      "content": "An alarm must be acknowledged within 5 minutes. An unacknowledged alarm re-notifies the same primary every 5 minutes and does not escalate to the secondary; only a page escalates.",
+      "tags": ["monitoring", "alarms", "acknowledgement"]
+    },
+    {
+      "id": "d-vpn-access",
+      "title": "VPN access",
+      "section_title": "Access",
+      "content": "Production console access requires the corporate VPN in addition to hardware MFA. Both are required together.",
+      "tags": ["network", "vpn", "access"]
+    },
+    {
+      "id": "d-network-egress",
+      "title": "Egress rules",
+      "section_title": "Network",
+      "content": "Production services may not make outbound calls to the public internet except through the egress proxy.",
+      "tags": ["network", "egress"]
+    },
+    {
+      "id": "d-runbook-index",
+      "title": "Runbook index",
+      "section_title": "Index",
+      "content": "Runbooks are organized by service. Each runbook carries a Rollout steps section and a Rollback section.",
+      "tags": ["runbook", "index"]
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-clean-1",
+      "class": "clean_fact",
+      "question": "Which pipeline stage must a payments deploy reach before the smoke suite runs?",
+      "gold_doc_ids": ["d-deploy-payments"]
+    },
+    {
+      "id": "q-clean-2",
+      "class": "clean_fact",
+      "question": "After how many minutes does an unacknowledged page escalate to the secondary?",
+      "gold_doc_ids": ["d-oncall-rotation"]
+    },
+    {
+      "id": "q-clean-3",
+      "class": "clean_fact",
+      "question": "At what time do full database backups run?",
+      "gold_doc_ids": ["d-backup-db-schedule"]
+    },
+    {
+      "id": "q-clean-4",
+      "class": "clean_fact",
+      "question": "How many requests per minute does the public API allow per key?",
+      "gold_doc_ids": ["d-api-ratelimit"]
+    },
+    {
+      "id": "q-clean-5",
+      "class": "clean_fact",
+      "question": "How long does break-glass elevated production access last?",
+      "gold_doc_ids": ["d-breakglass"]
+    },
+    {
+      "id": "q-clean-6",
+      "class": "clean_fact",
+      "question": "At what sustained error rate does the payments alarm fire?",
+      "gold_doc_ids": ["d-alarm-thresholds"]
+    },
+    {
+      "id": "q-multi-1",
+      "class": "multi_hop",
+      "question": "Who can approve an emergency schema change to the orders database outside business hours?",
+      "gold_doc_ids": ["d-db-orders-owner", "d-fulfillment-contacts"]
+    },
+    {
+      "id": "q-multi-2",
+      "class": "multi_hop",
+      "question": "Who can approve an emergency schema change to the payments database outside business hours?",
+      "gold_doc_ids": ["d-db-payments-owner", "d-billing-contacts"]
+    },
+    {
+      "id": "q-multi-3",
+      "class": "multi_hop",
+      "question": "What does a schema change to the orders database require, and who must review it?",
+      "gold_doc_ids": ["d-schema-change-process", "d-db-orders-owner"]
+    },
+    {
+      "id": "q-multi-4",
+      "class": "multi_hop",
+      "question": "Who gets paged when the payments error-rate alarm fires, and how often does that person change?",
+      "gold_doc_ids": ["d-alarm-routing", "d-oncall-payments-schedule"]
+    },
+    {
+      "id": "q-multi-5",
+      "class": "multi_hop",
+      "question": "What is required to reach the production console?",
+      "gold_doc_ids": ["d-mfa-baseline", "d-vpn-access"]
+    },
+    {
+      "id": "q-time-1",
+      "class": "time_bound",
+      "question": "What is the current application log retention period?",
+      "gold_doc_ids": ["d-retention-2025"]
+    },
+    {
+      "id": "q-time-2",
+      "class": "time_bound",
+      "question": "Under the 2023 policy, how many days were application logs retained?",
+      "gold_doc_ids": ["d-retention-2023"]
+    },
+    {
+      "id": "q-time-3",
+      "class": "time_bound",
+      "question": "What was the interim application log retention during 2024?",
+      "gold_doc_ids": ["d-retention-2024-interim"]
+    },
+    {
+      "id": "q-time-4",
+      "class": "time_bound",
+      "question": "When will API v1 actually be removed?",
+      "gold_doc_ids": ["d-api-deprecation-2025"]
+    },
+    {
+      "id": "q-time-5",
+      "class": "time_bound",
+      "question": "What removal date did the 2024 API v1 deprecation notice give?",
+      "gold_doc_ids": ["d-api-deprecation-2024"]
+    },
+    {
+      "id": "q-correction-1",
+      "class": "correction",
+      "question": "What is the deployed session cache TTL?",
+      "gold_doc_ids": ["d-cache-ttl-current"]
+    },
+    {
+      "id": "q-correction-2",
+      "class": "correction",
+      "question": "What TTL did the early session cache draft incorrectly state?",
+      "gold_doc_ids": ["d-cache-ttl-draft"]
+    },
+    {
+      "id": "q-correction-3",
+      "class": "correction",
+      "question": "What is the API response cache TTL?",
+      "gold_doc_ids": ["d-cache-api-ttl"]
+    },
+    {
+      "id": "q-correction-4",
+      "class": "correction",
+      "question": "Is the production session cache TTL 3600 seconds or 900 seconds?",
+      "gold_doc_ids": ["d-cache-ttl-current"]
+    },
+    {
+      "id": "q-contradiction-1",
+      "class": "contradiction",
+      "question": "What is the authoritative primary region for the service?",
+      "gold_doc_ids": ["d-region-adr"]
+    },
+    {
+      "id": "q-contradiction-2",
+      "class": "contradiction",
+      "question": "Which region does the older infra wiki claim is primary?",
+      "gold_doc_ids": ["d-region-wiki"]
+    },
+    {
+      "id": "q-contradiction-3",
+      "class": "contradiction",
+      "question": "What is the disaster recovery region?",
+      "gold_doc_ids": ["d-region-dr"]
+    },
+    {
+      "id": "q-contradiction-4",
+      "class": "contradiction",
+      "question": "Which document decides a region question when two sources disagree?",
+      "gold_doc_ids": ["d-region-adr"]
+    },
+    {
+      "id": "q-retraction-1",
+      "class": "retraction",
+      "question": "Is the new-checkout feature flag enabled at 100 percent?",
+      "gold_doc_ids": ["d-flag-checkout-retracted"]
+    },
+    {
+      "id": "q-retraction-2",
+      "class": "retraction",
+      "question": "What percentage of traffic is the new-checkout flag currently serving?",
+      "gold_doc_ids": ["d-flag-checkout-retracted"]
+    },
+    {
+      "id": "q-retraction-3",
+      "class": "retraction",
+      "question": "Was the search-ranking flag rollout retracted?",
+      "gold_doc_ids": ["d-flag-search-ranking"]
+    },
+    {
+      "id": "q-retraction-4",
+      "class": "retraction",
+      "question": "What did the withdrawn new-checkout rollout plan originally propose?",
+      "gold_doc_ids": ["d-flag-checkout-plan"]
+    },
+    {
+      "id": "q-reinforcement-1",
+      "class": "reinforcement",
+      "question": "Is hardware MFA required for production console access?",
+      "gold_doc_ids": ["d-mfa-baseline", "d-mfa-audit-q3", "d-mfa-audit-q4"]
+    },
+    {
+      "id": "q-reinforcement-2",
+      "class": "reinforcement",
+      "question": "Has an audit confirmed MFA enforcement in more than one quarter?",
+      "gold_doc_ids": ["d-mfa-audit-q3", "d-mfa-audit-q4"]
+    },
+    {
+      "id": "q-reinforcement-3",
+      "class": "reinforcement",
+      "question": "Does staging console access require hardware MFA?",
+      "gold_doc_ids": ["d-mfa-staging"]
+    },
+    {
+      "id": "q-reinforcement-4",
+      "class": "reinforcement",
+      "question": "Were any MFA exceptions found in the security audits?",
+      "gold_doc_ids": ["d-mfa-audit-q3", "d-mfa-audit-q4"]
+    },
+    {
+      "id": "q-hypothetical-1",
+      "class": "hypothetical_exclusion",
+      "question": "What are the actual steps to deploy the payments service today?",
+      "gold_doc_ids": ["d-deploy-payments"]
+    },
+    {
+      "id": "q-hypothetical-2",
+      "class": "hypothetical_exclusion",
+      "question": "How does the orders service currently roll out a new version?",
+      "gold_doc_ids": ["d-deploy-orders"]
+    },
+    {
+      "id": "q-hypothetical-3",
+      "class": "hypothetical_exclusion",
+      "question": "Is SMS-based MFA accepted for production console access?",
+      "gold_doc_ids": ["d-mfa-baseline"]
+    },
+    {
+      "id": "q-hypothetical-4",
+      "class": "hypothetical_exclusion",
+      "question": "Does a payments deploy require a manual approval gate today?",
+      "gold_doc_ids": ["d-deploy-payments"]
+    },
+    {
+      "id": "q-abstention-1",
+      "class": "abstention",
+      "question": "What is the parental leave policy for contractors in Brazil?",
+      "gold_doc_ids": []
+    },
+    {
+      "id": "q-abstention-2",
+      "class": "abstention",
+      "question": "What is the session cache TTL in the staging environment?",
+      "gold_doc_ids": []
+    },
+    {
+      "id": "q-abstention-3",
+      "class": "abstention",
+      "question": "Who is the current payments on-call primary, by name?",
+      "gold_doc_ids": []
+    },
+    {
+      "id": "q-abstention-4",
+      "class": "abstention",
+      "question": "What is the monthly infrastructure budget for the search service specifically?",
+      "gold_doc_ids": []
+    },
+    {
+      "id": "q-abstention-5",
+      "class": "abstention",
+      "question": "How many days are staging application logs retained?",
+      "gold_doc_ids": []
+    },
+    {
+      "id": "q-abstention-6",
+      "class": "abstention",
+      "question": "What is the rollback procedure for the search service?",
+      "gold_doc_ids": []
+    },
+    {
+      "id": "q-citation-1",
+      "class": "citation_fidelity",
+      "question": "Which section documents on-call escalation timing?",
+      "gold_doc_ids": ["d-oncall-rotation"]
+    },
+    {
+      "id": "q-citation-2",
+      "class": "citation_fidelity",
+      "question": "Which section of the payments runbook lists the rollout steps?",
+      "gold_doc_ids": ["d-deploy-payments"]
+    },
+    {
+      "id": "q-citation-3",
+      "class": "citation_fidelity",
+      "question": "Which section covers session cache eviction?",
+      "gold_doc_ids": ["d-cache-eviction"]
+    },
+    {
+      "id": "q-citation-4",
+      "class": "citation_fidelity",
+      "question": "Which section defines what counts as a Sev-1?",
+      "gold_doc_ids": ["d-incident-severity"]
+    }
+  ]
+}

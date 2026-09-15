@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270" role="img" aria-label="AWS Control">
+  <defs>
+    <linearGradient id="ac-bg-d" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a1a21"/>
+      <stop offset="100%" stop-color="#0f2a34"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="270" rx="12" fill="url(#ac-bg-d)"/>
+  <circle cx="60" cy="40" r="20" fill="#155e75" opacity="0.4"/>
+  <circle cx="432" cy="242" r="28" fill="#0e7490" opacity="0.3"/>
+
+  <!-- Drive / bucket on faint concentric arcs (left third) -->
+  <g transform="translate(122,136)">
+    <circle r="104" fill="none" stroke="#22d3ee" stroke-width="1.2" opacity="0.14"/>
+    <circle r="80" fill="none" stroke="#22d3ee" stroke-width="1.2" opacity="0.22"/>
+    <circle r="56" fill="none" stroke="#22d3ee" stroke-width="1.2" opacity="0.3"/>
+
+    <rect x="-48" y="-56" width="96" height="112" rx="12" fill="#0f2630" stroke="#164e63" stroke-width="1.8"/>
+    <line x1="-48" y1="-19" x2="48" y2="-19" stroke="#164e63" stroke-width="1.5"/>
+    <line x1="-48" y1="19" x2="48" y2="19" stroke="#164e63" stroke-width="1.5"/>
+
+    <rect x="-34" y="-43" width="48" height="6" rx="3" fill="#a5f3fc" opacity="0.8"/>
+    <rect x="-34" y="-32" width="30" height="5" rx="2.5" fill="#164e63"/>
+
+    <rect x="-34" y="-3" width="68" height="6" rx="3" fill="#164e63"/>
+    <rect x="-34" y="-3" width="42" height="6" rx="3" fill="#22d3ee"/>
+
+    <rect x="-34" y="30" width="34" height="5" rx="2.5" fill="#164e63"/>
+
+    <!-- Confirmed-before-use shield -->
+    <g transform="translate(33,48)">
+      <path d="M0,-12 L10.5,-8.3 V0.6 C10.5,7.6 0,12.5 0,12.5 C0,12.5 -10.5,7.6 -10.5,0.6 V-8.3 Z" fill="#22d3ee" stroke="#0f2630" stroke-width="3"/>
+      <path d="M0,-12 L10.5,-8.3 V0.6 C10.5,7.6 0,12.5 0,12.5 C0,12.5 -10.5,7.6 -10.5,0.6 V-8.3 Z" fill="#22d3ee"/>
+      <path d="M-4.4,-0.4 L-1.3,2.8 L4.8,-4" fill="none" stroke="#0a1a21" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+
+  <!-- Account rows, one health dot each (right) -->
+  <rect x="282" y="48" width="164" height="32" rx="7" fill="#0f2630" stroke="#164e63" stroke-width="1.5"/>
+  <circle cx="299" cy="64" r="4.5" fill="#22d3ee"/>
+  <rect x="312" y="58" width="96" height="6" rx="3" fill="#a5f3fc"/>
+  <rect x="312" y="68" width="56" height="5" rx="2.5" fill="#164e63"/>
+
+  <rect x="282" y="88" width="164" height="32" rx="7" fill="#0f2630" stroke="#164e63" stroke-width="1.5"/>
+  <circle cx="299" cy="104" r="4.5" fill="#22d3ee"/>
+  <rect x="312" y="98" width="78" height="6" rx="3" fill="#a5f3fc"/>
+  <rect x="312" y="108" width="44" height="5" rx="2.5" fill="#164e63"/>
+
+  <rect x="282" y="128" width="164" height="32" rx="7" fill="#0f2630" stroke="#164e63" stroke-width="1.5"/>
+  <circle cx="299" cy="144" r="4.5" fill="#fbbf24"/>
+  <rect x="312" y="138" width="88" height="6" rx="3" fill="#a5f3fc"/>
+  <rect x="312" y="148" width="50" height="5" rx="2.5" fill="#164e63"/>
+
+  <!-- Receipt badge: every paid service is confirmed on the record -->
+  <g transform="translate(400,198)">
+    <path d="M-15,-24 h30 a5,5 0 0 1 5,5 v38 l-6.7,-4 l-6.6,4 l-6.7,-4 l-6.7,4 l-6.6,-4 l-6.7,4 v-38 a5,5 0 0 1 5,-5 z" fill="#0f2630" stroke="#164e63" stroke-width="1.6"/>
+    <rect x="-12" y="-15" width="22" height="4.5" rx="2.25" fill="#a5f3fc" opacity="0.7"/>
+    <rect x="-12" y="-6" width="15" height="4.5" rx="2.25" fill="#164e63"/>
+    <circle cx="19" cy="16" r="13.5" fill="#0f2630"/>
+    <circle cx="19" cy="16" r="11.5" fill="#22d3ee"/>
+    <path d="M13.6,16 L17.6,20 L24.8,12.2" fill="none" stroke="#0a1a21" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

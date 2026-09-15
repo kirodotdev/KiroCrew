@@ -1,0 +1,7 @@
+schema-version: 2026-04-28
+fixture-name: sessions-a-few
+description: |
+  Four chat sessions cover pinned, open, closed-in-History, and archived states.
+  Transcript JSONL is the seedable half of session state; the SQLite event log
+  is not (see the SQLite deferral in ``rich/README.md``), so nothing here
+  depends on it.

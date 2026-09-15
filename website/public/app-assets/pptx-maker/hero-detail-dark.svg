@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" width="1200" height="288" role="img" aria-label="PPTX Maker">
+  <defs>
+    <linearGradient id="pmd-bg-d" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0f172e"/>
+    </linearGradient>
+    <linearGradient id="pmd-slide-d" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#161f33"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="288" fill="url(#pmd-bg-d)"/>
+
+  <circle cx="120" cy="52" r="34" fill="#4338ca" opacity="0.4"/>
+  <circle cx="1090" cy="240" r="46" fill="#6366f1" opacity="0.22"/>
+  <circle cx="980" cy="46" r="22" fill="#4338ca" opacity="0.3"/>
+
+  <g transform="translate(90,64)">
+    <rect x="0" y="0" width="150" height="30" rx="15" fill="#1e293b"/>
+    <rect x="14" y="13" width="92" height="5" rx="2.5" fill="#4338ca"/>
+    <rect x="18" y="42" width="132" height="30" rx="15" fill="#4f46e5"/>
+    <rect x="32" y="55" width="76" height="5" rx="2.5" fill="#c7d2fe"/>
+    <rect x="0" y="84" width="150" height="30" rx="15" fill="#1e293b"/>
+    <rect x="14" y="97" width="108" height="5" rx="2.5" fill="#4338ca"/>
+    <rect x="18" y="126" width="112" height="30" rx="15" fill="#4f46e5"/>
+    <rect x="32" y="139" width="60" height="5" rx="2.5" fill="#c7d2fe"/>
+  </g>
+
+  <g transform="translate(320,74)">
+    <rect x="0" y="0" width="112" height="140" rx="8" fill="#1e293b" stroke="#3730a3" stroke-width="1.2"/>
+    <rect x="12" y="14" width="46" height="7" rx="3.5" fill="#818cf8"/>
+    <rect x="12" y="32" width="86" height="4" rx="2" fill="#312e81"/>
+    <rect x="12" y="42" width="72" height="4" rx="2" fill="#312e81"/>
+    <rect x="12" y="52" width="80" height="4" rx="2" fill="#312e81"/>
+    <rect x="12" y="62" width="58" height="4" rx="2" fill="#312e81"/>
+    <text x="12" y="130" font-family="system-ui,sans-serif" font-size="11" fill="#818cf8" opacity="0.8">Brief</text>
+
+    <rect x="128" y="0" width="112" height="140" rx="8" fill="#1e293b" stroke="#3730a3" stroke-width="1.2"/>
+    <g fill="#4338ca">
+      <circle cx="142" cy="20" r="3"/><rect x="150" y="17.5" width="62" height="4.5" rx="2.25"/>
+      <circle cx="142" cy="36" r="3"/><rect x="150" y="33.5" width="74" height="4.5" rx="2.25"/>
+      <circle cx="142" cy="52" r="3"/><rect x="150" y="49.5" width="54" height="4.5" rx="2.25"/>
+      <circle cx="142" cy="68" r="3"/><rect x="150" y="65.5" width="68" height="4.5" rx="2.25"/>
+    </g>
+    <text x="140" y="130" font-family="system-ui,sans-serif" font-size="11" fill="#818cf8" opacity="0.8">Outline</text>
+
+    <rect x="256" y="0" width="112" height="140" rx="8" fill="#1e293b" stroke="#3730a3" stroke-width="1.2"/>
+    <rect x="268" y="14" width="40" height="26" rx="4" fill="#312e81"/>
+    <rect x="314" y="14" width="40" height="26" rx="4" fill="#14532d"/>
+    <rect x="268" y="46" width="40" height="26" rx="4" fill="#78350f"/>
+    <rect x="314" y="46" width="40" height="26" rx="4" fill="#831843"/>
+    <circle cx="278" cy="90" r="7" fill="#818cf8" opacity="0.85"/>
+    <circle cx="296" cy="90" r="7" fill="#22c55e" opacity="0.65"/>
+    <circle cx="314" cy="90" r="7" fill="#f59e0b" opacity="0.65"/>
+    <text x="268" y="130" font-family="system-ui,sans-serif" font-size="11" fill="#818cf8" opacity="0.8">Art direction</text>
+  </g>
+
+  <g transform="translate(730,58)">
+    <rect x="28" y="28" width="240" height="152" rx="9" fill="#312e81" stroke="#4338ca" stroke-width="1.2" opacity="0.8"/>
+    <rect x="14" y="14" width="240" height="152" rx="9" fill="#2e1065" stroke="#4338ca" stroke-width="1.2"/>
+    <rect x="0" y="0" width="240" height="152" rx="9" fill="url(#pmd-slide-d)" stroke="#818cf8" stroke-width="2"/>
+
+    <rect x="18" y="18" width="104" height="10" rx="5" fill="#818cf8"/>
+    <rect x="18" y="38" width="170" height="5" rx="2.5" fill="#3730a3"/>
+    <rect x="18" y="50" width="138" height="5" rx="2.5" fill="#312e81"/>
+
+    <rect x="18" y="76" width="30" height="52" rx="3.5" fill="#1e3a8a"/>
+    <rect x="54" y="92" width="30" height="36" rx="3.5" fill="#14532d"/>
+    <rect x="90" y="84" width="30" height="44" rx="3.5" fill="#78350f"/>
+    <rect x="126" y="70" width="30" height="58" rx="3.5" fill="#831843"/>
+
+    <rect x="172" y="72" width="50" height="56" rx="4" fill="none" stroke="#818cf8" stroke-width="1.5" stroke-dasharray="5 3.5"/>
+    <path d="M214,124 L214,146 L221,139 L227,152 L232,150 L226,137 L235,136 Z" fill="#a5b4fc"/>
+  </g>
+
+  <g transform="translate(1032,124)">
+    <rect x="0" y="0" width="88" height="40" rx="8" fill="#4f46e5"/>
+    <text x="44" y="25" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="600" fill="#ffffff">.pptx</text>
+  </g>
+</svg>

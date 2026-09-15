@@ -1,0 +1,1431 @@
+"""Tests for crash-dump store — rotation, newest-dump detection, doctor surfacing.
+
+Uses injected temp directories to avoid touching the real ~/.kirocrew/logs/.
+Follows the same injectable-dependency pattern as test_loop_watchdog.py.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import os
+import sys
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+from kiro_crew import platform_compat
+from kiro_crew.dashboard import crash_dump_store
+from kiro_crew.dashboard.crash_dump_store import (
+    DUMP_PREFIX,
+    DUMP_SUFFIX,
+    dump_age_seconds,
+    dump_first_stack_lines,
+    newest_dump,
+    newest_dump_with_stacks,
+    open_dump_file,
+    rotate_dumps,
+    sweep_stale_dumps,
+)
+
+
+@pytest.fixture
+def dumps_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "crash-dumps"
+    d.mkdir()
+    return d
+
+
+@contextlib.contextmanager
+def opened_dump_file(dumps_dir: Path) -> Iterator[crash_dump_store.DumpFile]:
+    """Yield an open dump file and release its raw fd when the block exits.
+
+    ``open_dump_file`` hands out a raw descriptor from :func:`os.open`, and
+    ``DumpFile.close()`` is a deliberate no-op ("the fd lives until process
+    exit") with no finalizer anywhere in the module.  So a test that calls
+    ``open_dump_file`` releases nothing even with ``finally: f.close()``: it
+    leaks a descriptor for the rest of the session and holds the ``tmp_path``
+    dump file open, which blocks the fixture's cleanup on Windows.  Tests that
+    need the file only for their own body acquire it through here.
+
+    This is a test-local concern.  Production must keep never closing the fd —
+    faulthandler's C timer may fire at any moment — which is what
+    ``test_dump_file_fd_survives_dropping_last_python_reference`` pins.
+    """
+    import errno
+
+    # Capture the prior global BEFORE opening, so the value restored below is
+    # not itself the object this block is about to close.
+    prior_active = crash_dump_store._active_dump_file
+    # Sentinel bound BEFORE the try: ``fd`` is assigned partway through, so if
+    # open_dump_file raises, the finally must not convert that real failure into
+    # an UnboundLocalError.  -1 is never a valid descriptor.
+    fd = -1
+    try:
+        dump_file = open_dump_file(dumps_dir)
+        fd = dump_file.fileno()
+        yield dump_file
+    finally:
+        # open_dump_file publishes the object as ``_active_dump_file``; restore
+        # the prior value so the descriptor closed below is not left reachable
+        # from a module global for the rest of the session.
+        crash_dump_store._active_dump_file = prior_active
+        if fd != -1:
+            # Still exercise the documented file-like no-op that production
+            # offers for exactly this ``finally`` shape, then release the fd it
+            # deliberately does not.
+            dump_file.close()
+            try:
+                os.close(fd)
+            except OSError as exc:
+                # Tolerate ONLY EBADF: a regression that closed the fd early
+                # would raise here, and re-raising would mask the assertion in
+                # the caller that is the real signal.
+                if exc.errno != errno.EBADF:
+                    raise
+
+
+def _create_header_only_dump(
+    dumps_dir: Path, name: str, *, pid_domain: str | None = None
+) -> Path:
+    """Create a dump file with only the header (no stacks = clean exit).
+
+    ``pid_domain`` defaults to THIS process's domain so ownership is
+    attributable and the injected liveness check is consulted; pass a foreign
+    domain (or empty string for a legacy domain-less header) to exercise the
+    unattributable paths.
+    """
+    domain = crash_dump_store._pid_domain() if pid_domain is None else pid_domain
+    pid_line = f"# PID: 12345 @ {domain}\n" if domain else "# PID: 12345\n"
+    p = dumps_dir / name
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T010000Z\n"
+        + pid_line
+        + "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+    )
+    return p
+
+
+def _create_stacked_dump(dumps_dir: Path, name: str) -> Path:
+    """Create a dump file with real stack content (simulating a wedge)."""
+    p = dumps_dir / name
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T020000Z\n"
+        f"# PID: 12345 @ {crash_dump_store._pid_domain()}\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+        "Thread 0x00007f1234 (most recent call first):\n"
+        '  File "/usr/lib/python3.12/socket.py", line 704, in close\n'
+        "    self._real_close()\n"
+        '  File "/home/user/.kirocrew/src/kiro_crew/acp/client.py", line 312, in _teardown\n'
+        "    self._sock.close()\n"
+        '  File "/home/user/.kirocrew/src/kiro_crew/dashboard/server.py", line 800, in _cleanup\n'
+        "    await self._teardown()\n"
+    )
+    return p
+
+
+# ── Rotation ──
+
+
+def test_rotate_removes_oldest(dumps_dir: Path) -> None:
+    # Create 12 dump files (more than max_dumps=10)
+    for i in range(12):
+        p = dumps_dir / f"{DUMP_PREFIX}2026071{i:02d}T000000Z{DUMP_SUFFIX}"
+        p.write_text(f"dump {i}")
+        # Stagger mtimes so sort order is deterministic
+        os.utime(p, (1000 + i, 1000 + i))
+
+    removed = rotate_dumps(max_dumps=10, dumps_dir=dumps_dir)
+    remaining = list(dumps_dir.iterdir())
+    # After rotation with max_dumps=10, we keep max_dumps-1=9 (room for new one)
+    assert len(remaining) == 9
+    assert removed == 3
+    # The 3 oldest (i=0,1,2) should be gone
+    for i in range(3):
+        assert not (dumps_dir / f"{DUMP_PREFIX}2026071{i:02d}T000000Z{DUMP_SUFFIX}").exists()
+
+
+def test_rotate_noop_when_under_limit(dumps_dir: Path) -> None:
+    _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    removed = rotate_dumps(max_dumps=10, dumps_dir=dumps_dir)
+    assert removed == 0
+    assert len(list(dumps_dir.iterdir())) == 1
+
+
+def test_rotate_empty_dir(dumps_dir: Path) -> None:
+    removed = rotate_dumps(max_dumps=10, dumps_dir=dumps_dir)
+    assert removed == 0
+
+
+# ── Open dump file ──
+
+
+def test_open_dump_file_creates_file(dumps_dir: Path) -> None:
+    with opened_dump_file(dumps_dir) as f:
+        assert f is not None
+        assert not f.closed
+        # File should exist on disk
+        files = list(dumps_dir.iterdir())
+        assert len(files) == 1
+        assert files[0].name.startswith(DUMP_PREFIX)
+        assert files[0].name.endswith(DUMP_SUFFIX)
+        # Header should be written
+        content = files[0].read_text(encoding="utf-8")
+        assert "KiroCrew loop-stall crash dump" in content
+        assert "PID:" in content
+
+
+def test_open_dump_file_returns_writable_fd(dumps_dir: Path) -> None:
+    with opened_dump_file(dumps_dir) as f:
+        # faulthandler needs to write to this fd
+        f.write("Thread 0x1234 (most recent call first):\n")
+        f.flush()
+        files = list(dumps_dir.iterdir())
+        content = files[0].read_text(encoding="utf-8")
+        assert "Thread 0x1234" in content
+
+
+@pytest.mark.parametrize("payload", ["line one\nline two\n", "line one\r\nline two\r\n"])
+def test_open_dump_file_preserves_bytes(dumps_dir: Path, payload: str) -> None:
+    """The real descriptor preserves newlines and remains non-inheritable."""
+    with opened_dump_file(dumps_dir) as dump_file:
+        fd = dump_file.fileno()
+        path = next(dumps_dir.iterdir())
+        header = path.read_bytes()
+        assert header.endswith(b"\n\n")
+        assert b"\r\n" not in header
+        assert not os.get_inheritable(fd)
+
+        dump_file.write(payload)
+        os.write(fd, payload.encode("utf-8"))
+        assert path.read_bytes() == header + payload.encode("utf-8") * 2
+
+
+# ── Newest dump detection ──
+
+
+def test_newest_dump_returns_none_on_empty(dumps_dir: Path) -> None:
+    assert newest_dump(dumps_dir) is None
+
+
+def test_newest_dump_returns_latest(dumps_dir: Path) -> None:
+    p1 = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260716T010000Z{DUMP_SUFFIX}")
+    os.utime(p1, (1000, 1000))
+    p2 = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    os.utime(p2, (2000, 2000))
+
+    result = newest_dump(dumps_dir)
+    assert result == p2
+
+
+def test_newest_dump_with_stacks_skips_header_only(dumps_dir: Path) -> None:
+    # Older dump with stacks
+    p1 = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260716T010000Z{DUMP_SUFFIX}")
+    os.utime(p1, (1000, 1000))
+    # Newer dump with only header (clean shutdown)
+    p2 = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    os.utime(p2, (2000, 2000))
+
+    # newest_dump returns p2 (most recent by mtime)
+    assert newest_dump(dumps_dir) == p2
+    # newest_dump_with_stacks skips p2 and returns p1
+    assert newest_dump_with_stacks(dumps_dir) == p1
+
+
+def test_newest_dump_with_stacks_returns_none_when_all_clean(dumps_dir: Path) -> None:
+    _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T020000Z{DUMP_SUFFIX}")
+    assert newest_dump_with_stacks(dumps_dir) is None
+
+
+# ── Stack line extraction ──
+
+
+def test_dump_first_stack_lines(dumps_dir: Path) -> None:
+    p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    lines = dump_first_stack_lines(p, max_lines=3)
+    assert len(lines) == 3
+    assert "Thread 0x" in lines[0]
+    assert "socket.py" in lines[1]
+
+
+def test_dump_first_stack_lines_header_only(dumps_dir: Path) -> None:
+    p = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    lines = dump_first_stack_lines(p, max_lines=5)
+    assert lines == []
+
+
+def _create_multi_thread_dump(dumps_dir: Path, name: str, *, idle_workers: int = 3) -> Path:
+    """Create a dump mirroring a REAL faulthandler loop-stall dump.
+
+    ``faulthandler.dump_traceback_later`` writes a ``Timeout (...)!`` preamble
+    then every thread newest-first: idle thread-pool workers (parked in
+    ``Queue.get``) come first, and the MAIN thread — the one the asyncio loop
+    wedged on — comes LAST.
+    """
+    idle_block = (
+        "Thread 0x00007f000000{i:04x} (most recent call first):\n"
+        '  File "/usr/lib/python3.12/queue.py", line 171 in get\n'
+        '  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 90 in _worker\n'
+        '  File "/usr/lib/python3.12/threading.py", line 1032 in _bootstrap\n'
+    )
+    main_block = (
+        "Thread 0x00007f0000beef (most recent call first):\n"
+        '  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 166 in submit\n'
+        '  File "/usr/lib/python3.12/asyncio/base_events.py", line 867 in run_in_executor\n'
+        '  File "/home/user/.kirocrew/src/kiro_crew/dashboard/server.py", line 246 in _should_prevent_sleep\n'
+        '  File "/usr/lib/python3.12/asyncio/base_events.py", line 645 in run_forever\n'
+        '  File "/home/user/.kirocrew/src/kiro_crew/cli.py", line 2046 in main\n'
+    )
+    p = dumps_dir / name
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T020000Z\n"  # brand-ok: mirrors production dump header
+        "# PID: 12345\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+        "Timeout (0:00:25)!\n"
+        + "".join(idle_block.format(i=i) for i in range(idle_workers))
+        + main_block
+    )
+    return p
+
+
+def test_dump_first_stack_lines_surfaces_wedged_thread(dumps_dir: Path) -> None:
+    """The extracted lines must show the WEDGED (last) thread, not an idle worker.
+
+    Regression: doctor labelled the first thread in the file "MainThread stuck
+    at:" — always an idle ``Queue.get`` thread-pool worker on real dumps —
+    while the actually-wedged main thread sat unread at the bottom.
+    """
+    p = _create_multi_thread_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    lines = dump_first_stack_lines(p, max_lines=8)
+    body = "\n".join(lines)
+    assert lines[0] == "Timeout (0:00:25)!"
+    assert "_should_prevent_sleep" in body  # the wedged thread's Kiro Crew frame
+    assert "queue.py" not in body  # no idle-worker frames
+
+
+def test_dump_first_stack_lines_prefers_current_thread_marker(dumps_dir: Path) -> None:
+    """A block explicitly marked ``Current thread`` wins over positional choice."""
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T020000Z\n"  # brand-ok: mirrors production dump header
+        "# PID: 12345\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+        "Current thread 0x00007f00000001 (most recent call first):\n"
+        '  File "/home/user/.kirocrew/src/kiro_crew/dashboard/state.py", line 100 in _flush\n'
+        "Thread 0x00007f00000002 (most recent call first):\n"
+        '  File "/usr/lib/python3.12/queue.py", line 171 in get\n'
+    )
+    lines = dump_first_stack_lines(p, max_lines=4)
+    assert lines[0].startswith("Current thread")
+    assert "_flush" in lines[1]
+
+
+def test_dump_first_stack_lines_fallback_without_thread_headers(dumps_dir: Path) -> None:
+    """Unrecognizable content degrades to the raw top-of-file lines."""
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T020000Z\n"  # brand-ok: mirrors production dump header
+        "# PID: 12345\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+        "some free-form line 1\n"
+        "some free-form line 2\n"
+    )
+    lines = dump_first_stack_lines(p, max_lines=5)
+    assert lines == ["some free-form line 1", "some free-form line 2"]
+
+
+# ── Age calculation ──
+
+
+def test_dump_age_seconds(dumps_dir: Path) -> None:
+    p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    age = dump_age_seconds(p)
+    # Should be very small since we just created it
+    assert 0 <= age < 2.0
+
+
+def test_dump_age_never_negative_with_future_mtime(dumps_dir: Path) -> None:
+    """A dump whose mtime rounds marginally AHEAD of ``time.time()`` (sub-microsecond
+    float jitter on a just-written file, or higher-resolution FS timestamps) must
+    report age 0.0 — never a negative, even when `assert 0 <= age` would fail
+    with a tiny negative delta (~-2e-7)."""
+    import time
+
+    p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    st = p.stat()
+    # Force mtime clearly into the future to reproduce the jitter deterministically.
+    os.utime(p, (st.st_atime, time.time() + 5.0))
+    assert dump_age_seconds(p) == 0.0
+
+
+# ── Integration with LoopStallWatchdog dump_file param ──
+
+
+def test_watchdog_dump_file_param_custom_callback(dumps_dir: Path) -> None:
+    """Verify custom dump callback is invoked when dump_file is set (wiring only)."""
+    from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
+
+    class _Clock:
+        def __init__(self) -> None:
+            self.t = 1000.0
+
+        def __call__(self) -> float:
+            return self.t
+
+        def advance(self, dt: float) -> None:
+            self.t += dt
+
+    clock = _Clock()
+    dump_targets: list[object] = []
+
+    # Open a dump file
+    with opened_dump_file(dumps_dir) as dump_file:
+        # Create watchdog with dump_file — custom dump callback to verify it's wired
+        wd = LoopStallWatchdog(
+            stall_after=30.0,
+            exit_after=None,
+            now=clock,
+            dump=lambda: dump_targets.append("called"),
+            dump_file=dump_file,
+            log=logging.getLogger("test.loop_watchdog"),
+        )
+        wd.beat()
+        clock.advance(31.0)
+        assert wd.check() is True
+        assert dump_targets == ["called"]
+
+
+def test_watchdog_soft_only_dump_is_written_to_discoverable_file(
+    dumps_dir: Path, monkeypatch
+) -> None:
+    """Without a hard timer, the soft dump must remain visible to doctor."""
+    from kiro_crew.dashboard import loop_watchdog
+
+    class _Clock:
+        def __init__(self) -> None:
+            self.t = 1000.0
+
+        def __call__(self) -> float:
+            return self.t
+
+        def advance(self, dt: float) -> None:
+            self.t += dt
+
+    clock = _Clock()
+    targets: list[object] = []
+    monkeypatch.setattr(
+        loop_watchdog.faulthandler,
+        "dump_traceback",
+        lambda *, file, all_threads: targets.append(file),
+    )
+
+    with opened_dump_file(dumps_dir) as dump_file:
+        wd = loop_watchdog.LoopStallWatchdog(
+            stall_after=30.0,
+            exit_after=None,
+            now=clock,
+            dump_file=dump_file,
+            arm_later=lambda t: None,  # disable armed timer
+            cancel_later=lambda: None,
+            enrich=lambda _silence: [],
+            log=logging.getLogger("test.loop_watchdog"),
+        )
+        wd.beat()
+        clock.advance(31.0)
+        assert wd.check() is True
+        assert targets == [dump_file, sys.stderr]
+
+
+def test_watchdog_armed_soft_dump_leaves_crash_sentinel_untouched(
+    dumps_dir: Path, monkeypatch
+) -> None:
+    """A recovered managed-service stall must not look like a fatal crash."""
+    from kiro_crew.dashboard import loop_watchdog
+
+    class _Clock:
+        def __init__(self) -> None:
+            self.t = 1000.0
+
+        def __call__(self) -> float:
+            return self.t
+
+        def advance(self, dt: float) -> None:
+            self.t += dt
+
+    clock = _Clock()
+    targets: list[object] = []
+    monkeypatch.setattr(
+        loop_watchdog.faulthandler,
+        "dump_traceback",
+        lambda *, file, all_threads: targets.append(file),
+    )
+
+    with opened_dump_file(dumps_dir) as dump_file:
+        wd = loop_watchdog.LoopStallWatchdog(
+            stall_after=30.0,
+            exit_after=90.0,
+            poll_interval=60.0,
+            now=clock,
+            dump_file=dump_file,
+            arm_later=lambda _timeout: None,
+            cancel_later=lambda: None,
+            enrich=lambda _silence: [],
+            log=logging.getLogger("test.loop_watchdog"),
+        )
+        wd.start()
+        try:
+            clock.advance(31.0)
+            assert wd.check() is True
+            assert targets == [sys.stderr]
+        finally:
+            wd.stop()
+
+
+def test_watchdog_rearm_failure_restores_discoverable_soft_dump(
+    dumps_dir: Path, monkeypatch
+) -> None:
+    """A cancelled timer that cannot re-arm must degrade to the file fallback."""
+    from kiro_crew.dashboard import loop_watchdog
+
+    class _Clock:
+        def __init__(self) -> None:
+            self.t = 1000.0
+
+        def __call__(self) -> float:
+            return self.t
+
+        def advance(self, dt: float) -> None:
+            self.t += dt
+
+    clock = _Clock()
+    targets: list[object] = []
+    arm_count = 0
+
+    def _arm(_timeout: float) -> None:
+        nonlocal arm_count
+        arm_count += 1
+        if arm_count > 1:
+            raise RuntimeError("re-arm failed")
+
+    monkeypatch.setattr(
+        loop_watchdog.faulthandler,
+        "dump_traceback",
+        lambda *, file, all_threads: targets.append(file),
+    )
+
+    with opened_dump_file(dumps_dir) as dump_file:
+        wd = loop_watchdog.LoopStallWatchdog(
+            stall_after=30.0,
+            exit_after=90.0,
+            poll_interval=60.0,
+            now=clock,
+            dump_file=dump_file,
+            arm_later=_arm,
+            cancel_later=lambda: None,
+            enrich=lambda _silence: [],
+            log=logging.getLogger("test.loop_watchdog"),
+        )
+        wd.start()
+        try:
+            wd.beat()
+            clock.advance(31.0)
+            assert wd.check() is True
+            assert targets == [dump_file, sys.stderr]
+        finally:
+            wd.stop()
+
+
+# ── fd stability ──
+
+
+def test_dump_file_fd_survives_repeated_arm_cancel(dumps_dir: Path) -> None:
+    """The raw fd must remain valid across cancel/re-arm.
+
+    The bug: faulthandler's C timer captures the fd at arm time and writes to it
+    when the timer fires.  If the fd is invalidated between arm and fire (e.g.
+    by GC of an intermediate Python file object or by closing/reopening), the
+    dump writes to nothing and the crash file contains only the header.
+
+    This test simulates the beat() cadence (cancel + re-arm every 5s) and then
+    verifies that a faulthandler.dump_traceback(file=dump_file) still lands real
+    content in the file — proving the fd was not invalidated by the churn.
+    """
+    import faulthandler
+    import gc
+
+    with opened_dump_file(dumps_dir) as dump_file:
+        # Simulate 20 cancel/re-arm cycles (beat() every 5s for ~100s of runtime).
+        # Each cycle exercises the same code path that runs in production.
+        for _ in range(20):
+            fd = dump_file.fileno()
+            # Verify the fd is still valid after each "cycle"
+            os.fstat(fd)  # raises OSError if fd was closed/invalidated
+
+        # Force a GC to surface any weak-reference or ref-counting issues
+        gc.collect()
+
+        # The fd must still be valid after GC
+        os.fstat(dump_file.fileno())
+
+        # Now verify faulthandler can actually write through it
+        faulthandler.dump_traceback(file=dump_file, all_threads=True)
+
+        # Read the file and confirm real stacks landed (not just the header)
+        dump_path = list(dumps_dir.iterdir())[0]
+        content = dump_path.read_text(encoding="utf-8", errors="replace")
+        assert "thread" in content.lower(), (
+            f"Expected thread stacks after 20 arm/cancel cycles, got: {content!r}"
+        )
+
+
+def test_dump_file_fileno_is_stable(dumps_dir: Path) -> None:
+    """The fd number returned by fileno() never changes across the DumpFile lifetime."""
+    with opened_dump_file(dumps_dir) as dump_file:
+        fd1 = dump_file.fileno()
+        dump_file.write("some data\n")
+        dump_file.flush()
+        fd2 = dump_file.fileno()
+        assert fd1 == fd2, "fileno() must return the same fd across calls"
+
+
+def test_dump_file_fd_survives_dropping_last_python_reference(dumps_dir: Path) -> None:
+    """The fd outlives every Python reference to the object that owns it.
+
+    This is the property that separates the raw-fd ``DumpFile`` from a buffered
+    ``open()``: faulthandler's C timer keeps only the integer fd, so if the last
+    Python reference to the file object is dropped and a finalizer closes the fd,
+    the timer later writes to a closed — or worse, a recycled — fd, and the dump
+    file keeps nothing but its header.  A buffered ``TextIOWrapper`` closes on
+    finalization; ``DumpFile`` never closes, so after collection the fd must
+    still be valid, still refer to the same file, and still be writable.
+
+    The two tests above cannot observe this: each keeps the file object bound to
+    a live local for its whole body, so it is never collectable and the
+    finalizer that would close the fd never runs.  ``open_dump_file`` also
+    publishes the object as ``_active_dump_file``, so that reference has to be
+    cleared as well before anything can be collected.
+    """
+    import errno
+    import gc
+
+    # Capture the prior global first, so the value restored in the finally is
+    # not itself a surviving reference to the object under test.
+    prior_active = crash_dump_store._active_dump_file
+    # Sentinel bound BEFORE the try: ``fd`` is assigned partway through the body,
+    # so if open_dump_file raises, the finally must not turn that failure into an
+    # UnboundLocalError.  -1 is never a valid descriptor.
+    fd = -1
+    try:
+        dump_file = open_dump_file(dumps_dir)
+        fd = dump_file.fileno()
+        dump_path = list(dumps_dir.iterdir())[0]
+        original_ino = os.stat(dump_path).st_ino
+
+        # Read the published reference into a bool rather than asserting on the
+        # object: an assert on ``dump_file`` itself can retain it in the frame,
+        # which would keep the object alive and make this test vacuous.
+        was_published = crash_dump_store._active_dump_file is dump_file
+
+        # Drop BOTH references — the module global and the local — then collect.
+        crash_dump_store._active_dump_file = None
+        del dump_file
+        gc.collect()
+
+        assert was_published, "open_dump_file must publish the DumpFile as _active_dump_file"
+
+        # (a) The fd is still valid.  A buffered file object's finalizer would
+        #     have closed it, and os.fstat would raise OSError(EBADF).
+        st = os.fstat(fd)
+
+        # (b) It is still the SAME file.  fd numbers are recycled, so an
+        #     unrelated open() could hand this number back out and make (a) and
+        #     (c) pass against a file that is not the dump.
+        assert st.st_ino == original_ino, (
+            f"fd {fd} no longer refers to the dump file (inode {st.st_ino} != "
+            f"{original_ino}) — it was closed and the number recycled"
+        )
+
+        # (c) It is still writable — this is what faulthandler's C thread does
+        #     when the timer fires, long after the arming frame has gone.
+        marker = b"# written after the last Python reference was dropped\n"
+        assert os.write(fd, marker) == len(marker)
+        assert marker.decode("utf-8") in dump_path.read_text(encoding="utf-8", errors="replace")
+    finally:
+        crash_dump_store._active_dump_file = prior_active
+        # Release the raw fd this test opened.  DumpFile.close() is a deliberate
+        # no-op, so nothing else will: leaving it open leaks a descriptor for the
+        # rest of the session and holds the tmp_path dump file open, which blocks
+        # the fixture's cleanup on Windows.  Every assertion above has already
+        # run by this point, so closing here cannot weaken them.
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                # Tolerate ONLY EBADF: a regression to a buffered open() would
+                # have closed the fd during collection, and raising here would
+                # mask the os.fstat failure that is this test's actual signal.
+                if exc.errno != errno.EBADF:
+                    raise
+
+
+# ── dump_replay_lines ──
+
+
+def test_dump_replay_lines_basic(dumps_dir: Path) -> None:
+    """Replay reads all stack lines within limits."""
+    from kiro_crew.dashboard.crash_dump_store import dump_replay_lines
+
+    p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}")
+    lines, truncated = dump_replay_lines(p)
+    assert len(lines) > 0
+    assert "Thread" in lines[0]
+    assert not truncated
+
+
+def test_dump_replay_lines_truncates_by_line_count(dumps_dir: Path) -> None:
+    """Replay truncates at max_lines."""
+    from kiro_crew.dashboard.crash_dump_store import dump_replay_lines
+
+    p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}")
+    lines, truncated = dump_replay_lines(p, max_lines=2)
+    assert len(lines) == 2
+    assert truncated
+
+
+def test_dump_replay_lines_truncates_by_bytes(dumps_dir: Path) -> None:
+    """Replay truncates at max_bytes."""
+    from kiro_crew.dashboard.crash_dump_store import dump_replay_lines
+
+    p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}")
+    lines, truncated = dump_replay_lines(p, max_bytes=50)
+    assert truncated
+    total = sum(len(ln) for ln in lines)
+    assert total <= 50
+
+
+def test_dump_replay_lines_header_only(dumps_dir: Path) -> None:
+    """Replay returns empty for header-only dumps."""
+    from kiro_crew.dashboard.crash_dump_store import dump_replay_lines
+
+    p = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}")
+    lines, truncated = dump_replay_lines(p)
+    assert lines == []
+    assert not truncated
+
+
+def test_dump_replay_lines_wedged_thread_survives_truncation(dumps_dir: Path) -> None:
+    """The wedged thread's stack is replayed FIRST so caps can't cut it.
+
+    Regression: real dumps carry 200+ lines of idle thread-pool workers before
+    the main thread; top-down replay hit the 120-line/8KB caps and the journal
+    showed only ``Queue.get`` workers plus ``[truncated]`` — omitting the one
+    stack that explains the stall.
+    """
+    from kiro_crew.dashboard.crash_dump_store import dump_replay_lines
+
+    # 40 idle workers x 4 lines >> the 12-line cap below; main thread is last.
+    p = _create_multi_thread_dump(
+        dumps_dir, f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}", idle_workers=40
+    )
+    lines, truncated = dump_replay_lines(p, max_lines=12)
+    body = "\n".join(lines)
+    assert truncated
+    assert lines[0] == "Timeout (0:00:25)!"
+    # The wedged thread's frames made it into the replay despite truncation.
+    assert "_should_prevent_sleep" in body
+    assert "run_forever" in body
+
+
+# ── Journal replay integration test ──
+
+
+def test_startup_crash_dump_replay_logs_stacks(dumps_dir: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Verify that the journal replay logic logs dump content at WARNING."""
+    from kiro_crew.dashboard.crash_dump_store import (
+        dump_replay_lines,
+        newest_dump_with_stacks,
+    )
+
+    _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}")
+    prior_dump = newest_dump_with_stacks(dumps_dir)
+    assert prior_dump is not None
+
+    # Simulate the server.py replay logic
+    _replay_lines, _truncated = dump_replay_lines(prior_dump)
+    assert len(_replay_lines) > 0
+    _replay_body = "\n".join(_replay_lines)
+    if _truncated:
+        _replay_body += "\n  [truncated — full dump at above path]"
+
+    test_logger = logging.getLogger("test.startup_replay")
+    with caplog.at_level(logging.WARNING, logger="test.startup_replay"):
+        test_logger.warning("Replaying prior crash dump stacks:\n%s", _replay_body)
+
+    assert "Thread" in caplog.text
+    assert "socket.py" in caplog.text
+
+
+# ── Stale header-only dump sweep ──
+
+
+def _dead_pid(pid: int) -> bool:
+    return False
+
+
+def _live_pid(pid: int) -> bool:
+    return True
+
+
+def test_sweep_removes_header_only_dump_of_dead_pid(dumps_dir: Path) -> None:
+    p = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 1
+    assert not p.exists()
+
+
+def test_sweep_keeps_header_only_dump_of_live_pid(dumps_dir: Path) -> None:
+    # A live PID means another gateway on this data home still owns the file
+    # (concurrent pod / overlapping restart) — must not be touched.
+    p = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_never_touches_dumps_with_stacks(dumps_dir: Path) -> None:
+    p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T020000Z{DUMP_SUFFIX}")
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_keeps_own_pid_file(dumps_dir: Path) -> None:
+    # The current process's own pre-created file must survive even if the
+    # injected liveness check lies about it.
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T030000Z\n"  # brand-ok: mirrors production dump header
+        f"# PID: {os.getpid()} @ {crash_dump_store._pid_domain()}\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+    )
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_keeps_dump_from_foreign_pid_domain(dumps_dir: Path) -> None:
+    # A PID recorded by a gateway on another host sharing the data home (or in
+    # another PID namespace) is not checkable with a local liveness probe — a
+    # locally-dead verdict says nothing about the remote owner, whose
+    # faulthandler still holds this file's fd. Must be left alone.
+    p = _create_header_only_dump(
+        dumps_dir,
+        f"{DUMP_PREFIX}20260717T090000Z{DUMP_SUFFIX}",
+        pid_domain="other-host/pid:[4026531836]",
+    )
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_keeps_legacy_dump_without_pid_domain(dumps_dir: Path) -> None:
+    # Headers written before the PID domain was recorded carry a bare PID.
+    # Ownership cannot be scoped to a PID table, so the sweep leaves the file
+    # for rotation to reap under pressure.
+    p = _create_header_only_dump(
+        dumps_dir, f"{DUMP_PREFIX}20260717T100000Z{DUMP_SUFFIX}", pid_domain=""
+    )
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_open_dump_file_header_records_pid_domain(dumps_dir: Path) -> None:
+    # The header must qualify the PID with this process's PID domain so a
+    # later sweep on a different host/namespace treats it as unattributable,
+    # and (where procfs exists) with the start ID so a recycled PID cannot
+    # masquerade as the owner.
+    with opened_dump_file(dumps_dir) as f:
+        content = f.path.read_text(encoding="utf-8")
+        start_id = crash_dump_store._pid_start_id(os.getpid())
+        start_tok = f" start={start_id}" if start_id is not None else ""
+        assert f"# PID: {os.getpid()} @ {crash_dump_store._pid_domain()}{start_tok}\n" in content
+        # And a same-process sweep must classify it as alive-owned, not sweep it.
+        removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+        assert removed == 0
+        assert f.path.exists()
+
+
+def test_sweep_keeps_header_only_dump_without_pid_line(dumps_dir: Path) -> None:
+    # No parseable PID — cannot attribute the file, so leave it alone.
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T040000Z{DUMP_SUFFIX}"
+    p.write_text("# KiroCrew loop-stall crash dump — opened 20260717T040000Z\n\n")  # brand-ok: mirrors production dump header
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_treats_oversized_pid_as_unparseable(dumps_dir: Path) -> None:
+    # A corrupt header whose digit run exceeds any real pid_t must not raise
+    # out of the startup sweep (int() digit-limit ValueError, os.kill
+    # OverflowError) — the file is unattributable and left alone.
+    for name, digits in (("20260717T050000Z", "9" * 5000), ("20260717T060000Z", str(2**31))):
+        p = dumps_dir / f"{DUMP_PREFIX}{name}{DUMP_SUFFIX}"
+        p.write_text(
+            "# KiroCrew loop-stall crash dump — opened 20260717T050000Z\n"  # brand-ok: mirrors production dump header
+            f"# PID: {digits}\n"
+            "\n"
+        )
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privilege on Windows")
+def test_sweep_refuses_symlinked_dump(dumps_dir: Path) -> None:
+    # A dump-named symlink (e.g. pointed at /dev/zero) must not be followed:
+    # the header inspection opens O_NOFOLLOW, so the sweep leaves the entry
+    # alone instead of pulling an unbounded read.
+    target = dumps_dir / "target.txt"
+    target.write_text("# not a dump\n")
+    link = dumps_dir / f"{DUMP_PREFIX}20260717T070000Z{DUMP_SUFFIX}"
+    link.symlink_to(target)
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert link.is_symlink()
+
+
+def test_list_dumps_skips_files_vanishing_mid_listing(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A concurrent gateway's sweep can unlink a dump between ``iterdir()`` and
+    # ``stat()``; the listing must skip the vanished entry, not raise out of
+    # the startup sweep.
+    keep = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    ghost = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T020000Z{DUMP_SUFFIX}")
+
+    real_stat = Path.stat
+
+    def racing_stat(self: Path, **kwargs: object) -> object:
+        if self.name == ghost.name:
+            raise FileNotFoundError(str(self))
+        return real_stat(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", racing_stat)
+    assert crash_dump_store._list_dumps(dumps_dir) == [keep]
+
+
+def test_sweep_reads_only_a_bounded_prefix(dumps_dir: Path) -> None:
+    # A huge file is by definition not header-only; the sweep must classify it
+    # from its leading bytes alone and never load the whole thing.
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T080000Z{DUMP_SUFFIX}"
+    with p.open("w") as f:
+        f.write("# KiroCrew loop-stall crash dump — opened 20260717T080000Z\n")  # brand-ok: mirrors production dump header
+        f.write("# PID: 1\n\n")
+        f.write("x" * (1024 * 1024))  # single long line, no newlines
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+def test_sweep_empty_dir(dumps_dir: Path) -> None:
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid) == 0
+
+
+def test_sweep_mixed_directory(dumps_dir: Path) -> None:
+    stale1 = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T010000Z{DUMP_SUFFIX}")
+    real = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260717T020000Z{DUMP_SUFFIX}")
+    stale2 = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T030000Z{DUMP_SUFFIX}")
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 2
+    assert not stale1.exists()
+    assert not stale2.exists()
+    assert real.exists()
+
+
+# ── Stack-aware rotation ──
+
+
+def test_rotate_sacrifices_header_only_before_stacked(dumps_dir: Path) -> None:
+    # Oldest file has REAL stacks; three newer header-only files follow.
+    # With max_dumps=3 the rotation must delete header-only files (oldest
+    # first) and keep the stall evidence, even though it is the oldest file.
+    real = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260710T000000Z{DUMP_SUFFIX}")
+    os.utime(real, (1000, 1000))
+    empties = []
+    for i in range(1, 4):
+        p = _create_header_only_dump(
+            dumps_dir, f"{DUMP_PREFIX}2026071{i}T000000Z{DUMP_SUFFIX}"
+        )
+        os.utime(p, (1000 + i, 1000 + i))
+        empties.append(p)
+
+    removed = rotate_dumps(max_dumps=3, dumps_dir=dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 2
+    assert real.exists()
+    # The two OLDEST header-only files are gone; the newest survives.
+    assert not empties[0].exists()
+    assert not empties[1].exists()
+    assert empties[2].exists()
+
+
+def test_rotate_removes_stacked_when_no_header_only_left(dumps_dir: Path) -> None:
+    paths = []
+    for i in range(4):
+        p = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}2026071{i}T000000Z{DUMP_SUFFIX}")
+        os.utime(p, (1000 + i, 1000 + i))
+        paths.append(p)
+
+    removed = rotate_dumps(max_dumps=3, dumps_dir=dumps_dir, is_pid_alive=_dead_pid)
+    assert removed == 2
+    # Oldest two stacked dumps removed, newest two kept.
+    assert not paths[0].exists()
+    assert not paths[1].exists()
+    assert paths[2].exists()
+    assert paths[3].exists()
+
+
+def test_rotate_never_victimizes_a_live_owners_dump(dumps_dir: Path) -> None:
+    # A concurrently running gateway's pre-created dump is header-only until
+    # it wedges — exactly the class sacrificed first. faulthandler holds its
+    # fd for the owner's lifetime, so unlinking it would send later stall
+    # evidence to an unreachable inode. Live-owner dumps are never victims,
+    # even when that means staying over the cap.
+    live = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260710T000000Z{DUMP_SUFFIX}")
+    os.utime(live, (1000, 1000))  # oldest — would be first victim otherwise
+    dead = []
+    for i in range(1, 4):
+        p = _create_header_only_dump(
+            dumps_dir, f"{DUMP_PREFIX}2026071{i}T000000Z{DUMP_SUFFIX}"
+        )
+        os.utime(p, (1000 + i, 1000 + i))
+        dead.append(p)
+
+    removed = rotate_dumps(max_dumps=3, dumps_dir=dumps_dir, is_pid_alive=_live_pid)
+    # All four dumps carry PID 12345; with every owner "alive" nothing is
+    # sacrificed regardless of rotation pressure.
+    assert removed == 0
+    assert live.exists() and all(p.exists() for p in dead)
+
+
+def test_rotate_never_victimizes_foreign_domain_dumps(dumps_dir: Path) -> None:
+    # A foreign-domain owner (another host/namespace sharing the
+    # data home) may be a LIVE gateway whose faulthandler holds this file's
+    # fd — and that cannot be checked from here. Rotation must never unlink
+    # its path (evidence would land on an unreachable inode); the owner's own
+    # domain rotates it. Legacy domain-less files carry no such live-fd claim
+    # and stay reapable, so unattributable litter is still bounded.
+    foreign = _create_header_only_dump(
+        dumps_dir,
+        f"{DUMP_PREFIX}20260711T000000Z{DUMP_SUFFIX}",
+        pid_domain="other-host/pid:[4026531836]",
+    )
+    os.utime(foreign, (1001, 1001))
+    legacy = _create_header_only_dump(
+        dumps_dir, f"{DUMP_PREFIX}20260712T000000Z{DUMP_SUFFIX}", pid_domain=""
+    )
+    os.utime(legacy, (1002, 1002))
+    real = _create_stacked_dump(dumps_dir, f"{DUMP_PREFIX}20260710T000000Z{DUMP_SUFFIX}")
+    os.utime(real, (1000, 1000))  # oldest — kept anyway: stacked evidence
+
+    removed = rotate_dumps(max_dumps=2, dumps_dir=dumps_dir, is_pid_alive=_live_pid)
+    # 3 files, cap 2 => excess computed as 2, but the foreign dump is excluded
+    # from the victim list: only the legacy header-only file is sacrificed.
+    assert removed == 1
+    assert foreign.exists()
+    assert not legacy.exists()
+    assert real.exists()
+
+
+def test_owner_alive_detects_pid_reuse_via_start_id(dumps_dir: Path) -> None:
+    # A live PID is not proof of a live OWNER — the kernel can
+    # recycle the recorded PID for an unrelated process. A header that
+    # recorded a start ID differing from the live process's start ID means
+    # the owner is dead; its file must not be protected.
+    if crash_dump_store._pid_start_id(os.getpid()) is None:
+        pytest.skip("no procfs start-id probe on this platform")
+    # Use a REAL live process (the parent) so the start-id probe returns a
+    # value; record a fabricated start id that cannot match it. It must be in
+    # the CURRENT representation (see _start_ids_comparable) or it reads as a
+    # legacy token and is deliberately not compared: "0" is a well-formed jiffy
+    # count / FILETIME that no live process can actually have.
+    reused_pid = os.getppid()
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T110000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T110000Z\n"  # brand-ok: mirrors production dump header
+        f"# PID: {reused_pid} @ {crash_dump_store._pid_domain()} start=0\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+    )
+    assert crash_dump_store._owner_alive(p, _live_pid) is False
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid)
+    assert removed == 1
+    assert not p.exists()
+
+
+def test_owner_alive_without_recorded_start_id_trusts_liveness(dumps_dir: Path) -> None:
+    # Legacy headers (no start= token) fall back to plain PID liveness —
+    # conservative: a live PID protects the file.
+    p = _create_header_only_dump(dumps_dir, f"{DUMP_PREFIX}20260717T120000Z{DUMP_SUFFIX}")
+    assert crash_dump_store._owner_alive(p, _live_pid) is True
+    removed = sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid)
+    assert removed == 0
+    assert p.exists()
+
+
+# ── PID-reuse guard: cross-platform start-id probe ──
+
+# Above Linux's pid_max ceiling (2**22) yet inside the header's _PID_MAX range,
+# so `/proc/<pid>/stat` can never exist for it on any platform while the header
+# still parses. That makes "the procfs probe cannot answer" a property of the
+# value rather than of the host the test runs on.
+_UNREACHABLE_PID = 2**30
+
+
+def _stub_identity_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stable: str | None,
+    coarse: str | None,
+    windows: bool = False,
+) -> None:
+    """Give the two platform_compat start-time routines DIFFERENT answers.
+
+    ``get_process_start_id`` is the persisted-identity routine; ``process_start_time``
+    is the kill-guard one whose remaining POSIX leg is a 1-second, TZ-rendered
+    ``ps -o lstart=`` string. Stubbing both apart is what makes the assertions
+    below name a SOURCE rather than merely observe a value.
+
+    ``windows`` pins which platform arm is under test, so every case runs the
+    same way on every CI host: the two routines divide by platform, and a test
+    that let the host decide would assert a different contract per runner.
+
+    Both the source module's names and any name the module under test bound
+    directly are stubbed. The subject here is WHICH routine supplies a recorded
+    identity, and that must hold however the module imports it — so re-adding a
+    ``from platform_compat import process_start_time`` and calling it stays
+    visible to these tests rather than slipping past them.
+    """
+    monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: stable)
+    monkeypatch.setattr(platform_compat, "process_start_time", lambda pid: coarse)
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+    for name, value in (
+        ("get_process_start_id", lambda pid: stable),
+        ("process_start_time", lambda pid: coarse),
+        ("IS_WINDOWS", windows),
+    ):
+        if hasattr(crash_dump_store, name):
+            monkeypatch.setattr(crash_dump_store, name, value)
+
+
+def test_start_id_comes_from_the_persisted_identity_routine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The recorded value decides whether sweep_stale_dumps UNLINKS a dump, so it
+    # must come from platform_compat.get_process_start_id — in-process on every
+    # platform and microsecond-resolution on macOS. process_start_time's POSIX
+    # leg is `ps -o lstart=`: 1-second and locale/TZ-rendered, and documented as
+    # safe only because drift there makes a KILL guard decline to act. Under this
+    # caller drift deletes instead, so the coarse source must not be consulted.
+    _stub_identity_sources(monkeypatch, stable="stable-id", coarse="Wed Sep  3 10:00:00 2026")
+    assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) == "stable-id"
+
+
+def test_posix_start_id_is_none_rather_than_the_ps_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The regression this guards. On POSIX, `None` from the identity routine
+    # means "identity unknown" — NOT a mismatch. The header then omits the token
+    # and readers fall back to plain PID liveness. Falling through to
+    # process_start_time here would manufacture an identity out of `ps -o
+    # lstart=`, whose locale/TZ rendering the two readers of this value would
+    # then ACT on: sweep_stale_dumps unlinks, cron_inflight declares a run
+    # abandoned. A guard is not entitled to a value it cannot trust.
+    _stub_identity_sources(
+        monkeypatch, stable=None, coarse="Wed Sep  3 10:00:00 2026", windows=False
+    )
+    assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) is None
+
+
+def test_windows_start_id_comes_from_the_persisted_identity_routine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Windows coverage comes from get_process_start_id itself: its win32 arm
+    # reads the process creation FILETIME through a query-only handle — a
+    # machine integer at 100-ns resolution with no locale or timezone in it.
+    # The kill-guard routine must not be consulted even on Windows: give it a
+    # different answer and assert the recorded identity names the persisted-
+    # identity routine as its source.
+    _stub_identity_sources(
+        monkeypatch, stable="133700000000000000", coarse="unrelated-value", windows=True
+    )
+    assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) == "133700000000000000"
+
+
+def test_windows_unknown_identity_is_none_not_a_fallback_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # None means "identity unknown" on Windows exactly as on POSIX: the header
+    # omits the token and readers fall back to plain PID liveness. Consulting
+    # process_start_time here would make a second identity source feed the same
+    # header, and two sources for one recorded value is what lets a reader
+    # compare values that were produced by different representations.
+    _stub_identity_sources(
+        monkeypatch, stable=None, coarse="133700000000000000", windows=True
+    )
+    assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) is None
+
+
+def test_real_start_id_round_trips_through_the_header(dumps_dir: Path) -> None:
+    # No stubbing: whatever this host's identity routine really returns must
+    # survive the `# PID:` line, which is parsed with a single whitespace-
+    # delimited token. A value that fails to parse reads as "no attributable
+    # owner", which drops a live session's dump out of rotation's never-a-victim
+    # set while faulthandler still holds the fd.
+    expected = crash_dump_store._pid_start_id(os.getpid())
+    with opened_dump_file(dumps_dir) as f:
+        owner = crash_dump_store._dump_owner(f.path)
+    assert owner is not None
+    pid, _domain, start_id = owner
+    assert pid == os.getpid()
+    assert start_id == expected
+    if expected is not None:
+        assert expected.split() == [expected], "recorded start id must be a single token"
+        # Bind _CURRENT_START_ID_RE to the routine's real output on this host:
+        # a platform_compat value outside the allowlist would silently degrade
+        # reuse detection to plain liveness, and this is the assertion that
+        # turns that drift into a red test on every CI platform.
+        assert crash_dump_store._CURRENT_START_ID_RE.fullmatch(expected), (
+            "get_process_start_id emitted a shape outside _CURRENT_START_ID_RE: "
+            f"{expected!r}"
+        )
+    if not platform_compat.IS_WINDOWS:
+        # And on every platform the identity routine covers, it IS the source
+        # this host used — the assertion above alone would also pass on a
+        # `ps`-rendered value.
+        assert expected == platform_compat.get_process_start_id(os.getpid())
+
+
+def test_header_records_start_id_on_a_non_procfs_platform(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # macOS has no `/proc`, but get_process_start_id answers there from libproc.
+    # Stub it to stand in for that platform and require the header to carry the
+    # token, so a later sweep can detect PID reuse there too.
+    _stub_identity_sources(monkeypatch, stable="non-procfs-token", coarse=None)
+    with opened_dump_file(dumps_dir) as f:
+        content = f.path.read_text(encoding="utf-8")
+    expected = f"# PID: {os.getpid()} @ {crash_dump_store._pid_domain()} start=non-procfs-token\n"
+    assert expected in content
+
+
+def test_pid_reuse_detected_without_procfs(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End-to-end consequence. When the recorded start id differs from the
+    # one the PID reports now, the owner is dead and its header-only dump is
+    # stale — even though the PID probes alive. Without a working probe the
+    # live PID protects the file forever.
+    _stub_identity_sources(monkeypatch, stable="1788432000.999999", coarse=None)
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T130000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T130000Z\n"  # brand-ok: mirrors production dump header
+        f"# PID: {_UNREACHABLE_PID} @ {crash_dump_store._pid_domain()} start=1788000000.000001\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+    )
+    assert crash_dump_store._owner_alive(p, _live_pid) is False
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 1
+    assert not p.exists()
+
+
+def test_unknown_live_identity_keeps_the_dump(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other direction, and the one that makes the Windows `None` safe: a
+    # recorded token whose live counterpart is unknown must NOT count as a
+    # mismatch. The dump stays, protected by plain PID liveness.
+    _stub_identity_sources(monkeypatch, stable=None, coarse=None)
+    p = dumps_dir / f"{DUMP_PREFIX}20260717T131000Z{DUMP_SUFFIX}"
+    p.write_text(
+        "# KiroCrew loop-stall crash dump — opened 20260717T131000Z\n"  # brand-ok: mirrors production dump header
+        f"# PID: {_UNREACHABLE_PID} @ {crash_dump_store._pid_domain()} start=recorded-token\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+    )
+    assert crash_dump_store._owner_alive(p, _live_pid) is True
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 0
+    assert p.exists()
+
+
+def test_rotation_reclaims_recycled_pid_dumps_without_procfs(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Rotation's never-a-victim rule keys on `_owner_alive(...) is True`, so
+    # without a working probe every recycled-PID dump is immune and the cap
+    # stops holding; with it they rank as ordinary header-only victims again.
+    _stub_identity_sources(monkeypatch, stable="1788432000.999999", coarse=None)
+    for name in ("20260717T140000Z", "20260717T150000Z", "20260717T160000Z"):
+        p = dumps_dir / f"{DUMP_PREFIX}{name}{DUMP_SUFFIX}"
+        p.write_text(
+            f"# KiroCrew loop-stall crash dump — opened {name}\n"  # brand-ok: mirrors production dump header
+            f"# PID: {_UNREACHABLE_PID} @ {crash_dump_store._pid_domain()} start=1788000000.000001\n"
+            "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+            "\n"
+        )
+    removed = rotate_dumps(max_dumps=2, dumps_dir=dumps_dir, is_pid_alive=_live_pid)
+    assert removed == 2
+    assert len(list(dumps_dir.iterdir())) == 1
+
+
+# ── Identity-format migration: a legacy token is UNKNOWN, never a mismatch ──
+
+# What a macOS gateway recorded before this build: process_start_time's
+# `ps -o lstart=` render with whitespace collapsed to one header token. It can
+# never equal what get_process_start_id returns now, so comparing the two as
+# though they were the same kind of identity is not evidence of PID reuse.
+_LEGACY_PS_TOKEN = "Wed_Sep__3_10:00:00_2026"
+
+# What this build records on macOS: libproc's "<seconds>.<microseconds>".
+_LIBPROC_TOKEN = "1788432000.123456"
+
+
+def _write_dump_with_start(dumps_dir: Path, stamp: str, pid: int, start: str) -> Path:
+    p = dumps_dir / f"{DUMP_PREFIX}{stamp}{DUMP_SUFFIX}"
+    p.write_text(
+        f"# KiroCrew loop-stall crash dump — opened {stamp}\n"  # brand-ok: mirrors production dump header
+        f"# PID: {pid} @ {crash_dump_store._pid_domain()} start={start}\n"
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+        "\n"
+    )
+    return p
+
+
+def test_legacy_ps_header_does_not_sweep_a_live_gateways_dump(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The migration case. A macOS gateway wrote its header under the previous
+    # build (a `ps` render) and is STILL RUNNING; this build reads libproc. The
+    # two representations can never compare equal, and sweep_stale_dumps acts on
+    # a mismatch by unlinking — while faulthandler holds that file's fd, so any
+    # later stall evidence would go to an unreachable inode with no recovery.
+    # An overlapping restart is the very case the sweep documents a live PID as
+    # protecting against, so the legacy value must read as UNKNOWN, not as
+    # different.
+    _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
+    p = _write_dump_with_start(dumps_dir, "20260717T170000Z", _UNREACHABLE_PID, _LEGACY_PS_TOKEN)
+    assert crash_dump_store._owner_alive(p, _live_pid) is True
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 0
+    assert p.exists()
+
+
+def test_legacy_ps_header_is_not_a_rotation_victim(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Rotation's never-a-victim rule keys on `_owner_alive(...) is True`, so the
+    # same misclassification would also make a live pre-upgrade gateway's dump an
+    # ordinary sacrificial candidate. Format alone must not demote it.
+    _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
+    for stamp in ("20260717T180000Z", "20260717T190000Z", "20260717T200000Z"):
+        _write_dump_with_start(dumps_dir, stamp, _UNREACHABLE_PID, _LEGACY_PS_TOKEN)
+    removed = rotate_dumps(max_dumps=2, dumps_dir=dumps_dir, is_pid_alive=_live_pid)
+    assert removed == 0
+    assert len(list(dumps_dir.iterdir())) == 3
+
+
+def test_legacy_cron_marker_is_not_reported_abandoned(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The second destructive reader of the recorded identity. A cron in-flight
+    # marker written before this build carries the same legacy token; reading
+    # it as a mismatch reports a run that is STILL EXECUTING as abandoned, and
+    # the breaker parks the job. Patching only the dump path would leave this
+    # open.
+    _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
+    alive = crash_dump_store.pid_identity_alive(
+        os.getpid(), crash_dump_store._pid_domain(), _LEGACY_PS_TOKEN
+    )
+    assert alive is True
+
+
+def test_legacy_cron_marker_falls_back_to_liveness_not_the_own_pid_shortcut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The test above uses this process's own PID, so it could pass through
+    # pid_identity_alive's own-PID shortcut rather than the guard. Pin the real
+    # path a breaker takes on a marker written by ANOTHER gateway: a PID that is
+    # not ours, probing alive, carrying a legacy token. It must degrade to plain
+    # liveness — True — instead of being reported abandoned.
+    _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
+    monkeypatch.setattr(crash_dump_store, "pid_exists", lambda pid: True)
+    alive = crash_dump_store.pid_identity_alive(
+        _UNREACHABLE_PID, crash_dump_store._pid_domain(), _LEGACY_PS_TOKEN
+    )
+    assert alive is True
+
+
+def test_current_format_mismatch_still_detects_pid_reuse(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The guard must not blunt the check it is protecting. Two values that are
+    # BOTH in the current representation and differ are still proof the PID was
+    # recycled, and the stale dump is still swept.
+    _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
+    p = _write_dump_with_start(
+        dumps_dir, "20260717T210000Z", _UNREACHABLE_PID, "1788000000.000001"
+    )
+    assert crash_dump_store._owner_alive(p, _live_pid) is False
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=_live_pid) == 1
+    assert not p.exists()
+
+
+def test_current_format_mismatch_still_detects_a_recycled_cron_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Same, on the marker path: a genuinely recycled PID must still be reported.
+    _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
+    alive = crash_dump_store.pid_identity_alive(
+        os.getpid(), crash_dump_store._pid_domain(), "1788000000.000001"
+    )
+    assert alive is False
+
+
+def test_legacy_token_does_not_resurrect_a_dead_owner(
+    dumps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The guard turns "different" into "unknown", and unknown falls back to plain
+    # PID liveness. It must never turn confirmed-dead evidence into alive: a dead
+    # PID is still dead, and its header-only dump is still swept.
+    _stub_identity_sources(monkeypatch, stable=_LIBPROC_TOKEN, coarse=None)
+    p = _write_dump_with_start(dumps_dir, "20260717T220000Z", _UNREACHABLE_PID, _LEGACY_PS_TOKEN)
+    assert crash_dump_store._owner_alive(p, lambda pid: False) is False
+    assert sweep_stale_dumps(dumps_dir, is_pid_alive=lambda pid: False) == 1
+    assert not p.exists()
+
+
+def test_windows_filetime_is_a_comparable_current_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A Windows creation FILETIME must stay on the comparable side of the
+    # guard: it is a machine integer, so PID-reuse detection there is
+    # unaffected. The allowlist would be wrong if it excluded it.
+    assert crash_dump_store._start_ids_comparable("133700000000000000", "133700000000000001")
+    _stub_identity_sources(monkeypatch, stable="133700000000000000", coarse=None, windows=True)
+    assert crash_dump_store._pid_start_id(_UNREACHABLE_PID) == "133700000000000000"
+
+
+def test_comparability_is_an_allowlist_of_the_current_representation() -> None:
+    # The discriminator is what THIS build writes, not a property of the retired
+    # one: `ps -o lstart=` renders under the writer's locale and TZ, so no
+    # substring of it is reliable. Both sides must be in the current shape.
+    assert crash_dump_store._start_ids_comparable("12345", "67890")  # Linux jiffies
+    assert crash_dump_store._start_ids_comparable("1788432000.123456", "1788432000.123457")
+    assert not crash_dump_store._start_ids_comparable(_LEGACY_PS_TOKEN, _LIBPROC_TOKEN)
+    assert not crash_dump_store._start_ids_comparable(_LIBPROC_TOKEN, _LEGACY_PS_TOKEN)
+    # A localized render with no ASCII month name is still refused.
+    assert not crash_dump_store._start_ids_comparable("三_9月_3_10:00:00_2026", _LIBPROC_TOKEN)

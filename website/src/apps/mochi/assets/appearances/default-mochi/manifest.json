@@ -1,0 +1,27 @@
+{
+  "meta": {
+    "id": "default-mochi",
+    "name": "Mochi",
+    "author": "KiroCrew",
+    "description": "The Kiro purple ghost — a friendly floating companion.",
+    "version": "1.0.0",
+    "type": "built-in",
+    "format": "svg",
+    "thumbnail": "mochi_idle.svg"
+  },
+  "states": {
+    "idle": "mochi_idle.svg",
+    "walking": "mochi_walking.svg",
+    "thinking": "mochi_thinking.svg",
+    "working": "mochi_working.svg",
+    "error": "mochi_error.svg",
+    "offline": "mochi_sleeping.svg"
+  },
+  "moods": {
+    "happy": "mochi_done.svg",
+    "sleepy": "mochi_sleeping.svg",
+    "curious": "mochi_thinking.svg",
+    "busy": "mochi_working.svg",
+    "scared": "mochi_error.svg"
+  }
+}

@@ -1,0 +1,2057 @@
+name: Security Scope Review
+
+# Answers ONE question about a security-tightening change: which legitimate
+# operations does it newly refuse? A guard made stricter has no upper bound review
+# can see -- the author reads the attack the new pattern catches, nobody reads the
+# ordinary operations that pattern ALSO newly matches, and the symptom lands days
+# later as an agent that stopped working, reporting a pattern instead of a cause.
+#
+# MODEL PROPOSES, SCRIPT DECIDES. The model writes candidate legitimate operations
+# to `candidates.json`; `scripts/deny_diff.py` classifies each one with the REAL
+# deny composite at the base ref and at the head ref, and only a row that flipped
+# from allowed to refused becomes a finding. The split is the whole point: the
+# composite is four checks and thousands of lines, so a model that reports a
+# refusal it did not observe produces a confident finding about nothing, and the
+# next reader learns to skip this lane. Nothing here lets the model decide a
+# refusal, and nothing lets it clear one.
+#
+# A candidate is DATA, never authorization. `deny_diff` classifies a row's string
+# and never executes one, which is what makes it safe to let a model write the
+# corpus this lane classifies.
+#
+# Relationship to Denial Differential: that lane gates the COMMITTED corpus, whose
+# rows a human chose. This lane probes the boundary the committed corpus does not
+# cover yet, and its confirmed rows are the ones the corpus was missing. A
+# candidate the corpus already holds is dropped by `scope_candidates.py validate`
+# rather than probed twice.
+#
+# What a green does NOT cover: the classifier adjudicates `shell` / `flow` / `cron`
+# operations through the tool-call deny composite, and that is all. A tightening in
+# a validator, an admission policy, a URL or origin gate, a computer-use target
+# check or an approval tier gets no verdict here, which is why the contract makes
+# the model name that gap in an UNADJUDICATED section and forbids reporting PASS
+# over an empty adjudicated set.
+
+on:
+  pull_request:
+    # No `paths:` filter on the trigger, deliberately. A path filter applies to
+    # EVERY activity type, so a `labeled` event on a pull request outside the
+    # security surface is dropped before any job can read the label -- the escape
+    # below would parse but never fire. The surface list therefore lives in the
+    # "Resolve review scope" step, which is the only place both inputs (the touched
+    # paths and the label) are readable at once.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+# Declared PER JOB below, never workflow-wide. The adjudication stage runs the pull
+# request's OWN classifier code, and a workflow-level `id-token: write` would hand that
+# code a credential-minting token it has no use for. Same split the fork lane makes,
+# for the same reason: the stage holding credentials never executes the change's code.
+permissions: {}
+
+concurrency:
+  group: security-scope-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Stage 1 of 4: the model's half ───────────────────────────────────────────
+  # Proposes candidates and emits the review. Publishes no verdict and no comment:
+  # both belong to the deterministic stages below.
+  #
+  # THIS JOB HOLDS THE BEDROCK CREDENTIAL, so it runs NO repository program at all:
+  # `jq`, `gh`, `git` and `awk` only. Every one of this lane's own programs --
+  # `scope_candidates.py`, `deny_diff.py`, `scope_redact.py` -- has a bootstrap
+  # window in which the copy that executes comes from THIS workspace, the change
+  # under review, which the reviewer holds `Write` over. That is an
+  # attacker-writable program beside a live credential, so validation, the
+  # credential-shape probe and the outbound scrub all happen in `validate`, which
+  # holds nothing worth reaching.
+  generate:
+    name: Security scope candidates (Fable 5)
+    runs-on: ubuntu-latest
+    # OIDC for Bedrock, and read-only on the PR: this stage proposes candidates and
+    # posts nothing.
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    timeout-minutes: 30
+    outputs:
+      in_scope: ${{ steps.scope.outputs.in_scope }}
+      override: ${{ steps.human_override.outputs.active }}
+      override_actor: ${{ steps.human_override.outputs.actor }}
+    steps:
+      # persist-credentials:false stops actions/checkout from writing the
+      # GITHUB_TOKEN into .git/config, where the agentic reviewer -- which reads
+      # untrusted PR diff content -- could otherwise read and leak it. `git diff`
+      # still works (history is fetched via depth 0). Mirrors design-review.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          # THE TRUSTED BASE, never the merge ref, because this job holds the
+          # Bedrock credential and the model is granted `Read`/`Grep`/`Glob`. With
+          # no `ref:` a `pull_request` checkout materializes the PULL REQUEST'S OWN
+          # TREE here -- and a TRACKED SYMLINK committed in it, say `notes.md ->
+          # /proc/self/environ`, then exists at a WORKSPACE path. The credential
+          # fence is `Read(//proc/**)`, which is a PATH deny: reading the symlink's
+          # own workspace path matches no glob in it, and the value reaches the
+          # review text this lane uploads as a world-readable artifact before
+          # anything has probed a byte of it. A symlink is exactly how a workspace
+          # path becomes a kernel-filesystem path, so the fence cannot be the thing
+          # that closes this.
+          #
+          # So the head never lands on this runner AS FILES. It arrives as the
+          # prefetched unified diff under `runner.temp`, read as data and never
+          # applied -- the posture fork-security-scope-review.yml has always run,
+          # which also ends the last trust-posture divergence between the two lanes.
+          ref: ${{ github.event.pull_request.base.sha }}
+          # Full history: `git show` must reach the BASE tree for the contract, the
+          # scope resolver diffs base...head, and the prefetch below needs both
+          # objects -- a shallow base clone has neither.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The surface list, and the maintainer escape from it. A tightening that
+      # lives outside these paths is a real thing -- the composite is reachable
+      # from code that is not under `security/` -- so the label forces the lane on
+      # rather than leaving the question unasked.
+      - name: Resolve review scope
+        id: scope
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FORCED: ${{ contains(github.event.pull_request.labels.*.name, 'security-scope-review') }}
+        run: |
+          set -uo pipefail
+          if [ "$FORCED" = "true" ]; then
+            echo "in_scope=true" >> "$GITHUB_OUTPUT"
+            echo "Forced on by the \`security-scope-review\` label."
+            exit 0
+          fi
+          # `git diff` needs the OBJECTS, not just the refs. fetch-depth: 0
+          # normally supplies both, so fetch only what is genuinely absent.
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$sha" || true
+            fi
+            # Fail CLOSED on a ref that is still absent. The workspace is the BASE
+            # tree, so the head arrives only through this fetch -- and an absent
+            # head makes the diff below name nothing, which the `else` branch would
+            # write as `in_scope=false`: a resolved skip over an unmeasured
+            # tightening, and the one shape the status step's tri-state cannot
+            # catch, because `false` is the honest answer it must honor. The fork
+            # lane orders its own fetch ahead of this step for the same reason.
+            if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+              echo "::error::$sha is not present after fetching it, so this lane cannot tell whether the security surface was touched. Failing closed rather than resolving an unanswerable question as \`false\`."
+              exit 1
+            fi
+          done
+          # The same surface Denial Differential gates, plus this lane's own three
+          # inputs. That lane's `paths:` also names its own workflow file; the
+          # analogue here is this file, which is named below. Another LANE's workflow file
+          # stays out -- a change to it is not a tightening of anything.
+          #
+          # THE FORK LANE READS THIS ARRAY OUT OF THIS FILE, at the base commit, so
+          # the two lanes resolve one list rather than two that drift. That is why
+          # it is an array with sentinels around it instead of pathspecs inline in
+          # the `git diff` below: the markers are the extraction contract. Keep one
+          # single-quoted pathspec per line between them, and nothing else -- a
+          # comment or a second entry on a line is silently not extracted, and the
+          # fork lane would then scope a narrower surface than this one.
+          # SCOPE-SURFACE-BEGIN
+          surface=(
+            'src/kiro_crew/security/'
+            'src/kiro_crew/deny_guidance.py'
+            'src/kiro_crew/platform/security_authority.py'
+            'src/kiro_crew/hooks.py'
+            'src/kiro_crew/builtin_skills/security-conductor/rules-of-engagement.json'
+            'src/kiro_crew/builtin_skills/security-conductor/golden-paths.json'
+            'scripts/deny_diff.py'
+            'scripts/scope_candidates.py'
+            'scripts/scope_redact.py'
+            '.github/review-prompts/security-scope.md'
+            '.github/workflows/security-scope-review.yml'
+          )
+          # SCOPE-SURFACE-END
+          # `|| true` on this diff was the same defect one layer down: a git
+          # failure produced an empty `touched`, which the `else` writes as
+          # `in_scope=false` -- "measured, nothing here" over a run that measured
+          # nothing. Keep the status separate from the output, and say which it was.
+          rc=0
+          touched="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
+            "${surface[@]}" 2>&1)" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::could not diff $BASE_SHA...$HEAD_SHA against the review surface, so whether this change touches it is unknown. Failing closed rather than answering \`false\`. git said: $touched"
+            exit 1
+          fi
+          if [ -n "$touched" ]; then
+            echo "in_scope=true" >> "$GITHUB_OUTPUT"
+            echo "Security surface touched:"
+            printf '%s\n' "$touched"
+          else
+            echo "in_scope=false" >> "$GITHUB_OUTPUT"
+            echo "No security-surface path touched, and no \`security-scope-review\` label. Nothing to scope."
+          fi
+
+      - name: Resolve human override
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          steps.scope.outputs.in_scope == 'true'
+          )
+        id: human_override
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          exact="<!-- ai-review-human-override target=scope head=$HEAD "
+          all="<!-- ai-review-human-override target=all head=$HEAD "
+          # A comments feed this step could not READ is not a PR with no
+          # override recorded. Collapsing an API failure onto the same empty
+          # string as "no override recorded" re-gates a verdict a human has
+          # already cleared, so absorb the transient case here and fail CLOSED
+          # on a read that never succeeds.
+          comments=""
+          read_ok=""
+          for attempt in 1 2 3; do
+            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate)"; then
+              read_ok=1
+              break
+            fi
+            echo "Reading the PR comments failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          if [ -z "$read_ok" ]; then
+            echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
+            exit 1
+          fi
+          record="$(printf '%s' "$comments" \
+            | jq -sr --arg exact "$exact" --arg all "$all" \
+              'add // [] | [.[] | select(.user.login == "github-actions[bot]")
+              | select((.body | startswith($exact)) or (.body | startswith($all)))]
+              | (last.body // "")')"
+          actor="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
+          source="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
+          if [ -n "$actor" ] && [ -n "$source" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "actor=$actor" >> "$GITHUB_OUTPUT"
+            echo "source=$source" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The contract comes from the BASE ref: the PR under review must not be able
+      # to rewrite its own reviewer's instructions. A head-owned contract would let
+      # the same PR that tightens a rule blank the prompt that judges it. The corpus
+      # its candidates are deduped against follows the same rule, in the validation
+      # job that is the only reader of it.
+      - name: Materialize the base-owned contract
+        id: contract
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          steps.scope.outputs.in_scope == 'true'
+          && steps.human_override.outputs.active != 'true'
+          )
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          # Remove before creating: `mkdir -p` alone leaves whatever is committed
+          # at this path in place, and a tracked symlink there would redirect the
+          # write below onto its target. The workspace is the base tree, so that is
+          # the base's own content -- the delete is what keeps the statement true
+          # of whatever it carries.
+          rm -rf .review-prompts-scope
+          mkdir -p .review-prompts-scope
+          contract=".review-prompts-scope/security-scope.md"
+          git show "$BASE_SHA:.github/review-prompts/security-scope.md" > "$contract" 2>/dev/null || true
+          if [ ! -s "$contract" ]; then
+            # Absent on the base -- the bootstrap window for the PR that
+            # introduces the contract. Use the head COMMIT and say so; a contract
+            # absent EVERYWHERE fails closed rather than degrading into an
+            # unspecified review that could look clean.
+            echo "::warning::.github/review-prompts/security-scope.md is missing or empty on the base commit ($BASE_SHA); using the head commit's blob (bootstrap for the PR that introduces it)."
+            # The HEAD BLOB, never the checkout. This job's workspace is the BASE
+            # tree, so the head copy is not on disk to `cp` at all -- and committed
+            # content is what `publish`'s own bootstraps already read, for the same
+            # reason. The stamp below still runs on it, and `publish` still judges
+            # the marker it demands.
+            git show "$HEAD_SHA:.github/review-prompts/security-scope.md" > "$contract" 2>/dev/null || true
+            if [ ! -s "$contract" ]; then
+              echo "::error::.github/review-prompts/security-scope.md is missing or empty at the head commit ($HEAD_SHA) too. Refusing to review against an unspecified contract."
+              exit 1
+            fi
+          fi
+          # The contract carries __HEAD_SHA__ so the marker line it demands names
+          # THIS commit; publish verifies the marker against the same sha.
+          sed -i "s/__HEAD_SHA__/$HEAD_SHA/g" "$contract"
+          # The reviewer WRITES this name into this workspace. The workspace is
+          # the base tree now, so the symlink at this path can only be one the base
+          # committed -- but the delete stays: it is what makes the model's write
+          # able to create nothing but a regular file, and it costs one line to
+          # keep true of whatever the base carries.
+          rm -f candidates.json
+
+      # Re-derive the diff AUTHORITATIVELY as a DATA FILE, pinned to
+      # (base_sha...head_sha), BEFORE any credential exists. A prefetched data
+      # file costs this lane no `Bash(...)` grant beside a live Bedrock
+      # credential, where letting the model run `git diff` itself costs three.
+      # It is the same shape the fork lane uses. Nothing applies or executes it.
+      - name: Prefetch the diff as a data file (never applied, never executed)
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          steps.scope.outputs.in_scope == 'true'
+          && github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PATCH: ${{ runner.temp }}/authentic.patch
+        run: |
+          set -uo pipefail
+          # `git diff` needs the OBJECTS. This workspace is the BASE checkout, so
+          # fetch-depth: 0 supplies the base history and the head is fetched here.
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$sha" || true
+            fi
+          done
+          if ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            echo "::error::head SHA $HEAD_SHA not present after fetch; failing closed."
+            exit 1
+          fi
+          # Written under RUNNER_TEMP, never into the workspace: the reviewed tree
+          # is checked out here, and a PR-planted symlink at a workspace path
+          # would redirect this write.
+          rm -f "$PATCH"
+          git diff --no-color "$BASE_SHA...$HEAD_SHA" > "$PATCH"
+          # The same 1 MB cap the fork lane fails closed on: a diff too large to
+          # review must not read as a review that found nothing.
+          if [ "$(wc -c < "$PATCH" 2>/dev/null || echo 0)" -gt 1000000 ]; then
+            echo "::error::diff exceeds 1 MB; failing closed (split the PR)."
+            exit 1
+          fi
+          if [ ! -s "$PATCH" ]; then
+            echo "::error::empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
+            exit 1
+          fi
+          echo "Prefetched the diff ($(wc -c < "$PATCH") bytes) as a data file."
+
+      # Dependabot PRs run with a read-only token and NO secrets/OIDC, so the
+      # Bedrock role assumption can never succeed there. Skip the review for
+      # Dependabot -- a mechanical version bump tightens nothing -- and skip it
+      # when a human override is recorded, so an OIDC failure can never keep the
+      # override from clearing the lane. github.actor is set by GitHub and cannot
+      # be spoofed by PR content.
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          steps.scope.outputs.in_scope == 'true'
+          && github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
+        with:
+          role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
+          aws-region: us-west-2
+
+      # `configure-aws-credentials` exports through `core.exportVariable`, which
+      # ALSO writes each value into `$RUNNER_TEMP/_runner_file_commands/set_env_*`.
+      # That is a FILE, so the `Read(//proc/**)` fence below does not cover it and
+      # a model told to open it can emit the value in chunks that match no
+      # credential shape. Truncate it instead of filtering what comes back. Only
+      # `set_env_*` is emptied: the runner's other command files still carry state
+      # this job needs, and a later step re-writes whatever it exports after this.
+      - name: Scrub persisted credential files before the model runs
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-}/_runner_file_commands"
+          if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$dir" ]; then
+            echo "no runner file-command directory; nothing to truncate"
+            exit 0
+          fi
+          n=0
+          for f in "$dir"/set_env_*; do
+            [ -f "$f" ] || continue
+            : > "$f"
+            n=$((n + 1))
+          done
+          echo "truncated $n persisted set_env_* file(s)"
+
+      - name: Security scope review (Fable 5)
+        id: review
+        # No continue-on-error: a model call that failed (Bedrock throttling /
+        # 403 / action error) leaves no `[SCOPE-REVIEWED]` marker, and publish
+        # fails the lane closed on that. A scope review that did not run must
+        # never read as "nothing newly refused" -- which is what an advisory
+        # green here would say.
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          steps.scope.outputs.in_scope == 'true'
+          && github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+          )
+        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        with:
+          # Inference via Amazon Bedrock (region from the AWS creds step above).
+          use_bedrock: "true"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Fable 5's BARE, REGIONAL (`us.`) Bedrock inference-profile id.
+          # Two reasons it must be this exact form:
+          #  - No `[1m]` tag: that suffix is the Anthropic-API/claude_code
+          #    provider-id form in model_registry.json; the Bedrock path
+          #    (use_bedrock) rejects it as an unknown model.
+          #  - `us.` not `global.`: Fable requires data-retention mode
+          #    `provider_data_share`, set at the ACCOUNT level in us-west-2.
+          #    The regional `us.` profile honors that account setting; the
+          #    `global.` profile routes cross-region and falls back to
+          #    `default`, which the model rejects ("data retention mode
+          #    'default' is not available for this model").
+          #
+          # --fallback-model pins the overload fallback to Opus 4.8 (regional
+          # `us.` profile). Without it, Claude Code falls back to its own
+          # smaller/older default when Fable 5 is overloaded; pinning keeps the
+          # reviewer on a top-tier model. us.anthropic.* is already IAM-granted
+          # and honors the account provider_data_share retention mode.
+          #
+          # Write is granted for ONE reason: `candidates.json` is the model's
+          # half of the mechanism. What that grant cannot become: the name is
+          # `rm -f`'d above so a PR-planted symlink cannot redirect the write,
+          # `validate` rejects a file it cannot parse rather than trimming it,
+          # and the classifier never executes a row -- a candidate is data.
+          # No posting tool: the workflow parses the review from the run's
+          # execution_file and posts it itself, so the model cannot publish its
+          # own verdict. Deliberately NO --json-schema: claude-code's internal
+          # StructuredOutput tool refuses to fire when other tools are enabled
+          # (anthropics/claude-code#37904), so the schema path returns nothing;
+          # plain-text capture plus a parsed verdict header is robust.
+          #
+          # `--setting-sources user` is what keeps this call from being a code
+          # execution beside the live Bedrock credential. The action otherwise
+          # auto-loads the CHECKOUT's CLAUDE.md (and what it imports) and
+          # `.claude/` as instructions, and a `.claude/settings.json`
+          # `SessionStart` hook EXECUTES. This job checks out `base.sha`, so those
+          # project settings are base-owned and the exposure is not live today --
+          # the flag stays because that exposure is one checkout-ref edit away, and
+          # this defect class has recurred by being fixed at one site and left at
+          # its sibling. Word for word the reason the fork lane keeps it.
+          #
+          # NO BASH, and the diff arrives as a DATA FILE. `--allowedTools` Bash
+          # grants are PREFIX-matched, so `Bash(git diff:*)` also admits
+          # `git diff ... > candidates.json` -- an injected instruction in the diff
+          # under review could redirect a write while the credential is live. Those
+          # three grants existed only because this lane's prompt told the model to
+          # compute the diff itself; the prefetch step above does it instead, which
+          # is what the fork lane has always done. That also erases the last
+          # divergence between the two model calls.
+          #
+          # NO BASH IS NOT NO ENVIRONMENT ACCESS. `Read` is path-unscoped and
+          # `/proc/self/environ` is an ordinary file, so an injected prompt could
+          # read this job's Bedrock credentials through `Read` alone and write them
+          # into the review text -- which leaves this job as a WORLD-READABLE
+          # artifact, before `validate`'s credential-shape probe has seen a byte of
+          # it. Redaction cannot close that: a value that is chunked, delimited or
+          # re-encoded matches no shape rule. So deny the READ PATH. A deny rule
+          # outranks every allow rule and CLI flag, and a `Read` denial applies to
+          # `Grep` and `Glob` too. `/sys` is denied beside `/proc` because it is the
+          # other kernel filesystem that hands out process and host state through
+          # ordinary file reads.
+          #
+          # `Write` IS PATH-BOUND, for the same reason and against the same
+          # attacker. The prompt tells the model to produce exactly ONE file --
+          # `candidates.json` in the working directory -- and the review itself
+          # comes back as the last transcript message rather than through a tool.
+          # An unscoped `Write` in THIS job is therefore surplus authority beside a
+          # live Bedrock credential, held while the model reads a diff the pull
+          # request's author controls: an injected instruction could write an
+          # absolute path outside the workspace, over the action's own
+          # later-executing JavaScript, which runs with these credentials. Bounding
+          # the write removes the escalation without removing the capability.
+          #
+          # The bound is a DENY on the two directories that carry the escalation,
+          # NOT a narrowed allow. That shape is forced twice over. First by this
+          # repo's own rule (`test_the_fence_is_a_deny_not_a_narrowed_allow`): an
+          # allow rule that fails to match falls back to PROMPTING, which in a
+          # non-interactive run guarantees nothing. Second by measurement -- a
+          # previous revision of this lane bounded the allow to `candidates.json`
+          # and DENIED `Write(/**)`, and the lane failed closed: the model step
+          # succeeded, wrote nothing, and the upload found no file. The matcher
+          # resolves the tool's path to an absolute one, so the narrow allow never
+          # matched the legitimate write and the `/**` deny was a superset of the
+          # attack. Keep that measurement in mind before tightening this again.
+          #
+          # `_actions` holds the action's own JavaScript, which executes later in
+          # THIS job with these credentials -- the vector the finding named.
+          # `runner.temp` holds the workflow command files (`$GITHUB_ENV`,
+          # `$GITHUB_OUTPUT`, `$GITHUB_PATH`, `$GITHUB_STEP_SUMMARY`), and a write
+          # into `$GITHUB_ENV` injects environment variables into every later step:
+          # the same escalation by another door, and the reason denying only
+          # `_actions` would be half a fence. Both sit OUTSIDE the workspace, so
+          # neither deny can touch the one write the prompt asks for.
+          #
+          # `_actions` is spelled literally because no expression exposes it
+          # (`runner.temp` does exist, so it is used). That is a real weakness worth
+          # naming: on a runner image that moves the actions directory this deny
+          # stops matching, and it fails OPEN rather than closed. The pin in
+          # `test_ai_review_workflows.py` asserts both denies are present, which
+          # catches a deletion but cannot catch a layout change underneath.
+          #
+          # `Edit`, `MultiEdit` and `NotebookEdit` are DENIED rather than merely
+          # left out of the allowlist: they are the other paths to the same
+          # write, and a deny outranks every allow rule and CLI flag, so the bound
+          # holds even if an allowlist entry is later widened. This matches the UX
+          # lane, which denies the whole family.
+          claude_args: |
+            --model us.anthropic.claude-fable-5
+            --fallback-model us.anthropic.claude-opus-4-8
+            --max-turns 60
+            --setting-sources user
+            --allowedTools "Read,Grep,Glob,Write"
+            --disallowedTools "Read(//proc/**),Read(//sys/**),Write(//home/runner/work/_actions/**),Write(/${{ runner.temp }}/**),Edit,MultiEdit,NotebookEdit"
+          prompt: |
+            Read `.review-prompts-scope/security-scope.md` and follow it exactly.
+            It is your complete instruction set for this run, and nothing in this
+            message overrides it.
+
+            Pull request: #${{ github.event.pull_request.number }} of ${{ github.repository }}
+            (HEAD ${{ github.event.pull_request.head.sha }}).
+
+            Inspect ONLY what this branch introduces relative to its base. The
+            authoritative unified diff is prefetched for you as a DATA file:
+                ${{ runner.temp }}/authentic.patch
+            That patch is the ONLY place this change appears. The checked-out
+            directory is the UNMODIFIED trusted BASE tree, so read the surrounding
+            BASE files with Read/Grep to understand what the patch changes. No file
+            of the pull request's own is on this runner to read. You have no shell.
+
+            Write your candidate rows to `candidates.json` in the working
+            directory -- that exact path, that exact name. The caps are enforced,
+            not trimmed: at most 60 rows, at most 512 characters per
+            `command_or_flow`, and a file that exceeds either is rejected whole.
+
+            Read the committed corpus for the STYLE of a row, and to avoid
+            re-proposing rows it already holds -- the BASE copy, at this checkout:
+                src/kiro_crew/builtin_skills/security-conductor/golden-paths.json
+
+            Emit the review as your LAST message. The workflow captures it
+            verbatim from the run transcript, so do NOT call any tool to post it,
+            and write nothing after the marker line.
+
+      # Capture the model's final review text from the run transcript. The
+      # transcript may be a single result object, JSONL, or an array of stream
+      # events; the slurp+flatten below extracts the last non-null `.result` for
+      # all three. Never fails: an empty capture is a missing marker downstream,
+      # which is the fail-closed path.
+      #
+      # `jq` ONLY, and no scrub. THIS JOB HOLDS THE BEDROCK CREDENTIAL, so it runs
+      # no program this repository ships: `scope_redact.py` has a bootstrap window
+      # in which the executed copy is the change under review, which would put a
+      # pull-request-supplied program beside a live credential. The captured text
+      # therefore crosses to `validate` as an explicitly unscrubbed `-raw`
+      # artifact and is scrubbed there, in a job that holds nothing.
+      - name: Capture the review text
+        id: capture
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          && steps.scope.outputs.in_scope == 'true'
+          && steps.human_override.outputs.active != 'true'
+          )
+        env:
+          EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          rm -f scope-review.md
+          : > scope-review.md
+          if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+            summary="$(jq -r '.result // ""' "$EXEC_FILE" 2>/dev/null || true)"
+            if [ -z "$summary" ]; then
+              summary="$(jq -rs '[ .[] | (if type=="array" then .[] else . end) | select(.result != null) ] | (last.result // "")' "$EXEC_FILE" 2>/dev/null || true)"
+            fi
+            printf '%s\n' "$summary" > scope-review.md
+          fi
+          if [ ! -s scope-review.md ]; then
+            echo "::warning::No review text in the execution_file; publish will fail this lane closed on the missing marker."
+          fi
+
+      # The rows cross to `validate` UNPROBED, and the name says so. The probe is
+      # `scope_redact.py --fail-if-changed`, a repository program, so it cannot run
+      # in the job that holds the credential; it runs in `validate` and refuses the
+      # run there. What that costs is bounded and stated: this transfer artifact is
+      # world-readable for a day, while the corpus the legs classify is still
+      # probe-gated before it travels.
+      - name: Upload the unprobed candidate set
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          steps.scope.outputs.in_scope == 'true'
+          && steps.human_override.outputs.active != 'true'
+          )
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-scope-candidates-raw
+          path: candidates.json
+          if-no-files-found: error
+          retention-days: 1
+
+      # The RAW capture, crossing to `validate` as an explicitly-named transfer
+      # artifact: unscrubbed, because the scrubber is a repository program and this
+      # job holds the credential. No publisher reads this name -- `publish` reads
+      # only `security-scope-review-text`, which `validate` writes after the scrub
+      # -- and it is retained for one day rather than seven.
+      #
+      # `always()`: a model call that failed still leaves an empty capture, and
+      # `publish` fails the lane closed on the absent marker rather than on a
+      # missing artifact.
+      - name: Upload the unscrubbed review text
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          && steps.scope.outputs.in_scope == 'true'
+          && steps.human_override.outputs.active != 'true'
+          )
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-scope-review-text-raw
+          path: scope-review.md
+          if-no-files-found: warn
+          retention-days: 1
+
+  # ── Stage 2 of 4: the seam between the two halves ────────────────────────────
+  # `validate` proves the candidate file is a corpus the differential can consume,
+  # drops rows the committed corpus already gates, and writes the normalized corpus
+  # the legs are pointed at.
+  #
+  # A JOB OF ITS OWN, and that separation is the whole point of it. The harness has
+  # a bootstrap window -- absent at the base commit, present in the checkout -- and
+  # in that window the program executed is the change under review. Run beside the
+  # Bedrock credential, that is an attacker-writable program next to a live
+  # credential: the reviewer holds `Write` over the same workspace the bootstrap
+  # copies from, so a prompt-injected diff reaches the validator. Run here it
+  # reaches nothing, which is the posture `adjudicate` and the fork lane's own
+  # differential already run in.
+  validate:
+    name: Security scope candidate validation
+    needs: generate
+    # `always()`: this job now owns the review-text scrub, so a `generate` that
+    # died after the model call still has its reasoning published here. The scope
+    # and override gates stay -- a lane that reviewed nothing must not run.
+    if: >-
+      always()
+      && needs.generate.outputs.in_scope == 'true'
+      && needs.generate.outputs.override != 'true'
+    runs-on: ubuntu-latest
+    # `contents: read` and NOTHING else. This job can execute the pull request's own
+    # harness, so it must hold nothing worth reaching: no `id-token`, so no AWS
+    # assume is even possible here, and no scope that could post or patch this
+    # lane's verdict.
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    outputs:
+      adjudicate: ${{ steps.validate.outputs.adjudicate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the harness, the redactor and the corpus are each read out
+          # of the BASE commit with `git show`, and a shallow clone of the merge ref
+          # has neither parent's tree.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # continue-on-error: a model call that failed uploaded no candidate set, and
+      # the refusal for that belongs to the validate step below, which names the
+      # cause and writes `adjudicate=false`. Aborting here would report a download
+      # failure in its place.
+      - name: Download the candidate set
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: security-scope-candidates-raw
+
+      # The unscrubbed capture `generate` could not scrub for itself.
+      # continue-on-error for the same reason as the download above: a model call
+      # that failed uploaded nothing, and the refusal for that belongs to the
+      # steps below, which name the cause.
+      - name: Download the unscrubbed review text
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: security-scope-review-text-raw
+
+      # The outbound scrub comes from the BASE ref, like the harness and the corpus:
+      # the workspace is the MERGE ref, so a redactor taken from it would be the
+      # change under review supplying the program that redacts its own published
+      # output. No model runs in this job, so nothing here can rewrite the staged
+      # copy after it lands.
+      - name: Materialize the base-owned outbound redactor
+        id: redactor
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/scope-redact"
+          # Remove before creating: a tracked symlink the PR committed at this path
+          # would otherwise redirect the write below onto its target.
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dest="$dir/scope_redact.py"
+          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
+          if [ ! -s "$dest" ]; then
+            # Absent on the base -- the bootstrap window for the pull request that
+            # introduces the redactor, and admissible in this job for the same reason
+            # the harness bootstrap is: nothing here is worth reaching.
+            echo "::warning::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
+            cp scripts/scope_redact.py "$dest" 2>/dev/null || true
+          fi
+          if [ ! -s "$dest" ]; then
+            echo "::error::scripts/scope_redact.py is missing at the base commit AND in the checkout. Refusing to publish text no scrubber could redact."
+            exit 1
+          fi
+          echo "redactor=$dest" >> "$GITHUB_OUTPUT"
+
+      # THE OUTBOUND SCRUB FOR THE REVIEW TEXT, and it runs HERE rather than beside
+      # the model. `generate` mints the Bedrock credential, and this scrubber is a
+      # program this repository ships whose base copy has a bootstrap window -- so
+      # run there, the change under review could supply the program that decides
+      # what of its own output reaches a public pull request comment, next to a
+      # live credential. Run here it reaches nothing: no `id-token`, no write
+      # scope, no token worth taking.
+      #
+      # A refusal here leaves `scrub_ok=false`, which withholds THIS file's upload
+      # -- and then ends the step at 0. Failing the step would skip the validation
+      # below it, and the corpus is a different surface with its own probe, so a
+      # refused review-text scrub would take the adjudication legs down with it.
+      # Withholding is enough to fail the lane closed: `publish` proves the review
+      # ran by the marker in this file, so an absent artifact is a missing verdict
+      # there, never a clean one.
+      - name: Scrub the review text
+        id: scrub_review
+        if: always()
+        env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
+        run: |
+          set -uo pipefail
+          # `scrub_ok` is what the upload below reads, and it is written FALSE
+          # first: that upload runs on `always()`, so a refusal here would
+          # otherwise be followed by an upload of the very raw file it refused to
+          # publish -- and an artifact is world-readable on a public repository.
+          echo "scrub_ok=false" >> "$GITHUB_OUTPUT"
+          # No file is not a refusal: the model call can have failed, and there is
+          # then no text to scrub or publish.
+          if [ ! -f scope-review.md ]; then
+            echo "No review text was captured, so there is nothing to scrub."
+            exit 0
+          fi
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
+            echo "::error::the base-owned outbound redactor is unavailable, so the review text cannot be scrubbed before it is published. Refusing to publish it raw."
+            exit 0
+          fi
+          if [ -s scope-review.md ]; then
+            python "$REDACTOR" --mode text scope-review.md || {
+              echo "::error::scrubbing scope-review.md failed, so it cannot be published safely."
+              exit 0
+            }
+          fi
+          echo "scrub_ok=true" >> "$GITHUB_OUTPUT"
+
+      # The candidate set reached this job as an ARTIFACT, and an artifact is
+      # world-readable on a public repository. It also has to reach the classifier
+      # BYTE-FAITHFUL: `deny_diff` classifies these exact strings at both refs, so a
+      # placeholder where a command used to be is a command nobody ever refused,
+      # which classifies as allowed. So this cannot scrub -- it probes a COPY and
+      # refuses the run, the same answer the normalized corpus gets before its own
+      # upload.
+      #
+      # HERE rather than in `generate`, and that is the whole reason this step
+      # moved: the probe IS `scope_redact.py`, a repository program, and `generate`
+      # holds the Bedrock credential. The rows are already public by the time this
+      # runs, so the refusal is what it can still buy -- a row carrying a credential
+      # shape is never adjudicated, and the corpus the legs read never travels.
+      - name: Probe the candidate set for credential shapes
+        id: probe
+        env:
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
+        run: |
+          set -uo pipefail
+          # Written FALSE first: the upload below reads it, and a refusal here must
+          # not be followed by an upload of the very file it refused to publish.
+          echo "candidates_ok=false" >> "$GITHUB_OUTPUT"
+          if [ ! -s candidates.json ]; then
+            # Not a refusal here. "The reviewer wrote no candidates" is the
+            # validation job's verdict to give, and one place owning it keeps two
+            # refusals from disagreeing about the same fact.
+            echo "The reviewer wrote no candidates.json; the validation job refuses on it."
+            exit 0
+          fi
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
+            echo "::error::the base-owned outbound redactor is unavailable, so the candidate set cannot be checked for credential shapes. Refusing to upload it unchecked."
+            exit 1
+          fi
+          rm -f scrub-probe-candidates.json
+          cp candidates.json scrub-probe-candidates.json
+          probe=0
+          python "$REDACTOR" --mode json --fail-if-changed scrub-probe-candidates.json || probe=$?
+          rm -f scrub-probe-candidates.json
+          if [ "$probe" != "0" ] && [ "$probe" != "10" ]; then
+            echo "::error::the candidate set could not be checked for credential shapes, and it travels to the validation job as a public artifact. Refusing to upload it unchecked."
+            exit 1
+          fi
+          # Exit 10 is the redactor's own answer to "did this change", which is the
+          # whole question the probe asks. Reading it beats grepping the probe's text
+          # for a marker: a redacted secret VALUE carries the unprefixed `[REDACTED]`
+          # spelling, so a `[REDACTED-` grep misses exactly the credential class the
+          # candidate set most needs refused.
+          if [ "$probe" = "10" ]; then
+            echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
+            exit 1
+          fi
+          echo "candidates_ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate the candidates against the base corpus
+        id: validate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HARNESS: ${{ runner.temp }}/scope-harness
+          # The redactor this step's own outbound guard reads. Staged by the step
+          # above, and passed in HERE rather than resolved again: a guard that
+          # refuses on an unset variable is a guard that refuses always, and the
+          # refusal reads identically to a genuinely absent scrubber.
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
+        run: |
+          set -uo pipefail
+          if [ ! -s candidates.json ]; then
+            echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+            echo "::error::The reviewer wrote no candidates.json, so nothing could be classified. An unmeasured scope review is not a pass."
+            exit 1
+          fi
+          # THE VALIDATOR COMES FROM THE BASE REF whenever the base has one: a
+          # pull request that CHANGES the harness is validated by the harness as it
+          # stands at base, so its own new version is not what admits its
+          # candidates. Same rule the base-owned prompt and the base-owned corpus
+          # follow. `deny_diff.py` is imported BESIDE `scope_candidates.py` by path,
+          # so both must land in this directory or the schema load fails.
+          #
+          # The bootstrap below executes the CHECKOUT's copy, and that is admissible
+          # HERE and nowhere else in this lane: this job holds no credential, no
+          # write scope and no token, so a harness the pull request supplied can
+          # reach nothing but its own verdict -- and that verdict is re-measured by
+          # `adjudicate`, which runs the change's own classifier at both refs in the
+          # same empty-handed posture. The two jobs that hold something execute a
+          # committed blob, never a file from this workspace.
+          rm -rf "$HARNESS"
+          mkdir -p "$HARNESS"
+          bootstrap=""
+          for f in scope_candidates.py deny_diff.py; do
+            git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
+            if [ ! -s "$HARNESS/$f" ]; then
+              # Absent on the base -- the bootstrap window for the pull request that
+              # introduces the harness, exactly as the corpus above handles its own
+              # first commit. Use the checked-out copy and NAME the bootstrap; a
+              # harness absent everywhere fails closed rather than degrading into an
+              # unvalidated candidate file that could read as clean.
+              echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the pull request that introduces it)."
+              cp "scripts/$f" "$HARNESS/$f" 2>/dev/null || true
+              bootstrap=1
+            fi
+            if [ ! -s "$HARNESS/$f" ]; then
+              echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+              echo "::error::scripts/$f is missing at the base commit AND in the checkout. Refusing to admit candidates with no validator."
+              exit 1
+            fi
+          done
+          if [ -n "$bootstrap" ]; then
+            {
+              echo "### Security scope review -- harness bootstrap"
+              echo
+              echo "Part of the validation harness is absent at the base commit, so the"
+              echo "checked-out copy validated this run's candidates. Every later run"
+              echo "takes it from the base ref."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
+          # ONE corpus path, named here rather than looked up: a gate that switched
+          # contracts the moment another file appeared would hand coverage over with
+          # nobody's PR showing the handover. From the BASE ref for the same reason
+          # the harness is -- the change must not choose what it is deduped against.
+          corpus_path="src/kiro_crew/builtin_skills/security-conductor/golden-paths.json"
+          rm -f base-corpus.json
+          base_corpus=""
+          if git cat-file -e "$BASE_SHA:$corpus_path" 2>/dev/null; then
+            git show "$BASE_SHA:$corpus_path" > base-corpus.json
+            base_corpus="base-corpus.json"
+          else
+            # Absent at base: the corpus itself is being added, so there is no
+            # committed row to dedupe against and nothing that could be withdrawn
+            # to escape one. Adjudicate every candidate rather than failing.
+            echo "::warning::No golden-paths corpus at $corpus_path on the base commit; every candidate will be adjudicated."
+          fi
+          args=(validate --candidates candidates.json --out normalized.json)
+          if [ -n "$base_corpus" ]; then
+            args+=(--corpus "$base_corpus")
+          fi
+          rc=0
+          python "$HARNESS/scope_candidates.py" "${args[@]}" > validate.json 2> validate.err || rc=$?
+          # Scrub before either file is echoed to the job log or quoted into the step
+          # summary, both public on a public repository. The report names the rows
+          # it dropped, and the classifier's own loader quotes an offending row on
+          # the way out -- so both carry model-written command text.
+          #
+          # No scrubber is a refusal, not a pass-through: publishing raw is the
+          # thing this closes.
+          #
+          # Per FILE SHAPE, not one program for both: `validate.json` is quoted into
+          # the step summary as JSON and read by a reader who expects to parse it,
+          # so it is redacted through a parse that guarantees the output is still
+          # JSON. `validate.err` is stderr prose with no structure to keep.
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
+            echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+            echo "::error::the base-owned outbound redactor is unavailable, so the validator output cannot be scrubbed before it is published. Refusing to publish it raw."
+            exit 1
+          fi
+          if [ -s validate.json ]; then
+            python "$REDACTOR" --mode json validate.json || {
+              echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+              echo "::error::scrubbing validate.json failed, so it cannot be published safely."
+              exit 1
+            }
+          fi
+          if [ -s validate.err ]; then
+            python "$REDACTOR" --mode text validate.err || {
+              echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+              echo "::error::scrubbing validate.err failed, so it cannot be published safely."
+              exit 1
+            }
+          fi
+          cat validate.json || true
+          cat validate.err || true
+          if [ "$rc" = "0" ]; then
+            # THE CORPUS IS NOT SCRUBBED, and must not be. `deny_diff` classifies
+            # these exact strings at both refs, so a placeholder where a command used
+            # to be is a command nobody ever refused -- it classifies as allowed, and
+            # that is the false green in its least visible shape. The artifact is
+            # public, though, so a credential shape in it cannot simply travel: probe
+            # a COPY and refuse the run, the same refusal the publish path applies to
+            # a redacted confirmed row before it reaches the comment. A candidate
+            # carrying a credential shape is not a legitimate operation worth adjudicating.
+            cp normalized.json scrub-probe.json
+            probe=0
+            python "$REDACTOR" --mode json --fail-if-changed scrub-probe.json || probe=$?
+            rm -f scrub-probe.json
+            if [ "$probe" != "0" ] && [ "$probe" != "10" ]; then
+              echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+              echo "::error::the normalized corpus could not be checked for credential shapes, and it travels to the legs as a public artifact. Refusing to upload it unchecked."
+              exit 1
+            fi
+            # Exit 10 is the redactor's own answer to "did this change", which is
+            # the whole question the probe asks. Reading it beats grepping the
+            # probe's text for a marker: a redacted secret VALUE carries the
+            # unprefixed `[REDACTED]` spelling, so a `[REDACTED-` grep misses
+            # exactly the credential class the corpus most needs refused.
+            if [ "$probe" = "10" ]; then
+              echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+              echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The corpus travels to the adjudication legs as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
+              exit 1
+            fi
+            echo "adjudicate=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Security scope review -- candidates"
+              echo
+              echo '```json'
+              cat validate.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "adjudicate=false" >> "$GITHUB_OUTPUT"
+          if [ "$rc" = "3" ]; then
+            # Honest outcome, not a failure: every candidate is already a
+            # committed golden path, so Denial Differential already gates all of
+            # them and there is nothing NEW to adjudicate. Short-circuit the rest
+            # of the lane and say so.
+            {
+              echo "### Security scope review -- nothing new to adjudicate"
+              echo
+              echo "Every candidate the reviewer proposed is already a committed golden path."
+              echo "Those rows are gated by **Denial Differential**, so this lane classified"
+              echo "nothing new. Not a finding, and not a gap."
+              echo
+              echo '```json'
+              cat validate.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Exit 2 (or anything else): the candidate file cannot be trusted, so
+          # the corpus the legs would classify is not the one anybody chose.
+          {
+            echo "### Security scope review -- the candidate file was rejected"
+            echo
+            echo '```'
+            cat validate.err
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::The candidate file could not be validated -- see the job summary. A corpus that cannot be trusted is not a pass."
+          exit 1
+
+      - name: Upload the normalized corpus
+        if: steps.validate.outputs.adjudicate == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-scope-corpus
+          path: normalized.json
+          if-no-files-found: error
+          retention-days: 7
+
+      # Uploaded even when the validation refused: `publish` posts the model's
+      # sections beside the deterministic verdict, and a lane that reds still owes
+      # the reader the reasoning it reds on. It is NOT uploaded when the scrub
+      # refused -- this artifact is world-readable on a public repository, so
+      # publishing text the scrub declined to clear would hand out exactly what the
+      # refusal withholds. The condition therefore reads the SCRUB's own answer
+      # rather than the job's conclusion.
+      - name: Upload the review text
+        if: always() && steps.scrub_review.outputs.scrub_ok == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-scope-review-text
+          path: scope-review.md
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ── Stage 3 of 4: the deterministic half ─────────────────────────────────────
+  # One leg per platform, because the rules read argv SHAPE and the path fence
+  # reads real paths, and both differ per host -- Windows has its own tokenizer and
+  # separators, and the fence's home-directory ordering is macOS-specific. A
+  # Linux-only adjudication would pass a tightening that costs every operator on
+  # another OS the operation.
+  adjudicate:
+    name: Security scope adjudication (${{ matrix.os }})
+    needs: validate
+    if: needs.validate.outputs.adjudicate == 'true'
+    runs-on: ${{ matrix.os }}
+    # Runs the pull request's OWN classifier at both refs, so it gets the floor: no
+    # id-token, no write scope. Nothing here is worth stealing.
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    strategy:
+      # Every leg reports. One platform's regression is not evidence about
+      # another's, so a fail-fast cancel would hide the rows an operator on the
+      # cancelled runner is the only one who can see.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      # The BASE ref, not the merge ref. On a `pull_request` event a bare checkout
+      # resolves to the MERGE REF, so a pull request that edits
+      # `scripts/deny_diff.py` would supply the very program whose verdict this
+      # gate trusts: make it emit a well-shaped clean report and the lane passes
+      # with no real comparison behind it. A judge supplied by the change under
+      # judgement decides nothing. Same source `publish` stages its folder from,
+      # and the posture the fork lane's own adjudication runs in.
+      #
+      # This is not merely stricter -- it costs the comparison nothing. The
+      # HARNESS comes from the base ref; the PRODUCT under test is each ref's OWN
+      # `kiro_crew.security`, which `deny_diff.py` materializes itself from the two
+      # SHAs into its own temp directory and runs as a child process. So both
+      # sides are still the real classifier at their own ref, and all that moves
+      # is which copy of the code does the comparing.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          # Full history: BOTH commits must be archivable locally, and a shallow
+          # clone has neither tree.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: security-scope-corpus
+
+      # No dependency install: the composite's import chain is stdlib plus the
+      # package's own modules, and the child reaches them through PYTHONPATH at a
+      # materialized checkout. Installing the package would add three
+      # platform-dependent minutes and a resolution failure mode, and an editable
+      # install would put a SECOND copy of `kiro_crew` on the path -- which the
+      # script's own tree check would then refuse.
+      - name: Classify the candidates at both refs
+        id: classify
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LEG: ${{ matrix.os }}
+        run: |
+          set -uo pipefail
+          # `git archive` needs the OBJECTS, not just the refs. fetch-depth: 0
+          # normally supplies both, so fetch only what is genuinely absent.
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$sha" || true
+            fi
+          done
+          # The workspace is the BASE tree, so a file that is present here IS the
+          # base-owned harness and is used as it stands. Absent here has exactly
+          # two readings, and they get opposite answers -- the same distinction
+          # the staging steps in `generate` and `publish` draw:
+          #
+          #   absent at base, present at head -> the pull request that INTRODUCES
+          #     this harness. There is no base copy to prefer, by definition, so
+          #     refusing outright would mean this lane could never green on the
+          #     change that adds it. Take the HEAD BLOB, name the bootstrap, and
+          #     let every later run take the base copy.
+          #   absent at both -> a refusal, unchanged: a harness that exists
+          #     nowhere cannot judge anything, and an unmeasured adjudication must
+          #     not read as "nothing newly refused".
+          #
+          # The head BLOB, never the merge-ref worktree: this checkout is the base
+          # tree, so `git show` on the fetched head object is the only copy
+          # reachable here, and it is committed content rather than a file some
+          # earlier step could have rewritten.
+          BOOT="${RUNNER_TEMP:-/tmp}/scope-bootstrap"
+          rm -rf "$BOOT"
+          DENY_DIFF="scripts/deny_diff.py"
+          REDACTOR="scripts/scope_redact.py"
+          bootstrap=""
+          for f in deny_diff.py scope_redact.py; do
+            [ -s "scripts/$f" ] && continue
+            mkdir -p "$BOOT"
+            git show "$HEAD_SHA:scripts/$f" > "$BOOT/$f" 2>/dev/null || true
+            if [ ! -s "$BOOT/$f" ]; then
+              echo "::error::scripts/$f is missing or empty at the base commit ($BASE_SHA) AND at the head commit ($HEAD_SHA). Refusing to adjudicate with a harness that exists nowhere."
+              exit 1
+            fi
+            echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+            bootstrap=1
+            if [ "$f" = "deny_diff.py" ]; then
+              DENY_DIFF="$BOOT/$f"
+            else
+              REDACTOR="$BOOT/$f"
+            fi
+          done
+          if [ -n "$bootstrap" ]; then
+            {
+              echo "### Security scope adjudication -- harness bootstrap ($LEG)"
+              echo
+              echo "Part of the harness is absent at the base commit, so this leg ran the"
+              echo "head commit's copy. Every later run takes it from the base ref."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
+          rc=0
+          python "$DENY_DIFF" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --corpus normalized.json \
+            --platform auto \
+            --json > "report-$LEG.json" 2> error.log || rc=$?
+          # Scrub before either file becomes public, and on THIS runner rather than in
+          # `publish`: this job's log, its step summary and its uploaded report are
+          # all world-readable on a public repository, so each is an outbound
+          # surface of its own. A candidate command or a refusal reason can carry
+          # an ARN, an account id or a credential-bearing URL, and once the log
+          # line is written no later step can take it back.
+          #
+          # Per FILE SHAPE: the report is read back by the verdict folder with
+          # `json.loads`, and a report that does not parse is exit 2 there -- a
+          # hard block naming no rows. So it is redacted through a parse that
+          # guarantees valid JSON, while `error.log` is prose.
+          #
+          # `scrub_ok` records that BOTH files were scrubbed. The upload below runs
+          # on `always()`, so it must read this rather than the step's own
+          # conclusion: a scrub that refused would otherwise be followed by an
+          # upload of the very raw file it refused to publish.
+          echo "scrub_ok=false" >> "$GITHUB_OUTPUT"
+          if [ -s "report-$LEG.json" ]; then
+            python "$REDACTOR" --mode json "report-$LEG.json" || {
+              echo "::error::scrubbing report-$LEG.json failed, so it cannot be published safely."
+              exit 1
+            }
+          fi
+          if [ -s error.log ]; then
+            python "$REDACTOR" --mode text error.log || {
+              echo "::error::scrubbing error.log failed, so it cannot be published safely."
+              exit 1
+            }
+          fi
+          echo "scrub_ok=true" >> "$GITHUB_OUTPUT"
+          if [ -s error.log ]; then
+            cat error.log
+            {
+              echo "### Security scope adjudication -- $LEG"
+              echo
+              echo '```'
+              cat error.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$rc" = "2" ]; then
+            # A differential that could not run is not a pass. The report is
+            # uploaded anyway if it exists, and publish reads a missing leg as a
+            # missing verdict rather than as a clean one.
+            echo "::error::deny_diff could not run on $LEG (corpus or ref error) -- see the job log."
+            exit 1
+          fi
+          if [ "$rc" != "0" ]; then
+            echo "::error::Newly-refused candidates on $LEG -- the verdict is folded in the publish job."
+            exit 1
+          fi
+          echo "No candidate flipped from allowed to refused on $LEG."
+
+      # if: always() -- the report of a leg that FOUND something is the report
+      # publish most needs, so it must survive the leg's own red. It must NOT
+      # survive the scrub's refusal, though: an artifact is world-readable on a
+      # public repository, so uploading a file whose scrub did not succeed
+      # publishes exactly the raw text the refusal exists to withhold. So the
+      # condition is the SCRUB's own answer, not the step's conclusion -- the step
+      # reds on a confirmed regression too, and that report is scrubbed and must
+      # travel.
+      - name: Upload this leg's report
+        if: always() && steps.classify.outputs.scrub_ok == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-scope-report-${{ matrix.os }}
+          path: report-${{ matrix.os }}.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ── Stage 4 of 4: the verdict ────────────────────────────────────────────────
+  # This job carries the protected check name, so its own conclusion IS the lane's
+  # conclusion. It folds the legs with `scope_candidates.py verdict`, upserts one
+  # comment, and reds on the SCRIPT's answer.
+  publish:
+    # BRANCH-PROTECTION NAME COLLISION -- keep this conditional. Two workflows
+    # publish the check name "Security Scope Review": this same-repo lane and the
+    # privileged Stage-2 fork-security-scope-review.yml. GitHub resolves a
+    # required status check to the NEWEST check-run carrying that name, so on a
+    # fork PR -- where this lane reviews nothing -- any `pull_request` event
+    # firing AFTER the fork lane published its verdict would make THIS lane the
+    # newest run under the protected name and satisfy the gate on a review that
+    # never ran. Naming this job differently on a fork PR leaves exactly ONE
+    # publisher of the protected name per PR type.
+    #
+    # The fork guard sits on EVERY step rather than on the job, and that placement
+    # is what makes the name above render. GitHub never evaluates a skipped job's
+    # `name:` expression, so a job-level guard publishes the raw expression source
+    # as the check name on every fork PR. Letting the job start with all steps
+    # gated costs seconds of runner time and reports the intended name instead.
+    name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'Security Scope Review' || 'Security Scope Review (same-repo lane, not applicable to forks)' }}"
+    needs: [generate, validate, adjudicate]
+    # always(): a leg that reds is exactly the run whose verdict must be
+    # published, and the exit-3 short circuit skips `adjudicate` entirely.
+    if: always()
+    runs-on: ubuntu-latest
+    # Posts, and holds the ONLY write scope in this lane. On a `pull_request`
+    # event a bare checkout resolves to the PR MERGE REF, so the workspace below
+    # IS the change under review -- which makes `scripts/` a path the change can
+    # rewrite. Every program this job runs is therefore read out of a COMMITTED
+    # BLOB into its own staging directory: the base commit's, or -- in the window
+    # where the file does not exist at base yet -- the head commit's, which is
+    # committed content rather than a worktree file some earlier step could have
+    # rewritten. A change under review must not supply the code that folds its own
+    # verdict while the bot's comment-write token is live, and no `cp` out of this
+    # workspace may reintroduce that.
+    permissions:
+      checks: read
+      contents: read
+      pull-requests: write
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          # Full history: the fold step reads the harness out of the BASE commit
+          # with `git show`, and a shallow clone of the merge ref has neither
+          # parent's tree.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          needs.generate.outputs.in_scope == 'true'
+          )
+        with:
+          python-version: "3.12"
+
+      # Staged in its OWN step rather than beside the folder below, because two
+      # steps in this job scrub: the fold, and the comment assembly. The folder's
+      # directory is created with `rm -rf` inside the fold step, so a redactor
+      # placed there would be unavailable to whichever step ran first.
+      - name: Materialize the base-owned outbound redactor
+        id: redactor
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          && needs.generate.outputs.in_scope == 'true'
+          )
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/scope-redact"
+          rm -rf "$dir"
+          mkdir -p "$dir"
+          dest="$dir/scope_redact.py"
+          git show "$BASE_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
+          if [ ! -s "$dest" ]; then
+            # Absent on the base -- the bootstrap window for the pull request that
+            # introduces the redactor. The HEAD BLOB, never the worktree file: this
+            # job holds `pull-requests: write`, and a `cp` out of the merge-ref
+            # checkout would execute a path any earlier step could have written.
+            echo "::warning::scripts/scope_redact.py is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+            git show "$HEAD_SHA:scripts/scope_redact.py" > "$dest" 2>/dev/null || true
+          fi
+          if [ ! -s "$dest" ]; then
+            echo "::error::scripts/scope_redact.py is missing at the base commit AND at the head commit. Refusing to publish text no scrubber could redact."
+            exit 1
+          fi
+          echo "redactor=$dest" >> "$GITHUB_OUTPUT"
+
+      # continue-on-error on both downloads: a lane whose model call failed
+      # uploaded no review text, and the exit-3 short circuit produced no leg
+      # reports. Neither absence may abort the job -- publishing what IS known,
+      # and naming what is not, is this job's whole purpose.
+      - name: Download the review text
+        id: get_review
+        continue-on-error: true
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          needs.generate.outputs.in_scope == 'true'
+          )
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: security-scope-review-text
+
+      - name: Download every leg report
+        id: get_reports
+        continue-on-error: true
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          needs.generate.outputs.in_scope == 'true'
+          )
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: security-scope-report-*
+          merge-multiple: true
+
+      # Fold the legs. Exit 0 = no confirmed regression, 1 = at least one, 2 =
+      # nothing was measured or a report was unreadable. Both non-zero codes are
+      # RED: "could not run" and "found nothing" are the same badge to a reader
+      # and must not be the same conclusion.
+      - name: Fold the per-platform reports into one verdict
+        id: fold
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          needs.generate.outputs.in_scope == 'true'
+          && needs.generate.outputs.override != 'true'
+          )
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HARNESS: ${{ runner.temp }}/scope-harness-publish
+          # The redactor this step's own outbound guard reads, staged by the step
+          # above. Same reason it is passed rather than re-resolved: an unset
+          # variable makes the guard refuse every run, indistinguishably from an
+          # absent scrubber.
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
+          # Every leg `adjudicate` dispatches, named here so the fold can rule on
+          # ABSENCE. The download above is `continue-on-error`, so a leg that died
+          # before it uploaded anything leaves no file and no failure -- and the
+          # legs that did report would otherwise fold to a clean verdict covering a
+          # platform nothing measured. Keep this list equal to the adjudicate
+          # matrix.
+          EXPECT_LEGS: "ubuntu-latest macos-latest windows-latest"
+        run: |
+          set -uo pipefail
+          reports=()
+          found=0
+          for f in report-*.json; do
+            [ -s "$f" ] || continue
+            # The leg's own label, taken from the name `adjudicate` uploaded it
+            # under (`report-<matrix.os>.json`). A report carries its own
+            # `platform`, which is the HOST FAMILY rather than the leg -- two legs
+            # can report the same family, so it cannot answer which leg is missing.
+            leg="${f#report-}"
+            leg="${leg%.json}"
+            reports+=(--report "$leg=$f")
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            # No leg reported at all. That is a different fact from "one leg is
+            # missing" and the step below already scores it, so leave it to the
+            # ladder there rather than asserting legs against an empty set.
+            echo "folded=none" >> "$GITHUB_OUTPUT"
+            echo "No leg report to fold."
+            exit 0
+          fi
+          for leg in ${EXPECT_LEGS:-}; do
+            reports+=(--expect-leg "$leg")
+          done
+          # THE FOLDER COMES FROM A COMMITTED BLOB, never from the checkout. This
+          # job holds `pull-requests: write`, and on a `pull_request` event the
+          # workspace is the PR merge ref -- so running the checked-out copy would
+          # execute the change's own code while the token that posts and patches
+          # this lane's comment is live. Same rule the base-owned prompt and corpus
+          # follow. `deny_diff.py` is imported BESIDE `scope_candidates.py` by path,
+          # so both must land in this directory.
+          rm -rf "$HARNESS"
+          mkdir -p "$HARNESS"
+          bootstrap=""
+          for f in scope_candidates.py deny_diff.py; do
+            git show "$BASE_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
+            if [ ! -s "$HARNESS/$f" ]; then
+              # Absent on the base -- the bootstrap window for the pull request that
+              # introduces the harness. The HEAD BLOB, not the worktree file: a `cp`
+              # out of this checkout would run a path any earlier step in this
+              # write-scoped job could have written, and committed content is the
+              # weakest thing that closes that. Same source `adjudicate` bootstraps
+              # from, for the same reason.
+              echo "::warning::scripts/$f is missing or empty on the base commit ($BASE_SHA); using the head commit's copy (bootstrap for the pull request that introduces it)."
+              git show "$HEAD_SHA:scripts/$f" > "$HARNESS/$f" 2>/dev/null || true
+              bootstrap=1
+            fi
+            if [ ! -s "$HARNESS/$f" ]; then
+              # No folder anywhere. `error` is the fail-closed verdict: a run that
+              # could not fold has measured nothing, and the step below reds on it.
+              echo "folded=error" >> "$GITHUB_OUTPUT"
+              echo "::error::scripts/$f is missing at the base commit AND at the head commit. Refusing to fold a verdict with no folder."
+              exit 0
+            fi
+          done
+          if [ -n "$bootstrap" ]; then
+            {
+              echo "### Security scope review -- folder bootstrap"
+              echo
+              echo "Part of the harness is absent at the base commit, so the head"
+              echo "commit's copy folded this run's verdict. Every later run takes it from"
+              echo "the base ref."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
+          rc=0
+          python "$HARNESS/scope_candidates.py" verdict "${reports[@]}" \
+            --out-md verdict-body.md \
+            --out-rows confirmed-rows.json > /dev/null 2> verdict.err || rc=$?
+          # Outbound scrub, before the folded verdict reaches ANY public surface: this
+          # job's log, the step summary and the pull request comment all read the
+          # three files below. A candidate command and a refusal reason are text
+          # this job did not author, so either can carry an ARN, an account id or a
+          # credential-bearing URL.
+          #
+          # No scrubber is a refusal, not a pass-through: publishing raw is the
+          # thing this closes.
+          #
+          # Per FILE SHAPE: the rows file is a corpus a maintainer pastes into the
+          # committed corpus, so it is redacted through a parse that guarantees valid
+          # JSON. The body and the stderr are prose. `rows_redacted` records the
+          # redactor's own changed answer, which is what the withhold decision below
+          # turns on.
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
+            echo "folded=error" >> "$GITHUB_OUTPUT"
+            echo "::error::the base-owned outbound redactor is unavailable, so the folded verdict cannot be scrubbed before it is published. Refusing to publish it raw."
+            exit 0
+          fi
+          for f in verdict-body.md verdict.err; do
+            [ -s "$f" ] || continue
+            python "$REDACTOR" --mode text "$f" || {
+              echo "folded=error" >> "$GITHUB_OUTPUT"
+              echo "::error::scrubbing $f failed, so it cannot be published safely."
+              exit 0
+            }
+          done
+          rows_redacted=0
+          if [ -s confirmed-rows.json ]; then
+            python "$REDACTOR" --mode json --fail-if-changed confirmed-rows.json || rows_redacted=$?
+            if [ "$rows_redacted" != "0" ] && [ "$rows_redacted" != "10" ]; then
+              echo "folded=error" >> "$GITHUB_OUTPUT"
+              echo "::error::scrubbing confirmed-rows.json failed, so it cannot be published safely."
+              exit 0
+            fi
+          fi
+          cat verdict.err || true
+          # A scrubbed row no longer names the operation that was refused, so
+          # publishing it would pass off redacted text as the finding -- and a reader
+          # cannot narrow a rule at a tier they cannot read, nor adopt a golden path
+          # whose command is a placeholder. Withhold it instead.
+          # The redactor's exit 10 is the primary signal, because it covers every
+          # redaction class: a redacted secret VALUE carries the unprefixed
+          # `[REDACTED]` spelling, which a `[REDACTED-` grep does not see. The grep
+          # stays beside it so a marker that reached the file by any other route
+          # than this scrub is caught too.
+          if [ "$rows_redacted" = "10" ] \
+            || { [ -s confirmed-rows.json ] && grep -q '\[REDACTED-' confirmed-rows.json; }; then
+            echo "folded=rows-redacted" >> "$GITHUB_OUTPUT"
+            echo "::error::a confirmed row carried a credential shape and was redacted, so it no longer names the operation that was refused. Every surface this lane writes is scrubbed, so reproduce the rows with scripts/deny_diff.py against this head and narrow the rule at the tier they name -- or record a human override for this head."
+            exit 0
+          fi
+          case "$rc" in
+            0) echo "folded=clean" >> "$GITHUB_OUTPUT" ;;
+            1) echo "folded=regression" >> "$GITHUB_OUTPUT" ;;
+            *) echo "folded=error" >> "$GITHUB_OUTPUT" ;;
+          esac
+          if [ -s verdict-body.md ]; then
+            cat verdict-body.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -s confirmed-rows.json ]; then
+            {
+              echo
+              echo "<details><summary>The confirmed rows, in the committed corpus's own shape</summary>"
+              echo
+              echo '```json'
+              cat confirmed-rows.json
+              echo '```'
+              echo
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
+
+      - name: Post the scope verdict
+        id: post
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          && needs.generate.outputs.in_scope == 'true'
+          )
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          ACTOR: ${{ github.actor }}
+          FOLDED: ${{ steps.fold.outputs.folded }}
+          ADJUDICATED: ${{ needs.validate.outputs.adjudicate }}
+          GENERATE_RESULT: ${{ needs.generate.result }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          ADJUDICATE_RESULT: ${{ needs.adjudicate.result }}
+          HUMAN_OVERRIDE: ${{ needs.generate.outputs.override }}
+          OVERRIDE_ACTOR: ${{ needs.generate.outputs.override_actor }}
+          REDACTOR: ${{ steps.redactor.outputs.redactor }}
+          # The trusted committed-blob harness the fold step staged. The
+          # conclusion table is run from HERE, never from the merge-ref checkout,
+          # because this job holds the comment-write token.
+          HARNESS: ${{ runner.temp }}/scope-harness-publish
+        run: |
+          set -uo pipefail
+          MARKER="<!-- security-scope-review -->"
+          OUT="${RUNNER_TEMP:-/tmp}/scope-comment.md"
+          if [ "$HUMAN_OVERRIDE" = "true" ]; then
+            {
+              echo "$MARKER"
+              echo "## Security Scope Review -- ✅ human override accepted"
+              echo
+              echo "_@$OVERRIDE_ACTOR overrode this lane for \`$HEAD\` via \`/ai-review override\` (this commit only)._"
+              # STAMPED, because this body is a completed verdict FOR THIS HEAD:
+              # the override record the generate stage read is keyed to $HEAD, so
+              # the acceptance is attributable to this revision on the human's own
+              # authority -- the same grounds the classifier's rows are stamped on.
+              # Without the stamp the guarded upsert below reads this as a failure
+              # notice, sets `withhold`, and leaves a prior BLOCK comment standing:
+              # the pull request would then show a stale block over an override a
+              # human has already accepted, which is the one comment state nothing
+              # later clears.
+              echo
+              echo "[SCOPE-REVIEWED] $HEAD"
+            } > "$OUT"
+            echo "verdict=OVERRIDE" >> "$GITHUB_OUTPUT"
+          elif [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo "Dependabot PR: scope review skipped (no Bedrock secrets/OIDC)."
+            echo "verdict=SKIPPED" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            summary=""
+            [ -s scope-review.md ] && summary="$(cat scope-review.md)"
+            # Parse the model's Scope-Verdict header (case-insensitive). Left as
+            # the RAW header here; whether it is attributable to THIS head is the
+            # marker's job, decided in the shared table rather than folded into the
+            # header, so a present-but-unmarked header is not silently honoured.
+            model="$(printf '%s\n' "$summary" | grep -iE '^[[:space:]]*Scope-Verdict:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
+            [ -z "$model" ] && model="UNKNOWN"
+            # The marker is the ONLY proof the review ran for THIS revision. A
+            # here-string, not `printf | grep`, so a long summary cannot
+            # manufacture a SIGPIPE status under `pipefail`.
+            marker="absent"
+            grep -qF "[SCOPE-REVIEWED] $HEAD" <<< "$summary" && marker="present"
+            # The TWO platform-gap sources, both fed to the shared table. gap-model
+            # is the review's OWN prose -- model-authored input to a merge-blocking
+            # gate -- so the table treats it as untrusted and lets it only ever make
+            # the verdict STRICTER, never clear it. Both sources feed BOTH lanes
+            # now; the fork reading only gap-script was the asymmetry this collapse
+            # removes.
+            gap_model="false"
+            grep -qE '^[[:space:]]*UNADJUDICATED:' <<< "$summary" && gap_model="true"
+            gap_script="false"
+            { [ -s verdict-body.md ] && grep -qF "NO VERDICT" verdict-body.md; } && gap_script="true"
+            # Normalize this lane's fold word to the table's vocabulary.
+            case "$FOLDED" in
+              clean)         fold="clean" ;;
+              regression)    fold="regression" ;;
+              rows-redacted) fold="redacted" ;;
+              none)          fold="no-report" ;;
+              *)             fold="error" ;;
+            esac
+            # The exit-3 short circuit: no legs ran because every candidate is
+            # already a committed golden path. On this lane that is (no leg report)
+            # AND (adjudicate did not run) AND (both preceding jobs succeeded). The
+            # marker requirement is NOT folded in here -- the table enforces it, so
+            # a nothing-new run with no marker reads as fail-closed, not as a green.
+            nothing_new="false"
+            if [ "$FOLDED" = "none" ] && [ "$ADJUDICATED" != "true" ] \
+              && [ "$GENERATE_RESULT" = "success" ] && [ "$VALIDATE_RESULT" = "success" ]; then
+              nothing_new="true"
+            fi
+            # THE CONCLUSION LADDER lives in scope_candidates.py so this lane and
+            # the fork lane cannot drift. It is run from the SAME trusted committed
+            # blob the fold step staged into $HARNESS, never from the merge-ref
+            # checkout, because this job holds the comment-write token. This step
+            # only reads its answer and maps it to a badge below.
+            SC="${HARNESS:-}/scope_candidates.py"
+            if [ -s "$SC" ]; then
+              conc="$(python "$SC" conclude --lane same-repo \
+                --fold "$fold" --model "$model" --marker "$marker" \
+                --nothing-new "$nothing_new" --gap-script "$gap_script" --gap-model "$gap_model")"
+              token="$(printf '%s\n' "$conc" | sed -n 's/^conclusion=//p')"
+              why="$(printf '%s\n' "$conc" | sed -n 's/^why=//p')"
+            else
+              # The fold step could not stage even the head blob of the folder, so
+              # the fold is already `error`; there is no trusted copy of the table
+              # to run, and the PR checkout must not run under this job's write
+              # token. Fail closed directly, exactly as the fold step's own
+              # no-folder branch does.
+              token="error"; why="the scope harness is absent at both refs, so no verdict could be folded"
+            fi
+            # Map the table's conclusion to this lane's existing verdict vocabulary
+            # so the comment, badge and status wiring below are unchanged.
+            case "$token" in
+              pass)        verdict="PASS" ;;
+              nothing-new) verdict="NOTHING-NEW" ;;
+              concerns)    verdict="CONCERNS" ;;
+              block)       verdict="BLOCK" ;;
+              *)           verdict="UNKNOWN" ;;
+            esac
+            # Preserve the downstream prose-withhold contract: the model's text is
+            # shown only when a marker attributes it to this head.
+            [ "$marker" != "present" ] && model="UNKNOWN"
+            echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+            echo "why=$why" >> "$GITHUB_OUTPUT"
+            case "$verdict" in
+              PASS)        badge="✅ PASS" ;;
+              NOTHING-NEW) badge="✅ nothing new to adjudicate" ;;
+              CONCERNS)    badge="🟡 CONCERNS" ;;
+              BLOCK)       badge="🔴 BLOCK (blocking)" ;;
+              *)           badge="" ;;
+            esac
+            # `deny_diff.py` classified every row at the base ref AND at $HEAD, so
+            # its output is attributable to this head on its own authority -- the
+            # model's marker proves nothing about it either way. That is what the
+            # stamp below is written from. Without it the guarded upsert reads a
+            # script-confirmed regression whose model half died as an incomplete
+            # run and withholds the whole comment, so the rows naming the broken
+            # operation and its tier never reach the author: a red badge, and the
+            # job logs as the only place to learn what a deterministic script
+            # already decided. An empty `verdict-body.md` means the classifier
+            # produced nothing, and then there is genuinely nothing to attribute.
+            rows_attributable=""
+            [ -s verdict-body.md ] && rows_attributable=1
+            # A redacted body is withheld on the same grounds the rows are: printing
+            # it under a findings heading passes redacted text off as the finding.
+            [ "$FOLDED" = "rows-redacted" ] && rows_attributable=""
+            if [ -n "$badge" ]; then
+              {
+                echo "$MARKER"
+                echo "## Security Scope Review -- $badge"
+                echo
+                echo "_Which legitimate operations does \`$HEAD\` newly refuse? Updated in place on each push. **A script-confirmed regression blocks**; the model proposes candidates and never decides a refusal._"
+                echo
+                echo "Verdict basis: $why."
+                echo
+                [ -s verdict-body.md ] && cat verdict-body.md
+                echo
+                if [ "$model" != "UNKNOWN" ]; then
+                  printf '%s\n' "$summary"
+                else
+                  # The model's prose stays withheld exactly as before: with no
+                  # current-head marker it is a review of something else, and
+                  # printing it here would read as this head's verdict. Only the
+                  # classifier's half is published, stamped as the classifier's.
+                  echo "_The reviewer left no \`[SCOPE-REVIEWED]\` marker for this head, so its text is withheld: it cannot be shown to describe this revision. The rows above are the classifier's, measured at both refs. See the job logs._"
+                  [ -n "$rows_attributable" ] && echo "[SCOPE-REVIEWED] $HEAD"
+                fi
+              } > "$OUT"
+            else
+              # No parseable verdict, or no current-head marker. Do NOT post the
+              # raw model/error text: it can carry internal detail (AWS account
+              # ids, ARNs, endpoints, stack traces) into a public comment. Post a
+              # generic, leak-safe notice and name the cause from the jobs' OWN
+              # results rather than asserting one.
+              # ONE candidate stage to a reader, two jobs in the graph: the model's
+              # half and the validation that must not share its credential. Report
+              # the first of the two that did not succeed.
+              stage_result="$GENERATE_RESULT"
+              if [ "$stage_result" = "success" ]; then
+                stage_result="${VALIDATE_RESULT:-}"
+              fi
+              case "$stage_result" in
+                failure)   cause="the candidate stage failed" ;;
+                cancelled) cause="the candidate stage was cancelled" ;;
+                skipped)   cause="the candidate stage never ran" ;;
+                *)         cause="the review produced no \`[SCOPE-REVIEWED]\` marker for this head" ;;
+              esac
+              if [ "$ADJUDICATE_RESULT" = "failure" ] && [ "$FOLDED" = "error" ]; then
+                cause="$cause; the adjudication legs also could not be folded"
+              fi
+              if [ "$FOLDED" = "rows-redacted" ]; then
+                cause="a confirmed row carried a credential shape and was redacted, so the rows are withheld rather than published as this head's finding -- reproduce them with \`scripts/deny_diff.py\` against this head"
+              fi
+              {
+                echo "$MARKER"
+                echo "## Security Scope Review -- 🔴 could not complete (fails closed)"
+                echo
+                echo "_No scope verdict for \`$HEAD\` ($cause). This lane fails CLOSED: an unmeasured tightening must not read as \"nothing newly refused\". See the job logs, then re-run -- or record \`/ai-review override scope $HEAD: <reason>\` if a human has judged the scope by hand._"
+              } > "$OUT"
+              # Whatever the classifier DID reach still belongs in the comment.
+              # A leg that reported NO VERDICT, or rows folded before the model
+              # half failed, is this head's measurement and names the surface
+              # that went unadjudicated; only the model's prose is unattributable.
+              if [ -n "$rows_attributable" ]; then
+                {
+                  echo
+                  echo "---"
+                  echo
+                  cat verdict-body.md
+                  echo
+                  echo "[SCOPE-REVIEWED] $HEAD"
+                } >> "$OUT"
+              fi
+            fi
+          fi
+          # The confirmed rows are a HUMAN-READABLE block only: the paste-ready
+          # `golden_paths` corpus a maintainer adds to the committed corpus, where the
+          # deterministic denial differential gates each row on every run and re-run.
+          # No machine-readable marker fences them, so no later run reads a row back
+          # out of this comment and no model prose in this comment can forge such a
+          # channel. A redacted row is withheld: its command no longer names the
+          # refused operation, so it names no golden path a maintainer could adopt.
+          if [ "$FOLDED" != "rows-redacted" ] \
+            && [ -s confirmed-rows.json ] \
+            && [ "$(jq -r '.golden_paths | length' confirmed-rows.json 2>/dev/null || echo 0)" -gt 0 ]; then
+            {
+              echo
+              echo "<details><summary>The confirmed rows, in the committed corpus's own shape</summary>"
+              echo
+              echo '```json'
+              cat confirmed-rows.json
+              echo '```'
+              echo
+              echo "</details>"
+            } >> "$OUT"
+          fi
+          # Defense-in-depth: scrub credential shapes AND AWS account ids / ARNs
+          # from whatever we post (a valid-verdict body may quote an ARN from the
+          # diff, and a candidate row is model-authored text). Combined with the
+          # "no raw text unless a verdict parsed" gate above, this keeps internal
+          # detail out of the public PR comment.
+          # TEXT mode: this file is a markdown comment body, not a JSON document.
+          # An unavailable redactor is a refusal here too -- the comment is the
+          # lane's most public surface, and the status step below reads a missing
+          # comment as an unpublished verdict rather than as a pass.
+          if [ -z "${REDACTOR:-}" ] || [ ! -s "$REDACTOR" ]; then
+            echo "::error::the base-owned outbound redactor is unavailable, so the comment body cannot be scrubbed before it is posted. Refusing to post it raw."
+            echo "verdict=UNPUBLISHED" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          python "$REDACTOR" --mode text "$OUT" || {
+            echo "::error::scrubbing the comment body failed, so it cannot be posted safely."
+            echo "verdict=UNPUBLISHED" >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+          # Guarded upsert (#8292, #8344): the shared function below is defined
+          # byte-identically in every review lane; test_ai_review_workflows.py
+          # pins all copies to one canonical body so the invariant cannot
+          # drift lane by lane.
+          guarded_comment_upsert() {
+            local marker="$1" stamp="$2" lane="$3" out_file="$4"
+            local matches existing lookup_ok pr_head="" attempt withhold=""
+            # Find the bot's existing marker comment (first match wins) and
+            # capture its id. Author filter: only a github-actions[bot]
+            # comment can match, so a PR commenter cannot plant the marker and
+            # have this step PATCH their comment with the write-scoped token.
+            # Only the id is read: no decision below inspects the current
+            # body, so this function has no read-modify-write window on it.
+            # Capture the paginated query's FULL output first and select the
+            # first id off the captured value -- a `... | head -n1` inside the
+            # pipeline lets head's early exit SIGPIPE the api call and misread
+            # a successful lookup as a failure under pipefail (#8350).
+            # Retry a transient failure: whether a comment exists is a gating
+            # input here, and one blip is not evidence that none does.
+            lookup_ok=0
+            for attempt in 1 2 3; do
+              if matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" 2>/dev/null)"; then
+                lookup_ok=1
+                break
+              fi
+              matches=""
+              echo "Reading this PR's comments failed on attempt $attempt."
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            existing="$(printf '%s\n' "$matches" | awk 'NR == 1')"
+            # This lane's marker comment is ONE slot shared by every run on the
+            # PR, and the REST comments API has no If-Match, so a write to it
+            # is last-writer-wins with no way to detect the loss afterwards --
+            # it exposes no edit history either (#8292). Exactly one kind of
+            # run may therefore claim the slot: a COMPLETED verdict for the
+            # PR's CURRENT head. Every other case leaves an existing comment
+            # untouched, because each of them can lose a live verdict.
+            if ! grep -Fq "$stamp $HEAD" "$out_file"; then
+              # No "<stamp> $HEAD" proof marker: this is a review FAILURE
+              # notice, and PATCHing one over a completed verdict buries that
+              # verdict -- blocking findings included -- where no reader or
+              # tool looks. Note that PRESERVING the verdict and prepending a
+              # staleness notice is not a safe alternative: it reads the body
+              # and writes a merge of it back, so a verdict published between
+              # the read and the write is restored away.
+              withhold="run for $HEAD produced no completed verdict"
+            else
+              # A completed verdict for a SUPERSEDED head is the same loss
+              # arriving late: an older run can finish after a newer one has
+              # already published, and the fork lanes' concurrency group is
+              # keyed per head so they are not cancelled -- while a cancelled
+              # same-repo run still executes this if:always() step. So confirm
+              # this run is still the PR's head before claiming the slot.
+              # Retry a transient read the way this lane's other gating reads
+              # do, then treat an unreadable head as NOT confirmed: writing is
+              # the destructive half, so it must not proceed on an unknown.
+              for attempt in 1 2 3; do
+                if pr_head="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')" \
+                  && [ -n "$pr_head" ]; then
+                  break
+                fi
+                pr_head=""
+                echo "Reading this PR's head sha failed on attempt $attempt."
+                if [ "$attempt" -lt 3 ]; then
+                  sleep "$attempt"
+                fi
+              done
+              if [ -z "$pr_head" ]; then
+                withhold="this PR's head was unreadable after 3 attempts, so $HEAD cannot be confirmed current"
+              elif [ "$pr_head" != "$HEAD" ]; then
+                withhold="$HEAD is no longer this PR's head ($pr_head)"
+              fi
+            fi
+            if [ -n "$withhold" ]; then
+              # A lookup that ERRORED is not "no comment exists": taking the
+              # create path there plants a second marker comment over a
+              # possibly-live verdict, which no later run undoes.
+              if [ "$lookup_ok" -eq 0 ]; then
+                echo "Withholding $lane comment for $HEAD ($withhold); the comment lookup also failed, so nothing was posted"
+                return 0
+              fi
+              if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+                echo "Withholding $lane comment for $HEAD ($withhold); left existing comment #$existing untouched"
+                return 0
+              fi
+              # The lookup SUCCEEDED and found nothing, so there is no verdict
+              # to lose: posting the body as a NEW comment buries nothing.
+              gh pr comment "$PR" --body-file "$out_file" || true
+              echo "Created new $lane comment"
+              return 0
+            fi
+            if [ "$lookup_ok" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                --field body="$(cat "$out_file")" >/dev/null || true
+              echo "Updated existing $lane comment #$existing"
+            else
+              # No existing comment -- or a lookup that could not confirm one
+              # -- falls through to CREATE either way: a completed verdict for
+              # the confirmed current head must never be dropped because the
+              # comment lookup failed, since a duplicate comment is
+              # recoverable and an unposted verdict is not (#8350).
+              gh pr comment "$PR" --body-file "$out_file" || true
+              echo "Created new $lane comment"
+            fi
+          }
+          guarded_comment_upsert "$MARKER" "[SCOPE-REVIEWED]" "Security Scope Review" "$OUT"
+
+      # This step IS the lane's conclusion. The failing branches are exactly the
+      # two the script owns -- a confirmed regression, and a run that could not
+      # measure one -- so the model can neither clear a red nor invent one.
+      - name: Security scope status (gates on a confirmed regression)
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          )
+        env:
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          ACTOR: ${{ github.actor }}
+          IN_SCOPE: ${{ needs.generate.outputs.in_scope }}
+          VERDICT: ${{ steps.post.outputs.verdict }}
+          WHY: ${{ steps.post.outputs.why }}
+          HUMAN_OVERRIDE: ${{ needs.generate.outputs.override }}
+          OVERRIDE_ACTOR: ${{ needs.generate.outputs.override_actor }}
+        run: |
+          if [ "$HUMAN_OVERRIDE" = "true" ]; then
+            echo "Human judgment by $OVERRIDE_ACTOR overrides Security Scope Review for $HEAD. Passing gate."
+            exit 0
+          fi
+          # A TRI-STATE, matched on the LITERAL `false` rather than on "not
+          # true". `in_scope` is written by ONE step of `generate`, `Resolve review
+          # scope`; anything that fails before it -- the runner hardening, the
+          # checkout, the resolver itself -- leaves this output EMPTY. A
+          # `!= "true"` test reads that empty as "measured, and there was nothing
+          # to scope" and passes the required status with no model call and no
+          # differential: an infrastructure failure in `generate` then publishes a
+          # green gate over a change nobody measured. Only the resolver's own
+          # `false` buys the skip; empty or unrecognized means the question was
+          # never answered, which is the same fail-closed answer this lane already
+          # gives every other unmeasured outcome. Same literal, same reason, as the
+          # fork lane's `Decide the lane's conclusion`.
+          case "$IN_SCOPE" in
+            true) ;;
+            false)
+              echo "No security-surface path touched and no \`security-scope-review\` label: nothing to scope for $HEAD."
+              exit 0 ;;
+            *)
+              echo "::error::\`generate\` never resolved this lane's review scope for $HEAD (in_scope=\"$IN_SCOPE\"), so nothing measured whether this change tightens the deny composite. This lane fails CLOSED on a change it did not measure: read the \`generate\` job logs and re-run, or record a human override."
+              exit 1 ;;
+          esac
+          if [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo "Dependabot PR: scope review skipped."
+            exit 0
+          fi
+          case "$VERDICT" in
+            PASS|NOTHING-NEW)
+              echo "Security scope verdict for $HEAD: $VERDICT ($WHY)."
+              exit 0 ;;
+            CONCERNS)
+              # Advisory, and deliberately not silent: a green tick tells a
+              # reader nothing was worth reading. A job cannot report itself
+              # `neutral`, so the basis goes on the job as an annotation.
+              echo "::warning title=Security Scope Review CONCERNS::$WHY -- read the Security Scope Review comment on this PR."
+              exit 0 ;;
+            BLOCK)
+              echo "::error::Security scope verdict for $HEAD: BLOCK -- $WHY. Narrow the rule at the tier named in the PR comment. Withdrawing a golden path is not the way to green: that is its own pull request, on its own merits."
+              exit 1 ;;
+            *)
+              echo "::error::Security Scope Review produced no verdict for $HEAD ($WHY). This lane fails CLOSED -- an unmeasured tightening must not read as \"nothing newly refused\". See the job logs and re-run, or record a human override."
+              exit 1 ;;
+          esac
+
+      # A re-run of the SAME head can go SOFT: the candidate set is model-sampled,
+      # so a row confirmed by a run whose block is held only by that run's own
+      # check-run is not re-proposed, not re-classified, and the fresh clean
+      # conclusion replaces the block. A gate a re-run clears is not a gate. This
+      # step reads the lane's OWN completed check-run conclusions for this head and
+      # refuses to pass under one that is harder -- the per-(base, head) monotonic
+      # floor, keyed per SHA so a new head starts clean. It runs only after the
+      # status step passed (a block already reds the job), and never over a human
+      # override, whose clearance for this head is a deliberate softening the floor
+      # must leave standing (that is the SHA-scoped escape hatch).
+      - name: Enforce the per-head monotonic floor
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          ACTOR: ${{ github.actor }}
+          IN_SCOPE: ${{ needs.generate.outputs.in_scope }}
+          VERDICT: ${{ steps.post.outputs.verdict }}
+          HUMAN_OVERRIDE: ${{ needs.generate.outputs.override }}
+          # The trusted committed-blob harness the fold step staged; never the
+          # merge-ref checkout, because this job holds the comment-write token.
+          HARNESS: ${{ runner.temp }}/scope-harness-publish
+        run: |
+          set -uo pipefail
+          if [ "$HUMAN_OVERRIDE" = "true" ]; then
+            echo "Human override for $HEAD: the per-head floor is not applied."
+            exit 0
+          fi
+          case "$IN_SCOPE" in
+            true) ;;
+            *) echo "Nothing measured for $HEAD; no floor to enforce."; exit 0 ;;
+          esac
+          if [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo "Dependabot PR: no floor to enforce."
+            exit 0
+          fi
+          SC="${HARNESS:-}/scope_candidates.py"
+          if [ ! -s "$SC" ]; then
+            echo "::error::the trusted scope harness is absent at $SC, so the per-head floor cannot be settled for $HEAD. Failing closed."
+            exit 1
+          fi
+          enc="$(jq -rn '"Security Scope Review" | @uri')"
+          # `filter=all` IS THE GATE. This endpoint defaults to `filter=latest`,
+          # which returns only the most recent check-run per NAME -- and while this
+          # job runs, that one is this run's OWN in-progress check-run. So the
+          # default silently returns a listing with no prior in it, every prior reads
+          # as "this head has never been judged", and the floor below can never hold
+          # anything: a resampled clean re-run publishes success over a confirmed
+          # regression. Do not drop this parameter to tidy the query.
+          #
+          # The RAW listing, not a pre-extracted conclusion list. Which rows are
+          # THIS pull request's and THIS lane's, and whether the response is a
+          # check-run listing at all, are both decided by the shared table: an
+          # exit-0 response with no body names no check-runs either way, and only
+          # a well-formed listing may mean "no prior".
+          priors=""; readable="true"
+          for attempt in 1 2 3; do
+            if priors="$(gh api --method GET \
+              "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100&filter=all")"; then
+              readable="true"
+              break
+            fi
+            priors=""; readable="false"
+            echo "Reading the prior check-runs for $HEAD failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then sleep "$attempt"; fi
+          done
+          # This run's own check-run is still in progress, so it is not among the
+          # completed rows. The status step passed, so this run publishes a green
+          # job -- a `success` check-run -- which is what the floor compares.
+          # The floor's own EXIT STATUS, captured directly rather than inferred
+          # from its output. A settled computation always prints a conclusion, so
+          # a blank one means the script died. Both reds this lane, and the two
+          # reasons carry distinct messages: "the floor holds a prior block" and
+          # "the floor could not be computed" send a reader to different places.
+          floor_ok="yes"
+          if ! floor="$(printf '%s\n' "$priors" | python "$SC" monotonic --current success \
+            --lane same-repo --pr "$PR" --prior-readable "$readable")"; then
+            floor_ok=""
+          fi
+          raised="$(printf '%s\n' "$floor" | sed -n 's/^conclusion=//p')"
+          why="$(printf '%s\n' "$floor" | sed -n 's/^why=//p')"
+          if [ -z "$floor_ok" ] || [ -z "$raised" ]; then
+            echo "::error::the per-head floor computation for $HEAD did not settle, so Security Scope Review fails closed rather than passing. Read this job's logs for the harness error, then re-run -- or record a human override for this head."
+            exit 1
+          fi
+          if [ "$raised" != "success" ]; then
+            echo "::error::Security Scope Review for $HEAD is held at the harder verdict a prior run of this head published ($why). This run classified nothing that clears it. Re-measure and push, or record a human override for this head."
+            exit 1
+          fi
+          echo "Per-head floor for $HEAD: $why."

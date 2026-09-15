@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements for the KiroCrew Electron app.
+     - allow-jit: required by V8's JIT compiler (Electron's renderer processes)
+     - allow-unsigned-executable-memory: required for V8 + native Node.js addons (numpy, aiohttp)
+     - disable-library-validation: required to load native .node/.dylib addons not signed with the same identity
+     - automation.apple-events: allows the app to send Apple Events (used for open-at-login registration)
+     - device.audio-input: REQUIRED for the microphone (voice input / streaming STT).
+       Under the hardened runtime this entitlement — not the Info.plist usage
+       string — is what grants the capability (a Resource Access key; it is NOT
+       App-Sandbox-only, and this app is not sandboxed). Without it the mic is
+       refused and the user is NEVER prompted, with no System Settings toggle to
+       fix it. THIS FILE is what signed the shipped bundle whose mic was dead.
+       This is the release-lane twin of website/electron/build/entitlements.mac.plist;
+       the two signing paths read their OWN file, so both must carry the key or
+       one lane ships a broken bundle. packaging.test.js pins both.
+       Camera is deliberately absent — permission-handler.js denies video.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+    <key>com.apple.security.automation.apple-events</key><true/>
+    <key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>

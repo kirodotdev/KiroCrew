@@ -1,0 +1,48 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "kirocrew-core_monitor_start",
+        "tool_call_id": "call_live_1",
+        "tool_kind": "other",
+        "wire_title": "kirocrew-core_monitor_start"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "interval_secs": 300,
+          "message": "Watch CI on this PR; stop when it is green."
+        },
+        "title": "kirocrew-core_monitor_start",
+        "tool_call_id": "call_live_1",
+        "tool_input": "{\n  \"message\": \"Watch CI on this PR; stop when it is green.\",\n  \"interval_secs\": 300\n}",
+        "tool_kind": "other",
+        "wire_title": "kirocrew-core_monitor_start"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_live_1",
+        "tool_final": true,
+        "tool_output": "Monitor loop requested for this session.\n[[KIROCREW_SESSION_DIRECTIVE]]{\"kind\":\"monitor_start\",\"args\":{\"message\":\"Watch CI on this PR; stop when it is green.\",\"interval_secs\":300,\"gate\":true}}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

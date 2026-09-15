@@ -1,0 +1,101 @@
+/**
+ * Shared page scaffolding for the transcript screenshot harnesses.
+ *
+ * Every harness that photographs a chat transcript needs the same five things
+ * before its own scene matters: a static server over the built SPA, a browser
+ * page at 2x (the cards are 11-13px type, and a 1x shot renders them soft), the
+ * `/api/ws` route bound so the app's socket does not hang, `/api/**` answered
+ * from `slots` + `detail` fixtures with everything else falling through to
+ * `handleBootRoute`, and a cold `load(theme)` that boots the SPA with a chat slot
+ * already selected.
+ *
+ * Kept here rather than copied per harness so a harness file holds only its
+ * scene — the fixture transcript and the shots it takes.
+ */
+import { chromium } from 'playwright'
+import { serveDist } from './serve-dist.mjs'
+import { json, makeFixedApi, handleBootRoute } from './boot-api.mjs'
+
+/**
+ * Open a transcript harness.
+ *
+ * @param {object} opts
+ * @param {string} opts.slot            chat slot key the fixtures describe
+ * @param {string} opts.project         project dir the boot fixtures report
+ * @param {unknown} opts.slots          body for `/api/chat/slots`
+ * @param {unknown} opts.detail         body for `/api/chat/slots/<key>`
+ * @param {object} [opts.viewport]      browser viewport
+ * @param {number} [opts.deviceScaleFactor]
+ * @param {boolean} [opts.hasTouch]     emulate a touch device — this is what
+ *   makes `(hover: none)` / `(pointer: coarse)` media queries match in
+ *   Chromium (CDP `Emulation.setEmulatedMedia` does NOT cover those two
+ *   features)
+ * @param {{dir: string, size?: {width: number, height: number}}} [opts.recordVideo]
+ *   record the session to a webm in `dir`; `close()` then returns the file's
+ *   path. Needed for anything a still cannot carry — an entrance animation, a
+ *   transition, a multi-step gesture.
+ * @returns {Promise<{browser: import('playwright').Browser, page: import('playwright').Page, base: string, ws: () => import('playwright').WebSocketRoute | null, load: (theme?: string, waitFor?: {selector?: string, settle?: number}) => Promise<void>, close: () => Promise<string | null>}>}
+ */
+export async function openTranscriptHarness({
+  slot,
+  project,
+  slots,
+  detail,
+  viewport = { width: 1280, height: 900 },
+  deviceScaleFactor = 2,
+  hasTouch = false,
+  recordVideo = undefined,
+}) {
+  const { srv, base } = await serveDist()
+  const browser = await chromium.launch()
+  const context = await browser.newContext({ viewport, deviceScaleFactor, hasTouch, ...(recordVideo ? { recordVideo } : {}) })
+  const page = await context.newPage()
+  // The route is bound either way so the app's socket does not hang; the handle
+  // is kept so a harness that drives a live turn can push frames through it.
+  let socket = null
+  await page.routeWebSocket(/\/api\/ws/, ws => { socket = ws })
+
+  const fixedApi = makeFixedApi(project)
+  // Mutable so `load` can switch theme between shots without re-registering the
+  // route — the boot fixtures read the theme at request time.
+  const scene = { theme: 'dark' }
+
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/chat/slots') return json(route, slots)
+    if (path.startsWith('/api/chat/slots/')) return json(route, detail)
+    return handleBootRoute(route, path, { project, theme: scene.theme, fixedApi })
+  })
+
+  page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 300)))
+  page.on('console', msg => {
+    if (msg.type() === 'error') console.log('CONSOLE:', msg.text().slice(0, 300))
+  })
+
+  /** Cold-load the SPA on `theme` with `slot` pre-selected. */
+  async function load(theme = 'dark', waitFor = {}) {
+    scene.theme = theme
+    await page.addInitScript(([t, s]) => {
+      localStorage.clear()
+      localStorage.setItem('mc-theme', t)
+      localStorage.setItem('mc-onboarded', '1')
+      localStorage.setItem('mc-active-slot-chat', s)
+    }, [theme, slot])
+    await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
+    if (waitFor.selector) await page.waitForSelector(waitFor.selector, { timeout: 20000 })
+    await page.waitForTimeout(waitFor.settle ?? 600)
+  }
+
+  async function close() {
+    // `video().path()` only resolves once the CONTEXT is closed, and the handle
+    // must be taken while the page is still alive — asking the out-dir for "the
+    // newest webm" instead would pick up a previous run's finished recording.
+    const video = recordVideo ? page.video() : null
+    await context.close()
+    await browser.close()
+    srv.close()
+    return video ? await video.path() : null
+  }
+
+  return { browser, page, base, load, close, ws: () => socket }
+}

@@ -1,0 +1,1093 @@
+# AWS Control
+
+AWS Control is the builtin account portal and S3-backed drive. It registers
+selected local AWS profiles, groups their live identity probes by AWS account,
+and exposes Drive, Library, Backup, cost, share, and IAM-policy views. The
+builtin is declared by `kiro_crew.apps.builtins` and mounted by
+`aws_control.backend.routes.register_routes`; the dashboard surface is
+`website/src/apps/aws-control/`.
+
+## Access boundary
+
+Every AWS Control route passes `routes._guarded`. It refuses a disabled app and
+any caller that is not the dashboard owner, and records either denial in SEL.
+`test_aws_control_app.py::TestRouteRegistration.test_every_route_refuses_non_owner_when_enabled`
+pins the owner boundary.
+
+Every mutating route additionally passes `routes._mutating`. It refuses
+restricted sessions and emits an SEL outcome for success, refusal, or an
+`AWSError`; this is load-bearing because a restricted or non-owner session must
+not turn an ordinary dashboard request into an AWS mutation. The mutating route
+registrations in `routes.register_routes` cover profile registration, drive
+operations, shares, library publication, and backup operations.
+
+Account-targeted operations resolve the registered profile and then re-probe
+its live identity in `routes._account_target`. A profile that has been repointed
+to another account is refused instead of being used for the account named in
+the URL. `test_aws_control_storage.py::TestFindDrive.test_a_bucket_owned_by_another_account_is_refused`
+pins the related storage ownership check.
+
+## Credentials and paid-service consent
+
+The profile registry in `deploy.profiles` stores profile metadata, not keys or
+tokens. It discovers names through the AWS CLI and writes only its allowlisted
+configuration keys through `aws configure`; `credential_process` is a stored
+command, not credential material. This separation is load-bearing because the
+gateway passes profile names to the CLI provider chain rather than persisting
+AWS secrets itself.
+
+`aws_consent.GATED_SERVICES` includes S3 and Cost Explorer. A grant is scoped
+to service, profile, region, and the account returned by the identity probe.
+`aws_consent.authorize` consults a short-cached live identity probe before it
+allows a gated call and withdraws a mismatched grant; unreadable, absent,
+changed, or unresolved grants refuse the operation.
+`test_aws_control_app.py::TestConsentExtension` pins the AWS Control service
+registrations, and
+`test_aws_control_app.py::TestDriveGuards.test_consent_refusal_answers_409_before_any_aws_call`
+pins refusal before the drive handler calls AWS.
+
+The confirmation surface and the operations resolve the same key, through one
+policy. `accounts.resolve_default_account_profile` is the strict form: the
+registry default picks the ACCOUNT, and `accounts._pick_profile` picks the key
+within it — healthy first, the default preferred only among the healthy ones,
+which is exactly what `_resolve_target` gives a request-driven operation. The
+nightly backup loop (`hooks.py::_run_once`) calls it and skips the wake on None,
+because a caller about to spend money must read "no working key" as "not now".
+`accounts.resolve_consent_target` is the DISPLAY form the consent handler
+(`dashboard/handlers/aws_consent.py::_effective_target`) calls for S3 and Cost
+Explorer: same resolution, but with no working key it names the registry default
+anyway so the card reports the credential error instead of rendering nothing.
+That fallback reads the agent-writable registry directly, so it is `_safe_field`
+scrubbed on the resolver's side of the return — the profile charset admits the
+shape of an access key id, and the handler emits `profile` and `region` in its
+JSON. If the resolver itself raises (it spawns the AWS CLI), the handler degrades
+to the empty profile and `DEFAULT_REGION`, both module constants, rather than to
+an unscrubbed read.
+Resolving the default directly is a dead end: the card bound to an unhealthy
+default has no account to confirm, `Confirm and enable` requires one, and the
+account's healthy sibling key keeps serving every operation — a working account
+with no way to authorize it. The same read in the unattended loop is worse than a
+dead end, because the grant names the healthy key while the loop resolves the
+broken one, so the backup skips on every wake with only a log line.
+`test_aws_control_app.py::TestConsentTargetTracksTheOperation` pins the shared
+resolution as an equality against `resolve_account_profile`, the key the nightly
+loop gates on, the fallback scrub, and each degraded state.
+The surface stays one grant per service, so the account the default names is
+still the account a confirmation applies to; a grant recorded for one account
+and used under another fails closed in `aws_consent.is_granted`, and the gate's
+own row names the account it would bill so the mismatch is visible.
+
+Registration is reversible from the same surface. `POST /profiles/unregister`
+drops the named profiles from the registry and nothing else: it never reaches
+`deploy.profiles.create_aws_profile` (the module's one `aws configure` writer)
+or the AWS CLI, so the operator's AWS CLI configuration and every AWS resource
+the account holds, the drive bucket included, are untouched. Names are checked
+against the shared profile pattern but not against the machine's profile list,
+so an entry whose profile was already deleted from the CLI configuration is
+removable. Because grants are keyed by service, `aws_consent.revoke_for_profile`
+sweeps the gated services under one consent lock and withdraws every grant
+naming a removed profile, so a later re-registration under the same name starts
+unconsented; the sweep runs BEFORE the registry write, so a request that fails
+between the two leaves a registered-but-unconsented profile (the operator
+retries) rather than an unregistered profile still holding an authorization
+(`consent_unwritable` is the 500 that reports the former). The share,
+library, and backup ledgers are account-keyed and are left alone: they describe
+the bucket, which still exists and still bills, and must render unchanged when
+the key is registered again. `test_aws_control_app.py::TestProfileUnregister`
+pins the registry-only boundary, the default re-pick, and the grant sweep.
+
+AWS Control reaches AWS through deploy-engine helpers: account inspection uses
+`deploy.engine.run_aws`, while storage uses `deploy.engine._checked`. The engine
+constructs fixed AWS CLI argument vectors with a profile name and runs the CLI
+through the standard subprocess sandbox. The app does not import an AWS SDK.
+
+## Drive and destructive operations
+
+`storage.find_drive` discovers a drive by its managed tags, validates the bucket
+name, and verifies bucket ownership against the requested account. Ambiguous or
+unverifiable discovery refuses. The result is deliberately not cached: a bucket
+identity is an authorization decision, not a display value.
+
+`storage.create_drive` creates a bucket only after the bootstrap handler's
+preview-plus-confirm flow. `routes._handle_drive_bootstrap` rechecks the
+account target and S3 consent after confirmation and serializes creation so
+concurrent confirmations cannot create competing drives.
+`test_aws_control_app.py::TestDriveGuards.test_bootstrap_without_confirm_previews_and_creates_nothing`,
+`TestDriveGuards.test_concurrent_bootstrap_confirms_create_exactly_one_drive`,
+and `TestDriveGuards.test_consent_withdrawn_mid_create_refuses_and_creates_nothing`
+pin those guarantees.
+
+A created drive is ownership-checked before it becomes discoverable. The storage
+layer enables versioning and then calls `deploy.engine._harden_bucket`, which
+sets S3 Block Public Access, bucket-owner-enforced ownership controls, default
+SSE, and the discovery tags. The order is load-bearing: a partially configured
+bucket is left untagged rather than becoming a usable drive without versioning.
+`test_aws_control_storage.py::TestCreateDrive.test_versioning_is_enabled_before_hardening_tags_land`
+pins the sequence.
+
+Drive objects live beneath the `artifacts/`, `drive/`, and `backup/` prefixes.
+`storage.validate_key` rejects paths that could escape a section. Folder deletion
+uses a validated, slash-anchored prefix, so it cannot target an empty section,
+the bucket root, or a sibling with a common name prefix.
+`test_aws_control_routes.py::TestFolderDelete.test_delete_rejects_an_empty_path`
+and `test_aws_control_storage.py::TestDeletePrefix.test_deletes_every_object_and_returns_the_count`
+pin that guard.
+
+At the API layer, object and folder deletion do not require a `confirm`
+parameter. The dashboard shows a confirmation strip before either deletion, and
+`routes._handle_drive_delete` and `routes._handle_drive_folder_delete` then
+execute after the owner, restricted-session, S3-consent, and key-scope guards.
+On the versioned drive, `storage.delete_key` writes an S3 delete marker rather
+than purging historical versions. This is the current recovery property; the
+app does not implement a version purge.
+
+`routes._handle_drive_move` moves one object as a server-side copy followed by
+a delete, both through `storage` (`storage.copy_object`, then
+`storage.delete_key`), with the source deleted only after the copy succeeded —
+a failed copy leaves the drive unchanged. Two invariants are load-bearing: a
+move never silently overwrites (an existing destination refuses with 409,
+pinned by
+`test_aws_control_routes.py::TestDriveMove.test_move_existing_destination_answers_409_and_deletes_nothing`),
+and the section is restricted to `drive` (the `library` and `backup` sections
+are managed surfaces whose objects carry ledger state a move would orphan;
+pinned by
+`test_aws_control_routes.py::TestDriveMove.test_move_rejects_a_non_drive_section`).
+Both keys pass `storage.validate_key` before any AWS call, the source must
+exist (404), and the copy-before-delete order is pinned by
+`test_aws_control_routes.py::TestDriveMove.test_move_copies_before_deleting`
+and `TestDriveMove.test_move_copy_failure_issues_no_delete`. The copy carries
+both `--expected-bucket-owner` and `--expected-source-bucket-owner`
+(`test_aws_control_storage.py::TestCopyObject.test_copy_object_is_owner_pinned_on_both_ends`).
+The dashboard reaches this route two ways with one mutation behind both: a
+pointer drag of a file row or tile onto a folder, and a "Move to folder…" item
+in the file's own overflow menu that opens a picker of the folders the current
+listing can see (the top level, the parent, and the sub-folders on screen) —
+the keyboard and touch path, since a drag is a convention only a pointer user
+discovers. Moves are serialized: while one copy runs the source row is dimmed
+and marked busy, other rows are not draggable and their "Move to folder…" item
+is disabled, so the busy marker and any refusal always belong to the one move
+in flight. A refused move (409 conflict, live share) is reported in the picker,
+which stays open for another choice. The picker can be dismissed at any point,
+including mid-move: the copy keeps running, the row stays busy until it lands,
+and a refusal that arrives after dismissal is reported on the pane's own error
+strip.
+
+`routes._handle_drive_preview` is the gateway-proxied read behind the dashboard's
+text preview: the browser cannot fetch a presigned URL itself (the bucket has no
+CORS configuration), so the gateway reads a bounded head of the object through
+`storage.get_object_head_bytes` and returns it decoded. The CLI only writes to a
+path, so the bytes stage through a fresh per-call directory under
+`storage.STAGING_DIR_LEAF` (`aws-control-staging`), a top-level leaf of the data
+home that every agent sandbox bind-masks and the shared file-tool gate refuses —
+a same-UID agent cannot swap the destination for a link between the gateway's
+create and the CLI's open. Top-level on purpose: a mask covers the leaf, not its
+ancestors, so a leaf under `apps/aws-control/` would leave agent-writable
+directories that a rename could swap out from under a transfer; at the top level
+the only ancestors are the data home and `$HOME`, the residual every other
+fenced leaf already stands on. That same mask would hide the directory from the
+sandboxed CLI, so the per-call directory is granted to that one fixed-argv spawn
+through `engine.run_aws(extra_visible_dirs=...)`. The mask is a Linux/macOS
+mechanism; on Windows, which has no sandbox, the destination is pinned by
+identity instead — the whole path, not just the file. The staging root and then
+the per-call directory are each opened and held through
+`platform_compat.pin_directory` (a handle without `FILE_SHARE_DELETE`, which
+refuses a link or reparse point at the name and, while held, lets neither that
+directory nor anything above it be renamed or deleted); inside the pinned
+directory the gateway creates the file itself with `O_EXCL` (a pre-planted name
+— a hard link to a sensitive file included — fails the create), holds that
+handle across the CLI call, re-checks device, inode and link count against it
+once the CLI returns, and reads the bytes back through the handle rather than by
+reopening the path; the directory is removed before the call returns. A
+0-byte object makes the byte range unsatisfiable (S3 answers 416
+`InvalidRange`), which reads as the empty preview it is, not as a failure. The head
+is fetched with an 8 KB look-ahead past the 256 KB window, redacted whole, and
+only then cut to the window at a whitespace boundary, so a secret straddling
+the window's end is masked rather than shipped as an unrecognised prefix. The
+response carries `truncated` (the object continues past the window) and
+`redacted` (the egress redactor masked at least one value), and the dashboard
+shows a one-line notice for each — the redaction notice at body weight, since
+it changes the meaning of every byte below it — so a masked value is never read
+as the file's own bytes. The window is a byte budget: the redacted text is cut
+to `_PREVIEW_MAX_BYTES` of UTF-8, not characters, so a multibyte file cannot
+carry the look-ahead past it. The dialog header names the file and, for a
+nested key, its folder muted beside it, so two same-named search hits stay
+distinguishable once open. `routes._handle_drive_download` returns the stored `contentType`
+from the same HEAD that gates the presign, and the dashboard routes a `.pdf`
+key whose stored type is not `application/pdf` (an object uploaded before
+content types were set, served as octet-stream) to the "cannot be previewed"
+fallback instead of an empty sandboxed frame.
+
+`routes._handle_drive_search` matches FILE NAMES only (the full section-relative
+key, case-insensitively), never contents, and the dashboard's search box says
+so ("Search by file name or path…" — the match runs over the whole
+relative key, folder segments included, but only files are returned). While a search is active the folder view, its
+crumbs, the folder-scoped write controls (Upload, New folder) and the grid/list
+toggle are all withdrawn together: results span the whole section and always
+render as a table, so a write would land in a folder the reader cannot see and
+the toggle would visibly do nothing. The section's drop zone goes inert rather
+than absent — it still swallows a dropped OS file (the page's only
+`dragover`/`drop` `preventDefault`, without which the browser navigates the
+tab to the file) but uploads nothing. A refinement keeps the previous query's
+rows on screen (`keepPreviousData`) and marks them busy with a "Searching…"
+line while the new walk runs, so stale rows are never read as the new answer.
+Each hit carries the same overflow menu as a file row (Download, Rename, Share)
+plus "Open containing folder", with Delete alone below a separator; rename and
+delete run in place against the hit's own path (the delete confirmation names
+the full relative key, since same-named files from different folders sit side
+by side in results) and re-run the search. "Open containing folder" clears the
+search, navigates to the hit's directory, and marks the hit's row (or grid
+card) for a few seconds counted from the moment the row appears — the listing
+is a CLI round-trip, so a clock started at the click could expire before there
+is anything to mark — scrolling it into view and moving keyboard focus onto it
+as it mounts (the menu trigger the reader activated unmounted with the search
+view, and the ring alone is a cue assistive technology never announces), so the
+reader does not re-find by eye the file they just searched for; a hit that sits
+past the first listing page is paged in automatically until its row mounts (or
+the folder runs out), and navigating to any other folder retires the marker.
+
+Rename (rows, grid cards, and search hits) is a same-directory call to the move
+endpoint, so every move guarantee applies and only the refusal wording is
+rename's own. Its completion is scoped to the row that started it: the in-place
+editor may have moved to another row while the request was in flight, and the
+name being typed there survives — a success closes the editor only if it still
+belongs to the renamed row, and a failure lands inline only there; when the
+editor has moved on, the failure is reported in the page-level notice naming
+the file (`rename_failed_named`), never dropped. Delete follows the same rule:
+its inline notice lives in the confirmation strip, and a rejection arriving
+after that strip is gone (`delete_failed_named`) goes to the page-level notice.
+A query change closes every in-place editor with the view it belonged to, in
+flight or not — the request finishes regardless, and its outcome takes the
+page-level route above.
+
+On Linux the staging root is created empty before every namespace spawn
+(`sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES`, materialised by
+`sandbox._materialize_maskable_dirs`): the launcher's mask loop only binds over
+a directory that exists, so a root created lazily on first preview would be
+visible to every sandbox already running. The materialisation is fail-closed:
+a non-directory squatting the name, a creation failure other than `EEXIST`, or
+a data home that cannot be resolved at all refuses the spawn
+(`SandboxCeilingUnsealable`) rather than launching the agent with the directory
+unmasked.
+
+## Publishing and sharing
+
+`routes._publish_gate` applies the shared fail-closed publish-governance decision
+before a library push, a download presign, or a share presign. This guard is
+load-bearing because each operation makes bytes reachable outside the local
+machine.
+
+The share implementation is a presigned URL and a local metadata ledger only.
+`storage.presign` clamps the requested lifetime to the S3 signing limit, while
+`shares.record_share` stores metadata and expiry but never the URL. A presigned
+URL cannot be revoked by this app before it expires; `shares.forget_share` only
+removes its ledger record. Backup objects are not shareable.
+`test_aws_control_app.py::TestDriveGuards.test_share_of_backup_section_is_refused_outright`
+and `test_aws_control_routes.py::TestSharesListForget.test_forget_removes_a_known_share`
+pin those boundaries.
+
+The share ledger is CURRENT STATE, not an audit log: `shares._prune` drops every
+expired entry on both the read and the write path, and `record_share` keeps only
+the newest `_MAX_SHARES`. The audit trail of minted URLs is the SEL event
+`routes._audit` writes per grant, so nothing is lost by this file forgetting.
+The state it holds is a GRANT — a URL was minted for this key and has not
+expired — and NOT a claim that the object is still there.
+
+That distinction decides how a deleted object is handled. `GET /shares` reads the
+account's drive (`storage.list_object_keys`) and `shares.mark_missing_objects`
+sets `objectMissing` on every row whose `section/key` the drive does not hold; no
+row is removed and nothing is written. Dropping the row would be wrong on both
+counts: a presigned URL signs bucket, key and expiry but no version, so
+recreating the key makes an unexpired URL resolve again — the grant is dormant,
+not dead — and dropping the record is exactly the `forget` the app documents as
+the user's decision. The mark is not persisted for the same reason: it is a fact
+about the bucket at render time, which recreating the key would make stale in the
+under-reporting direction. This is a deliberate divergence from
+`library.reconcile`, which does prune, because that ledger claims a cloud copy
+exists and the bucket can settle that claim.
+
+The listing is best-effort and its outcome is reported, never implied: `checked`
+says whether the rows were compared against the drive, because an absent
+`objectMissing` otherwise reads as "the object is there" on a render where the
+drive was never read. WHY the check did not run is logged rather than sent — the
+reason is a backend-authored English sentence and the console is rendered in
+thirteen locales, so it shows a translated "not checked" line gated on `checked`,
+the same resolution the Library's `remoteError` reaches.
+`storage.list_object_keys` raises rather than degrading to an empty set, and
+per-row `storage.object_exists` is deliberately not used — it answers `rc == 0`,
+so a throttle or a timeout is indistinguishable from a 404, which is correct when
+refusing to mint and would mark live shares dead here. The ledger is read BEFORE
+the listing is taken, which is what makes an `observed_at` cutoff unnecessary: no
+row in hand can postdate the listing.
+`test_aws_control_routes.py::TestSharesListForget` pins the mark, the read order,
+the unmarked degradation, the logged reason, and the empty-ledger case that takes
+no listing at all.
+
+Existing rows stranded before this shipped are corrected on the next render;
+there is no migration over `shares.json`.
+
+AWS Control does not create bucket-policy account grants or public CDN shares.
+The IAM-policy endpoint renders `deploy.iam.policy_json` for the operator to
+apply; it does not write IAM policy.
+
+## Library, costs, and backup
+
+`library.push_artifact` copies a selected artifact through the Drive storage
+layer after the route's S3-consent and publish-governance checks. It refuses
+credential-bearing artifact content; `test_aws_control_app.py::TestLibraryScan.test_credential_bearing_artifact_is_refused`
+pins that egress boundary.
+
+`library.library_remove` deletes the whole `artifacts/<slug>/` prefix and then
+forgets the slug's ledger record. The order is load-bearing rather than
+transactional: a local file and a remote bucket cannot be committed as one, and
+objects-then-record leaves at worst a record the bucket does not back, which
+`library.reconcile` repairs. The reverse order would leave objects that no
+surface lists. Removal writes delete markers on the versioned bucket, so it
+empties the listing rather than reaching billing-zero; a version purge remains
+outstanding, as it does for the Drive's own deletes.
+
+`library.reconcile` is the direction that makes the ledger's "display state, not
+truth" claim hold: it drops records the bucket does not back and never invents a
+record for a cloud copy it finds, because version and push time live in that
+copy's sidecar. It prunes only what the bucket has had a chance to disprove — a
+record stamped at or after the listing it is judged against is left alone, since
+that listing predates the record — so a push completing mid-render does not lose
+its record. `routes._handle_library_list` reconciles before joining local
+artifacts, and reports whether the bucket was actually read — a failed, absent,
+or unconsented read leaves the rows rendering as an unverified ledger claim
+rather than as an authoritative empty. It reads the prefix through
+`storage.list_library_folders`, which is unredacted and completely paginated
+because a reconcile reasons about absence; the paged, redacted display listing
+cannot answer that question. `library._update_ledger` is the ledger's only
+writer, so push, removal, and reconcile cannot drop each other's records.
+
+`routes._library_lock` serializes the three Library operations on one drive —
+push, removal, and the reconcile read. Each is a network round trip followed by a
+ledger write, and interleaving two of them corrupts state neither half can
+detect: a push completing between the reconcile's listing and its prune, or a
+push racing a removal of the same slug past the delete sweep. The ledger's file
+lock cannot serve this — it covers a sub-second read plus rename by design.
+
+The two mutations wait on that lock unbounded — they are user-initiated actions
+that may legitimately queue — but the render path waits only
+`_LIBRARY_RECONCILE_LOCK_WAIT_SECS` and then reports `reconciled: false`. A push
+holds the lock across an upload allowed up to 600s, and a page render must not
+hang for that; skipping loses nothing durable because the reconcile is
+self-correcting, so the next render performs it. Errors on this path already
+degrade rather than failing, and slowness degrades the same way.
+
+Because that lock makes a caller WAIT, all three operations re-run their
+authorization inside it via `routes._reauthorize_in_lock` — app enabled, then live
+identity still resolving to the requested account, then S3 consent, then the drive
+bucket re-resolved and compared, plus publish governance for the push. This is the
+same re-check `_handle_drive_upload` runs after its spool and for the same reason:
+the wait sits between the checks that authorized the call and the call itself. The
+bucket is included because tag discovery can return a different bucket while the
+identity is unchanged, and this module keeps no bucket-name cache precisely
+because that identity must not be stale. The reconcile read is included because a
+listing is still a call into a paid service; on the read path a failed re-check
+degrades to "not reconciled" rather than an error, so the local half still
+renders, and so does a ledger that cannot be written — the rows are renderable,
+they are merely unverified. The degraded identity denial is SEL-audited even
+though the route does not fail on it: a permission decision reaches SEL whether or
+not it becomes an error response.
+
+`library_remove` CONFIRMS the prefix is gone before touching the ledger.
+`delete_prefix` deliberately degrades on an unreadable listing page — it stops the
+walk and reports the count so far, so it can under-delete — and forgetting a record
+on that would drop a copy still in the bucket while reporting the removal as done.
+A slug still present raises instead, leaving the record intact.
+
+The lock is per-process, so a second gateway sharing the data home is still a
+racer. `library._recorded_at_or_after` is that cross-process guard, one rule
+asked by both operations: reconcile will not prune, and removal will not forget,
+a record written at or after the remote observation each is acting on. Both
+cutoffs are read BEFORE their observation begins, never after — a cutoff that
+postdates its own observation protects nothing, because a record written in the
+gap compares as older than it. Reading early only widens the set of records left
+alone, and a record left behind whose objects were really removed is merely
+stale, which the next render repairs.
+
+Soundness also depends on `pushedAt` being stamped when the record is WRITTEN —
+inside the ledger lock, after the uploads have succeeded — not when the push
+began; a pre-upload stamp would read older than a listing that ran during a slow
+upload. The metadata sidecar keeps its own pre-upload stamp, which is what remote
+metadata should say about when the push started.
+
+Cloud copies with no local artifact row are reported to the caller as
+`remoteOnly` rather than being hidden: `list_pushable` walks the local store, so
+a copy pushed from another machine has no row to carry it and would otherwise be
+unreachable from the console that must be able to remove it. The dashboard keeps
+that promise through the Library folder's listing rather than through this field:
+the folder renders one card per listed prefix and offers removal on all of them,
+so a copy with no local row is reachable by construction rather than by a second,
+separately-derived set.
+
+`costs.fetch_month_costs` calls Cost Explorer for the requested linked account
+and groups results by service. `routes._handle_costs` serves a fresh local cache
+without a new consent check; a stale cache is returned with its stale state when
+Cost Explorer consent is absent or a refresh fails. This keeps the Bill view
+available without misrepresenting a cached value as fresh.
+
+`backup.run_snapshot_backup` uploads a generated snapshot archive, and
+`backup.run_sessions_backup` archives session material only when descriptor-based
+traversal pinning is available. `backup._authorize_upload` requires the app to
+remain enabled, the S3 grant to still name the target account, and shutdown not
+to be in progress before upload. `backup.restore_download` stages an archive
+locally; it does not restore it into live gateway state.
+`test_aws_control_app.py::TestRound22Hardening.test_restore_refuses_a_symlinked_destination`
+pins the staged restore safety boundary.
+
+### Several installs, one drive
+
+Drive discovery is by tag, so every install pointed at the account finds the same
+bucket and writes to it. This is supported rather than refused, and the archive
+keys carry the distinction: `backup/snapshots/<install>/...` and
+`backup/sessions/<install>/...`, where `<install>` is a random 32-hex id held at
+the top level of the app's own `backup.json` and minted on first use by
+`backup.install_identity`. It is deliberately NOT `beacon.install_id()`, which is
+the telemetry egress identity and is only materialised under telemetry consent;
+minting it from the backup path would create a telemetry identity on a host that
+opted out. An unwritable state file degrades to a process-local id rather than
+refusing the backup, because refusing would stop a backup that works today.
+
+The nested prefix is what lets one delimited listing answer two questions at
+once: `storage.list_section` on `snapshots/` returns every install id present as a
+folder and every pre-namespace archive as a file, so attribution and "another
+install writes here" arrive together. A second call reads this install's own
+prefix. Enumerating the OTHER installs' prefixes is opt-in
+(`list_remote_backups(include_others=True)`, capped at
+`backup.MAX_OTHER_INSTALLS`) because it costs a list call and a label read per
+install; it exists because a replacement machine owns no archives, so a view
+limited to its own prefix would show it nothing on the one occasion the bucket
+holds the only surviving copy.
+
+An install also publishes a human-readable label beside its own archives at
+`<kind>/<install>/_label.json`, written from the upload path and under BOTH kind
+prefixes on every backup, so a rename followed by a backup of one kind cannot
+leave the other prefix serving the old name. Each S3 write carries its OWN
+`_authorize_upload` immediately before it, with no other network call in between:
+whichever of the two writes ran second would otherwise be running on a decision
+taken before the first one's transfer, and since the archive upload can last
+minutes, ordering the pair differently only moves which write is exposed. The gate
+therefore lives inside `_publish_label` rather than at its call site, so the
+authorization cannot be separated from the write it guards. The label is **display only**. The id
+in the key is the identity S3 itself recorded and no writer can restate;
+`backup.classify_key` and every decision that follows read that and nothing else.
+A label read from the bucket is foreign-authored text, so it is control-stripped,
+run through the same egress redactors `storage.list_section` applies to object
+names, and length-bounded by `backup.sanitize_label`; the transfer is
+range-bounded through `storage.get_object_head_bytes`, since the object's size is
+another install's choice. The dashboard renders a foreign label in quotation marks
+beside the owning id so the self-asserted part is visibly self-asserted.
+`test_aws_control_backup.py::TestLabelIsDisplayOnly.test_a_published_label_cannot_make_a_foreign_archive_restorable`
+pins that the gate never reads it.
+
+`backup.restore_download` refuses every archive it cannot PROVE is this install's
+own -- a co-tenant's, one under this install's own prefix with no matching entry in
+the upload record, and one predating install ids -- unless the caller passes
+`foreign_ok`. `routes._handle_backup_restore` answers `409 foreign_install_archive`
+carrying both the refused origin and the owning id, because the three cases need
+different words. The rule is uniform on purpose: an earlier revision refused only
+the foreign case and left the other two to a confirmation dialog, which put a
+safety property in one client, so any caller that did not open the dashboard
+restored a planted archive with no override. `ORIGIN_SELF` is the only origin that
+needs none, and it is the one the local upload record can vouch for.
+
+The override is mandatory rather than optional: restoring onto a replacement
+machine means nothing in the bucket is provably this install's, which is what
+disaster recovery is, so a hard wall would block the one case the backup exists
+for. `POST /install/label` renames this install and reaches no AWS service.
+
+A shared drive is not shared state. Each backup is an opaque point-in-time
+archive, and a restore only downloads it: the operator applies it themselves with
+the gateway stopped. The panel copy says exactly that, because "share memory
+between my laptop and my cloud desktop" is the request that leads people here.
+
+The nightly toggle records whether an account is eligible for a scheduled
+snapshot. `aws_control.hooks._run_once` resolves an account and drive, checks
+S3 consent, runs only due backups, and SEL-audits invocation, success, and
+failure. It skips unavailable accounts or absent drives rather than creating
+resources itself. When `hooks._note_shared_drive` sees another install's prefix it
+logs and SEL-audits the observation and then PROCEEDS. It does not take ownership
+of the schedule: with the keys namespaced there is nothing left to collide, and a
+single-owner schedule would leave one machine silently un-backed-up, which is
+discovered at restore time and is worse than the state it replaced.
+
+## Dashboard surface
+
+The app opens on an Overview pane, not on a listing: a strip of metric cards
+(accounts, keys healthy of total, drive used, month-to-date spend, live share
+links, backup schedule), each restating a fact one of the other panes owns and
+carrying a one-line reading under the number, then an Accounts card and a Cloud
+drive card side by side, then a Paid services card. The Overview adds no
+mutation of its own beyond the two paid-service gates. Its account rows are the
+same `AccountRow` component the Accounts pane renders (a `variant` prop decides
+density), so the remove flow, the Reconnect disclosure and the hand-off gating
+exist once. A row carries two controls, the select surface and its overflow
+menu; Reconnect (offered on a degraded resolved row) and Remove are items in
+that menu, and the health word on the row is the cue that the menu holds
+something to do. The bare `/aws-control` path and an unknown pane segment both land on
+Overview; every named pane path is unchanged. The month-to-date figure shares the
+Usage pane's cost cache entry and, like it, settles to a dash with a visible
+reason (consent missing, or the read failed) rather than a tooltip. A read that
+fails (drive, bill, share links, backup schedule) renders an `AwsErrorNotice`
+with a retry under the metric strip, and its card holds a dash. The one
+rejection that is not a failure is the `aws_consent_required` 409, the reader's
+own pending decision, which routes to the setup action or the consent gate; a
+stale connection's 409 (`account_unavailable`, `account_mismatch`) is told apart
+by its code and renders as the failed read it is. Neither the Cloud drive card
+nor the Usage pane's storage meter repeats the byte total its metric card
+already prints; each owns the split, drawn once as `StorageBar`.
+
+Paid-service consent renders in two shapes from one component. `AwsConsentGate`'s
+default mode is the full card the settings panels use; its `compact` mode is one
+row per service in every state (receipt, ask, error) with no container of its
+own, so the Overview and Usage panes lay those rows in a single `divide-y` list
+inside their Paid services card. The Usage pane's month-to-date, storage and
+object figures are metric cards; the storage split (one bar, one legend, one
+tile per section) is the shared `StorageBar` from `shared.tsx`, drawn once and
+placed by both the Usage pane's `StorageMeter` and the Overview's Cloud drive
+card, so the two readings cannot drift. Health is encoded the same way on every
+row (account, key, backup, share): a dot plus a `Badge` word, never colour alone,
+and the word is never hidden at any width.
+
+Every list on the app's panes (accounts, keys, backups, share links, library,
+files) sits inside a `Card` with a `PanelSectionHeader`, empty states render
+through the shared `EmptyState` (a filtered-to-nothing state through
+`FilteredEmpty`, which offers the clear action in place), loading states mirror
+the row box they replace, and the three file dialogs keep their hand-rolled
+overlays because `DriveSectionView` restores focus to a remembered opener that
+the Radix dialog would fight. The App Store card and detail page carry hero
+art declared in `app.json` (`heroImage`, `heroImageDark`, `heroImageDetail`,
+`heroImageDetailDark`), authored in the same palette and restraint as the other
+builtins' art.
+
+## HTTP surface
+
+`routes.register_routes` exposes owner-gated reads for accounts, available
+profiles, reconnect guidance, drive status/list/download/preview/search, costs,
+library, backup status, share metadata, and rendered IAM policy. Its mutations
+are profile registration and unregistration; drive bootstrap, upload, delete,
+move, folder create/delete, and share; share-ledger removal; library push and
+library removal; backup run, nightly toggle, and staged restore; and renaming
+this install (local, display only -- see "Several installs, one drive").
+
+Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, move,
+profile registration, library push, library removal, share creation, and backup
+mutations have no separate confirmation request; the dashboard separately
+confirms object deletion, folder deletion, library removal, and account
+removal. Account removal lives in an overflow menu beside each account row on
+the Accounts pane, outside the row's select button so opening it cannot select
+the account; the menu item reveals the same inline Cancel-plus-danger strip the
+Files and Library folders use, naming the account (or, for the unresolved
+pseudo-row, the keys it will forget) and stating that nothing in AWS or in the
+AWS CLI configuration changes, and it posts every key the row holds; the menu
+item itself carries that reassurance as a muted second line, since the strip
+sits behind a click a cautious reader would otherwise refuse. Library removal
+is offered on the Library folder's own listing — one overflow menu per listed
+cloud copy, in both the grid and the list view, the same `⋮` shape the Files
+folder's cards and rows use — and never on the "Add from Artifacts" picker. That
+placement is the correctness boundary, not a layout preference: a picker row is a
+LOCAL artifact joined to the `account -> slug` ledger, and because
+`ArtifactStore.delete` does not prune that ledger and a new artifact starts at
+version 1, a reused slug lends a never-pushed artifact another one's push record,
+so a removal offered there empties a different artifact's copy under the wrong
+name. No predicate available on such a row separates the two, and naming the
+bucket folder in the confirm narrows the blast radius without fixing it — the
+reader is still asked to vouch for an identity this machine cannot establish. A
+folder row comes from the bucket listing, so removing it empties the object that
+was LISTED rather than one inferred from the ledger. That fixes the target, not
+the name: the card's label still comes from the slug-keyed join, and the folder
+named in the confirm is built from that same shared slug, so under slug reuse the
+reader can be shown one artifact's name over another's bytes with nothing on
+screen able to separate them. Establishing whose copy it is needs the pushed
+`meta.json` sidecar and is tracked by #6987; the same slug-targeted removal is
+offered from the picker on the current release, so this placement neither
+introduces that gap nor closes it. Removal is therefore not gated on local state
+at all, which is
+what makes a copy pushed from another machine (`remoteOnly` above) removable
+rather than stranded. It is gated the way folder deletion is: the menu item
+reveals an inline Cancel-plus-danger strip that names both the item and the
+`artifacts/<slug>/` prefix it will empty, and that strip stays open until the
+request resolves — it is the only place the outcome can render, so neither its
+Cancel nor an early close may discard an in-flight answer. Every mutation is
+owner-gated, restricted-session
+refused, and SEL-audited. Account-targeted AWS operations additionally enforce
+live identity and service consent, and egress paths enforce publish governance.
+Library removal is deliberately outside that egress set: it sends no bytes out,
+so a profile that denies publishing can still empty a bucket it is paying for.
+
+## Error surfaces
+
+Every failure the dashboard shows for this app renders through one wrapper,
+`shared.AwsErrorNotice`, over the dashboard's shared `ErrorNotice` — never an
+ad-hoc red paragraph, and never nothing. The wrapper exists because of a
+mismatch the shared notice cannot bridge on its own: `ErrorNotice` recovers an
+error's context from the error journal by matching the message it renders, and
+this app renders a LOCALISED sentence keyed off the backend `code`, not the
+backend prose, so that lookup can never match here. The client closes the gap
+at the transport instead. `api.request` journals every non-ok response
+(`utils/errorReport.recordError`: status, machine-readable `code`, path-only
+endpoint, raw body) and hands the resulting entry to the thrown
+`AwsControlError` as `report`; a transport-level rejection is journaled by its
+own message and rethrown unchanged. `api.errorReportOf` is the one reader of
+both paths, and `AwsErrorNotice` passes what it returns to the notice as the
+structured report — so the "ask the agent" hand-off carries the endpoint, the
+status, the code and the body, while the reader sees the sentence.
+`api.test.ts::request error contract` pins the journal entry's shape, the
+query-string strip, and that an error built outside the client (as tests do)
+degrades to the sentence alone rather than throwing.
+
+The hand-off keeps `ErrorNotice`'s opt-in default and is stated at every call
+site in this app. The safety argument for leaving it off is an unsaved draft the
+navigation would destroy, so the three notices rendered beside unsaved input —
+the folder-create failure under the folder-name field, the share failure under
+the share note, and the register failure under the Add-accounts checkboxes —
+leave it off; the refusal is journaled regardless. Two panes go further and
+gate every notice they render on their one draft being absent, because all of
+those notices share the screen with it: the Files pane on the folder-name
+disclosure being closed, and the accounts pane on no profile being ticked in
+the Add-accounts form (`AddAccounts` reports that through `onDraftChange`; the
+row and connections-card Reconnect notices and the orphaned-consent rescue all
+take the pane's `handOff`). A
+client-side name check (a rejected folder or file name) leaves it off too: no
+request was made, so there is no report and nothing for the agent to read.
+Every other notice opts in. `AwsConsentGate` is shared with settings panels
+that DO hold drafts, so it takes the decision as an `askAgent` prop, off by
+default, which this app sets. Every READ notice this app renders itself offers
+a Try-again button under the notice (`onRetry`), because a transient read is
+the one failure the reader can clear alone; a mutation's retry is the control
+that fired it, which is still on screen. `AwsConsentGate`'s own status-read
+failure carries that button itself, because with the grant and withdraw
+controls gone the notice is the whole card. The page-level accounts failure words
+a 403 as a permission answer (sign in as the owner) rather than as a transient
+read, because a retry cannot clear it. A confirm strip that already holds
+Cancel and Delete renders its inline notice on its own line (`basis-full`), so
+the hand-off never becomes a third action in that row.
+
+Two classes of failure previously rendered nothing and now render a notice:
+every read whose query had no error branch (the Files listing, drive status
+outside the consent 409, the permissions drawer, backup status, the share
+ledger, the local profile scan) and every mutation whose error was never read
+(drive create-confirm, share creation, nightly toggle, restore, share removal).
+A failed read must not fall through to the surface's empty state — a failed
+listing is not an empty folder, a failed profile scan is not "nothing left to
+add" — and the tests for each state assert the empty state's absence alongside
+the notice. Two states are deliberately NOT errors: a 403 whose code is
+`app_disabled` renders the disabled-app copy (any other 403 — a non-owner
+caller's `dashboard_owner_required` — is an error to diagnose and goes to the
+notice), and a costs 409 `aws_consent_required` is answered by the Cost Explorer
+ask, not a banner beside it. A reason the backend reports inside a 200 (the
+backup archive's `remoteError`) travels as the notice's message under the
+localised lead, so the hand-off carries the text AWS returned.
+`DrivePage.test.tsx::error surfaces reach the agent`,
+`AwsControlPage.test.tsx::edge states`, and `ConsoleView.test.tsx` pin these.
+
+## The crew container runtime
+
+`crew/runtime/` is the source of a Linux container image, not code the owner's
+gateway runs. It is what a remote crew runs AS: a supervisor that orders and
+watches the task's processes, a front process that receives a turn, and Kiro
+Crew's own backend executing it. The design of record is
+[rfc-remote-instance-on-fargate](../../request-for-change/rfc-remote-instance-on-fargate.md).
+
+The tree is a docker build context and deliberately not a Python package:
+`crew/runtime/` has no `__init__.py`, its modules import each other as top-level
+`container.*` because that is what they are inside the image, and
+`test_spawn_audit.py::test_container_image_assets_are_not_imported` pins that the
+gateway never imports it. Three repo-level audits exempt it by shape for that
+reason: the spawn audit (`_is_container_image_asset`), the MCP secret-caller scan,
+and the hardcoded-agents-dir ratchet.
+
+Its tests live in `container_tests/`, run only by the `backend-test-crew-container`
+lane in `ci.yml` (see [ci-and-reviews](../../ci/ci-and-reviews.md)), and are
+excluded from `setup.cfg`'s `package_data` and from `MANIFEST.in`, so a user's
+wheel and DMG carry the image's build context and not its test suite.
+`test_crew_runtime_payload.py` pins both directions.
+
+The image's two review-sensitive fetches are pinned to what was reviewed: the
+base image by manifest-list digest on the explicit `-bookworm` tag (a bare tag
+can move -- `3.12-slim` had already drifted to trixie when the pin was added;
+the digest names the multi-arch index, from which the builder's platform
+selects the per-arch manifest) and the kiro-cli tarball by a per-arch sha256
+recorded in the Dockerfile. The host publishes checksums beside the tarballs,
+but a checksum served by the same host it protects verifies transport, not
+review, so the reviewed values live in the repo. A moved tag or a re-published
+tarball fails the build instead of silently changing the image. The remaining
+fetches are bounded but not content-addressed:
+`container/requirements.txt` pins direct versions yet carries no `--hash`
+entries (pip's hash-checking mode is all-or-nothing per invocation and the same
+install includes the locally built `vendor/*.whl`, whose hash cannot be
+recorded ahead of the build -- transitive resolution can therefore still
+drift), and apt packages are unpinned, since bookworm point releases drop
+superseded versions and a pin would break on every security update.
+
+### Three processes, one task
+
+| Process | Owns | Exposure |
+|---|---|---|
+| Supervisor | process order, the crew bundle install, the container's own config, teardown | no listener; it is the task's init process |
+| Front | receiving a turn, stripping any route prefix, forwarding over loopback | the only listener, port 8080 |
+| Kiro Crew backend | sessions, conversations, transcripts, MCP, subagents, skills, memory | loopback only (`127.0.0.1`, not configurable) |
+
+Nothing serves a user interface. `config_dir` equals `data_home`: the gateway's
+`config_dir()` and `data_home()` resolve to the same directory, so
+`session_map.json` and `open_slots.json` sit at the home root, and the supervisor
+refuses to start when the two disagree, because a backend writing to one path
+while the deployment points at another loses the record of which conversations
+existed.
+
+The startup order is a correctness requirement rather than a preference:
+
+1. Gate the environment (path layout, model credential, sandbox) and install the
+   crew bundle. Nothing has started.
+2. Write the container's own configuration. It must land after the bundle, because
+   a bundle may ship config and the container's posture has to win on the keys it
+   sets, and before the backend, which reads the file at boot.
+3. Start the backend. `wait_until_ready` returns only when the port answers **and**
+   the boot secret file exists; process-alive is not ready.
+4. Start the front process.
+
+There is no backup sidecar and no restore phase. Durability across task
+replacement is a capability the container does not have; the front still fetches a
+slot's transcript from S3 on demand, so `SMC_BACKUP_BUCKET`/`SMC_BACKUP_PREFIX`
+name where it reads. When durability returns it must reinstate the ordering rule
+that made it correct -- a restore must finish before the backend starts, because
+the backend's periodic flush persists its in-memory slot table and a flush landing
+before the restore completes writes an empty set over the record of which
+conversations existed.
+
+### The front layer
+
+Two customer routes and nothing else. Everything is classified once, on the path
+AFTER any configured route prefix is stripped, because classifying the prefixed
+path let a control route read as a customer route in an earlier build:
+
+| Route | Auth | What it does |
+|---|---|---|
+| `POST /v1/chat/completions` | none of its own | one turn, forwarded to the backend |
+| `GET /health` | none of its own | liveness; `{"status": "ok"}` and no internals |
+| everything else | `SMC_CONTROL_SECRET` in `X-SMC-Control-Secret` | 404: no control operation is served yet |
+
+Both outcomes of the control-authorization decision are recorded before the response is
+sent -- the grant as well as the deny, because a trail holding only grants records exactly
+the events nobody needed to investigate, and the deny is what answers who tried. **A
+decision that cannot be recorded is not acted on**: the request gets a 503
+`control_audit_unavailable` rather than the 403 or the 404 it would otherwise get, because
+serving the grant would be the unaudited grant the record exists to prevent, and serving
+the deny would leave a denial nobody can later account for. 503 rather than 403 says the
+failure is the container's, not the caller's.
+
+The record mirrors `kiro_crew.sel` -- the `SecurityEvent` field names, its `event_type`
+vocabulary (`tool_approval` / `tool_denial`), and the audit-or-deny discipline
+`log_tool_invocation(critical=True)` exists for -- and is mirrored rather than called
+because of the SINK, not importability. The wheel is installed in this image, so
+`kiro_crew.sel` would import; what does not survive the move is where SEL keeps its log.
+`sel._default_dir()` resolves under `config_dir()` with the HMAC key in `trust/` beside
+it, which here means the persistent volume, and the supervisor and the model worker run as
+the same user -- so the audited party could delete both and write a self-consistent
+replacement, and there is no trust root in the container to anchor a chain. Nothing
+harvests that file either: the container's only writer to the owner's bucket is the
+transcript store. So the record goes to the process log stream, which leaves the task as
+it is written. It carries no `prev_hash` or `entry_hash`, because claiming SEL's integrity
+fields for an unchained line would assert a property the record does not have. Durability
+of that stream is the task definition's log driver, which belongs to the deploy track
+rather than to this image.
+
+No header value is ever recorded -- not the control secret, not any other header -- so
+what the record says is only whether the header was presented.
+
+**The sink is the container's own, and `emit` refuses when a record would not be
+delivered.** This is a different shape of defect from the rest of this document: the guard
+above is present, its logic is right, and it does refuse when it should -- but under
+uvicorn's own logging configuration a module logger in this process resolves to an
+effective level of WARNING with no reachable handler, and `logging.lastResort` sits at
+WARNING too, so an INFO audit call writes zero bytes. A dropped record is not an error, so
+nothing raised, the audit-or-deny path never fired, and every control decision was acted
+on with no record -- in production only, since a test session has a root handler. A guard
+that is live only where it is not needed cannot be told from no guard.
+
+Two halves, both load-bearing. `configure_sink()` attaches an INFO-capable handler that
+this module owns, called from `build_app` rather than from the process entrypoint so that
+an app which can serve a request has one -- a lazy "configure on first emit" would let
+whichever request arrives first decide whether the audit works. And `emit` checks that a
+record would actually reach a handler before writing it, which is what stops a later
+logging change from switching the audit off silently. The check is not
+`logger.hasHandlers()`: that ignores the logger's effective level and every handler's own
+level, so it answers yes for a logger whose only reachable handler is at WARNING, which is
+exactly the arrangement that drops an INFO record.
+
+`/health` is registered twice, prefixed and bare, so liveness can be probed
+without knowing the crew's prefix. The route prefix is optional and empty by
+default; nothing in this repository sets `SMC_ROUTE_PREFIX`, and a wrong value
+fails closed because a path that does not strip to one of the two customer routes
+is control and is refused.
+
+The control gate sits IN FRONT of the 404 rather than behind it. Adding a control
+route is then adding a handler rather than also remembering to authorise it, and
+an unauthorised caller cannot learn which control paths exist by reading which
+ones 404. `_control_authorized` fails closed when no control secret is configured
+and compares in constant time, on bytes rather than `str`, because
+`hmac.compare_digest` raises `TypeError` on a non-ASCII `str` and a caller could
+otherwise turn a 403 into an unhandled 500.
+
+**How an endpoint gets added.** Decide first whether it is a customer route or a
+control route, because that decision is the security boundary and not a detail of
+registration. A customer route is added to the allowlist that `gateway` checks and
+inherits no authentication of its own, so it must be safe for anyone who can reach
+the port; a control route needs only a handler, since the gate already refuses
+without the secret. Either way the path is matched on the STRIPPED path, and the
+turn path stays the only route that accepts a caller-supplied conversation id.
+
+**Authorisation, and what this process cannot do.** Reaching port 8080 is an
+authorised call in the owner's own account, decided before the request arrives; the
+task is not published to the internet and has no external DNS name. That decision's
+result is not passed through to the front process, so it has no caller identity to
+bind a forwarded conversation id to, and a binding written against an absent
+identity would fail open. What it does instead is refuse to serve customer turns at
+all unless the deployment has declared `SMC_SINGLE_PRINCIPAL`, which is the RFC's
+one-owner invariant made explicit and enforced at startup rather than assumed. The
+refusal is at startup for the reason `require_api_key` refuses at startup: a
+container that answers its port while mixing two callers' conversations looks
+healthy and is not.
+
+### The loopback hop
+
+The front forwards to the gateway's own `POST /v1/chat/completions` with
+`{model, messages, id, stream}`, returning one JSON completion or an SSE stream.
+`model` is set from the DEPLOYED crew name and never copied from the payload, and
+`id` is the slot id, which is what continues a conversation.
+
+Facts the front must respect, each established by reading the gateway's source and
+each wrong once in a way that produced no error:
+
+- **Authenticate with `X-Internal-Secret`, read from disk on EVERY attempt.** The
+  boot secret is `os.urandom(16)` per boot and is never persisted, so a cached copy
+  works until the backend restarts and then 403s on every request in a way that
+  looks like a client fault. On a 403 the front re-reads the secret once and retries
+  once, then relays the failure.
+- **Do not forward the client's `Origin` or any `X-Forwarded-*` header.** Loopback
+  with no Origin is trusted by the gateway's CSRF check and a forwarded foreign
+  Origin trips it. Outbound headers are built from scratch rather than copied and
+  stripped, so a header the caller sends cannot reach the backend by accident.
+- **A busy slot answers 409.** Requests for one slot id are serialised in the front
+  process rather than surfacing 409 to the caller.
+- **The stream is OpenAI-format, not ACP.** Completion chunks, keepalives, a
+  terminal sentinel and an error object, with no event names at all. The ACP
+  `sessionUpdate` vocabulary lives on the owner control stream, which this process
+  does not serve, so the projection is keyed on frame shape and is fail-closed: a
+  kind added later is dropped rather than relayed.
+- **Readiness proves less than it looks like.** A backend with no model credential
+  answers its port and then returns `503 kiro_prerequisite_required` on every turn,
+  so a present `KIRO_API_KEY` is not a working one and only a real turn establishes
+  that it is.
+
+A restored transcript is bounded by SIZE as well as by shape. The bytes come from the
+bucket and are held in memory for the length of a turn, so without a ceiling one stored
+object decides how much memory the task uses. `ContentLength` is checked first and then
+not trusted -- a header is a claim by the source -- and the read is streamed in chunks
+against the same 64 MiB ceiling, one chunk past it so an object of exactly that size can
+be told from a larger one. The refusal is a `TranscriptUnavailable`, so an oversized
+object fails that turn rather than letting the backend serve one with the conversation
+missing.
+
+### Launching the backend
+
+Verified names only, because the plausible ones are read by nothing:
+`KIROCREW_BIND=127.0.0.1` (the published image sets `0.0.0.0`, and a deployment
+that does not override it puts the backend on the network while every local test
+still passes); `KIROCREW_HOME` equal to `SMC_DATA_HOME`, which is what makes the
+boot secret path resolve; `KIROCREW_TELEMETRY_DISABLED=1` to silence the beacon;
+`--no-crons`, because arming the scheduler fires any overdue job immediately; and
+`--approval yolo`, which the gateway refuses unless `KIROCREW_HOME` is explicitly
+non-default. Nothing in the container is there to click Approve, so an interactive
+prompt would be an indefinite stall rather than a question, and the cost is stated
+plainly: every tool the crew carries is auto-approved for whatever a caller's
+message causes it to do. The boot update check cannot be disabled by config; it is
+recorded as an outbound request the deployment makes rather than suppressed.
+
+**The container serves no messaging channel, and disables them positively.** Before
+the backend starts, the supervisor writes `<config dir>/config.json` with every
+channel section's `enabled` false, merged over anything already there so a shipped
+file cannot outvote it, and the launch environment carries no channel credential.
+Both halves are required and neither covers the other's case: `imessage` and
+`whatsapp` carry no credential in the gateway's channel registry, so they start on
+their config flag alone, and `slack` has no `enabled` key at all, so it starts on
+its tokens alone. Both name lists are ratcheted against that registry in both
+directions by `test_crew_container_config_isolation.py` -- a channel the gateway
+can start that the container does not disable fails, and so does a name the gateway
+does not have, because that reads as coverage while doing nothing.
+
+**The backend environment drops what the worker must not hold.** The task role
+(`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` and its peers) and the front's
+`SMC_CONTROL_SECRET` are removed: the backend spawns the model subprocess with this
+environment, that subprocess auto-approves every tool, and a turn could otherwise
+read the task role from its own environment and act as it. `KIRO_API_KEY` cannot be
+removed, because kiro-cli re-injects it into the worker and it is the whole
+model-auth mechanism.
+
+**A reinstall replaces the bundle's own files and prunes nothing else.**
+`install_bundle` runs at every boot and the data home may be a persistent volume, so
+the skills install has two jobs that pull against each other: a skill a later bundle
+DROPPED must not stay active, and a skill the running crew created must not be
+deleted. Replacing the whole tree satisfies the first and violates the second, so the
+two sets are separated. The bundle-managed set is derived from the tree in the image
+layer, which needs no trust and cannot be forged by the crew; the marker records that
+set so the NEXT install can prune exactly what this one installed. Pruning is per
+FILE, not per directory, because a directory can hold both the bundle's file and the
+crew's. When the marker is absent, hand-edited or from an older build, the previous
+set is unknown and NOTHING is pruned: a stale skill an operator can delete is a
+smaller harm than the crew's work disappearing silently, and the log says which of the
+two happened. A symlink at a bundle-managed path is unlinked before that file is
+written -- a pointer is not work, and its target is never opened -- while a link at the
+skills ROOT is still refused outright, since that one redirects the whole install.
+
+**The install marker is authenticated, because it lives where the crew can write.**
+The record the prune reads sits in the data home, so its contents are an INPUT and not
+state this code owns; constraining what the list may contain does not change that. It
+carries an HMAC tag keyed on `SMC_CONTROL_SECRET` -- the one value the supervisor holds
+that the worker provably does not, since `build_backend_env` removes it from the
+environment the backend is launched with and the worker inherits that environment.
+Relocating the marker instead is not available: the image runs the supervisor and the
+worker as the same user, so no directory on the persistent volume is writable by one and
+not the other, and a location in the read-only image layer cannot record what a previous
+task installed, which is the marker's whole purpose. Every untrusted case -- no tag, a
+tag that does not verify, no control secret to verify with -- prunes nothing and is
+logged as itself, because "the tag is wrong" and "there is no marker" are different
+things to be told.
+
+**Every directory the container creates on that volume refuses rather than crashes.**
+`mkdir(exist_ok=True)` raises `FileExistsError` when a regular file holds the path, and a
+previous task can leave one where a skill directory belongs. Uncaught, that crashes the
+supervisor, ECS restarts the task, and the next boot hits the same file on the same
+volume -- a boot loop that spends the owner's money and never says what is wrong. A boot
+loop is worse than a refusal for the reason a crash is worse than a refusal, so each
+directory goes through one helper that names the path it could not create.
+
+**The prune's bound is in the code, not in the record.** The marker lives in the data
+home, which the crew can write, so what it says is an INPUT: an absolute entry, a
+non-normalised one, one carrying `..`, or a clean-looking one whose parent is a symlink
+would each turn "delete the bundle's own file" into "delete a file of the entry's
+choosing". Pruning from a recorded list is narrower than replacing the tree and would
+be strictly worse if the list decided where the deleting happens.
+
+So the bound is enforced twice. Any entry that is not a plain relative path is refused
+by name, and one bad entry discards the WHOLE record rather than only itself: a
+malformed entry means the record is corrupt or hostile, which says nothing good about
+the entries beside it, so the install falls back to pruning nothing and logs an error.
+It does not fail the boot, because refusing to start over a corrupt bookkeeping file
+would be a worse outcome than the residue. Then each deletion walks descriptors from
+the skills directory with `O_NOFOLLOW | O_DIRECTORY` and unlinks relative to the last
+one, so a component swapped for a symlink is refused by the kernel as it is traversed
+and the directory verified is the directory deleted from -- there is no window in which
+the path is re-resolved by name. A resolved-containment check runs first as well, not
+because the walk needs it but because it turns "this entry leaves the tree" into its
+own named refusal instead of a bare `ELOOP`. The leaf's own type is read by `lstat` on
+that descriptor, so a link at the recorded path is left alone rather than followed.
+
+**A transcript entry that is not a file is refused, not opened.** Boot restores no
+transcripts, so what is on disk was put there by an earlier turn or by the restore,
+and the restore's bytes and keys come from the backup bucket -- names and files from
+outside the container. Before the backend is handed a path it will open and append to,
+the entry's shape is checked: a directory, a FIFO, a socket, a symlink or a
+hard-linked file is refused by name with `TranscriptUnavailable`, which fails that one
+turn. A crash mid-turn on whatever `open()` raises would be worse, because a refusal
+is auditable and a crash is not.
+
+Shape is decided on the DESCRIPTOR, never on the name. `Path.exists()` follows a
+symlink, answers true for a directory, and is a separate resolution from the open that
+follows it, so a check by name plus an open by name is the check-to-use gap every
+finding in this area lives in. The probe opens with the link refused and `O_NONBLOCK`
+(a FIFO open would otherwise wait for a writer and hang the turn rather than answer),
+then `fstat`s that descriptor, so the entry validated is the entry that was opened.
+`st_nlink > 1` is refused as well as a non-regular type, because a hard link is a
+regular file and the backend appends to this path. This mirrors
+`hooks.safe_read_file_bytes_nolink`, which the container cannot import, the way
+`supervisor/bundle.py` mirrors the agents-dir resolver. The write side refuses a
+symlinked sessions directory for the same reason `mkdir(exist_ok=True)` cannot be
+trusted, and still installs by `os.link` so an existing target is never clobbered.
+
+A publish COLLISION goes through the same check. `os.link` failing means the entry the
+turn will use is not the one just written and has had none of these checks applied to
+it, so the winner is validated by the same helper before it is accepted. Keeping it is
+still right when it is a transcript -- whoever wrote it has the newer history -- and a
+shape that fails the check fails that turn rather than being handed to the backend.
+
+**The container writes the sandbox settings rather than inheriting them.** The
+gateway reads `agent.sandbox` and two unsandboxed-fallback flags from the same
+`config.json`, so a file supplied to the task could turn the sandbox off while the
+supervisor's refusal reported nothing wrong. All three are forced -- `sandbox` to
+`auto`, both flags to false -- and forcing rather than defaulting matters because
+`sandbox_allow_unsandboxed_exec` resolves an undeclared value through a platform
+default, so silence is not a constant. The rule is by PREFIX rather than by that list
+of three: `test_crew_container_config_isolation.py` requires every `AgentConfig`
+field whose name begins with `sandbox` to appear in `FORCED_AGENT_SETTINGS`, with the
+value checked as well as the key, so a sandbox knob added to the gateway reds CI
+until the container decides what to write for it.
+
+**The config is published atomically.** The file's failure is in the future: nothing
+reads it during the write, and a truncated write is read at the NEXT start, on a
+container that boots on a config it cannot parse and with the run that produced it
+already gone. So the write is a sibling temp in the destination's own directory
+opened `O_EXCL | O_NOFOLLOW`, fsynced, then one `os.replace`, with the directory
+fsynced after so the rename itself survives a power loss. A symlink at the
+destination is refused rather than replaced: `rename` would unlink the link rather
+than follow it, so nothing would be written through it, but a link there means
+something else chose the path and consuming it silently hides that.
+
+**A link planted where the boot secret goes stops the task.** The gateway writes
+`run/gateway-<port>.secret` itself, with an ordinary link-following open, and
+truncates it on every start; the model worker can write inside the data home and
+what it writes is driven by prompt content. Nothing in the container can make the
+gateway's writer link-safe, so the supervisor refuses to start when the run
+directory or the secret path is a symlink, or when the secret path is not a regular
+file. The checks are `lstat`-based, because `exists()` follows the link they are
+looking for. The container's own writes into the data home already refuse a link at
+the destination (`bundle._write_nofollow`); this is the same guard for a file
+another process writes.
+
+### Sandboxed-only, and why there is no opt-in
+
+kiro-cli runs the model subprocess inside an unprivileged user namespace, and
+without one `wrap_argv` fails closed. This container runs SANDBOXED-ONLY: there is
+deliberately no config key or environment variable that opts into unsandboxed
+execution, and the supervisor refuses to start on a host that cannot provide the
+sandbox rather than running the worker exposed.
+
+The refusal is positive. The probe returns an available verdict, a denied verdict,
+or an `undetermined: <why>` verdict, and only the first proceeds: undetermined
+refuses and names what could not be determined, and so does any verdict the guard
+does not recognise. Reading "could not determine" as "probably fine" fails open as
+new hosts appear, which is the same defect as reading the environment through a
+denylist.
+
+Why no opt-in, and why the task boundary is not a substitute for one: the model
+subprocess auto-approves every tool and its environment carries `KIRO_API_KEY`, so
+an unsandboxed worker would run an auto-approved shell, driven by untrusted prompt
+content, with a live credential readable in its own environment. The ECS task
+boundary (one owner, one data home, no public endpoint, reached only by an
+authorised call in the owner's own account) does not close that path, because the
+attacker there is the caller's own prompt content, already inside the boundary.
+Offering an unsandboxed posture safely requires brokering the model credential out
+of the worker's environment, which is tracked separately; until then the worker is
+sandboxed or the container does not start. Unprivileged user namespaces are not
+available on Fargate today
+([aws/containers-roadmap#2102](https://github.com/aws/containers-roadmap/issues/2102)),
+so the supported target is a host that permits them.
+
+### Shutdown
+
+A kiro-cli worker spawns with `start_new_session`, so it `setsid`s into its own
+process group and ESCAPES a `killpg` on the backend. Only the backend's own SIGTERM
+handling reaps it, which makes the drain window load-bearing rather than a
+courtesy: too short a drain SIGKILLs the backend before it finishes reaping and
+orphans a worker that goes on to finish its turn. Teardown order is front, then
+backend -- stop new turns arriving, then let the backend drain and flush -- and
+anything still alive afterwards is an escaped worker, which the teardown sweeps by
+process group over bounded rounds, because a killed process's children reparent to
+PID 1 and surface in the next round.
+
+The exit code distinguishes the two reasons, because it is the only thing the
+platform reads: a stop signal is the one success case, and any other reason,
+including one this code cannot account for, exits non-zero. Reporting both as 0
+told ECS that a crash loop was a clean shutdown.

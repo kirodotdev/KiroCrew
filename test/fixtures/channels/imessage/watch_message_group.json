@@ -1,0 +1,32 @@
+{
+  "_provenance": {
+    "source": "vendor_doc",
+    "reference": "Same envelope as the direct sample, with is_group true and the 'iMessage;+;chat<digits>' group chat_guid form documented at https://github.com/steipete/imsg/blob/main/docs/json.md ('Chat', is_group).",
+    "captured_at": "2026-08-21",
+    "note": "Transcribed from published docs, NOT captured from a live Mac. Pins the group fail-close path: is_group true must be refused and audited, because a reply there would deliver tool output to members off the allowlist."
+  },
+  "jsonrpc": "2.0",
+  "method": "message",
+  "params": {
+    "subscription": 1,
+    "message": {
+      "id": 118351,
+      "guid": "C1B4E907-77AA-42D8-8F30-5E9142ADB6C2",
+      "chat_id": 309,
+      "chat_guid": "iMessage;+;chat884203117755119042",
+      "chat_identifier": "chat884203117755119042",
+      "chat_name": "Weekend plans",
+      "participants": [
+        "+15551234567",
+        "+15559876543"
+      ],
+      "is_group": true,
+      "sender": "+15559876543",
+      "is_from_me": false,
+      "text": "can the agent book it?",
+      "created_at": "2026-08-21T05:14:02Z",
+      "attachments": [],
+      "is_read": false
+    }
+  }
+}

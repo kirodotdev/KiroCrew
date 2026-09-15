@@ -1,0 +1,32 @@
+{
+  "dataTheme": "custom-minimal-light-light",
+  "mode": "light",
+  "tokens": {
+    "--bg": "#e8f8f5",
+    "--card": "#181b22",
+    "--muted": "#7f7f88",
+    "--muted-fg": "#fff",
+    "--text-strong": "#fafafa",
+    "--accent-fg": "#000"
+  },
+  "measured": {
+    "settings row label": {
+      "color": "rgb(26, 58, 74)",
+      "on": "rgb(24, 27, 34)",
+      "ratio": 1.43,
+      "text": "Language"
+    },
+    "settings row description": {
+      "color": "rgb(26, 58, 74)",
+      "on": "rgb(26, 29, 37)",
+      "ratio": 1.4,
+      "text": "Auto — English"
+    },
+    "segmented segment": {
+      "color": "rgb(250, 250, 250)",
+      "on": "rgb(26, 29, 37)",
+      "ratio": 16.14,
+      "text": "Chat"
+    }
+  }
+}

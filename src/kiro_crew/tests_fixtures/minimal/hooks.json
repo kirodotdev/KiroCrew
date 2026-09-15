@@ -1,0 +1,10 @@
+{
+  "hooks": [
+    {
+      "id": "fixture-hook-01",
+      "event": "HOOK_EVENT_STOP",
+      "matcher": "*",
+      "command": "/usr/bin/true"
+    }
+  ]
+}

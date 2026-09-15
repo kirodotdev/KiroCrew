@@ -1,0 +1,28 @@
+# Smoke: the other half of the sessions surface that `sessions-new-chat` does
+# not cover -- returning to an existing conversation. The `rich` fixture seeds
+# four sessions with known titles and transcripts, so switching between two of
+# them and reading the right history back is a deterministic pixel check.
+name: chat-switch-seeded-sessions
+tier: smoke
+feature: chat
+user_story: >-
+  As a user with several conversations open, I want to click between them in
+  the sidebar and see each one's own history, so that I can run and return to
+  more than one piece of work at once.
+docs_url: docs/system-specs/modules/session.md
+summary: Switch between two seeded sessions from the sidebar and see each transcript
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. In the left sidebar find the session titled "Fix empty-glob crash in list_sessions" (it sits inside a folder named "Demos"; expand the folder if its rows are hidden) and click it.
+  - Read the conversation that opens. It begins with a user message about the sessions tab failing to load when the sessions directory is empty.
+  - Now click the session titled "Welcome to KiroCrew" in the sidebar (it is pinned near the top).  # brand-ok: verbatim seeded session title from the rich fixture
+  - Wait a second for the transcript to switch.
+expectations:
+  - The conversation area shows the "Welcome to KiroCrew" transcript, which contains the question "Where does KiroCrew store my data?" and an answer mentioning config.json.  # brand-ok: verbatim seeded session title from the rich fixture
+  - The "Welcome to KiroCrew" row is highlighted as the current session in the sidebar, and "Fix empty-glob crash in list_sessions" is no longer highlighted.  # brand-ok: verbatim seeded session title from the rich fixture
+  - No message about the sessions directory being empty is visible in the conversation area any more.
+max_steps: 12
+max_seconds: 300

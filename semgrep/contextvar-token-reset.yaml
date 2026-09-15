@@ -1,0 +1,44 @@
+rules:
+  # ─── ContextVar: Token-based reset is context-bound ────────────────
+  # ContextVar.reset(token) is bound to the Context object the token was
+  # created in. Under pytest-xdist each worker shares the main-thread
+  # Context across tests, so a token obtained in one test and reset in
+  # another (or after an asyncio task boundary) raises ValueError and can
+  # take down the whole worker. Use value-based restore instead:
+  #   previous = var.get()
+  #   var.set(new_value)
+  #   ...
+  #   var.set(previous)
+
+  - id: kirocrew.contextvar-token-reset
+    patterns:
+      - pattern: |
+          $TOKEN = $VAR.set(...)
+          ...
+          $VAR.reset($TOKEN)
+    # Scoped to test/** on purpose. In production code a synchronous
+    # `token = var.set(...)` / `try: yield / finally: var.reset(token)` inside
+    # one contextmanager frame is the CANONICAL use of a token and is strictly
+    # better than value-based restore (only reset() can restore "unset").
+    # The hazard this rule catches is the test-suite shape: a token taken in
+    # one test and reset after an asyncio task boundary, where pytest-xdist
+    # shares the worker's main-thread Context across tests.
+    paths:
+      include:
+        - test/**
+    message: >
+      ContextVar token-based reset ($VAR.reset($TOKEN)) is bound to the
+      Context the token was created in. In a test this leaks: pytest-xdist
+      shares the worker's main-thread Context across tests, so a token taken
+      here and reset after an asyncio task boundary raises ValueError and can
+      take the worker down. Use value-based restore instead: save the previous
+      value with .get() before setting, and restore with .set(previous) in a
+      finally block.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: concurrency
+      cwe: "CWE-362: Concurrent Execution using Shared Resource with Improper Synchronization"
+      references:
+        - https://docs.python.org/3/library/contextvars.html#contextvars.Token.old_value

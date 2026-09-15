@@ -1,0 +1,639 @@
+name: Nightly Build
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC = 11pm PDT
+  workflow_dispatch: {} # manual trigger for testing
+
+# All build/sign/notarize/publish logic lives in reusable workflows shared
+# with release.yml (build-wheel.yml, build-desktop.yml, publish-cli.yml,
+# sign-and-notarize.yml). This file owns only what is genuinely
+# nightly-specific: the trigger, the concurrency group, and the
+# date-stamped version derivation.
+
+permissions:
+  contents: read
+
+# Single-flight nightly runs. cancel-in-progress also protects the channel
+# feeds (feed/nightly/latest-mac.yml + latest-linux.yml, last-writer-wins):
+# an overlapping older run is cancelled rather than finishing last and
+# rolling a feed back to an older build for every client.
+concurrency:
+  group: nightly-build
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: Compute Nightly Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      nightly_version: ${{ steps.stamp.outputs.version }}
+      wheel_version: ${{ steps.stamp.outputs.wheel_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: src/kiro_crew/__init__.py
+          persist-credentials: false
+
+      - name: Compute version
+        id: stamp
+        run: |
+          # Wheel stamp includes HHMM so re-running a nightly on the same UTC date can
+          # never republish an existing version key with different bytes. CloudFront
+          # caches cli/* as immutable (CACHING_OPTIMIZED); a republished key leaves
+          # stale wheels on some edges while the no-cache manifest is fresh, causing
+          # sha256 mismatch failures. All .dev stamps are 12 digits from now on, so
+          # PEP 440 integer ordering stays monotonic across days. Seconds close the
+          # same-minute double-dispatch window; publish-cli.yml additionally enforces
+          # never-republish with an S3 conditional write (If-None-Match).
+          # ONE clock read, everything sliced from it. Three separate
+          # `date -u` calls can straddle UTC midnight, pairing an old-day date
+          # with a new-day time (version goes backward -> the feed offers
+          # clients a downgrade) and can also make the desktop and wheel stamps
+          # disagree for the SAME run.
+          STAMP=$(date -u +%Y%m%d%H%M%S)
+          STAMP_DATE="${STAMP:0:8}"       # YYYYMMDD (desktop)
+          STAMP_TIME="${STAMP:8:6}"       # HHMMSS   (both)
+          STAMP_FULL="${STAMP:0:14}"      # YYYYMMDDHHMMSS (wheel .dev<N>)
+          BASE=$(grep -m1 '__version__' src/kiro_crew/__init__.py | sed -E 's/.*= *"([^"]+)".*/\1/')
+          # Desktop/Squirrel needs semver; the pip wheel needs PEP 440. Emit both:
+          #   nightly_version (semver):  <base>-nightly.<YYYYMMDD>t<HHMMSS> -> Electron app + S3 build path
+          #   wheel_version   (PEP 440): <base>.dev<YYYYMMDDHHMMSS>      -> pip wheel, unique per RUN
+          # The desktop stamp carries the same seconds precision as the wheel:
+          # a date-only stamp meant two nightlies on one UTC date overwrote the
+          # same signed/<channel>/<version>/ and notarized/<channel>/<version>/
+          # keys (the exact republish class #62 fixed for cli/*), which becomes
+          # a CloudFront edge-divergence bug the day mac artifacts go public.
+          # The old shared "-nightly.<date>" is invalid PEP 440, so setuptools normalized
+          # every nightly wheel down to the base version (all became 0.1.0). ".dev<date>"
+          # is valid PEP 440 and keeps nightly wheels uniquely versioned.
+          #
+          # DATE AND TIME ARE ONE ALPHANUMERIC IDENTIFIER SEPARATED BY "t",
+          # never a bare number and never two dot-separated numeric identifiers.
+          # ONE live constraint forces this shape, and two retired ones explain
+          # why it is not just a bare timestamp:
+          #
+          # 1. LIVE -- SemVer forbids leading zeros in a purely NUMERIC
+          #    prerelease identifier. The 06:00 cron yields HHMMSS=060000, so a
+          #    bare `.${STAMP_TIME}` identifier would be invalid and
+          #    electron-builder would reject it. Inside an alphanumeric
+          #    identifier (the "t" makes it alphanumeric) leading zeros are legal.
+          # 2. RETIRED with Squirrel.Windows -- Int32 overflow. Squirrel derived
+          #    each release entry's version from the nupkg FILENAME
+          #    (ReleaseEntry.Version -> Filename.ToSemanticVersion()) and sorted
+          #    entries in WriteReleaseFile; that comparison Int32-parsed digit
+          #    runs, so a run above 2147483647 made `Update.com --releasify` die
+          #    with System.OverflowException. Proven: `-nightly.20260727152449`
+          #    (2.0e13) FAILED, `-nightly.20260727t184500` PASSED. Dot-splitting
+          #    did NOT help: electron-builder concatenates the identifiers into
+          #    the package filename, so a LETTER between the digit runs was
+          #    required. Both runs here (YYYYMMDD ~2.0e7, HHMMSS <= 235959) stay
+          #    far under Int32 anyway.
+          # 3. RETIRED with Squirrel.Windows -- NuGet's 20-char "special version"
+          #    cap. It rejected a prerelease part over 20 chars ("The special
+          #    version part cannot exceed 20 characters."), which killed every
+          #    Windows nightly on this 23-char shape and forced a temporary
+          #    compact date (YYDDD, exactly 20). The Windows target is NSIS as of
+          #    #1428 and electron-updater's win32 path has no NuGet in it, so the
+          #    cap is gone and the readable YYYYMMDD is back.
+          #
+          # 2 and 3 are kept written down because the shape still satisfies 2
+          # (both digit runs stay far under Int32) and DELIBERATELY violates 3
+          # (23 chars against a 20-char cap) -- exceeding that cap is the point
+          # of the readable date. A future NuGet-based Windows target (msi, appx)
+          # would re-impose the cap and require re-compacting the date; this
+          # comment is the only place that records why, and what it would cost.
+          #
+          # Ordering still works: the identifier is fixed-width, and semver
+          # compares alphanumeric identifiers lexically -- which for a
+          # zero-padded YYYYMMDDtHHMMSS is chronological.
+          #
+          # The "-nightly." prefix is load-bearing and preserved: auto-update.js
+          # channelForVersion, instance-guard identityFamily, and
+          # packaging/build-desktop.sh's *-nightly.* glob all match on it.
+          # test/test_nightly_version_contract.py pins every property above.
+          echo "version=${BASE}-nightly.${STAMP_DATE}t${STAMP_TIME}" >> "$GITHUB_OUTPUT"
+          echo "wheel_version=${BASE}.dev${STAMP_FULL}" >> "$GITHUB_OUTPUT"
+          echo "Nightly (semver): ${BASE}-nightly.${STAMP_DATE}t${STAMP_TIME}"
+          echo "Wheel (PEP 440):  ${BASE}.dev${STAMP_FULL}"
+
+  # The production dependency audit gates PUBLICATION, not the build. It reaches
+  # the npm registry, whose slow hours once failed the nightly for hours at a
+  # stretch and blocked every build behind it -- which is why it was removed
+  # from this workflow entirely. Removing it went too far: main has no
+  # dependency-audit gate of its own, so a high/critical production
+  # vulnerability that lands there shipped to nightly-channel users unaudited
+  # until the next tagged release.
+  #
+  # Hanging it off the PUBLISH jobs instead of the build jobs restores the
+  # control without restoring the outage: a slow or flaky registry now delays
+  # publication of an already-built nightly rather than failing the build, and
+  # the artifacts stay in the run for a re-run to publish once the audit
+  # answers. Deliberately NOT a `needs:` of build-wheel / build-desktop /
+  # build-windows -- that arrangement is what blocked the builds before, and
+  # test_dependency_vulnerability_gate.py pins it that way.
+  dependency-vulnerability-gate:
+    name: Production Dependency Vulnerability Gate
+    uses: ./.github/workflows/dependency-vulnerability.yml
+
+  # ── macOS platform tests ──────────────────────────────────────────────
+  # The backend suite on real Darwin. It ran on every pull request until it moved
+  # here: on the PR path a macos-15 runner took 176-213 MINUTES to arrive and then
+  # 26-33 to run, which was ~64 percent of a pull request's CI wall clock sitting on
+  # the required `PR Readiness` check, while the lane itself failed 0 times and was
+  # cancelled 129 times in the same window (usually still queued). At nightly hours
+  # the same runners arrive in 0-33 minutes. platform-tests.yml carries the full
+  # measurement and the pull-request-side replacements.
+  #
+  # Gated the same way as the dependency audit, and for the same reason in reverse:
+  # this one is a `needs:` of every PUBLISH job and of no BUILD job. A red macOS
+  # suite must stop bytes reaching a nightly-channel user, but the built artifacts
+  # are the evidence a fixer works from, so they still get produced and uploaded --
+  # exactly the trade the audit's own comment describes. A build job growing this
+  # `needs:` reintroduces the outage that shape exists to avoid;
+  # test_dependency_vulnerability_gate.py and test_macos_platform_tests_gate.py both
+  # pin the partition.
+  #
+  # ALL publish jobs gate on it, not only the darwin-shipping `sign-and-notarize`,
+  # so the nightly channel stays version-coherent: every platform ships the same
+  # nightly build or none does, never a macOS desktop a version behind the CLI,
+  # Linux and Windows builds it has to interoperate with. The cost this widens is a
+  # darwin flake holding every platform's bytes for a night -- real, but bounded:
+  # the suite failed 0 times and was cancelled 129 times over the measured window,
+  # the builds are ungated so the evidence survives, and the remedy is a human
+  # "re-run failed jobs". A skewed-version nightly would ship with no signal at all.
+  #
+  platform-tests:
+    name: Platform Tests
+    permissions:
+      contents: read
+    uses: ./.github/workflows/platform-tests.yml
+
+  # ── Pod scenario E2E ──────────────────────────────────────────────────
+  # Scenario-level E2E over the shipped `kirocrew pod` tooling: one real
+  # service-managed pod, five user-visible flows (test/e2e/scenarios/).
+  #
+  # Nightly rather than per-PR because it boots a real service-managed gateway
+  # and builds the SPA and a wheel, which is minutes per leg. It is deliberately
+  # NOT a `needs:` of anything: a scenario failure must not hold up a nightly
+  # publish, and a publish failure must not hide a scenario result.
+  #
+  # Linux, macOS, and Windows run the same scenario bodies. There is no
+  # platform skip in the job: the fixture asks runtime.require_backend(), then
+  # drives systemd, launchd, or the dedicated Task Scheduler task selected by
+  # production. test/test_pod_scenario_matrix.py pins backend existence to this
+  # matrix so a future backend cannot remain silently uncovered.
+  pod-scenarios:
+    name: Pod Scenario E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # A pod's gateway is the CHECKOUT's own `.venv/bin/kirocrew`, not the
+      # runner's installed build, and the pod fixture refuses rather than falling
+      # back to a global one. So the venv is a hard prerequisite, in the layout
+      # `pod provision` expects.
+      - name: Build the checkout venv the pod boots
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            PY=.venv/Scripts/python.exe
+          else
+            PY=.venv/bin/python
+          fi
+          "$PY" -m pip install -U pip build
+          "$PY" -m pip install -e . --group dev
+          "$PY" -m kiro_crew --version
+
+      # `pod up` fails loud without a built SPA bundle, on purpose: a pod serves
+      # the real dashboard. Staged the same way ci.yml's e2e job stages it.
+      - name: Build and stage the SPA bundle
+        shell: bash
+        run: |
+          cd website
+          npm ci
+          npm run build
+          cd ..
+          rm -rf src/kiro_crew/static/dist
+          cp -r website/dist src/kiro_crew/static/dist
+          test -f src/kiro_crew/static/dist/index.html
+
+      # A hosted ubuntu runner has NO `systemd --user` session by default: the
+      # job runs over SSH-less exec with no login session, so there is no
+      # per-user manager and no session bus, and every pod verb refuses (see
+      # pod/runtime.py require_systemd). `loginctl enable-linger` starts the
+      # per-user instance independently of a login session, which is the exact
+      # remedy that refusal prints. The two variables are then exported for every
+      # later step, because systemctl --user locates the manager through them and
+      # a non-login shell inherits neither.
+      #
+      # PROVEN in the log, not assumed: the step prints `systemctl --user
+      # is-system-running` and `--version`, and fails the job if the manager
+      # cannot be reached. Without that check a broken session would silently
+      # become 6 skipped scenarios, and KIROCREW_E2E_REQUIRE below
+      # would be the only thing standing between that and a green nightly.
+      - name: Start a systemd --user session (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$USER"
+          UID_NUM="$(id -u)"
+          echo "XDG_RUNTIME_DIR=/run/user/${UID_NUM}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${UID_NUM}/bus" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="/run/user/${UID_NUM}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${UID_NUM}/bus"
+          # Linger creates the runtime dir asynchronously; wait for the bus
+          # rather than sleeping a fixed amount.
+          for _ in $(seq 1 30); do
+            [ -S "${XDG_RUNTIME_DIR}/bus" ] && break
+            sleep 1
+          done
+          echo "--- proof: systemd --user is reachable ---"
+          systemctl --user --version | head -1
+          systemctl --user is-system-running || true
+          systemctl --user show-environment >/dev/null
+          echo "systemd --user session bus: ${XDG_RUNTIME_DIR}/bus"
+
+      # The SECOND thing a hosted ubuntu runner lacks: a usable namespace sandbox.
+      # ubuntu-24.04 restricts unprivileged user namespaces through AppArmor
+      # (kernel.apparmor_restrict_unprivileged_userns=1), so the pod gateway's
+      # `unshare(CLONE_NEWNS)` answers EPERM and its only Linux sandbox backend
+      # is unavailable. A pod pins `agent.sandbox=auto` with the unsandboxed
+      # opt-in OFF (pod/runtime.py), so the pod's own boot probe then REFUSES the
+      # boot -- correctly: serving a gateway whose every agent turn would fail
+      # while /health answers 200 is the failure the probe exists to catch. On
+      # this job's first nightly run that refusal was six `pod up` errors.
+      #
+      # Same remedy as ci.yml's `e2e` and `backend-test-sandbox` jobs, and the
+      # same PROOF right after it: if the runner image ever stops allowing this,
+      # fail here by name instead of six scenarios deep. The sysctl is host-wide,
+      # so the service-managed pod gateway sees it too. Never the alternative of
+      # seeding `sandbox_allow_unsandboxed_exec` into the pod: that would make the
+      # suite pass by running the product in a mode a real pod refuses.
+      - name: Enable unprivileged user namespaces (Linux)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify the namespace sandbox backend is available (Linux)
+        if: runner.os == 'Linux'
+        run: unshare --mount --map-root-user true
+
+      # macOS needs neither: the pod's launchd backend uses the per-user launchd
+      # domain, which a runner session already has, and its seatbelt sandbox
+      # backend needs no host opt-in. Printed so the two legs read the same way
+      # in the log.
+      - name: Confirm the launchd user domain (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          launchctl print "user/$(id -u)" >/dev/null
+          echo "launchd user domain reachable: user/$(id -u)"
+
+      # The canary pattern from ci.yml: run by path with `-v -n0`, tee the log,
+      # then grep the expected pass count and fail otherwise. An exit code alone
+      # cannot tell "every scenario passed" from "every scenario skipped", and a
+      # silent skip is exactly what a precondition-gated suite degrades into.
+      # KIROCREW_E2E_REQUIRE=1 is the belt: it turns each precondition
+      # skip into a failure. The grep is the braces.
+      - name: Run the pod scenario suite
+        shell: bash
+        env:
+          KIROCREW_E2E_SCENARIOS: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+        run: |
+          set -uo pipefail
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            PY=.venv/Scripts/python.exe
+          else
+            PY=.venv/bin/python
+          fi
+          "$PY" -m pytest -v -p no:cacheprovider -o addopts= \
+            -n0 --timeout=600 test/e2e/scenarios/ 2>&1 | tee pod-scenarios.log
+          status="${PIPESTATUS[0]}"
+          echo "pytest exit: ${status}"
+          # Six user-flow scenarios and 49 fixture-isolation checks must execute.
+          # Anchor the count so 155 passed cannot satisfy the 55-test contract.
+          if ! grep -qE '(^|[^0-9])55 passed' pod-scenarios.log; then
+            echo "::error::the pod scenario suite did not report 55 passed; a skipped or collapsed suite is not a pass"
+            exit 1
+          fi
+          exit "${status}"
+
+      # The pod's own journal / log files are the only place a boot refusal is
+      # legible, and the job log carries just the tail `pod up` chose to print.
+      - name: Upload the pod logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pod-scenarios-logs-${{ matrix.os }}
+          path: |
+            pod-scenarios.log
+            /tmp/kce2e-*/a/**
+            /tmp/kce2e-*/h/**/*.log
+            ${{ runner.temp }}/**/kce2e-*/a/**
+            ${{ runner.temp }}/**/kce2e-*/h/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  build-wheel:
+    name: Build Wheel
+    needs: [version]
+    uses: ./.github/workflows/build-wheel.yml
+    with:
+      wheel_version: ${{ needs.version.outputs.wheel_version }}
+
+  build-desktop:
+    name: Build Desktop
+    needs: [version]
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      version: ${{ needs.version.outputs.nightly_version }}
+
+  # Windows builds in its own workflow because it Authenticode-signs during the
+  # build (the Squirrel installer embeds already-signed executables), so unlike
+  # build-desktop.yml it needs OIDC. Keeping it separate is what lets
+  # build-desktop.yml stay credential-free. Installer-only (publishes nothing):
+  # soft_fail keeps a Windows failure from skipping publish-linux /
+  # sign-and-notarize via this caller's result.
+  build-windows:
+    name: Build Windows Desktop
+    needs: [version]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      version: ${{ needs.version.outputs.nightly_version }}
+      soft_fail: true
+      use_prod_environment: true
+    # Explicit passthrough, not `secrets: inherit`: the callee declares
+    # the secret it consumes, so this hands over that one and nothing
+    # else. Pinned by test_workflow_permissions.py.
+    secrets:
+      AWS_WINDOWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_WINDOWS_SIGNING_ROLE_ARN }}
+
+  # ── CLI channel publish ───────────────────────────────────────────────
+  # Publishes the built wheel to the nightly CLI channel (cli/ + latest-cli.json).
+  # Depends only on the wheel and its CLI-specific KMS manifest signer (not
+  # build-desktop, Apple notarization, or CDSigner), so a macOS signing failure
+  # never blocks the CLI release. See docs/build/release.md.
+  publish-cli:
+    name: Publish CLI (nightly channel)
+    needs: [version, build-wheel, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-cli.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      wheel_artifact: cli-wheel
+    # Explicit passthrough, not `secrets: inherit`: the callee declares
+    # the secret it consumes, so this hands over that one and nothing
+    # else. Pinned by test_workflow_permissions.py.
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  # ── Linux desktop publish ─────────────────────────────────────────────
+  # Publishes the built AppImages to the distribution CDN (versioned key +
+  # latest alias). Its own lane beside publish-cli, deliberately NOT inside
+  # sign-and-notarize.yml: the Linux artifact takes no part in the macOS
+  # trust chain, and needing only build-desktop means neither a wheel nor a
+  # macOS signing failure can block it (per-platform releases).
+  #
+  # ONE JOB PER ARCH, not a matrix over `arch`: each arch owns a distinct S3
+  # key, feed file and alias, and separate jobs keep the per-arch publish
+  # status visible in the run graph.
+  #
+  # Scope of that separation, stated precisely because the obvious reading is
+  # wrong: it decouples the PUBLISH steps, not the BUILDS. Both publishers
+  # still `needs: build-desktop`, which is the reusable-workflow caller job
+  # aggregating BOTH matrix legs, so a failed arm64 build skips the x64
+  # publish too. That is deliberate for now -- the versioned S3 keys are
+  # immutable, so publishing half a release and then discovering the other
+  # arch never built is the worse failure -- but it does mean a broken arm64
+  # build can hold up an x64 release, which was not true before this lane
+  # existed. True per-arch publish independence needs the publishers to run
+  # past a partial build failure and let their own artifact download decide;
+  # tracked in #2645 rather than reshaped here.
+  publish-linux-appimage-x64:
+    name: Publish Linux appimage (nightly channel · x64)
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: x64
+      format: appimage
+      publish: true
+      build_artifact: build-linux-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-appimage-arm64:
+    name: Publish Linux appimage (nightly channel · arm64)
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: arm64
+      format: appimage
+      publish: true
+      build_artifact: build-linux-arm64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-deb-x64:
+    name: Publish Linux deb (nightly channel · x64)
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: x64
+      format: deb
+      publish: true
+      build_artifact: build-linux-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-deb-arm64:
+    name: Publish Linux deb (nightly channel · arm64)
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: arm64
+      format: deb
+      publish: true
+      build_artifact: build-linux-arm64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-rpm-x64:
+    name: Publish Linux rpm (nightly channel · x64)
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: x64
+      format: rpm
+      publish: true
+      build_artifact: build-linux-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-rpm-arm64:
+    name: Publish Linux rpm (nightly channel · arm64)
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: arm64
+      format: rpm
+      publish: true
+      build_artifact: build-linux-arm64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  # ── Windows installer publish ─────────────────────────────────────────
+  # Depends on build-windows rather than build-desktop: the installer is
+  # Authenticode-signed DURING its build (an NSIS installer compresses its own
+  # already-signed executables), so it comes from that lane's artifact.
+  #
+  # build-windows carries soft_fail, which means its job `result` is `success`
+  # even when the build failed and uploaded nothing. This job therefore does
+  # not trust the result: publish-windows.yml probes for the artifact and skips
+  # cleanly when it is absent. That keeps a Windows-only failure from blocking
+  # the mac and Linux lanes, which is the same per-platform independence
+  # soft_fail exists to protect.
+  #
+  # There is deliberately NO `if:` here, so a red `smoke-install-windows` holds
+  # this publish. soft_fail sets continue-on-error on the BUILD job only; the
+  # smoke in the same reusable workflow does not carry it, so a failed install or
+  # a gateway that will not start fails the `build-windows` CALL and this job is
+  # skipped with it. That is the point of running the smoke: the artifact is
+  # uploaded before it runs, so anything that lets this job start anyway would
+  # find that artifact and publish an installer the smoke had already rejected.
+  # Holding it costs nothing cross-platform -- the lane being held is the same
+  # platform whose smoke failed, and the mac and Linux publishes are their own
+  # jobs.
+  publish-windows-x64:
+    name: Publish Windows Desktop (nightly channel · x64)
+    needs: [version, build-windows, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      contents: read
+      # A called workflow cannot exceed the caller job's grants, so the probe's
+      # actions:read has to be granted here too or the lane 403s.
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-windows.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      publish: true
+      installer_artifact: build-windows-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  # ── Docker image publish ──────────────────────────────────────────────
+  # Builds the multi-arch gateway image FROM THE SAME WHEEL publish-cli
+  # ships and pushes it to ghcr.io (GITHUB_TOKEN only — no AWS credentials,
+  # no CDN vars, so this lane also works on forks). Its own lane beside
+  # publish-cli/publish-linux per the per-platform release design: only a
+  # wheel-build failure can block it. packages:write is scoped to this job
+  # alone (see test_workflow_permissions.py).
+  publish-docker:
+    name: Publish Docker Image (nightly channel)
+    needs: [version, build-wheel, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-docker.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      publish: true
+      # The GHCR package is public. Nightly is the earliest signal that the
+      # package's visibility regressed, so assert anonymous pull here too.
+      require_public_access: true
+      wheel_artifact: cli-wheel
+    # No `secrets: inherit`: the lane authenticates with GITHUB_TOKEN only
+    # (implicitly available to reusable workflows). Inheriting would expose
+    # every repo secret (signing, CDN) to a lane documented as needing none.
+
+  # Caller job for the reusable sign-and-notarize workflow: a workflow_call
+  # callee can never exceed the caller job's permissions, so the caller must
+  # grant id-token explicitly. attestations:write covers the sign job's
+  # wheel/sdist/AppImage provenance and the notarize job's shipping-DMG
+  # attestation (signed + stapled bytes).
+  sign-and-notarize:
+    name: Sign + Notarize macOS
+    needs: [version, build-wheel, build-desktop, dependency-vulnerability-gate, platform-tests]
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    # Explicit passthrough, not `secrets: inherit`: the callee declares
+    # the secrets it consumes, so this hands over those and nothing
+    # else. Pinned by test_workflow_permissions.py.
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+      AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+      AWS_SIGNER_ACCESS_ROLE_ARN: ${{ secrets.AWS_SIGNER_ACCESS_ROLE_ARN }}
+      CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      write_feed: true

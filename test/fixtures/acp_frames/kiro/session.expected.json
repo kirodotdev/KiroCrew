@@ -1,0 +1,190 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {}
+    },
+    "agent_version": "2.21.4",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "",
+      "ids": []
+    },
+    "session_id": "14c95094-e1b8-4799-9a9d-5e19ad07485f"
+  },
+  {
+    "action": "subagent_activity",
+    "events": [],
+    "frame": "_kiro.dev/session/update",
+    "session_update": "tool_call_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run the requested echo command exactly as specified",
+          "command": "echo hello-from-corpus"
+        },
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested echo command exactly as specified\",\n  \"command\": \"echo hello-from-corpus\"\n}",
+        "tool_kind": "execute",
+        "tool_name": "shell",
+        "tool_purpose": "Run the requested echo command exactly as specified",
+        "wire_title": "Running: echo hello-from-corpus"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run the requested echo command exactly as specified",
+          "command": "echo hello-from-corpus"
+        },
+        "request_id": "2c535cd4-c4bf-4c17-bd40-95de8a37da4c",
+        "shell_classified": true,
+        "title": "Running: echo hello-from-corpus",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested echo command exactly as specified\",\n  \"command\": \"echo hello-from-corpus\"\n}",
+        "tool_name": "shell"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
+        "tool_output": "hello-from-corpus\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
+        "tool_final": true,
+        "tool_output": "hello-from-corpus\n"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "__tool_use_purpose": "Run the requested echo command exactly as specified",
+          "command": "echo hello-from-corpus"
+        },
+        "title": "echo hello-from-corpus",
+        "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
+        "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested echo command exactly as specified\",\n  \"command\": \"echo hello-from-corpus\"\n}",
+        "tool_kind": "execute",
+        "tool_purpose": "Run the requested echo command exactly as specified",
+        "wire_title": "Running: echo hello-from-corpus"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "```",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "\nhello-from-corp"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\nhello-from-corp",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "us\n```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "us\n```",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

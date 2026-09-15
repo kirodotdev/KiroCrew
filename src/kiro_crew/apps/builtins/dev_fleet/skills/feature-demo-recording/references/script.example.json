@@ -1,0 +1,48 @@
+{
+  "voice": "en-US-AndrewMultilingualNeural",
+  "gap": 0.4,
+  "_note": "role=intro is a designed slide, role=footage is spoken over the capture, role=outro closes. The number of footage lines IS the number of beats the recorder must mark. `say` is spoken, `cap` is the on-screen subtitle -- keep them separate: a glyph like the command key reads badly aloud, and a subtitle should be shorter than a sentence.",
+
+  "lines": [
+    {
+      "role": "intro",
+      "eyebrow": "THE FEATURE",
+      "title": "Command Bar",
+      "sub": "Cmd+K becomes a launcher - you type a command, not a query",
+      "say": "This is Command Bar. It takes over Command K and turns it into a launcher: you type a command, not a query.",
+      "cap": "Command Bar: Cmd+K becomes a launcher"
+    },
+    {
+      "role": "intro",
+      "eyebrow": "WHY",
+      "title": "Every Keystroke",
+      "sub": "The old palette scanned an unindexed session corpus on every key",
+      "say": "It replaces a search box that scanned an unindexed corpus of sessions on every keystroke, on the gateway's event loop, stalling unrelated chats.",
+      "cap": "The old Cmd+K scanned an unindexed corpus on every key"
+    },
+
+    {
+      "role": "footage",
+      "say": "Out of the box the app is off. The slot has no owner, so the host renders what it always did: the old palette.",
+      "cap": "No owner for the slot - the host renders its own palette"
+    },
+    {
+      "role": "footage",
+      "say": "One manifest line says it replaces quick-search. The host no longer picks what to render, and the top bar flips to Run a command.",
+      "cap": "One manifest line: replaces quick-search"
+    },
+    {
+      "role": "footage",
+      "say": "Every row names its kind on the right, so you can tell a command from an app before you press Enter.",
+      "cap": "Every row names its kind"
+    },
+
+    {
+      "role": "outro",
+      "title": "Command Bar",
+      "sub": "An app that replaces a component in a pre-wired slot",
+      "say": "Command Bar. Off by default, a request-free root, reversible at any time.",
+      "cap": "Command Bar - an app that replaces a host component"
+    }
+  ]
+}

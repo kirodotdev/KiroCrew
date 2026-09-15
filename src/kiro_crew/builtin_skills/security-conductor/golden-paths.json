@@ -1,0 +1,389 @@
+{
+  "_about": [
+    "The golden-path corpus: the legitimate operations every security fix to this",
+    "repository must keep alive. THIS FILE is what verify_fix.py checks -- the RFC",
+    "rules that 'both gates read the file and nothing else, and a row that is not in",
+    "the committed export does not gate'. The ledger's golden_paths table is the",
+    "editing surface behind it: 'ledger.py propose-golden-path' records a candidate",
+    "an audit surfaced, 'approve-golden-path' marks it accepted, and adding it here",
+    "is the reviewed edit that puts it in front of the gate. 'ledger.py",
+    "import-golden-paths golden-paths.json --approved-by WHO' loads this file into a",
+    "ledger; the import is idempotent on (kind, command_or_flow, platform), so running",
+    "it again is one corpus rather than two.",
+    "",
+    "Why the file and not the table: the ledger is per-host and invisible to CI, and",
+    "it is mutable by anything that can reach the database, so a gate that read it",
+    "could be steered by a row flip -- retire the one row a fix broke, and the gate",
+    "goes green. A change to what the gate checks is a change to this file, in a pull",
+    "request, where it shows. verify_fix.py reads the copy beside itself, not the one",
+    "in the worktree it is judging, so the change under review cannot rewrite its",
+    "own gate.",
+    "",
+    "Two failure modes earn a row. THE TOOL BECAME UNUSABLE: a fix widened the deny",
+    "fence, a path guard or a validator until an operation the maintainers run every",
+    "day is refused. PLATFORM LOCK-IN: a fix was written against one host's spelling",
+    "of a path, an interpreter or an environment, so the other host lost the",
+    "operation. Rows tagged 'posix' and 'windows' are the second mode's corpus and",
+    "are checked only on their own host -- a Windows row reported broken on Linux",
+    "would be a false rejection of a fix.",
+    "",
+    "verify_fix.py NEVER runs anything out of this corpus, because a row is data and",
+    "not authorization: whoever can edit a JSON file or reach a database is not",
+    "thereby authorized to run commands with the operator's access.",
+    "",
+    "So a 'shell' row is CHECKED -- classified against the fixed worktree's own tool",
+    "gate, all four checks it applies to a shell command in its order (path fence,",
+    "sensitive-command tier, exfiltration auditor, deny-rule catalog -- the same tier",
+    "table scripts/deny_diff.py declares), and a refusal by any of them rejects the",
+    "fix. A 'flow' or 'cron' row is RECORDED and reported for a human to exercise: an",
+    "MCP tool has no command line, a chat turn needs a gateway, and firing a schedule",
+    "has effects no deadline bounds. Their value is naming what to try, and the test",
+    "suite asserts they are well formed at review time. A row is named in every",
+    "report by its position in the 'golden_paths' list below."
+  ],
+  "golden_paths": [
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh pr view 9332 --json state,mergeStateStatus,statusCheckRollup",
+      "platform": "any",
+      "reason": "Reading a pull request's state is how every review loop decides what to do next; a fence that refuses it leaves an agent unable to see its own PR."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh pr list --json number,title,headRefName --limit 50",
+      "platform": "any",
+      "reason": "Enumerating open pull requests is the collision check before any dispatch; without it two workers land the same fix."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh pr view 9332 --json state; gh pr view 9195 --json state",
+      "platform": "any",
+      "reason": "Two read-only PR reads joined by ';' were false-positive refused while this corpus was being designed. The pair is the shape that matters: a rule matching across a separator turns two permitted reads into one refusal."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh pr view 9332 --json statusCheckRollup; gh run list --limit 5",
+      "platform": "any",
+      "reason": "A PR read combined with a run list was the second false-positive refusal in the same design effort; checks and runs are read together because a rollup names the run a reviewer then has to open."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh run list --branch feat/example --limit 20",
+      "platform": "any",
+      "reason": "Listing a branch's CI runs is the only way to find the run that failed; a refusal here blinds the poll-and-fix loop."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh run view 12345678 --log-failed",
+      "platform": "any",
+      "reason": "Reading a failed run's log is how a red check becomes an actionable diagnosis rather than a guess."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh pr checks 9332",
+      "platform": "any",
+      "reason": "The check roll-up is the readiness gate every review loop exits on."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-write",
+      "command_or_flow": "gh pr comment 9332 --body-file /tmp/disposition.md",
+      "platform": "any",
+      "reason": "Dispositioning a review finding goes through --body-file precisely so the comment text cannot be read as command argv; refusing it forces the argv form the fence is right to distrust."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git fetch origin main",
+      "platform": "any",
+      "reason": "Every rebase, diff and base comparison starts here; a refusal makes a worker unable to see the branch it must land on."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git rev-parse HEAD",
+      "platform": "any",
+      "reason": "The head SHA is what a push lease, a screenshot pin and an evidence line are all keyed to."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git rev-parse origin/main",
+      "platform": "any",
+      "reason": "Resolving the base ref is how a worker knows whether it is behind, and it is the lease SHA a force-with-lease push needs resolved separately."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git log --oneline -20 origin/main..HEAD",
+      "platform": "any",
+      "reason": "Counting a branch's own commits is the single-commit gate; a refusal makes the repository's commit-count rule uncheckable."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git status --porcelain",
+      "platform": "any",
+      "reason": "A clean-tree check before capturing evidence is what keeps an uncommitted change out of a commit or a recording."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git diff --stat origin/main...HEAD",
+      "platform": "any",
+      "reason": "The branch's own diffstat is how a reviewer sizes a change before reading it."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git show --stat HEAD",
+      "platform": "any",
+      "reason": "Reading the commit just written is the cheapest confirmation that the intended files landed."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git branch --show-current",
+      "platform": "any",
+      "reason": "Knowing which branch a worktree is on is what keeps a push from naming the wrong one."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git worktree list",
+      "platform": "any",
+      "reason": "Enumerating worktrees is how a conductor finds a stalled worker's checkout instead of creating a second one on the same branch."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git stash list",
+      "platform": "any",
+      "reason": "Reading the stash is the recovery path after an interrupted edit; a refusal hides work the operator still has."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-write",
+      "command_or_flow": "git worktree add ../kc-wt-example -b fix/example origin/main",
+      "platform": "any",
+      "reason": "An isolated worktree per work item is the whole isolation model: refusing it forces every worker into one shared checkout, where a branch switch corrupts a sibling's state."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-write",
+      "command_or_flow": "git commit -F /tmp/commit-message.txt",
+      "platform": "any",
+      "reason": "Commit messages are passed by file so their prose cannot be read as argv; a refusal forces the -m form, which is the shape that trips a text-matching fence."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-publish",
+      "command_or_flow": "git push -u origin feat/example",
+      "platform": "any",
+      "reason": "Pushing a named feature branch is the sanctioned publish path -- the fence's job is to refuse a bare push and a protected branch, and it must keep telling the two apart."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-publish",
+      "command_or_flow": "git push --force-with-lease=refs/heads/feat/example:0123456789abcdef0123456789abcdef01234567 origin feat/example",
+      "platform": "any",
+      "reason": "A lease-guarded force push is how a rebased branch is republished safely; kept as its own row because it is a different shape from the plain push and a fence can lose one without the other."
+    },
+    {
+      "kind": "shell",
+      "surface": "tests",
+      "command_or_flow": "env -u KIROCREW_PORT -u KIROCREW_BOUND_PORT -u KIROCREW_SANDBOX_ACTIVE -u KIROCREW_SANDBOX_LEVEL -u KIROCREW_PROJECT_DIR -u KIROCREW_SPAWNED -u KIROCREW_HOST_PID .venv/bin/python -m pytest test/test_security_conductor_ledger.py -n0 -q",
+      "platform": "posix",
+      "reason": "The sanctioned POSIX test invocation: the leaked parent-sandbox variables are stripped so a nested run does not inherit them, and -n0 keeps one worker. Refusing it leaves a worker unable to prove its own fix."
+    },
+    {
+      "kind": "shell",
+      "surface": "tests",
+      "command_or_flow": ".venv\\Scripts\\python.exe -m pytest test\\test_security_conductor_ledger.py -n0 -q",
+      "platform": "windows",
+      "reason": "The same operation in Windows spelling, and the corpus's canonical lock-in guard: a fix that validates an interpreter path against a POSIX shape loses the entire Windows test lane."
+    },
+    {
+      "kind": "shell",
+      "surface": "gates",
+      "command_or_flow": "python3 scripts/docs_lint.py",
+      "platform": "any",
+      "reason": "The docs gate runs on every change that touches prose; a refusal makes a required check unrunnable locally."
+    },
+    {
+      "kind": "shell",
+      "surface": "gates",
+      "command_or_flow": "python3 scripts/check_black_formatting.py",
+      "platform": "any",
+      "reason": "The baselined formatting gate is the only local way to know whether new code is black-clean without reformatting the tree."
+    },
+    {
+      "kind": "shell",
+      "surface": "gates",
+      "command_or_flow": "isort --check-only src/kiro_crew test conftest.py xdist_budget.py",
+      "platform": "any",
+      "reason": "One of the three blocking lint gates; the two repo-root modules are named explicitly and a fix that mangles multi-path argv would drop them."
+    },
+    {
+      "kind": "shell",
+      "surface": "gates",
+      "command_or_flow": "flake8 src/kiro_crew test conftest.py xdist_budget.py",
+      "platform": "any",
+      "reason": "The blocking lint gate; refusing it means the first sight of a style failure is a red CI check."
+    },
+    {
+      "kind": "shell",
+      "surface": "gates",
+      "command_or_flow": "mypy src/kiro_crew/",
+      "platform": "any",
+      "reason": "The blocking type gate, and the slowest to learn about from CI instead of locally."
+    },
+    {
+      "kind": "shell",
+      "surface": "gates",
+      "command_or_flow": "python3 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py --base main --require-single-on-base",
+      "platform": "any",
+      "reason": "The publish preflight every branch runs before pushing; refusing it removes the check that keeps a multi-commit branch off a single-commit base."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git rev-parse --show-toplevel",
+      "platform": "any",
+      "reason": "Resolving a checkout's root is the first thing a worker does in a fresh worktree; a fence that refuses it makes every later path relative to nothing."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh issue list --label needs-triage --json number,title,labels",
+      "platform": "any",
+      "reason": "Read-only issue enumeration is what the triage and scanner crons run every cycle; refusing it blinds the intake end of the pipeline."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh pr diff 9332",
+      "platform": "any",
+      "reason": "Fetching a change as data is how a review lane reads it at all, and it is read-only; a rule that refuses it leaves a reviewer guessing from titles."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-write",
+      "command_or_flow": "git worktree add --detach /tmp/probe origin/main",
+      "platform": "posix",
+      "reason": "A detached probe worktree is the sanctioned way to read a base ref without checking out over live work, and its own argv shape -- --detach into a temporary path -- is what a path fence is most likely to catch."
+    },
+    {
+      "kind": "shell",
+      "surface": "gates",
+      "command_or_flow": "npx eslint src/ --max-warnings 603",
+      "platform": "any",
+      "reason": "The frontend lint ratchet at CI's exact ceiling; a fence that refuses the runner makes the gate unrunnable locally while CI still enforces it."
+    },
+    {
+      "kind": "shell",
+      "surface": "self-health",
+      "command_or_flow": "kirocrew status",
+      "platform": "any",
+      "reason": "Reading the product's own health is the first step of every diagnosis, and it sits on the self-protection floor -- the rule most often tightened, so the row most often broken."
+    },
+    {
+      "kind": "shell",
+      "surface": "self-health",
+      "command_or_flow": "kirocrew cron list",
+      "platform": "any",
+      "reason": "Enumerating installed jobs is read-only and crosses the same self-protection surface, so it is a second shape on the rule that guards it."
+    },
+    {
+      "kind": "shell",
+      "surface": "fs-read",
+      "command_or_flow": "ls -la src/kiro_crew/security",
+      "platform": "posix",
+      "reason": "A read-only listing over the governance tree is a repeat false-positive source: the path is sensitive, the operation is not."
+    },
+    {
+      "kind": "shell",
+      "surface": "fs-read",
+      "command_or_flow": "Get-ChildItem -Path src -Recurse -Filter *.py",
+      "platform": "windows",
+      "reason": "The Windows spelling of the same read-only listing, so the fence is proven not to be POSIX-shaped on the host where its tokenizer differs."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh pr view 9332 --json state,mergeable,statusCheckRollup",
+      "platform": "any",
+      "reason": "The mergeability spelling of the status read, kept as its own row because a rule can catch one --json field list and not another."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git log --oneline -20",
+      "platform": "any",
+      "reason": "History read with no revision range: the bare form is a different argv shape from the range form, and a fence can refuse one while permitting the other."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-publish",
+      "command_or_flow": "git push origin feat/example",
+      "platform": "any",
+      "reason": "A plain named feature-branch push, without -u: policy fences only protected branches, and the bare form is the shape an ordinary round uses after the first push."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-publish",
+      "command_or_flow": "git push --force-with-lease=feat/example:0123456789abcdef0123456789abcdef01234567 origin feat/example",
+      "platform": "any",
+      "reason": "The short lease spelling, which names the branch rather than the full refs/heads/ path; both spellings are sanctioned, so both are shapes the fence must keep permitting."
+    },
+    {
+      "kind": "flow",
+      "surface": "monitoring",
+      "command_or_flow": "monitor_start",
+      "platform": "any",
+      "reason": "Arming a same-session monitor loop is how a long CI or review wait is survived without a human babysitting it. An MCP tool with no command line, so exercising it is a human step."
+    },
+    {
+      "kind": "flow",
+      "surface": "monitoring",
+      "command_or_flow": "autonudge_stop",
+      "platform": "any",
+      "reason": "Stopping a monitor loop deliberately is the exit condition of every babysit; losing it leaves a loop running to its runaway cap. An MCP tool with no command line, so exercising it is a human step."
+    },
+    {
+      "kind": "flow",
+      "surface": "chat",
+      "command_or_flow": "python setup.py test_e2e",
+      "platform": "any",
+      "reason": "Starting a chat and completing one turn, proven by the offline stub-ACP end-to-end harness. Recorded rather than run: the harness boots a gateway and takes tens of minutes, which no per-fix verification pass can hold."
+    },
+    {
+      "kind": "cron",
+      "surface": "cron",
+      "command_or_flow": "17 3 * * * :: ops-mission-control ledger-hygiene",
+      "platform": "any",
+      "reason": "A shipped daily cron, recorded so a fix that tightens schedule or command handling has a named operation to be checked against by hand. Never fired from here: a schedule has effects no deadline bounds."
+    },
+    {
+      "kind": "cron",
+      "surface": "cron",
+      "command_or_flow": "every:300 :: ops-mission-control rotation-check",
+      "platform": "any",
+      "reason": "The interval spelling of the same contract, kept as its own row because a validator can accept a 5-field expression and lose 'every:SECONDS'."
+    },
+    {
+      "kind": "cron",
+      "surface": "cron",
+      "command_or_flow": "0 9 * * 1-5 :: gh pr list --json number,title",
+      "platform": "any",
+      "reason": "An operator's weekday digest cron: a range field plus a command carrying flags, which is the pair shape most likely to break under stricter parsing."
+    }
+  ]
+}

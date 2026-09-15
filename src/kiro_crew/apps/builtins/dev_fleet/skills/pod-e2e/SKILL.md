@@ -1,0 +1,372 @@
+---
+name: pod-e2e
+description: "ONLY for developing Kiro Crew itself -- if the project you are working on is anything else, ignore this skill: it drives Kiro Crew's own pod tooling, which does not exist in another repository. Boots a Kiro Crew feature worktree's full stack as an ISOLATED throwaway pod and proves it boots, authenticates and renders (headless Playwright), without touching the live gateway. It does NOT run the worktree's test suite -- run the tests your change touches yourself and let CI own the full suite. Use when asked to e2e-test / smoke-test / verify a Kiro Crew worktree's feature hands-off, drive browser checks on a pod, or prove a new backend route + UI work together. NOT for testing the live instance, and NOT a general-purpose e2e or smoke-test skill."
+triggers: e2e test, smoke test, pod test, verify worktree, test pod, run e2e, end to end
+repo_scope: src/kiro_crew
+---
+
+# pod-e2e — test a worktree against an isolated full-stack pod
+
+A worktree's full stack (backend API **and** frontend SPA) runs as **one process
+on one port** — exactly like a Docker container. The `kirocrew pod` CLI is the
+only interface you need: spin one up, get a `{base_url, token}` handle, test
+against it, tear it down and have the teardown VERIFIED. The live gateway is
+**never touched**.
+
+## Quickstart — run the bundled e2e suite
+
+```bash
+bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <worktree-name> --video
+```
+
+**Expected success output** — a `POD-E2E SUMMARY` ending like:
+```
+  ✅ auth — GET /api/sessions → 200 with token, 403 without
+  ✅ playwright — headless chromium loaded dashboard …
+result:       2 passed, 0 failed
+ARTIFACT_DIR=~/.kirocrew-pods/.e2e-artifacts/<worktree-name>
+```
+Exit code = number of failed phases (0 = all green). Then **look at the
+evidence**: `Read` the screenshots in that `ARTIFACT_DIR`
+(`fe-smoke.png`, plus any spec screenshots) to confirm the real UI rendered —
+not a 403/blank page.
+
+To smoke-test isolation after it finishes:
+```bash
+kirocrew pod ls          # should be empty (torn down)
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5476/api/sessions   # live plane still alive
+```
+
+## The interface — pod tools if you are an agent, the CLI if you are a human
+
+**If you are an agent session, reach for the `pod_up` / `pod_down` / `pod_status`
+/ `pod_ls` MCP tools before a shell.** A pod is a systemd `--user` unit, so every
+pod verb needs the systemd user bus. Whether your shell can reach that bus depends
+on the sandbox your session runs behind: under Kiro Crew's own sandbox it can (see
+`security.md`, "Scoped user-bus locator forward"), but behind an outer sandbox with
+its own user namespace it cannot, and `kirocrew pod up` then fails with
+`Permission denied`. `systemctl --user is-system-running` tells you which case you
+are in. The tools work either way -- the gateway holds the host bus and does the
+systemd part -- so they are the portable choice, and the only one on a host that
+denies you the bus.
+
+```
+pod_up     {"worktree": "<wt>"}   -> {base_url, token, port, ttl}
+pod_status {"worktree": "<wt>"}   -> status + port + health
+pod_ls     {}                     -> every pod active on this host
+pod_down   {"worktree": "<wt>"}   -> stopped, HOME reclaimed
+```
+
+Provisioning is not one of them: a cold venv plus an SPA build is minutes of work,
+and a single blocking tool call for that dies to any timeout with no way to learn
+the outcome. An unbuilt worktree is refused with the CLI's own remedy in the
+message; run `kirocrew pod provision <wt>` or use the Dev Fleet page's Provision
+button, which streams its output.
+
+Everything after step 1 below -- curl against the handle, drive the SPA with
+Playwright, read the screenshots -- is unaffected: those are ordinary loopback
+HTTP, which a sandbox does not block. Only the systemd control path is walled off.
+
+The tools need the Dev Fleet app enabled; a disabled app refuses with
+`app_not_enabled`.
+
+The CLI is the same operations for a human at a terminal:
+
+```bash
+# 1. bring the pod up, get a handle (JSON: base_url + token + port)
+kirocrew pod up <wt> --json
+#    → {"name":"<wt>","status":"up","port":7958,
+#       "base_url":"http://127.0.0.1:7958","token":"…","ttl":"2h"}
+
+# 2. test against the handle — full stack, ONE port:
+curl -s "$base_url/api/<anything>?token=$token"      # backend API
+#    open  $base_url/?token=$token  in Playwright     # frontend SPA (same port)
+
+# 3. destroy it — deletes the HOME and verifies it is gone (nonzero if not),
+#    live gateway untouched
+kirocrew pod down <wt>
+```
+
+Other verbs: `ls` (list running pods) · `status <wt>` · `token <wt>` · `url <wt>`
+· `logs <wt>` · `provision <wt>`. Run `kirocrew pod --help` for the full list.
+`token`, `url`, `logs` and `provision` have no tool of their own yet: `pod_up`
+already returns the token and url, and pod logs stay a human-facing read.
+
+**Isolation guarantees** (enforced by the pod runtime):
+own `KIROCREW_HOME`, own port, **no tunnel** (can't grab the real Slack identity),
+`--no-crons`, and cleanup on `pod down`.
+A pod can **never** collide with the live gateway and many can run at once.
+
+**Resource ceilings are Linux-only.** On Linux the unit sets cgroup
+`MemoryMax=4G` / `CPUQuota=200%`, which the kernel enforces. **On macOS there is
+no such ceiling and none is emitted** — macOS has no cgroups, and nothing it does
+offer bounds the total memory of a *process tree* or hard-caps CPU (`RLIMIT_AS`
+covers one process's address space, not resident memory, and the gateway spawns
+agent subprocesses that each get their own limit). So on a Mac a runaway pod can
+starve the machine; every other isolation property above still holds.
+
+**Teardown belongs to `pod down`, on both platforms.** It stops the service,
+waits for the process tree to drain, deletes the isolated HOME, and verifies the
+directory is gone — a HOME that survives is reported as a failure, never as zero
+residue. Nothing reclaims from a post-stop service hook: systemd would run one
+before the final kill of the pod's cgroup (racing the pod's own subprocesses) and
+on the stop half of a restart. So a pod that goes away WITHOUT a `down` (host
+crash, force-reboot, a raw `systemctl --user stop`) leaves its HOME behind on
+either OS; `pod ls` reports those (reclaim each with `pod down <name>`).
+
+This is also what makes a **seeded** pod home survive `systemctl --user restart`
+and `Restart=on-failure` instead of silently reverting to a blank instance.
+
+## Bundled suite (quick path)
+
+```bash
+bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <worktree-name>
+```
+
+Runs the bundled orchestrator end-to-end. Prints a `POD-E2E SUMMARY` ending in
+`ARTIFACT_DIR=<path>` and exits with the **number of failed phases** (0 = all
+green). Flags:
+
+| flag | effect |
+|---|---|
+| `--keep` / `--no-stop` | leave the pod running after tests (debug) |
+| `--api-only` | skip the Playwright phase (leaves a boot + auth check) |
+| `--fe-only` | accepted no-op — no test-suite phase exists to skip |
+| `--video` | record the session at 1080p → `.webm` + `.mp4` (finalization is time-capped) |
+
+**It does not run the worktree's test suite.** There is no pytest phase, on
+purpose: the suite is ~62k tests that need no pod, CI runs it on the merge ref,
+and a full local fan-out on a shared box costs far more than the browser check
+this harness exists for. Run the tests your change actually touches yourself,
+in the worktree (see the `kirocrew-worktree-dev` skill), and let CI own the
+full suite.
+
+## What each phase does
+
+1. **up** — `kirocrew pod up <wt> --json`. If already active, reuses it (and
+   won't stop it on exit). Boots the worktree's own gateway with `--no-crons`,
+   blank-seed DB, isolated HOME. If this phase fails with `gateway still
+   starting after Ns` in `pod-up.log`, the gateway was alive but slower than
+   the health-wait budget (default 90s): re-run with
+   `KIROCREW_POD_HEALTH_SECS=<higher>` exported — the harness passes its
+   environment through to the `pod up` it spawns.
+2. **health** — polls `kirocrew pod status <wt> --json` until its `health` is
+   200/401/403 (≤60s). Deliberately not a bare `curl base_url/api/health`: a
+   derived port is routinely held by another pod or by the live gateway, every
+   gateway answers that path identically, so a 200 there proves only that
+   *something* is listening. `pod status` reports the pod's OWN health and returns
+   `-2` when the responder is provably somebody else's, which this phase reports
+   as a port conflict naming `PORT=`. On timeout it dumps logs to `boot-fail.log`
+   and aborts.
+3. **auth** — proves auth: `/api/sessions` → 200 with token, 403 without.
+   Token comes from `kirocrew pod up --json` output (no manual minting needed).
+4. **Playwright** — `pod-playwright.py` (run with a Playwright venv + bundled
+   chromium) loads `/?token=` headless, asserts the SPA rendered (screenshots
+   `fe-smoke.png`), then exec's the optional `PLAYWRIGHT_SPEC` with a live authed
+   `page` in scope.
+   - If the Playwright interpreter is not executable, the FE phase **skips
+     gracefully** (no failure, just a warning).
+   - `--video` requires `ffmpeg` for mp4 transcoding; if absent, the `.webm` is
+     kept but no `.mp4` is produced.
+   - **Bounded, always.** The whole phase runs under `timeout`
+     (`POD_E2E_PW_TIMEOUT`, default 600s) and each browser-teardown step under
+     its own cap (`POD_E2E_TEARDOWN_TIMEOUT`, default 30s). Video finalization
+     (`context.close()`) has been observed to block forever *after* a spec
+     passed; on expiry the driver keeps every artifact, kills the browser tree,
+     and exits, and the summary reports `playwright — TIMED OUT` as a distinct
+     outcome. A recording that grew past 200MB is reported and left
+     un-transcoded — for a short spec that size is itself a defect signal.
+     The per-step cap uses `SIGALRM`, so on a platform without it the teardown
+     degrades to unbounded and says so in the log (the harness is POSIX-only
+     anyway); the phase-level `timeout` still applies.
+5. **collect** — all logs + screenshots land in
+   `~/.kirocrew-pods/.e2e-artifacts/<wt>/`. Per-phase results are appended to
+   `verdict.jsonl` **as they are decided** (and `playwright.log` is unbuffered),
+   so a stalled or killed run still leaves a readable verdict. The file is
+   truncated at the start of **every** run — including runs that skip the FE
+   phase — so it can never show a previous run's rows. The rest of the artifact
+   dir DOES persist across runs, so check timestamps before trusting an old
+   screenshot.
+6. **stop** — `kirocrew pod down <wt>`: stops the service, waits for its process
+   tree to drain, deletes the isolated HOME, and verifies it is gone — a HOME that
+   survives fails the command rather than being reported as zero residue. Skipped
+   if `--keep` or if
+   the pod was already up.
+
+## The test manifest (`.pod-test.sh`)
+
+Optional per-worktree file declaring how THIS feature is tested. Searched at
+`<worktree>/.pod-test.sh` then `<worktree>/src/kiro_crew/.pod-test.sh`.
+The manifest is parsed **declaratively** (a `PLAYWRIGHT_SPEC=` line is
+extracted textually) — it is **never sourced or eval'd** on the host.
+
+```sh
+# .pod-test.sh
+PLAYWRIGHT_SPEC=".pod-e2e/feature.spec.py" # frontend spec, relative to the manifest's dir
+```
+
+### Trust model
+
+The **pod** isolates the gateway under test (own `KIROCREW_HOME`, own port,
+no tunnel, resource caps). The **harness** is not a sandbox: it runs the
+worktree's own gateway, and exec's that branch's `PLAYWRIGHT_SPEC`, as your
+user — exactly like building and running the checkout yourself. Only run
+pod-e2e against branches you would be willing to build and run locally.
+
+### Playwright spec contract
+
+A spec is plain Python exec'd with these names in scope (no imports needed):
+`page` (already on the authed app), `context`, `base_url`, `token`,
+`artifact_dir`, `expect` (Playwright's **native web-first assertion** —
+`expect(locator).to_be_visible()`, auto-retries), `expect_true(cond, msg)`
+(boolean fallback, raises `AssertionError`), and `record(name, ok, detail="")`
+(append a per-assertion row to `verdict.jsonl` immediately, so a later stall
+still leaves your decided results on disk — an `ok=False` row **fails the run**,
+it is not a silent note). Assert UI, take screenshots into
+`artifact_dir`. Run with `--video` to also record a `.webm` (+ a shareable
+`.mp4`) at 1080p, paced.
+
+### First-run noise is auto-suppressed
+
+A fresh pod = a real first-run: every Playwright context starts with empty
+`localStorage`, so onboarding/changelog modals would pop up and overlay the
+feature you're testing. The runner handles this automatically:
+- **pre-seeds** `localStorage` so theme modal never mounts;
+- **dismisses** any modal that still appears by pressing Escape + clicking
+  `[aria-label="Close"]` if present.
+
+Pass `--no-suppress-first-run` to let those modals appear (only if testing the
+onboarding flow itself).
+
+## PRIMARY USE — dev agent delegates to a QA agent
+
+When you (the agent building a feature) want it tested, spawn a *separate QA
+agent* via `spawn_run` and hand it the worktree name. You keep coding; the QA
+agent runs the isolated pod, inspects the evidence, triages failures, and reports
+a verdict back as a completion event.
+
+### The QA agent prompt (copy, fill `<wt>` + the feature one-liner)
+
+```
+spawn_run(task="""
+You are a QA engineer verifying the KiroCrew feature in worktree '<wt>'.
+Feature under test: <one-line description of what this branch adds>.
+
+Run the isolated end-to-end suite (it spins a throwaway pod on its own port,
+never touches the live instance, and tears it down after):
+
+    bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <wt> --video
+
+Rules:
+- Do NOT `cat` any .local_secret yourself (credential-read blocked). The script
+  mints the token internally via the CLI — just run the one command above.
+- After it finishes, READ the artifacts in the printed ARTIFACT_DIR:
+  verdict.jsonl (per-phase results, written as decided — trust this even if the
+  run was killed), playwright.log, fe-*.png screenshots (use the
+  Read tool on the .png to actually look at the UI), and boot-fail.log if present.
+
+Then return a QA VERDICT, not a raw dump:
+  1. Overall: PASS / FAIL / BLOCKED (couldn't even boot the pod).
+  2. Per check (auth / playwright): pass|fail + one-line evidence.
+  3. For each FAIL: triage it — is it (a) a real regression in the feature,
+     (b) a flaky/timing issue, or (c) an environment problem (missing venv,
+     missing dist, port clash)? Cite the log line or screenshot that proves it.
+  4. The ARTIFACT_DIR path so the dev can open screenshots/video.
+""")
+```
+
+### When to delegate vs run inline
+- **Delegate to a QA agent** (default): you're mid-feature and want it verified
+  without derailing your own context; or the suite is long (Playwright + video).
+- **Run inline** yourself: a quick smoke where you want the result in your own turn.
+
+Parallel QA across branches: spawn one QA agent per worktree in a single
+`spawn_run` `tasks=[...]` call — each pod gets its own port and isolated HOME,
+so they don't collide.
+
+## Prerequisites & the provisioning on-ramp
+
+A worktree must be **built** before it can be podded — its own
+`.venv/bin/kirocrew` (editable install) + a built SPA bundle (`static/dist`).
+The pod boot refuses without them.
+
+```bash
+kirocrew pod up <wt>                 # auto-builds the venv; FAILS LOUD if no dist
+kirocrew pod up <wt> --provision     # full on-ramp: venv + build, then up
+kirocrew pod provision <wt>          # just the on-ramp (venv + dist)
+kirocrew pod provision <wt> --venv-only
+```
+
+Every failure teaches the next step: no worktree → create one; no venv → auto;
+no dist → build-or-`--provision`.
+
+- Playwright venv: controlled by env `KIROCREW_PW_PY`.
+  If that interpreter is missing or not executable, the FE phase **fails** —
+  it does not skip. A run that captured zero screenshots must never report a
+  green summary. Set it up once, pinning the version that matches the chromium
+  build already on disk:
+
+  ```sh
+  python3 -m venv <path> && <path>/bin/pip install playwright==1.61.0
+  export KIROCREW_PW_PY=<path>/bin/python
+  ```
+
+  To skip the frontend phase deliberately, pass `--api-only` — that is the only
+  clean skip.
+- `--video` needs `ffmpeg` on PATH (or pointed to by `POD_E2E_FFMPEG` env).
+  If absent, `.webm` is kept but no `.mp4` transcoding occurs. Recording
+  finalization is time-capped (see `POD_E2E_TEARDOWN_TIMEOUT`), so `--video`
+  can cost you the `.mp4` — never the verdict.
+
+## Hands off the live plane
+
+This skill only ever talks to pod ports (78xx). It must never restart or touch
+the live gateway. If the derived port ever resolves to the production port the
+orchestrator refuses and exits.
+
+## Attach approved QA media to the PR (MANDATORY workflow)
+
+QA screenshots and demo videos follow a **review-then-attach** contract:
+
+1. **Deliver to the user first.** Send the screenshots/video for review (after
+   the usual frame inspection for overlays -- first-run modals, toasts, theme
+   pickers). Never attach media the user has not seen.
+2. **Wait for explicit approval of the media.** A silent user is NOT approval.
+3. **On approval, attach to the PR automatically -- do NOT ask again.** The media
+   is a GitHub attachment, never a commit: nothing is copied into the worktree,
+   nothing is amended, nothing is pushed.
+   - Write the PR body to a scratch file outside the worktree and reference the
+     approved files by their local paths: `![Settings page, empty state](<ARTIFACT_DIR>/fe-settings.png)`.
+     Put the 2-3 most telling shots inline and fold the rest into `<details>`.
+     A video MUST stand alone in its own paragraph -- `![](<ARTIFACT_DIR>/demo.mp4)`
+     with a blank line above and below -- to render as an inline player; inside a
+     sentence it renders as a link.
+   - Run `gh pr edit <n> --body-file <body> --attach <ARTIFACT_DIR>/fe-settings.png --attach <ARTIFACT_DIR>/demo.mp4`
+     (one `--attach` per file; gh >= 2.99, check `gh --version`). Each referenced
+     path is rewritten in place to a permanent
+     `https://github.com/user-attachments/assets/<uuid>` URL; an attached file the
+     body does not reference is appended at the end. Limits: 10 MB per image/GIF,
+     100 MB per video. `--attach` needs push access to the repository -- a fork
+     contributor without it drags the file into the description in the web UI,
+     which yields the same URL.
+   - Verify the body update landed: `gh api repos/<o>/<r>/pulls/<n> --jq .body | grep -c user-attachments`
+     prints the number of files you attached.
+   - The URL is tied to no commit or branch, so a later amend, force-push, branch
+     deletion or the merge leaves it valid; nothing is ever re-pinned.
+4. **Attach before asking for PR approval.** The evidence goes in as a body edit
+   -- no push, no approval reset -- and it must be in the body before the user is
+   asked to approve the PR, so the approval covers what a reviewer sees.
+
+### Keep the rest of the tree clean
+
+The e2e suite already writes its logs and screenshots to
+`~/.kirocrew-pods/.e2e-artifacts/<wt>/` -- **outside** the worktree -- by design;
+don't copy those raw logs back into the worktree "to keep them with the branch."
+No QA output belongs in the tree: approved media is uploaded from `ARTIFACT_DIR`
+as a PR attachment (above), and everything else -- raw `*.log` dumps, extra
+frames, scratch notes, the `.pr-body.md` you fed to `gh pr create` -- stays
+outside (write it under a `mktemp -d`). Before ending the session,
+`git status --porcelain` must be empty: a dirty tree fail-closes Dev Fleet's
+"Prune merged" (`merged_dirty`) so the merged worktree can't be reaped. See the
+kirocrew-worktree-dev skill, "Rule 9 -- Leave the worktree clean (so prune can
+reap it)."

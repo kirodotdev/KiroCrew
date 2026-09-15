@@ -1,0 +1,443 @@
+"""The durable lessons and corrections tools: what they advertise and what they do.
+
+``schemas()`` returns the ADVERTISEMENT half of each tool -- its name, the
+model-facing description, and the JSON Schema a call is validated against.
+``HANDLERS`` maps each of those names to the function that runs it. Both halves
+of a tool live here so its contract and its behavior are read together, and
+``test_mcp_tool_registry`` fails if one arrives without the other.
+
+Handlers reach this server's shared plumbing as attributes of ``mcp_core`` --
+``mcp_core._post``, the identity resolvers, the governance vets. That is
+deliberate rather than untidy: an attribute lookup resolves at CALL time, so a
+test that rebinds one on the module still intercepts the handler. Importing
+those names directly here would bind them at import time and silently escape
+every existing patch site.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+from urllib.parse import urlencode
+
+from kiro_crew import mcp_core
+from kiro_crew.validation import LEARN_ADD_SCHEMA, MAX_SHORT_STRING
+
+
+def schemas() -> list[dict[str, Any]]:
+    """Descriptors for the learn tools."""
+    # Derive the learn_add rule/negative char limit from the schema field the
+    # validator actually enforces (single source of truth) so the tool hint
+    # tracks the enforced limit — including a future config-driven value —
+    # instead of a parallel constant that can silently drift.
+    _rule_max = next(
+        (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "rule"),
+        MAX_SHORT_STRING,
+    )
+    _neg_max = next(
+        (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "negative"),
+        MAX_SHORT_STRING,
+    )
+    _scope_max = next(
+        (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "repo_scope"),
+        MAX_SHORT_STRING,
+    )
+    return [
+        {
+            "name": "memory_recall",
+            "description": (
+                "Retrieve relevant facts, experiences and corrections from the memory "
+                "bound to this session: Global V1 for an unowned session, or this Crew "
+                "Member's private V2. Search is on demand, not run automatically for "
+                "every message. Ask a specific question when earlier decisions or "
+                "events are needed; skip it if the current conversation suffices. "
+                "Returns bounded context and sources. The caller cannot choose another "
+                "store; private members cannot access Global V1 or sibling memories."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 2000}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "learn_add",
+            "description": (
+                "Save a learned correction or preference that changes behavior in "
+                "unrelated future sessions. MUST be called only when a user correction "
+                "defines reusable behavior, including 'always do X', 'never do Y', or "
+                "'remember that'. Do NOT save volatile session or task facts such as "
+                "the active model identity or which concrete model ID the assistant "
+                "is running as. A 'running as' phrase needs an unambiguous model "
+                "noun, a qualified 'backend' that ends its clause, or a concrete "
+                "model ID; backend service-account and process wording remains "
+                "durable. The tool rejects recognized runtime identity assertions "
+                "and model-selection imperatives whose selected object is a "
+                "concrete model ID at the end of its clause in the rule or negative "
+                "clause. Clause endings are the field end, a newline, punctuation, or "
+                "the documented closed connector class. A following plain noun makes "
+                "the ID a durable tooling qualifier. "
+                "The check covers only the registry families pinned by the trusted review "
+                "workflow; other backend IDs are not lesson-refused. A model version "
+                "mentioned by itself is allowed. Free-form wording remains a best-effort "
+                "check. Future phrasing misses are handled by this instruction, not new "
+                "regex branches, so do not disguise either refused class. Include "
+                "both the rule (what to do) and negative (what not to do)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "maxLength": _rule_max,
+                        "description": (
+                            f"The lesson to remember. HARD LIMIT {_rule_max} "
+                            "characters — longer rules are REJECTED (not truncated), "
+                            "so keep it concise. Put 'what not to do' in the separate "
+                            "'negative' field rather than inlining a long '-- NOT: ...' "
+                            "clause here, and split unrelated corrections into multiple "
+                            "learn_add calls instead of one oversized rule."
+                        ),
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["tool", "preference", "knowledge"],
+                        "description": "Category: tool, preference, or knowledge",
+                    },
+                    "negative": {
+                        "type": "string",
+                        "maxLength": _neg_max,
+                        "description": (
+                            f"What NOT to do (optional). HARD LIMIT {_neg_max} "
+                            "characters — rejected if exceeded."
+                        ),
+                    },
+                    "repo_scope": {
+                        "type": "string",
+                        "maxLength": _scope_max,
+                        "description": (
+                            "Optional. Restrict this correction to ONE repository, "
+                            "given as a path fragment that repository contains "
+                            "(e.g. 'src/kiro_crew'). The correction then applies "
+                            "only in sessions whose project is inside that tree, "
+                            "and is withheld everywhere else. Use it for a rule "
+                            "that is only true of one codebase; omit it for a "
+                            "durable preference that should always apply. Omitted "
+                            "means it applies everywhere."
+                        ),
+                    },
+                },
+                "required": ["rule", "category"],
+            },
+        },
+        {
+            "name": "learn_list",
+            "description": "List all saved lessons and corrections",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "learn_remove",
+            "description": "Remove lessons whose rule contains the given substring",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Substring to match"},
+                    "repo_scope": {
+                        "type": "string",
+                        "maxLength": _scope_max,
+                        "description": (
+                            "Optional. Only remove lessons carrying this repo "
+                            "scope, given as the same path fragment used to store "
+                            "them (e.g. 'src/kiro_crew'). A lesson's identity is "
+                            "the pair (rule, repo_scope), so the same rule scoped "
+                            "to a repo and stored globally are two separate "
+                            "lessons; without this the substring removes both. "
+                            "Omit to match every scope. Pass an empty string to "
+                            "remove only the unscoped (global) lessons."
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    ]
+
+
+def memory_recall(name: str, args: dict[str, Any]) -> str:
+    from kiro_crew.memory_recall import recall_json
+
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip() or len(query) > 2000:
+        return "Error: query must contain 1–2000 characters"
+    session, refusal = mcp_core.require_strict_session_key(
+        "Error: memory recall requires an established session"
+    )
+    if not session:
+        return refusal
+    result = mcp_core._get(
+        "/api/memory/recall?" + urlencode({"q": query.strip()}), session_key=session
+    )
+    return recall_json(
+        result, ensure_ascii=False, context_cap=3000, mcp_envelope=True, model_facing=True
+    )
+
+
+def learn_add(name: str, args: dict[str, Any]) -> str:
+    rule = args.get("rule", "")
+    category = args.get("category", "knowledge")
+    if not rule:
+        return "Error: rule is required"
+    # Governance: a durable lesson write is re-injected into every future
+    # session, so it is gated by capabilities.memory_writes (default on; a
+    # policy/profile may disable it for a sandboxed surface/app).
+    _gov_mem = mcp_core._vet_memory_writes_governance(mcp_core._resolve_session_key())
+    if _gov_mem:
+        return f"Error: {_gov_mem}"
+    # A stale client still holding the old advertised schema can send
+    # scope="workspace". Silently forcing that to "global" would take a correction
+    # meant for one workspace and inject it into EVERY session -- the exact harm
+    # this change exists to end, and worse than the old behaviour, where the tier
+    # was inert and reached no prompt at all. So a legacy scope asking for anything
+    # narrower than global is REFUSED, with the replacement named. Refusing loses
+    # nothing that ever worked, and it tells the caller instead of widening silently.
+    _legacy_scope = args.get("scope")
+    if isinstance(_legacy_scope, str) and _legacy_scope.strip() not in ("", "global"):
+        return (
+            f"Error: scope={_legacy_scope.strip()!r} is no longer accepted. That tier "
+            "never reached a prompt, and saving it as a global lesson would apply it "
+            "in every session. Use repo_scope to restrict a lesson to one repository."
+        )
+    # The tool offers no workspace scope: that tier never reached a
+    # prompt, so a lesson saved under it reported success and changed nothing.
+    # Restricting a correction to one codebase is what repo_scope does, and the
+    # context builder enforces it before injection.
+    payload: dict[str, str] = {"rule": rule, "category": category, "scope": "global"}
+    # The tool schema advertises ``negative`` -- and the ``rule`` description
+    # explicitly tells the model to prefer it over inlining a "-- NOT: ..."
+    # clause -- but this payload never forwarded it, so the clause was dropped
+    # client-side before /api/lessons could see it. The route validates the
+    # field via LEARN_ADD_SCHEMA and passes it through to write_lesson.
+    negative = args.get("negative", "")
+    if negative:
+        payload["negative"] = negative
+    repo_scope = args.get("repo_scope", "")
+    if repo_scope:
+        payload["repo_scope"] = repo_scope
+    d = mcp_core._post("/api/lessons", payload)
+    err_val = d.get("error")
+    if err_val:
+        # Map the backend session-scope error to a user-actionable
+        # message so the LLM can explain the situation instead of
+        # leaking an opaque HTTP 400 as a "transport failed" error.
+        # See api_lessons_create in dashboard/handlers/cron.py: the
+        # "unknown session" response is returned when the X-Session-Key
+        # matches neither a live in-memory slot, a restricted key, the
+        # slack: namespace, nor a persisted session JSONL — so the
+        # remaining cases are genuinely unrecognised keys (forged, or
+        # ephemeral/incognito sessions that never wrote to disk), not
+        # merely evicted real sessions.
+        if "unknown session" in str(err_val):
+            return (
+                "Lesson was NOT saved: this session is not recognised "
+                "by the gateway (no active slot, restricted key, or "
+                "persisted history found for this session key). Start "
+                "a new Slack thread or dashboard tab and re-state the "
+                "lesson you want to save — it will not carry over "
+                "from this session automatically."
+            )
+        # ``err_val`` is already redacted at the trust boundary by
+        # ``_http_error_body`` (HTTP bodies are untrusted external content), and
+        # an internal-auth mismatch has already been rewritten there into a
+        # sentence naming the instance mix-up -- so every tool gets that copy,
+        # not just this one.
+        return f"Error: {err_val}"
+    scope_note = f" (applies only in {repo_scope})" if repo_scope else ""
+    # ``outcome`` names what actually happened, so this tool does not report
+    # "Saved lesson" when the store REFUSED the value or a dedup rule dropped it.
+    # An older gateway that does not send ``outcome`` falls through to the saved
+    # wording.
+    outcome = d.get("outcome")
+    reason = d.get("reason")
+    detail = f" ({reason})" if isinstance(reason, str) and reason else ""
+    # What this write DESTROYED, which no wording below could report before. The
+    # store's dedup rules delete a stored lesson when the submitted rule contains it
+    # or overlaps it heavily, and the route reported a plain success -- so teaching a
+    # narrower rule ("when a release is in progress, never force push...") retired
+    # the general one it contains ("never force push...") and the model was told the
+    # save succeeded. Deleting is the designed behaviour; not saying so was not.
+    #
+    # Filtered to strings from a list rather than trusted: this crosses HTTP, and an
+    # older or a hand-rolled gateway can send anything or nothing. Absent reads as
+    # "none reported", which is what every gateway said before this field existed.
+    raw_superseded = d.get("superseded")
+    dropped = (
+        [s for s in raw_superseded if isinstance(s, str) and s.strip()]
+        if isinstance(raw_superseded, list)
+        else []
+    )
+    lost = ""
+    if dropped:
+        # Named in full, not counted and not truncated to a preview: the point of
+        # this sentence is that the user can get the rule back, and a rule the model
+        # cannot read out is a rule nobody can restore -- the row is a tombstone, so
+        # this text is the last copy anything can reach.
+        shown = "".join(f"\n  - {s}" for s in dropped)
+        lost = (
+            f"\n\nWARNING -- saving this REMOVED {len(dropped)} stored "
+            f"lesson{'s' if len(dropped) != 1 else ''} whose wording this rule "
+            f"contains or overlaps:{shown}\n"
+            "Those are no longer in effect and will not appear in learn_list. Tell the "
+            "user which ones were dropped. A verbatim re-add is DECLINED while this "
+            "rule is stored, so restoring one exactly means removing this rule first; "
+            "wording that shares few significant words with it can coexist."
+        )
+    if outcome == "refused":
+        if reason == "volatile_session_fact":
+            return (
+                "Error: volatile_session_fact: lesson was NOT saved. Runtime model "
+                "identity assertions and model-selection imperatives whose selected "
+                "concrete model ID ends its clause become stale between sessions. A "
+                "model version mentioned by itself is allowed. Remove the volatile "
+                "assertion or imperative and state a reusable behavioral rule instead. "
+                "Put a concrete background or subagent model choice in config under "
+                "agent.role_models.<role>, not in learned memory."
+            )
+        return (
+            f"Lesson was NOT saved{scope_note}: the memory store refused this "
+            f"value{detail}. Nothing was stored, so the correction is not in effect. "
+            "Re-state it in plainer wording, or tell the user it could not be saved."
+            f"{lost}"
+        )
+    if outcome == "deduped":
+        # ``rule`` is the SUBMITTED text, not the stored lesson that claimed the
+        # write. The old wording put it directly after "an existing stored lesson
+        # already covers it", which reads as a quote OF that stored lesson -- so a
+        # caller believed it had been shown the winner. It had not, and it could
+        # not name what it lost to, leaving a blind ``learn_remove`` on a guessed
+        # substring as the only recovery. Say which text this is, and name the
+        # replace path for a submission that was meant to CORRECT a stale lesson.
+        if reason == "semantic_similarity":
+            # This reason means the stored near-duplicate OUTRANKS the write
+            # (the user's own lesson, or a higher-confidence imported one).
+            # Do NOT coach the remove-and-re-add path here: an automated
+            # caller following it would delete the row the store just
+            # protected and replace it with lower-authority guidance.
+            return (
+                f"Lesson was NOT saved{detail}: a near-identical lesson with "
+                f"higher authority (set by the user, or imported at higher "
+                f"confidence) already covers it, and that stored lesson stays "
+                f"in effect. The text below is what was DROPPED -- it is NOT the "
+                f"stored lesson: {rule}\n"
+                "Only the user can replace their own lesson; do not remove it on "
+                "their behalf."
+                f"{lost}"
+            )
+        return (
+            f"Lesson was NOT saved{detail}. The text below is what was DROPPED -- it "
+            f"is NOT the stored lesson: {rule}\n"
+            "An existing stored lesson already covers it, and that existing lesson "
+            "stays in effect. If this was meant to correct or replace a stale lesson, "
+            "run learn_list to find the stored wording, learn_remove it, then add this "
+            "again -- otherwise the outdated lesson keeps applying."
+            f"{lost}"
+        )
+    if outcome == "unchanged":
+        # No exact-match claim here, because ``unchanged`` does not mean the stored row
+        # equals the submission. It means nothing was WRITTEN, and the store keeps
+        # several fields on a re-submit rather than rewriting them: the category is
+        # write-once (correcting it means delete then re-add), and a bare re-submit
+        # keeps a stored NOT-clause instead of deleting it. So a re-submit carrying a
+        # NEW category, or omitting a clause that is stored, still lands here -- and
+        # telling the caller it was saved "exactly as submitted" would be false in
+        # both cases. Name what was kept instead, so the model knows why the value it
+        # sent did not take effect.
+        if reason == "kept_stored_clause":
+            return (
+                f"Lesson was already stored{scope_note}, and it carries a NOT-clause "
+                f"this submission did not include -- the stored clause was kept, not "
+                f"removed. Nothing was written, and the lesson remains in effect: {rule}"
+                f"{lost}"
+            )
+        return (
+            f"Lesson was already stored{scope_note} and nothing was written. A "
+            f"re-submit does not rewrite the stored category or NOT-clause, so those "
+            f"keep the values they already had -- changing one means removing the "
+            f"lesson and adding it again. It remains in effect: {rule}{lost}"
+        )
+    if outcome == "enriched":
+        return f"Updated the stored lesson{scope_note} with the new clause: {rule}{lost}"
+    # ``lost`` is interpolated on EVERY branch, including the two that cannot carry it
+    # (``unchanged`` and ``enriched`` are decided before the dedup scan runs, so they
+    # delete nothing). It renders to the empty string when nothing was superseded, so
+    # the uniform interpolation costs nothing and means no future outcome can drop the
+    # warning by being added to a branch that forgot it -- which is the mistake that
+    # made this field necessary in the first place.
+    return f"Saved lesson{scope_note}: {rule}{lost}"
+
+
+def learn_list(name: str, args: dict[str, Any]) -> str:
+    d = mcp_core._get("/api/lessons")
+    # Surface transport/auth failures instead of rendering them as "no
+    # lessons". ``_get`` returns ``{"error": ...}`` on a non-2xx, which has
+    # no ``lessons`` key — reporting that as an empty list told the agent its
+    # memory was empty when the real cause was an HTTP 403 from a mismatched
+    # gateway credential, and sent a debugging session after the wrong bug.
+    err_val = d.get("error")
+    if err_val:
+        return f"Error: {err_val}"
+    lessons = d.get("lessons", [])
+    if not lessons:
+        return "No lessons saved."
+    lines = []
+    for le in lessons:
+        withheld = (
+            " [WITHHELD: volatile_session_fact]"
+            if le.get("withheld_reason") == "volatile_session_fact"
+            else ""
+        )
+        lines.append(f"[{le.get('category', '?')}] {le['rule']}{withheld}")
+    return "\n".join(lines)
+
+
+def learn_remove(name: str, args: dict[str, Any]) -> str:
+    query = args["query"]
+    payload: dict[str, Any] = {"rule": query}
+    # Forward the scope discriminator only when the caller supplied a string.
+    # An absent key leaves scope out of the match (delete every scope); a
+    # present string -- INCLUDING an empty one, which targets the unscoped/
+    # global rows -- makes the delete scope-selective. A JSON null arrives here
+    # as None after schema validation and is treated as absent rather than
+    # coerced: coercing it to "" would silently turn "no selector" into
+    # "delete the global rows". The route distinguishes presence the same way,
+    # so a bare rule still deletes across scopes and no existing caller changes.
+    rs = args.get("repo_scope")
+    if isinstance(rs, str):
+        payload["repo_scope"] = rs
+    d = mcp_core._delete("/api/lessons", payload)
+    err_val = d.get("error")
+    if err_val:
+        # Same session-scope mapping as ``learn_add``, but dispatched on the
+        # machine-readable ``code`` the delete route emits (and ``_delete``
+        # preserves) rather than the error wording, so a rephrased message
+        # cannot break the mapping. Make explicit that NOTHING was deleted, so
+        # a remove-then-re-add consolidation knows it failed closed at step
+        # one instead of assuming the destructive half went through.
+        if d.get("code") == "unknown_session":
+            return (
+                "No lessons were removed: this session is not recognised "
+                "by the gateway (no active slot, restricted key, or "
+                "persisted history found for this session key). Retry "
+                "from an established session (dashboard tab or Slack "
+                "thread), or use `kirocrew learn remove` from a shell."
+            )
+        return f"Error: {err_val}"
+    return f"Removed lessons matching: {query}"
+
+
+HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
+    "memory_recall": memory_recall,
+    "learn_add": learn_add,
+    "learn_list": learn_list,
+    "learn_remove": learn_remove,
+}

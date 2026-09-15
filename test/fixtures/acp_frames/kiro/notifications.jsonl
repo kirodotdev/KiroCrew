@@ -1,0 +1,13 @@
+{"_meta": {"backend": "", "recorded": "synthesized", "date": "2026-09-06", "agent_version": "2.21.1", "note": "The _kiro.dev/* notification family only kiro-cli sends, plus the redaction case. See ../README.md."}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/metadata", "params": {"sessionId": "kiro-session-0001", "contextUsagePercentage": 12.5, "meteringUsage": [{"unit": "credit", "value": 0.25, "unitPlural": "credits"}, {"unit": "token", "value": 4096, "unitPlural": "tokens"}]}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/compaction/status", "params": {"sessionId": "kiro-session-0001", "status": "started"}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/compaction/status", "params": {"sessionId": "kiro-session-0001", "status": "completed"}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/clear/status", "params": {"sessionId": "kiro-session-0001", "status": "completed"}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/agent/switched", "params": {"sessionId": "kiro-session-0001", "agentName": "kirocrew"}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/mcp/server_initialized", "params": {"sessionId": "kiro-session-0001", "serverName": "kirocrew-core"}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/mcp/server_init_failure", "params": {"sessionId": "kiro-session-0001", "serverName": "kirocrew-cron", "error": "spawn failed"}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/mcp/oauth_request", "params": {"sessionId": "kiro-session-0001", "serverName": "example-mcp", "url": "https://example.invalid/oauth/authorize"}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/subagent/list_update", "params": {"sessionId": "kiro-session-0001", "subagents": [{"id": "sub-1", "name": "reviewer", "status": "running"}]}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "kiro-session-0001", "update": {"sessionUpdate": "tool_call", "toolCallId": "kiro-tool-0002", "title": "read the deploy notes", "kind": "read", "status": "pending", "rawInput": {"path": "~/notes.md", "token": "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "kiro-session-0001", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "kiro-tool-0002", "status": "completed", "rawOutput": {"content": "the deploy key is ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"}}}}
+{"jsonrpc": "2.0", "id": 4, "result": {"stopReason": "max_tokens"}}
