@@ -94,6 +94,24 @@ class TestAdoption(_Base):
         self.assertIsNotNone(results.read_result("CR-1", self.root, "run-a"))
         self.assertIsNone(results.read_result("CR-1", self.root, None))
 
+    def test_a_worker_authored_delivery_intent_never_crosses_adoption(self):
+        """delivery_intent is the driver's evidence that a review reached GitHub.
+
+        post_recorded treats a prepared/attempting/indeterminate intent as an
+        operation to reconcile and confirm, so a worker that ships one in its
+        own record is proposing a delivery the driver would then confirm as its
+        own.
+        """
+        rec = _record()
+        rec["delivery_intent"] = {"operation_id": "a" * 32, "state": "attempting",
+                                  "selected_units": 5}
+        results.write_result(rec, self.root)
+
+        self.assertTrue(results.adopt_from_shared("CR-1", self.root, "run-a"))
+
+        adopted = results.read_result("CR-1", self.root, "run-a") or {}
+        self.assertNotIn("delivery_intent", adopted)
+
     def test_adoption_is_a_no_op_when_the_worker_wrote_nothing(self):
         # Must be reported as a failed change, not a silently empty report.
         self.assertFalse(results.adopt_from_shared("CR-1", self.root, "run-a"))
