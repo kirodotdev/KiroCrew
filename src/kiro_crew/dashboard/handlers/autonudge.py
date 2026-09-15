@@ -1034,6 +1034,9 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         active=body.get("active"),
         max_runtime_secs=body.get("max_runtime_secs"),
         banner=body.get("banner"),
+        # Without this the store's stale-baseline fence is inert on the only browser write
+        # path: a dropped field reads as "no baseline offered", so a concurrent write wins.
+        expect_fingerprint=body.get("expect_fingerprint"),
         source="dashboard",
         caller=request.remote or "",
     )

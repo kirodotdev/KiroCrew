@@ -929,3 +929,771 @@ describe('AutoNudgePopover {{STOP_FILE}} help line (#10458)', () => {
     expect(noneLine()).toBeNull()
   })
 })
+
+describe('AutoNudgePopover — a failed save surfaces through ErrorNotice', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('renders a rejected PATCH through the shared error surface, hand-off omitted', async () => {
+    // The rule this pins is blocking BECAUSE the shared surface is what recovers the structured context; a hand-written red div silently throws that away.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) =>
+        init?.method === 'PATCH'
+          ? Promise.reject(new Error('autonudge PATCH refused'))
+          : Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+      ) as unknown as typeof fetch,
+    )
+
+    renderPopover(makeLoop())
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a replacement goal' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent ?? '').toContain('autonudge PATCH refused')
+    // The hand-off navigates away and unmounts the popover, so offering it here would discard the goal still sitting unsaved in the textarea.
+    expect(screen.queryByRole('button', { name: /ask.*agent|fix this/i })).toBeNull()
+  })
+
+  it('surfaces a failed conflict refetch instead of repeating the 409 silently', async () => {
+    // The 409's compare gate keys on the SERVED goal changing, so a failed refetch leaves the fingerprint stale and every retry repeats the same 409 with no reason shown.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) => {
+        if (init?.method === 'PATCH') {
+          return Promise.resolve({
+            ok: false,
+            status: 409,
+            json: () => Promise.resolve({ error: 'the stored goal changed elsewhere' }),
+          })
+        }
+        // The conflict refetch: the one GET the 409 branch makes to refresh the baseline.
+        if (String(url).includes('/slot/')) {
+          return Promise.reject(new Error('refetch unreachable'))
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+      }) as unknown as typeof fetch,
+    )
+
+    renderPopover(makeLoop({ message: 'the served goal', message_fingerprint: 'abc123fingerprint' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a replacement goal' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    const alert = await screen.findByRole('alert')
+    const shown = alert.textContent ?? ''
+    // The refetch failure is still disclosed, but in plain copy: the raw transport text it used to append ('HTTP 500') is not something a user can act on.
+    expect(shown).toContain('Could not reload the newer goal')
+    expect(shown).not.toContain('refetch unreachable')
+    // WITHHELD: the server's 409 text promises a compare the failed reload made impossible; staleness still reads from 'the newer goal' above.
+    expect(shown).not.toContain('the stored goal changed elsewhere')
+  })
+
+  it('names the resume in the keep-stored arm only while the loop is paused', async () => {
+    // The arm PATCHes active: true like every save, so on a paused loop it resumes and starts spending unattended cycles; base Save already relabels for exactly this case.
+    const armGate = async (active: boolean) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() =>
+          Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+        ) as unknown as typeof fetch,
+      )
+      renderPopover(
+        makeLoop({
+          active,
+          message: 'deploy using [REDACTED: aws-access-key-id]',
+          message_redacted: true,
+        }),
+      )
+      fireEvent.change(screen.getByRole('textbox'), {
+        target: { value: 'deploy using [REDACTED: aws-access-key-id] now' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: /save|start loop/i }))
+      const arm = await screen.findByTestId('autonudge-decline-overwrite')
+      return arm.textContent ?? ''
+    }
+
+    const paused = await armGate(false)
+    cleanup()
+    const running = await armGate(true)
+
+    expect(paused).toContain('start loop')
+    expect(running).not.toContain('start loop')
+    // Both still answer the GOAL question, so the distinguishing half must survive.
+    expect(paused).toContain('Keep stored goal')
+    expect(running).toContain('Keep stored goal')
+  })
+
+  it('sends the served fingerprint as the PATCH baseline, not the maskable text', async () => {
+    const bodies: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) => {
+        if (init?.method === 'PATCH') {
+          bodies.push(String(init.body ?? ''))
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+      }) as unknown as typeof fetch,
+    )
+
+    renderPopover(makeLoop({ message: 'the served goal', message_fingerprint: 'abc123fingerprint' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a replacement goal' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    await waitFor(() => expect(bodies.length).toBe(1))
+    const sent = JSON.parse(bodies[0])
+    expect(sent.expect_fingerprint).toBe('abc123fingerprint')
+    // The text baseline is MASKABLE: two goals differing only inside a redacted span share one projection, so sending it would let a stale write authorise itself.
+    expect(sent.expect_message).toBeUndefined()
+  })
+
+  it('dismisses the armed confirm on a 409 instead of leaving it bound to a stale goal', async () => {
+    // Discriminating: the pre-existing `!resp.ok` throw already surfaces the message, so what only this branch does is DROP the armed baseline.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) =>
+        init?.method === 'PATCH'
+          ? Promise.resolve({
+              ok: false,
+              status: 409,
+              json: () => Promise.resolve({ error: 'the goal changed in another window' }),
+            })
+          : Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+      ) as unknown as typeof fetch,
+    )
+
+    renderPopover(makeLoop({ message: 'deploy using [REDACTED: aws-access-key-id]', message_redacted: true }))
+    const area = screen.getByRole('textbox')
+    fireEvent.change(area, { target: { value: 'deploy using [REDACTED: aws-access-key-id] now' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    const confirmBtn = await screen.findByTestId('autonudge-confirm-overwrite')
+    await waitFor(() => expect(confirmBtn.hasAttribute('disabled')).toBe(false))
+    fireEvent.click(confirmBtn)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent ?? '').toContain('changed in another window')
+    await waitFor(() =>
+      expect(screen.queryByTestId('autonudge-confirm-overwrite')).toBeNull(),
+    )
+    // The refused edit stays in the textarea; a cleared box would lose the user's typing.
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(
+      'deploy using [REDACTED: aws-access-key-id] now',
+    )
+  })
+})
+
+describe('AutoNudgePopover — the confirm is bound to the goal it was served for', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetForTests()
+    vi.restoreAllMocks()
+  })
+
+  it('never advises leaving the text untouched once the text has been touched', async () => {
+    renderPopover(makeLoop({
+      message: 'deploy using [REDACTED: aws-access-key-id]',
+      message_redacted: true,
+    }))
+    const box = screen.getByRole('textbox')
+
+    fireEvent.change(box, {
+      target: { value: 'deploy using [REDACTED: aws-access-key-id] tonight' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    const question = await screen.findByTestId('autonudge-confirm-question')
+
+    // ux-review: this confirm renders only AFTER the edit, so that advice names a path the reader no longer has -- the keep-stored button below is the one that still works.
+    expect(question).not.toHaveTextContent('untouched to keep it')
+    // ux-review: the question must name the STAKE rather than restate the verb -- what the reader cannot know is that the stored goal is neither shown nor recoverable.
+    expect(question).toHaveTextContent("The stored goal can't be shown or recovered")
+  })
+
+  it('submits the fingerprint the confirm was ARMED on, not the live one', async () => {
+    // Two goals differing only inside the mask share one projection, so the text guard cannot separate them and a live token would carry the newer goal's own baseline.
+    const patches: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        if (init?.method === 'PATCH') patches.push(String(init.body ?? ''))
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+      }) as unknown as typeof fetch,
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const props = { slotKey: SLOT, open: true, onOpenChange: () => {}, onChange: () => {} }
+    // Same projection both times: only the fingerprint moves, which is the whole point.
+    const at = (fingerprint: string) => (
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          {...props}
+          loop={makeLoop({
+            message: 'call the API with key ***',
+            message_redacted: true,
+            message_fingerprint: fingerprint,
+          })}
+        />
+      </QueryClientProvider>
+    )
+    const view = render(at('fp-armed-on'))
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByTestId('autonudge-confirm-question')
+
+    // The stored goal is replaced DURING the confirm window by a different goal whose redacted projection is byte-identical, so the text guard sees no change.
+    view.rerender(at('fp-newer-goal'))
+    fireEvent.click(screen.getByTestId('autonudge-confirm-overwrite'))
+
+    await waitFor(() => expect(patches.length).toBe(1))
+    const body = JSON.parse(patches[0]) as { expect_fingerprint?: string }
+    expect(body.expect_fingerprint).toBe('fp-armed-on')
+  })
+
+  it('discloses a stored-goal change that landed BEFORE the confirm was armed', async () => {
+    // GPT 5.6 (BLOCKING): arming read the LIVE token, so a goal replaced before the first Save click became the confirm's own baseline and the 409 could never fire on it.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+      ) as unknown as typeof fetch,
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const props = { slotKey: SLOT, open: true, onOpenChange: () => {}, onChange: () => {} }
+    // Same redacted projection both times, so only the token distinguishes the two goals.
+    const at = (fingerprint: string) => (
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          {...props}
+          loop={makeLoop({
+            message: 'call the API with key ***',
+            message_redacted: true,
+            message_fingerprint: fingerprint,
+          })}
+        />
+      </QueryClientProvider>
+    )
+    const view = render(at('fp-at-open'))
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    // BEFORE any Save click: the stored goal moves while the user is still typing.
+    view.rerender(at('fp-newer-goal'))
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByTestId('autonudge-confirm-question')
+
+    expect(screen.queryByTestId('autonudge-confirm-rearmed')).not.toBeNull()
+
+    // Opus 4.8: the flag only ever latched true, so keep-editing then re-saving with the token now stable re-announced a stale change.
+    fireEvent.click(screen.getByTestId('autonudge-dismiss-overwrite'))
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByTestId('autonudge-confirm-question')
+    expect(screen.queryByTestId('autonudge-confirm-rearmed')).toBeNull()
+  })
+
+  it('omits every field the user did not touch, so a concurrent change to it survives', async () => {
+    // GPT 5.6 (BLOCKING): a settings-only Save sent the goal seeded at open together with the LIVE fingerprint, so the 409 matched and the newer goal was replaced by the stale one.
+    const patches: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        if (init?.method === 'PATCH') patches.push(String(init.body ?? ''))
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+      }) as unknown as typeof fetch,
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const props = { slotKey: SLOT, open: true, onOpenChange: () => {}, onChange: () => {} }
+    const at = (goal: string, fingerprint: string) => (
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover {...props} loop={makeLoop({ message: goal, message_fingerprint: fingerprint })} />
+      </QueryClientProvider>
+    )
+    const view = render(at('the goal shown at open', 'fp-at-open'))
+
+    // The NUMBER moves, never the textarea: this is the settings-only path.
+    fireEvent.change(screen.getByRole('spinbutton', { name: /Seconds between nudges/i }), { target: { value: '120' } })
+    view.rerender(at('a newer goal the user never saw', 'fp-newer-goal'))
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    await waitFor(() => expect(patches.length).toBe(1))
+    // An omitted `message` is what protects the moved goal: the server leaves the field alone, so no value of ours -- stale seed OR live copy -- can land on top of it.
+    expect(JSON.parse(patches[0]).message).toBeUndefined()
+    expect(JSON.parse(patches[0]).idle_secs).toBe(120)
+    // One shared dirty flag also sent the UNTOUCHED max_cycles, clobbering a concurrent change.
+    expect(JSON.parse(patches[0]).max_cycles).toBeUndefined()
+    // Design: a settings-only patch carries no CAS token, or the backend would 409 a goal conflict this save could not have caused.
+    expect(JSON.parse(patches[0]).expect_fingerprint).toBeUndefined()
+
+    // A goal CLEARED elsewhere is a deliberate act, and resending any goal would have resurrected it; omission leaves the cleared goal cleared.
+    view.rerender(at('', 'fp-cleared'))
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await waitFor(() => expect(patches.length).toBe(2))
+    expect(JSON.parse(patches[1]).message).toBeUndefined()
+  })
+
+  it('follows a live numeric change while untouched, and stops once edited', () => {
+    // GPT 5.6 (BLOCKING): the seed runs on the open edge only, so an untouched input went stale and the user's next edit sent that superseded number back over the newer one.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const at = (idle: number) => (
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover slotKey={SLOT} open onOpenChange={() => {}} onChange={() => {}} loop={makeLoop({ idle_secs: idle })} />
+      </QueryClientProvider>
+    )
+    const view = render(at(90))
+    const f = () => screen.getByRole('spinbutton', { name: /Seconds between nudges/i }) as HTMLInputElement
+    expect(f().value).toBe('90')
+    view.rerender(at(300))
+    expect(f().value).toBe('300')
+    fireEvent.change(f(), { target: { value: '45' } })
+    view.rerender(at(600))
+    expect(f().value).toBe('45')
+  })
+
+  it('keeps a numeric edit AND a goal edit typed while the save was still in flight', async () => {
+    // GPT 5.6 (BLOCKING, twice): success cleared both dirty flags so the reseed wrote the response's older value back, and a non-redacted success closed the popover, discarding newer goal text that no draft covers while a loop exists.
+    let release: () => void = () => {}
+    let closed = false
+    const gate = new Promise<void>(r => { release = r })
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') await gate
+      const sent = init?.body ? JSON.parse(String(init.body)) : {}
+      return { ok: true, status: 200, json: async () => ({ ok: true, loop: makeLoop({ idle_secs: 120, message: sent.message ?? 'active loop goal' }) }) }
+    }) as unknown as typeof fetch)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const Harness = () => {
+      const [l, setL] = useState<AutoNudgeLoop | null>(makeLoop({ idle_secs: 90 }))
+      return <AutoNudgePopover slotKey={SLOT} open onOpenChange={o => { if (!o) closed = true }} onChange={setL} loop={l} />
+    }
+    render(<QueryClientProvider client={qc}><Harness /></QueryClientProvider>)
+    const f = () => screen.getByRole('spinbutton', { name: /Seconds between nudges/i }) as HTMLInputElement
+    const box = () => screen.getByPlaceholderText(/Describe what you want the agent to accomplish/i) as HTMLTextAreaElement
+    fireEvent.change(f(), { target: { value: '120' } })
+    fireEvent.change(box(), { target: { value: 'first goal edit' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    fireEvent.change(f(), { target: { value: '200' } })
+    fireEvent.change(box(), { target: { value: 'newer goal typed mid-save' } })
+    await act(async () => { release() })
+    await waitFor(() => expect(f().value).toBe('200'))
+    expect(box().value).toBe('newer goal typed mid-save')
+    expect(closed).toBe(false)
+    // Opus 5: the latches must follow the response, or the NEXT Save arms the moved-goal gate against the user's own just-saved text -- only a second click reaches that state.
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await waitFor(() => expect(box().value).toBe('newer goal typed mid-save'))
+    expect(screen.queryByTestId('autonudge-moved-goal-preview')).toBeNull()
+  })
+
+  it('refuses the first trigger click that would discard an unsaved goal edit', async () => {
+    // GPT 5.6 (BLOCKING): the trigger toggle closes through the ROOT onOpenChange, which neither dismiss hook sees, so that one gesture discarded the edit without warning.
+    vi.stubGlobal('fetch', vi.fn(() =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+    ) as unknown as typeof fetch)
+    const onOpenChange = vi.fn()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover slotKey={SLOT} open loop={makeLoop()} onOpenChange={onOpenChange} onChange={() => {}} />
+      </QueryClientProvider>,
+    )
+    const chip = () => screen.getByRole('button', { name: /Goal active/i })
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'edited but never saved' } })
+    fireEvent.click(chip())
+
+    expect(onOpenChange).not.toHaveBeenCalled()
+    expect(screen.getByTestId('autonudge-escape-warned')).toBeTruthy()
+
+    // Warn ONCE: the second press is the answer to the warning, so it must close.
+    fireEvent.click(chip())
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+
+  it('lands gate focus on the arm that writes nothing', async () => {
+    // The keep-stored arm PATCHes, so focusing it means a habituated second Enter after Save commits a partial save. `e.repeat` does not help: that guard only blocks a HELD key.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+      ) as unknown as typeof fetch,
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          slotKey={SLOT}
+          open
+          onOpenChange={() => {}}
+          onChange={() => {}}
+          loop={makeLoop({ message: 'stored goal', message_redacted: true })}
+        />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByTestId('autonudge-confirm-question')
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId('autonudge-dismiss-overwrite')),
+    )
+  })
+
+  it('cancels the armed gate on Escape instead of discarding the typed goal', async () => {
+    // UX: Escape is the habitual cancel, but closing the popover discards the edit, which no draft covers while a loop exists.
+    const patches: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        if (init?.method === 'PATCH') patches.push(String(init.body ?? ''))
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+      }) as unknown as typeof fetch,
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    let openState = true
+    const props = {
+      slotKey: SLOT,
+      open: true,
+      onOpenChange: (v: boolean) => { openState = v },
+      onChange: () => {},
+    }
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          {...props}
+          loop={makeLoop({ message: 'stored goal', message_redacted: true })}
+        />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByTestId('autonudge-confirm-question')
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+    expect(patches).toEqual([])
+    expect(openState).toBe(true)
+    expect(screen.queryByTestId('autonudge-confirm-question')).toBeNull()
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('my replacement')
+  })
+
+  it('closes on Escape for a new goal, whose text the draft restores', async () => {
+    // The draft restores this text on reopen, so the guard that swallowed Escape here was protecting nothing and read as a frozen popover on the most common path.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+      ) as unknown as typeof fetch,
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    let openState = true
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          slotKey={SLOT}
+          open
+          onOpenChange={(v: boolean) => { openState = v }}
+          onChange={() => {}}
+          loop={null}
+        />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a brand new goal' } })
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+    expect(openState).toBe(false)
+    expect(screen.queryByTestId('autonudge-escape-warned')).toBeNull()
+  })
+
+  it('warns once before Escape discards a live loop edit, then lets it close', async () => {
+    // The other half: with a loop the edit IS lost on close (the draft is only restored when no loop exists), so the key must refuse VISIBLY rather than silently.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+      ) as unknown as typeof fetch,
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    let openState = true
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          slotKey={SLOT}
+          open
+          onOpenChange={(v: boolean) => { openState = v }}
+          onChange={() => {}}
+          loop={makeLoop({ message: 'stored goal', message_redacted: true })}
+        />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+    // Refused, but VISIBLY: a swallowed key with no notice is the defect.
+    expect(openState).toBe(true)
+    expect(screen.getByTestId('autonudge-escape-warned')).toBeTruthy()
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('my replacement')
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    expect(openState).toBe(false)
+  })
+
+  it('warns once before the X button discards a live loop edit, then lets it close', async () => {
+    // UX: the Escape guard alone left two silent exits. A user who has learned the warning exists loses typed text to the X, which is the click most likely to be habitual.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+      ) as unknown as typeof fetch,
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    let openState = true
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          slotKey={SLOT}
+          open
+          onOpenChange={(v: boolean) => { openState = v }}
+          onChange={() => {}}
+          loop={makeLoop({ message: 'stored goal', message_redacted: true })}
+        />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    fireEvent.click(screen.getByLabelText('Close'))
+
+    expect(openState).toBe(true)
+    expect(screen.getByTestId('autonudge-escape-warned')).toBeTruthy()
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('my replacement')
+
+    fireEvent.click(screen.getByLabelText('Close'))
+    expect(openState).toBe(false)
+  })
+
+  it('shares one warned flag across the dismissal paths rather than one per path', async () => {
+    // The three paths are separate Radix hooks. With per-path state, a warning earned on one path would not carry, so the SECOND path would still discard silently on its first use.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) }),
+      ) as unknown as typeof fetch,
+    )
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    let openState = true
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          slotKey={SLOT}
+          open
+          onOpenChange={(v: boolean) => { openState = v }}
+          onChange={() => {}}
+          loop={makeLoop({ message: 'stored goal', message_redacted: true })}
+        />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    expect(openState).toBe(true)
+
+    // Warned via Escape; the X must now honour that same flag instead of re-warning.
+    fireEvent.click(screen.getByLabelText('Close'))
+    expect(openState).toBe(false)
+  })
+
+  it('offers a write-free exit that keeps the typed goal and sends no PATCH', async () => {
+    // UX review: both other buttons PATCH, so the armed gate had no do-nothing answer and the only silent dismissal was Escape, which DISCARDS the edit.
+    const patches: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        if (init?.method === 'PATCH') patches.push(String(init.body ?? ''))
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+      }) as unknown as typeof fetch,
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const props = { slotKey: SLOT, open: true, onOpenChange: () => {}, onChange: () => {} }
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          {...props}
+          loop={makeLoop({ message: 'stored goal', message_redacted: true })}
+        />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByTestId('autonudge-confirm-question')
+
+    fireEvent.click(screen.getByTestId('autonudge-dismiss-overwrite'))
+
+    expect(patches).toEqual([])
+    expect(screen.queryByTestId('autonudge-confirm-question')).toBeNull()
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('my replacement')
+  })
+
+  it('refuses a confirm whose goal moved after the gate was armed, and re-arms on the newer goal', async () => {
+
+    // GPT 5.6 (BLOCKING): the gate was evaluated at RENDER time only, so an update landing between the read and the click was committed over irreversibly.
+    const patches: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, init?: RequestInit) => {
+        if (init?.method === 'PATCH') patches.push(String(init.body ?? ''))
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+      }) as unknown as typeof fetch,
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const props = { slotKey: SLOT, open: true, onOpenChange: () => {}, onChange: () => {} }
+    const at = (msg: string) => (
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover {...props} loop={makeLoop({ message: msg })} />
+      </QueryClientProvider>
+    )
+    const view = render(at('goal one'))
+
+    // The user edits, then the stored goal moves under that edit: the gate arms.
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    view.rerender(at('goal two'))
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    // The preview now carries a label, so pin the served text it must SHOW, not equality.
+    expect(screen.getByTestId('autonudge-moved-goal-preview').textContent).toContain('goal two')
+
+    // The goal moves AGAIN while the confirm sits open, then the user clicks confirm.
+    view.rerender(at('goal three'))
+    fireEvent.click(screen.getByTestId('autonudge-confirm-overwrite'))
+
+    expect(patches).toEqual([])
+    expect(screen.getByTestId('autonudge-moved-goal-preview').textContent).toContain('goal three')
+    // ux-review: the swallowed click must be ANNOUNCED. Changed preview text is the only other cue and a screen reader is never told about it.
+    expect(screen.getByTestId('autonudge-confirm-rearmed')).toHaveAttribute('role', 'status')
+
+    // Confirming the goal now on screen does commit — the gate re-arms, it does not lock.
+    fireEvent.click(screen.getByTestId('autonudge-confirm-overwrite'))
+    await screen.findByRole('textbox')
+    expect(patches.length).toBe(1)
+    expect(patches[0]).toContain('my replacement')
+  })
+})
+
+describe('AutoNudgePopover — the keep-stored arm claims only what it saved', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetForTests()
+  })
+
+  it('does not claim other settings were saved when only the goal was edited', async () => {
+    const patches: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+        const href = String(url)
+        if (init?.method === 'PATCH') {
+          patches.push(String(init.body))
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ loop: makeLoop({ message: 'stored goal' }) }),
+          })
+        }
+        if (href.includes('/api/autonudge')) {
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ loops: [] }) })
+        }
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+      }) as unknown as typeof fetch,
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          slotKey={SLOT}
+          open
+          onOpenChange={() => {}}
+          onChange={() => {}}
+          loop={makeLoop({ message: 'stored goal', message_redacted: true })}
+        />
+      </QueryClientProvider>,
+    )
+
+    // ONLY the goal is touched. The numeric inputs are never edited, so a notice that reports settings being saved describes a change the user did not make.
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'my replacement' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByTestId('autonudge-confirm-question')
+
+    // The arm's own label must not promise a settings save either.
+    const arm = screen.getByTestId('autonudge-decline-overwrite')
+    expect(arm.textContent).not.toContain('other settings')
+
+    fireEvent.click(arm)
+
+    const kept = await screen.findByTestId('autonudge-kept-stored-goal')
+    expect(kept.textContent).toContain('The stored goal was kept')
+    expect(kept.textContent).toContain('Your typed text is still here')
+    expect(kept.textContent).not.toContain('other settings were saved')
+  })
+})
+
+describe('AutoNudgePopover — a masked save does not close silently', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetForTests()
+  })
+
+  it('stays open and shows the notice when the store masked the goal just typed', async () => {
+    const saved = makeLoop({ message: 'deploy with [REDACTED: credential]', message_redacted: true })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'PATCH') {
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ loop: saved }) })
+        }
+        if (String(url).includes('/api/autonudge')) {
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ loops: [] }) })
+        }
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+      }) as unknown as typeof fetch,
+    )
+
+    const opens: boolean[] = []
+    let served = makeLoop({ message: 'stored goal' })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          slotKey={SLOT}
+          open
+          onOpenChange={(v: boolean) => opens.push(v)}
+          onChange={(l: AutoNudgeLoop | null) => { if (l) served = l }}
+          loop={served}
+        />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'deploy with hunter2' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    await vi.waitFor(() => expect(served.message_redacted).toBe(true))
+    expect(opens).not.toContain(false)
+
+    rerender(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover
+          slotKey={SLOT}
+          open
+          onOpenChange={(v: boolean) => opens.push(v)}
+          onChange={(l: AutoNudgeLoop | null) => { if (l) served = l }}
+          loop={served}
+        />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByTestId('autonudge-redacted-notice')).toBeInTheDocument()
+  })
+})
