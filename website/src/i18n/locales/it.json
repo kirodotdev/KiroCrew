@@ -15165,7 +15165,27 @@
       "role_update_apply_blocked_many": "Scegli Mantieni il mio o Prendi quello del modello per ciascuno dei {{count}} campi cambiati su entrambi i lati.",
       "detach_failed": "Impossibile scollegare il membro.",
       "detached_done": "Scollegato da {{app}}. Questo compagno conserva tutto ciò che ha e non segue più quel modello.",
-      "role_update_member_moved": "Questo membro è stato modificato da quando è stato fatto questo piano. Rivedilo."
+      "role_update_member_moved": "Questo membro è stato modificato da quando è stato fatto questo piano. Rivedilo.",
+      "fire": "Licenzia «{{name}}»",
+      "fire_explain": "Licenziare ritira questo compagno: lascia la tua crew e il suo file di ruolo viene rimosso; conversazione, attività, briefing, regole e memoria vengono archiviati, non eliminati. Nulla viene rimosso finché non confermi.",
+      "fire_confirm_explain": "Licenziare «{{name}}»? Questo compagno lascia la tua crew: il compagno e il suo file di ruolo vengono rimossi. Conversazione, attività, briefing, regole e memoria vengono archiviati, non eliminati — potrai ritrovarli in seguito.",
+      "fire_confirm_explain_purge": "Licenziare «{{name}}» ed eliminare tutto? Questo compagno di crew lascia la tua crew: il compagno e la sua definizione di agente vengono rimossi, la sua memoria viene archiviata. Conversazione, attività, briefing e regole vengono ELIMINATI, non archiviati. Non annullabile.",
+      "fire_purge_label": "Elimina anche conversazione, attività, briefing e regole. Non annullabile.",
+      "fire_confirm": "Sì, licenzia",
+      "fire_confirm_purge": "Sì, licenzia ed elimina",
+      "firing": "Licenziamento…",
+      "fire_failed": "Impossibile licenziare il membro.",
+      "fire_slug_collision": "Nessuno è stato licenziato. Un altro membro, {{other}}, ha lo stesso nome breve ({{slug}}) di {{name}}, quindi condividono i file. Prima rinomina o licenzia quel membro: lo trovi in «I tuoi compagni» se è un compagno di crew, altrimenti in «Capacità degli agenti › Agenti».",
+      "fired_summary": "{{name}} è stato licenziato.",
+      "fired_thread_archived": "Conversazione, attività, briefing e regole sono archiviati; la conversazione si apre ancora dalla <history/> della pagina Chat.",
+      "fired_thread_purged": "Conversazione, attività, briefing e regole sono stati eliminati.",
+      "fired_thread_kept": "Attività, briefing e regole sono stati eliminati, ma non la conversazione; resta nella <history/>: puoi eliminarla da lì.",
+      "fired_thread_kept_cron_claim": "Attività, briefing e regole sono stati eliminati, ma non la conversazione: un lavoro pianificato vi fa ancora riferimento. Resta nella <history/>: metti in pausa o rimuovi quel lavoro, poi eliminala da lì.",
+      "fired_thread_kept_store": "Attività, briefing e regole sono stati eliminati, ma non la conversazione: l’elenco dei lavori pianificati non è leggibile, quindi non è certo che nessuno vi faccia riferimento. Resta nella <history/>: puoi eliminarla da lì.",
+      "fired_history_link": "Cronologia",
+      "fired_thread_none": "Non aveva conversazioni; attività, briefing e regole sono archiviati.",
+      "fired_dismiss": "Chiudi",
+      "fired_thread_none_purged": "Non aveva conversazioni; attività, briefing e regole sono stati eliminati."
     }
   },
   "privacyDisclosure": {

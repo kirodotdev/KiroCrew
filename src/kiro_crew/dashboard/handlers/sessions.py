@@ -1954,52 +1954,93 @@ def _delete_history_session(
     return result, resolved_claim
 
 
-async def api_session_delete(request: web.Request) -> web.Response:
-    """DELETE /api/sessions/{key} — permanently delete a history session."""
-    state: DashboardState = request.app["state"]
-    key = request.match_info["key"]
-    if not state.conversation_log:
-        return web.json_response({"error": "no conversation log"}, status=400)
+#: Outcomes of :func:`delete_history_transcript` other than success. Each names
+#: WHY the transcript stayed, so a caller can say the repair instead of guessing.
+HISTORY_DELETE_NO_LOG = "no_log"
+HISTORY_DELETE_STORE_UNREADABLE = "store_unreadable"
+HISTORY_DELETE_CRON_CLAIM_UNREADABLE = "cron_claim_unreadable"
+HISTORY_DELETE_REFUSED = "refused"
 
-    # Freeze the slot/transcript/manager route before the first await. The strict
-    # cron-store scan establishes exact owner keys independently of that route.
+
+@dataclass(frozen=True)
+class HistoryDeleteOutcome:
+    """What :func:`delete_history_transcript` did. ``reason`` is ``""`` when the
+    transcript is gone, else one of the ``HISTORY_DELETE_*`` names; ``error`` is
+    the store exception behind ``store_unreadable``; ``owner_keys`` are the cron
+    owner keys the strict scan found, for the ownership-unknown refusal."""
+
+    reason: str
+    error: Exception | None = None
+    owner_keys: tuple[str, ...] = ()
+
+
+async def delete_history_transcript(state: DashboardState, key: str) -> HistoryDeleteOutcome:
+    """Permanently delete one history transcript: the ONE sequence behind
+    ``DELETE /api/sessions/{key}`` and a fired crewmate's purge.
+
+    Claim the slot/transcript route before the first await; scan the cron store
+    STRICTLY for jobs bound to the transcript (an unreadable store refuses --
+    deleting would strand a job it cannot see); resolve ambiguous slot ownership
+    and the linked session inside the transcript lock set and unlink there (an
+    unreadable owner claim refuses with the row intact); then sweep for a job
+    created between the scan and the unlink (loud, cannot refuse: the row is
+    gone), remove the slot and push the refreshes. Composed once, here, because
+    the fire needs the outcome as a value and the route needs it as a response:
+    two hand-written copies of a five-step private sequence drift the moment one
+    of them gains a step.
+    """
+    if not state.conversation_log:
+        return HistoryDeleteOutcome(HISTORY_DELETE_NO_LOG)
     delete_claim = _capture_history_delete_claim(state, key)
     crons = getattr(state, "crons", None)
     try:
         swept = await _owner_keys_bound_to_transcript(crons, (key,))
     except (CronStoreBusy, CronStoreUnreadable) as exc:
-        return _cron_store_refusal(exc)
-
-    # Resolve ambiguous slot ownership and read linked_session_key inside the
-    # same canonical-plus-legacy lock set, before the unlink destroys either
-    # piece of evidence. An unreadable owner claim refuses with the row intact.
+        return HistoryDeleteOutcome(HISTORY_DELETE_STORE_UNREADABLE, error=exc)
+    owner_keys = tuple(swept.get(key, ()))
     try:
         ok, delete_claim = await asyncio.to_thread(
             _delete_history_session,
             state.conversation_log,
             key,
             delete_claim,
-            exact_owner_keys=swept.get(key, ()),
+            exact_owner_keys=owner_keys,
         )
     except _OwnerKeyUnreadable:
-        return _cron_ownership_unknown_refusal(crons, swept.get(key, ()))
+        return HistoryDeleteOutcome(HISTORY_DELETE_CRON_CLAIM_UNREADABLE, owner_keys=owner_keys)
+    if not ok:
+        return HistoryDeleteOutcome(HISTORY_DELETE_REFUSED, owner_keys=owner_keys)
+    # Catch a job created after the strict pre-scan but before the unlink.
+    # The row is already gone, so a failed second scan is loud but cannot
+    # refuse; the pre-unlink owner claim still proceeds to cleanup.
+    after = await _owner_keys_after_unlink(crons, (key,))
+    delete_claim = replace(
+        delete_claim,
+        cron_owner_keys=(delete_claim.cron_owner_keys | frozenset(after.get(key, ()))),
+    )
+    try:
+        await _remove_slot_for_history_key(state, key, delete_claim=delete_claim)
+    except Exception:
+        logger.warning("cleanup failed for session %s", key, exc_info=True)
+    state.push_slots_update()
+    state.push_refresh("history")
+    return HistoryDeleteOutcome("", owner_keys=owner_keys)
 
-    if ok:
-        # Catch a job created after the strict pre-scan but before the unlink.
-        # The row is already gone, so a failed second scan is loud but cannot
-        # refuse; the pre-unlink owner claim still proceeds to cleanup.
-        after = await _owner_keys_after_unlink(crons, (key,))
-        delete_claim = replace(
-            delete_claim,
-            cron_owner_keys=(delete_claim.cron_owner_keys | frozenset(after.get(key, ()))),
-        )
-        try:
-            await _remove_slot_for_history_key(state, key, delete_claim=delete_claim)
-        except Exception:
-            logger.warning("cleanup failed for session %s", key, exc_info=True)
-        state.push_slots_update()
-        state.push_refresh("history")
-    return web.json_response({"ok": ok})
+
+async def api_session_delete(request: web.Request) -> web.Response:
+    """DELETE /api/sessions/{key} — permanently delete a history session."""
+    state: DashboardState = request.app["state"]
+    key = request.match_info["key"]
+    if not state.conversation_log:
+        return web.json_response({"error": "no conversation log"}, status=400)
+    # The sequence is the shared helper's, so the fire's purge and this route
+    # cannot diverge; only the refusal BODIES are the route's own.
+    outcome = await delete_history_transcript(state, key)
+    if outcome.reason == HISTORY_DELETE_STORE_UNREADABLE and outcome.error is not None:
+        return _cron_store_refusal(outcome.error)
+    if outcome.reason == HISTORY_DELETE_CRON_CLAIM_UNREADABLE:
+        return _cron_ownership_unknown_refusal(getattr(state, "crons", None), outcome.owner_keys)
+    return web.json_response({"ok": outcome.reason == ""})
 
 
 # A release that loses the store-lock race is not recoverable later: the session

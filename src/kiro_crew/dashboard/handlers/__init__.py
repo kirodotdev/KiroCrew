@@ -245,6 +245,7 @@ from kiro_crew.dashboard.handlers.mcp_apps import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_activity,
     api_member_detach,
+    api_member_fire,
     api_member_hire,
     api_member_role_update_apply,
     api_member_role_update_get,

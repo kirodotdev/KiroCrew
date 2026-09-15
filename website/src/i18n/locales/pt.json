@@ -15165,7 +15165,27 @@
       "role_update_apply_blocked_many": "Escolha Manter o meu ou Usar o do modelo para cada um dos {{count}} campos alterados em ambos os lados.",
       "detach_failed": "Não foi possível desvincular o membro.",
       "detached_done": "Desvinculado de {{app}}. Este colega mantém tudo o que tem e não segue mais esse modelo.",
-      "role_update_member_moved": "Este membro foi editado desde que este plano foi feito. Revise-o de novo."
+      "role_update_member_moved": "Este membro foi editado desde que este plano foi feito. Revise-o de novo.",
+      "fire": "Demitir “{{name}}”",
+      "fire_explain": "Demitir aposenta este colega: ele deixa a sua tripulação e o arquivo de função dele é removido; a conversa, a atividade, o briefing, as regras e a memória são arquivados, não excluídos. Nada é removido até você confirmar.",
+      "fire_confirm_explain": "Demitir “{{name}}”? Este colega deixa a sua tripulação: o colega e o arquivo de função dele são removidos. Sua conversa, atividade, briefing, regras e memória são arquivados, não excluídos — você ainda pode encontrá-los depois.",
+      "fire_confirm_explain_purge": "Demitir “{{name}}” e excluir tudo? Este colega de equipe sai da sua equipe: o colega e sua própria definição de agente são removidos, e sua memória é arquivada. Conversa, atividade, briefing e regras são EXCLUÍDOS, não arquivados. Não pode ser desfeito.",
+      "fire_purge_label": "Excluir também a conversa, a atividade, o briefing e as regras. Não pode ser desfeito.",
+      "fire_confirm": "Sim, demitir",
+      "fire_confirm_purge": "Sim, demitir e apagar",
+      "firing": "Demitindo…",
+      "fire_failed": "Não foi possível demitir o membro.",
+      "fire_slug_collision": "Nada foi demitido. Outro membro, {{other}}, tem o mesmo nome curto ({{slug}}) que {{name}}, então eles compartilham arquivos. Renomeie ou demita esse membro primeiro: encontre-o em “Seus colegas” se for um colega de equipe, senão em “Capacidades de agentes › Agentes”.",
+      "fired_summary": "{{name}} foi demitido.",
+      "fired_thread_archived": "Conversa, atividade, briefing e regras estão arquivados; a conversa ainda abre em <history/> na página Chat.",
+      "fired_thread_purged": "Conversa, atividade, briefing e regras foram excluídos.",
+      "fired_thread_kept": "Atividade, briefing e regras foram excluídos, mas a conversa não pôde ser; ela fica em <history/> — você pode excluí-la por lá.",
+      "fired_thread_kept_cron_claim": "Atividade, briefing e regras foram excluídos, mas a conversa não pôde ser: uma tarefa agendada ainda se refere a ela. Ela fica em <history/> — pause ou remova essa tarefa e depois exclua a conversa por lá.",
+      "fired_thread_kept_store": "Atividade, briefing e regras foram excluídos, mas a conversa não pôde ser: a lista de tarefas agendadas não pôde ser lida, então não é certo que nenhuma se refira a ela. Ela fica em <history/> — você pode excluí-la por lá.",
+      "fired_history_link": "Histórico",
+      "fired_thread_none": "Não havia conversa; atividade, briefing e regras estão arquivados.",
+      "fired_dismiss": "Dispensar",
+      "fired_thread_none_purged": "Não havia conversa; atividade, briefing e regras foram excluídos."
     }
   },
   "privacyDisclosure": {

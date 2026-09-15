@@ -170,6 +170,8 @@ describe('destructive confirmations are translated', () => {
  * be pinned here by hand (#5725; several entries below are exactly that).
  */
 export const QUOTED_OPERAND_CONFIRM_KEYS = [
+  'pages.membersPage.fire_confirm_explain', // member label operand, quoted per locale (step 5)
+  'pages.membersPage.fire_confirm_explain_purge', // same operand on the purge variant
   'apps.awsControl.console.delete_confirm', // filename operand, quoted per locale
   'apps.awsControl.console.folder_delete_confirm', // folder-name operand, quoted per locale #4821
   'apps.awsControl.console.library_remove_confirm', // artifact-name operand, quoted per locale #6987

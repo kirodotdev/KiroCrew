@@ -322,6 +322,13 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # which of its instructions are its user's edits. A TOP-LEVEL leaf: the
     # ``trust`` subtree is sandbox-visible (see ``_CREW_SANDBOX_VISIBLE_LEAVES``).
     "member-templates",
+    # A fire's intent markers (``dashboard/handlers/members.py``): one file per
+    # fire still pending, whose ``purge``/``slug``/``thread_history_key`` the
+    # resume TRUSTS. Written and read only by the GATEWAY; a spawned shell that
+    # could rewrite one would have the next fire delete unrelated lived state or
+    # another thread's transcript in its name. A TOP-LEVEL leaf for the reason
+    # ``member-templates`` is one: ``trust`` is sandbox-visible.
+    "member-fires",
     "agentcore-inbound",
     "routing",
     "webhooks",
@@ -849,6 +856,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # the merge BASE visible to every sandbox already running. The writer's own
     # ``mkdir`` is ``exist_ok`` and tightens the mode it finds.
     "member-templates",
+    # A fire's intent markers share the first-use shape: the root is built by
+    # the first fire, so it is materialized before any spawn for the mask to
+    # bind over; the writer's pinned publish tolerates an existing root.
+    "member-fires",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
     # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the

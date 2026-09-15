@@ -2345,6 +2345,23 @@ export interface RoleUpdatePlan {
   fields: RoleUpdateField[]
 }
 
+/** POST /api/members/{id}/fire. `thread.state`: archived (the transcript stays in
+ *  History), purged (deleted on explicit request), kept (a purge was asked for
+ *  but the history path refused -- a cron owns the transcript, the store could
+ *  not be read), none (the member never opened its thread). */
+export interface FireMemberResult {
+  ok: boolean
+  thread: {
+    state: 'archived' | 'purged' | 'kept' | 'none'
+    /** Present only with `state: 'kept'` -- WHY the transcript stayed when a
+     *  purge was asked, so the notice names the repair instead of guessing:
+     *  a scheduled job's claim on it could not be read, the schedule store
+     *  could not be read, or the delete itself declined. */
+    kept_reason?: 'cron_claim_unreadable' | 'store_unreadable' | 'refused'
+  }
+  lived_state: 'archived' | 'purged' | 'none'
+}
+
 /** `{ok}` like detach: the panel refetches the roster and the plan after an
  *  apply, so the response carries nothing the refetch does not. */
 export interface RoleUpdateResult {
@@ -3167,6 +3184,10 @@ export const api = {
    *  `expected_version` is the installed version the plan was made against. */
   applyMemberRoleUpdate: (member: string, body: { resolutions: Record<string, 'mine' | 'theirs'>; expected_version: string; member_fingerprint: string; template_fingerprint: string }) =>
     post('/api/members/' + encodeURIComponent(member) + '/role-update', body).then(j) as Promise<RoleUpdateResult>,
+  /** Retire a member: row, agent file and pristine copy go; memory archived; what
+   *  it lived is archived, or destroyed with `purge`. */
+  fireMember: (member: string, body: { purge: boolean }) =>
+    post('/api/members/' + encodeURIComponent(member) + '/fire', body).then(j) as Promise<FireMemberResult>,
   /** Sever a member from its template: provenance cleared, everything else kept. One-way. */
   detachMember: (member: string) =>
     post('/api/members/' + encodeURIComponent(member) + '/detach', {}).then(j) as Promise<{ ok: boolean }>,

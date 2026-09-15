@@ -15166,7 +15166,27 @@
       "role_update_apply_blocked_many": "Choisissez Garder le mien ou Prendre celui du modèle pour chacun des {{count}} champs modifiés des deux côtés.",
       "detach_failed": "Le membre n’a pas pu être détaché.",
       "detached_done": "Détaché de {{app}}. Ce coéquipier garde tout ce qu’il a et ne suit plus ce modèle.",
-      "role_update_member_moved": "Ce membre a été modifié depuis ce plan. Examinez-le à nouveau."
+      "role_update_member_moved": "Ce membre a été modifié depuis ce plan. Examinez-le à nouveau.",
+      "fire": "Licencier « {{name}} »",
+      "fire_explain": "Renvoyer retire ce coéquipier : il quitte votre équipage et son fichier de rôle disparaît ; sa conversation, son activité, son briefing, ses règles et sa mémoire sont archivés, pas supprimés. Rien n’est supprimé avant votre confirmation.",
+      "fire_confirm_explain": "Renvoyer « {{name}} » ? Ce coéquipier quitte votre équipage : le coéquipier et son fichier de rôle sont supprimés. Sa conversation, son activité, son briefing, ses règles et sa mémoire sont archivés, pas supprimés — vous pourrez les retrouver plus tard.",
+      "fire_confirm_explain_purge": "Licencier « {{name}} » et tout supprimer? Ce coéquipier quitte ton équipage : le coéquipier et sa propre définition d’agent sont retirés, et sa mémoire est archivée. Sa discussion, son activité, son briefing et ses règles sont SUPPRIMÉS, pas archivés. Irréversible.",
+      "fire_purge_label": "Supprimer aussi la discussion, l’activité, le briefing et les règles. Irréversible.",
+      "fire_confirm": "Oui, licencier",
+      "fire_confirm_purge": "Oui, licencier et supprimer",
+      "firing": "Licenciement…",
+      "fire_failed": "Le membre n’a pas pu être licencié.",
+      "fire_slug_collision": "Rien n’a été renvoyé. Un autre membre, {{other}}, a le même nom court ({{slug}}) que {{name}} ; ils partagent donc des fichiers. Renommez ou renvoyez d’abord ce membre : cherchez-le dans « Vos coéquipiers » s’il s’agit d’un coéquipier, sinon dans « Capacités des agents › Agents ».",
+      "fired_summary": "{{name}} a été licencié.",
+      "fired_thread_archived": "Sa discussion, son activité, son briefing et ses règles sont archivés ; la discussion s’ouvre toujours depuis l’<history/> de la page Chat.",
+      "fired_thread_purged": "Sa discussion, son activité, son briefing et ses règles ont été supprimés.",
+      "fired_thread_kept": "Son activité, son briefing et ses règles ont été supprimés, mais pas la discussion ; elle reste dans l’<history/> — tu peux la supprimer depuis là.",
+      "fired_thread_kept_cron_claim": "Son activité, son briefing et ses règles ont été supprimés, mais pas la discussion : une tâche planifiée y fait encore référence. Elle reste dans l’<history/> — mets cette tâche en pause ou retire-la, puis supprime la discussion depuis là.",
+      "fired_thread_kept_store": "Son activité, son briefing et ses règles ont été supprimés, mais pas la discussion : la liste des tâches planifiées n’a pas pu être lue, donc rien ne garantit qu’aucune n’y fait référence. Elle reste dans l’<history/> — tu peux la supprimer depuis là.",
+      "fired_history_link": "Historique",
+      "fired_thread_none": "Aucune discussion ; son activité, son briefing et ses règles sont archivés.",
+      "fired_dismiss": "Fermer",
+      "fired_thread_none_purged": "Aucune discussion ; son activité, son briefing et ses règles ont été supprimés."
     }
   },
   "privacyDisclosure": {

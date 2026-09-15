@@ -55,6 +55,7 @@ from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.bridges import _namespace, _safe_link_name, render_app_agent_spec
 from kiro_crew.apps.manager import _read_installed, app_dir, get_app_manifest
 from kiro_crew.apps.manifest import AppManifest, CrewTemplate, _path_escapes_app_root
+from kiro_crew.atomic_write import fsync_dir
 from kiro_crew.config.paths import data_home
 from kiro_crew.pinned_fs import (
     create_and_open_dir_pinned,
@@ -755,11 +756,19 @@ def read_pristine_copy(member_id: str, *, generation: str) -> dict[str, Any] | N
 
 
 def remove_pristine_copy(member_id: str) -> None:
-    """Remove a member's pristine copy; a missing one is nothing to remove."""
+    """Remove a member's pristine copy; a missing one is nothing to remove.
+
+    The unlink is synced through its directory: a fire clears its resume
+    marker only once every step is durable, and a directory entry is not
+    until its directory is.
+    """
     try:
-        pristine_copy_path(member_id).unlink(missing_ok=True)
+        path = pristine_copy_path(member_id)
     except members.MemberSlugError:
         return
+    path.unlink(missing_ok=True)
+    if path.parent.is_dir():
+        fsync_dir(path.parent)
 
 
 #: A field one side does not have at all. Distinct from ``None`` (a key set to

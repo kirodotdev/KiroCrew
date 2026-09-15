@@ -444,6 +444,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # base makes the next merge skip a template change or silently overwrite
     # the member's own customizations.
     "member-templates",
+    # A fire's intent markers (``dashboard/handlers/members.py``): the record a
+    # resumed fire acts on. Gateway-only; fenced from the agent file tools on
+    # every OS for the same reason the sandbox masks it -- a rewritten marker
+    # makes the next fire delete state that is not the fired member's.
+    "member-fires",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

@@ -32,26 +32,32 @@ import kiro_crew.dashboard.handlers as _h
 import kiro_crew.dashboard.handlers.agents as _agents_handlers
 from kiro_crew import agent_state, member_templates
 from kiro_crew import members as members_mod
+from kiro_crew import platform_compat
 from kiro_crew.agent import _spec_path_is_safe, agents_spec_lock, write_agent_definition
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.apps.manager import app_lifecycle_lock
+from kiro_crew.atomic_write import fsync_dir
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
     default_project_dir,
     update_config_locked,
 )
+from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_persistence import (
     pin_private_agent_store,
     rehydrate_slot_from_history_async,
 )
-from kiro_crew.dashboard.chat_utils import drained, effective_session_key
+from kiro_crew.dashboard.chat_utils import _history_key_for, drained, effective_session_key
+from kiro_crew.dashboard.handlers import sessions as _sessions
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.member_identity import display_name_too_long, effective_display_name
 from kiro_crew.members import MemberSlugError
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.pinned_fs import read_file_pinned, write_file_pinned
 from kiro_crew.validation import _AGENT_NAME_RE
 
 logger = logging.getLogger(__name__)
@@ -474,6 +480,24 @@ async def api_member_thread(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
 
+    # Serialized against a fire of the same member (``_dm_thread_lock``): a
+    # fire that closes and retires a thread must not race an open that is
+    # binding one, or the open re-creates the slot and the binding the fire
+    # just removed and a same-slug re-hire inherits them.
+    async with _dm_thread_lock:
+        return await _open_member_thread(request, state, slug)
+
+
+#: One lock for every DM-thread binding mutation: the thread open (read the
+#: binding, bind a slot, write it) and the fire (close the slot, remove the
+#: binding). Loop-bound like the config lock. Fire holds it OUTSIDE the config
+#: lock; the open never takes the config lock, so the order cannot invert.
+_dm_thread_lock = LoopBoundLock()
+
+
+async def _open_member_thread(
+    request: web.Request, state: DashboardState, slug: str
+) -> web.Response:
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
 
@@ -987,49 +1011,57 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
         )
-    # Config load does filesystem reads + validation — off-loop, like every
-    # other handler's config access on a request path.
-    cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    try:
-        enrolled = await asyncio.to_thread(enrolled_member_ids, cfg, strict=True)
-    except (OSError, ValueError):
-        logger.warning("crewmate record unreadable; refusing the rules write", exc_info=True)
-        return web.json_response(
-            {"error": "the crewmate record could not be read", "code": "members_unavailable"},
-            status=503,
-        )
-    if member not in enrolled:
-        return web.json_response(
-            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
-        )
-    # Same collision scan the roster/thread paths use — the central helper
-    # applies the agent-name grammar filter and tolerates MemberSlugError, so
-    # a hand-edited config key that is not a valid agent name can neither
-    # crash this scan nor manufacture a phantom collision.
-    colliding = _member_names_for_slug(enrolled, slug)
-    if colliding != [member]:
-        return web.json_response(
-            {
-                "error": "multiple crews share this slug; rules would be ambiguous",
-                "code": "rules_slug_ambiguous",
-            },
-            status=409,
-        )
-    try:
-        await asyncio.to_thread(members_mod.write_member_rules, slug, member=member, text=rules)
-    except ValueError:
-        return web.json_response(
-            {
-                "error": f"rules exceed {members_mod.MEMBER_RULES_MAX_CHARS} characters",
-                "code": "rules_too_long",
-            },
-            status=400,
-        )
-    except OSError:
-        logger.warning("member rules write failed for %r", slug, exc_info=True)
-        return web.json_response(
-            {"error": "could not persist rules", "code": "rules_write_failed"}, status=500
-        )
+    # Membership check AND write under the config lock -- the lock a fire
+    # holds from its row delete through its cleanup (the rules file included).
+    # Checked outside it, a PUT that read the row a moment before the fire
+    # took the lock would land the rules AFTER the fire archived or purged
+    # them: a live rules file for a member the roster does not hold, inherited by
+    # the next member hired onto the slug. Inside the hold the row is re-read
+    # and a fired member answers 404, so nothing is written behind the fire.
+    async with _agents_handlers._get_config_lock():
+        # Config load does filesystem reads + validation — off-loop, like every
+        # other handler's config access on a request path.
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        try:
+            enrolled = await asyncio.to_thread(enrolled_member_ids, cfg, strict=True)
+        except (OSError, ValueError):
+            logger.warning("crewmate record unreadable; refusing the rules write", exc_info=True)
+            return web.json_response(
+                {"error": "the crewmate record could not be read", "code": "members_unavailable"},
+                status=503,
+            )
+        if member not in enrolled:
+            return web.json_response(
+                {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+            )
+        # Same collision scan the roster/thread paths use — the central helper
+        # applies the agent-name grammar filter and tolerates MemberSlugError, so
+        # a hand-edited config key that is not a valid agent name can neither
+        # crash this scan nor manufacture a phantom collision.
+        colliding = _member_names_for_slug(enrolled, slug)
+        if colliding != [member]:
+            return web.json_response(
+                {
+                    "error": "multiple crews share this slug; rules would be ambiguous",
+                    "code": "rules_slug_ambiguous",
+                },
+                status=409,
+            )
+        try:
+            await asyncio.to_thread(members_mod.write_member_rules, slug, member=member, text=rules)
+        except ValueError:
+            return web.json_response(
+                {
+                    "error": f"rules exceed {members_mod.MEMBER_RULES_MAX_CHARS} characters",
+                    "code": "rules_too_long",
+                },
+                status=400,
+            )
+        except OSError:
+            logger.warning("member rules write failed for %r", slug, exc_info=True)
+            return web.json_response(
+                {"error": "could not persist rules", "code": "rules_write_failed"}, status=500
+            )
 
     # Same audit posture as the GET: a successful boundary WRITE is the event
     # an owner most needs a trace of — it is the moment the member's safety
@@ -1290,7 +1322,7 @@ async def _hire_transaction(
         copy_source=agent,
         # The store hire copies the snapshot resolve verified, never a re-read.
         copy_spec=store.materialized_spec if store is not None else None,
-        admit=_slug_collision_refusal,
+        admit=_hire_admit,
         enroll=_enroll if store is None else None,
     )
     if created.status != 200:
@@ -1420,6 +1452,98 @@ def _slugmates(cfg: KiroCrewConfig | Collection[str], candidate: str) -> tuple[s
     except MemberSlugError:
         return "", []
     return slug, [n for n in _member_names_for_slug(cfg, slug) if n != candidate]
+
+
+def _hire_admit(cfg: KiroCrewConfig | Collection[str], candidate: str) -> web.Response | None:
+    """The create's ``admit`` hook for a hire: the slug must be free of other
+    members, and no interrupted fire may still be pending for this id OR for
+    any id on this slug -- a marker means lived state under that SLUG (the
+    activity, briefing, rules and thread binding are slug-keyed) is still on
+    disk waiting to be archived, and a new member on the slug would inherit it
+    (or lose its own files to the resumed cleanup). Fire the id again to finish,
+    then hire. The plain create runs the same check (``_pending_fire_refusal``
+    is its ``admit``), so no creation path reaches a slug a fire is mid-way on.
+    """
+    refused = _slug_collision_refusal(cfg, candidate)
+    if refused is not None:
+        return refused
+    return _pending_fire_refusal(candidate)
+
+
+def _pending_fire_refusal(candidate: str) -> web.Response | None:
+    """409 ``fire_pending`` when a fire is pending for *candidate*'s id or slug."""
+    try:
+        pending = _pending_fires_for(candidate)
+    except FireMarkerUnreadable as exc:
+        # Fail closed: a marker that cannot be read still means a fire on this
+        # slug may have left its lived state behind.
+        return web.json_response(
+            {
+                "error": f"{exc}; fix or remove it before hiring under that id",
+                "code": "fire_pending",
+            },
+            status=409,
+        )
+    if pending:
+        return web.json_response(
+            {
+                "error": f"a fire of {pending[0]!r} did not finish; fire it again to finish "
+                f"before hiring {candidate!r} (they share the member space "
+                f"{members_mod.slug_for_name(candidate)!r})",
+                "code": "fire_pending",
+            },
+            status=409,
+        )
+    return None
+
+
+def _pending_fires_for(candidate: str) -> list[str]:
+    """The ids with a pending fire marker that share *candidate*'s slug (the
+    candidate's own id included). Raises :class:`FireMarkerUnreadable` when a
+    marker on that slug cannot be read."""
+    try:
+        slug = members_mod.slug_for_name(candidate)
+    except MemberSlugError:
+        return []
+    root = _fire_marker_path(candidate).parent
+    try:
+        entries = sorted(p.name for p in root.iterdir() if p.name.endswith(".json"))
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        # A marker directory that cannot be LISTED (permissions, not a
+        # directory) is not an empty one: a fire on this slug may have left a
+        # marker in it. Fail closed like an unreadable marker, never a 500.
+        raise FireMarkerUnreadable(
+            f"the fire records under {root.name!r} could not be listed"
+        ) from exc
+    out: list[str] = []
+    for entry in entries:
+        member = entry[: -len(".json")]
+        if not _AGENT_NAME_RE.match(member):
+            continue
+        try:
+            if members_mod.slug_for_name(member) != slug:
+                continue
+        except MemberSlugError:
+            continue
+        if _read_fire_marker(member) is not None:
+            out.append(member)
+    return out
+
+
+def _fire_slug_collision_text(other: str, slug: str, display_name: str) -> str:
+    """The fire's 409 for a shared slug, naming the repair by the labels the
+    navigation actually shows -- **Your Crewmates** (the Crew page's title) for
+    a crewmate, **Agent Capabilities › Agents** for a plain crew -- so a reader
+    with only this sentence can find the colleague. The page renders the same
+    refusal from the structured ``collision`` field, translated."""
+    return (
+        f"Nothing was fired. Another member, '{other}', has the same short name "
+        f"('{slug}') as '{display_name}', so they share files. Rename or fire that member "
+        "first: find it under Your Crewmates if it is a crewmate, otherwise under "
+        "Agent Capabilities \u203a Agents."
+    )
 
 
 def _slug_collision_refusal(
@@ -1651,6 +1775,10 @@ def _remove_private_copy(copy_name: str, member_id: str) -> None:
                 )
                 return None
             (agents_dir / f"{copy_name}.json").unlink(missing_ok=True)
+            # The fire clears its resume marker only once every step is on
+            # disk; an unlink is a directory entry, durable when its
+            # directory is synced (see members.retire_member_space).
+            fsync_dir(agents_dir)
             agent_state.prune(copy_name)
         return None
 
@@ -2309,3 +2437,540 @@ def _detach_member(member: str, generation: str, template: str) -> web.Response:
         return web.json_response({"error": str(exc), "code": "member_changed"}, status=409)
     _agents_handlers.clear_list_agents_cache()
     return web.json_response({"ok": True})
+
+
+# ── Fire (design step 5): retire the member, archive what it lived ──
+
+
+async def api_member_fire(request: web.Request) -> web.Response:
+    """POST /api/members/{member}/fire — retire a crew member.
+
+    Body ``{"purge": false}`` (optional). Fire is the reverse of hire: the
+    wrapper row goes, the member's own agent file goes, the pristine copy goes;
+    the private memory store is archived under the ordinary retirement marker
+    (never erased, restorable from the memory admin surface). What the member
+    LIVED -- its DM thread, activity, briefing, rules -- is **archived, not
+    destroyed**: the open thread is closed the way the tab's ✕ closes a chat
+    (its transcript stays in the History tab), and ``members/<slug>/`` moves to
+    ``members/.retired/`` with a ``fired.json`` naming the member, its thread's
+    history key and its template. ``purge: true`` is the explicit request the
+    design reserves for destruction: the lived state is removed instead of
+    archived and the thread's transcript is deleted from history through the
+    same path ``DELETE /api/sessions/{key}`` takes -- and reported as kept
+    when that path refuses (a cron still owns the transcript, the store could
+    not be read), never silently.
+
+    Order: close the thread first (a live session must not keep running
+    against a row that is about to vanish), then row + store under the config
+    lock (the delete route's own mutation; the row must still be the one this
+    request saw), then the copy and pristine copy, then the lived state. The
+    default member cannot be fired (409 ``cannot_fire_default``).
+    """
+    denied = await require_owner_dashboard_request(request, "member.fire")
+    if denied is not None:
+        return denied
+    member = request.match_info["member"]
+    try:
+        body = await request.json() if request.can_read_body else {}
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
+    purge = body.get("purge", False)
+    if not isinstance(purge, bool):
+        return web.json_response(
+            {"error": "purge must be a boolean", "code": "invalid_purge"}, status=400
+        )
+    state: DashboardState = request.app["state"]
+    # Serialized against thread opens (see ``_dm_thread_lock``) for the whole
+    # fire: from the binding read to the retirement, no open can re-bind the
+    # slug under it.
+    async with _dm_thread_lock:
+        return await _fire_member(request, state, member, purge)
+
+
+#: Where a fire records its intent before the row goes: a TOP-LEVEL leaf of the
+#: data home, one ``<member id>.json`` per pending fire. NOT under ``trust/``:
+#: that subtree is sandbox-VISIBLE (its SEL key and log have in-sandbox readers
+#: and appenders), so a spawned shell could rewrite a marker by ``open()`` past
+#: the file-tool gate -- and the resume TRUSTS the marker's ``purge``, ``slug``
+#: and ``thread_history_key`` (a forged one deletes unrelated state or another
+#: transcript). Bind-masked from every sandboxed process
+#: (``sandbox._CREW_HIDDEN_LEAVES``), pre-created owner-only before each spawn
+#: (``_CREW_PRECREATE_HIDDEN_DIR_LEAVES``: the root is otherwise built by the
+#: first fire) and refused to the agent file tools on every OS
+#: (``security._CREW_SECRET_LEAVES``); only the gateway reads or writes one.
+# The activity writer reads the same directory (``members.fire_pending_for_slug``)
+# to refuse recreating a space mid-fire; one constant, owned there.
+FIRE_MARKERS_DIR_NAME = members_mod.FIRE_MARKERS_DIR_NAME
+
+
+def _fire_marker_path(member: str) -> Path:
+    """Where a fire records its intent before the row goes: the gateway-only
+    ``FIRE_MARKERS_DIR_NAME`` leaf, keyed by the member id."""
+    if not _AGENT_NAME_RE.match(member):
+        raise MemberSlugError(f"invalid member id {member!r}")
+    # The id grammar admits no separator or dot-run, so the name cannot
+    # traverse; the path is returned UNRESOLVED on purpose -- resolving it
+    # would follow a link planted at the marker's name and hand its target
+    # back as the path to write, which is exactly what the pinned write and
+    # read below exist to refuse.
+    return data_home().resolve() / FIRE_MARKERS_DIR_NAME / f"{member}.json"
+
+
+def _write_fire_marker(member: str, intent: dict) -> None:
+    """Record the fire's intent through the no-follow publish path.
+
+    ``write_file_pinned`` pins the parent and refuses a link planted at the
+    marker's own name (and never writes a by-name temp file a same-user
+    process could pre-plant as a link): a predictable ``<id>.json.tmp`` under
+    ``write_text`` would be a truncation primitive aimed at whatever the link
+    names. The directory is owner-only, normally already materialized before
+    the first sandbox spawn.
+    """
+    path = _fire_marker_path(member)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        platform_compat.restrict_dir_to_owner(path.parent)
+    except OSError:
+        logger.debug("could not tighten mode on %s", path.parent, exc_info=True)
+    write_file_pinned(path, json.dumps(intent, ensure_ascii=False), what="member fire record")
+
+
+class FireMarkerUnreadable(Exception):
+    """A fire's intent marker exists but cannot be read as one.
+
+    Distinct from "no marker": an unreadable or malformed marker still means a
+    fire of that id may have left lived state on disk, so the callers that ask
+    fail CLOSED -- the hire refuses the id and a fire of the vanished member
+    says the record must be fixed -- rather than treating it as absent and
+    letting a replacement member inherit what the interrupted fire left.
+    """
+
+
+def _read_fire_marker(member: str) -> dict | None:
+    """The recorded intent of a pending fire of *member*, ``None`` when there is
+    none. Only a MISSING file is "none"; anything else that keeps the marker
+    from reading raises :class:`FireMarkerUnreadable`."""
+    try:
+        text = read_file_pinned(_fire_marker_path(member), what="member fire record")
+    except FileNotFoundError:
+        return None
+    except (OSError, MemberSlugError) as exc:
+        raise FireMarkerUnreadable(f"the fire record for {member!r} could not be read") from exc
+    try:
+        raw = json.loads(text)
+    except ValueError as exc:
+        raise FireMarkerUnreadable(f"the fire record for {member!r} is not readable JSON") from exc
+    if not isinstance(raw, dict) or not isinstance(raw.get("slug"), str):
+        raise FireMarkerUnreadable(f"the fire record for {member!r} does not name its member")
+    return raw
+
+
+def _clear_fire_marker(member: str) -> bool:
+    """Remove the fire's intent marker; True when it is gone.
+
+    False is a failure the caller must report: a marker left behind reads as
+    a PENDING fire, and every later creation on the slug is refused with
+    ``fire_pending`` until it is cleared.
+
+    The caller runs this LAST, after every archive step has been made durable
+    (``fired.json`` fsync'd, each directory a rename or unlink touched synced):
+    the marker is the fire's only resume anchor, so its unlink must never reach
+    disk ahead of the work it says is done. The marker directory is synced
+    afterwards too, best-effort -- the unlink is committed at that point, and a
+    marker that survives a crash only makes the next fire resume idempotent
+    steps, which is the safe direction.
+    """
+    try:
+        path = _fire_marker_path(member)
+        path.unlink(missing_ok=True)
+    except (OSError, MemberSlugError):
+        logger.warning("fire %r: the intent marker could not be removed", member)
+        return False
+    fsync_dir(path.parent, best_effort=True)
+    return True
+
+
+async def _fire_member(
+    request: web.Request, state: DashboardState, member: str, purge: bool
+) -> web.Response:
+    # Function-local on purpose: ``chat_handlers`` imports ``chat_runner``, which
+    # imports this handlers package -- a module-scope import here is a cycle
+    # (``ImportError: partially initialized module``); every import without
+    # that cycle is module-scope.
+    from kiro_crew.dashboard.chat_handlers import SlotCloseError, close_slot
+
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    if member not in cfg.agents:
+        # A fire interrupted after the row went (the gateway died, a disk
+        # error) left its intent marker; the retry RESUMES the cleanup instead
+        # of answering 404 for a member whose lived state is still on disk.
+        try:
+            pending = await asyncio.to_thread(_read_fire_marker, member)
+        except FireMarkerUnreadable as exc:
+            return web.json_response(
+                {
+                    "error": f"{exc}; the interrupted fire's files were left in place -- fix or "
+                    f"remove the record under {FIRE_MARKERS_DIR_NAME} to finish by hand",
+                    "code": "fire_marker_unreadable",
+                },
+                status=500,
+            )
+        if pending is not None:
+            async with _agents_handlers._get_config_lock():
+                return await _finish_fire(request, state, member, pending, purge)
+    row = _member_row(cfg, member)
+    if isinstance(row, web.Response):
+        return row
+    if member == cfg.default_agent:
+        return web.json_response(
+            {
+                "error": "The default member cannot be fired; make another member the default first",
+                "code": "cannot_fire_default",
+            },
+            status=409,
+        )
+    # Only a CREWMATE can be fired: the fire is the member lifecycle's exit and
+    # removes a row, its agent file and its uploaded picture. A row that is
+    # not enrolled -- a built-in, an app's materialized agent, a synced file,
+    # a plain crew -- is a session agent the crew manager owns, and this route
+    # answers 404 for it the way every member route does; an unreadable
+    # record is 503, never "not a member" (the write must not fail open).
+    try:
+        enrolled = await asyncio.to_thread(enrolled_member_ids, cfg, strict=True)
+    except (OSError, ValueError):
+        logger.warning("crewmate record unreadable; refusing the fire", exc_info=True)
+        return web.json_response(
+            {"error": "the crewmate record could not be read", "code": "members_unavailable"},
+            status=503,
+        )
+    if member not in enrolled:
+        return web.json_response(
+            {"error": f"Crew Member {member!r} not found", "code": "member_not_found"}, status=404
+        )
+    generation = row.memory_store
+    copy_name = row.kiro_agent
+    slug = members_mod.slug_for_name(member)
+    display_name = effective_display_name(member, row.display_name)
+    # The lived state -- ``members/<slug>/``, the rules, the binding -- is
+    # keyed by the lossy slug. Another live member on the same slug shares it,
+    # so retiring it would take that colleague's activity, briefing, rules and
+    # thread along; that member is renamed (or fired) first.
+    slugmates = [n for n in _member_names_for_slug(cfg, slug) if n != member]
+    if slugmates:
+        return web.json_response(
+            {
+                "error": _fire_slug_collision_text(slugmates[0], slug, display_name),
+                "code": "slug_collision",
+                # Structured for the page, which says the same thing in the
+                # user's language with the navigation's own labels.
+                "collision": {"member": slugmates[0], "slug": slug},
+            },
+            status=409,
+        )
+    # The thread is this member's only when the binding names it exactly AND
+    # points at THIS member's canonical slot -- the key derived from the slug
+    # and the row's current private-store generation, the one the thread open
+    # would bind. A binding naming a ghost of the same slug (a deleted member)
+    # attributes nothing to fire; so does one left by a same-ID predecessor
+    # (delete, re-create, fire): its slot carries the OLD generation, and
+    # accepting it would purge the predecessor's transcript as ours.
+    binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
+    if binding is not None:
+        expected_slot, expected_store = await asyncio.to_thread(
+            _member_thread_slot, cfg, member, slug
+        )
+        if (
+            binding.get("member") != member
+            or binding.get("slot_key") != expected_slot
+            or (binding.get("memory_store") or "") != expected_store
+        ):
+            binding = None
+    slot_key = str(binding.get("slot_key") or "") if binding else ""
+    thread_history_key = _history_key_for(slot_key) if slot_key else ""
+
+    # 1. The thread: close it like the tab does. A failure leaves everything
+    # as it was -- the member still exists and the user can retry.
+    slot = state._slots.get(slot_key) if slot_key else None
+    if slot is not None:
+        try:
+            await close_slot(state, slot, slot_key)
+        except SlotCloseError as exc:
+            return web.json_response(
+                {"error": exc.message, "code": "thread_close_failed"}, status=500
+            )
+
+    intent = {
+        "member": member,
+        "slug": slug,
+        "copy_name": copy_name,
+        "purge": purge,
+        "record": {
+            "display_name": display_name,
+            "slot_key": slot_key,
+            "thread_history_key": thread_history_key,
+            "template": row.template,
+            "template_version": row.template_version,
+            "fired_at": _utc_now_iso(),
+        },
+    }
+    # 2. Row + store, under the config lock, only while the row is still the
+    # one this request saw. The intent marker is written FIRST, in the same
+    # hold: from here on the fire is resumable -- a cleanup step that fails
+    # after the row is gone leaves the marker, the request says so, and the
+    # next fire of this member finishes the job.
+    async with _agents_handlers._get_config_lock():
+        fresh = await asyncio.to_thread(KiroCrewConfig.load)
+        current = fresh.agents.get(member)
+        if current is None:
+            return web.json_response(
+                {"error": f"Crew Member {member!r} not found", "code": "member_not_found"},
+                status=404,
+            )
+        if current.memory_store != generation or current.kiro_agent != copy_name:
+            return web.json_response(
+                {"error": f"Crew Member {member!r} changed concurrently", "code": "member_changed"},
+                status=409,
+            )
+        try:
+            await asyncio.to_thread(_write_fire_marker, member, intent)
+        except (OSError, MemberSlugError) as exc:
+            logger.exception("fire %r: the intent marker could not be written", member)
+            return web.json_response(
+                {"error": f"could not record the fire: {exc}", "code": "fire_not_recorded"},
+                status=500,
+            )
+
+        def _still_this_member(entry: dict) -> str | None:
+            # Re-checked INSIDE the delete's cross-process locked mutation: the
+            # in-process lock does not hold a writer in another process, and a
+            # row it replaced after the read above is not the one being fired.
+            if entry.get("memory_store") != generation or entry.get("kiro_agent") != copy_name:
+                return f"Crew Member {member!r} changed concurrently"
+            # ... and still a crewmate of THIS generation: a fire or a delete in
+            # another process that un-enrolled it since the check above makes
+            # this row a session agent, not this fire's to remove.
+            try:
+                record = agent_state.get_crewmate_record(member, strict=True)
+            except (OSError, ValueError):
+                return "the crewmate record could not be read; nothing was fired"
+            if not agent_state.record_covers_store(record, generation):
+                return f"Crew Member {member!r} is not an enrolled crewmate; nothing was fired"
+            return None
+
+        slug_shared_with = ""
+
+        def _space_still_ours(agents_doc: dict) -> str | None:
+            # The slug check above ran against a pre-lock read. A plain create
+            # in another process (its admit refuses only a PENDING fire, and
+            # this fire's marker landed after that create's own admit could
+            # have run) may have published a same-slug row since; the space
+            # this fire archives or purges is then shared, and removing it
+            # would take the new member's lived state with it.
+            nonlocal slug_shared_with
+            others = [n for n in _member_names_for_slug(agents_doc, slug) if n != member]
+            if others:
+                slug_shared_with = others[0]
+                return _fire_slug_collision_text(others[0], slug, display_name)
+            return None
+
+        try:
+            await _agents_handlers._delete_crew_record(
+                request, member, expect=_still_this_member, expect_others=_space_still_ours
+            )
+        except UnknownMemoryStore as exc:
+            await asyncio.to_thread(_clear_fire_marker, member)
+            if slug_shared_with:
+                return web.json_response(
+                    {
+                        "error": str(exc),
+                        "code": "slug_collision",
+                        "collision": {"member": slug_shared_with, "slug": slug},
+                    },
+                    status=409,
+                )
+            return web.json_response({"error": str(exc), "code": "member_changed"}, status=409)
+        # Steps 3 and 4 run in the SAME config-lock hold: a hire of the same id
+        # (which takes this lock to publish its row) cannot interleave and have
+        # this fire's cleanup remove the copy, pristine copy or space the new
+        # member just received.
+        return await _finish_fire(request, state, member, intent, purge)
+
+
+async def _finish_fire(
+    request: web.Request, state: DashboardState, member: str, intent: dict, purge: bool
+) -> web.Response:
+    """Steps 3 and 4 of a fire -- the member's files and its lived state --
+    from the recorded intent. Every step is idempotent, so this runs the same
+    on a fresh fire and on a resume. Success is answered only once everything
+    is done; a step that fails leaves the marker and answers 500
+    ``fire_incomplete`` (the next fire of this member resumes here).
+
+    *purge* is the CALLER's word for this request, so a resume asked with
+    ``purge: true`` purges what the interrupted archive left; the recorded
+    intent supplies everything else.
+    """
+    # Under the config lock (both callers). The marker is the fired member's:
+    # a row under this id NOW is somebody else -- the hire refuses to publish
+    # while a fire is pending, so this is a hand-edited config -- and its copy,
+    # pristine copy and space are not this fire's to remove.
+    current = (await asyncio.to_thread(KiroCrewConfig.load)).agents.get(member)
+    if current is not None:
+        return web.json_response(
+            {
+                "error": f"a member {member!r} exists again; the interrupted fire's files were "
+                "left in place",
+                "code": "member_changed",
+            },
+            status=409,
+        )
+    slug = str(intent.get("slug") or "")
+    copy_name = str(intent.get("copy_name") or "")
+    raw_record = intent.get("record")
+    record: dict = raw_record if isinstance(raw_record, dict) else {}
+    # Exactly ``True``: the marker is a file, and a hand-edited ``"false"`` must
+    # not read as a purge the user never asked for.
+    purge = purge or intent.get("purge") is True
+    thread_history_key = str(record.get("thread_history_key") or "")
+    try:
+        # 3. The member's own definition and its pristine copy. The copy goes
+        # only while the sidecar still names this member as its owner and no
+        # row is bound to it -- the same rule the hire's roll-back applies.
+        if copy_name:
+            await asyncio.to_thread(_remove_private_copy, copy_name, member)
+        await asyncio.to_thread(member_templates.remove_pristine_copy, member)
+        # The enrollment record goes with the definition: a fired crewmate is
+        # off the roster for good, and no later sync, re-list or restart may
+        # bring it back (a row minted under this id again is a NEW hire, which
+        # writes its own record). Idempotent -- a resume finds it already gone.
+        await asyncio.to_thread(agent_state.clear_crewmate_record, member)
+        # 4. Lived state: archived, or removed on explicit request. The archive
+        # entry's name is chosen ONCE and recorded in the marker before
+        # anything moves, so an attempt interrupted between the rename and the
+        # record resumes into that same entry (or purges that exact entry)
+        # instead of minting a second one and leaving the first unrecorded.
+        archive_name = intent.get("archive_name")
+        if not isinstance(archive_name, str) or not archive_name:
+            archive_name = members_mod.new_archive_name(slug)
+            intent = dict(intent, archive_name=archive_name)
+            await asyncio.to_thread(_write_fire_marker, member, intent)
+        archived = await asyncio.to_thread(
+            members_mod.retire_member_space,
+            slug,
+            member=member,
+            record=record,
+            purge=purge,
+            archive_name=archive_name,
+        )
+    except (OSError, ValueError, MemberSlugError) as exc:
+        logger.exception("fire %r: the member's files could not be retired", member)
+        return web.json_response(
+            {
+                "error": f"the member's row is gone but its files could not be retired: {exc}; "
+                "fire it again to finish",
+                "code": "fire_incomplete",
+            },
+            status=500,
+        )
+    # A thread that was bound but never wrote a transcript (opened, nothing
+    # said) has nothing in History to archive or purge: "none", the same as a
+    # member that never opened one. Probed through the log's own key resolver.
+    log = state.conversation_log
+    has_transcript = bool(
+        thread_history_key
+        and log is not None
+        and await asyncio.to_thread(log.has_log, thread_history_key)
+    )
+    thread_state = "archived" if has_transcript else "none"
+    kept_reason = ""
+    if purge and has_transcript:
+        kept_reason = await _purge_thread_history(state, thread_history_key)
+        thread_state = "kept" if kept_reason else "purged"
+    if await asyncio.to_thread(members_mod.member_space_exists, slug):
+        # The space came back between the archive and here -- a member-space
+        # writer (an activity record for an in-flight routing decision) that
+        # ran ahead of the marker check. Live state the fire did not retire is
+        # not a finished fire: the marker stays, so the next member on the slug
+        # is still refused, and the next fire of this member archives (or
+        # purges) the recreated space into the same entry.
+        return web.json_response(
+            {
+                "error": "the member's space was written again while it was being fired; "
+                "fire it again to finish",
+                "code": "fire_incomplete",
+            },
+            status=500,
+        )
+    if not await asyncio.to_thread(_clear_fire_marker, member):
+        # Everything else is done, but a marker left behind is a fire still
+        # PENDING to every creation on this slug: not a success. Resumable --
+        # every step above is idempotent, and the next fire's only remaining
+        # work is this unlink.
+        return web.json_response(
+            {
+                "error": "the member was fired but its intent marker could not be removed; "
+                "fire it again to finish",
+                "code": "fire_incomplete",
+            },
+            status=500,
+        )
+    # The response says what happened to the conversation, not where it lives:
+    # the notice links the History pane, which finds it by name, and no reader
+    # takes the key -- a field nothing reads is surface to keep honest for nothing.
+    thread: dict[str, str] = {"state": thread_state}
+    if kept_reason:
+        # WHY the transcript stayed, so the notice can name the repair instead
+        # of guessing: a scheduled job's claim, an unreadable store, a refusal.
+        thread["kept_reason"] = kept_reason
+    try:
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="member.fire",
+            outcome="success",
+            source="dashboard",
+            resources=f"{member} purge={purge} thread={thread_state}",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for member.fire failed", exc_info=True)
+    _agents_handlers.clear_list_agents_cache()
+    state.push_refresh("agents")
+    return web.json_response(
+        {
+            "ok": True,
+            "thread": thread,
+            "lived_state": "purged" if purge else ("archived" if archived else "none"),
+        }
+    )
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def _purge_thread_history(state: DashboardState, key: str) -> str:
+    """Delete a fired member's thread transcript exactly the way
+    ``DELETE /api/sessions/{key}`` does -- the ONE shared sequence,
+    :func:`sessions.delete_history_transcript` (claim the slot/transcript route,
+    bind cron ownership, unlink under the transcript lock, remove the slot).
+    Returns ``""`` when the transcript is gone, else WHY it was kept --
+    ``cron_claim_unreadable`` (a scheduled job's claim on the transcript could
+    not be read, so deleting it would strand that job), ``store_unreadable``
+    (the cron store could not be read), ``refused`` (no conversation log, the
+    transcript lock timed out, or the delete itself declined) -- so the notice
+    names the repair instead of guessing at one.
+    """
+    outcome = (await _sessions.delete_history_transcript(state, key)).reason
+    if outcome == _sessions.HISTORY_DELETE_NO_LOG:
+        return "refused"
+    if outcome == _sessions.HISTORY_DELETE_STORE_UNREADABLE:
+        logger.warning("fire: the cron store could not be read; thread %s kept", key)
+    elif outcome == _sessions.HISTORY_DELETE_CRON_CLAIM_UNREADABLE:
+        logger.warning("fire: a cron owner claim on thread %s is unreadable; kept", key)
+    return outcome

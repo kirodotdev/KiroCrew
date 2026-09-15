@@ -15166,7 +15166,27 @@
       "role_update_apply_blocked_many": "Elige Conservar el mío o Tomar el de la plantilla para cada uno de los {{count}} campos que cambiaron en ambos lados.",
       "detach_failed": "No se pudo desvincular al miembro.",
       "detached_done": "Separado de {{app}}. Este compañero conserva todo lo que tiene y ya no sigue esa plantilla.",
-      "role_update_member_moved": "Este miembro se editó desde que se hizo este plan. Revísalo de nuevo."
+      "role_update_member_moved": "Este miembro se editó desde que se hizo este plan. Revísalo de nuevo.",
+      "fire": "Despedir a “{{name}}”",
+      "fire_explain": "Despedir retira a este compañero: deja tu tripulación y su archivo de rol desaparece; su conversación, actividad, briefing, reglas y memoria se archivan, no se borran. No se elimina nada hasta que confirmes.",
+      "fire_confirm_explain": "¿Despedir a “{{name}}”? Este compañero deja tu tripulación: se eliminan el compañero y su archivo de rol. Su conversación, actividad, briefing, reglas y memoria se archivan, no se borran — podrás encontrarlos más tarde.",
+      "fire_confirm_explain_purge": "¿Despedir a “{{name}}” y eliminar todo? Este compañero de equipo deja tu equipo: se quitan el compañero y su propia definición de agente, y su memoria se archiva. Su conversación, actividad, briefing y reglas se ELIMINAN, no se archivan. No se puede deshacer.",
+      "fire_purge_label": "Eliminar también la conversación, la actividad, el briefing y las reglas. No se puede deshacer.",
+      "fire_confirm": "Sí, despedir",
+      "fire_confirm_purge": "Sí, despedir y borrar",
+      "firing": "Despidiendo…",
+      "fire_failed": "No se pudo despedir al miembro.",
+      "fire_slug_collision": "No se despidió a nadie. Otro miembro, {{other}}, tiene el mismo nombre corto ({{slug}}) que {{name}}, así que comparten archivos. Primero renombra o despide a ese miembro: búscalo en «Tus compañeros» si es un compañero de equipo, o si no en «Capacidades de agentes › Agentes».",
+      "fired_summary": "{{name}} ha sido despedido.",
+      "fired_thread_archived": "Su conversación, actividad, briefing y reglas están archivados; la conversación sigue abriéndose desde el <history/> de la página Chat.",
+      "fired_thread_purged": "Su conversación, actividad, briefing y reglas se eliminaron.",
+      "fired_thread_kept": "Su actividad, briefing y reglas se eliminaron, pero la conversación no pudo eliminarse; se queda en el <history/>: puedes eliminarla desde ahí.",
+      "fired_thread_kept_cron_claim": "Su actividad, briefing y reglas se eliminaron, pero la conversación no pudo eliminarse: una tarea programada aún la referencia. Se queda en el <history/>: pausa o elimina esa tarea y luego elimínala desde ahí.",
+      "fired_thread_kept_store": "Su actividad, briefing y reglas se eliminaron, pero la conversación no pudo eliminarse: la lista de tareas programadas no pudo leerse, así que no es seguro que ninguna la referencie. Se queda en el <history/>: puedes eliminarla desde ahí.",
+      "fired_history_link": "Historial",
+      "fired_thread_none": "No tenía conversación; su actividad, briefing y reglas están archivados.",
+      "fired_dismiss": "Descartar",
+      "fired_thread_none_purged": "No tenía conversación; su actividad, briefing y reglas se eliminaron."
     }
   },
   "privacyDisclosure": {

@@ -418,6 +418,36 @@ def _close_quietly(fd: int, path: Path | str) -> None:
         logger.warning("could not close the directory descriptor for %s", path, exc_info=True)
 
 
+def fsync_dir_fd(dir_fd: int, what: str, *, best_effort: bool = False) -> None:
+    """:func:`fsync_dir` for a directory the caller already holds OPEN.
+
+    The pinned flows (a members root, an archive root, a rules directory opened
+    ``O_NOFOLLOW`` and every step taken relative to it) must not reopen the
+    directory by path to sync it -- that lookup is the one the descriptor
+    exists to avoid. Same policy as :func:`fsync_dir`: quiet where a
+    directory sync cannot be expressed, raising on a device error unless
+    *best_effort*; the descriptor stays open, it is the caller's to close.
+    """
+    try:
+        os.fsync(dir_fd)
+    except OSError as exc:
+        if exc.errno in _DIR_SYNC_UNSUPPORTED:
+            logger.debug(
+                "this filesystem does not support syncing the directory %s (%s)",
+                what,
+                errno.errorcode.get(exc.errno or 0, exc.errno),
+            )
+            return
+        if best_effort:
+            logger.warning(
+                "could not sync the directory %s; its entries may not be durable",
+                what,
+                exc_info=True,
+            )
+            return
+        raise
+
+
 def fsync_dir(path: Path | str, *, best_effort: bool = False) -> None:
     """Force a directory's own entries out, so a create or rename survives a crash.
 

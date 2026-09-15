@@ -14767,7 +14767,27 @@
       "role_update_apply_blocked_other": "双方都已更改 {{count}} 个字段，请逐个选择“保留我的”或“采用模板”。",
       "detach_failed": "无法分离该成员。",
       "detached_done": "已从 {{app}} 分离。该队友保留现有的一切，不再跟随该模板。",
-      "role_update_member_moved": "自制定此计划以来该成员已被编辑，请重新查看。"
+      "role_update_member_moved": "自制定此计划以来该成员已被编辑，请重新查看。",
+      "fire": "解雇“{{name}}”",
+      "fire_explain": "解雇会让该队友退出：它离开你的团队，其角色文件会被移除；它的对话、活动、简报、规则和记忆会被归档而非删除。在你确认之前不会移除任何内容。",
+      "fire_confirm_explain": "解雇“{{name}}”？该队友将离开你的团队：队友及其角色文件会被移除。它的对话、活动、简报、规则和记忆会被归档而非删除——你以后仍能找到它们。",
+      "fire_confirm_explain_purge": "解雇“{{name}}”并删除全部内容？这位队友将离开你的团队：队友及其专属代理定义会被移除，记忆会归档。其会话、活动、简报和规则会被删除，而非归档。此操作无法撤销。",
+      "fire_purge_label": "同时删除会话、活动、简报和规则。此操作无法撤销。",
+      "fire_confirm": "是，解雇",
+      "fire_confirm_purge": "是，解雇并删除",
+      "firing": "正在解雇…",
+      "fire_failed": "无法解雇该成员。",
+      "fire_slug_collision": "没有解雇任何人。另一位成员 {{other}} 与 {{name}} 有相同的短名称（{{slug}}），因此他们共享文件。请先重命名或解雇该成员：如果它是队友，请在“你的队友”中查找，否则请在“智能体能力 › 智能体”中查找。",
+      "fired_summary": "{{name}} 已被解雇。",
+      "fired_thread_archived": "其会话、活动、简报和规则已归档；会话仍可从“聊天”页面的<history/>中打开。",
+      "fired_thread_purged": "其会话、活动、简报和规则已删除。",
+      "fired_thread_kept": "其活动、简报和规则已删除，但会话无法删除；它仍保留在<history/>中——你可以在那里删除它。",
+      "fired_thread_kept_cron_claim": "其活动、简报和规则已删除，但会话无法删除：仍有一个计划任务引用它。它仍保留在<history/>中——暂停或移除该任务后，再在那里删除它。",
+      "fired_thread_kept_store": "其活动、简报和规则已删除，但会话无法删除：无法读取计划任务列表，因此不能确定没有任务引用它。它仍保留在<history/>中——你可以在那里删除它。",
+      "fired_history_link": "历史记录",
+      "fired_thread_none": "没有会话；活动、简报和规则已归档。",
+      "fired_dismiss": "关闭",
+      "fired_thread_none_purged": "没有会话；活动、简报和规则已删除。"
     }
   },
   "privacyDisclosure": {

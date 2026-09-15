@@ -32,10 +32,10 @@
  * the remembered one (else the first row), never on the empty column.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Route, Square, Star, UserPlus, Users, Webhook, Zap } from 'lucide-react'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Route, Square, Star, UserPlus, Users, Webhook, X, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
 import {
   MEMBERS_ROSTER_QUERY_KEY,
@@ -68,6 +68,7 @@ import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import RoleUpdatePanel from './RoleUpdatePanel'
+import FirePanel, { firedOutcomeKey, firedOutcomeText } from './FirePanel'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
@@ -380,6 +381,18 @@ export default function MembersPage() {
   // '' — no thread opened). The remembered-member fallback never sets it —
   // there the user named nobody. Cleared once a different member opens.
   const [gone, setGone] = useState<{ name: string; shown: string } | null>(null)
+  // The outcome of the last fire, shown on the roster until dismissed: the
+  // fired member's drawer disappears with its row, so the sentence that says
+  // where the thread went (archived, purged, or KEPT because the history path
+  // refused) has to live where the user still is.
+  // The fired notice: the summary sentence plus the i18n key of the sentence
+  // saying where the thread went, rendered with its History link. `text` is
+  // the same sentence as plain text, for the row's accessible name.
+  const [firedNotice, setFiredNotice] = useState<{ summary: string; whereKey: string; text: string } | null>(null)
+  // The member the fired notice speaks for: the gone-member fallback stays
+  // quiet for that name, or every drawer fire would say it twice ("has been
+  // fired" and "is no longer on the roster", once by label, once by id).
+  const firedNameRef = useRef('')
   // The member the fallback is about to open in place of a gone one a link
   // named. Set right before the fallback's URL write, read (and cleared) by
   // the open that write triggers, so that open can skip the memory write. A
@@ -1335,9 +1348,11 @@ export default function MembersPage() {
         // No thread to fall back to below md — the roster is the answer, so
         // say where the member went above the list (shown: '' marks the
         // roster variant of the notice).
-        setGone((prev) =>
-          prev && prev.name === urlMember && prev.shown === '' ? prev : { name: urlMember, shown: '' },
-        )
+        if (firedNameRef.current !== urlMember) {
+          setGone((prev) =>
+            prev && prev.name === urlMember && prev.shown === '' ? prev : { name: urlMember, shown: '' },
+          )
+        }
         setSearchParams({}, { replace: true })
       } else if (activeName) {
         activeNameRef.current = ''
@@ -1347,7 +1362,7 @@ export default function MembersPage() {
     }
     const target = resolveDefaultMember(safeGetItem(LAST_MEMBER_KEY), orderedMembers)
     if (!target) return
-    if (urlMember) {
+    if (urlMember && firedNameRef.current !== urlMember) {
       setGone((prev) =>
         prev && prev.name === urlMember && prev.shown === target.name
           ? prev
@@ -1574,6 +1589,38 @@ export default function MembersPage() {
             testId="member-star-error"
           />
         </div>
+        {firedNotice && (
+          <div className="flex items-start gap-2 px-4 py-1.5 text-[13px]" role="status" aria-label={firedNotice.text} data-testid="member-fired-notice">
+            <span className="min-w-0 flex-1">
+              {firedNotice.summary}{' '}
+              {/* "History" is the chat page's History pane, not anything on this
+                  surface: the word is a link there (`/chat?history=1` opens it
+                  on arrival), so the reader is not left to find it. */}
+              <Trans
+                i18nKey={firedNotice.whereKey}
+                components={{
+                  history: (
+                    <Link to="/chat?history=1" className="underline" data-testid="member-fired-history-link">
+                      {t('pages.membersPage.fired_history_link')}
+                    </Link>
+                  ),
+                }}
+              />
+            </span>
+            {/* The page primitive, kept compact: borderless and unpadded so
+                the X sits as a dismiss glyph, not a second button beside the
+                History link. */}
+            <Btn
+              type="button"
+              className="shrink-0 border-0 p-0 text-muted hover:bg-transparent hover:text-text"
+              onClick={() => { firedNameRef.current = ''; setFiredNotice(null) }}
+              aria-label={t('pages.membersPage.fired_dismiss')}
+              data-testid="member-fired-dismiss"
+            >
+              <X className="lucide-inline" size={14} aria-hidden />
+            </Btn>
+          </div>
+        )}
         {gone && gone.shown === '' && (
           /* Below md a stale link lands on the roster; this is where the
              answer to "where did they go" has to live. Same tone as the
@@ -2682,6 +2729,44 @@ export default function MembersPage() {
             <Pencil size={12} className="lucide-inline" />
             {t('pages.membersPage.edit_in_crew_manager')}
           </button>
+          {/* Fire (design step 5): the reverse of hire, withheld for the default
+              member, which cannot be fired. */}
+          {/* The default member is the one the fire refuses (409
+              `cannot_fire_default`): the verb is withheld for it, decided by
+              the shared ['default-agent'] read the wake block already runs --
+              not a per-row field. Unanswered, nothing is offered yet; a failed
+              read offers the verb and lets the server's refusal answer. */}
+          {(defaultAgentQ.isError || (defaultAgentQ.data !== undefined && active.name !== defaultAgentQ.data)) && (
+            <FirePanel
+              member={active}
+              label={memberLabel(active)}
+              onFired={(result, fired) => {
+                // `fired` is the member the SERVER deleted -- fixed when the
+                // confirm was pressed, not read off `active`, which may be
+                // another member the user selected while the fire was in
+                // flight. The row is gone: say where the thread went from the
+                // roster, which is what remains on screen, and leave the URL
+                // naming nobody so the gone-member fallback does not also speak.
+                firedNameRef.current = fired.name
+                setFiredNotice({
+                  summary: t('pages.membersPage.fired_summary', { name: fired.label }),
+                  whereKey: firedOutcomeKey(result),
+                  text: firedOutcomeText(fired.label, result, t),
+                })
+                // Evict the fired row from the cached roster BEFORE navigating:
+                // the roster route renders against the cache, and a row still
+                // there for the refetch's duration would reopen the member the
+                // user just fired (and its drawer) for a beat, then vanish.
+                queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+                  rows?.filter((r) => r.name !== fired.name),
+                )
+                // Leave the fired member's view only when it IS the view; a
+                // member the user moved on to stays open.
+                if (activeNameRef.current === fired.name) navigate('/members')
+                void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+              }}
+            />
+          )}
             </div>
           )
           const leadingTab: SidePanelLeadingTab = {

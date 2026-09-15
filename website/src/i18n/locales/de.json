@@ -14966,7 +14966,27 @@
       "role_update_apply_blocked_other": "Wähle für jedes der {{count}} beidseitig geänderten Felder „Meins behalten“ oder „Aus der Vorlage übernehmen“.",
       "detach_failed": "Das Mitglied konnte nicht getrennt werden.",
       "detached_done": "Von {{app}} gelöst. Dieses Crewmitglied behält alles, was es hat, und folgt dieser Vorlage nicht mehr.",
-      "role_update_member_moved": "Dieses Mitglied wurde seit diesem Plan bearbeitet. Prüfe ihn erneut."
+      "role_update_member_moved": "Dieses Mitglied wurde seit diesem Plan bearbeitet. Prüfe ihn erneut.",
+      "fire": "„{{name}}“ entlassen",
+      "fire_explain": "Feuern setzt dieses Crewmitglied außer Dienst: Es verlässt deine Crew und seine Rollendatei wird entfernt; Unterhaltung, Aktivität, Briefing, Regeln und Speicher werden archiviert, nicht gelöscht. Nichts wird entfernt, bis du bestätigst.",
+      "fire_confirm_explain": "„{{name}}“ feuern? Dieses Crewmitglied verlässt deine Crew: das Crewmitglied und seine Rollendatei werden entfernt. Unterhaltung, Aktivität, Briefing, Regeln und Speicher werden archiviert, nicht gelöscht — du findest sie später wieder.",
+      "fire_confirm_explain_purge": "„{{name}}“ entlassen und alles löschen? Dieses Crewmitglied verlässt deine Crew: das Crewmitglied und seine eigene Agentendefinition werden entfernt, sein Gedächtnis wird archiviert. Unterhaltung, Aktivität, Briefing und Regeln werden GELÖSCHT, nicht archiviert. Das lässt sich nicht rückgängig machen.",
+      "fire_purge_label": "Auch Unterhaltung, Aktivität, Briefing und Regeln löschen. Das lässt sich nicht rückgängig machen.",
+      "fire_confirm": "Ja, entlassen",
+      "fire_confirm_purge": "Ja, entlassen und löschen",
+      "firing": "Wird entlassen…",
+      "fire_failed": "Das Mitglied konnte nicht entlassen werden.",
+      "fire_slug_collision": "Nichts wurde gefeuert. Ein anderes Mitglied, {{other}}, hat denselben Kurznamen ({{slug}}) wie {{name}}, daher teilen sie sich Dateien. Benenne dieses Mitglied zuerst um oder feuere es: Du findest es unter „Deine Crewmitglieder“, wenn es ein Crewmitglied ist, sonst unter „Agent-Fähigkeiten › Agenten“.",
+      "fired_summary": "{{name}} wurde entlassen.",
+      "fired_thread_archived": "Unterhaltung, Aktivität, Briefing und Regeln sind archiviert; die Unterhaltung lässt sich weiterhin über <history/> auf der Chat-Seite öffnen.",
+      "fired_thread_purged": "Unterhaltung, Aktivität, Briefing und Regeln wurden gelöscht.",
+      "fired_thread_kept": "Aktivität, Briefing und Regeln wurden gelöscht, die Unterhaltung jedoch nicht; sie bleibt im <history/> – dort kannst du sie löschen.",
+      "fired_thread_kept_cron_claim": "Aktivität, Briefing und Regeln wurden gelöscht, die Unterhaltung jedoch nicht: ein geplanter Job verweist noch auf sie. Sie bleibt im <history/> – pausiere oder entferne den Job und lösche sie dann dort.",
+      "fired_thread_kept_store": "Aktivität, Briefing und Regeln wurden gelöscht, die Unterhaltung jedoch nicht: die Liste der geplanten Jobs konnte nicht gelesen werden, daher ist nicht sicher, dass keiner auf sie verweist. Sie bleibt im <history/> – dort kannst du sie löschen.",
+      "fired_history_link": "Verlauf",
+      "fired_thread_none": "Es gab keine Unterhaltung; Aktivität, Briefing und Regeln sind archiviert.",
+      "fired_dismiss": "Ausblenden",
+      "fired_thread_none_purged": "Es gab keine Unterhaltung; Aktivität, Briefing und Regeln wurden gelöscht."
     }
   },
   "privacyDisclosure": {

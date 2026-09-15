@@ -4685,7 +4685,16 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
         )
-    return await _create_crew(request, body)
+    # The plain create shares the hire's pending-fire admission: a fire mid-way
+    # on this id's SLUG has lived state (activity, briefing, rules, the thread
+    # binding -- all slug-keyed) still on disk, which a new member on the slug
+    # would inherit, and this route must not be the way around that check.
+    # Function-local import: handlers.members imports this module.
+    from kiro_crew.dashboard.handlers.members import _pending_fire_refusal
+
+    return await _create_crew(
+        request, body, admit=lambda _names, candidate: _pending_fire_refusal(candidate)
+    )
 
 
 async def _create_crew(
@@ -4951,7 +4960,9 @@ async def _create_crew(
         if name in cfg.agents:
             return _exists_response(cfg, name, display_name, hire=enroll is not None)
         if admit is not None:
-            refused = admit(cfg.agents, name)
+            # On a worker: the hook reads disk (the pending-fire markers), and
+            # this runs on the loop inside the in-process config lock.
+            refused = await asyncio.to_thread(admit, cfg.agents, name)
             if refused is not None:
                 return refused
 
@@ -5896,6 +5907,7 @@ async def _delete_crew_record(
     name: str,
     *,
     expect: Callable[[dict], str | None] | None = None,
+    expect_others: Callable[[dict], str | None] | None = None,
 ) -> None:
     """Remove crew *name*: its ``agents`` row, its private memory (archived, not
     erased), its cached store handles and its uploaded picture.
@@ -5911,7 +5923,13 @@ async def _delete_crew_record(
     the source I created it against, still carrying the store I minted"), and
     the mutation then raises ``UnknownMemoryStore`` with it -- so a writer in
     another process that replaced the row between the caller's read and this
-    write cannot have its member deleted in the original's name. A V2
+    write cannot have its member deleted in the original's name. *expect_others*
+    is the same kind of check on the OTHER rows -- it receives the document's
+    whole ``agents`` map as it is on disk inside the lock, for a caller whose
+    removal also touches state keyed more loosely than the row (a fire removes
+    the member SPACE, which is slug-keyed, so a row another process published
+    on the same slug after the caller's read makes that space shared and not
+    the caller's to remove). A V2
     private store owned by the crew is archived under the ordinary retirement
     marker -- never unlinked -- in the same hold, and the archive is rolled back
     if the config write then fails, so config and store never disagree.
@@ -5937,6 +5955,10 @@ async def _delete_crew_record(
             entry = agents[name]
             if expect is not None:
                 why = expect(entry if isinstance(entry, dict) else {})
+                if why:
+                    raise UnknownMemoryStore(why)
+            if expect_others is not None:
+                why = expect_others(agents)
                 if why:
                     raise UnknownMemoryStore(why)
             stores = coerce_dict_section(doc, "memory_stores")
