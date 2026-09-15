@@ -387,6 +387,28 @@ class TestApiSpawnContinue:
         assert mgr.continue_conversation.call_args.kwargs["cwd"] == "/proj/alpha"
         mgr.recorded_cwd.assert_called_once_with("conv1")
 
+    def test_the_remote_agent_record_is_resolved_off_loop_and_forwarded(self) -> None:
+        """Same contract as the cwd: a remote conversation's continuation inherits
+        (or must match) the agent that owns it, decided from a state.json read that
+        happens here in a thread, never inside the synchronous method."""
+        mgr = _mgr()
+        record = object()
+        mgr.recorded_a2a = MagicMock(return_value=record)
+        mgr.continue_conversation.return_value = _info(id="run2")
+        resp = _run(mod.api_spawn_continue, self._req(mgr, {"task": "x"}))
+        assert resp.status == 200
+        assert mgr.continue_conversation.call_args.kwargs["a2a_record"] is record
+        mgr.recorded_a2a.assert_called_once_with("conv1")
+
+    def test_agent_mismatch_is_a_400_with_its_own_code(self) -> None:
+        mgr = _mgr()
+        mgr.continue_conversation.return_value = _info(
+            done=True, error="agent_mismatch: conversation conv1 belongs to remote agent 'r'"
+        )
+        resp = _run(mod.api_spawn_continue, self._req(mgr, {"task": "x", "agent": "other"}))
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "agent_mismatch"
+
 
 # ── api_spawn_steer / release ──
 

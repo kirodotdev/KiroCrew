@@ -14,6 +14,7 @@ agent loads only the one it needs.
 |---|---|
 | [acp-client.md](acp-client.md) | The ACP JSON-RPC client that drives `kiro-cli`: transport, framing, timeouts, and the backend seam. |
 | [providers.md](providers.md) | The `LLMProvider` interface, the `AcpProvider` the factory selects, and how a backend id is chosen. |
+| [a2a-subagents.md](a2a-subagents.md) | Remote agents over A2A as subagent-only workers: the `a2a_agents` registry, `A2AProvider`, the contextId-as-conversation mapping, and the failure discipline. |
 | [agent-host-contract.md](agent-host-contract.md) | What an agent backend must supply besides speaking ACP: agent layout, session store, identity, sandbox, MCP delivery, billing, permission engine, auxiliary runtimes — kiro-cli, KAS and Claude Code side by side, with the new-provider checklist. |
 | [claude-code-provider.md](claude-code-provider.md) | Claude Code as a selectable ACP harness: the live spawn path, the two binaries it needs on the machine, and the MCP gap a Claude session still carries. |
 | [harness-parity.md](harness-parity.md) | The invariants keeping the Kiro harness first-class while other harnesses are adapted, and the test pinning each. |

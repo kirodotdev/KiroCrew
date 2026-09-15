@@ -3,7 +3,7 @@
 from ._component import bind_component_globals, copy_component_docs
 from .admission import SpawnAdmissionCoordinator
 from .cancellation import CancellationCoordinator
-from .continuation import ContinuationCoordinator
+from .continuation import ContinuationCoordinator, RecordedA2A
 from .monitoring import OrphanStallMonitor
 from .run import RunEventCoordinator
 from .terminal import TerminalCoordinator
@@ -16,6 +16,7 @@ __all__ = [
     "TerminalCoordinator",
     "SpawnAdmissionCoordinator",
     "ContinuationCoordinator",
+    "RecordedA2A",
     "WaveDigestCoordinator",
     "RunEventCoordinator",
     "CancellationCoordinator",

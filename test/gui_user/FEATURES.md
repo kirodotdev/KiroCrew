@@ -26,8 +26,9 @@ under `scenarios/` says how the lane checks it.
 
 | | Total | smoke | nightly | native-only | needs-secret | excluded |
 |---|---|---|---|---|---|---|
-| **All features** | 268 | 42 | 165 | 12 | 27 | 22 |
+| **All features** | 274 | 42 | 171 | 12 | 27 | 22 |
 | Chat sessions (`chat`) | 26 | 3 | 19 | 0 | 2 | 2 |
+| Subagents & remote agents (`subagents`) | 6 | 0 | 6 | 0 | 0 | 0 |
 | Side panel tabs (`side-panel`) | 4 | 1 | 3 | 0 | 0 | 0 |
 | Terminal panel (`terminal`) | 3 | 0 | 3 | 0 | 0 | 0 |
 | Sessions sidebar & folders (`sidebar`) | 16 | 5 | 10 | 0 | 1 | 0 |
@@ -63,7 +64,7 @@ under `scenarios/` says how the lane checks it.
 | Security & governance (`security`) | 10 | 1 | 9 | 0 | 0 | 0 |
 | Developer tools (`developer`) | 12 | 0 | 12 | 0 | 0 | 0 |
 
-Priorities: P0 10 · P1 35 · P2 162 · P3 61. Deduped from 387 raw records.
+Priorities: P0 11 · P1 38 · P2 164 · P3 61. Deduped from 387 raw records.
 
 ## Chat sessions (`chat`)
 
@@ -91,6 +92,17 @@ Priorities: P0 10 · P1 35 · P2 162 · P3 61. Deduped from 387 raw records.
 | P2 | `chat-turn-minimap` | As a desktop user reading a long transcript, I want a proportional marker rail in the left gutter with hover previews and click/arrow-key jumps, so that I can navigate turns quickly. | `/chat` | sessions-long-history | nightly | 3 |
 | P2 | `chat-worktrees` | As a developer, I want to create a git worktree for a follow-up session from a card, so that parallel work stays isolated. | `/chat` | rich | nightly | 3 |
 | P2 | `side-chat-busy-send-steer-or-queue` | As a user, I want a second question during a streaming side turn to be steered in or shown as a queue card, so that nothing I typed is dropped. | `/chat` | rich | nightly | 7 |
+
+## Subagents & remote agents (`subagents`)
+
+| Priority | Id | User story | Start URL | Seed | Runnable | Steps |
+|---|---|---|---|---|---|---|
+| P0 | `subagents-remote-spawn` | As a user, I want to ask my agent something that it delegates to a remote agent, so that I see the remote worker stream and finish on the subagent board exactly like a local one. | `/chat` | sessions-a-few | nightly | 16 |
+| P1 | `subagents-remote-connection-lost` | As a user, I want a remote subagent whose connection drops to show as failed together with the output it managed to produce, so that I never mistake a dead worker for a finished one. | `/chat` | sessions-a-few | nightly | 16 |
+| P1 | `subagents-remote-continue` | As a user, I want to continue a finished remote subagent conversation and have it remember what we discussed, so that a long investigation can be picked up later without re-explaining. | `/chat` | sessions-a-few | nightly | 20 |
+| P1 | `subagents-remote-not-primary` | As a user, I want the agent picker for my chat to offer only local agents, so that I cannot accidentally run a whole session on a remote worker that is meant to be delegated to. | `/chat` | sessions-a-few | nightly | 12 |
+| P2 | `subagents-remote-mixed-batch` | As a user, I want one request to fan out to a local and a remote worker at once, so that I get both results in a single completion without having to choose a backend. | `/chat` | sessions-a-few | nightly | 16 |
+| P2 | `subagents-remote-steer` | As a user, I want to send a follow-up to a running remote subagent and be told plainly when live interrupt is not available, so that I know which kinds of steering work with a remote agent. | `/chat` | sessions-a-few | nightly | 24 |
 
 ## Side panel tabs (`side-panel`)
 

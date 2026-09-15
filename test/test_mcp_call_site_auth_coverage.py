@@ -108,6 +108,10 @@ _SOURCES = (
     _SRC / "cron_trigger.py",
     _SRC / "apps/builtins/code_review_sage/sage_lib/review_driver.py",
     _SRC / "computer_use/screencast.py",
+    # The test-mode fake ACP backend's delegation bridge (opt-in via
+    # KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1) sets the header itself to make the same
+    # /api/spawn* calls the kirocrew-core MCP server makes for a real agent.
+    _SRC / "testing/fake_acp_backend.py",
     *sorted((_SRC / "mcp_tools").glob("*.py")),
 )
 
@@ -146,6 +150,10 @@ _KNOWN_UNRESOLVED = frozenset(
         "mcp_core.py:_delete",
         "mcp_dashboard.py:_get_rows",
         "cron_script.py:_post",
+        # Same shape as cron_script._post: the fake ACP backend's bridge helper
+        # builds the Request from its ``path`` parameter; its callers' literal
+        # paths (/api/spawn, /api/spawn/{id}/continue|steer) are what get checked.
+        "fake_acp_backend.py:_bridge_post",
         # The gateway liveness probe: its URL is assembled from a resolved port
         # via a helper, and the endpoint (/api/ready) carries no auth by
         # design — it answers before auth middleware exists so a starting

@@ -26,7 +26,19 @@ SHIPPED_SMOKE = {
     "settings-theme-toggle",
     "sidebar-folders-and-older-sessions",
 }
-SHIPPED = SHIPPED_SMOKE | {"members-dm-hello"}
+SHIPPED = (
+    SHIPPED_SMOKE
+    | {"members-dm-hello"}
+    | {
+        # Remote (A2A) sub-agent stories: nightly tier, real gateway + fake A2A sidecar.
+        "subagents-remote-connection-lost",
+        "subagents-remote-continue",
+        "subagents-remote-mixed-batch",
+        "subagents-remote-not-primary",
+        "subagents-remote-spawn",
+        "subagents-remote-steer",
+    }
+)
 
 
 class TestShippedScenarios:
@@ -80,6 +92,14 @@ class TestShippedScenarios:
         groups = scenarios.by_feature(scenarios.load_all(SCENARIOS_DIR))
         assert {slug: [s.name for s in g] for slug, g in groups.items()} == {
             "chat": ["chat-switch-seeded-sessions", "sessions-new-chat"],
+            "subagents": [
+                "subagents-remote-connection-lost",
+                "subagents-remote-continue",
+                "subagents-remote-mixed-batch",
+                "subagents-remote-not-primary",
+                "subagents-remote-spawn",
+                "subagents-remote-steer",
+            ],
             "sidebar": ["sidebar-folders-and-older-sessions"],
             "search": ["search-everywhere-jump-to-setting"],
             "members": ["members-dm-hello"],
@@ -87,7 +107,15 @@ class TestShippedScenarios:
             "settings": ["settings-search-jump-to-theme", "settings-theme-toggle"],
         }
         # FEATURES order, not alphabetical: chat is the product's primary surface.
-        assert list(groups) == ["chat", "sidebar", "search", "members", "auth", "settings"]
+        assert list(groups) == [
+            "chat",
+            "subagents",
+            "sidebar",
+            "search",
+            "members",
+            "auth",
+            "settings",
+        ]
 
     def test_members_scenario_holds_across_the_crew_mode_retirement(self) -> None:
         """The Feature Previews card carries two titles across the Crew Mode retirement; the steps name both."""
@@ -433,7 +461,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_6 of {len(scenarios.FEATURES)} features covered · 8 scenarios (7 smoke / 1 nightly)._"
+            f"_7 of {len(scenarios.FEATURES)} features covered · 14 scenarios (7 smoke / 7 nightly)._"
             in md
         )
         assert (
