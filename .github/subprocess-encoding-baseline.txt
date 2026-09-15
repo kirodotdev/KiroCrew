@@ -102,7 +102,6 @@
 1 test/test_pr_quality_gates.py
 1 test/test_pr_readiness_evaluate.py
 1 test/test_pr_readiness_publish.py
-2 test/test_pr_readiness_sweep.py
 4 test/test_prepare_pr_local_review.py
 1 test/test_prepare_pr_profiles.py
 2 test/test_prepare_pr_prove.py

@@ -7,6 +7,13 @@ assumed -- and the condition is the whole point: too narrow and a frozen verdict
 stays frozen, too broad and every genuinely-failing PR gets dispatched every 15
 minutes forever.
 
+The run block reads its evidence through .github/scripts/readiness_sweep_scan.py,
+which pages the open pull requests over GraphQL. So each Runner links the REAL
+scanner into the fixture workspace and the `gh` stub answers `api graphql` by
+translating three REST-shaped fixtures (see GRAPHQL_STUB). The scanner, the shell
+and the decision are therefore all exercised end to end, and the fixtures stay
+readable as "statuses" and "check runs" rather than as GraphQL documents.
+
 Skipped where the POSIX toolchain the script needs (bash, jq, GNU `date -d`) is
 unavailable, which is the case on the Windows leg of the matrix. Mirrors the
 explicit nt guard in test_issue_triage_workflow.py.
@@ -18,17 +25,15 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-WORKFLOW = (
-    Path(__file__).resolve().parents[1]
-    / ".github"
-    / "workflows"
-    / "pr-readiness-sweep.yml"
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-readiness-sweep.yml"
+SCANNER = REPO_ROOT / ".github" / "scripts" / "readiness_sweep_scan.py"
 
 
 def _gnu_date() -> bool:
@@ -44,6 +49,7 @@ def _gnu_date() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not WORKFLOW.exists()
+    or not SCANNER.exists()
     or os.name == "nt"
     or shutil.which("bash") is None
     or shutil.which("jq") is None
@@ -52,35 +58,192 @@ pytestmark = pytest.mark.skipif(
 )
 
 # `gh` stub. Three shapes are served, keyed on the subcommand:
-#   pr list                 -> the fixture PR list
-#   api .../statuses        -> the fixture readiness status history
-#   api .../check-runs      -> the fixture check runs
+#   api graphql             -> the fixture repository state, translated (see below)
+#   api .../comments        -> the fixture issue comments, and the read is RECORDED
 #   workflow run            -> RECORD the dispatch instead of firing it
+#
+# The comment read is recorded because mode 5 is now GATED on the PR's own
+# `updatedAt`, and "this read did not happen" is the whole assertion of one test:
+# a dispatch count cannot distinguish a read that found nothing from a read that
+# was correctly skipped.
 GH_STUB = r"""#!/usr/bin/env bash
 set -euo pipefail
-if [ "$1 ${2:-}" = "pr list" ]; then
-  cat "$FIXTURES/prs.json"
-  exit 0
-fi
 if [ "$1 ${2:-}" = "workflow run" ]; then
   # Record every -f key=value so the test can assert pr/sha were passed through.
   printf '%s\n' "$*" >> "$FIXTURES/dispatched.txt"
   exit 0
 fi
+if [ "$1 ${2:-}" = "api graphql" ]; then
+  exec "$STUB_PYTHON" "$FIXTURES/graphql_stub.py" "$@"
+fi
 if [ "$1" = "api" ]; then
   case "${2:-}" in
-    *"/check-runs") cat "$FIXTURES/check_runs.json"; exit 0 ;;
-    *"/comments") cat "$FIXTURES/comments.json"; exit 0 ;;
-    *"/statuses")
-      # Emulate a transport failure when the test asks for one: gh exits
-      # non-zero having written nothing to stdout.
-      if [ -f "$FIXTURES/statuses_fail" ]; then exit 1; fi
-      cat "$FIXTURES/statuses.json"; exit 0 ;;
+    *"/comments")
+      printf '%s\n' "$*" >> "$FIXTURES/comments_read.txt"
+      cat "$FIXTURES/comments.json"; exit 0 ;;
   esac
 fi
 echo "gh stub: unhandled: $*" >&2
 exit 90
 """
+
+# The `gh api graphql` half of the stub, answering from these fixtures the way a
+# real GraphQL server would. The fixtures stay in their REST-shaped, readable
+# form (`statuses.json`, `check_runs.json`) and the translation happens here, so a
+# test still reads as "a failure published at T, a check completed at T+1".
+#
+# Two queries are served, told apart by the query text: the pull-request page and
+# the per-commit rollup-contexts page. Both page for real, at the 25-PR and
+# 100-context sizes the scanner asks for, so the scanner's paging is exercised by
+# these behavioural tests and not only by its unit tests.
+GRAPHQL_STUB = '''#!/usr/bin/env python3
+"""Answer `gh api graphql` from the sweep tests REST-shaped fixtures."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+FIXTURES = Path(os.environ["FIXTURES"])
+PR_PAGE = 25
+CONTEXTS_PAGE = 100
+
+# Old, non-failure-class filler, used only to push the fixture's SECOND check-run
+# page past the 100-node connection ceiling so the scanner must fetch a second
+# contexts page to see it. NEUTRAL is not failure-class and the timestamp precedes
+# every fixture value, so filler can change no decision.
+FILLER = {
+    "__typename": "CheckRun",
+    "status": "COMPLETED",
+    "conclusion": "NEUTRAL",
+    "completedAt": "2000-01-01T00:00:00Z",
+}
+
+
+def _args() -> dict:
+    """gh passes `-f name=value`; collect them."""
+    out = {}
+    argv = sys.argv[1:]
+    for i, token in enumerate(argv):
+        if token in ("-f", "-F") and i + 1 < len(argv):
+            name, _, value = argv[i + 1].partition("=")
+            out[name] = value
+    return out
+
+
+def _read(name, default):
+    path = FIXTURES / name
+    if not path.exists():
+        return default
+    return json.loads(path.read_text())
+
+
+def _statuses(sha):
+    """Flatten the paginated fixture. A per-SHA file wins when one exists."""
+    per_sha = FIXTURES / ("status_" + sha + ".json")
+    if per_sha.exists():
+        pages = json.loads(per_sha.read_text())
+    else:
+        pages = _read("statuses.json", [])
+    return [entry for page in pages for entry in page]
+
+
+def _check_nodes():
+    pages = _read("check_runs.json", [])
+    nodes = []
+    for index, page in enumerate(pages):
+        if index == 1 and len(nodes) < CONTEXTS_PAGE:
+            nodes += [dict(FILLER)] * (CONTEXTS_PAGE - len(nodes))
+        for run in page.get("check_runs", []):
+            conclusion = run.get("conclusion")
+            nodes.append(
+                {
+                    "__typename": "CheckRun",
+                    "status": str(run.get("status", "")).upper(),
+                    "conclusion": None if conclusion is None else str(conclusion).upper(),
+                    "completedAt": run.get("completed_at"),
+                }
+            )
+    return nodes
+
+
+def _contexts(nodes, offset):
+    window = nodes[offset : offset + CONTEXTS_PAGE]
+    end = offset + len(window)
+    return {
+        "totalCount": len(nodes),
+        "pageInfo": {"hasNextPage": end < len(nodes), "endCursor": "ctx-%d" % end},
+        "nodes": window,
+    }
+
+
+def _commit(pr):
+    sha = str(pr.get("headRefOid", ""))
+    contexts = [
+        {
+            "context": entry.get("context"),
+            "state": str(entry.get("state") or "").upper(),
+            "createdAt": entry.get("updated_at"),
+        }
+        for entry in _statuses(sha)
+    ]
+    return {
+        "status": {"contexts": contexts},
+        "statusCheckRollup": {"contexts": _contexts(_check_nodes(), 0)},
+    }
+
+
+def _pr_page(args):
+    prs = _read("prs.json", [])
+    offset = int(args["cursor"].split("-")[-1]) if "cursor" in args else 0
+    window = prs[offset : offset + PR_PAGE]
+    end = offset + len(window)
+    nodes = [
+        {
+            "number": pr.get("number"),
+            "updatedAt": pr.get("updatedAt"),
+            "headRefOid": pr.get("headRefOid"),
+            "commits": {"nodes": [{"commit": _commit(pr)}]},
+        }
+        for pr in window
+    ]
+    return {
+        "data": {
+            "repository": {
+                "pullRequests": {
+                    "pageInfo": {
+                        "hasNextPage": end < len(prs),
+                        "endCursor": "pr-%d" % end,
+                    },
+                    "nodes": nodes,
+                }
+            }
+        }
+    }
+
+
+def _contexts_page(args):
+    offset = int(args.get("after", "ctx-0").split("-")[-1])
+    rollup = {"contexts": _contexts(_check_nodes(), offset)}
+    return {"data": {"repository": {"object": {"statusCheckRollup": rollup}}}}
+
+
+def main() -> int:
+    if (FIXTURES / "graphql_fail").exists():
+        # A GraphQL transport failure: non-zero exit, nothing on stdout.
+        return 1
+    args = _args()
+    query = args.get("query", "")
+    payload = _pr_page(args) if "pullRequests(" in query else _contexts_page(args)
+    json.dump(payload, sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
 
 
 def _script() -> str:
@@ -96,6 +259,19 @@ def script() -> str:
     return _script()
 
 
+def install_scanner(fixtures: Path, work: Path) -> None:
+    """Make the run block's `.github/scripts/...` path resolve inside `work`.
+
+    The real scanner is copied in, not reimplemented: the sweep's decisions now
+    depend on the JSON that script emits, so a fake would leave the two free to
+    disagree exactly where a wrong field name or a missed page hides.
+    """
+    scripts = work / ".github" / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / SCANNER.name).write_text(SCANNER.read_text(encoding="utf-8"), encoding="utf-8")
+    (fixtures / "graphql_stub.py").write_text(GRAPHQL_STUB, encoding="utf-8")
+
+
 class Runner:
     """Executes the sweep's one step against one fixture repository state."""
 
@@ -109,15 +285,18 @@ class Runner:
         stub = bindir / "gh"
         stub.write_text(GH_STUB)
         stub.chmod(0o755)
+        install_scanner(self.fixtures, self.work)
         self.env = {
             **os.environ,
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "FIXTURES": str(self.fixtures),
+            # The stub is bash and must name an interpreter for the translator;
+            # `python3` on PATH is not necessarily the one running these tests.
+            "STUB_PYTHON": sys.executable,
             "REPO": "kirodotdev/KiroCrew",
             "STATUS_CONTEXT": "PR Readiness",
             "STALE_MINUTES": "15",
             "MAX_DISPATCH": "10",
-            "PR_LIST_LIMIT": "900",
         }
 
     def sweep(
@@ -128,12 +307,12 @@ class Runner:
         check_completed_at: str | None = None,
         check_conclusion: str = "success",
         extra_check_page: tuple[str, str] | None = None,
-        statuses_read_fails: bool = False,
+        graphql_read_fails: bool = False,
         pr: int = 2064,
         sha: str = "4328fd0f941f09ff10f245fbdb4accf7c246febe",
         context: str = "PR Readiness",
         max_dispatch: str = "10",
-        pr_updated_at: str = "2020-01-01T00:00:00Z",
+        pr_updated_at: str | None = None,
         extra_statuses: list[dict] | None = None,
         disposition_at: str | None = None,
         other_comments: list[dict] | None = None,
@@ -142,16 +321,30 @@ class Runner:
 
         `state=None` means the head SHA carries NO readiness status at all, which
         is the unpublished-verdict freeze mode.
+
+        `pr_updated_at=None` derives the PR's last-activity time from the comment
+        fixture, because that is what GitHub does: creating or editing a comment
+        bumps the pull request's `updatedAt`. Mode 5's read is gated on that
+        timestamp, so a fixture whose comments post-date an `updatedAt` frozen in
+        2020 is not a state the API can produce, and a test built on one would
+        pass for the wrong reason. Pass it explicitly to model a PR touched by
+        something else -- a label, a review -- after the verdict.
         """
+        comment_times = [
+            at
+            for at in [
+                disposition_at,
+                *[c.get("updated_at") for c in other_comments or []],
+            ]
+            if at
+        ]
+        if pr_updated_at is None:
+            pr_updated_at = max(["2020-01-01T00:00:00Z", *comment_times])
         (self.fixtures / "prs.json").write_text(
-            json.dumps(
-                [{"number": pr, "headRefOid": sha, "updatedAt": pr_updated_at}]
-            )
+            json.dumps([{"number": pr, "headRefOid": sha, "updatedAt": pr_updated_at}])
         )
         statuses = (
-            []
-            if state is None
-            else [{"context": context, "state": state, "updated_at": status_at}]
+            [] if state is None else [{"context": context, "state": state, "updated_at": status_at}]
         )
         # `/statuses` returns newest-first, and the sweep takes the FIRST entry
         # matching its own context, so extras are appended after. The fixture is
@@ -159,8 +352,8 @@ class Runner:
         # OUTER array of pages, each page being the endpoint's own array.
         statuses += extra_statuses or []
         (self.fixtures / "statuses.json").write_text(json.dumps([statuses]))
-        fail_marker = self.fixtures / "statuses_fail"
-        if statuses_read_fails:
+        fail_marker = self.fixtures / "graphql_fail"
+        if graphql_read_fails:
             fail_marker.write_text("")
         else:
             fail_marker.unlink(missing_ok=True)
@@ -209,17 +402,21 @@ class Runner:
         (self.fixtures / "comments.json").write_text(json.dumps([comments]))
         applied = self.fixtures / "dispatched.txt"
         applied.unlink(missing_ok=True)
+        self.comments_read = self.fixtures / "comments_read.txt"
+        self.comments_read.unlink(missing_ok=True)
 
         proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
             ["bash", "-c", self.script],
             cwd=self.work,
             env={**self.env, "MAX_DISPATCH": max_dispatch},
             text=True,
+            encoding="utf-8",
             capture_output=True,
         )
         # The sweep must never fail a run: a nudge it cannot make is not an error.
         assert proc.returncode == 0, proc.stderr
         self.last_stdout = proc.stdout
+        self.last_stderr = proc.stderr
         if not applied.exists():
             return []
         return applied.read_text().splitlines()
@@ -244,9 +441,7 @@ def test_fresh_pending_is_left_alone(runner: Runner) -> None:
     """Inside STALE_MINUTES the fan-out may genuinely still be running."""
     from datetime import datetime, timedelta, timezone
 
-    recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert runner.sweep(state="pending", status_at=recent) == []
 
 
@@ -307,9 +502,7 @@ def test_failure_refire_is_self_terminating(runner: Runner) -> None:
 
 def test_failure_with_no_completed_checks_is_left_alone(runner: Runner) -> None:
     """No check evidence at all means nothing proves the verdict stale."""
-    assert (
-        runner.sweep(state="failure", status_at="2026-08-07T19:01:24Z") == []
-    )
+    assert runner.sweep(state="failure", status_at="2026-08-07T19:01:24Z") == []
 
 
 def test_check_completing_in_the_same_second_is_not_new_evidence(runner: Runner) -> None:
@@ -332,9 +525,7 @@ def test_check_completing_in_the_same_second_is_not_new_evidence(runner: Runner)
 
 
 @pytest.mark.parametrize("state", ["success", "error"])
-def test_green_verdict_with_later_failing_evidence_is_refired(
-    runner: Runner, state: str
-) -> None:
+def test_green_verdict_with_later_failing_evidence_is_refired(runner: Runner, state: str) -> None:
     """The unsafe direction of the same re-run mechanism.
 
     A job re-run that flips a lane red after a green verdict emits no fresh
@@ -439,20 +630,13 @@ def test_a_brand_new_pull_request_is_left_alone(runner: Runner) -> None:
     """
     from datetime import datetime, timedelta, timezone
 
-    recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert runner.sweep(state=None, pr_updated_at=recent) == []
 
 
 def test_a_missing_status_still_respects_the_dispatch_cap(runner: Runner) -> None:
     """The runaway backstop applies to the new path as well."""
-    assert (
-        runner.sweep(
-            state=None, pr_updated_at="2026-08-17T14:20:00Z", max_dispatch="0"
-        )
-        == []
-    )
+    assert runner.sweep(state=None, pr_updated_at="2026-08-17T14:20:00Z", max_dispatch="0") == []
 
 
 def test_an_unparseable_pr_timestamp_is_left_alone(runner: Runner) -> None:
@@ -463,24 +647,92 @@ def test_an_unparseable_pr_timestamp_is_left_alone(runner: Runner) -> None:
 # ── Truncation: the oldest PRs must never be dropped silently ────────────────
 
 
-def test_the_open_pr_listing_is_not_capped_near_the_real_backlog(script: str) -> None:
-    """`gh pr list` returns newest-first and truncates SILENTLY at --limit.
+def test_the_open_pr_scan_has_no_silent_ceiling(script: str) -> None:
+    """The oldest open PRs must not be droppable at all.
 
-    A ceiling near the real open-PR count drops the OLDEST PRs -- precisely the
-    frozen ones this sweep exists to rescue -- so the limit must stay well clear
-    of it and a hit must be reported rather than absorbed.
+    `gh pr list` returned newest-first and truncated SILENTLY at `--limit`, so a
+    ceiling that fell behind the real open-PR count dropped the OLDEST PRs --
+    precisely the frozen ones this sweep exists to rescue -- and the guard against
+    it was a warning nobody could act on until it had already happened. Cursor
+    paging removes the ceiling instead of sizing it, so the property is now
+    structural: there is no limit left to outgrow, and none may come back.
     """
-    assert "--limit 300" not in script
-    assert '--limit "$PR_LIST_LIMIT"' in script
-    assert "::warning::" in script
+    # Comments are stripped first: the block SHOULD still explain what `gh pr
+    # list` did and why the ceiling was dangerous. What must not survive is the
+    # executable form of it.
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    assert "gh pr list" not in code
+    assert "PR_LIST_LIMIT" not in code
+    assert "--limit" not in code
+    assert "readiness_sweep_scan.py" in code
 
 
-def test_a_truncated_listing_is_reported(runner: Runner) -> None:
-    """Hitting the ceiling is an action item, not a measurement."""
-    runner.env["PR_LIST_LIMIT"] = "1"
-    runner.sweep(state="success", status_at="2020-01-01T00:00:00Z")
-    assert "::warning::" in runner.last_stdout
-    assert "hit its ceiling" in runner.last_stdout
+def test_every_open_pull_request_is_scanned_across_pages(tmp_path: Path, script: str) -> None:
+    """Nothing past the first page is dropped.
+
+    The scan pages 25 pull requests at a time -- measured, not tidy: with each
+    PR's rollup contexts attached, 100 and 50 per page both answered HTTP 504.
+    Here 30 PRs are open and all five stale ones live on the SECOND page, so a
+    scan that stopped after one page would rescue none of them and report a
+    plausible-looking 25.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    fixtures = tmp_path / "fixtures"
+    work = tmp_path / "work"
+    bindir = tmp_path / "bin"
+    for d in (fixtures, work, bindir):
+        d.mkdir(parents=True)
+    stub = bindir / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+    install_scanner(fixtures, work)
+
+    fresh = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prs = []
+    for index in range(30):
+        sha = f"sha{index:02d}"
+        prs.append(
+            {
+                "number": 100 + index,
+                "headRefOid": sha,
+                "updatedAt": "2020-01-01T00:00:00Z",
+            }
+        )
+        at = "2020-01-01T00:00:00Z" if index >= 25 else fresh
+        (fixtures / f"status_{sha}.json").write_text(
+            json.dumps([[{"context": "PR Readiness", "state": "pending", "updated_at": at}]])
+        )
+    (fixtures / "prs.json").write_text(json.dumps(prs))
+
+    proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
+        ["bash", "-c", script],
+        cwd=work,
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "FIXTURES": str(fixtures),
+            "STUB_PYTHON": sys.executable,
+            "REPO": "kirodotdev/KiroCrew",
+            "STATUS_CONTEXT": "PR Readiness",
+            "STALE_MINUTES": "15",
+            "MAX_DISPATCH": "200",
+        },
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "Scanning 30 open pull request(s)" in proc.stdout
+
+    dispatched = (fixtures / "dispatched.txt").read_text().splitlines()
+    numbers = sorted(
+        int(token.split("=", 1)[1])
+        for line in dispatched
+        for token in line.split()
+        if token.startswith("pr=")
+    )
+    assert numbers == [125, 126, 127, 128, 129]
 
 
 def test_a_different_status_context_never_drives_the_decision(runner: Runner) -> None:
@@ -492,9 +744,7 @@ def test_a_different_status_context_never_drives_the_decision(runner: Runner) ->
     """
     from datetime import datetime, timedelta, timezone
 
-    recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert (
         runner.sweep(
             state="pending",
@@ -549,29 +799,10 @@ def test_max_dispatch_caps_the_sweep(runner: Runner) -> None:
 
 # ── Fairness: oldest-stale-first, never PR-list order ────────────────────────
 
-# A `gh` stub that serves per-SHA readiness statuses, so several PRs can be
-# frozen for different lengths of time in one sweep. The base stub keys statuses
-# only on the subcommand (one fixture for all PRs), which cannot express "PR A is
-# staler than PR B" -- the exact thing this ordering test must vary.
-GH_STUB_PER_SHA = r"""#!/usr/bin/env bash
-set -euo pipefail
-if [ "$1 ${2:-}" = "pr list" ]; then
-  cat "$FIXTURES/prs.json"; exit 0
-fi
-if [ "$1 ${2:-}" = "workflow run" ]; then
-  printf '%s\n' "$*" >> "$FIXTURES/dispatched.txt"; exit 0
-fi
-if [ "$1" = "api" ]; then
-  case "${2:-}" in
-    *"/check-runs") echo '[{"check_runs":[]}]'; exit 0 ;;
-    *"/commits/"*"/statuses")
-      sha="${2#*/commits/}"; sha="${sha%%/statuses}"
-      cat "$FIXTURES/status_${sha}.json"; exit 0 ;;
-  esac
-fi
-echo "gh stub: unhandled: $*" >&2
-exit 90
-"""
+# Per-SHA readiness statuses need no second stub: the translator prefers a
+# `status_<sha>.json` fixture over the shared `statuses.json` when one exists,
+# which is what lets one sweep hold several PRs frozen for different lengths of
+# time -- the exact thing the ordering test must vary.
 
 
 def test_dispatch_is_oldest_stale_first(tmp_path: Path, script: str) -> None:
@@ -587,8 +818,9 @@ def test_dispatch_is_oldest_stale_first(tmp_path: Path, script: str) -> None:
     for d in (fixtures, work, bindir):
         d.mkdir(parents=True)
     stub = bindir / "gh"
-    stub.write_text(GH_STUB_PER_SHA)
+    stub.write_text(GH_STUB)
     stub.chmod(0o755)
+    install_scanner(fixtures, work)
 
     # PRs as `gh pr list` returns them (newest-numbered first), each frozen for a
     # DIFFERENT length of time. Staleness order (oldest first) is 3120, 3400, 3612
@@ -598,6 +830,9 @@ def test_dispatch_is_oldest_stale_first(tmp_path: Path, script: str) -> None:
         {"number": 3120, "headRefOid": "bbb"},
         {"number": 3400, "headRefOid": "ccc"},
     ]
+    # No `updatedAt`: these are `pending` verdicts, so neither the unpublished arm
+    # nor mode 5's gate reads it, and leaving it out keeps the fixture about the
+    # one thing this test varies.
     (fixtures / "prs.json").write_text(json.dumps(prs))
     ages = {
         "aaa": "2020-01-01T00:00:03Z",  # least stale
@@ -617,13 +852,14 @@ def test_dispatch_is_oldest_stale_first(tmp_path: Path, script: str) -> None:
             **os.environ,
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "FIXTURES": str(fixtures),
+            "STUB_PYTHON": sys.executable,
             "REPO": "kirodotdev/KiroCrew",
             "STATUS_CONTEXT": "PR Readiness",
             "STALE_MINUTES": "15",
             "MAX_DISPATCH": "200",
-            "PR_LIST_LIMIT": "900",
         },
         text=True,
+        encoding="utf-8",
         capture_output=True,
     )
     assert proc.returncode == 0, proc.stderr
@@ -684,18 +920,24 @@ def test_a_green_verdict_sees_failing_evidence_on_a_later_page(runner: Runner) -
 # ── Transport failure is not an absent verdict ───────────────────────────────
 
 
-def test_a_failed_statuses_read_is_not_treated_as_unpublished(runner: Runner) -> None:
-    """A statuses-API 503 and a genuinely absent status both yield empty jq output.
+def test_a_failed_read_is_not_treated_as_unpublished(runner: Runner) -> None:
+    """A GraphQL failure and a genuinely absent verdict must not read alike.
 
     Conflating them would turn transient GitHub trouble into a spurious re-fire of
     an arbitrary old PR -- on a shared token budget, at 15-minute intervals, on
-    every PR at once. The read is therefore checked for failure BEFORE the filter.
+    every PR at once. The scan enforces the distinction by SHAPE rather than by an
+    ordering rule in the shell: a PR it could not read is absent from its output
+    entirely, so the unpublished arm never sees one. It also exits 0 with a
+    warning rather than failing, because a sweep that runs on the pages it did
+    read still rescues those PRs, and the next sweep retries the rest.
     """
     dispatched = runner.sweep(
-        state=None, pr_updated_at="2026-08-17T14:20:00Z", statuses_read_fails=True
+        state=None, pr_updated_at="2026-08-17T14:20:00Z", graphql_read_fails=True
     )
     assert dispatched == []
-    assert "statuses lookup failed" in runner.last_stdout
+    assert "Scanning 0 open pull request(s)" in runner.last_stdout
+    assert "::warning::" in runner.last_stderr
+    assert "the walk ends here" in runner.last_stderr
 
 
 # ── The disposition-comment freeze (the verdict depends on comment bytes) ─
@@ -727,6 +969,7 @@ def test_failure_with_an_older_disposition_is_left_alone(runner: Runner) -> None
             status_at="2026-08-30T19:01:24Z",
             check_completed_at="2026-08-30T18:55:00Z",
             disposition_at="2026-08-30T18:40:00Z",
+            pr_updated_at="2026-08-30T19:30:00Z",
         )
         == []
     )
@@ -742,6 +985,7 @@ def test_disposition_refire_is_self_terminating(runner: Runner) -> None:
             status_at="2026-08-30T19:25:00Z",
             check_completed_at="2026-08-30T18:55:00Z",
             disposition_at="2026-08-30T19:20:00Z",
+            pr_updated_at="2026-08-30T19:30:00Z",
         )
         == []
     )
@@ -754,6 +998,7 @@ def test_a_disposition_edit_in_the_same_second_is_not_new_evidence(runner: Runne
             status_at="2026-08-30T19:01:24Z",
             check_completed_at="2026-08-30T18:55:00Z",
             disposition_at="2026-08-30T19:01:24Z",
+            pr_updated_at="2026-08-30T19:30:00Z",
         )
         == []
     )
@@ -831,6 +1076,7 @@ def test_green_verdict_with_an_older_disposition_is_left_alone(runner: Runner) -
             status_at="2026-08-30T19:01:24Z",
             check_completed_at="2026-08-30T18:55:00Z",
             disposition_at="2026-08-30T18:30:00Z",
+            pr_updated_at="2026-08-30T19:30:00Z",
         )
         == []
     )
@@ -843,6 +1089,7 @@ def test_green_disposition_refire_is_self_terminating(runner: Runner) -> None:
             status_at="2026-08-30T19:25:00Z",
             check_completed_at="2026-08-30T18:55:00Z",
             disposition_at="2026-08-30T19:20:00Z",
+            pr_updated_at="2026-08-30T19:30:00Z",
         )
         == []
     )
@@ -913,6 +1160,33 @@ def test_a_same_second_disposition_still_terminates_the_loop(runner: Runner) -> 
             state="success",
             status_at="2026-08-30T19:01:24Z",
             disposition_at="2026-08-30T19:01:24Z",
+            pr_updated_at="2026-08-30T19:10:00Z",
         )
         == []
     )
+
+
+def test_comments_are_not_read_when_the_pr_is_untouched_since_the_verdict(
+    runner: Runner,
+) -> None:
+    """The one read left on the shared REST pool is skipped when it cannot find
+    anything.
+
+    Creating OR editing a comment bumps the pull request's `updatedAt`, so an
+    `updatedAt` no newer than the verdict proves no disposition record moved after
+    it. The fixture here is deliberately impossible -- a record stamped 19:20 on a
+    PR last touched 19:00 -- because that is what makes the assertion sharp: the
+    read is not merely fruitless, it never happens, and no dispatch count could
+    tell those two apart.
+    """
+    assert (
+        runner.sweep(
+            state="failure",
+            status_at="2026-08-30T19:01:24Z",
+            check_completed_at="2026-08-30T18:55:00Z",
+            disposition_at="2026-08-30T19:20:00Z",
+            pr_updated_at="2026-08-30T19:00:00Z",
+        )
+        == []
+    )
+    assert not runner.comments_read.exists()

@@ -88,6 +88,7 @@ on:
 
 permissions:
   actions: write        # dispatch pr-readiness.yml (workflow_dispatch)
+  checks: read          # GraphQL statusCheckRollup CheckRun fields
   contents: read
   pull-requests: read   # list open PRs
   statuses: read        # read the "PR Readiness" commit status
@@ -119,6 +120,16 @@ jobs:
     # in a single sweep (see MAX_DISPATCH), so the job may fire many recomputes.
     timeout-minutes: 15
     steps:
+      # The scan script only. sparse-checkout with cone mode off is what makes a
+      # single-file path legal, and persist-credentials: false leaves no token in
+      # the worktree -- nothing here runs git against the remote.
+      - name: Check out the readiness scan script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts/readiness_sweep_scan.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Re-fire readiness for stale pull requests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -134,10 +145,6 @@ jobs:
           # set in a single sweep, so a genuine backlog drains in one pass; it
           # exists only to bound a single sweep against a pathological run.
           MAX_DISPATCH: "200"
-          # Ceiling for the open-PR listing. See the truncation guard below: this
-          # must stay comfortably above the real open-PR count, because `gh pr
-          # list` drops the OLDEST entries silently once it is reached.
-          PR_LIST_LIMIT: "900"
         run: |
           set -euo pipefail
 
@@ -155,9 +162,15 @@ jobs:
           # every push are not evidence -- without that narrowing this would
           # re-fire most PRs on every sweep and prove nothing.
           #
-          # `--slurp` for the same reason the check-run reads use it: without it
-          # `--paginate` emits one document per page and `max` would produce one
-          # timestamp per page, which `date -d` then rejects.
+          # This is the ONE REST read the sweep still makes, and it is made only
+          # for a candidate PR whose own `updatedAt` is newer than the verdict --
+          # see the gate at each call site. Comment bodies are not in the GraphQL
+          # scan because the rule they feed is evaluated elsewhere; only the
+          # newest marked record's timestamp matters here.
+          #
+          # `--slurp` collapses `--paginate`'s one-document-per-page output into a
+          # single array, so the filter sees one document and `max` emits one
+          # timestamp instead of one per page -- which `date -d` would reject.
           newest_disposition_epoch() {
             local pr_number="$1" newest
             newest="$(gh api "repos/$REPO/issues/$pr_number/comments" \
@@ -170,57 +183,90 @@ jobs:
             date -u -d "$newest" +%s 2>/dev/null || echo 0
           }
 
-          # Open PRs with their current head SHA and last-activity time. A
-          # single cheap list call.
+          # Every open PR with its head SHA, last-activity time, readiness
+          # status and check-run evidence -- one JSON line each, read over
+          # GraphQL by .github/scripts/readiness_sweep_scan.py.
           #
-          # `gh pr list` returns NEWEST-first and truncates at --limit SILENTLY,
-          # so a ceiling below the real open-PR count drops the OLDEST PRs --
-          # exactly the ones most likely to be frozen, and the ones this sweep
-          # exists to rescue. The limit is therefore sized well clear of the
-          # current set (250 open at the time of writing) and a hit is reported
-          # as a loud action item rather than being absorbed as a measurement.
-          prs="$(gh pr list --repo "$REPO" --state open --limit "$PR_LIST_LIMIT" \
-            --json number,headRefOid,updatedAt)"
+          # This was `gh pr list` plus, PER pull request, a REST `/statuses` read
+          # and one or two `/check-runs` reads: roughly 1500-2500 REST requests
+          # per sweep at 500 open PRs, four sweeps an hour, on the installation
+          # REST pool every workflow in this repository shares. On 2026-09-15
+          # that pool was exhausted -- 36 `PR Readiness` runs and every AI review
+          # lane failed closed, and this sweep's own log read `statuses lookup
+          # failed; skipping` for pull request after pull request. The backstop
+          # was taken out by its own cost, exactly when a frozen required status
+          # had nothing else left to correct it.
+          #
+          # GraphQL bills against a SEPARATE pool and carries all three facts in
+          # one query, so the whole scan is now a handful of requests and the
+          # sweep no longer competes with the lanes it exists to unfreeze. The
+          # scanner pages 25 pull requests at a time, which is measured rather
+          # than tidy: with each PR's rollup contexts attached, `first: 100` and
+          # `first: 50` both answered HTTP 504, `first: 30` took 10s, and
+          # `first: 25` took 4s and was stable.
+          #
+          # There is no silent ceiling left to guard. The scanner follows
+          # `hasNextPage` to the end of the open set, so the OLDEST PRs -- the
+          # ones most likely to be frozen, and the ones this sweep exists to
+          # rescue -- can no longer be dropped by a `--limit` that fell behind
+          # the backlog. A page that fails three GraphQL attempts is retried at
+          # the same cursor with a smaller page size (25 -> 12 -> 6 -> 3 -> 1);
+          # only when a page of ONE pull request still fails does the walk end
+          # with a `::warning::` (a cursor comes only from the page that failed),
+          # so the sweep runs less completely rather than not at all -- the same
+          # trade the concurrency block above already takes.
+          scan="$(python3 .github/scripts/readiness_sweep_scan.py \
+            --repo "$REPO" --status-context "$STATUS_CONTEXT")"
 
-          total="$(jq 'length' <<<"$prs")"
+          total=0
+          [ -z "$scan" ] || total="$(printf '%s\n' "$scan" | wc -l | tr -d ' ')"
           echo "Scanning $total open pull request(s) for stale PR Readiness."
-          if [ "$total" -ge "$PR_LIST_LIMIT" ]; then
-            echo "::warning::Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
-              "the oldest open PRs were dropped and cannot be rescued." \
-              "Raise PR_LIST_LIMIT in pr-readiness-sweep.yml."
-          fi
 
           # First pass: COLLECT every stale PR; do NOT dispatch inline. Inline
-          # dispatch in `gh pr list` order plus a cap starves whichever stale PRs
-          # land past the cap on every sweep -- in practice the oldest,
-          # lowest-numbered ones, since the list is newest-first. Gather them all
-          # here, then dispatch oldest-first in the second pass below.
+          # dispatch in SCAN order plus a cap starves whichever stale PRs land
+          # past the cap on every sweep -- in practice the oldest, lowest-numbered
+          # ones, since the scan walks newest-updated first. Gather them all here,
+          # then dispatch oldest-first in the second pass below.
           stale_file="$(mktemp)"
 
           while read -r row; do
             [ -n "$row" ] || continue
             number="$(jq -r '.number' <<<"$row")"
-            sha="$(jq -r '.headRefOid' <<<"$row")"
-            pr_updated_at="$(jq -r '.updatedAt // empty' <<<"$row")"
+            sha="$(jq -r '.sha' <<<"$row")"
+            pr_updated_at="$(jq -r '.pr_updated_at // empty' <<<"$row")"
             [ -n "$sha" ] && [ "$sha" != "null" ] || continue
+            pr_updated_epoch="$(date -u -d "$pr_updated_at" +%s 2>/dev/null || echo 0)"
 
-            # Most-recent "PR Readiness" commit status for this head SHA. The
-            # statuses API returns newest first, so `first` is authoritative.
+            # The scan already resolved the "PR Readiness" commit status for this
+            # head SHA, read from the commit's STATUS list and never from the
+            # check rollup -- the rollup interleaves check-runs, so reading the
+            # verdict there would let a check-run named like the aggregate decide
+            # the sweep. An empty state means the SHA carries no readiness status.
             #
-            # The read is captured BEFORE the jq filter so a transport failure is
-            # distinguishable from a genuinely absent status: both produce empty
-            # jq output, and the unpublished arm below dispatches on the latter.
-            # Conflating them would turn a statuses-API 503 into a spurious
-            # re-fire of an arbitrary old PR. `--slurp` collapses the paginated
-            # pages into one array, so the filter sees a single document.
-            if ! statuses_json="$(gh api "repos/$REPO/commits/$sha/statuses" \
-                --paginate --slurp 2>/dev/null)"; then
-              echo "PR #$number: statuses lookup failed; skipping this sweep."
-              continue
+            # A pull request the scan could not read is ABSENT from the scan
+            # output rather than present with an empty status, which is what keeps
+            # a GraphQL failure from reading as an unpublished verdict. Conflating
+            # them would turn transient GitHub trouble into a spurious re-fire of
+            # an arbitrary old PR, on a shared token budget, every 15 minutes.
+            state="$(jq -r '.readiness.state // empty' <<<"$row")"
+            updated_at="$(jq -r '.readiness.updated_at // empty' <<<"$row")"
+
+            # Newest completed / newest failure-class check-run on this SHA, both
+            # folded across every rollup page by the scan. The failure class is
+            # the same six conclusions the REST reader listed, in GraphQL's
+            # UPPER_CASE spelling; test_readiness_sweep_scan.py compares the two
+            # lists so they cannot drift.
+            newest_check="$(jq -r '.newest_completed_check_at // empty' <<<"$row")"
+            newest_fail="$(jq -r '.newest_failed_check_at // empty' <<<"$row")"
+
+            # A rollup page the scan could not read leaves this evidence PARTIAL.
+            # Evaluate anyway: missing evidence can only fail to prove a verdict
+            # stale, never invent staleness, so the worst case is a rescue delayed
+            # to the next sweep -- the same degradation as a skipped PR page.
+            if [ "$(jq -r '.checks_complete' <<<"$row")" != "true" ]; then
+              echo "PR #$number: check-run evidence is partial (a rollup page" \
+                "failed); evaluating on what was read."
             fi
-            status_json="$(jq -c --arg ctx "$STATUS_CONTEXT" \
-              '[.[][] | select(.context == $ctx)] | first // empty' \
-              <<<"$statuses_json")"
 
             # NO readiness status on this SHA. Skipping here on the assumption
             # that "the PR's own run is coming" is only true for a few minutes
@@ -241,12 +287,9 @@ jobs:
             # record writer below, instead of restating either. GitHub's commit
             # status states are error/failure/pending/success, so the sentinel
             # cannot collide with a real one.
-            if [ -z "$status_json" ]; then
+            if [ -z "$state" ]; then
               state="__unpublished__"
               updated_at="$pr_updated_at"
-            else
-              state="$(jq -r '.state' <<<"$status_json")"
-              updated_at="$(jq -r '.updated_at' <<<"$status_json")"
             fi
             updated_epoch="$(date -u -d "$updated_at" +%s 2>/dev/null || echo 0)"
             age=$(( now_epoch - updated_epoch ))
@@ -294,18 +337,12 @@ jobs:
                 # failing is nudged at most once per new piece of check evidence,
                 # not once per sweep.
                 [ "$updated_epoch" -ne 0 ] || continue
-                # `--slurp` is REQUIRED, not tidiness: without it `--paginate`
-                # concatenates one JSON document per page and jq evaluates each
-                # separately, so `max` emits one timestamp PER PAGE. `date -d`
-                # then rejects the multi-line string, the epoch reads 0, and the
-                # PR is skipped -- silently exempting every PR with more than 100
-                # check-runs, which on this repo is any PR whose lanes have been
-                # re-run. Slurped, the filter sees one array and emits one value.
-                newest_check="$(gh api "repos/$REPO/commits/$sha/check-runs" \
-                  --paginate --slurp 2>/dev/null \
-                  | jq -r '[.[].check_runs[]? | select(.status == "completed") | .completed_at]
-                           | map(select(. != null)) | max // empty' \
-                  || echo "")"
+                # `newest_check` is the newest COMPLETED check-run on this SHA,
+                # folded by the scan across every rollup page. A GraphQL contexts
+                # connection serves at most 100 nodes and this repository's PRs
+                # already carry 65-98, so the paging is not hypothetical: a
+                # page-blind read would silently exempt every PR whose lanes have
+                # been re-run, which is exactly the population mode 2 rescues.
                 newest_epoch=0
                 if [ -n "$newest_check" ]; then
                   newest_epoch="$(date -u -d "$newest_check" +%s 2>/dev/null || echo 0)"
@@ -348,6 +385,24 @@ jobs:
                   # push or a manual dispatch, and the docs say so. In the green
                   # direction it needs no rescue, because removing a record can
                   # only remove a violation.
+                  # Gate the comment read on the PR's own last-activity
+                  # time. Creating OR editing an issue comment bumps the pull
+                  # request's `updatedAt` -- measured directly: a comment PATCH at
+                  # 06:04:01Z moved `updated_at` from 06:02:52Z to 06:04:01Z. So
+                  # an `updatedAt` no newer than the verdict PROVES no disposition
+                  # record was created or edited after it, and there is nothing
+                  # here for the read to find.
+                  #
+                  # The gate is deliberately one-sided. A label, a review or a
+                  # push bumps `updatedAt` too, so it opens for PRs that carry no
+                  # new comment at all -- each costing exactly one REST read --
+                  # but it never closes on a PR that does. It cannot hide comment
+                  # evidence; it only skips reads that cannot find any. Measured
+                  # on 2026-09-15: 317 of 502 open PRs were untouched since their
+                  # verdict and skip this read; the other 185 mostly carry the
+                  # label writes readiness itself makes AFTER publishing, which
+                  # bump `updatedAt` past the verdict and cost one read each.
+                  [ "$pr_updated_epoch" -gt "$updated_epoch" ] || continue
                   disposition_epoch="$(newest_disposition_epoch "$number")"
                   [ "$disposition_epoch" -ne 0 ] || continue
                   # STRICT, with no margin. The check-evidence modes carry a
@@ -386,16 +441,9 @@ jobs:
                 # dropped-event problem: "the next real event will correct it"
                 # holds only when a next event exists.
                 [ "$updated_epoch" -ne 0 ] || continue
-                newest_fail="$(gh api "repos/$REPO/commits/$sha/check-runs" \
-                  --paginate --slurp 2>/dev/null \
-                  | jq -r '[.[].check_runs[]?
-                             | select(.status == "completed")
-                             | select(.conclusion as $c
-                                 | ["failure","timed_out","cancelled","action_required",
-                                    "stale","startup_failure"] | index($c))
-                             | .completed_at]
-                           | map(select(. != null)) | max // empty' \
-                  || echo "")"
+                # `newest_fail` is the newest failure-class check-run on this SHA
+                # (failure/timed_out/cancelled/action_required/stale/
+                # startup_failure), folded by the scan across every rollup page.
                 newest_fail_epoch=0
                 if [ -n "$newest_fail" ]; then
                   newest_fail_epoch="$(date -u -d "$newest_fail" +%s 2>/dev/null || echo 0)"
@@ -421,6 +469,24 @@ jobs:
                   # contrast, is only ever written by a writer ruling on this PR,
                   # and each one is counted at most once because republishing
                   # makes readiness the newest timestamp again.
+                  # Gate the comment read on the PR's own last-activity
+                  # time. Creating OR editing an issue comment bumps the pull
+                  # request's `updatedAt` -- measured directly: a comment PATCH at
+                  # 06:04:01Z moved `updated_at` from 06:02:52Z to 06:04:01Z. So
+                  # an `updatedAt` no newer than the verdict PROVES no disposition
+                  # record was created or edited after it, and there is nothing
+                  # here for the read to find.
+                  #
+                  # The gate is deliberately one-sided. A label, a review or a
+                  # push bumps `updatedAt` too, so it opens for PRs that carry no
+                  # new comment at all -- each costing exactly one REST read --
+                  # but it never closes on a PR that does. It cannot hide comment
+                  # evidence; it only skips reads that cannot find any. Measured
+                  # on 2026-09-15: 317 of 502 open PRs were untouched since their
+                  # verdict and skip this read; the other 185 mostly carry the
+                  # label writes readiness itself makes AFTER publishing, which
+                  # bump `updatedAt` past the verdict and cost one read each.
+                  [ "$pr_updated_epoch" -gt "$updated_epoch" ] || continue
                   disposition_epoch="$(newest_disposition_epoch "$number")"
                   [ "$disposition_epoch" -ne 0 ] || continue
                   # STRICT, with no margin. The check-evidence modes carry a
@@ -447,7 +513,7 @@ jobs:
             # staleness epoch is the status's own updated_at, so a numeric sort
             # ascending on column 1 orders by HOW LONG each PR has been frozen.
             printf '%s\t%s\t%s\t%s\n' "$updated_epoch" "$number" "$sha" "$reason" >>"$stale_file"
-          done < <(jq -c '.[]' <<<"$prs")
+          done < <(printf '%s\n' "$scan")
 
           stale_total=0
           [ -s "$stale_file" ] && stale_total="$(wc -l <"$stale_file" | tr -d ' ')"
