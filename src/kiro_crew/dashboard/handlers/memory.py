@@ -1490,11 +1490,12 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     inherited = bool(
         custom is not None and legacy_embedding_ids(memory_config.get("embed_model_legacy_ids"))
     )
-    error_code = (
-        (custom.error_code or "model_path_unreadable")
-        if custom is not None and setup_error
-        else "model_download_failed" if setup_error else ""
-    )
+    if custom is not None and setup_error:
+        error_code = custom.error_code or "model_path_unreadable"
+    elif setup_error:
+        error_code = "model_download_failed"
+    else:
+        error_code = ""
     progress = reembed_progress().snapshot()
     if (
         generation

@@ -517,10 +517,10 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
         # extra credential regexes scrub the broadcast file JSON too — the
         # same overlay-aware pass the filename/path/description gates use.
         redacted_file_json = redact(json.dumps(file_data))
-        # append_and_surface = the same conditional-broadcast pattern this
-        # site pioneered, now also stamping ``ts`` + ``meta.mid`` on the
-        # reader-suppressed frame so a client seeing the row through two
-        # doors recognises it instead of rendering a duplicate card.
+        # append_and_surface, not a hand-built broadcast_ws: hand-built
+        # frames ship the row a second time and carry no ``meta.mid``, so
+        # the client cannot recognise the redelivery and renders a
+        # duplicate card.
         append_and_surface(state, active, "file", redacted_file_json)
     else:
         # Suppression is the RIGHT outcome — better nowhere than in an unrelated
@@ -5358,8 +5358,6 @@ def _load_sheet_payload(f: BinaryIO, *, max_bytes: int) -> dict:
     a soft import: absence surfaces as ImportError from this thread and the
     handler maps it to 501.
     """
-    import io
-
     with f:
         import openpyxl  # noqa: F401  (probe here, off-loop; parse imports lazily too)
 
@@ -5433,7 +5431,6 @@ def _parse_workbook_grid(data: bytes) -> dict:
     shown instead of an empty cell. Both loads stream the same bytes, so the
     row structures are identical and can be zipped in lockstep.
     """
-    import io
     import itertools
 
     from openpyxl import load_workbook
