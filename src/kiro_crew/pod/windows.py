@@ -940,6 +940,15 @@ def stop(
     cannot be anchored or any required snapshot fails, teardown fails closed and
     preserves the task and HOME.
 
+    **A handoff marker is settled, then re-read -- never judged on sight.** The
+    supervisor publishes one the moment the gateway it supervised is reaped, which
+    on this path is the reap teardown itself just caused, and it keeps that marker
+    stamped for as long as it holds the restart window. So a live marker says only
+    "a supervisor has not answered yet", and refusing on it refused a pod whose
+    tree was already drained. Teardown waits, bounded, for the answer and only
+    then reads the pid record: settling means no adoption can follow it, so a
+    record naming no live successor at that point is final.
+
     The caller still owns the HOME removal (see ``runtime.stop_pod``) because
     that goes through ``cleanup_home``'s name re-validation.
     """
@@ -1129,6 +1138,18 @@ def stop(
                 "pod is NOT zero-residue."
             ),
         )
+    # SETTLE THE HANDOFF, THEN read liveness. A marker is published on every reap
+    # -- including the one this teardown just caused -- and is re-stamped for as
+    # long as the supervisor holds the restart window, so a pod that has restarted
+    # in-app carries a live marker for the whole of its remaining life. Its
+    # presence is therefore neither residue nor a verdict. What settling buys is
+    # that the reads below are FINAL rather than racy: the successor loop has
+    # exited (and retracted), or the supervisor that would adopt a successor is
+    # itself gone, so no adoption can follow. Judging the marker before the
+    # supervisor had decided refused a pod this very call had already drained and
+    # left its scheduled task registered -- the residue teardown exists to remove.
+    if handoff_in_progress(cfg, name):
+        _await_handoff_outcome(cfg, name, bound=timeout)
     unattributable = _unattributable_live_pid(cfg, name)
     if unattributable is not None:
         # A record whose pid is ALIVE but whose creation-time identity does not
@@ -1163,8 +1184,9 @@ def stop(
                 f"`kirocrew pod down {name}`."
             ),
         )
-    late_handoff = handoff_in_progress(cfg, name)
-    if late_handoff and not _await_handoff_outcome(cfg, name, bound=timeout):
+    if handoff_in_progress(cfg, name):
+        # Still undecided after the wait above: a supervisor is holding the window
+        # and may yet adopt a successor into this HOME, so nothing here may go.
         return subprocess.CompletedProcess(
             args=[],
             returncode=1,
@@ -1175,20 +1197,6 @@ def stop(
                 "were preserved.\n"
                 f"  Retry:             kirocrew pod down {name}\n"
                 f"  What is up:        kirocrew pod ls"
-            ),
-        )
-    if late_handoff:
-        # Settled is not drained: adoption may publish (or clear) a successor
-        # after late_pid was checked. No exact handle proved that new tree.
-        return subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=ended.stdout or "",
-            stderr=(
-                f"pod {name!r} settled a restart handoff after its original tree "
-                "was drained, but the successor tree has no exact-handle stop "
-                "proof. Its HOME and task were preserved; retry teardown once "
-                "a live root can be anchored. This pod is NOT proven zero-residue."
             ),
         )
     deleted = schtasks("/Delete", "/TN", task_name(cfg, name), "/F")
@@ -1246,6 +1254,11 @@ def _await_handoff_outcome(cfg: PodConfig, name: str, *, bound: float | None = N
     * a pid is recorded again -- a successor WAS adopted and is running, which is a
       different refusal from this one, so report unsettled and let the caller say so;
     * the bound expires with the marker still live -- undecided, so refuse.
+
+    "Settled" is therefore not a licence to delete anything; it is the point after
+    which the caller's own liveness reads are final, because no further adoption
+    can happen once the supervisor has decided or died. :func:`stop` re-reads the
+    pid record after this returns and refuses on whatever it finds there.
 
     A marker that goes STALE also settles, and deliberately: staleness means nothing
     is refreshing it, which this module already treats as "its supervisor is presumed

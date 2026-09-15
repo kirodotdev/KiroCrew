@@ -86,9 +86,18 @@ A missing live root is not a completed drain. Before `/End`, `windows.stop`
 refuses when it cannot anchor a live root and finds a PID record (including
 malformed/unreadable/dead/reused identities), wrapper, result, handoff marker,
 HOME, or registered task. State observed before settling is retained as evidence
-if the supervisor clears it while stop waits. A settled handoff does not prove
-its descendants stopped; a handoff observed after the original tree drain also
-blocks deletion, even if its marker disappears while waiting. Only a plane with
+if the supervisor clears it while stop waits. A settled handoff does not itself
+prove descendants stopped, so a handoff seen after the original tree drain is
+settled and then RE-READ rather than judged on sight: stop waits, bounded, for the
+supervisor's decision and reads the PID record afterwards. Settling is what makes
+that read final -- the successor loop has exited, or the supervisor that would
+adopt a successor is gone, so no adoption can follow it. Deletion proceeds only
+when the post-settle read shows no recorded successor, no live unattributable
+record and no live marker; a recorded successor and a still-undecided marker each
+block it. Refusing on the marker's presence alone wedged teardown permanently
+instead: the reap stop itself causes publishes one, an in-app restart keeps it
+stamped for the pod's remaining life, and a retry has no live root left to anchor,
+so the task stayed registered and the isolated HOME was never reclaimed. Only a plane with
 no prior runtime evidence can take the unanchored, never-started no-op path.
 These refusals preserve records, task, and HOME; they do not infer descendant
 death from root death or grant termination authority over a recycled PID.

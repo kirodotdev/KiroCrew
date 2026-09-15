@@ -275,6 +275,68 @@ def test_stop_takes_the_exact_handle_path_on_every_host(cfg, monkeypatch, recycl
         assert "ALIVE but does not carry" in result.stderr
 
 
+def test_stop_refuses_an_unrecorded_successor_when_publisher_death_settles_the_handoff(
+    cfg, monkeypatch
+):
+    """What catches an UNRECORDED successor is the tree drain, not the marker.
+
+    The marker cannot be the guard for this shape, and never was: it names its
+    publisher, so a supervisor killed mid-adoption leaves an ORPHANED marker that
+    ``handoff_in_progress`` reports as no handoff -- before this change as well as
+    after, since the refusal it fed only ever fired while that publisher was still
+    alive. The protection is upstream and positive: a successor has to be created
+    before the process that spawned it exits, that process is retained by exact
+    handle, and ``_drain_exact_windows_tree`` scans every retained handle once more
+    after it goes inactive (Toolhelp keeps a living child's PPID across its
+    parent's exit). So the successor is discovered, and one that survives
+    termination is named as an orphan and refuses teardown here -- with the
+    handoff tail never reached.
+    """
+    active = {8001, 9001}  # 9001 is an unrecorded successor that ignores the kill
+    marker = {"live": True}
+    monkeypatch.setattr(win, "supervised_pid", lambda *_a: 4242 if 8001 in active else None)
+    monkeypatch.setattr(win, "_read_pid_record", lambda *_a: (4242, "100"))
+    monkeypatch.setattr(win, "process_start_time", lambda _pid: "100")
+    monkeypatch.setattr(win, "pid_exists", lambda pid: pid == 4242 and 8001 in active)
+    monkeypatch.setattr(win, "handoff_in_progress", lambda *_a: marker["live"])
+    monkeypatch.setattr(win, "_describe_processes", lambda pids: f"pids={sorted(pids)}")
+
+    def settle(*_a, **_kw):
+        # The publisher was reaped without retracting: an orphaned marker reads as
+        # settled. This is the interleaving that must NOT be what decides safety.
+        marker["live"] = False
+        return True
+
+    monkeypatch.setattr(win, "_await_handoff_outcome", settle)
+    monkeypatch.setattr(win, "open_process_termination_handle", lambda *_a: 8001)
+    monkeypatch.setattr(win, "descendant_termination_handles", lambda *_a, **_k: {4300: 9001})
+    monkeypatch.setattr(win, "process_handle_active", lambda handle: handle in active)
+    monkeypatch.setattr(
+        win,
+        "terminate_process_handle",
+        lambda handle: active.discard(handle) if handle != 9001 else None,
+    )
+    monkeypatch.setattr(win, "close_process_handle", lambda _handle: None)
+    calls: list[str] = []
+
+    def schtasks(*args):
+        calls.append(args[0])
+        if args[0] == "/End":
+            active.discard(8001)
+        return _cp()
+
+    monkeypatch.setattr(win, "schtasks", schtasks)
+    wrapper = win.write_task_script(cfg, "demo")
+
+    result = win.stop(cfg, "demo", timeout=0.1)
+
+    assert result.returncode == 1
+    assert "4300" in result.stderr, result.stderr
+    assert "NOT" in result.stderr and "zero-residue" in result.stderr
+    assert "/Delete" not in calls, "a live successor must keep its task"
+    assert wrapper.exists(), "a live successor must keep its wrapper and HOME"
+
+
 def test_stop_closes_retained_handles_when_end_raises(cfg, monkeypatch):
     closed: list[int] = []
     monkeypatch.setattr(win, "handoff_in_progress", lambda *_a: False)
@@ -639,9 +701,36 @@ child_pid_path.write_text(str(child.pid), encoding="utf-8")
                 time.sleep(0.05)
 
 
-@pytest.mark.parametrize("outcome", ["live_successor", "dead_successor", "cleared_record"])
-def test_stop_pod_refuses_a_handoff_not_covered_by_the_drained_root(cfg, monkeypatch, outcome):
-    """A post-drain handoff settling does not prove its successor tree stopped."""
+@pytest.mark.parametrize(
+    "outcome, refuses",
+    [
+        ("live_successor", True),
+        ("dead_successor", False),
+        ("cleared_record", False),
+        ("drained_root_record", False),
+    ],
+)
+def test_stop_pod_judges_a_post_drain_handoff_by_what_it_settled_on(
+    cfg, monkeypatch, outcome, refuses
+):
+    """A post-drain handoff is judged by the pid record it settled ON, not its marker.
+
+    ``supervise_gateway`` publishes a marker the instant the gateway it supervised
+    is reaped -- and on this path that reap is the one ``stop`` itself just caused
+    -- then keeps it stamped for as long as it holds the restart window, so a pod
+    that has restarted in-app carries a live marker for the rest of its life.
+
+    Only ``live_successor`` is residue: a restart claimed the sidecar during
+    teardown, so deleting the task and reclaiming HOME would do it under a serving
+    gateway. The other three have nothing alive -- the anchored root and every
+    attributed descendant were drained by exact handle, the marker is retracted,
+    and the record names a dead pid or none -- and refusing them was unrecoverable
+    rather than cautious: a retry finds no live root to anchor and lands on the
+    prior-runtime-state refusal instead, so the task stays registered and the
+    isolated HOME is never reclaimed. ``drained_root_record`` is the shape the
+    nightly Windows pod scenario hit, where the record still names the gateway
+    this call drained.
+    """
     from kiro_crew.pod import runtime as rt
 
     monkeypatch.setattr(rt, "IS_MACOS", False)
@@ -670,10 +759,17 @@ def test_stop_pod_refuses_a_handoff_not_covered_by_the_drained_root(cfg, monkeyp
             state.update(pid=None, handoff=True)
         return _cp()
 
+    records = {
+        "live_successor": (4300, "200"),
+        "dead_successor": (4300, "200"),
+        "cleared_record": None,
+        "drained_root_record": (4242, "100"),
+    }
+
     def settle(*_a, **_kw):
         state.update(
             pid=4300 if outcome == "live_successor" else None,
-            record=None if outcome == "cleared_record" else (4300, "200"),
+            record=records[outcome],
             handoff=False,
         )
         return True
@@ -684,10 +780,17 @@ def test_stop_pod_refuses_a_handoff_not_covered_by_the_drained_root(cfg, monkeyp
 
     result = rt.stop_pod(cfg, "demo")
 
-    assert result.returncode != 0
-    assert "/Delete" not in calls
-    assert cleanup == []
-    assert wrapper.exists()
+    if refuses:
+        assert result.returncode != 0
+        assert "appeared during teardown as pid 4300" in result.stderr
+        assert "/Delete" not in calls
+        assert cleanup == []
+        assert wrapper.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "/Delete" in calls
+        assert set(cleanup) == {"demo"}, "a drained pod's isolated HOME must be reclaimed"
+        assert not wrapper.exists()
 
 
 def test_stop_anchors_a_live_root_after_initial_handoff_settles(cfg, monkeypatch):
