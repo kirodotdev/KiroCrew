@@ -5606,6 +5606,29 @@ class DashboardState:
         from kiro_crew.dashboard.file_index import FileIndexRegistry
 
         self.file_indexes = FileIndexRegistry()
+        # Last-seen {slot_key -> driving member name} for member-driven slots,
+        # diffed on each slots broadcast to emit slot/opened + slot/closed to
+        # the per-member event log. Best-effort, additive.
+        self._member_driven_slots_seen: dict[str, str] = {}
+        # Wire the per-member event log's broadcast sink. Lazy import + blanket
+        # guard: the service module is filled in concurrently and may raise.
+        try:
+            from kiro_crew.eventlog.service import get_service
+
+            get_service().attach_broadcast(self.broadcast_ws)
+        except Exception:
+            logger.debug("eventlog attach_broadcast failed", exc_info=True)
+        # Wire the contribution protocol's delta channel: every append is
+        # enqueued for the app sockets subscribed to that unit. Separate from the
+        # broadcast sink above -- that one carries WHOLE PROJECTED VALUES to
+        # dashboards, this one carries raw envelopes to contributors, and the two
+        # have opposite client rules (higher-seq-wins vs no-folding-across-a-gap).
+        try:
+            from kiro_crew.dashboard.eventlog_ws import attach_to_service
+
+            attach_to_service()
+        except Exception:
+            logger.debug("eventlog subscription hub attach failed", exc_info=True)
         # Runtime services share the gateway's policy, never a model-supplied mode.
         from kiro_crew.dashboard.handlers._shared import (
             require_live_session_memory_mode,
@@ -7056,6 +7079,32 @@ class DashboardState:
         if direct_meta and isinstance(direct_meta, dict):
             payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
         self._broadcast(payload)
+        # Best-effort per-member event log: a message in a member DM thread.
+        try:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.eventlog.types import MEMBER_MESSAGE
+
+            _mslug = eventlog_hooks.member_slug_for_slot(slot_key)
+            if _mslug is not None:
+                _raw_ts = msg.get("ts", "")
+                try:
+                    _ev_ts = float(_raw_ts)
+                except (TypeError, ValueError):
+                    _ev_ts = time.time()
+                # Same redaction chain the members roster uses, run before the
+                # length cap so a credential split by truncation cannot leak.
+                _prev = content if isinstance(content, str) else str(content or "")
+                _prev, _ = redact_exfiltration_urls(_prev)
+                _prev, _ = redact_credentials(_prev)
+                _prev = _prev[:140]
+                eventlog_hooks.emit(
+                    _mslug,
+                    None,
+                    MEMBER_MESSAGE,
+                    {"ts": _ev_ts, "preview": _prev},
+                )
+        except Exception:
+            logger.debug("member/message event-log hook failed", exc_info=True)
 
     # ── Folder persistence ──
 
@@ -8327,6 +8376,46 @@ class DashboardState:
                 )
             )
 
+        # Best-effort per-member event log: emit slot/opened and slot/closed
+        # for slots DRIVEN by a member (created_by is a member NAME), diffed
+        # against the last-seen set on this state object. Additive; never
+        # affects the broadcast above.
+        try:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.eventlog.types import SLOT_CLOSED, SLOT_OPENED
+            from kiro_crew.members import slug_for_name
+
+            cfg = None
+            current: dict[str, str] = {}
+            for _sk, _slot in list(self._slots.items()):
+                _cb = getattr(_slot, "_created_by", "")
+                if not _cb:
+                    continue
+                if cfg is None:
+                    from kiro_crew.config.loader import KiroCrewConfig
+
+                    cfg = KiroCrewConfig.load()
+                if _cb in getattr(cfg, "agents", {}):
+                    current[_sk] = _cb
+            prev = self._member_driven_slots_seen
+            if current != prev:
+                for _sk, _member in current.items():
+                    if _sk not in prev:
+                        eventlog_hooks.emit(
+                            slug_for_name(_member), _member, SLOT_OPENED, {"slot_key": _sk}
+                        )
+                for _sk, _member in prev.items():
+                    if _sk not in current:
+                        eventlog_hooks.emit(
+                            slug_for_name(_member),
+                            _member,
+                            SLOT_CLOSED,
+                            {"slot_key": _sk, "reason": "closed"},
+                        )
+                self._member_driven_slots_seen = current
+        except Exception:
+            logger.debug("slot open/close event-log hook failed", exc_info=True)
+
     def push_slot_title(self, key: str, title: str, *, full: bool = True) -> None:
         """Push a targeted title update for a single slot.
 
@@ -8560,6 +8649,9 @@ class DashboardState:
 
     def register_ws(self, ws: web.WebSocketResponse, *, owner: bool = False) -> None:
         _websocket_for(self).register_ws(ws, owner=owner)
+
+    async def send_members_subscribed(self, ws: web.WebSocketResponse) -> None:
+        await _websocket_for(self).send_members_subscribed(ws)
 
     def unregister_ws(self, ws: web.WebSocketResponse) -> None:
         _websocket_for(self).unregister_ws(ws)

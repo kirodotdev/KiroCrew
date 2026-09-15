@@ -2783,6 +2783,24 @@ Examples:
     app_sub = app_parser.add_subparsers(dest="app_action")
     app_install = app_sub.add_parser("install", help="Install an app from a local directory")
     app_install.add_argument("source", help="Path to app directory containing app.json")
+    app_import = app_sub.add_parser(
+        "import",
+        help="Convert a manifest-declared plugin package into an app directory",
+    )
+    app_import.add_argument("source", help="Path to the plugin package directory")
+    app_import.add_argument(
+        "--out",
+        help="Output app directory (default: ./<app-name>-app)",
+    )
+    app_import.add_argument(
+        "--name",
+        help="Override the derived app name (kebab-case)",
+    )
+    app_import.add_argument(
+        "--install",
+        action="store_true",
+        help="Install the converted app after writing it",
+    )
     app_sub.add_parser("list", help="List installed apps")
     app_enable = app_sub.add_parser("enable", help="Enable an installed app")
     app_enable.add_argument("name", help="App name to enable")

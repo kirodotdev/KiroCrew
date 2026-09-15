@@ -83,6 +83,94 @@ class TeardownResult:
         return not self.failures
 
 
+async def teardown_contributions(name: str) -> list[str]:
+    """Retract *name*'s log contributions (contribution protocol §6).
+
+    Three things, in order, and the order is the point:
+
+    1. Invalidate the cached grant, so an append already in flight is refused
+       rather than landing after the rows it would have folded into are gone.
+    2. Close the app's event-log subscriptions. The socket itself is closed, not
+       just unsubscribed: the app's code is being stopped, so an authenticated
+       socket held open for it is a connection to a process that should not run.
+    3. Delete every projection row it published and push ``value: null`` for each,
+       which is how a dashboard learns the card is gone.
+
+    Events the app appended STAY in the log. They are history, and the log is
+    never rewritten -- so a re-enable folds the same past it left behind.
+
+    Returns warning strings, never raises: this runs inside a teardown that must
+    push through a failing step rather than abort halfway.
+    """
+    warnings: list[str] = []
+    try:
+        from kiro_crew.eventlog.grants import invalidate
+
+        invalidate(name)
+    except Exception as exc:
+        warnings.append(f"contribution grant cache not invalidated: {redact(str(exc))}")
+
+    try:
+        from kiro_crew.dashboard.eventlog_ws import get_hub
+
+        closed = await get_hub().close_app(name)
+        if closed:
+            logger.info("teardown: closed %d event-log subscription socket(s) for %s", closed, name)
+    except Exception as exc:
+        warnings.append(f"event-log subscriptions not closed: {redact(str(exc))}")
+
+    try:
+        from kiro_crew.eventlog.contrib import get_store, get_unit
+
+        loop = asyncio.get_running_loop()
+        removed = await loop.run_in_executor(
+            subprocess_executor(), get_store().delete_app_rows, name
+        )
+        if removed:
+            _push_projection_deletions(removed, get_unit)
+            logger.info("teardown: deleted %d contributed projection row(s) for %s", len(removed), name)
+    except Exception as exc:
+        warnings.append(f"contributed projections not deleted: {redact(str(exc))}")
+    return warnings
+
+
+def _push_projection_deletions(removed: list[tuple[str, str, str]], get_unit) -> None:
+    """Push ``value: null`` on each deleted row's own kind frame.
+
+    The frame sink is read off the unit's own log service, which is where the
+    dashboard attached ``broadcast_ws`` at startup (``attach_broadcast``). Reading
+    it there rather than importing the dashboard state keeps this kind-generic and
+    keeps ``apps.teardown`` free of a dashboard import it has no other need for.
+
+    Best-effort and deliberately quiet: the rows are already gone, so a failed
+    push costs a connected dashboard one stale card until it reloads, and a
+    teardown must not fail on it.
+    """
+    for kind, unit_id, key in removed:
+        unit = get_unit(kind)
+        if unit is None:
+            continue
+        try:
+            broadcast = getattr(unit.service(), "broadcast", None)
+            if broadcast is None:
+                continue
+            broadcast(
+                unit.frame,
+                # A seq far past any real fold position, so the client's
+                # higher-seq-wins rule accepts the deletion instead of dropping it
+                # as stale. The row is gone server-side either way; this is what
+                # makes the CARD go away too.
+                {unit.id_field: unit_id, "key": key, "value": None, "seq": _DELETION_SEQ},
+            )
+        except Exception:
+            logger.debug("projection deletion push failed for %s/%s", unit_id, key, exc_info=True)
+
+
+#: The seq a deletion frame carries. Above any real fold position, so the
+#: client's higher-seq-wins rule cannot mistake a deletion for a replay.
+_DELETION_SEQ = 2**53 - 1
+
+
 async def teardown_app_runtime(
     name: str, record: dict[str, Any], *, withdrawing_trust: bool = False
 ) -> TeardownResult:
@@ -261,6 +349,16 @@ async def teardown_app_runtime(
         except Exception as exc:  # noqa: BLE001 - never abort a teardown on the app's script
             _warn(f"onDisable script could not be run: {exc}")
             logger.warning("onDisable could not be run for %s", name, exc_info=True)
+
+    # Log contributions come off FIRST, before the app's own shutdown hooks run.
+    # A contributor appends and publishes through the HTTP surface, so as long as
+    # the grant answers yes an in-flight request can still write -- and a write
+    # landing after the rows it folds into are deleted leaves a card that no
+    # dashboard can explain. Invalidating the grant and closing the subscriptions
+    # ahead of everything else closes that window; the deletions that follow
+    # cannot be re-created behind us.
+    for _warning in await teardown_contributions(name):
+        _warn(_warning)
 
     try:
         hooks_result = await on_app_disable(
@@ -566,3 +664,26 @@ def forget_app_hooks(app: str) -> None:
     unregister_app_disable_hook(app)
     unregister_slot_close_hook(app)
     unregister_slot_close_undo_hook(app)
+    # Contributed projection rows are the same shape of residue this function
+    # exists to clear: process state (and a small file) keyed by an app name whose
+    # package is being deleted. Unlike the registries above, uninstall reaches here
+    # through a path that may not have called ``teardown_app_runtime``, so the
+    # retraction is repeated rather than assumed. Both are idempotent -- a second
+    # pass finds no rows and pushes nothing.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        task = loop.create_task(teardown_contributions(app))
+        # Fire-and-forget with a retained reference: this function is sync (it is
+        # called from a sync uninstall step), and awaiting would change its
+        # signature for every caller. A strong reference keeps the task from being
+        # garbage-collected mid-flight.
+        _uninstall_tasks.add(task)
+        task.add_done_callback(_uninstall_tasks.discard)
+
+
+#: Strong references to in-flight uninstall retractions, so the event loop does
+#: not collect a task nothing else holds.
+_uninstall_tasks: set[asyncio.Task[Any]] = set()

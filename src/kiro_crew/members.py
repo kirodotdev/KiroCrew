@@ -33,12 +33,7 @@ from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
-from kiro_crew.jsonl_util import (
-    RECORD_CAP,
-    UnreadableRecord,
-    rotate_jsonl_at,
-    strict_records,
-)
+from kiro_crew.jsonl_util import RECORD_CAP
 from kiro_crew.pinned_fs import (
     PinnedPathRefusal,
     open_in_pinned_parent,
@@ -74,6 +69,14 @@ _ACTIVITY_LOG_MAX_BYTES = 1024 * 1024
 # skipped. Named here so a test can move the dial; real entries are ~150 bytes,
 # so the shared cap has enormous headroom over anything legitimate.
 _RECORD_CAP = RECORD_CAP
+
+#: How many of the member's most recent events the ``dedupe_session`` probe
+#: scans for a matching (session, member) pair. The activity projection's own
+#: ring is 50, and a genuine duplicate is a cold-start replay of the SAME
+#: conversation, so it lands within the newest handful of events; a generous
+#: bound keeps the probe cheap while still catching a replay that trailed a
+#: burst of other records.
+_DEDUPE_SCAN_LIMIT = 200
 
 #: Crew-slug -> DM-thread binding inside a member's directory.
 DM_FILE_NAME = "dm.json"
@@ -1002,57 +1005,26 @@ def record_activity(
         entry["via"] = via
     try:
         slug = slug_for_name(member)
-        path = member_dir(slug)
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.types import ACTIVITY_RECORD
+
+        svc = get_service()
         if dedupe_session:
-            prior, complete = _read_activity_checked(slug)
-            if not complete:
-                # Fail closed. An over-cap record was refused, so `prior` is a
-                # prefix of the log and the probe below cannot prove this pair
-                # is absent from the part it could not read. Appending anyway
-                # would risk a duplicate participation entry, which inflates
-                # the counts that drive trigger generation and routing. Not
-                # recording is the same outcome the blanket handler below
-                # already produces for any other read failure, so no caller
-                # learns a new failure mode from this.
-                logger.warning(
-                    "member activity log unreadable in full; not recording %r to avoid a "
-                    "duplicate entry",
-                    member,
-                )
-                return False
-            if any(
-                # Matched on BOTH fields: a colliding slug means one file can hold
-                # two members, so session alone would suppress the wrong entry.
-                # Only participation entries carry `session`, which is also the only
-                # kind deduped — routing decisions are distinct events.
-                r.get("session") == session_key and r.get("member") == member
-                for r in prior
-            ):
-                return False
-        path.mkdir(parents=True, exist_ok=True)
-        # Newline on BOTH sides. The trailing one is ordinary JSONL framing; the
-        # LEADING one is what survives a torn write. A record appended straight
-        # after an interrupted write would otherwise be glued to that fragment,
-        # losing BOTH to one unparseable line — and a leading newline alone is
-        # not enough either, because the newest record would then carry no
-        # terminator and be absorbed by whatever came next. read_activity skips
-        # the blank lines this produces.
-        line = "\n" + json.dumps(entry, ensure_ascii=False) + "\n"
-        # Bound the log before appending. The helper's rotation is
-        # try-lock-guarded (the log is append-only from multiple processes, so
-        # unserialized rotation would let two writers hitting the cap together
-        # discard a generation), best-effort, and never raises; a lost
-        # try-lock skips rotating rather than waiting, so this call cannot
-        # stall the shared event loop any more than the append itself.
-        # History survives rotation: read_activity spans both generations, so
-        # the `dedupe_session` probe keeps seeing rotated-aside entries.
-        rotate_jsonl_at(path / ACTIVITY_FILE_NAME, _ACTIVITY_LOG_MAX_BYTES)
-        # No fsync: this is an advisory pointer log, and a durability barrier is
-        # a blocking kernel syscall that would stall the shared event loop for
-        # every concurrent session. Losing the final entry to a crash is
-        # acceptable; stalling the gateway is not.
-        with open(path / ACTIVITY_FILE_NAME, "a", encoding="utf-8") as fh:
-            fh.write(line)
+            # Check the member's own recent ACTIVITY_RECORD events for this
+            # session pair instead of scanning a file. Matched on BOTH fields:
+            # a colliding slug means one log can hold two members, so session
+            # alone would suppress the wrong entry. Only participation entries
+            # carry `session`, which is also the only kind deduped — routing
+            # decisions are distinct events.
+            recent = svc.history(slug, before=None, limit=_DEDUPE_SCAN_LIMIT)
+            for ev in recent:
+                if ev.get("type") != ACTIVITY_RECORD:
+                    continue
+                rec = ev.get("data") or {}
+                if rec.get("session") == session_key and rec.get("member") == member:
+                    return False
+        svc.ensure(slug, member)
+        svc.append(slug, ACTIVITY_RECORD, entry)
         return True
     except Exception:
         logger.debug("member activity log write failed for %r", member, exc_info=True)
@@ -1063,13 +1035,11 @@ def read_activity(slug: str, limit: int = 0) -> list[dict]:
     """Return a member's activity entries, oldest first.
 
     The degrading view of :func:`_read_activity_checked`: it drops the
-    completeness flag. A generation stopped by an over-cap record still
-    contributes the entries it read BEFORE that record, so the caller sees a
-    prefix rather than nothing -- correct for a caller that only displays or
-    counts entries. A caller whose output feeds a durable decision must use
-    :func:`_read_activity_checked` and honour the flag, because a prefix is
-    indistinguishable from the whole log without it -- see the
-    ``dedupe_session`` probe in :func:`record_activity`.
+    completeness flag. Backed by the per-member append-only event log — the
+    entries are the record dicts carried by ``ACTIVITY_RECORD`` events, in
+    append order (oldest first). ``limit`` > 0 returns only the most recent N.
+    Every failure reads as an empty list, so a caller that only displays or
+    counts entries needs no try/except.
     """
     rows, _complete = _read_activity_checked(slug, limit)
     return rows
@@ -1078,88 +1048,34 @@ def read_activity(slug: str, limit: int = 0) -> list[dict]:
 def _read_activity_checked(slug: str, limit: int = 0) -> tuple[list[dict], bool]:
     """Return a member's activity entries oldest first, and whether they are ALL of them.
 
-    Reads the one rotated generation (``.jsonl.1``, see
-    :data:`_ACTIVITY_LOG_MAX_BYTES`) before the live file — the same
-    two-generation read as the stub fallback log's aggregator — so a
-    rotation does not hide history from consumers: in particular the
-    ``dedupe_session`` probe keeps suppressing a session pair whose entry
-    was rotated aside. Malformed lines are skipped rather than raising: the
-    log is append-only from multiple processes, and one torn line must not
-    make the whole history unreadable. A generation that cannot be read is
-    likewise skipped rather than discarding what the other generation
-    yielded. ``limit`` > 0 returns only the most recent N across both
-    generations.
+    Backed by the per-member append-only event log: reads ``ACTIVITY_RECORD``
+    events (newest first from the service), unwraps each to the record dict it
+    carries, and reverses to oldest-first — the order the former file-backed
+    reader returned. ``limit`` > 0 returns the most recent N. A bad slug or any
+    read failure yields ``([], True)``.
 
-    The second element is False when a record exceeded
-    :data:`_RECORD_CAP` and was therefore refused. That case cannot be
-    treated like a malformed line: this log is agent-writable, so one
-    crafted newline-free line would otherwise be materialised whole, and
-    :func:`kiro_crew.jsonl_util.strict_records` stops the read instead of
-    skipping it. Skipping would be worse than losing the entry — the
-    ``dedupe_session`` probe reads absence as "no prior entry" and appends a
-    duplicate, inflating the participation counts this log exists to feed.
-    So the flag is returned rather than swallowed, and the one caller that
-    writes based on this read fails closed on it.
+    The second element is retained for callers that fail closed on a partial
+    read of the agent-writable file. The event log commits one line
+    per append under fsync and the reader repairs a torn trailing line at load,
+    so a partial-read completeness gap does not arise here — the flag is
+    always ``True`` on a successful read. It stays in the signature so the
+    ``record_activity`` dedupe probe and its tests keep their shape.
     """
     try:
-        live = member_dir(slug) / ACTIVITY_FILE_NAME
+        validate_slug(slug)
     except MemberSlugError:
         return [], True
-    out: list[dict] = []
-    complete = True
-
-    # Hold a shared (non-blocking) lock on the rotation lock file while
-    # reading both generations.  This prevents a concurrent writer from
-    # rotating the live file into .1 between the two reads, which could
-    # cause records to be missed and duplicate session entries appended.
-    lock_fd: int = -1
-    lock_path = live.with_name(live.name + ".lock")
     try:
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        if not platform_compat.try_acquire_lock(lock_fd, exclusive=False):
-            # Could not acquire; close and proceed without the lock.
-            os.close(lock_fd)
-            lock_fd = -1
-    except OSError:
-        lock_fd = -1
+        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.types import ACTIVITY_RECORD
 
-    try:
-        for path in (live.with_name(live.name + ".1"), live):
-            if not path.is_file():
-                continue
-            try:
-                with open(path, "rb") as fh:
-                    for line in strict_records(fh, path, cap=_RECORD_CAP):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            row = json.loads(line)
-                        except (ValueError, TypeError):
-                            continue
-                        if isinstance(row, dict):
-                            out.append(row)
-            except UnreadableRecord:
-                # The generation is abandoned at the record it could not
-                # deliver, so what it yielded so far is a prefix, not the whole
-                # of it. Keep those rows (they are real entries the caller may
-                # display) but report the read as incomplete.
-                #
-                # "unreadable", not "over-cap": UnreadableRecord also covers a
-                # record that is not valid UTF-8, and naming only the cap here
-                # would send a reader looking for a size problem that may not
-                # exist.
-                complete = False
-                logger.warning(
-                    "member activity log has an over-cap record; %r read as incomplete", slug
-                )
-                continue
-            except OSError:
-                logger.debug("member activity log read failed for %r", slug, exc_info=True)
-                continue
-    finally:
-        if lock_fd != -1:
-            platform_compat.release_lock(lock_fd)
-            os.close(lock_fd)
-
-    return (out[-limit:] if limit > 0 else out), complete
+        svc = get_service()
+        events = svc.history(slug, before=None, limit=None)
+        records = [
+            ev.get("data") or {} for ev in reversed(events) if ev.get("type") == ACTIVITY_RECORD
+        ]
+        rows = [r for r in records if isinstance(r, dict)]
+    except Exception:
+        logger.debug("member activity log read failed for %r", slug, exc_info=True)
+        return [], True
+    return (rows[-limit:] if limit > 0 else rows), True

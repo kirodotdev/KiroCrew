@@ -1,4 +1,5 @@
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
+import type { ProjectionsBlock } from '../state/memberProjectionTypes'
 import type {
   AppContributor,
   ChatSlot,
@@ -2339,6 +2340,10 @@ export interface MemberRosterRow {
   source?: 'kirocrew' | 'builtin' | 'package' | string
   /** User's favourite mark; toggled via PUT /api/agents/{name}. */
   starred?: boolean
+  /** Baseline projections (roster/activity/wake/driving) at a known seq, fed
+   *  to the per-member projection store so the page renders from pushed
+   *  frames. Absent on an older gateway that predates the event log. */
+  projections?: ProjectionsBlock
   [extra: string]: unknown
 }
 
@@ -2351,6 +2356,24 @@ export interface MemberActivityEntry {
   ts: number
   via: 'chat' | 'select_crew' | string
   project?: string
+}
+
+/** One raw event of GET /api/members/{slug}/history — the append-only log the
+ *  projections are folded from. `data` is the event's payload, shape per
+ *  `type`; left untyped so a new event type is not a frontend break. */
+export interface MemberHistoryEvent {
+  type: string
+  seq: number
+  time: number
+  data: unknown
+}
+
+/** GET /api/members/{slug}/history — a page of the member's event log, newest
+ *  first, with the highest seq the server holds for paging with `before`. */
+export interface MemberHistoryPage {
+  slug: string
+  events: MemberHistoryEvent[]
+  lastSeq: number
 }
 
 /** WakaTime coding-stats payload (GET /api/wakatime/stats). When the
@@ -3109,6 +3132,17 @@ export const api = {
       capped: boolean
       entries: MemberActivityEntry[]
     }>,
+  // A member's raw event log, newest first — the source the projections are
+  // folded from. `before` pages older events by seq; `limit` bounds the page.
+  // Read on demand (a history/audit view), never polled.
+  memberHistory: (slug: string, opts?: { before?: number; limit?: number }) => {
+    const q: string[] = []
+    if (opts?.before !== undefined) q.push('before=' + encodeURIComponent(String(opts.before)))
+    if (opts?.limit !== undefined) q.push('limit=' + encodeURIComponent(String(opts.limit)))
+    return fetch(
+      '/api/members/' + encodeURIComponent(slug) + '/history' + (q.length ? '?' + q.join('&') : ''),
+    ).then(j) as Promise<MemberHistoryPage>
+  },
   updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>

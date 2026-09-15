@@ -3676,6 +3676,11 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                         }
                     ]
                 },
+                "contributions": {
+                    "events": ["probe/*"],
+                    "projections": ["probe/*"],
+                    "units": ["member"],
+                },
             }
         )
         # Every declared field must be populated above, otherwise a conditional
