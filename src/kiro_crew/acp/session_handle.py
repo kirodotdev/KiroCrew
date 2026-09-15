@@ -32,6 +32,8 @@ from kiro_crew.acp._dispatch import (
     build_permission_event,
     classify_notification,
     error_is_refusal_terminal,
+    identified_mcp_call,
+    is_mcp_tool_approval,
     parse_metadata,
     parse_prompt_token_usage,
     parse_refusal,
@@ -41,6 +43,7 @@ from kiro_crew.acp._dispatch import (
     parse_usage_update,
     redact_text,
     reject_option_id,
+    scoped_tool_cache_key,
     set_mode_params,
     set_model_params,
 )
@@ -789,6 +792,14 @@ class AcpSessionHandle:
         # per sessionId before this handle's queue exists, so the report is
         # genuinely this session's and not the process's.
         self._mcp_report = McpSessionReport()
+        # (server, tool) pairs this session's agent spec switches off, set by the
+        # runtime from the mirror's session projection. The wire cannot carry the
+        # restriction on a mirrored host -- there is no per-tool deny channel in
+        # ``mcpServers`` -- so it is honoured at the permission request instead.
+        # Empty for every host whose MCP surface needs no projection, which makes
+        # ``_deny_spec_disabled_tool`` a single falsy read on those sessions.
+        # Mirrors ``AcpClient._spec_denied_tools``.
+        self.spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
         # JSON-RPC request id -> {"once","always","reject"} optionId map, so
         # approve_tool / reject_tool echo the exact ids the agent advertised
         # (kiro "allow_once"/"allow_always"; claude-agent-acp "allow"/"reject").
@@ -1437,14 +1448,160 @@ class AcpSessionHandle:
                 {"outcome": {"outcome": OUTCOME_CANCELLED}},
             )
 
+    async def _deny_spec_disabled_tool(self, event: AcpEvent) -> bool:
+        """Refuse a call the agent spec switched off. True when it was refused.
+
+        The mirrored counterpart of ``AcpClient._deny_spec_disabled_tool``, and the
+        identity read is the SAME function on both drivers
+        (:func:`~kiro_crew.acp._dispatch.identified_mcp_call`) rather than a second
+        copy of it -- a driver that read identity its own way would be a restriction
+        that holds on one transport and not the other.
+
+        Both drivers refuse on the same grounds: the pair is in this session's deny
+        set, proved from a channel the model cannot reach (the preceding
+        ``tool_call`` frame's own ``server``/``tool``, or the ``_meta`` identity the
+        harness published). A False means "not refused BY THIS", nothing more -- an
+        unidentifiable call is left to the consumer's own gate, exactly as it is on
+        the client's event-yielding path.
+
+        Refused HERE rather than after the yield, because a switched-off tool is not
+        a decision to offer anyone: a consumer that auto-approves on hooks or trust
+        would answer it without a human, and a human offered the choice is being
+        asked to re-decide something the spec already settled.
+
+        The reject is sent before the audit, and the audit runs off the loop, so an
+        audit failure cannot undo or delay the refusal.
+        """
+        if not self.spec_denied_tools:
+            return False
+        identity = identified_mcp_call(event)
+        if identity is None or identity not in self.spec_denied_tools:
+            return False
+        server, tool = identity
+        logger.warning(
+            "session MCP: refusing %r on %r -- the agent spec switches it off and this "
+            "transport has no wire channel for that restriction, so it is honoured at "
+            "the permission request [session=%s]",
+            tool,
+            server,
+            self._session_id,
+        )
+        await self.reject_tool(event.request_id)
+        self._audit_handle_reject(
+            event.request_id,
+            f"mcp__{server}__{tool}",
+            "spec_disabled_tool",
+            sub_session_id=event.sub_session_id or "",
+        )
+        return True
+
+    def _tripwire_spec_disabled_tool(self, result: AcpEvent, msg: JsonRpcMessage) -> None:
+        """Make a switched-off tool that RAN loud, whatever let it run.
+
+        The two refusals above fire on a permission REQUEST, and whether codex sends
+        one for a given call is the adapter's behaviour -- read from its source, not
+        measured here. This is the in-band check that does not depend on it: the
+        result frame for a completed call carries the same ``toolCallId`` the
+        ``tool_call`` frame cached its ``rawInput = {server, tool}`` under, so a
+        completed call whose pair is in the deny set is detectable from Crew's own
+        side of the wire -- read under the SAME origin-scoped key the ``tool_call``
+        frame wrote it under, because a bare id would miss on every session and read as
+        "this call carries no identity", which is the silent direction.
+
+        A TRIPWIRE, not enforcement -- the call has already run -- so it logs at
+        WARNING and audits as a security-relevant observation. That turns an adapter
+        release which stopped prompting from a silent drift into a red line in the
+        log and the SEL. Cheap (two dict lookups) and a no-op with an empty deny set,
+        which is every host that needs no projection.
+
+        The same authoring as ``AcpClient._tripwire_spec_disabled_tool``, because the
+        deny set has three readers on that driver and a transport carrying only two
+        of them is a restriction whose failure is invisible on one side.
+        """
+        if not self.spec_denied_tools or not result.tool_final:
+            return
+        scope = str((msg.params or {}).get("sessionId") or self._session_id)
+        params = self._tool_call_raw_params.get(
+            scoped_tool_cache_key(scope, result.tool_call_id or "")
+        )
+        if not isinstance(params, dict):
+            return
+        server, tool = params.get("server"), params.get("tool")
+        if not (isinstance(server, str) and isinstance(tool, str)):
+            return
+        if (server, tool) not in self.spec_denied_tools:
+            return
+        logger.warning(
+            "session MCP: a call to %r on %r COMPLETED although the agent spec switches it "
+            "off; the backend ran it without asking permission, so the per-call refusal "
+            "never saw it -- check the adapter's approval behaviour [session=%s]",
+            tool,
+            server,
+            self._session_id,
+        )
+        self._audit_handle_reject(
+            None,
+            f"mcp__{server}__{tool}",
+            "spec_disabled_tool_completed",
+            outcome="ran_despite_spec_disable",
+        )
+
+    async def _refuse_unidentifiable_mcp_approval(
+        self, msg: JsonRpcMessage, event: AcpEvent
+    ) -> bool:
+        """Refuse an MCP approval this session cannot check against its deny set.
+
+        ``AcpClient`` carries this refusal on ``_handle_permission`` alone, because
+        that is its site with no human. This handle has no second site: the event it
+        yields is what a consumer reads, and a consumer auto-approves by hook glob,
+        by ``auto_approve_tools`` pattern and in trust mode. So "unidentified" cannot
+        fall toward asking here either -- on a session whose spec switched tools off,
+        an MCP tool approval whose call cannot be identified is REFUSED.
+
+        Reachable rather than theoretical: codex marks its STANDALONE approval with
+        ``_meta.is_mcp_tool_approval`` too, and a standalone one has no preceding
+        ``tool_call`` frame, so nothing cached its ``(server, tool)``. Left to the
+        consumer, that is a switched-off tool running on an auto-approve.
+
+        Narrow by construction. It fires only on a session that HAS a deny set, which
+        is a mirrored host whose agent spec switched something off; every other
+        session reads one falsy attribute and returns. The tool name is the one thing
+        this record cannot say, so it is audited as ``mcp__unidentified``.
+        """
+        if not self.spec_denied_tools:
+            return False
+        if not is_mcp_tool_approval(msg, event) or identified_mcp_call(event) is not None:
+            return False
+        logger.warning(
+            "session MCP: refusing an MCP tool approval this session cannot identify -- "
+            "the agent spec switches tools off here and an unidentified call cannot be "
+            "checked against that, while a consumer may auto-approve it [session=%s]",
+            self._session_id,
+        )
+        await self.reject_tool(event.request_id)
+        self._audit_handle_reject(
+            event.request_id,
+            "mcp__unidentified",
+            "spec_disabled_tool_unidentified_call",
+            sub_session_id=event.sub_session_id or "",
+        )
+        return True
+
     def _audit_handle_reject(
         self,
         request_id: str | int | None,
         title: str,
         error: str,
         sub_session_id: str = "",
+        outcome: str = "denied",
     ) -> None:
-        """SEL-audit a permission request this handle rejected ITSELF.
+        """SEL-audit a permission decision this handle made ITSELF.
+
+        ``outcome`` is a parameter because one caller is not a rejection:
+        :meth:`_tripwire_spec_disabled_tool` records that a switched-off call RAN, and
+        writing that down as ``denied`` would put a false record in the SEL -- the one
+        place an operator goes to find out what happened. Every other caller takes the
+        default.
 
         The fail-close fidelity gate and the pre-turn drain answer requests
         that never reach a consumer, so no consumer-side audit fires — every
@@ -1483,7 +1640,7 @@ class AcpSessionHandle:
                     agent="kirocrew",
                     source="acp_session_handle",
                     tool_name=safe_title,
-                    outcome="denied",
+                    outcome=outcome,
                     request_id=rid,
                     error=error,
                 )
@@ -2968,6 +3125,14 @@ class AcpSessionHandle:
 
                 if action == "permission":
                     _perm_event = self._build_permission_event(msg)
+                    # Before the fidelity gate: a tool the spec switched off is
+                    # refused whether or not this consumer opted into the child
+                    # contract, and naming that reason in the audit is more use
+                    # than naming the fidelity one for the same rejected call.
+                    if await self._deny_spec_disabled_tool(_perm_event):
+                        continue
+                    if await self._refuse_unidentifiable_mcp_approval(msg, _perm_event):
+                        continue
                     if _perm_event.child_low_fidelity and not self.child_fidelity_aware:
                         # This consumer never opted into the child-fidelity
                         # contract: it would run its ordinary hook/trust
@@ -3013,6 +3178,10 @@ class AcpSessionHandle:
                     )
                 elif action == "update":
                     for ev in self._handle_update(msg):
+                        # Before the yield, so the observation is recorded even for a
+                        # consumer that stops pulling: the call already ran, and this
+                        # is the only in-band notice that it did.
+                        self._tripwire_spec_disabled_tool(ev, msg)
                         yield ev
                         # kiro-cli's built-in security filter can abort a turn's
                         # tools and emit ONLY this text marker — never a `complete`

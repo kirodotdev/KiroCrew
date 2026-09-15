@@ -2262,6 +2262,225 @@ async def test_dispatch_permission_request():
 
 
 @pytest.mark.asyncio
+async def test_a_spec_disabled_tool_is_refused_before_the_event_is_yielded():
+    """The deny set the mirror's projection returned is enforced in the dispatch loop.
+
+    Unit-testing ``_deny_spec_disabled_tool`` alone would pass on a loop that never
+    called it, and an unwired restriction on a host that approves its own tools is
+    the whole defect. So this drives the real loop: the ``tool_call`` frame seeds the
+    trusted identity cache, the approval arrives, and NOTHING is yielded -- a
+    consumer that auto-approves on hooks or trust must not get the chance, and a
+    human must not be asked to re-decide what the agent spec settled.
+    """
+    from kiro_crew.acp.types import (
+        EVENT_PERMISSION_REQUEST,
+        METHOD_REQUEST_PERMISSION,
+        METHOD_SESSION_UPDATE,
+    )
+
+    rt, reader, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    # What AcpRuntime sets from the projection on a mirrored host.
+    handle.spec_denied_tools = frozenset({("kirocrew-core", "spawn_run")})
+    task = await _start_reader(rt)
+    try:
+        events = []
+
+        async def drive():
+            async for ev in handle.prompt("hi", timeout=3.0):
+                events.append(ev)
+
+        driver = asyncio.ensure_future(drive())
+        req_id = (await _await_routed(rt, "sA"))["sA"]
+        # The adapter's own resolution of what will run -- the one identity channel
+        # the model cannot reach.
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tcD",
+                        "title": "mcp.kirocrew-core.spawn_run",
+                        "kind": "execute",
+                        "rawInput": {"server": "kirocrew-core", "tool": "spawn_run"},
+                    },
+                },
+            },
+        )
+        _feed(
+            reader,
+            {
+                "id": 6001,
+                "method": METHOD_REQUEST_PERMISSION,
+                "params": {
+                    "sessionId": "sA",
+                    "toolCall": {"kind": "execute", "toolCallId": "tcD"},
+                    "options": [
+                        {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                        {"optionId": "cancel", "name": "Cancel", "kind": "reject_once"},
+                    ],
+                },
+            },
+        )
+        _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+        await asyncio.wait_for(driver, timeout=3.0)
+        assert [e for e in events if e.kind == EVENT_PERMISSION_REQUEST] == []
+        answered = [
+            json.loads(call.args[0].decode())
+            for call in proc.stdin.write.call_args_list
+            if b'"id": 6001' in call.args[0] or b'"id":6001' in call.args[0]
+        ]
+        assert answered, "the request must be ANSWERED, never dropped -- a dropped one hangs"
+        assert answered[-1]["result"]["outcome"] == {
+            "outcome": "selected",
+            "optionId": "cancel",
+        }
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_a_tool_the_deny_set_does_not_name_still_reaches_the_consumer():
+    """The refusal is narrow: a set that names another tool changes nothing."""
+    from kiro_crew.acp.types import (
+        EVENT_PERMISSION_REQUEST,
+        METHOD_REQUEST_PERMISSION,
+        METHOD_SESSION_UPDATE,
+    )
+
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.spec_denied_tools = frozenset({("kirocrew-core", "spawn_run")})
+    task = await _start_reader(rt)
+    try:
+        events = []
+
+        async def drive():
+            async for ev in handle.prompt("hi", timeout=3.0):
+                events.append(ev)
+
+        driver = asyncio.ensure_future(drive())
+        req_id = (await _await_routed(rt, "sA"))["sA"]
+        _feed(
+            reader,
+            {
+                "method": METHOD_SESSION_UPDATE,
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "tcE",
+                        "title": "mcp.kirocrew-core.send_message",
+                        "kind": "execute",
+                        "rawInput": {"server": "kirocrew-core", "tool": "send_message"},
+                    },
+                },
+            },
+        )
+        _feed(
+            reader,
+            {
+                "id": 6002,
+                "method": METHOD_REQUEST_PERMISSION,
+                "params": {
+                    "sessionId": "sA",
+                    "toolCall": {"kind": "execute", "toolCallId": "tcE"},
+                    "options": [
+                        {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                        {"optionId": "cancel", "name": "Cancel", "kind": "reject_once"},
+                    ],
+                },
+            },
+        )
+        _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+        await asyncio.wait_for(driver, timeout=3.0)
+        perm = [e for e in events if e.kind == EVENT_PERMISSION_REQUEST]
+        assert len(perm) == 1
+        assert perm[0].request_id == 6002
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_an_unidentifiable_mcp_approval_never_reaches_the_consumer():
+    """The second refusal is wired into the dispatch loop, not merely callable.
+
+    A standalone MCP approval carries no correlated ``tool_call`` frame, so the
+    handle cannot check it against the deny set. It must be ANSWERED here rather than
+    yielded: the consumer auto-approves by hook glob and in trust mode, and this
+    session's spec switched a tool off.
+    """
+    from kiro_crew.acp.types import (
+        EVENT_PERMISSION_REQUEST,
+        METHOD_REQUEST_PERMISSION,
+    )
+
+    rt, reader, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.spec_denied_tools = frozenset({("kirocrew-core", "spawn_run")})
+    task = await _start_reader(rt)
+    try:
+        events = []
+
+        async def drive():
+            async for ev in handle.prompt("hi", timeout=3.0):
+                events.append(ev)
+
+        driver = asyncio.ensure_future(drive())
+        req_id = (await _await_routed(rt, "sA"))["sA"]
+        # No tool_call frame first: this is codex's standalone shape, which still
+        # carries the MCP marker.
+        _feed(
+            reader,
+            {
+                "id": 6003,
+                "method": METHOD_REQUEST_PERMISSION,
+                "params": {
+                    "sessionId": "sA",
+                    "toolCall": {"kind": "execute", "toolCallId": "tcUnknown"},
+                    "_meta": {"is_mcp_tool_approval": True},
+                    "options": [
+                        {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                        {"optionId": "cancel", "name": "Cancel", "kind": "reject_once"},
+                    ],
+                },
+            },
+        )
+        _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+        await asyncio.wait_for(driver, timeout=3.0)
+        assert [e for e in events if e.kind == EVENT_PERMISSION_REQUEST] == []
+        answered = [
+            json.loads(call.args[0].decode())
+            for call in proc.stdin.write.call_args_list
+            if b'"id": 6003' in call.args[0] or b'"id":6003' in call.args[0]
+        ]
+        assert answered, "the request must be ANSWERED, never dropped -- a dropped one hangs"
+        assert answered[-1]["result"]["outcome"]["optionId"] == "cancel"
+    finally:
+        await _stop_reader(task)
+
+
+def test_both_deny_set_refusals_run_at_the_handles_one_answering_site():
+    """Structural: ``AcpClient`` splits these across two sites because it HAS two.
+
+    The handle has one, so both belong on it. A refusal that exists but is not called
+    from the loop is a restriction nothing enforces, and the behavioural tests above
+    each cover only their own branch.
+    """
+    import inspect
+
+    body = inspect.getsource(AcpSessionHandle._dispatch_events)
+    assert "self._deny_spec_disabled_tool(" in body
+    assert "self._refuse_unidentifiable_mcp_approval(" in body
+
+
+@pytest.mark.asyncio
 async def test_approve_tool_echoes_recorded_option():
     """approve_tool echoes the advertised optionId recorded from the request."""
     rt, _, proc = _make_runtime()

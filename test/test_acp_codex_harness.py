@@ -39,7 +39,7 @@ from kiro_crew.acp.harness import codex as harness_mod
 from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.harness.base import SpawnContext, TeardownPolicy
 from kiro_crew.acp.harness.codex import CodexHarness
-from kiro_crew.acp.runtime import AcpRuntime
+from kiro_crew.acp.runtime import AcpRuntime, _MirroredSessionMcp
 from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     advertised_models_from_session,
@@ -1076,46 +1076,6 @@ class TestWhatTheHandleAdvertisesForCodex:
         )
         assert handle._advertised_model_ids() == ["gpt-5.6"]
 
-    def test_the_pooled_mcp_refusal_is_empty_passes_nonempty_refuses(self):
-        """The fail-closed gate, both branches, on the runtime that would carry it.
-
-        A pooled array reaches ``session/new`` on this path with only a transport
-        narrowing applied — the agent allowlist that withholds a stub the agent's
-        ``tools`` never names, and the per-tool deny set the client enforces at the
-        approval request, both live in the mirror's projection and the projection runs
-        only on the ``AcpClient`` path. codex approves its own tools, so a stub that
-        arrives is a live tool surface Crew never granted. The refusal makes that
-        state unreachable rather than documented, and it is read from
-        ``has_mirror`` rather than from a backend name so a future mirrored host
-        inherits it.
-        """
-        rt = AcpRuntime(work_dir="/tmp", acp_backend=ACP_BACKEND_CODEX)
-        # Empty is the shipped case: the shared gateway off answers [].
-        rt._refuse_unprojected_pooled_servers([])
-        with pytest.raises(AcpToolGateUnroutable) as exc:
-            rt._refuse_unprojected_pooled_servers([{"name": "brokered", "command": "x"}])
-        msg = str(exc.value)
-        assert "shared MCP gateway" in msg
-        assert ENV_CODEX_ACP_RUNTIME in msg
-
-    def test_a_host_with_no_mirror_is_untouched_by_the_refusal(self):
-        """kiro and KAS reach their servers natively, so the gate must not fire."""
-        for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
-            assert has_mirror(backend) is False
-            rt = AcpRuntime(work_dir="/tmp", acp_backend=backend)
-            rt._refuse_unprojected_pooled_servers([{"name": "brokered", "command": "x"}])
-
-    def test_the_refusal_is_not_retryable(self):
-        """A respawn re-reads the same configuration, so a reconnect budget must not
-        be spent on it — which is what the AcpError subclass records."""
-        assert issubclass(AcpToolGateUnroutable, AcpError)
-        rt = AcpRuntime(work_dir="/tmp", acp_backend=ACP_BACKEND_CODEX)
-        with pytest.raises(AcpToolGateUnroutable) as exc:
-            rt._refuse_unprojected_pooled_servers([{"name": "brokered"}])
-        # Falsy rather than exactly False: an unset `transient` is None, and both
-        # readings mean the same thing to every caller that branches on it.
-        assert not getattr(exc.value, "transient", False)
-
     def test_the_entitlement_probe_reads_the_select_too(self):
         """The probe exists to HEAL a degraded snapshot, so [] is its worst answer.
 
@@ -1428,3 +1388,73 @@ class TestTheRuntimeArmsCodexPermissionRouting:
             await rt.create_session(cwd="/w", agent="kirocrew")
 
         assert METHOD_SET_CONFIG_OPTION not in plane.methods
+
+
+class TestTheRuntimeCarriesTheProjectionOntoTheSession:
+    """``create_session`` sends the projected array and hands the deny set to the handle.
+
+    The projection itself is a double here: what these assert is that the runtime
+    CONSUMES what it returned. Dropping either half is silent otherwise -- an array
+    that was narrowed and then not sent looks identical to a narrowed session, and a
+    deny set the handle never received is a restriction nothing enforces.
+    """
+
+    @staticmethod
+    def _projection(servers: list[dict], denied: set[tuple[str, str]]):
+        async def _mirrored(agent, *, work_dir, session_key, channel_id):
+            return _MirroredSessionMcp(
+                servers=list(servers),
+                denied_tools=frozenset(denied),
+                stub_token="tok-proj",
+                derived_spec_snapshot=None,
+            )
+
+        return _mirrored
+
+    @pytest.mark.asyncio
+    async def test_the_projected_array_is_what_session_new_carries(self):
+        rt = _codex_runtime()
+        plane = _ControlPlane(_codex_session_new_response())
+        projected = [{"name": "kirocrew-core", "type": "stdio", "command": "/x", "args": []}]
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            stack.enter_context(
+                patch.object(rt, "_mirrored_session_mcp", self._projection(projected, set()))
+            )
+            handle = await rt.create_session(cwd="/w", agent="kirocrew")
+
+        sent = plane.params_for(METHOD_SESSION_NEW)[0]["mcpServers"]
+        assert [e["name"] for e in sent] == ["kirocrew-core"]
+        # And the token the projection minted rides the handle, so a later warm-pool
+        # rekey claim names THIS session rather than every session on the runtime.
+        assert handle.stub_session_token == "tok-proj"
+
+    @pytest.mark.asyncio
+    async def test_the_deny_set_reaches_the_handle_that_answers_the_prompts(self):
+        rt = _codex_runtime()
+        plane = _ControlPlane(_codex_session_new_response())
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            stack.enter_context(
+                patch.object(
+                    rt,
+                    "_mirrored_session_mcp",
+                    self._projection([], {("kirocrew-core", "spawn_run")}),
+                )
+            )
+            handle = await rt.create_session(cwd="/w", agent="kirocrew")
+
+        assert handle.spec_denied_tools == frozenset({("kirocrew-core", "spawn_run")})
+
+    @pytest.mark.asyncio
+    async def test_a_host_with_no_mirror_gets_an_empty_deny_set(self):
+        """kiro takes the pooled array and checks nothing at the approval request --
+        it enforces the spec's per-tool restrictions itself."""
+        rt = _runtime_for(ACP_BACKEND_KIRO, pid=4245)
+        plane = _ControlPlane({"sessionId": "sid-kiro"})
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            handle = await rt.create_session(cwd="/w", agent="kirocrew")
+
+        assert handle.spec_denied_tools == frozenset()
+        assert has_mirror(ACP_BACKEND_KIRO) is False

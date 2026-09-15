@@ -794,9 +794,15 @@ class AcpProvider(LLMProvider):
     def _owning_channel_id(self) -> str | None:
         """The channel this provider's session belongs to, or ``None``.
 
-        Carried on the claim frame beside the session key so a channel-driven
-        session's forwarded calls keep naming their channel. Read off the
-        placeholder client like :meth:`_owning_session_key`.
+        Two readers. The claim frame carries it beside the session key so a
+        channel-driven session's forwarded calls keep naming their channel; the
+        runtime's session-start paths carry it onto a MIRRORED host's ``mcpServers``
+        elements, which is the only channel a codex stdio server has for it --
+        codex-rs launches one with ``env_clear()`` plus an allowlist.
+
+        Both readers want ``""`` rather than ``None`` from the runtime's side, so the
+        call sites there spell the fallback; this stays ``None`` for the claim frame,
+        whose field is omitted rather than sent empty.
         """
         channel = getattr(self._client, "_channel_id", None)
         return channel if isinstance(channel, str) and channel else None
@@ -831,6 +837,7 @@ class AcpProvider(LLMProvider):
         agent: str | None,
         member_session_key: str = "",
         session_key: str = "",
+        channel_id: str = "",
     ) -> AcpSessionHandle | None:
         """Resume via session/load, retrying past a stale native session lock.
 
@@ -858,6 +865,7 @@ class AcpProvider(LLMProvider):
                     agent=agent or None,
                     member_session_key=member_session_key,
                     session_key=session_key,
+                    channel_id=channel_id,
                 )
                 if attempt:
                     logger.info(
@@ -1059,6 +1067,7 @@ class AcpProvider(LLMProvider):
                             agent,
                             member_session_key=self._member_session_key(),
                             session_key=self._owning_session_key(),
+                            channel_id=self._owning_channel_id() or "",
                         )
                     finally:
                         phases["session_load"] = (time.monotonic() - _t_load) * 1000.0
@@ -1117,6 +1126,7 @@ class AcpProvider(LLMProvider):
                         agent=agent or None,
                         member_session_key=self._member_session_key(),
                         session_key=self._owning_session_key(),
+                        channel_id=self._owning_channel_id() or "",
                     )
                 except AcpRuntimeError as exc:
                     if runtime.saw_not_logged_in():

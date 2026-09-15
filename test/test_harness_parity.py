@@ -22,7 +22,7 @@ import subprocess
 import sys
 import textwrap
 from dataclasses import fields
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -966,22 +966,198 @@ def test_the_model_select_fold_matches_the_advertised_selection_table(backend):
 
 
 @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
-def test_unprojected_pooled_mcp_is_refused_for_exactly_the_mirrored_hosts(backend):
-    """H6: pooled servers are refused iff this host's MCP surface needs a projection.
+def test_the_session_mcp_array_is_mirror_built_for_exactly_the_mirrored_hosts(backend):
+    """H6: the runtime builds its array through a projection iff the host has a mirror.
 
     Read from the mirror registry rather than from a backend name, so a host added to
-    ``providers.mirrors`` inherits the refusal instead of the gap.
+    ``providers.mirrors`` inherits the projection instead of reaching ``session/new``
+    with an array nothing narrowed. The host that needs one is the host whose MCP
+    surface Crew describes rather than the host that reaches its servers natively, and
+    that is exactly what the registry answers.
+
+    The mirror is a recording double that answers like the REGISTRY -- an instance for
+    a backend in ``MIRRORS``, ``None`` for the rest -- so this asserts the ROUTE for every
+    known backend without standing up seven real agent specs. Handing every backend a
+    mirror instead would make the seam project for a host that has none, and the test
+    would stop measuring the decision it exists to pin. Each real mirror's own projection
+    is pinned by its own module's tests.
     """
-    from kiro_crew.acp.client import AcpToolGateUnroutable
+    import asyncio
+
+    from kiro_crew.providers.mirrors.base import SessionProjection
+
+    projected: list[dict] = []
+
+    class _Recording:
+        def session_projection(self, agent, **kwargs):
+            projected.append(kwargs)
+            return SessionProjection(params={"mcpServers": [{"name": "projected"}]})
 
     rt = _runtime_for(backend)
-    rt._refuse_unprojected_pooled_servers([])  # empty never refuses, for any host
-    pooled = [{"name": "brokered", "command": "x"}]
-    if mirrors.has_mirror(backend):
-        with pytest.raises(AcpToolGateUnroutable):
-            rt._refuse_unprojected_pooled_servers(pooled)
-    else:
-        rt._refuse_unprojected_pooled_servers(pooled)
+    with (
+        patch.object(
+            acp_runtime,
+            "mirror_for",
+            lambda b: _Recording() if mirrors.has_mirror(b) else None,
+        ),
+        patch.object(acp_runtime, "pooled_session_servers", lambda *a, **k: [{"name": "brokered"}]),
+        patch.object(acp_runtime, "injection_server_names", lambda *a, **k: frozenset()),
+    ):
+        out = asyncio.run(
+            rt._mirrored_session_mcp(
+                "kirocrew", work_dir="/tmp", session_key="s-parity", channel_id="c-parity"
+            )
+        )
+    mirrored = mirrors.has_mirror(backend)
+    assert (out is not None) is mirrored
+    # Not just the return: a host that reached the projection and then discarded it
+    # would pass the line above on a None, and one that skipped it would pass on an
+    # array. Both halves are the answer.
+    assert bool(projected) is mirrored
+    if mirrored:
+        # The identity a mirrored host can receive no other way -- a codex stdio
+        # server starts from env_clear() plus an allowlist.
+        assert projected[0]["session_key"] == "s-parity"
+        assert projected[0]["channel_id"] == "c-parity"
+        # This runtime authors no native permission file, so a mirror in claude's
+        # class must fail closed here rather than deliver tools Crew cannot gate.
+        assert projected[0]["permission_surface_owned"] is False
+
+
+#: The spec's per-tool deny set is not one check -- it is three enforcement ROLES, and a
+#: transport carrying a subset is a restriction whose gap is invisible from the other
+#: side. Each row names the site that fills the role on each driver, because the two
+#: spell them differently: ``AcpClient`` answers the unidentified-approval case inline on
+#: the auto-approve site it alone has, while ``AcpSessionHandle``, having a single
+#: answering site, names a method for it.
+_DENY_SET_ROLES: tuple[tuple[str, str, str], ...] = (
+    (
+        "refuse a call whose identity IS in the deny set",
+        "_deny_spec_disabled_tool",
+        "_deny_spec_disabled_tool",
+    ),
+    (
+        "refuse an MCP approval whose call cannot be identified",
+        "_handle_permission",
+        "_refuse_unidentifiable_mcp_approval",
+    ),
+    (
+        "notice a call in the deny set that COMPLETED anyway",
+        "_tripwire_spec_disabled_tool",
+        "_tripwire_spec_disabled_tool",
+    ),
+)
+
+#: Sites that hold the deny set without enforcing it: the two writers and the capability
+#: predicate that reports whether this session judges its own requests. Listed so the
+#: gate below can tell a new ENFORCEMENT reader from a new bookkeeping one.
+_DENY_SET_NON_ENFORCEMENT = frozenset(
+    {"__init__", "_reset_state", "_resolve_session_mcp_servers", "_judges_permission_requests"}
+)
+
+
+def _deny_set_readers(cls, attr: str) -> set[str]:
+    """Methods of *cls* that reference *attr*."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(cls)))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Attribute) and child.attr == attr:
+                found.add(node.name)
+    return found
+
+
+def test_every_deny_set_enforcement_role_is_filled_on_both_drivers():
+    """H5/H6: a restriction is enforced on every transport or on none.
+
+    This is the gate the port needed and did not have. ``AcpClient`` fills three roles;
+    the first port of them to ``AcpSessionHandle`` carried two, and nothing was red --
+    the missing one was the post-hoc tripwire, so a codex release that stopped prompting
+    would have made the restriction silently inert on the runtime transport only.
+
+    Two halves. Every declared role's site must exist on its driver and actually read the
+    set, so a site renamed or gutted goes red. And every client site that reads the set
+    must be either a declared role or declared bookkeeping, so a FOURTH role added there
+    cannot ship without a row -- and adding the row forces naming the handle's site.
+    """
+    client_readers = _deny_set_readers(acp_client.AcpClient, "_spec_denied_tools")
+    handle_readers = _deny_set_readers(acp_runtime.AcpSessionHandle, "spec_denied_tools")
+
+    missing: list[str] = []
+    for role, client_site, handle_site in _DENY_SET_ROLES:
+        if client_site not in client_readers:
+            missing.append(f"AcpClient.{client_site} no longer reads the deny set ({role})")
+        if handle_site not in handle_readers:
+            missing.append(f"AcpSessionHandle.{handle_site} no longer reads the deny set ({role})")
+    assert not missing, "a declared deny-set role is unfilled:\n  " + "\n  ".join(missing)
+
+    declared = {client_site for _role, client_site, _h in _DENY_SET_ROLES}
+    undeclared = client_readers - declared - _DENY_SET_NON_ENFORCEMENT
+    assert not undeclared, (
+        "AcpClient reads the deny set in a place this table does not name: "
+        f"{sorted(undeclared)}. If it enforces the restriction, add a _DENY_SET_ROLES row "
+        "naming the AcpSessionHandle site that fills the same role -- a role on one "
+        "transport only is a gap invisible from the other. If it merely holds the set, "
+        "add it to _DENY_SET_NON_ENFORCEMENT."
+    )
+
+
+def test_the_projection_seam_is_never_awaited_on_a_shared_construction_path():
+    """H13: the array decision is a synchronous registry read, not an awaited seam.
+
+    ``_mirrored_session_mcp`` answering ``None`` for a non-mirrored host is not enough.
+    Awaiting it still puts a coroutine, a call frame and a failure point on the kiro and
+    KAS construction paths in service of an adapter -- and ``load_session`` states that
+    requirement for its own resume path in as many words ("reach a comparison and STOP:
+    no awaited step, nothing to unwind"). So every await of the seam must sit under an
+    ``if has_mirror(...)``.
+
+    Structural because the property IS structural: a behavioural test cannot tell an
+    unconditional await that returned ``None`` from a guard that never entered, since
+    both leave the same array. The behavioural half -- that the array is mirror-built
+    for exactly the mirrored hosts -- is
+    :func:`test_the_session_mcp_array_is_mirror_built_for_exactly_the_mirrored_hosts`.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    unguarded: list[str] = []
+    seen = 0
+    for name in ("create_session", "load_session"):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(acp_runtime.AcpRuntime, name))))
+        guards = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Call)
+            and isinstance(node.test.func, ast.Name)
+            and node.test.func.id == "has_mirror"
+        ]
+        guarded = {id(child) for guard in guards for child in ast.walk(guard)}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Await) or not isinstance(node.value, ast.Call):
+                continue
+            func = node.value.func
+            if isinstance(func, ast.Attribute) and func.attr == "_mirrored_session_mcp":
+                seen += 1
+                if id(node) not in guarded:
+                    unguarded.append(f"{name}:{node.lineno} (relative to the method)")
+
+    # A vacuous green is the failure mode this guards against second: a rename that
+    # left no await to find would otherwise report "all guarded".
+    assert seen == 2, f"expected one guarded seam await per session-start path, found {seen}"
+    assert not unguarded, (
+        "the projection seam is awaited outside an `if has_mirror(...)` guard, so a host "
+        "with no mirror pays an awaited adapter step on its construction path (H13):\n  "
+        + "\n  ".join(unguarded)
+    )
 
 
 def test_every_runtime_path_identity_test_is_declared():

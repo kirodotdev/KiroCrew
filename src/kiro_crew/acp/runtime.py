@@ -27,7 +27,7 @@ import uuid
 import weakref
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, NamedTuple, TypeVar
 
 from kiro_crew import acp_tool_gate, agent_scratch, platform_compat
 from kiro_crew.acp._dispatch import (
@@ -43,7 +43,6 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.client import (
-    AcpToolGateUnroutable,
     OversizeLineUnrecoverable,
     _apply_pod_home_remap,
     _drain_oversize_line,
@@ -91,7 +90,6 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
     backends_retired_by_host_logout,
 )
-from kiro_crew.agent_sdk.backends import ENV_CODEX_ACP_RUNTIME
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config import live
 from kiro_crew.config.paths import kiro_agents_dir
@@ -101,6 +99,7 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
+    injection_server_names,
     pooled_session_servers,
 )
 from kiro_crew.metrics.events import (
@@ -109,7 +108,7 @@ from kiro_crew.metrics.events import (
     DROPPED_FRAMES,
     emit_counter,
 )
-from kiro_crew.providers.mirrors.registry import has_mirror
+from kiro_crew.providers.mirrors.registry import has_mirror, mirror_for
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
@@ -702,6 +701,29 @@ def _resolve_session_start_timeout() -> float:
     except Exception:
         logger.debug("session-start timeout load failed — using default", exc_info=True)
         return _SESSION_NEW_TIMEOUT
+
+
+class _MirroredSessionMcp(NamedTuple):
+    """One mirrored host's ``session/new`` MCP array and what came with it.
+
+    Four things fall out of ONE agent-spec parse, and only the first is wire data.
+    Returning them together is what stops a second parse from being needed for the
+    others -- which would be the consistency window the projection exists to close,
+    since the spec is a user-writable file that can change between two reads.
+
+    ``denied_tools`` is the driver obligation: the ``(server, tool)`` pairs this
+    session's spec switched off, spelled as the backend registers them, refused at
+    the approval request because this transport has no wire channel for a per-tool
+    restriction. ``stub_token`` names this session's brokered servers to gatewayd.
+    ``derived_spec_snapshot`` is the generation the array was built from, typed
+    loosely so this module stays clear of :mod:`kiro_crew.agent` and its config
+    import chain.
+    """
+
+    servers: list[dict[str, Any]]
+    denied_tools: frozenset[tuple[str, str]]
+    stub_token: str
+    derived_spec_snapshot: Any
 
 
 class AcpRuntime:
@@ -3424,45 +3446,142 @@ class AcpRuntime:
             self._session_start_timeout = await asyncio.to_thread(_resolve_session_start_timeout)
         return self._session_start_timeout
 
-    def _refuse_unprojected_pooled_servers(self, pooled: list[dict[str, Any]]) -> None:
-        """Refuse pooled MCP servers this path cannot apply a projection to.
+    async def _mirrored_session_mcp(
+        self,
+        agent: str | None,
+        *,
+        work_dir: str | Path,
+        session_key: str,
+        channel_id: str,
+    ) -> _MirroredSessionMcp | None:
+        """This session's ``mcpServers``, built by the host's agent-config MIRROR.
 
-        A host whose MCP surface is reached through an agent-config MIRROR
-        (:func:`~kiro_crew.providers.mirrors.registry.has_mirror`) has its
-        ``session/new`` array built by that mirror's ``session_projection`` on the
-        :class:`~kiro_crew.acp.client.AcpClient` path, and the projection does two
-        things nothing here does: it WITHHOLDS a pooled broker stub for a server the
-        agent's ``tools`` never references, and it returns the per-tool deny set the
-        client enforces at the approval request. This path has neither -- it resolves
-        the pooled array and hands it to the harness, which can narrow transports and
-        nothing else -- and a mirrored host approves its own tools internally, so a
-        stub that reaches it is a live tool surface Crew never granted.
+        **Only called when the host HAS a mirror.** The decision is a synchronous
+        in-memory registry read at the call site
+        (:func:`~kiro_crew.providers.mirrors.registry.has_mirror`), not an await that
+        returns ``None``, because H13 asks the shared construction path to stay a
+        synchronous read: kiro and KAS reach their servers natively and must not gain
+        an awaited step, a new call frame or a new failure mode in service of an
+        adapter. ``load_session`` states the same requirement for its own resume path
+        in as many words. The guard below is therefore a second line of defence rather
+        than the gate, and it reads the registry rather than naming a backend, so a
+        host joining ``providers.mirrors`` inherits the projection.
 
-        So the refusal is FAIL-CLOSED rather than a documented gap: the array is
-        non-empty only when the shared MCP gateway is on (``pooled_session_servers``
-        answers ``[]`` with no overlay), and refusing makes the widening unreachable
-        instead of merely described. Nothing changes for a host with no mirror --
-        kiro and KAS reach their servers natively, so ``has_mirror`` is False and this
-        returns immediately -- which is why it reads the registry rather than naming a
-        backend: a future mirrored host joining this runtime inherits the refusal
-        instead of the gap.
+        A MIRRORED host cannot take the pooled array directly. The projection does two
+        things the pooled resolution does not: it WITHHOLDS a broker stub for a server
+        the agent's ``tools`` never references, and it returns the per-tool deny set
+        the driver enforces at the approval request. Handing the raw array to the
+        harness applies neither -- the harness narrows transports and nothing else --
+        and a mirrored host approves its own tools internally, so an unprojected stub
+        is a live tool surface Crew never granted.
 
-        Raised BEFORE ``session/new`` goes out, so there is no session to tear down;
-        ``AcpToolGateUnroutable`` is non-retryable because the condition is a
-        configuration fact a respawn would re-read. Carrying the projection onto this
-        path is what lifts the refusal.
+        Both halves of the array go through ONE owner. The stubs are handed down as
+        ``stub_elements`` rather than appended afterwards, because a stub carries the
+        same ``name`` as the spec entry it rewrites: an append after the projection
+        withheld that name un-withholds it, as the UNRESTRICTED server of the two.
+
+        The stub token is minted BEFORE the projection, so it rides the stubs the
+        projection keeps and no spec-translated element ever carries it -- the token
+        names this session's brokered servers, and :meth:`_own_stub_session` would
+        stamp every element of an array it was handed.
+
+        ``session_key`` and ``channel_id`` reach the ELEMENT because they cannot reach
+        the child any other way: a codex stdio server starts from ``env_clear()`` plus
+        an allowlist and inherits nothing, so Crew's own control plane comes up with no
+        session to act on unless the element carries the identity.
+
+        ``permission_surface_owned`` is False because this runtime authors no native
+        permission file. That is the fail-CLOSED direction: a mirror in claude's class
+        -- one whose tools could be pre-approved in a file Crew does not own, where
+        Crew's gate never fires -- withholds its array here rather than delivering it.
+
+        Blocking work (an agent-spec parse, an overlay read) runs off the loop, the
+        same as the pooled resolution it replaces.
         """
-        if not pooled or not has_mirror(self.acp_backend):
-            return
-        raise AcpToolGateUnroutable(
-            f"{self.acp_backend} on AcpRuntime cannot mount the shared MCP gateway's "
-            f"servers: the agent allowlist and per-tool deny set that decide which of "
-            f"them this agent may have are applied only on the AcpClient path, and this "
-            f"host approves its own tools ({len(pooled)} pooled server(s) offered). "
-            f"Either disable the shared MCP gateway for this agent, or unset the "
-            f"preview switch that put this host on the runtime "
-            f"({ENV_CODEX_ACP_RUNTIME}) so the session runs on AcpClient."
+        # ONE registry read, not two. ``has_mirror`` is ``backend in MIRRORS`` and this
+        # returns ``MIRRORS[backend]()`` when present, so a second read could only ever
+        # agree -- and a branch for the disagreement would be dead code whose only
+        # possible direction is wrong: falling through to the caller's pooled branch
+        # mounts the unprojected broker stubs this whole method exists to withhold.
+        # There is no degraded-but-running option worth having for that class, so the
+        # state is made unrepresentable instead of handled.
+        mirror = mirror_for(self.acp_backend)
+        if mirror is None:
+            return None
+        active_agent = agent or self._agent
+        try:
+            stubbed = await asyncio.to_thread(
+                injection_server_names, self._mcp_gateway_overlay, active_agent
+            )
+        except Exception:
+            # Same direction as the AcpClient path: an empty set re-declares a stubbed
+            # server, where the session-level injection still outranks it, rather than
+            # withholding a server nothing else supplies.
+            logger.warning(
+                "could not resolve pooled stub names; the session MCP array may re-declare one",
+                exc_info=True,
+            )
+            stubbed = frozenset()
+        stubs = await asyncio.to_thread(
+            pooled_session_servers,
+            self._mcp_gateway_overlay,
+            active_agent,
+            channel_id or None,
         )
+        stubs, stub_token = await self._own_stub_session(stubs, session_key)
+        projection = await asyncio.to_thread(
+            mirror.session_projection,
+            active_agent,
+            stub_server_names=stubbed,
+            stub_elements=stubs,
+            permission_surface_owned=False,
+            work_dir=work_dir,
+            session_key=session_key,
+            channel_id=channel_id,
+        )
+        servers = projection.params.get("mcpServers") or []
+        return _MirroredSessionMcp(
+            servers=list(servers) if isinstance(servers, list) else [],
+            denied_tools=projection.denied_tools,
+            stub_token=stub_token,
+            derived_spec_snapshot=projection.derived_spec_snapshot,
+        )
+
+    def _mirrored_spec_check_needed(self, snapshot: Any) -> bool:
+        """Whether this session has a derived spec to re-check. Synchronous.
+
+        Split from :meth:`_require_unchanged_mirrored_spec` so the two session-start
+        paths ask the question with an ordinary attribute test instead of awaiting a
+        coroutine that would answer ``None`` for every host with no mirror -- the same
+        H13 requirement that keeps the array decision a synchronous read.
+        """
+        return snapshot is not None
+
+    async def _require_unchanged_mirrored_spec(self, session_id: str, snapshot: Any) -> None:
+        """End the session when the spec it was built from changed under it.
+
+        The other end of the bracket :meth:`_mirrored_session_mcp` opens. For a
+        mirrored host the array IS the derived spec -- the child reads no spec of its
+        own -- so a write landing between the array's build and the host consuming it
+        would leave a session running restrictions nobody agreed to. Called once
+        ``session/new`` / ``session/load`` has returned: a write landing after that
+        point cannot change what the host already registered.
+
+        Only called when :meth:`_mirrored_spec_check_needed` said there is one, so the
+        kiro and KAS paths never reach it. The guard stays as a second line of defence.
+        """
+        if snapshot is None:
+            return
+        from kiro_crew.agent import DerivedSpecStale, require_unchanged_derived_spec
+
+        try:
+            await asyncio.to_thread(require_unchanged_derived_spec, snapshot)
+        except DerivedSpecStale as exc:
+            # session/new already succeeded, so the shared process holds this session;
+            # a plain local unregister would leak it (the same reason the activation
+            # bracket terminates rather than returns).
+            await self.terminate_session(session_id)
+            raise AcpRuntimeError(str(exc)) from exc
 
     async def _own_stub_session(
         self, entries: list[dict[str, Any]], session_key: str
@@ -3513,6 +3632,7 @@ class AcpRuntime:
         crew_agent: str | None = None,
         member_session_key: str = "",
         session_key: str = "",
+        channel_id: str = "",
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -3530,6 +3650,12 @@ class AcpRuntime:
         session-level entry (identity via ``KIROCREW_SESSION_KEY``), and the
         KAS wire agent's projection widens to grant its tools. Empty — every
         non-member session — leaves both paths byte-identical to before.
+
+        ``channel_id`` is the channel this session belongs to, and it reaches a
+        MIRRORED host's ``mcpServers`` ELEMENTS rather than the process env: a
+        codex stdio server starts from ``env_clear()`` plus an allowlist, so a
+        server that reports its caller's channel can only learn it from the
+        element. Empty — and unread — for a host with no mirror.
         """
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
@@ -3538,14 +3664,38 @@ class AcpRuntime:
         # explicit list. A session-injected server outranks the same-named entry
         # in the agent spec, so this is what actually pools the servers — no file
         # is written anywhere. Empty when the gateway is disabled.
+        # Resolved here rather than beside the params below, because a mirrored
+        # host's projection needs it: an agent spec can live in the project, and
+        # resolving a narrower spec set silently drops the ``tools`` allowlist that
+        # spec declared. One call either way -- no path resolves it twice.
+        session_work_dir = await self._session_work_dir(cwd)
+        denied_tools: frozenset[tuple[str, str]] = frozenset()
+        mirrored_snapshot: Any = None
         if mcp_servers is None:
-            # Resolve the overlay off the event loop: the lookup stats/reads
-            # files, and blocking the loop stalls every other session's I/O.
-            mcp_servers = await asyncio.to_thread(
-                pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
-            )
-            self._refuse_unprojected_pooled_servers(mcp_servers)
-            mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+            # A mirrored host takes its whole array from the mirror; every other host
+            # takes the pooled stubs it always took. Which one is a synchronous
+            # in-memory registry read, so the kiro path reaches a comparison and stops
+            # rather than awaiting an adapter seam (H13). Both branches resolve their
+            # own I/O off the event loop: the lookup stats/reads files, and blocking
+            # the loop stalls every other session's I/O.
+            mirrored = None
+            if has_mirror(self.acp_backend):
+                mirrored = await self._mirrored_session_mcp(
+                    agent,
+                    work_dir=session_work_dir,
+                    session_key=session_key,
+                    channel_id=channel_id,
+                )
+            if mirrored is not None:
+                mcp_servers = mirrored.servers
+                stub_token = mirrored.stub_token
+                denied_tools = mirrored.denied_tools
+                mirrored_snapshot = mirrored.derived_spec_snapshot
+            else:
+                mcp_servers = await asyncio.to_thread(
+                    pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
+                )
+                mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
         else:
             # An explicit array is the caller's own composition (a mirror's
             # projection, a test double); it is not this method's to re-key.
@@ -3585,7 +3735,6 @@ class AcpRuntime:
         # The generation the wire payload was built from, or None when this host takes its
         # agent at spawn time. Consumed by the activation bracket below.
         payload_snapshot = kas_extras.derived_spec_snapshot
-        session_work_dir = await self._session_work_dir(cwd)
         # The host's last word on its own tool surface. A host that reads an
         # agent spec passes the list straight back; one that has nothing else
         # describing its tools narrows it to the transports it advertised at
@@ -3648,6 +3797,12 @@ class AcpRuntime:
         # The token this session's stubs carry, so a later claim (warm-pool
         # rekey) can name THIS session instead of every session on the runtime.
         handle.stub_session_token = stub_token
+        # The projection's client obligation, on the driver that answers this
+        # session's permission requests. Empty for a host with no mirror and for a
+        # caller-supplied array, and the handle's check is a no-op on empty.
+        handle.spec_denied_tools = denied_tools
+        if self._mirrored_spec_check_needed(mirrored_snapshot):
+            await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 
         # Populate state from session/new response (configOptions, available models)
         handle.store_session_config(resp)
@@ -3850,6 +4005,7 @@ class AcpRuntime:
         crew_agent: str | None = None,
         member_session_key: str = "",
         session_key: str = "",
+        channel_id: str = "",
     ) -> AcpSessionHandle:
         """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -3871,6 +4027,11 @@ class AcpRuntime:
         re-declares the broker stubs, so it re-launches them, and a resumed
         session whose stubs carried no token would fall back to resolving as the
         runtime — the parent slot — for the rest of its life.
+
+        ``channel_id`` mirrors create_session() for the same reason the array
+        does: session/load re-initializes this session's MCP servers, so a resume
+        that dropped it would take the channel identity away from a conversation
+        that already had it.
         """
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
@@ -3887,11 +4048,39 @@ class AcpRuntime:
         # the event loop — the overlay lookup stats and reads files. Empty when
         # the shared gateway is disabled, so non-pooled installs still send [].
         active_agent = agent or self._agent
-        mcp_servers = await asyncio.to_thread(
-            pooled_session_servers, self._mcp_gateway_overlay, active_agent
-        )
-        self._refuse_unprojected_pooled_servers(mcp_servers)
-        mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+        # Hoisted above the array for the same reason create_session() hoists it: a
+        # mirrored host's projection resolves the agent spec against this directory.
+        session_work_dir = str(await self._session_work_dir(cwd))
+        denied_tools: frozenset[tuple[str, str]] = frozenset()
+        mirrored_snapshot: Any = None
+        # A mirrored host re-declares the array its projection built, not the raw
+        # pooled one: session/load re-initializes the session's servers, so an
+        # unprojected array here does not merely fail to withhold a stub -- it MOUNTS
+        # one on a conversation whose session/new withheld it.
+        #
+        # Gated on the registry read rather than entered unconditionally, for the
+        # reason this method already gives for gating the KAS re-attach on the
+        # backend: the kiro resume path must reach a comparison and STOP -- no awaited
+        # step, nothing to unwind, no shared coroutine that could grow a failure mode
+        # later. A membership read is the sanctioned form of that comparison.
+        mirrored = None
+        if has_mirror(self.acp_backend):
+            mirrored = await self._mirrored_session_mcp(
+                active_agent,
+                work_dir=session_work_dir,
+                session_key=session_key,
+                channel_id=channel_id,
+            )
+        if mirrored is not None:
+            mcp_servers = mirrored.servers
+            stub_token = mirrored.stub_token
+            denied_tools = mirrored.denied_tools
+            mirrored_snapshot = mirrored.derived_spec_snapshot
+        else:
+            mcp_servers = await asyncio.to_thread(
+                pooled_session_servers, self._mcp_gateway_overlay, active_agent
+            )
+            mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time, same as create_session().
@@ -3916,7 +4105,7 @@ class AcpRuntime:
         # a conversation that already had them.
         load_params: dict[str, Any] = {
             "sessionId": resume_sid,
-            "cwd": str(await self._session_work_dir(cwd)),
+            "cwd": session_work_dir,
             "mcpServers": self._harness.session_mcp_servers(
                 mcp_servers, agent_capabilities=self._agent_capabilities
             ),
@@ -4009,6 +4198,11 @@ class AcpRuntime:
         )
         # Mirrors create_session: the resumed session's own stub token.
         handle.stub_session_token = stub_token
+        # Mirrors create_session: the resumed session re-declares the array, so it
+        # re-derives the deny set that array came with and re-checks the generation.
+        handle.spec_denied_tools = denied_tools
+        if self._mirrored_spec_check_needed(mirrored_snapshot):
+            await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
         handle.store_session_config(resp)
         # session/load echoes ``currentModelId`` exactly like session/new, and a
         # session persisted before the account's served list changed can come

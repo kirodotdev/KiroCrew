@@ -19,6 +19,7 @@ this is where the measurement lives.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -28,16 +29,23 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from kiro_crew import agent as agent_mod
+from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp import session_mcp
+from kiro_crew.acp._dispatch import identified_mcp_call
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.runtime import AcpRuntime
+from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
 )
@@ -1850,3 +1858,417 @@ def test_the_real_adapter_guard_is_reachable_at_all():
     assert argv is None or isinstance(argv, list)
     assert isinstance(search, str)
     assert os.environ.get("CODEX_ACP_BIN") is None or _ENTRY is not None
+
+
+# ── the runtime path ────────────────────────────────────────────────────────
+
+
+def _codex_runtime(work_dir) -> AcpRuntime:
+    """An initialized codex ``AcpRuntime`` with no child process.
+
+    Nothing here spawns: the two methods under test resolve an array and answer a
+    permission frame, and neither reads the pipe.
+    """
+    rt = AcpRuntime(work_dir=str(work_dir), acp_backend=ACP_BACKEND_CODEX)
+    rt._initialized = True
+    # Truthy so the pooled resolution is reached at all; the stub source is patched,
+    # so no overlay is written and no gatewayd socket is opened.
+    rt._mcp_gateway_overlay = str(work_dir)
+    return rt
+
+
+def _stub(name: str) -> dict:
+    """A broker stub as ``pooled_session_servers`` shapes one: the SAME name as the
+    agent-spec entry it rewrites, which is what makes an unnarrowed append dangerous."""
+    return {"name": name, "type": "stdio", "command": "/stub", "args": [], "env": []}
+
+
+class TestTheRuntimePathAppliesTheProjection:
+    """``AcpRuntime`` builds a mirrored host's array through the mirror, not around it.
+
+    This is what replaced ``_refuse_unprojected_pooled_servers``. That gate made the
+    unprojected state unreachable by refusing the session outright, which cost the
+    preview every pooled server; these tests assert the state the gate stood in for is
+    unreachable because the projection now runs here too.
+    """
+
+    @staticmethod
+    def _projected(rt, stubs: list[dict], *, referenced: frozenset[str]):
+        with (
+            patch.object(acp_runtime, "pooled_session_servers", lambda *a, **k: list(stubs)),
+            patch.object(acp_runtime, "injection_server_names", lambda *a, **k: referenced),
+        ):
+            return asyncio.run(
+                rt._mirrored_session_mcp(
+                    "kirocrew", work_dir=rt._work_dir, session_key="s-owner", channel_id="c-1"
+                )
+            )
+
+    def test_a_pooled_stub_the_spec_never_references_does_not_reach_session_new(
+        self, tmp_path, agents_dir
+    ):
+        """Condition 5(d): the allowlist that filtered the translated half filters stubs.
+
+        The overlay is written per agent from the GLOBAL settings file too, so it can
+        carry a stub for a server this agent's ``tools`` never names. On the old
+        runtime path that stub went straight to ``session/new``, and codex approves
+        its own tools -- a live tool surface Crew never granted.
+        """
+        _write_spec(
+            agents_dir,
+            servers={"kirocrew-core": dict(_CORE)},
+            tools=["@kirocrew-core"],
+        )
+        rt = _codex_runtime(tmp_path)
+        rt._agent_capabilities = {"mcpCapabilities": dict(_CODEX_1_11_CAPS)}
+        out = self._projected(
+            rt,
+            [_stub("kirocrew-core"), _stub("never-referenced")],
+            referenced=frozenset({"kirocrew-core"}),
+        )
+        assert out is not None
+        names = set(_by_name(out.servers))
+        assert "never-referenced" not in names
+        # And the referenced one IS mounted: the rule withholds an ungranted server,
+        # it does not un-pool the session.
+        assert "kirocrew-core" in names
+
+    def test_a_stub_wrapping_a_withheld_server_cannot_re_add_it(self, tmp_path, agents_dir):
+        """One owner for both halves. A stub carries the name of the entry it rewrites,
+        so an append after the projection withheld that name re-adds the server as the
+        UNRESTRICTED one of the two."""
+        _write_spec(
+            agents_dir,
+            servers={"narrowed": {"command": "/bin/foo", "disabledTools": ["dangerous_tool"]}},
+            tools=["@narrowed"],
+        )
+        rt = _codex_runtime(tmp_path)
+        rt._agent_capabilities = {"mcpCapabilities": dict(_CODEX_1_11_CAPS)}
+        out = self._projected(rt, [_stub("narrowed")], referenced=frozenset({"narrowed"}))
+        assert out is not None
+        assert "narrowed" not in set(_by_name(out.servers))
+
+    def test_the_deny_set_comes_back_with_the_array(self, tmp_path, agents_dir):
+        """Condition 5(c)'s input: the pairs the runtime hands the session handle.
+
+        Derived on the SAME parse as the array, so it cannot name a tool on a spec
+        revision the array never saw.
+        """
+        _write_spec(
+            agents_dir,
+            servers={"kirocrew-core": {**_CORE, "disabledTools": ["spawn_run"]}},
+            tools=["@kirocrew-core"],
+        )
+        rt = _codex_runtime(tmp_path)
+        rt._agent_capabilities = {"mcpCapabilities": dict(_CODEX_1_11_CAPS)}
+        out = self._projected(rt, [], referenced=frozenset())
+        assert out is not None
+        assert ("kirocrew-core", "spawn_run") in out.denied_tools
+        # The server itself still mounts: the restriction narrows a tool, it does not
+        # cost the session its control plane.
+        assert "kirocrew-core" in set(_by_name(out.servers))
+
+    def test_the_session_identity_rides_the_element(self, tmp_path, agents_dir):
+        """A codex stdio child starts from ``env_clear()`` plus an allowlist, so the
+        session key reaches Crew's control plane only if the ELEMENT carries it."""
+        _write_spec(
+            agents_dir,
+            servers={"kirocrew-core": dict(_CORE)},
+            tools=["@kirocrew-core"],
+        )
+        rt = _codex_runtime(tmp_path)
+        rt._agent_capabilities = {"mcpCapabilities": dict(_CODEX_1_11_CAPS)}
+        out = self._projected(rt, [], referenced=frozenset())
+        assert out is not None
+        env = _env(_by_name(out.servers)["kirocrew-core"])
+        assert env["KIROCREW_SESSION_KEY"] == "s-owner"
+        assert env["KIROCREW_CHANNEL_ID"] == "c-1"
+
+    def test_a_host_with_no_mirror_takes_no_projection(self, tmp_path):
+        """kiro and KAS reach their servers natively, so this answers None and the
+        caller runs the pooled path it always ran -- no new conditional and no new
+        failure mode on the shared construction path (H13)."""
+        for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
+            assert mirror_for(backend) is None
+            rt = AcpRuntime(work_dir=str(tmp_path), acp_backend=backend)
+            rt._initialized = True
+            rt._mcp_gateway_overlay = str(tmp_path)
+            assert (
+                asyncio.run(
+                    rt._mirrored_session_mcp(
+                        "kirocrew", work_dir=str(tmp_path), session_key="s", channel_id="c"
+                    )
+                )
+                is None
+            )
+
+
+class TestTheRuntimeApprovalPathHonoursTheDenySet:
+    """Condition 5(c): ``AcpSessionHandle`` refuses what the projection switched off.
+
+    Semantics are the client's, and the identity read is literally the client's
+    function -- a restriction that held on one transport and not the other would be
+    the defect a shared driver invites.
+    """
+
+    @staticmethod
+    def _handle(denied: set[tuple[str, str]]):
+        runtime = MagicMock()
+        runtime.acp_backend = ACP_BACKEND_CODEX
+        sent: list[tuple] = []
+
+        async def _send_response(request_id, payload):
+            sent.append((request_id, payload))
+
+        runtime.send_response = _send_response
+        handle = AcpSessionHandle("s-1", asyncio.Queue(), runtime)
+        handle.spec_denied_tools = frozenset(denied)
+        return handle, sent
+
+    @pytest.mark.asyncio
+    async def test_a_switched_off_tool_is_refused_at_the_approval_request(self, monkeypatch):
+        handle, sent = self._handle({("kirocrew-core", "spawn_run")})
+        audited: list[dict] = []
+
+        class _Sel:
+            def log_tool_invocation(self, **kw):
+                audited.append(kw)
+
+        import kiro_crew.sel as sel_mod
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: _Sel())
+
+        # The tool_call frame arrives first and is cached by toolCallId, which is the
+        # only channel the model cannot reach...
+        list(handle._handle_update(_codex_mcp_tool_call("c1", "kirocrew-core", "spawn_run")))
+        # ...then codex asks.
+        event = handle._build_permission_event(_codex_mcp_approval(7, "c1"))
+        assert event.raw_params_trusted
+        assert await handle._deny_spec_disabled_tool(event) is True
+
+        # The adapter's own reject option, never ``cancelled``: that one is the
+        # turn-scoped fallback and this is one call.
+        assert sent == [(7, {"outcome": {"outcome": "selected", "optionId": "cancel"}})]
+        # The audit runs off the loop after the reject was sent.
+        for task in list(handle._audit_tasks):
+            await task
+        assert audited and audited[0]["outcome"] == "denied"
+        assert audited[0]["tool_name"] == "mcp__kirocrew-core__spawn_run"
+        assert audited[0]["error"] == "spec_disabled_tool"
+
+    @pytest.mark.asyncio
+    async def test_a_tool_the_spec_left_on_goes_to_the_consumers_gate(self):
+        handle, sent = self._handle({("kirocrew-core", "spawn_run")})
+        list(handle._handle_update(_codex_mcp_tool_call("c2", "kirocrew-core", "send_message")))
+        event = handle._build_permission_event(_codex_mcp_approval(8, "c2"))
+        assert await handle._deny_spec_disabled_tool(event) is False
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_the_permission_payloads_own_fields_are_never_the_identity(self):
+        """An uncorrelated approval carries its own ``rawInput``, which a forged frame
+        could fill with anything. With no cached frame the params are untrusted and the
+        request goes on to the consumer -- toward ASKING, never toward running."""
+        handle, sent = self._handle({("kirocrew-core", "spawn_run")})
+        msg = _codex_mcp_approval(9, "never-seen")
+        msg.params["toolCall"]["rawInput"] = {"server": "kirocrew-core", "tool": "spawn_run"}
+        event = handle._build_permission_event(msg)
+        assert not event.raw_params_trusted
+        assert await handle._deny_spec_disabled_tool(event) is False
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_an_unidentifiable_mcp_approval_is_refused_on_a_restricted_session(self):
+        """codex marks its STANDALONE approval as an MCP one too, and a standalone one
+        has no preceding ``tool_call`` frame -- so nothing cached its ``(server, tool)``.
+
+        The handle has no second answering site the way ``AcpClient`` does, and a
+        consumer auto-approves by hook glob or in trust mode. Left to the consumer
+        that is a switched-off tool running unasked, so it is refused here.
+        """
+        handle, sent = self._handle({("kirocrew-core", "spawn_run")})
+        msg = _codex_mcp_approval(11, "standalone-no-tool-call")
+        event = handle._build_permission_event(msg)
+        assert identified_mcp_call(event) is None
+        assert await handle._deny_spec_disabled_tool(event) is False
+        assert await handle._refuse_unidentifiable_mcp_approval(msg, event) is True
+        assert sent == [(11, {"outcome": {"outcome": "selected", "optionId": "cancel"}})]
+
+    @pytest.mark.asyncio
+    async def test_a_session_with_no_deny_set_still_asks_about_an_unidentified_call(self):
+        """The refusal is scoped to a session that HAS restrictions it cannot verify.
+        Every other session -- kiro, KAS, a mirrored spec that switched nothing off --
+        reads one falsy attribute and goes to the consumer's own gate."""
+        handle, sent = self._handle(set())
+        msg = _codex_mcp_approval(12, "standalone-no-tool-call")
+        event = handle._build_permission_event(msg)
+        assert await handle._refuse_unidentifiable_mcp_approval(msg, event) is False
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_a_non_mcp_approval_is_never_refused_by_this(self):
+        """A shell or edit approval carries neither codex's marker nor a trusted
+        ``_meta`` identity, so the deny set has nothing to say about it."""
+        handle, sent = self._handle({("kirocrew-core", "spawn_run")})
+        msg = _codex_mcp_approval(13, "shellish")
+        del msg.params["_meta"]
+        event = handle._build_permission_event(msg)
+        assert await handle._refuse_unidentifiable_mcp_approval(msg, event) is False
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_an_identified_allowed_call_is_not_swept_up(self):
+        """An MCP approval the handle CAN identify goes to the identified check, which
+        lets a tool the spec left on through. This refusal must not double-refuse it."""
+        handle, sent = self._handle({("kirocrew-core", "spawn_run")})
+        list(handle._handle_update(_codex_mcp_tool_call("c9", "kirocrew-core", "send_message")))
+        msg = _codex_mcp_approval(14, "c9")
+        event = handle._build_permission_event(msg)
+        assert await handle._deny_spec_disabled_tool(event) is False
+        assert await handle._refuse_unidentifiable_mcp_approval(msg, event) is False
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_a_session_with_no_deny_set_checks_nothing(self):
+        """Every host with no mirror, and every mirrored session whose spec switched
+        nothing off: one falsy read and out."""
+        handle, sent = self._handle(set())
+        list(handle._handle_update(_codex_mcp_tool_call("c3", "kirocrew-core", "spawn_run")))
+        event = handle._build_permission_event(_codex_mcp_approval(10, "c3"))
+        assert await handle._deny_spec_disabled_tool(event) is False
+        assert sent == []
+
+
+def _codex_mcp_tool_result(call_id: str) -> JsonRpcMessage:
+    """The terminal ``tool_call_update`` for a completed call: no identity of its own,
+    only the ``toolCallId`` the ``tool_call`` frame's cache is keyed by."""
+    return JsonRpcMessage(
+        method="session/update",
+        params={
+            "sessionId": "s-1",
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": call_id,
+                "status": "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}],
+            },
+        },
+    )
+
+
+class TestTheTripwireNoticesASwitchedOffToolThatRan:
+    """The third deny-set reader. The two refusals fire on a permission REQUEST, and
+    whether the adapter sends one is the adapter's behaviour -- so a release that
+    stopped prompting would make the restriction silently inert. This is the in-band
+    notice that it did.
+    """
+
+    @staticmethod
+    def _handle(denied: set[tuple[str, str]]):
+        runtime = MagicMock()
+        runtime.acp_backend = ACP_BACKEND_CODEX
+        handle = AcpSessionHandle("s-1", asyncio.Queue(), runtime)
+        handle.spec_denied_tools = frozenset(denied)
+        return handle
+
+    @staticmethod
+    def _audited(monkeypatch) -> list[dict]:
+        audited: list[dict] = []
+
+        class _Sel:
+            def log_tool_invocation(self, **kw):
+                audited.append(kw)
+
+        import kiro_crew.sel as sel_mod
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: _Sel())
+        return audited
+
+    @staticmethod
+    def _feed(handle, msg) -> None:
+        """Drive the frame through the parser exactly as the dispatch loop does."""
+        for ev in handle._handle_update(msg):
+            handle._tripwire_spec_disabled_tool(ev, msg)
+
+    @pytest.mark.asyncio
+    async def test_a_completed_switched_off_call_is_logged_and_audited(self, monkeypatch, caplog):
+        handle = self._handle({("kirocrew-core", "spawn_run")})
+        audited = self._audited(monkeypatch)
+        self._feed(handle, _codex_mcp_tool_call("t1", "kirocrew-core", "spawn_run"))
+        with caplog.at_level("WARNING"):
+            self._feed(handle, _codex_mcp_tool_result("t1"))
+        assert "COMPLETED although the agent spec switches it off" in caplog.text
+        for task in list(handle._audit_tasks):
+            await task
+        assert audited and audited[0]["tool_name"] == "mcp__kirocrew-core__spawn_run"
+        # NOT "denied": the call ran. A false record here is worse than no record.
+        assert audited[0]["outcome"] == "ran_despite_spec_disable"
+        assert audited[0]["error"] == "spec_disabled_tool_completed"
+
+    @pytest.mark.asyncio
+    async def test_a_completed_allowed_call_is_silent(self, monkeypatch, caplog):
+        handle = self._handle({("kirocrew-core", "spawn_run")})
+        audited = self._audited(monkeypatch)
+        self._feed(handle, _codex_mcp_tool_call("t2", "kirocrew-core", "send_message"))
+        with caplog.at_level("WARNING"):
+            self._feed(handle, _codex_mcp_tool_result("t2"))
+        assert "COMPLETED although" not in caplog.text
+        assert audited == []
+
+    @pytest.mark.asyncio
+    async def test_a_session_with_no_deny_set_is_a_no_op(self, monkeypatch, caplog):
+        """Every host that needs no projection: one falsy read and out."""
+        handle = self._handle(set())
+        audited = self._audited(monkeypatch)
+        self._feed(handle, _codex_mcp_tool_call("t3", "kirocrew-core", "spawn_run"))
+        with caplog.at_level("WARNING"):
+            self._feed(handle, _codex_mcp_tool_result("t3"))
+        assert "COMPLETED although" not in caplog.text
+        assert audited == []
+
+    @pytest.mark.asyncio
+    async def test_a_pending_frame_is_not_a_completed_call(self, monkeypatch, caplog):
+        """It reads ``tool_final``, so the tool_call frame that OPENS the call -- the
+        one the refusals act on -- must not be reported as a call that ran."""
+        handle = self._handle({("kirocrew-core", "spawn_run")})
+        audited = self._audited(monkeypatch)
+        with caplog.at_level("WARNING"):
+            self._feed(handle, _codex_mcp_tool_call("t4", "kirocrew-core", "spawn_run"))
+        assert "COMPLETED although" not in caplog.text
+        assert audited == []
+
+    @pytest.mark.asyncio
+    async def test_a_cache_entry_from_another_origin_is_not_read_as_this_sessions(
+        self, monkeypatch, caplog
+    ):
+        """The cache key carries the emitting origin, so this session cannot resolve an
+        id a CHILD frame wrote -- which is what stops a replayed id from lending its
+        trusted params to a different operation.
+
+        Written under the child's scope, read under this session's: a miss. With the
+        scope dropped from the key both halves collapse to the bare id, the lookup
+        hits, and the tripwire fires on an entry it does not own.
+        """
+        handle = self._handle({("kirocrew-core", "spawn_run")})
+        audited = self._audited(monkeypatch)
+        child_call = _codex_mcp_tool_call("t5", "kirocrew-core", "spawn_run")
+        child_call.params["sessionId"] = "some-child-session"
+        self._feed(handle, child_call)
+        # Written, but under the child's scope.
+        assert any("some-child-session|t5" == k for k in handle._tool_call_raw_params)
+        with caplog.at_level("WARNING"):
+            self._feed(handle, _codex_mcp_tool_result("t5"))
+        assert "COMPLETED although" not in caplog.text
+        assert audited == []
+
+
+def test_the_tripwire_is_wired_into_the_handles_update_branch():
+    """Structural: the tripwire is called from the dispatch loop, not merely defined.
+
+    The behavioural tests above drive the method. A detector nothing calls detects
+    nothing, and this one has no other caller to notice its absence.
+    """
+    import inspect
+
+    body = inspect.getsource(AcpSessionHandle._dispatch_events)
+    assert "self._tripwire_spec_disabled_tool(" in body

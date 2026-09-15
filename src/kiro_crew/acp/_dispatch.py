@@ -950,6 +950,79 @@ def gate_envelope(tool_call: dict[str, Any], nonce: str | None) -> dict[str, Any
     }
 
 
+def scoped_tool_cache_key(cache_scope: str, tool_call_id: str) -> str:
+    """The key a per-tool cache entry is stored under, for ONE emitting origin.
+
+    Cache entries are keyed by the emitting frame's ``sessionId`` as well as the
+    ``toolCallId``, so a backend-internal child cannot replay a consumed PARENT id and
+    inherit trusted params for a different operation, while a same-origin repeat frame
+    still resolves. An empty scope degrades to the bare id, which is the shape
+    ``AcpClient`` uses -- one client drives one session, so it has no second origin.
+
+    One authoring because every reader must compute the key the writer used: a site
+    that spells it differently does not raise, it MISSES, and a missed trusted-params
+    lookup reads as "this call carries no identity".
+    """
+    return f"{cache_scope}|{tool_call_id}" if cache_scope else tool_call_id
+
+
+def identified_mcp_call(event: AcpEvent) -> tuple[str, str] | None:
+    """The ``(server, tool)`` a permission event PROVABLY refers to, or None.
+
+    TWO trusted channels, and neither is the permission payload's own fields -- those
+    are a different shape (``serverName`` and prose) and could be anything.
+
+    The first is the params cached from the preceding ``tool_call`` frame
+    (``raw_params_trusted``), whose ``server``/``tool`` keys are the adapter's own
+    resolution of what will run -- codex-acp's ``createMcpRawInput``.
+
+    The second is the ``_meta`` identity the frame carried, cached and inherited the same
+    way (``mcp_identity_trusted``). It exists because rawInput is NOT a universal
+    channel: goose sends ``rawInput`` as ``{"": "{}"}`` and states the identity in
+    ``_meta.goose.toolCall`` instead, so a reader that only knew rawInput found no
+    identity on a harness that had published one. Same trust class either way -- both are
+    harness-resolved and unreachable by the model -- which is why the fallback is a
+    second source and not a weaker one.
+    """
+    if event.raw_params_trusted:
+        params = event.raw_tool_params if isinstance(event.raw_tool_params, dict) else {}
+        server = params.get("server")
+        tool = params.get("tool")
+        if isinstance(server, str) and isinstance(tool, str) and server and tool:
+            return server, tool
+    if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
+        return event.mcp_server_name, event.tool_name
+    return None
+
+
+def is_mcp_tool_approval(msg: JsonRpcMessage, event: AcpEvent | None = None) -> bool:
+    """Whether a ``session/request_permission`` is an MCP tool-call approval.
+
+    Two signals, because no single one is present on every harness.
+
+    codex-acp marks the REQUEST with ``_meta.is_mcp_tool_approval``
+    (``buildMcpPermissionRequest``), for the correlated and the standalone shape alike,
+    and sets it on neither a shell nor an edit approval.
+
+    A harness that sets no such marker can still have SAID what the call is: a trusted
+    ``_meta`` identity naming a server means the harness resolved this call to an MCP
+    server, which is the same claim. Read off *event* so it comes from the cached
+    ``tool_call`` frame rather than the permission payload. Without this, a harness that
+    publishes its identity but not codex's marker slipped past the
+    unidentified-approval refusal entirely -- and on an auto-approve path with a deny set
+    that meant a switched-off tool ran.
+
+    A built-in or shell call answers False on both signals: goose leaves
+    ``extensionName`` unset for its own tools, so no server is named and nothing here
+    fires.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    meta = params.get("_meta")
+    if isinstance(meta, dict) and meta.get("is_mcp_tool_approval") is True:
+        return True
+    return bool(event is not None and event.mcp_identity_trusted and event.mcp_server_name)
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -1083,7 +1156,7 @@ def build_permission_event(
     # provenance is only readable by the origin that wrote it, while
     # same-origin repeat frames (re-ask after reject_once, mode-change
     # re-prompt) still find their entry.
-    _ck = f"{cache_scope}|{tool_call_id}" if cache_scope else tool_call_id
+    _ck = scoped_tool_cache_key(cache_scope, tool_call_id)
     tool_input = ""
     tool_input_redacted = False
     if tool_call_id and tool_input_cache is not None and _ck in tool_input_cache:
@@ -1264,7 +1337,7 @@ def _build_tool_call_event(
     tool_call_id = update.get("toolCallId", "")
     # ORIGIN-BOUND cache key (see build_permission_event): entries written
     # here are readable only under the same emitting-session scope.
-    _ck = f"{cache_scope}|{tool_call_id}" if cache_scope else tool_call_id
+    _ck = scoped_tool_cache_key(cache_scope, tool_call_id)
     # Cache the STRUCTURED raw params (dict) keyed by toolCallId so a later
     # permission_request — which carries only a truncated title — can recover
     # them for governance enforcement (raw_tool_params). Mirrors AcpClient's
@@ -2079,7 +2152,7 @@ def _build_tool_refinement_event(
     if not tool_use_id:
         return None
     # ORIGIN-BOUND cache key (see build_permission_event).
-    _rk = f"{cache_scope}|{tool_use_id}" if cache_scope else tool_use_id
+    _rk = scoped_tool_cache_key(cache_scope, tool_use_id)
     title = update.get("title")
     kind = update.get("kind")
     raw_input = update.get("rawInput")

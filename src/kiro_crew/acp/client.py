@@ -58,6 +58,10 @@ from kiro_crew.acp._dispatch import (
     error_is_refusal_terminal,
     extract_tool_purpose,
     gate_envelope,
+)
+from kiro_crew.acp._dispatch import identified_mcp_call as _identified_mcp_call
+from kiro_crew.acp._dispatch import is_mcp_tool_approval as _is_mcp_tool_approval
+from kiro_crew.acp._dispatch import (
     log_unrenderable_content,
     make_unified_diff,
     meta_builtin_server_names,
@@ -1957,63 +1961,6 @@ def _mentions_skill_file(raw_params: dict | None, command: str | None) -> bool:
 # yielded so the user/agent sees what happened.  We use an exact (stripped) match so
 # the detection does not fire if the model merely quotes the marker string in prose.
 _TOOL_INTERRUPTED_MARKER = "Tool uses were interrupted, waiting for the next user prompt"
-
-
-def _identified_mcp_call(event: AcpEvent) -> tuple[str, str] | None:
-    """The ``(server, tool)`` a permission event PROVABLY refers to, or None.
-
-    TWO trusted channels, and neither is the permission payload's own fields -- those
-    are a different shape (``serverName`` and prose) and could be anything.
-
-    The first is the params cached from the preceding ``tool_call`` frame
-    (``raw_params_trusted``), whose ``server``/``tool`` keys are the adapter's own
-    resolution of what will run -- codex-acp's ``createMcpRawInput``.
-
-    The second is the ``_meta`` identity the frame carried, cached and inherited the same
-    way (``mcp_identity_trusted``). It exists because rawInput is NOT a universal
-    channel: goose sends ``rawInput`` as ``{"": "{}"}`` and states the identity in
-    ``_meta.goose.toolCall`` instead, so a reader that only knew rawInput found no
-    identity on a harness that had published one. Same trust class either way -- both are
-    harness-resolved and unreachable by the model -- which is why the fallback is a
-    second source and not a weaker one.
-    """
-    if event.raw_params_trusted:
-        params = event.raw_tool_params if isinstance(event.raw_tool_params, dict) else {}
-        server = params.get("server")
-        tool = params.get("tool")
-        if isinstance(server, str) and isinstance(tool, str) and server and tool:
-            return server, tool
-    if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
-        return event.mcp_server_name, event.tool_name
-    return None
-
-
-def _is_mcp_tool_approval(msg: JsonRpcMessage, event: AcpEvent | None = None) -> bool:
-    """Whether a ``session/request_permission`` is an MCP tool-call approval.
-
-    Two signals, because no single one is present on every harness.
-
-    codex-acp marks the REQUEST with ``_meta.is_mcp_tool_approval``
-    (``buildMcpPermissionRequest``), for the correlated and the standalone shape alike,
-    and sets it on neither a shell nor an edit approval.
-
-    A harness that sets no such marker can still have SAID what the call is: a trusted
-    ``_meta`` identity naming a server means the harness resolved this call to an MCP
-    server, which is the same claim. Read off *event* so it comes from the cached
-    ``tool_call`` frame rather than the permission payload. Without this, a harness that
-    publishes its identity but not codex's marker slipped past the
-    unidentified-approval refusal entirely -- and on an auto-approve path with a deny set
-    that meant a switched-off tool ran.
-
-    A built-in or shell call answers False on both signals: goose leaves
-    ``extensionName`` unset for its own tools, so no server is named and nothing here
-    fires.
-    """
-    params = msg.params if isinstance(msg.params, dict) else {}
-    meta = params.get("_meta")
-    if isinstance(meta, dict) and meta.get("is_mcp_tool_approval") is True:
-        return True
-    return bool(event is not None and event.mcp_identity_trusted and event.mcp_server_name)
 
 
 def _is_tool_interrupted_marker(chunk: str) -> bool:

@@ -462,21 +462,35 @@ adapted runtime harness neither bypasses the bound nor changes the Kiro path.
   failure after `spawn()` kills the runtime so a half-initialised session never
   leaks an orphaned `kiro-cli`.
 
-  This path refuses pooled MCP servers it cannot project.
-  `AcpRuntime._refuse_unprojected_pooled_servers` raises the non-retryable
-  `AcpToolGateUnroutable` — before `session/new`, so there is no session to tear
-  down — when `pooled_session_servers` returns a non-empty array for a backend
-  whose MCP surface is reached through an agent-config mirror
-  (`providers.mirrors.registry.has_mirror`). The reason is that the mirror's
-  `session_projection` is what withholds a pooled stub the agent's `tools` never
-  references and what returns the per-tool deny set the client enforces at the
-  approval request, and it runs only on the `AcpClient` path; a mirrored host
-  approves its own tools internally, so an unprojected stub would be a live tool
-  surface Crew never granted. The gate reads the registry rather than naming a
-  backend, so a future mirrored host on this runtime inherits the refusal instead
-  of the gap. `has_mirror` is False for kiro and KAS, which reach their servers
-  natively, so their paths are untouched. Carrying the projection onto this path
-  is what lifts the refusal.
+  This path builds a mirrored host's MCP array through that host's mirror.
+  `AcpRuntime._mirrored_session_mcp` answers `None` for a backend with no mirror
+  (`providers.mirrors.registry.has_mirror`), so kiro and KAS keep the pooled path
+  they always had — byte-identical, no new conditional and no new failure mode on
+  the shared construction path (harness-parity H13). For a mirrored backend it
+  resolves the broker stubs, mints this session's stub token onto them, and hands
+  them to `mirror.session_projection(...)` as `stub_elements` so ONE owner narrows
+  both halves of the array: a stub carries the same `name` as the spec entry it
+  rewrites, so appending stubs after a projection withheld that name would re-add
+  the server as the unrestricted one of the two. `session_key` and `channel_id`
+  ride the elements because a codex stdio server starts from `env_clear()` plus an
+  allowlist and can learn its session no other way. `permission_surface_owned` is
+  False: this runtime authors no native permission file, so a mirror in claude's
+  class fails closed here rather than delivering tools Crew's gate cannot see. The
+  harness still narrows transports afterwards (`session_mcp_servers`), which is
+  the last word on what this session's handshake advertised.
+
+  Two things come out of the projection that are not wire data. The per-tool deny
+  set lands on `AcpSessionHandle.spec_denied_tools`, and
+  `AcpSessionHandle._deny_spec_disabled_tool` refuses those calls at
+  `session/request_permission` — before the event is yielded, so no consumer
+  auto-approve and no human is asked to re-decide what the spec settled. It reads
+  the call's identity through the same `_dispatch.identified_mcp_call` the
+  `AcpClient` path reads, so the restriction cannot hold on one transport and not
+  the other. The derived-spec snapshot the array was built from is re-checked once
+  `session/new` / `session/load` returns
+  (`AcpRuntime._require_unchanged_mirrored_spec`): for a mirrored host the array
+  IS the derived spec, so a spec write landing between the build and the host
+  consuming it ends the session instead of running restrictions nobody agreed to.
 - **A non-runtime backend (not a member)** → `AcpClient.ensure_ready()`, one
   process per session with no shared runtime. The branch is expressed as
   positive membership, not `not is_claude_backend`, so a harness added later
