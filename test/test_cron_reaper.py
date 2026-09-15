@@ -247,7 +247,10 @@ class TestCronReaper:
         ) as mock_merge:
             await svc._run_job_isolated(job)
 
-        mock_merge.assert_called_once_with(job)
+        mock_merge.assert_called_once()
+        merged = mock_merge.call_args.args[0]
+        assert merged is not job
+        assert merged.id == job.id
 
     @pytest.mark.asyncio
     async def test_start_reaper_creates_task(self) -> None:

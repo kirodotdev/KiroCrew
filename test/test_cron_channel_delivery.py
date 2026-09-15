@@ -321,7 +321,14 @@ class TestDeliverCronToChannel:
             delivered = await orch._deliver_cron_to_channel(
                 DISCORD_KEY, "done", actor_key="cron:j1"
             )
+            outcome = await orch._deliver_cron_to_channel(
+                DISCORD_KEY,
+                "done",
+                actor_key="cron:j1",
+                return_outcome=True,
+            )
         assert delivered is False
+        assert outcome is gw._CronChannelDeliveryOutcome.REFUSED
         tr.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio

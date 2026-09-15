@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 import threading
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -47,6 +49,7 @@ def _make_gw():
     gw._no_crons = False
     gw.cron_svc = MagicMock()
     gw.cron_svc.remove_job_async = AsyncMock(return_value=True)
+    gw.cron_svc.run_is_manual = MagicMock(return_value=False)
     gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
     gw.sessions.release = MagicMock()
     gw.sessions.reset = AsyncMock()
@@ -82,7 +85,9 @@ def _make_command_job(**overrides):
     return CronJob(**defaults)
 
 
-async def _run_script_callback(gw, job, script_result=None, vet_reason=None, side_effect=None):
+async def _run_script_callback(
+    gw, job, script_result=None, vet_reason=None, side_effect=None, manual_run=False
+):
     """Run the cron callback with a mocked run_script_sandboxed result.
 
     ``vet_reason`` feeds the fire-time governance gate (None = job may run);
@@ -109,6 +114,7 @@ async def _run_script_callback(gw, job, script_result=None, vet_reason=None, sid
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.run_is_manual = MagicMock(return_value=manual_run)
             svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
@@ -153,6 +159,7 @@ async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.run_is_manual = MagicMock(return_value=False)
             svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
@@ -164,6 +171,25 @@ async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_
             return await captured_cb(job)
 
         return await _init_and_run(), mock_run
+
+
+def test_pruned_install_requires_both_runtime_paths_to_be_absent(tmp_path, monkeypatch):
+    from kiro_crew.slack import gateway as gateway_mod
+
+    interpreter = tmp_path / "old-install" / "python"
+    module = tmp_path / "old-install" / "gateway.py"
+    monkeypatch.setattr(gateway_mod.sys, "executable", str(interpreter))
+    monkeypatch.setattr(gateway_mod, "__file__", str(module))
+
+    assert gateway_mod._running_install_was_pruned()
+
+    module.parent.mkdir(parents=True)
+    module.write_text("# still installed\n", encoding="utf-8")
+    assert not gateway_mod._running_install_was_pruned()
+
+    module.unlink()
+    interpreter.write_text("", encoding="utf-8")
+    assert not gateway_mod._running_install_was_pruned()
 
 
 class TestScriptExecution:
@@ -184,6 +210,174 @@ class TestScriptExecution:
         job = _make_script_job()
         result, _ = await _run_script_callback(gw, job, {"status": "skip"})
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_pruned_install_enoent_is_recorded_never_started(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        job.consecutive_failures = 3
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        # Never-started retention contract: last_status "error" keeps
+        # _execute from recording a success, run_never_started stops
+        # _merge_job_result deleting a due one-shot, and no auto-pause
+        # strike is spent (consecutive_failures untouched).
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is True
+        assert job.consecutive_failures == 3
+        assert "replaced by an update" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_pruned_install_retains_a_due_one_shot(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        job.delete_after_run = True
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        # The exact data-loss shape: a one-shot delete_after_run job due
+        # inside the update handoff must NOT be treated as completed —
+        # run_never_started is what _merge_job_result's delete_owed guard
+        # (delete_after_run and not run_never_started) keys on.
+        assert result is None
+        assert job.delete_after_run and job.run_never_started
+
+    @pytest.mark.asyncio
+    async def test_pruned_at_job_is_quiesced_in_memory(self):
+        gw = _make_gw()
+        job = _make_script_job(schedule=CronSchedule(kind="at", at_ts=1.0), delete_after_run=True)
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        # A past-due at-job is due on every tick; on the drained gateway the
+        # launch fails identically forever, so leaving it enabled would be a
+        # zero-delay refire loop. It must be disabled in memory — while the
+        # retained delete_after_run shape keeps enabled=True on disk for the
+        # replacement gateway (merge propagation is gated on
+        # `not delete_after_run or fire_time_denied`).
+        assert result is None
+        assert job.run_never_started is True
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_pruned_recurring_job_is_quiesced_in_memory_too(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            await _run_script_callback(gw, job, side_effect=missing)
+
+        # keep_overdue leaves the job permanently due on this drained
+        # gateway, so it too must be disabled in memory or it refires in a
+        # zero-delay loop. The merge never propagates enabled for recurring
+        # jobs, so on disk it stays enabled for the replacement gateway.
+        assert job.enabled is False
+        assert job.keep_overdue is True
+        # 'every' jobs stay due via untouched last_run_ts — no owed marker.
+        assert job.owed_fire is False
+
+    @pytest.mark.asyncio
+    async def test_pruned_cron_expression_job_persists_an_owed_fire(self):
+        gw = _make_gw()
+        job = _make_script_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            await _run_script_callback(gw, job, side_effect=missing)
+
+        # A cron-expression job is only due while the current minute
+        # matches; the owed marker is what lets the replacement gateway
+        # dispatch the missed occurrence after a slow handoff.
+        assert job.owed_fire is True
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_manual_trigger_during_pruning_persists_no_debt(self):
+        """A manual trigger (run_job / cron trigger) failing on a pruned
+        install must not persist an owed occurrence: the schedule never
+        owed that run, and a paused job resumed later must not execute it
+        unscheduled."""
+        gw = _make_gw()
+        job = _make_script_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            await _run_script_callback(gw, job, side_effect=missing, manual_run=True)
+
+        assert job.owed_fire is False
+        # The quiesce still applies — the drained process cannot launch.
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_unrelated_missing_path_still_fails_even_when_pruned(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        missing = FileNotFoundError(
+            2, "No such file or directory", "/missing/user-script-interpreter"
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        # The pruned install only excuses ENOENT on the install's OWN files.
+        # A user script or wrapper deleted while the install happens to be
+        # pruned is still a real job failure.
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is False
+        assert job.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_pathless_enoent_is_a_real_failure_even_when_pruned(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        # resolve_script_path() style: a missing user script raised with no
+        # filename attached. Nothing install-owned is named, so the pruned
+        # install must not excuse it.
+        missing = FileNotFoundError("Script not found")
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is False
+        assert job.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_unrelated_spawn_enoent_remains_a_failure(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        missing = FileNotFoundError(2, "No such file or directory", "/missing/wrapper")
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=False):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert job.consecutive_failures == 1
+        assert "/missing/wrapper" in job.last_error
 
     @pytest.mark.asyncio
     async def test_skip_is_success_not_failure(self):
@@ -997,6 +1191,7 @@ def _make_gw_for_llm():
     gw._no_crons = False
     gw.cron_svc = MagicMock()
     gw.cron_svc.remove_job_async = AsyncMock(return_value=True)
+    gw.cron_svc.run_is_manual = MagicMock(return_value=False)
     gw._cfg = MagicMock()
     gw._cfg.agent.provider = "acp"
     gw._cfg.hooks = {}
@@ -1044,6 +1239,7 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.run_is_manual = MagicMock(return_value=False)
             svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
@@ -1052,6 +1248,1225 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
         assert captured_cb is not None
         result = await captured_cb(job)
         return result, _stream_mock
+
+
+class TestLlmCronDeliveryOwnership:
+    @pytest.mark.asyncio
+    async def test_same_service_edit_cannot_serialize_inflight_result_before_delivery(
+        self, tmp_path: Path
+    ) -> None:
+        """The canonical registry record never carries a run's partial result."""
+        from kiro_crew.cron import CronService
+
+        gateway = _make_gw_for_llm()
+        gateway.dashboard_state = None
+        gateway.slack = MagicMock()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.010")
+        gateway.slack.post_message = AsyncMock()
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job(
+            channel="C-old",
+            thread_ts="1711957800.100",
+            strict_schedule=True,
+        )
+        service._jobs = [job]
+        service._save()
+        original_validation = service.result_delivery_is_current
+        edited = False
+
+        def _edit_then_validate(running: CronJob) -> bool:
+            nonlocal edited
+            if not edited:
+                edited = True
+                assert (
+                    service.update_job(
+                        running.id,
+                        channel="C-new",
+                        thread_ts="1711957800.200",
+                    )
+                    is not None
+                )
+            return original_validation(running)
+
+        service.result_delivery_is_current = _edit_then_validate  # type: ignore[method-assign]
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new=AsyncMock(return_value="delivered result"),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.render_for_slack",
+                return_value=["delivered result"],
+            ),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", job.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            await service._run_job_isolated(job)
+
+        gateway.slack.post_blocks.assert_awaited_once()
+        assert gateway.slack.post_blocks.await_args.args[0] == "C-new"
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.channel == "C-new"
+        assert loaded.thread_ts == "1711957800.200"
+        assert loaded.last_result == "delivered result"
+        assert loaded.last_delivered_result_ts == loaded.last_result_ts
+        assert loaded.pending_delivery_result_ts == 0.0
+
+    @pytest.mark.asyncio
+    async def test_MUTATION_pinned_slack_route_waits_for_client_recovery(
+        self, tmp_path: Path
+    ) -> None:
+        """A missing client is transport downtime, not loss of a pinned route."""
+        from kiro_crew.cron import CronService
+
+        seed = CronService(base_dir=tmp_path)
+        job = _make_llm_job()
+        job.schedule = CronSchedule(kind="cron", cron_expr="3 3 29 2 *")
+        job.strict_schedule = True
+        job.owed_fire = True
+        seed._jobs = [job]
+        seed._save()
+        job.set_run_result("pinned while Slack is down")
+        assert seed.claim_result_delivery(job) is True
+        assert (
+            seed.checkpoint_result_delivery(
+                job,
+                parts=["pinned while Slack is down"],
+                completed_parts=0,
+                channel="C_PINNED",
+                parent_ts="",
+            )
+            is True
+        )
+        assert seed.release_result_delivery_claim(job) is True
+
+        replacement = CronService(base_dir=tmp_path)
+        pending = replacement.get_job(job.id)
+        assert pending is not None
+        gateway = _make_gw_for_llm()
+        gateway.dashboard_state = None
+        gateway.slack = None
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        stream = AsyncMock(side_effect=AssertionError("pending recovery reran provider work"))
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            replacement._on_job = on_job
+            return replacement
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=stream),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{pending.id}", pending.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            await replacement._run_job_isolated(pending)
+
+        stream.assert_not_awaited()
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.pending_delivery_result_ts == loaded.last_result_ts
+        assert loaded.delivery_slack_channel == "C_PINNED"
+        assert loaded.delivery_slack_completed_parts == 0
+        assert loaded.owed_fire is True
+
+    @pytest.mark.asyncio
+    async def test_MUTATION_dashboard_only_settlement_precedes_result_merge(
+        self, tmp_path: Path
+    ) -> None:
+        """A kill after callback return cannot resurrect a silent owed occurrence."""
+        from kiro_crew.cron import CronService
+
+        gateway = _make_gw_for_llm()
+        gateway.dashboard_state = None
+        gateway.slack = MagicMock()
+        gateway.slack.post_blocks = AsyncMock()
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job(silent=True)
+        job.schedule = CronSchedule(kind="cron", cron_expr="3 3 29 2 *")
+        job.strict_schedule = True
+        job.owed_fire = True
+        service._jobs = [job]
+        service._save()
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new=AsyncMock(return_value="dashboard result"),
+            ),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", job.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            # _execute returns before _run_job_isolated's normal result merge.
+            # Reading disk here models a hard kill in that exact window.
+            await service._execute(job)
+
+        gateway.slack.post_blocks.assert_not_awaited()
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_result == "dashboard result"
+        assert loaded.pending_delivery_result_ts == 0.0
+        assert loaded.delivery_claim_result_ts == 0.0
+        assert loaded.last_delivered_result_ts == 0.0
+        assert loaded.owed_fire is False
+
+    @pytest.mark.asyncio
+    async def test_MUTATION_parent_recovery_reuses_slack_client_msg_id(
+        self, tmp_path: Path
+    ) -> None:
+        """A kill after Slack accepts the parent retries with the same identity."""
+        from kiro_crew.cron import CronService
+
+        first_gateway = _make_gw_for_llm()
+        first_gateway.dashboard_state = None
+        first_gateway.slack = MagicMock()
+        first_gateway.slack.post_blocks = AsyncMock(return_value="1711957800.040")
+        first_gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        first_gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job(delete_after_run=True, channel="C_PINNED")
+        job.schedule = CronSchedule(kind="at", at_ts=1.0)
+        job.strict_schedule = True
+        service._jobs = [job]
+        service._save()
+        original_checkpoint = service.checkpoint_result_delivery
+        rejected_parent_checkpoint = False
+
+        def _checkpoint(*args, completed_parts: int, **kwargs):
+            nonlocal rejected_parent_checkpoint
+            if completed_parts == 1 and not rejected_parent_checkpoint:
+                rejected_parent_checkpoint = True
+                return False
+            return original_checkpoint(*args, completed_parts=completed_parts, **kwargs)
+
+        service.checkpoint_result_delivery = _checkpoint  # type: ignore[method-assign]
+
+        async def _first_create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_first_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new=AsyncMock(return_value="one-shot result"),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.render_for_slack",
+                return_value=["one-shot result"],
+            ),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", job.message),
+            ),
+        ):
+            await first_gateway._init_cron(arm=False)
+            await service._run_job_isolated(job)
+
+        first_call = first_gateway.slack.post_blocks.await_args
+        first_client_msg_id = first_call.kwargs["client_msg_id"]
+        assert first_client_msg_id
+        persisted = CronService(base_dir=tmp_path).get_job(job.id)
+        assert persisted is not None
+        assert persisted.delivery_slack_completed_parts == 0
+        assert persisted.delivery_slack_channel == "C_PINNED"
+        assert persisted.pending_delivery_result_ts == persisted.last_result_ts
+
+        replacement = CronService(base_dir=tmp_path)
+        pending = replacement.get_job(job.id)
+        assert pending is not None
+        second_gateway = _make_gw_for_llm()
+        second_gateway.dashboard_state = None
+        second_gateway.slack = MagicMock()
+        second_gateway.slack.post_blocks = AsyncMock(return_value="1711957800.040")
+        second_gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        second_gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        stream = AsyncMock(side_effect=AssertionError("one-shot recovery reran provider work"))
+
+        async def _second_create(*_args, on_job=None, **_kwargs):
+            replacement._on_job = on_job
+            return replacement
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_second_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=stream),
+            patch(
+                "kiro_crew.slack.gateway.render_for_slack",
+                side_effect=AssertionError("pinned result bytes were regenerated"),
+            ),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{pending.id}", pending.message),
+            ),
+        ):
+            await second_gateway._init_cron(arm=False)
+            await replacement._run_job_isolated(pending)
+
+        stream.assert_not_awaited()
+        retry_call = second_gateway.slack.post_blocks.await_args
+        assert retry_call.kwargs["client_msg_id"] == first_client_msg_id
+        assert CronService(base_dir=tmp_path).get_job(job.id) is None
+
+    @pytest.mark.asyncio
+    async def test_overflow_cancellation_resumes_at_exact_next_slack_part(
+        self, tmp_path: Path
+    ) -> None:
+        """A parent acknowledgement is partial progress, not full settlement."""
+        from kiro_crew.cron import CronService
+
+        gw = _make_gw_for_llm()
+        gw.dashboard_state = None
+        gw.slack = MagicMock()
+        gw.slack.post_blocks = AsyncMock(return_value="1711957800.001")
+        gw.slack.post_message = AsyncMock(side_effect=asyncio.CancelledError())
+        gw._open_dm_with_retry = AsyncMock(return_value="D_OWNER")
+        gw._deliver_cron_to_channel = AsyncMock(return_value=False)
+
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job()
+        job.schedule = CronSchedule(kind="cron", cron_expr="3 3 29 2 *")
+        job.strict_schedule = True
+        job.owed_fire = True
+        service._jobs = [job]
+        service._save()
+        gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new=AsyncMock(return_value="agent result"),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.render_for_slack",
+                return_value=["parent", "overflow"],
+            ),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", job.message),
+            ),
+        ):
+            await gw._init_cron(arm=False)
+            with pytest.raises(asyncio.CancelledError):
+                await service._execute(job)
+
+        persisted = CronService(base_dir=tmp_path).get_job(job.id)
+        assert persisted is not None
+        assert persisted.last_result == "agent result"
+        assert persisted.pending_delivery_result_ts == persisted.last_result_ts
+        assert persisted.last_delivered_result_ts == 0.0
+        assert persisted.acknowledged_delivery_result_ts == 0.0
+        assert persisted.delivery_slack_parts == ["parent", "overflow"]
+        assert persisted.delivery_slack_completed_parts == 1
+        assert persisted.delivery_slack_channel == "D_OWNER"
+        assert persisted.delivery_slack_parent_ts == "1711957800.001"
+        assert persisted.owed_fire is True
+
+        replacement = CronService(base_dir=tmp_path)
+        pending = replacement.get_job(job.id)
+        assert pending is not None
+        second_gateway = _make_gw_for_llm()
+        second_gateway.dashboard_state = None
+        second_gateway.slack = MagicMock()
+        second_gateway.slack.post_blocks = AsyncMock(return_value="1711957800.002")
+        second_gateway.slack.post_message = AsyncMock(return_value="1711957800.003")
+        second_gateway._open_dm_with_retry = AsyncMock(return_value="D_DIFFERENT")
+        second_gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        second_gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        second_stream = AsyncMock(return_value="next scheduled result")
+
+        async def _second_create(*_args, on_job=None, **_kwargs):
+            replacement._on_job = on_job
+            return replacement
+
+        def _render(text, **_kwargs):
+            assert text != "agent result", "pending result was rendered again"
+            return [text]
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_second_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=second_stream),
+            patch("kiro_crew.slack.gateway.render_for_slack", side_effect=_render),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{pending.id}", pending.message),
+            ),
+        ):
+            await second_gateway._init_cron(arm=False)
+            await replacement._run_job_isolated(pending)
+
+        second_stream.assert_awaited_once()
+        overflow_call = second_gateway.slack.post_message.await_args
+        assert overflow_call.args == ("D_OWNER", "overflow", "1711957800.001")
+        assert overflow_call.kwargs["client_msg_id"]
+        # The only new parent is the next scheduled result; the already-posted
+        # parent part of the pending result is never duplicated.
+        second_gateway.slack.post_blocks.assert_awaited_once()
+        assert "next scheduled result" in str(second_gateway.slack.post_blocks.await_args)
+        assert "parent" not in str(second_gateway.slack.post_blocks.await_args)
+        delivered = CronService(base_dir=tmp_path).get_job(job.id)
+        assert delivered is not None
+        assert delivered.last_result == "next scheduled result"
+        assert delivered.last_delivered_result_ts == delivered.last_result_ts
+        assert delivered.delivery_slack_parts == []
+        assert delivered.delivery_slack_completed_parts == 0
+        assert delivered.delivery_slack_channel == ""
+        assert delivered.delivery_slack_parent_ts == ""
+        assert delivered.owed_fire is False
+
+    @pytest.mark.asyncio
+    async def test_pending_delivery_retry_continues_into_owed_agent_occurrence(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.cron import CronService, CronStoreBusy
+
+        first_gateway = _make_gw_for_llm()
+        first_gateway.dashboard_state = None
+        first_gateway.slack = MagicMock()
+        first_gateway.slack.post_blocks = AsyncMock()
+        first_gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        first_gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job()
+        job.schedule = CronSchedule(kind="cron", cron_expr="3 3 29 2 *")
+        job.strict_schedule = True
+        job.owed_fire = True
+        service._jobs = [job]
+        service._save()
+        service.result_delivery_is_current = MagicMock(
+            side_effect=CronStoreBusy("validation store busy")
+        )
+
+        first_stream = AsyncMock(return_value="stored result")
+
+        async def _first_create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_first_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=first_stream),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", job.message),
+            ),
+        ):
+            await first_gateway._init_cron(arm=False)
+            await service._run_job_isolated(job)
+
+        first_stream.assert_awaited_once()
+        first_gateway.slack.post_blocks.assert_not_awaited()
+        persisted = CronService(base_dir=tmp_path).get_job(job.id)
+        assert persisted is not None
+        assert persisted.last_result == "stored result"
+        assert persisted.pending_delivery_result_ts == persisted.last_result_ts
+        assert persisted.last_delivered_result_ts == 0.0
+        assert persisted.last_posted_hash == ""
+        assert persisted.delivery_claim_result_ts == 0.0
+        assert persisted.owed_fire is True
+
+        replacement = CronService(base_dir=tmp_path)
+        pending = replacement.get_job(job.id)
+        assert pending is not None
+        second_gateway = _make_gw_for_llm()
+        second_gateway.dashboard_state = None
+        second_gateway.slack = MagicMock()
+        second_gateway.slack.post_blocks = AsyncMock(return_value="1711957800.002")
+        second_gateway.slack.post_message = AsyncMock()
+        second_gateway._open_dm_with_retry = AsyncMock(return_value="D_OWNER")
+        second_gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        second_gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        second_stream = AsyncMock(return_value="next scheduled result")
+
+        async def _second_create(*_args, on_job=None, **_kwargs):
+            replacement._on_job = on_job
+            return replacement
+
+        def _render(text, **_kwargs):
+            return [text]
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_second_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=second_stream),
+            patch("kiro_crew.slack.gateway.render_for_slack", side_effect=_render),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{pending.id}", pending.message),
+            ),
+        ):
+            await second_gateway._init_cron(arm=False)
+            await replacement._run_job_isolated(pending)
+
+        second_stream.assert_awaited_once()
+        assert second_gateway.slack.post_blocks.await_count == 2
+        delivered_calls = str(second_gateway.slack.post_blocks.await_args_list)
+        assert "stored result" in delivered_calls
+        assert "next scheduled result" in delivered_calls
+        delivered = CronService(base_dir=tmp_path).get_job(job.id)
+        assert delivered is not None
+        assert delivered.last_result == "next scheduled result"
+        assert delivered.pending_delivery_result_ts == 0.0
+        assert delivered.last_delivered_result_ts == delivered.last_result_ts
+        assert delivered.last_posted_hash
+        assert delivered.owed_fire is False
+
+    @pytest.mark.asyncio
+    async def test_pending_delivery_retry_failure_preserves_bytes_and_owed(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.cron import CronService, CronStoreBusy
+
+        seed = CronService(base_dir=tmp_path)
+        job = _make_llm_job()
+        job.schedule = CronSchedule(kind="cron", cron_expr="3 3 29 2 *")
+        job.strict_schedule = True
+        job.owed_fire = True
+        seed._jobs = [job]
+        seed._save()
+        job.set_run_result("pending exact bytes")
+        assert seed.claim_result_delivery(job) is True
+        assert seed.release_result_delivery_claim(job) is True
+
+        replacement = CronService(base_dir=tmp_path)
+        pending = replacement.get_job(job.id)
+        assert pending is not None
+        replacement.result_delivery_is_current = MagicMock(
+            side_effect=CronStoreBusy("validation still busy")
+        )
+        gateway = _make_gw_for_llm()
+        gateway.dashboard_state = None
+        gateway.slack = MagicMock()
+        gateway.slack.post_blocks = AsyncMock()
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        stream = AsyncMock(side_effect=AssertionError("pending retry reran provider work"))
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            replacement._on_job = on_job
+            return replacement
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=stream),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{pending.id}", pending.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            await replacement._run_job_isolated(pending)
+
+        stream.assert_not_awaited()
+        gateway.slack.post_blocks.assert_not_awaited()
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_result == "pending exact bytes"
+        assert loaded.pending_delivery_result_ts == loaded.last_result_ts
+        assert loaded.last_delivered_result_ts == 0.0
+        assert loaded.delivery_claim_result_ts == 0.0
+        assert loaded.owed_fire is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "boundary_method",
+        ["result_delivery_is_current", "claim_result_delivery"],
+        ids=["validation", "claim"],
+    )
+    async def test_cancellation_at_delivery_claim_boundary_pends_and_releases(
+        self, tmp_path: Path, boundary_method: str
+    ) -> None:
+        from kiro_crew.cron import CronService
+
+        gateway = _make_gw_for_llm()
+        gateway.dashboard_state = None
+        gateway.slack = MagicMock()
+        gateway.slack.post_blocks = AsyncMock()
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job()
+        job.schedule = CronSchedule(kind="cron", cron_expr="3 3 29 2 *")
+        job.strict_schedule = True
+        job.owed_fire = True
+        service._jobs = [job]
+        service._save()
+        original_boundary = getattr(service, boundary_method)
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+
+        def _blocked_boundary(current: CronJob) -> bool:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("test did not release delivery boundary")
+            return original_boundary(current)
+
+        setattr(service, boundary_method, _blocked_boundary)
+        stream = AsyncMock(return_value="completed before cancellation")
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=stream),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", job.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            task = asyncio.create_task(service._execute(job))
+            try:
+                assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 5), timeout=6)
+                task.cancel()
+                release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=6)
+            finally:
+                release.set()
+
+        stream.assert_awaited_once()
+        gateway.slack.post_blocks.assert_not_awaited()
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_result == "completed before cancellation"
+        assert loaded.pending_delivery_result_ts == loaded.last_result_ts
+        assert loaded.acknowledged_delivery_result_ts == 0.0
+        assert loaded.last_delivered_result_ts == 0.0
+        assert loaded.delivery_claim_result_ts == 0.0
+        assert loaded.delivery_claim_owner_pid == 0
+        assert loaded.delivery_claim_owner_start == ""
+        assert loaded.owed_fire is True
+
+    @pytest.mark.asyncio
+    async def test_failed_settlement_is_retried_without_skipping_next_occurrence(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.cron import CronService, CronStoreBusy
+
+        first_gateway = _make_gw_for_llm()
+        first_gateway.dashboard_state = None
+        first_gateway.slack = MagicMock()
+        first_gateway.slack.post_blocks = AsyncMock(return_value="1711957800.010")
+        first_gateway.slack.post_message = AsyncMock()
+        first_gateway._open_dm_with_retry = AsyncMock(return_value="D_OWNER")
+        first_gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        first_gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job()
+        job.schedule = CronSchedule(kind="cron", cron_expr="3 3 29 2 *")
+        job.strict_schedule = True
+        job.owed_fire = True
+        service._jobs = [job]
+        service._save()
+        service.settle_result_delivery = MagicMock(
+            side_effect=CronStoreBusy("settlement store busy")
+        )
+        first_stream = AsyncMock(return_value="first result")
+
+        async def _first_create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_first_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=first_stream),
+            patch(
+                "kiro_crew.slack.gateway.render_for_slack",
+                return_value=["first result"],
+            ),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", job.message),
+            ),
+        ):
+            await first_gateway._init_cron(arm=False)
+            await service._run_job_isolated(job)
+
+        first_gateway.slack.post_blocks.assert_awaited_once()
+        persisted = CronService(base_dir=tmp_path).get_job(job.id)
+        assert persisted is not None
+        assert persisted.last_result == "first result"
+        assert persisted.pending_delivery_result_ts == persisted.last_result_ts
+        assert persisted.acknowledged_delivery_result_ts == persisted.last_result_ts
+        assert persisted.last_delivered_result_ts == 0.0
+        assert persisted.last_posted_hash == ""
+        assert persisted.owed_fire is True
+
+        replacement = CronService(base_dir=tmp_path)
+        pending = replacement.get_job(job.id)
+        assert pending is not None
+        second_gateway = _make_gw_for_llm()
+        second_gateway.dashboard_state = None
+        second_gateway.slack = MagicMock()
+        second_gateway.slack.post_blocks = AsyncMock(return_value="1711957800.011")
+        second_gateway.slack.post_message = AsyncMock()
+        second_gateway._open_dm_with_retry = AsyncMock(return_value="D_OWNER")
+        second_gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        second_gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        second_stream = AsyncMock(return_value="next result")
+
+        async def _second_create(*_args, on_job=None, **_kwargs):
+            replacement._on_job = on_job
+            return replacement
+
+        def _render(text, **_kwargs):
+            return [text]
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_second_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=second_stream),
+            patch("kiro_crew.slack.gateway.render_for_slack", side_effect=_render),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{pending.id}", pending.message),
+            ),
+        ):
+            await second_gateway._init_cron(arm=False)
+            await replacement._run_job_isolated(pending)
+
+        second_stream.assert_awaited_once()
+        second_gateway.slack.post_blocks.assert_awaited_once()
+        assert "next result" in str(second_gateway.slack.post_blocks.await_args)
+        assert "first result" not in str(second_gateway.slack.post_blocks.await_args)
+        delivered = CronService(base_dir=tmp_path).get_job(job.id)
+        assert delivered is not None
+        assert delivered.last_result == "next result"
+        assert delivered.pending_delivery_result_ts == 0.0
+        assert delivered.acknowledged_delivery_result_ts == 0.0
+        assert delivered.last_delivered_result_ts == delivered.last_result_ts
+        assert delivered.owed_fire is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("slack_without_recipient", "created_by"),
+        [
+            (False, ""),
+            (True, ""),
+            (True, "app:digest"),
+        ],
+        ids=["no-slack-client", "slack-client-without-recipient", "app-owned-job"],
+    )
+    async def test_job_without_external_target_runs_fresh_turns_without_delivery_debt(
+        self, tmp_path: Path, slack_without_recipient: bool, created_by: str
+    ) -> None:
+        from kiro_crew.cron import CronService
+
+        gateway = _make_gw_for_llm()
+        gateway._owner_id = ""
+        gateway.slack = MagicMock() if slack_without_recipient else None
+        gateway._open_dm_with_retry = AsyncMock()
+        if gateway.slack is not None:
+            gateway.slack.post_blocks = AsyncMock()
+            gateway.slack.post_message = AsyncMock()
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job(created_by=created_by)
+        job.strict_schedule = True
+        service._jobs = [job]
+        service._save()
+        stream = AsyncMock(side_effect=["first result", "second result"])
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=stream),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                side_effect=lambda current: (f"cron:{current.id}", current.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            await service._run_job_isolated(job)
+            second = service.get_job(job.id)
+            assert second is not None
+            await service._run_job_isolated(second)
+
+        assert stream.await_count == 2
+        gateway._deliver_cron_to_channel.assert_not_awaited()
+        if gateway.slack is not None:
+            gateway.slack.post_blocks.assert_not_awaited()
+            gateway.slack.post_message.assert_not_awaited()
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_result == "second result"
+        assert loaded.pending_delivery_result_ts == 0.0
+        assert loaded.acknowledged_delivery_result_ts == 0.0
+        gateway._open_dm_with_retry.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_app_owned_job_falls_back_to_valid_slack_owner(self, tmp_path: Path) -> None:
+        from kiro_crew.cron import CronService
+
+        gateway = _make_gw_for_llm()
+        gateway._owner_id = "UOWNER"
+        gateway.slack = MagicMock()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.020")
+        gateway.slack.post_message = AsyncMock()
+        gateway._open_dm_with_retry = AsyncMock(return_value="D_OWNER")
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job(created_by="app:digest")
+        job.strict_schedule = True
+        service._jobs = [job]
+        service._save()
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new=AsyncMock(return_value="owner result"),
+            ),
+            patch("kiro_crew.slack.gateway.render_for_slack", return_value=["owner result"]),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", job.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            await service._run_job_isolated(job)
+
+        gateway._open_dm_with_retry.assert_awaited_once_with("UOWNER", job.name)
+        gateway.slack.post_blocks.assert_awaited_once()
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_delivered_result_ts == loaded.last_result_ts
+        assert loaded.pending_delivery_result_ts == 0.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "channel_outcome",
+        ["refused", "failed"],
+        ids=["policy-refusal-is-terminal", "transport-failure-stays-pending"],
+    )
+    async def test_channel_route_terminality_controls_future_agent_turns(
+        self, tmp_path: Path, channel_outcome: str
+    ) -> None:
+        from kiro_crew.cron import CronService
+        from kiro_crew.slack.gateway import _CronChannelDeliveryOutcome
+
+        gateway = _make_gw_for_llm()
+        gateway._owner_id = ""
+        gateway.slack = None
+        gateway._channel_reply_link = MagicMock(return_value=(MagicMock(channel_type="telegram"),))
+        outcome = (
+            _CronChannelDeliveryOutcome.REFUSED
+            if channel_outcome == "refused"
+            else _CronChannelDeliveryOutcome.FAILED
+        )
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=outcome)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job(created_by="", session_key="telegram:owner")
+        job.strict_schedule = True
+        service._jobs = [job]
+        service._save()
+        stream = AsyncMock(side_effect=["first result", "second result"])
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=stream),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                side_effect=lambda current: (f"cron:{current.id}", current.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            await service._run_job_isolated(job)
+            second = service.get_job(job.id)
+            assert second is not None
+            await service._run_job_isolated(second)
+
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        if channel_outcome == "refused":
+            assert stream.await_count == 2
+            assert loaded.last_result == "second result"
+            assert loaded.pending_delivery_result_ts == 0.0
+        else:
+            assert stream.await_count == 1
+            assert loaded.last_result == "first result"
+            assert loaded.pending_delivery_result_ts == loaded.last_result_ts
+            assert loaded.last_delivered_result_ts == 0.0
+
+    @pytest.mark.asyncio
+    async def test_one_shot_partial_slack_delivery_preserves_remaining_debt(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.cron import CronService
+
+        gateway = _make_gw_for_llm()
+        gateway.dashboard_state = None
+        gateway.slack = MagicMock()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.012")
+        gateway.slack.post_message = AsyncMock(side_effect=RuntimeError("overflow failed"))
+        gateway._open_dm_with_retry = AsyncMock(return_value="D_OWNER")
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        service = CronService(base_dir=tmp_path)
+        job = _make_llm_job(delete_after_run=True)
+        job.schedule = CronSchedule(kind="at", at_ts=1.0)
+        job.strict_schedule = True
+        service._jobs = [job]
+        service._save()
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            service._on_job = on_job
+            return service
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                new=AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new=AsyncMock(return_value="large result"),
+            ),
+            patch(
+                "kiro_crew.slack.gateway.render_for_slack",
+                return_value=["parent", "overflow"],
+            ),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{job.id}", job.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            await service._run_job_isolated(job)
+
+        gateway.slack.post_blocks.assert_awaited_once()
+        gateway.slack.post_message.assert_awaited_once()
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_delivered_result_ts == 0.0
+        assert loaded.acknowledged_delivery_result_ts == 0.0
+        assert loaded.delivery_slack_parts == ["parent", "overflow"]
+        assert loaded.delivery_slack_completed_parts == 1
+        assert loaded.delivery_slack_channel == "D_OWNER"
+        assert loaded.delivery_slack_parent_ts == "1711957800.012"
+        assert loaded.pending_delivery_result_ts == loaded.last_result_ts
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "recovery_state",
+        ["pending-overflow", "acknowledged-unsettled"],
+    )
+    async def test_one_shot_recovery_settles_then_deletes_without_rerunning_agent(
+        self, tmp_path: Path, recovery_state: str
+    ) -> None:
+        from kiro_crew.cron import CronService
+
+        seed = CronService(base_dir=tmp_path)
+        job = _make_llm_job(delete_after_run=True)
+        job.schedule = CronSchedule(kind="at", at_ts=1.0)
+        job.strict_schedule = True
+        seed._jobs = [job]
+        seed._save()
+        job.set_run_result("one-shot result")
+        assert seed.claim_result_delivery(job) is True
+        parts = ["parent", "overflow"] if recovery_state == "pending-overflow" else ["parent"]
+        assert (
+            seed.checkpoint_result_delivery(
+                job,
+                parts=parts,
+                completed_parts=1,
+                channel="D_OWNER",
+                parent_ts="1711957800.030",
+            )
+            is True
+        )
+        if recovery_state == "pending-overflow":
+            assert seed.release_result_delivery_claim(job) is True
+
+        replacement = CronService(base_dir=tmp_path)
+        pending = replacement.get_job(job.id)
+        assert pending is not None
+        gateway = _make_gw_for_llm()
+        gateway.dashboard_state = None
+        gateway.slack = MagicMock()
+        gateway.slack.post_blocks = AsyncMock()
+        gateway.slack.post_message = AsyncMock(return_value="1711957800.031")
+        gateway._open_dm_with_retry = AsyncMock()
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        stream = AsyncMock(side_effect=AssertionError("one-shot recovery reran provider work"))
+
+        async def _create(*_args, on_job=None, **_kwargs):
+            replacement._on_job = on_job
+            return replacement
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=_create),
+            ),
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new=AsyncMock(),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", new=stream),
+            patch(
+                "kiro_crew.slack.gateway.render_for_slack",
+                side_effect=AssertionError("pinned multipart bytes were regenerated"),
+            ),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch(
+                "kiro_crew.slack.gateway.build_cron_session_context",
+                return_value=(f"cron:{pending.id}", pending.message),
+            ),
+        ):
+            await gateway._init_cron(arm=False)
+            await replacement._run_job_isolated(pending)
+
+        stream.assert_not_awaited()
+        gateway.slack.post_blocks.assert_not_awaited()
+        gateway._open_dm_with_retry.assert_not_awaited()
+        if recovery_state == "pending-overflow":
+            overflow_call = gateway.slack.post_message.await_args
+            assert overflow_call.args == ("D_OWNER", "overflow", "1711957800.030")
+            assert overflow_call.kwargs["client_msg_id"]
+        else:
+            gateway.slack.post_message.assert_not_awaited()
+        assert CronService(base_dir=tmp_path).get_job(job.id) is None
 
 
 class TestLlmCronAdmission:
@@ -1171,6 +2586,143 @@ class TestModelFallback:
             raise RuntimeError("model spawn failed")
 
         with pytest.raises(RuntimeError, match="model spawn failed"):
+            await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+
+    @pytest.mark.asyncio
+    async def test_pruned_agent_launch_preserves_prior_result_generation(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job()
+        job.last_result = "settled prior result"
+        job.last_result_ts = 123.5
+        job.last_result_stamp = " | prior"
+        job.last_delivered_result_ts = 123.5
+        job.last_posted_hash = "prior-hash"
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, stream_mock = await _run_llm_callback(
+                gw, job, get_or_create_side_effect=_side_effect
+            )
+
+        assert result is None
+        stream_mock.assert_not_awaited()
+        assert job.run_never_started is True
+        assert job.last_result == "settled prior result"
+        assert job.last_result_ts == 123.5
+        assert job.last_result_stamp == " | prior"
+        assert job.last_delivered_result_ts == 123.5
+        assert job.last_posted_hash == "prior-hash"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "agent_sequence",
+        [[], ["first", "second"]],
+        ids=["single-agent", "agent-sequence"],
+    )
+    async def test_pruned_install_enoent_skips_agent_launch(self, agent_sequence):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=agent_sequence)
+        job.consecutive_failures = 3
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, stream_mock = await _run_llm_callback(
+                gw, job, get_or_create_side_effect=_side_effect
+            )
+
+        assert result is None
+        stream_mock.assert_not_awaited()
+        # Never-started retention contract (same as the script path): the
+        # skipped launch must not read as a completed run, and a due
+        # one-shot must survive for the replacement gateway.
+        assert job.last_status == "error"
+        assert job.run_never_started is True
+        assert job.consecutive_failures == 3
+        assert "replaced by an update" in job.last_error
+        expected_session_key = (
+            f"cron:{job.id}:{agent_sequence[0]}" if agent_sequence else f"cron:{job.id}"
+        )
+        gw.cron_svc.clear_active_session_key.assert_called_once_with(job.id, expected_session_key)
+
+    @pytest.mark.asyncio
+    async def test_mid_sequence_pruning_records_a_failure_not_never_started(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=["first", "second"])
+        missing = FileNotFoundError(
+            2,
+            "No such file or directory",
+            str(Path(sys.prefix) / "bin" / "python3.12"),
+        )
+        provider_mock = MagicMock()
+        calls = {"n": 0}
+
+        async def _acquire(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return (provider_mock, True, False)
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_acquire)
+
+        # Agent 'first' completed a turn: its side effects exist. Marking the
+        # run never-started would retain the one-shot and REPLAY that
+        # completed work on the replacement gateway — record a normal failed
+        # run instead, surfacing the partial completion to the operator.
+        assert result is None
+        assert job.run_never_started is False
+        assert job.last_status == "error"
+        assert "duplicating finished work" in job.last_error
+        assert job.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_mid_sequence_pruning_names_previous_repeated_agent_position(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=["repeat", "middle", "repeat"])
+        missing = FileNotFoundError(
+            2,
+            "No such file or directory",
+            str(Path(sys.prefix) / "bin" / "python3.12"),
+        )
+        provider_mock = MagicMock()
+        calls = {"n": 0}
+
+        async def _acquire(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return (provider_mock, True, False)
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_acquire)
+
+        assert result is None
+        assert "after 'middle' completed" in job.last_error
+        assert "duplicating finished work" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_unrelated_agent_spawn_enoent_remains_a_failure(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job()
+        missing = FileNotFoundError(2, "No such file or directory", "/missing/provider")
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with (
+            patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=False),
+            pytest.raises(FileNotFoundError, match="missing/provider"),
+        ):
             await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
 
 
@@ -1383,6 +2935,48 @@ class TestExecutePreservesCallbackStatus:
         await svc._execute(job)
         assert job.last_status == "error"
         assert job.last_error == "command failed (exit_code=1)"
+
+    @pytest.mark.asyncio
+    async def test_execute_keep_overdue_leaves_the_schedule_owed(self, tmp_path):
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+
+        async def pruned_cb(job):
+            # _record_pruned_launch_skip contract, scheduler side.
+            job.last_status = "error"
+            job.run_never_started = True
+            job.keep_overdue = True
+
+        svc._on_job = pruned_cb
+        job = svc.add_job("pruned", "echo hi", every_secs=3600)
+        before = job.last_run_ts
+        await svc._execute(job)
+        # The schedule stays exactly as owed as it was: no last_run_ts
+        # advance, so the replacement gateway's retry is not delayed.
+        assert job.last_run_ts == before
+
+    @pytest.mark.asyncio
+    async def test_execute_keep_overdue_does_not_park_a_plain_at_job(self, tmp_path):
+        from kiro_crew.cron import CronSchedule, CronService
+
+        svc = CronService(base_dir=tmp_path)
+
+        async def pruned_cb(job):
+            job.last_status = "error"
+            job.run_never_started = True
+            job.keep_overdue = True
+
+        svc._on_job = pruned_cb
+        job = svc.add_job("pruned-at", "echo hi", every_secs=3600)
+        job.schedule = CronSchedule(kind="at", at_ts=1.0)
+        job.enabled = True
+        await svc._execute(job)
+        # A plain at-job skipped by pruning must NOT hit the fired/parked
+        # disable — that would durably lose its only execution. (The drained
+        # process quiesces it in memory via _record_pruned_launch_skip
+        # instead.)
+        assert job.enabled is True
 
     @pytest.mark.asyncio
     async def test_execute_marks_ok_when_callback_clean(self, tmp_path):
@@ -1623,6 +3217,7 @@ async def _run_script_callback_behind_a_busy_worker(gw, job, script_result, hold
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.run_is_manual = MagicMock(return_value=False)
             svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
@@ -2102,6 +3697,12 @@ class TestCronPoolQueueWait:
         from kiro_crew.cron import CronService
 
         gw = _make_gw()
+        # A dispatched one-shot is consumed only after external acknowledgement.
+        # Keep this helper's negative control on the confirmed-delivery branch;
+        # validation/transport failure is covered by the pending-outbox tests.
+        gw.slack.open_dm = AsyncMock(return_value="D-CRON-CONTROL")
+        gw.slack.post_blocks = AsyncMock(return_value="1711957800.003")
+        gw.slack.post_message = AsyncMock(return_value=None)
         captured_cb = None
         with (
             patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,

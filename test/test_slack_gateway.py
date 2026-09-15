@@ -21,6 +21,7 @@ import pytest
 
 from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import (
     _CRON_MSG_LIMIT,
@@ -2048,29 +2049,15 @@ class TestInitCron:
 
         callback = mock_cs.create.call_args[1]["on_job"]
 
-        job = MagicMock()
-        job.member_id = ""
-        job.memory_store = ""
-        job.script = ""
-        job.command = ""
-        job.id = "j1"
-        job.name = f"nightly {secret} sweep"
-        job.persistent_session = True
-        job.agent_sequence = []
-        job.agent_id = None
-        job.channel = ""
-        job.created_by = "U1"
-        job.approval_mode = "auto"
-        job.env = None
-        job.acked_items = []
-        job.silent = False
-        job.thread_ts = None
-        job.last_posted_hash = ""
-        job.consecutive_dupes = 0
-        job.last_posted_at = 0.0
-        job.last_failure_hash = ""
-        job.last_failure_at = 0.0
-        job.consecutive_failures = 0
+        job = CronJob(
+            id="j1",
+            name=f"nightly {secret} sweep",
+            message="run task",
+            schedule=CronSchedule(kind="every", every_secs=3600),
+            persistent_session=True,
+            created_by="U1",
+            approval_mode="auto",
+        )
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -3545,30 +3532,19 @@ class TestCronSuccessReminder:
 
         callback = mock_cs.create.call_args[1]["on_job"]
 
-        job = MagicMock()
-        job.member_id = ""
-        job.memory_store = ""
-        job.script = ""
-        job.command = ""
-        job.id = "j_remind"
-        job.name = "reminder-job"
-        job.persistent_session = True
-        job.agent_sequence = []
-        job.agent_id = None
-        job.channel = ""
-        job.created_by = "U1"
-        job.approval_mode = "auto"
-        job.env = None
-        job.acked_items = []
-        job.silent = False
-        job.thread_ts = None
-        job.last_posted_hash = _result_hash("same output")
-        job.consecutive_dupes = 5
-        # Posted more than 24h ago
-        job.last_posted_at = time.time() - _SUCCESS_REMINDER_SECS - 100
-        job.last_failure_hash = ""
-        job.last_failure_at = 0.0
-        job.consecutive_failures = 0
+        job = CronJob(
+            id="j_remind",
+            name="reminder-job",
+            message="run",
+            schedule=CronSchedule(kind="every", every_secs=3600),
+            persistent_session=True,
+            created_by="U1",
+            approval_mode="auto",
+            last_posted_hash=_result_hash("same output"),
+            consecutive_dupes=5,
+            # Posted more than 24h ago.
+            last_posted_at=time.time() - _SUCCESS_REMINDER_SECS - 100,
+        )
 
         with patch(
             "kiro_crew.slack.gateway.stream_and_collect",

@@ -335,6 +335,10 @@ class TestAntiDrift:
     # - approval_mode: validated by a separate finite-set check, not length
     # - memory_store: resolved internally from trusted member/session identity;
     #   never accepted from a cron creation or update caller
+    # - delivery_claim_owner_start: captured from the claiming runtime's process
+    #   generation and never accepted from a cron creation or update caller
+    # - delivery_slack_channel / delivery_slack_parent_ts: captured from the
+    #   acknowledged Slack delivery and never accepted from a caller
     _RUNTIME_ONLY_FIELDS: frozenset[str] = frozenset(
         {
             "id",
@@ -346,6 +350,9 @@ class TestAntiDrift:
             "last_failure_hash",
             "approval_mode",
             "memory_store",
+            "delivery_claim_owner_start",
+            "delivery_slack_channel",
+            "delivery_slack_parent_ts",
         }
     )
 

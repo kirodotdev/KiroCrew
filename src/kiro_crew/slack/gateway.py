@@ -34,8 +34,9 @@ import uuid
 import webbrowser
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
+from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from aiohttp import web
 from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeClient
@@ -345,7 +346,7 @@ from kiro_crew.subagent_completion_meta import (
 )
 from kiro_crew.taskrunner import TaskRunner
 from kiro_crew.tunnel import set_publish_disabled
-from kiro_crew.validation import CHANNEL_ID_RE
+from kiro_crew.validation import CHANNEL_ID_RE, USER_ID_RE
 from kiro_crew.wecom.gateway import warn_if_channel_uncredentialed
 
 if TYPE_CHECKING:
@@ -457,6 +458,7 @@ def _injection_slot_busy(slot: Any) -> bool:
 # client creation / context assembly), mirroring the subagent path's budget.
 # In-stream transient errors are retried separately by stream_and_collect.
 _CRON_TRANSIENT_RETRIES = 2
+_CRON_DELIVERY_ROUTE_ATTEMPTS = 3
 
 # Continuation prompt for the one-shot post-token resume below. Reuses the
 # subagent path's constant verbatim (gateway.py already imports from
@@ -801,6 +803,98 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
         denied_commands_user_added=list(user_cfg.denied_commands_user_added),
     )
     return HookManager(scoped)
+
+
+def _running_install_was_pruned() -> bool:
+    """Whether an update removed every path that can launch this version.
+
+    A managed-install promotion may unlink the old interpreter and package
+    tree while this gateway still drains from mapped memory. Requiring both
+    paths to be absent distinguishes that handoff from an unrelated missing
+    working directory, launcher, or user binary, which must remain a real
+    cron failure.
+    """
+    return not Path(sys.executable).is_file() and not Path(__file__).is_file()
+
+
+def _enoent_names_this_install(exc: FileNotFoundError) -> bool:
+    """Whether the missing path belongs to this (replaced) install.
+
+    A pruned install must only excuse launches that failed on the install's
+    OWN vanished files (interpreter, launcher, package tree). A user script
+    or provider binary deleted while the install happens to be pruned is
+    still a real job failure and must keep raising.
+    """
+    missing = exc.filename
+    if not missing:
+        # A pathless ENOENT (e.g. resolve_script_path() refusing a missing
+        # user script) names nothing install-owned: treat it as a real
+        # failure. Launch-path failures on the replaced install always
+        # carry the missing file's path.
+        return False
+    # Two containment roots, both concrete: the interpreter prefix (the
+    # launch interpreter lives under it) and this module's own package tree
+    # (a sibling of sys.prefix in versioned installs, so neither implies
+    # the other). Deliberately NOT sys.prefix's parent, which degrades to
+    # '/' or '/usr' on non-versioned layouts and would excuse everything.
+    roots = (Path(sys.prefix), Path(__file__).resolve().parents[2])
+    target = Path(missing)
+    for root in roots:
+        try:
+            if target.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _record_pruned_launch_skip(job: "CronJob", cron_svc: "CronService | None" = None) -> None:
+    """Book a launch skipped by a pruned install as never-started.
+
+    Mirrors the overlap-skip retention pattern: ``last_status = "error"``
+    keeps ``CronScheduler._execute`` from recording a success (so
+    ``record_success()`` cannot mask the missed run), ``run_never_started``
+    is the retention marker that stops ``_merge_job_result`` deleting a due
+    one-shot ``delete_after_run`` job, and ``record_failure()`` is
+    deliberately NOT called so the update handoff costs no auto-pause
+    strike. The replacement gateway launches a version-consistent child on
+    its next tick.
+    """
+    # A skipped launch owns no result transition. Keep the durable result and
+    # outbox generation intact so the replacement runtime can still settle or
+    # present it without this never-started run publishing an empty value.
+    job.last_status = "error"
+    job.last_error = "Launch skipped: the running install was replaced by an update"
+    job.run_never_started = True
+    # Leave the schedule exactly as owed as it was: _execute neither
+    # advances last_run_ts nor durably disables an at-job when this is set,
+    # and _merge_job_result skips its at-job enabled propagation, so the
+    # replacement gateway retries the job as if this launch never happened.
+    job.keep_overdue = True
+    if job.schedule.kind == "cron" and not (
+        cron_svc is not None and cron_svc.run_is_manual(job.id)
+    ):
+        # 'every' stays due (last_run_ts untouched) and 'at' stays due
+        # (at_ts in the past), but a cron-expression job is only due while
+        # the CURRENT minute matches — a slow handoff would silently lose
+        # the occurrence. Persist the debt; _is_due honors it and the
+        # make-up run consumes it. A MANUAL trigger (run_job / cron
+        # trigger) is excluded: the schedule never owed that run, and a
+        # paused job resumed later must not execute it unscheduled.
+        job.owed_fire = True
+    # On this drained gateway every launch fails the same way forever, and
+    # a job left enabled while still due (which keep_overdue guarantees)
+    # would refire in a zero-delay loop — flooding history and contending
+    # the store lock against the replacement gateway. Two quiesce layers:
+    # the snapshot object is disabled for the CURRENT tick, and the
+    # service's pruned-quiesce registry excludes the id from every FUTURE
+    # due-scan — necessary because each tick's _sync() replaces the job
+    # list with fresh disk copies (enabled=True on disk by design, so the
+    # replacement gateway retries), which would resurrect a per-object
+    # disable. Neither layer is persisted; user_paused is untouched.
+    job.enabled = False
+    if cron_svc is not None:
+        cron_svc.quiesce_pruned(job.id)
 
 
 class _GateTally:
@@ -1339,6 +1433,25 @@ async def _cron_stream_with_posttoken_resume(
             )
             await asyncio.sleep(_delay)
             msg = _CRON_POSTTOKEN_CONTINUE_MSG
+
+
+class _CronChannelDeliveryOutcome(Enum):
+    """What the non-Slack route established for one delivery attempt."""
+
+    NO_TARGET = auto()
+    REFUSED = auto()
+    FAILED = auto()
+    DELIVERED = auto()
+
+
+class _CronResultDeliveryOutcome(Enum):
+    """Terminal or retry state of one generated cron result."""
+
+    DASHBOARD_ONLY = auto()
+    EXTERNAL_PENDING = auto()
+    EXTERNAL_ACKNOWLEDGED = auto()
+    SETTLED_CONTINUE = auto()
+    SETTLED_DELETE_ONE_SHOT = auto()
 
 
 def _result_hash(text: str) -> str:
@@ -3677,7 +3790,34 @@ class GatewayOrchestrator:
         origin = job.session_key if job else ""
         return origin if isinstance(origin, str) else ""
 
-    async def _deliver_cron_to_channel(self, origin_key: str, text: str, *, actor_key: str) -> bool:
+    @overload
+    async def _deliver_cron_to_channel(
+        self,
+        origin_key: str,
+        text: str,
+        *,
+        actor_key: str,
+        return_outcome: Literal[False] = False,
+    ) -> bool: ...
+
+    @overload
+    async def _deliver_cron_to_channel(
+        self,
+        origin_key: str,
+        text: str,
+        *,
+        actor_key: str,
+        return_outcome: Literal[True],
+    ) -> _CronChannelDeliveryOutcome: ...
+
+    async def _deliver_cron_to_channel(
+        self,
+        origin_key: str,
+        text: str,
+        *,
+        actor_key: str,
+        return_outcome: bool = False,
+    ) -> bool | _CronChannelDeliveryOutcome:
         """Deliver cron output to the non-Slack channel that owns *origin_key*.
 
         A job belongs to the conversation that scheduled it, so an unattended
@@ -3696,18 +3836,24 @@ class GatewayOrchestrator:
         gates are the same audited, fail-closed seam, so a denial at either end
         refuses the send and lands on the SEL trail.
 
-        Returns False for a Slack, dashboard, or unresolvable origin: those keep
-        the Slack leg and the dashboard bell as their delivery, which is every job
-        an install carries today. When it DOES deliver, it is the only leg: the
-        callers stand their Slack leg down, because one run notifying one operator
-        twice is how notifications become noise. An explicit ``job.channel`` is a
-        destination the user pinned and takes precedence over both.
+        Boolean callers retain the established API. Result-delivery callers ask
+        for the typed outcome so a missing route or durable policy refusal can
+        finish as dashboard-only, while a transport failure keeps its exact bytes
+        pending. An explicit ``job.channel`` still takes precedence over both.
         """
+
+        def _result(
+            outcome: _CronChannelDeliveryOutcome,
+        ) -> bool | _CronChannelDeliveryOutcome:
+            if return_outcome:
+                return outcome
+            return outcome is _CronChannelDeliveryOutcome.DELIVERED
+
         if not origin_key or not text.strip():
-            return False
+            return _result(_CronChannelDeliveryOutcome.NO_TARGET)
         resolved = self._channel_reply_link(origin_key)
         if resolved is None:
-            return False
+            return _result(_CronChannelDeliveryOutcome.NO_TARGET)
         channel_type = resolved[0].channel_type
         try:
             # Off-loop: resolving the active profile walks the profile directory
@@ -3731,7 +3877,7 @@ class GatewayOrchestrator:
                 actor_key,
                 channel_type,
             )
-            return False
+            return _result(_CronChannelDeliveryOutcome.REFUSED)
         # Default False, not True: a Decision without ``permitted`` is an
         # unusable answer from a gate, and must not read as permission.
         if not getattr(decision, "permitted", False):
@@ -3740,9 +3886,14 @@ class GatewayOrchestrator:
                 actor_key,
                 channel_type,
             )
-            return False
-        return await self._deliver_channel_reply(
+            return _result(_CronChannelDeliveryOutcome.REFUSED)
+        delivered = await self._deliver_channel_reply(
             origin_key, text, resolved_link=resolved, caller="cron"
+        )
+        return _result(
+            _CronChannelDeliveryOutcome.DELIVERED
+            if delivered
+            else _CronChannelDeliveryOutcome.FAILED
         )
 
     # ── One spelling of the cron failure-alert mechanism ───────────────────
@@ -3899,6 +4050,474 @@ class GatewayOrchestrator:
 
     async def _init_cron(self, *, arm: bool = True) -> None:
         """Initialize the cron service, optionally arming it immediately."""
+
+        async def _run_result_store_call(call: Callable[..., Any], *args: Any) -> Any:
+            """Run one result-store transaction to completion before cancellation escapes."""
+            operation = asyncio.create_task(asyncio.to_thread(call, *args))
+            try:
+                return await asyncio.shield(operation)
+            except asyncio.CancelledError as cancelled:
+                while not operation.done():
+                    try:
+                        await asyncio.shield(operation)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                try:
+                    operation.result()
+                except Exception:
+                    logger.warning(
+                        "Cron result-store operation failed while cancellation drained",
+                        exc_info=True,
+                    )
+                raise cancelled
+
+        async def _result_delivery_is_current(job: CronJob) -> bool | None:
+            """True=current, False=stale/delivered, None=retryable validation error."""
+            if self.cron_svc is None:
+                return True
+            try:
+                return await _run_result_store_call(self.cron_svc.result_delivery_is_current, job)
+            except Exception:
+                logger.warning(
+                    "Cron '%s': could not validate result delivery origin",
+                    job.name,
+                    exc_info=True,
+                )
+                return None
+
+        async def _claim_result_delivery(job: CronJob) -> bool | None:
+            """True=owned, False=another valid owner, None=retryable store error."""
+            if self.cron_svc is None:
+                return True
+            try:
+                return await _run_result_store_call(self.cron_svc.claim_result_delivery, job)
+            except Exception:
+                logger.warning(
+                    "Cron '%s': could not claim result delivery",
+                    job.name,
+                    exc_info=True,
+                )
+                return None
+
+        async def _release_result_delivery_claim(job: CronJob) -> bool:
+            if self.cron_svc is None:
+                return True
+            try:
+                return await _run_result_store_call(
+                    self.cron_svc.release_result_delivery_claim, job
+                )
+            except Exception:
+                logger.warning(
+                    "Cron '%s': could not release unacknowledged delivery claim",
+                    job.name,
+                    exc_info=True,
+                )
+                return False
+
+        async def _settle_result_delivery(job: CronJob, result_hash: str) -> bool:
+            """Persist confirmed delivery before publishing in-memory acknowledgement."""
+            if self.cron_svc is None:
+                job.run_dispatched = True
+                self._record_cron_delivery(job, result_hash)
+                return True
+            settlement = asyncio.create_task(
+                asyncio.to_thread(self.cron_svc.settle_result_delivery, job, result_hash)
+            )
+            try:
+                settled = await asyncio.shield(settlement)
+                if settled:
+                    job.last_delivered_result_ts = job.last_result_ts
+                    job.pending_delivery_result_ts = 0.0
+                    job.acknowledged_delivery_result_ts = 0.0
+                    job.delivery_claim_result_ts = 0.0
+                    job.delivery_claim_owner_pid = 0
+                    job.delivery_claim_owner_start = ""
+                    job.delivery_unconfirmed = False
+                    job.owed_fire = False
+                    job.run_dispatched = True
+                    self._record_cron_delivery(job, result_hash)
+                return settled
+            except asyncio.CancelledError as cancelled:
+                while not settlement.done():
+                    try:
+                        await asyncio.shield(settlement)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                raise cancelled
+            except Exception:
+                logger.warning(
+                    "Cron '%s': confirmed delivery settlement failed",
+                    job.name,
+                    exc_info=True,
+                )
+                return False
+
+        async def _settle_result_dashboard_only(job: CronJob) -> bool:
+            """Clear only external delivery debt for a terminal dashboard result."""
+            if self.cron_svc is None:
+                job.pending_delivery_result_ts = 0.0
+                job.acknowledged_delivery_result_ts = 0.0
+                job.delivery_claim_result_ts = 0.0
+                job.delivery_claim_owner_pid = 0
+                job.delivery_claim_owner_start = ""
+                job.delivery_unconfirmed = False
+                job.owed_fire = False
+                return True
+            try:
+                return await _run_result_store_call(self.cron_svc.settle_result_dashboard_only, job)
+            except Exception:
+                logger.warning(
+                    "Cron '%s': dashboard-only delivery settlement failed",
+                    job.name,
+                    exc_info=True,
+                )
+                return False
+
+        def _settled_result_outcome(job: CronJob) -> _CronResultDeliveryOutcome:
+            if job.delete_after_run:
+                return _CronResultDeliveryOutcome.SETTLED_DELETE_ONE_SHOT
+            return _CronResultDeliveryOutcome.SETTLED_CONTINUE
+
+        async def _checkpoint_result_delivery(
+            job: CronJob,
+            *,
+            parts: list[str],
+            completed_parts: int,
+            channel: str,
+            parent_ts: str,
+        ) -> bool:
+            """Persist one acknowledged Slack part before another can send."""
+            if self.cron_svc is None:
+                job.delivery_slack_parts = list(parts)
+                job.delivery_slack_completed_parts = completed_parts
+                job.delivery_slack_channel = channel
+                job.delivery_slack_parent_ts = parent_ts
+                if completed_parts == len(parts):
+                    job.acknowledged_delivery_result_ts = job.last_result_ts
+                return True
+            checkpoint = asyncio.create_task(
+                asyncio.to_thread(
+                    self.cron_svc.checkpoint_result_delivery,
+                    job,
+                    parts=parts,
+                    completed_parts=completed_parts,
+                    channel=channel,
+                    parent_ts=parent_ts,
+                )
+            )
+            try:
+                return await asyncio.shield(checkpoint)
+            except asyncio.CancelledError as cancelled:
+                while not checkpoint.done():
+                    try:
+                        await asyncio.shield(checkpoint)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                raise cancelled
+            except Exception:
+                logger.warning(
+                    "Cron '%s': Slack multipart checkpoint failed",
+                    job.name,
+                    exc_info=True,
+                )
+                return False
+
+        def _mark_result_delivery_pending(job: CronJob) -> None:
+            """Keep this exact result generation owed without acknowledging it."""
+            job.pending_delivery_result_ts = job.last_result_ts
+            job.delivery_unconfirmed = True
+
+        async def _preserve_cancelled_result_delivery(job: CronJob) -> None:
+            """Persist the completed generation as pending and release local ownership."""
+            _mark_result_delivery_pending(job)
+            claimed = await _claim_result_delivery(job)
+            if claimed is True:
+                await _release_result_delivery_claim(job)
+
+        async def _drain_cancelled_result_delivery(job: CronJob) -> None:
+            cleanup = asyncio.create_task(_preserve_cancelled_result_delivery(job))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+            except Exception:
+                logger.warning(
+                    "Cron '%s': could not preserve cancelled result delivery",
+                    job.name,
+                    exc_info=True,
+                )
+
+        async def _deliver_result_external(
+            job: CronJob,
+            result_text: str,
+            result_hash: str,
+            session_key: str,
+        ) -> _CronResultDeliveryOutcome:
+            """Advance one result through the delivery-finalization state machine."""
+
+            def _slack_route() -> tuple[str, str]:
+                """Return ``(channel, DM recipient)`` for the current/pinned route.
+
+                Route existence is independent of client readiness. A pinned
+                outbox must stay pending while Slack is unavailable rather than
+                being mistaken for a terminal dashboard-only result.
+                """
+                channel = job.delivery_slack_channel or job.channel or ""
+                if channel:
+                    return channel, ""
+                for candidate in (job.created_by, self._owner_id):
+                    if candidate and USER_ID_RE.fullmatch(candidate):
+                        return "", candidate
+                return "", ""
+
+            def _slack_client_msg_id(part_index: int) -> str:
+                """Return Slack's deterministic retry identity for one result part."""
+                return str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"kirocrew://cron/{job.id}/{job.last_result_ts!r}/{part_index}",
+                    )
+                )
+
+            def _has_external_target() -> bool:
+                channel_target = bool(
+                    not job.channel and self._channel_reply_link(job.session_key) is not None
+                )
+                slack_channel, slack_recipient = _slack_route()
+                return channel_target or bool(slack_channel or slack_recipient)
+
+            async def _finish_dashboard_only() -> _CronResultDeliveryOutcome:
+                """Durably finish this generation without external acknowledgement."""
+                if not await _settle_result_dashboard_only(job):
+                    _mark_result_delivery_pending(job)
+                    return _CronResultDeliveryOutcome.EXTERNAL_PENDING
+                job.delivery_unconfirmed = False
+                job.owed_fire = False
+                if job.delete_after_run:
+                    return _CronResultDeliveryOutcome.SETTLED_DELETE_ONE_SHOT
+                return _CronResultDeliveryOutcome.DASHBOARD_ONLY
+
+            delivery_claimed = False
+            try:
+                for _attempt in range(_CRON_DELIVERY_ROUTE_ATTEMPTS):
+                    current = await _result_delivery_is_current(job)
+                    if current is None:
+                        _mark_result_delivery_pending(job)
+                        return _CronResultDeliveryOutcome.EXTERNAL_PENDING
+                    if not current:
+                        return _CronResultDeliveryOutcome.EXTERNAL_PENDING
+
+                    # Validation refreshes the detached run from the canonical
+                    # record. A configured Slack client alone is not a target,
+                    # app provenance is not a Slack user id, and a concurrent
+                    # switch to silent must not create or preserve delivery debt.
+                    if job.silent or not _has_external_target():
+                        return await _finish_dashboard_only()
+
+                    route_before_claim = job.delivery_route_identity()
+                    claimed = await _claim_result_delivery(job)
+                    if claimed is None:
+                        _mark_result_delivery_pending(job)
+                        return _CronResultDeliveryOutcome.EXTERNAL_PENDING
+                    if claimed:
+                        delivery_claimed = True
+                        break
+                    if job.delivery_route_identity() != route_before_claim:
+                        # The claim transaction observed a newer destination or
+                        # owner. Resolve that route before retrying the atomic
+                        # claim; no outbox was written for the superseded route.
+                        continue
+                    # A live owner may still deliver this generation. Keep the
+                    # occurrence owed until that owner commits the tombstone.
+                    _mark_result_delivery_pending(job)
+                    return _CronResultDeliveryOutcome.EXTERNAL_PENDING
+                else:
+                    # Continuous route churn is retryable. Persist the exact
+                    # bytes and let a later tick resolve a stable destination.
+                    _mark_result_delivery_pending(job)
+                    return _CronResultDeliveryOutcome.EXTERNAL_PENDING
+            except asyncio.CancelledError as cancelled:
+                # Validation and claim run off-loop. Drain whichever transaction
+                # was in flight, then claim the exact completed generation only
+                # long enough to publish its pending outbox state and release
+                # this runtime's ownership. Cancellation may then propagate
+                # without replaying provider/tool work or stranding a live claim.
+                await _drain_cancelled_result_delivery(job)
+                raise cancelled
+
+            delivery_acknowledged = False
+            channel_outcome: bool | _CronChannelDeliveryOutcome = (
+                _CronChannelDeliveryOutcome.NO_TARGET
+            )
+            if not job.channel:
+                try:
+                    channel_outcome = await self._deliver_cron_to_channel(
+                        job.session_key,
+                        f"⏰ Cron: {job.name}\n\n{result_text}",
+                        actor_key=session_key,
+                        return_outcome=True,
+                    )
+                except asyncio.CancelledError:
+                    await _release_result_delivery_claim(job)
+                    _mark_result_delivery_pending(job)
+                    raise
+                except Exception:
+                    channel_outcome = _CronChannelDeliveryOutcome.FAILED
+                    logger.error(
+                        "Cron job '%s': channel delivery failed (job succeeded)",
+                        job.name,
+                        exc_info=True,
+                    )
+            channel_delivered = (
+                channel_outcome is True or channel_outcome is _CronChannelDeliveryOutcome.DELIVERED
+            )
+            if channel_delivered:
+                delivery_acknowledged = True
+                job.run_dispatched = True
+                job.acknowledged_delivery_result_ts = job.last_result_ts
+                if await _settle_result_delivery(job, result_hash):
+                    return _settled_result_outcome(job)
+                _mark_result_delivery_pending(job)
+                return _CronResultDeliveryOutcome.EXTERNAL_ACKNOWLEDGED
+
+            slack_channel, slack_recipient = _slack_route()
+            if self.slack and (slack_channel or slack_recipient):
+                try:
+                    parts = list(job.delivery_slack_parts) or render_for_slack(
+                        result_text,
+                        limit=_CRON_MSG_LIMIT,
+                        header=f"⏰ *Cron: {job.name}*\n\n",
+                    )
+                    if not parts:
+                        raise RuntimeError("Slack renderer produced no result parts")
+                    completed_parts = job.delivery_slack_completed_parts
+                    if completed_parts < 0 or completed_parts > len(parts):
+                        raise RuntimeError("stored Slack delivery cursor is invalid")
+                    channel = slack_channel
+                    if not channel and slack_recipient:
+                        channel = (await self._open_dm_with_retry(slack_recipient, job.name)) or ""
+                    if channel:
+                        thread_root = job.delivery_slack_parent_ts or job.thread_ts or ""
+                        # Persist the exact rendered outbox and destination before
+                        # the first external side effect. A replacement runtime
+                        # therefore resumes against the same part boundaries even
+                        # when rendering code or the configured DM changes.
+                        if not job.delivery_slack_parts and not await _checkpoint_result_delivery(
+                            job,
+                            parts=parts,
+                            completed_parts=0,
+                            channel=channel,
+                            parent_ts=thread_root,
+                        ):
+                            raise RuntimeError("could not persist Slack delivery outbox")
+
+                        if completed_parts == 0:
+                            blocks: list[dict] = [
+                                {
+                                    "type": "section",
+                                    "text": {"type": "mrkdwn", "text": parts[0]},
+                                },
+                            ] + build_cron_ack_block(job.id)
+                            parent_ts = await self.slack.post_blocks(
+                                channel,
+                                blocks,
+                                parts[0],
+                                job.thread_ts,
+                                client_msg_id=_slack_client_msg_id(0),
+                            )
+                            thread_root = job.thread_ts or parent_ts
+                            if not thread_root:
+                                raise RuntimeError("Slack parent delivery returned no identity")
+                            job.run_dispatched = True
+                            if not await _checkpoint_result_delivery(
+                                job,
+                                parts=parts,
+                                completed_parts=1,
+                                channel=channel,
+                                parent_ts=thread_root,
+                            ):
+                                raise RuntimeError("could not checkpoint Slack parent delivery")
+                            completed_parts = 1
+                        elif not thread_root:
+                            raise RuntimeError("stored Slack delivery has no parent identity")
+
+                        if self.sessions:
+                            await self.sessions.set_thread(session_key, thread_root)
+                            await self.sessions.set_channel(session_key, channel)
+                        for index in range(completed_parts, len(parts)):
+                            await self.slack.post_message(
+                                channel,
+                                parts[index],
+                                thread_root,
+                                client_msg_id=_slack_client_msg_id(index),
+                            )
+                            job.run_dispatched = True
+                            if not await _checkpoint_result_delivery(
+                                job,
+                                parts=parts,
+                                completed_parts=index + 1,
+                                channel=channel,
+                                parent_ts=thread_root,
+                            ):
+                                raise RuntimeError(
+                                    f"could not checkpoint Slack result part {index + 1}"
+                                )
+                        delivery_acknowledged = True
+                        job.acknowledged_delivery_result_ts = job.last_result_ts
+                        if await _settle_result_delivery(job, result_hash):
+                            return _settled_result_outcome(job)
+                        _mark_result_delivery_pending(job)
+                        return _CronResultDeliveryOutcome.EXTERNAL_ACKNOWLEDGED
+                    logger.warning(
+                        "Cron '%s': no channel resolved, skipping notification", job.name
+                    )
+                except asyncio.CancelledError:
+                    if delivery_claimed and not delivery_acknowledged:
+                        await _release_result_delivery_claim(job)
+                        _mark_result_delivery_pending(job)
+                    raise
+                except Exception as slack_exc:
+                    if delivery_claimed and not delivery_acknowledged:
+                        await _release_result_delivery_claim(job)
+                    logger.error(
+                        "Cron job '%s': Slack delivery failed (job succeeded)",
+                        job.name,
+                        exc_info=True,
+                    )
+                    if self.dashboard_state:
+                        exc_msg, _ = redact_exfiltration_urls(str(slack_exc))
+                        exc_msg, _ = redact_credentials(exc_msg)
+                        self.dashboard_state.notify(
+                            "cron",
+                            f"Cron: {job.name}",
+                            f"⚠️ Job completed but Slack delivery failed: {exc_msg}",
+                            meta={"job_id": job.id},
+                        )
+
+            if delivery_acknowledged:
+                return _CronResultDeliveryOutcome.EXTERNAL_ACKNOWLEDGED
+            terminal_channel = channel_outcome in (
+                _CronChannelDeliveryOutcome.NO_TARGET,
+                _CronChannelDeliveryOutcome.REFUSED,
+            )
+            if not (slack_channel or slack_recipient) and terminal_channel:
+                return await _finish_dashboard_only()
+            if delivery_claimed:
+                await _release_result_delivery_claim(job)
+            _mark_result_delivery_pending(job)
+            return _CronResultDeliveryOutcome.EXTERNAL_PENDING
 
         async def _deliver_script_result(
             job: CronJob, message: str, *, remove: bool = False
@@ -4132,6 +4751,71 @@ class GatewayOrchestrator:
             # helper picks stable vs ephemeral session key and
             # decides whether to prepend last_result, based on job.persistent_session.
             session_key, msg = build_cron_session_context(job)
+
+            if (
+                not job.script
+                and not job.command
+                and job.acknowledged_delivery_result_ts
+                and job.acknowledged_delivery_result_ts == job.last_result_ts
+                and job.acknowledged_delivery_result_ts != job.last_delivered_result_ts
+                and job.last_result
+            ):
+                # The transport already acknowledged these bytes. Re-sending
+                # would duplicate delivery; settle the stored generation only.
+                # A recurring job then continues into the occurrence that woke
+                # recovery. A retained one-shot terminates here so merge owns
+                # its exactly-once removal instead of dispatching it again.
+                job.result_origin_ts = job.last_result_ts
+                job.result_produced = True
+                claim = await _claim_result_delivery(job)
+                if claim is not True or not await _settle_result_delivery(
+                    job, _result_hash(job.last_result)
+                ):
+                    _mark_result_delivery_pending(job)
+                    return job.last_result
+                if (
+                    _settled_result_outcome(job)
+                    is _CronResultDeliveryOutcome.SETTLED_DELETE_ONE_SHOT
+                ):
+                    return job.last_result
+                job.result_produced = False
+                job.run_dispatched = False
+
+            if (
+                not job.script
+                and not job.command
+                and job.pending_delivery_result_ts
+                and job.pending_delivery_result_ts == job.last_result_ts
+                and job.pending_delivery_result_ts != job.last_delivered_result_ts
+                and job.last_result
+            ):
+                # Recovery is delivery-only: the agent may already have run
+                # tools, so regenerating would replay side effects and could
+                # produce different text. Re-arm the runtime attribution fields
+                # that are intentionally absent from the serialized record.
+                job.result_origin_ts = job.last_result_ts
+                job.result_produced = True
+                delivery_outcome = await _deliver_result_external(
+                    job,
+                    job.last_result,
+                    _result_hash(job.last_result),
+                    session_key,
+                )
+                if delivery_outcome in (
+                    _CronResultDeliveryOutcome.EXTERNAL_PENDING,
+                    _CronResultDeliveryOutcome.EXTERNAL_ACKNOWLEDGED,
+                ):
+                    # Validation, claim, transport, or settlement did not
+                    # complete. Keep the exact bytes and occurrence pending;
+                    # provider/tool work must not run again yet.
+                    return job.last_result
+                if delivery_outcome is _CronResultDeliveryOutcome.SETTLED_DELETE_ONE_SHOT:
+                    return job.last_result
+                # A recurring result is now terminal (externally settled or
+                # dashboard-only). Continue into the occurrence that triggered
+                # recovery without carrying the prior generation as this run's.
+                job.result_produced = False
+                job.run_dispatched = False
 
             from kiro_crew.cron import resolve_cron_memory
 
@@ -4595,28 +5279,48 @@ class GatewayOrchestrator:
                     # the body from disk in the child, so the gate's scan alone
                     # authorises bytes that may no longer be there.  The re-vet
                     # runs inside the worker, after the wait, so the decision
-                    # holds at the moment of use.  It shares the backstop below,
-                    # which is why it must stay short.
-                    result = await run_in_cron_pool(
-                        _vet_at_claim_then,
-                        handoff,
-                        job,
-                        run_script_sandboxed,
-                        job.script,
-                        job.id,
-                        job.message,
-                        script_timeout,
-                        job.secret_env,
-                        job.secret_env_pin,
-                        delivery_fingerprint(
-                            job.session_key,
-                            job.silent,
-                            job.channel or "",
-                            job.thread_ts or "",
-                        ),
-                        self._live_internal_secret,
-                        timeout=_claim_backstop(job, script_timeout),
-                    )
+                    # holds at the moment of use.  It also now shares the
+                    # backstop below, which is why it must stay short.
+                    try:
+                        # POSITIVE dispatch confirmation for the owed-debt
+                        # cancellation handler: past this await the sandboxed
+                        # launch may have side effects, so a cancellation must
+                        # not restore (and thus replay) an owed occurrence.
+                        job.run_dispatched = True
+                        result = await run_in_cron_pool(
+                            _vet_at_claim_then,
+                            handoff,
+                            job,
+                            run_script_sandboxed,
+                            job.script,
+                            job.id,
+                            job.message,
+                            script_timeout,
+                            job.secret_env,
+                            job.secret_env_pin,
+                            delivery_fingerprint(
+                                job.session_key,
+                                job.silent,
+                                job.channel or "",
+                                job.thread_ts or "",
+                            ),
+                            self._live_internal_secret,
+                            timeout=_claim_backstop(job, script_timeout),
+                        )
+                    except FileNotFoundError as enoent:
+                        if not _running_install_was_pruned() or not _enoent_names_this_install(
+                            enoent
+                        ):
+                            raise
+                        # The replacement gateway owns the next wake. Record
+                        # the launch as never-started so the scheduler neither
+                        # counts a success nor deletes a due one-shot, and no
+                        # auto-pause strike is spent on a healthy job.
+                        logger.info(
+                            "Script cron launch skipped because the running install was replaced"
+                        )
+                        _record_pruned_launch_skip(job, self.cron_svc)
+                        return None
                     status = result.get("status", "error")
                     if status == "cancelled":
                         # User-initiated cancel: CronService.cancel() owns the
@@ -4986,11 +5690,11 @@ class GatewayOrchestrator:
 
             async def _acquire_with_model_fallback(
                 key: str, agent_id: str | None
-            ) -> "tuple[LLMProvider, bool, bool, bool]":
+            ) -> "tuple[LLMProvider, bool, bool, bool] | None":
                 """get_or_create honoring job.model; if that model is
                 unavailable, retry once with the registry default.
-                Returns (client, is_new, resumed, downgraded)."""
-
+                Returns (client, is_new, resumed, downgraded), or ``None`` when
+                this gateway's runtime was pruned during an update."""
                 assert self.sessions is not None
                 modes = getattr(self.ctx_builder, "_session_memory_modes", None)
                 if isinstance(modes, dict):
@@ -5030,39 +5734,50 @@ class GatewayOrchestrator:
                         self.ctx_builder, cron_memory_store, session_key=key
                     )
                 try:
-                    client, is_new, resumed = await self.sessions.get_or_create(
-                        key,
-                        agent=agent_id,
-                        channel_id=job.channel,
-                        approval_policy=job.approval_mode,
-                        model=job.model or None,
-                        extra_env=_cron_extra_env(),
-                    )
-                    return client, is_new, resumed, False
-                except Exception as model_exc:
-                    if not job.model:
+                    try:
+                        client, is_new, resumed = await self.sessions.get_or_create(
+                            key,
+                            agent=agent_id,
+                            channel_id=job.channel,
+                            approval_policy=job.approval_mode,
+                            model=job.model or None,
+                            extra_env=_cron_extra_env(),
+                        )
+                        return client, is_new, resumed, False
+                    except Exception as model_exc:
+                        if not job.model:
+                            raise
+                        # Only fall back when the failure plausibly implicates the
+                        # pinned model; unrelated session-creation errors (provider
+                        # spawn, missing factory, transient I/O) must propagate so
+                        # they are not misreported as a model downgrade.
+                        _err = str(model_exc).lower()
+                        if "model" not in _err and job.model.lower() not in _err:
+                            raise
+                        logger.warning(
+                            "Cron '%s': model %r unavailable (%s); retrying with default",
+                            job.name,
+                            job.model,
+                            model_exc,
+                        )
+                        client, is_new, resumed = await self.sessions.get_or_create(
+                            key,
+                            agent=agent_id,
+                            channel_id=job.channel,
+                            approval_policy=job.approval_mode,
+                            extra_env=_cron_extra_env(),
+                        )
+                        return client, is_new, resumed, True
+                except FileNotFoundError as enoent:
+                    if not _running_install_was_pruned() or not _enoent_names_this_install(enoent):
                         raise
-                    # Only fall back when the failure plausibly implicates the
-                    # pinned model; unrelated session-creation errors (provider
-                    # spawn, missing factory, transient I/O) must propagate so
-                    # they are not misreported as a model downgrade.
-                    _err = str(model_exc).lower()
-                    if "model" not in _err and job.model.lower() not in _err:
-                        raise
-                    logger.warning(
-                        "Cron '%s': model %r unavailable (%s); retrying with default",
-                        job.name,
-                        job.model,
-                        model_exc,
+                    # Do not pair this old gateway's in-memory protocol and
+                    # package paths with the newly promoted interpreter. The
+                    # replacement gateway will launch a single-version child.
+                    logger.info(
+                        "Agent cron launch skipped because the running install was replaced"
                     )
-                    client, is_new, resumed = await self.sessions.get_or_create(
-                        key,
-                        agent=agent_id,
-                        channel_id=job.channel,
-                        approval_policy=job.approval_mode,
-                        extra_env=_cron_extra_env(),
-                    )
-                    return client, is_new, resumed, True
+                    return None
 
             def _annotate_model_downgrade(text: str) -> str:
                 # job.model is LLM-controllable via MCP; redact before it
@@ -5082,15 +5797,36 @@ class GatewayOrchestrator:
                 # Run-scoped: a sequence where one agent got a tool through has
                 # done work, even if a later agent was blocked outright.
                 _gate = _GateTally()
-                for agent in agents:
+                for agent_index, agent in enumerate(agents):
                     agent_session_key = f"cron:{job.id}:{agent}"
                     if self.cron_svc is not None:
                         self.cron_svc.register_active_session_key(job.id, agent_session_key)
                     _acq = False
                     try:
-                        client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
-                            agent_session_key, agent
-                        )
+                        acquired = await _acquire_with_model_fallback(agent_session_key, agent)
+                        if acquired is None:
+                            if self.cron_svc is not None:
+                                self.cron_svc.clear_active_session_key(job.id, agent_session_key)
+                            if _prompt_dispatched:
+                                # A prior agent in this sequence already ran —
+                                # its side effects exist. Never-started would
+                                # retain the one-shot and REPLAY that completed
+                                # work on the replacement gateway, so record a
+                                # normal failed run instead: the strike and
+                                # error message surface the partial completion
+                                # to the operator rather than silently rerunning.
+                                job.clear_carried_result()
+                                job.last_status = "error"
+                                job.last_error = (
+                                    f"Agent sequence interrupted by an install update after "
+                                    f"'{agents[agent_index - 1]}' completed; not retried "
+                                    "automatically to avoid duplicating finished work"
+                                )
+                                job.record_failure()
+                                return None
+                            _record_pruned_launch_skip(job, self.cron_svc)
+                            return None
+                        client, is_new, _resumed, _downgraded = acquired
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
                         # Publish this turn's session identity so managed MCP
@@ -5124,6 +5860,18 @@ class GatewayOrchestrator:
                         # the episodic-query embed above are setup, not the turn.
                         _turn_t0 = time.monotonic()
                         _prompt_dispatched = True
+
+                        def _confirm_dispatch_gate(*a: Any, _n=_gate.note, **kw: Any):
+                            # Earliest side-effect signal: a tool call reached
+                            # the gate, so the prompt was submitted and work
+                            # may have run — the owed debt must stay consumed.
+                            # A cancelled turn that produced NO tool calls
+                            # delivered nothing and is safe to replay, so no
+                            # text-chunk confirmation is needed (the resume
+                            # helper owns on_chunk).
+                            job.run_dispatched = True
+                            return _n(*a, **kw)
+
                         result_text, _carried_credits = await _cron_stream_with_posttoken_resume(
                             client,
                             full_message,
@@ -5139,7 +5887,7 @@ class GatewayOrchestrator:
                                 if job.approval_mode == "auto"
                                 else self._interactive_approval("cron")
                             ),
-                            on_tool_gate=_gate.note,
+                            on_tool_gate=_confirm_dispatch_gate,
                             fallback_models=configured_fallback_chain(),
                         )
                         if not result_text:
@@ -5236,9 +5984,13 @@ class GatewayOrchestrator:
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
-                client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
-                    session_key, cron_agent or None
-                )
+                acquired = await _acquire_with_model_fallback(session_key, cron_agent or None)
+                if acquired is None:
+                    if self.cron_svc is not None:
+                        self.cron_svc.clear_active_session_key(job.id, session_key)
+                    _record_pruned_launch_skip(job, self.cron_svc)
+                    return None
+                client, is_new, _resumed, _model_downgraded = acquired
                 _acquired = True
                 # Same identity publish as the sequential site above — the
                 # single-agent cron turn must publish its pidfile mapping or
@@ -5271,6 +6023,17 @@ class GatewayOrchestrator:
                 _turn_t0 = time.monotonic()
                 _gate = _GateTally()
                 _prompt_dispatched = True
+
+                def _confirm_dispatch_gate(*a: Any, _n=_gate.note, **kw: Any):
+                    # Earliest side-effect signal: a tool call reached the
+                    # gate, so the prompt was submitted and work may have
+                    # run — the owed debt must stay consumed. A cancelled
+                    # turn that produced NO tool calls delivered nothing and
+                    # is safe to replay, so no text-chunk confirmation is
+                    # needed (the resume helper owns on_chunk).
+                    job.run_dispatched = True
+                    return _n(*a, **kw)
+
                 result_text, _carried_credits = await _cron_stream_with_posttoken_resume(
                     client,
                     full_message,
@@ -5284,7 +6047,7 @@ class GatewayOrchestrator:
                     on_tool_approval=(
                         None if job.approval_mode == "auto" else self._interactive_approval("cron")
                     ),
-                    on_tool_gate=_gate.note,
+                    on_tool_gate=_confirm_dispatch_gate,
                     fallback_models=configured_fallback_chain(),
                 )
 
@@ -5399,6 +6162,12 @@ class GatewayOrchestrator:
                                 history=await prefetch_cron_history(self.dashboard_state, job.id),
                                 context_reading=_ctx_reading,
                             )
+                        if not await _settle_result_dashboard_only(job):
+                            # The store could not commit this locally terminal
+                            # generation. Keep the occurrence owed; do not invent
+                            # external delivery debt for a result intentionally
+                            # suppressed by the dedup policy.
+                            job.delivery_unconfirmed = True
                         return result_text
 
                 if job.silent:
@@ -5424,6 +6193,7 @@ class GatewayOrchestrator:
                             history=await prefetch_cron_history(self.dashboard_state, job.id),
                             context_reading=_ctx_reading,
                         )
+                    await _deliver_result_external(job, result_text, rh, session_key)
                     return result_text
 
                 if self.dashboard_state:
@@ -5480,113 +6250,7 @@ class GatewayOrchestrator:
                         redacted_for_dash,
                         meta=notify_meta,
                     )
-                # A job belongs to ONE surface: the conversation that scheduled
-                # it. Delivering to both would notify an operator twice for one
-                # run, which is how notifications become noise people stop
-                # reading. So the channel leg is attempted FIRST and Slack stands
-                # down only on a CONFIRMED delivery: a predicate saying a channel
-                # *would* take it is not the same claim, and standing Slack down
-                # on that loses the result outright when the channel send is
-                # refused by governance or fails on the wire. An explicit
-                # `job.channel` is a destination the user pinned, so it wins over
-                # both. Every job that exists today has no channel origin, so
-                # this is inert for current installs.
-                channel_delivered = False
-                if not job.channel:
-                    try:
-                        channel_delivered = await self._deliver_cron_to_channel(
-                            job.session_key,
-                            f"⏰ Cron: {job.name}\n\n{result_text}",
-                            actor_key=session_key,
-                        )
-                    except Exception:
-                        # The job SUCCEEDED. Letting a delivery error reach the
-                        # outer handler would record a failure and march the job
-                        # toward auto-pause on a messaging fault. Slack still
-                        # runs below, because nothing was delivered here.
-                        logger.error(
-                            "Cron job '%s': channel delivery failed (job succeeded)",
-                            job.name,
-                            exc_info=True,
-                        )
-                if channel_delivered:
-                    # Same dedup contract as the Slack leg: the hash advances
-                    # once the result reached someone. Without this a Slack-less
-                    # install never advances it, so the suppression branch can
-                    # never fire and an unchanged result is re-delivered forever.
-                    self._record_cron_delivery(job, rh)
-                    # No reply-anchor write to mirror the Slack branch's
-                    # set_thread/set_channel below, deliberately. Those two record
-                    # where a Slack cron post LANDED so a later subagent completion
-                    # under ``cron:{id}`` can be threaded onto it; the channel leg
-                    # learns nothing equivalent at send time -- its conversation was
-                    # already resolved FROM the creating session's own durable
-                    # origin/mirror link, which every later delivery re-reads.
-                    # Routing a cron's subagent completions back to the creating
-                    # channel needs a ``cron:{id}`` -> creating-key edge instead,
-                    # which is its own change; half of it here would look like
-                    # parity without being it.
-                if self.slack and not channel_delivered:
-                    try:
-                        # Retry only open_dm (transient Slack API errors).
-                        # Delivery (post_blocks/post_message) is NOT retried to avoid duplicates.
-                        channel = job.channel
-                        if not channel and (job.created_by or self._owner_id):
-                            channel = await self._open_dm_with_retry(
-                                job.created_by or self._owner_id, job.name
-                            )
-                        if channel:
-                            # The caption is redacted-but-not-converted by
-                            # render_for_slack's header= seam, which also charges
-                            # it against the limit. Doing it there rather than
-                            # here is the point: a cron name is LLM-authored (the
-                            # agent can create crons via cron_add), and the
-                            # hand-rolled version of this had already forgotten to
-                            # redact it once.
-                            parts = render_for_slack(
-                                result_text,
-                                limit=_CRON_MSG_LIMIT,
-                                header=f"⏰ *Cron: {job.name}*\n\n",
-                            )
-                            # First part as Block Kit message with ack button
-                            blocks: list[dict] = [
-                                {
-                                    "type": "section",
-                                    "text": {"type": "mrkdwn", "text": parts[0]},
-                                },
-                            ] + build_cron_ack_block(job.id)
-                            parent_ts = await self.slack.post_blocks(
-                                channel, blocks, parts[0], job.thread_ts
-                            )
-                            thread_root = job.thread_ts or parent_ts
-                            # Store thread_ts so subagents can route replies here
-                            if thread_root and self.sessions:
-                                await self.sessions.set_thread(session_key, thread_root)
-                                await self.sessions.set_channel(session_key, channel)
-                            # Overflow parts as threaded follow-up messages
-                            for part in parts[1:]:
-                                await self.slack.post_message(channel, part, thread_root)
-                            # Dedup state: only advance after confirmed delivery.
-                            self._record_cron_delivery(job, rh)
-                        else:
-                            logger.warning(
-                                "Cron '%s': no channel resolved, skipping notification", job.name
-                            )
-                    except Exception as slack_exc:
-                        logger.error(
-                            "Cron job '%s': Slack delivery failed (job succeeded)",
-                            job.name,
-                            exc_info=True,
-                        )
-                        if self.dashboard_state:
-                            exc_msg, _ = redact_exfiltration_urls(str(slack_exc))
-                            exc_msg, _ = redact_credentials(exc_msg)
-                            self.dashboard_state.notify(
-                                "cron",
-                                f"Cron: {job.name}",
-                                f"⚠️ Job completed but Slack delivery failed: {exc_msg}",
-                                meta={"job_id": job.id},
-                            )
+                await _deliver_result_external(job, result_text, rh, session_key)
                 # Session cleanup happens in finally block
                 return result_text
             except Exception as exc:
