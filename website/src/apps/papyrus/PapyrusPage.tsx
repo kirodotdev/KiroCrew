@@ -127,6 +127,9 @@ export default function PapyrusPage() {
   const [slotKey, setSlotKey] = useState<string | null>(null)
   const [slotCreating, setSlotCreating] = useState(false)
   const [error, setError] = useState('')
+  // Separate from `error` because the two differ in SEVERITY, not just wording: `error`
+  // reports a failed user action, this reports a declined convenience the user can redo.
+  const [contextError, setContextError] = useState<string | null>(null)
   // The file whose on-disk copy diverged from an unsaved buffer (a co-author edit
   // arriving while the user was typing). Blocks saves until reconciled — see
   // `reloadOpenFile`'s no-flush branch and `resolveConflict`.
@@ -576,6 +579,28 @@ export default function PapyrusPage() {
     onError: (err: Error) => setError(err.message),
   })
 
+  // Routed through React Query like every other mutation on this page, so the request is
+  // retried, deduped and observable rather than a bare floating promise.
+  //
+  // `content` is CAPTURED BY THE CALLER before it awaits slot creation, never read here: React
+  // Query resolves `mutationFn` from the observer's LATEST render options, so a lazy
+  // `companionContext()` would attach whichever paper is open when the request finally goes out.
+  const injectContextMut = useMutation({
+    mutationFn: (vars: { slotKey: string; content: string }) =>
+      api.chatSlotContext(vars.slotKey, vars.content, {
+        source: 'papyrus-co-author', ephemeral: false, maxAge: 3600,
+      }),
+    onSuccess: () => {
+      setContextError(null)
+    },
+    // EVERY rejection reaches the user: silence left the session open with no document
+    // context and no way to know, and every cause shares the one actionable remedy.
+    onError: () => {
+      setContextError(i18nT('apps.papyrus.workspace.context_not_attached'))
+    },
+  })
+  const injectContext = injectContextMut.mutate
+
   // ── Git ───────────────────────────────────────────────────────────────────
 
   const gitQuery = useQuery({
@@ -650,9 +675,11 @@ export default function PapyrusPage() {
   const companionContext = useCallback(() => {
     return companionContextLines(project ?? '', mainFile).join('\n')
   }, [project, mainFile])
-
   const startSession = useCallback(async () => {
     if (!project || slotCreating) return
+    // Pinned before the create round-trip: `project`/`mainFile` here are this invocation's closure
+    // values, so the paper the user opened the panel on is the one handed to the agent.
+    const content = companionContext()
     setSlotCreating(true)
     try {
       // No `name`: the backend mints a unique slot key. Reusing a name-derived key
@@ -668,9 +695,7 @@ export default function PapyrusPage() {
         messages: 0,
         running: false,
       } as ChatSlot))
-      api.chatSlotContext(key, companionContext(), {
-        source: 'papyrus-co-author', ephemeral: true,
-      }).catch(() => undefined)
+      injectContext({ slotKey: key, content })
       dispatch(fetchSlots())
       saveSlot(project, key)
       setSlotKey(key)
@@ -679,7 +704,7 @@ export default function PapyrusPage() {
     } finally {
       setSlotCreating(false)
     }
-  }, [project, slotCreating, dispatch, companionContext])
+  }, [project, slotCreating, dispatch, injectContext, companionContext])
 
   const toggleChat = useCallback(() => {
     setChatOpen(open => {
@@ -695,6 +720,8 @@ export default function PapyrusPage() {
   // single answer to "is this session working" and already merges every signal
   // that decides it (stream state, sub-agents, the slots snapshot).
   const coAuthorBusy = useAppSelector(state => selectComposerBusy(state, slotKey))
+  // NO AUTO-RETRACTION ON A TURN. A turn does not attach the paper, so clearing on one told a
+  // user who typed anything at all that the co-author had it. The notice stands until dismissed.
   const prevBusyRef = useRef(false)
   useEffect(() => {
     const wasBusy = prevBusyRef.current
@@ -1112,14 +1139,32 @@ export default function PapyrusPage() {
                   content-sized, so a percentage on the child alone resolves
                   against a box that hugs its own content -- the panel would come
                   out narrower than the pixel width it replaced, not wider. */}
-              <div style={{ width: isMobile ? '100%' : CHAT_PANEL_WIDTH }} className="h-full min-h-0">
-                <CoAuthorPanel
-                  slotKey={slotKey}
-                  creating={slotCreating}
-                  onStartSession={startSession}
-                  onOpenFull={openFullChat}
-                  onClose={() => setChatOpen(false)}
+              <div
+                style={{ width: isMobile ? '100%' : CHAT_PANEL_WIDTH }}
+                className="flex h-full min-h-0 flex-col"
+              >
+                {/* IN THIS COLUMN: the action that fails is "Start a session" here, so a page-top
+                    banner puts the report a column away from the control that produced it.
+                    No hand-off: this page holds an editable buffer and `askAgent` navigates away,
+                    unmounting it, so the offer would risk unsaved edits to save nothing. */}
+                <ErrorNotice
+                  className="mb-2 animate-rise"
+                  message={contextError}
+                  title={i18nT('apps.papyrus.workspace.context_notice_title')}
+                  onDismiss={() => setContextError(null)}
                 />
+                {/* The panel sizes against THIS box, not the column: its own `h-full` measured the
+                    whole column, so the notice's height pushed the composer past a clipped edge --
+                    hiding the input the notice tells the reader to type into. */}
+                <div className="min-h-0 flex-1">
+                  <CoAuthorPanel
+                    slotKey={slotKey}
+                    creating={slotCreating}
+                    onStartSession={startSession}
+                    onOpenFull={openFullChat}
+                    onClose={() => setChatOpen(false)}
+                  />
+                </div>
               </div>
             </motion.div>
           )}
