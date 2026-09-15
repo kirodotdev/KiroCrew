@@ -2,6 +2,355 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.7.0] - 2026-09-15
+
+Kiro Crew stops asking you to restart it: almost every setting now reaches the
+running gateway the moment you save it, and updates check on a schedule and wait
+for your work to finish. Long chats get a minimap, a model picker that no longer
+hides reasoning effort behind a drill in, and links you define yourself. Windows
+gets isolated pods and a gateway that starts about four times faster, and a pull
+request watch now covers GitLab, Bitbucket and Azure DevOps as well as GitHub.
+
+### Settings that apply while you work
+
+- **Almost every setting now reaches the running gateway**: saving `config.json`,
+  or changing a value in Settings, takes effect at once instead of waiting for a
+  restart.
+- **A boot-only setting can flag itself in place**: the Slack slash command field
+  under Settings → Channels carries a changes need a restart badge that the
+  gateway's own config schema drives, and it is the only field that shows one.
+
+### Chat that keeps up with you
+
+- **A turn minimap in the left gutter of a desktop chat** shows one marker per
+  turn, with hover previews, click to jump and an end cap that loads older
+  history; it does not render on a phone or on a touch pointer.
+- **A session's short name opens it**: writing a name like `chat-1380` in a
+  dashboard chat now renders a chip that switches to that session when it is
+  open, where before only the full slot key did, and a name no open session
+  answers to stays plain text.
+- **An oversized diff can be expanded line by line**: the simplified view gains a
+  Show line-by-line diff control that computes the real patch in the background
+  and folds the unchanged ranges away.
+
+### Chat, tuned to your habits
+
+- **The composer's model chip no longer hides reasoning effort behind a drill in
+  step**, and Settings → Chat → Selectable Models decides which models the list
+  offers, though Auto and a session's active model always stay visible.
+- **Choose what Enter does while the agent is working**: Settings → Chat sets
+  Steer or Queue as the default, and, while the split send button is showing and
+  your send shortcut is set to Enter sends, Cmd or Ctrl plus Enter does the
+  opposite for one send.
+- **New dashboard chats can start in the memory mode you prefer**, from Settings
+  → Chat → Default Memory Mode, and ticket ids or any other plain text can become
+  links by pairing a pattern with a URL template under Settings → Chat → Text
+  Link Patterns.
+
+### Side Chat, tables and code blocks
+
+- **Side Chat can run read only tools on Kiro CLI**: open it with `/side` or the
+  new `/btw` alias and it auto approves read only shell commands and a short list
+  of built in read tools under a stripped down agent definition, while everything
+  else, including a read only tool served over MCP, is refused because a side
+  turn has no approval card.
+- **Every markdown table in a reply gets a small action row** to copy it as
+  Markdown or as CSV.
+- **Long code blocks repeat their copy and edit buttons at the bottom**, so you
+  never scroll back up to use them.
+
+### Around the dashboard
+
+- **A bookmarkable All sessions page**: open `/sessions` for a chooser that never
+  auto creates or auto selects a session, with search, All and Unread filters,
+  status tag chips and Today, Yesterday and Earlier grouping.
+- **Back and Forward arrows for the dashboard's own history**: a desktop-width
+  window's top bar carries two arrows, with Cmd or Ctrl plus the left and right
+  arrow keys as the keyboard twin.
+- **Start a chat in a folder without leaving the one you are reading**: Cmd or
+  Ctrl click, or middle click, a folder's plus in the sidebar or on the board now
+  opens the new chat as a background tab, the same gesture the New button takes.
+
+### Coding hours, and an alert when work finishes
+
+- **Coding hours on Settings → Overview**: a WakaTime card shows the last seven
+  days and opens a drill in with per language and per project bars plus Export
+  hours as CSV or JSON, once `wakatime.enabled` is on and the API key is stored
+  in the secrets vault.
+- **Get told when a background chat finishes**: Settings → Notifications →
+  Desktop alerts adds a default off Notify when a background chat finishes
+  toggle, and flipping it is what asks the operating system for permission.
+
+### Faster and steadier under load
+
+- **The Windows desktop app's gateway starts about four times faster from cold**,
+  moving the measured import of its bundled Python from about seventeen seconds
+  to about four.
+- **Session search returns results sooner on large histories** once a background
+  index pass finishes after the gateway starts, and the sidebar repaints a
+  bounded window of top rows instead of every row when a new chat lands.
+- **Browsing the knowledge library no longer risks freezing the gateway**: a busy
+  Knowledge tab on Agent Capabilities, or a contended sync, no longer stalls
+  chat, cron and other sessions at the same time.
+
+### Isolated pods, on Windows and from the agent
+
+- **Isolated pods run on Windows**: `kirocrew pod up` and its down, ls, status,
+  token, url, logs, prune and provision verbs work through Task Scheduler, for a
+  git worktree of a source checkout on a host where your own user may create a
+  scheduled task, while `pod api` is the one verb refused there because Windows
+  has no unix-domain socket for the pod's private request.
+- **An agent can bring a preview pod up by itself**: with the Dev Fleet app
+  enabled under Apps → Library, new pod tools let an agent session start a
+  worktree's pod and receive its address, port and short lived token, which its
+  own sandbox blocked before.
+
+### Windows catches up
+
+- **Turns work again behind a TLS inspecting proxy**, because the gateway no
+  longer replaces the Windows trust store for the agent process.
+- **A directory junction now trips the same defences a symlink does**, so seeding
+  into a junctioned data home is refused by name instead of silently detaching
+  it, while a skill install and a source rebuild of the dashboard bundle no
+  longer fail over one.
+- **Two apps stop refusing Windows work they can now do**: Issue Radar reads
+  Azure DevOps without WSL once you enable it under Apps → Library and install an
+  authenticated `az` with the azure-devops extension, and PPTX Maker finds a
+  LibreOffice for its previews at the default Windows install location even when
+  it is not on `PATH`.
+
+### Updates that land
+
+- **Update checks recur instead of running once at boot**: the gateway looks for
+  a new version every twelve hours, and an automatic apply pauses new turns and
+  defers scheduled runs until the work already in flight finishes.
+- **A source checkout update that needs a newer Python than this install's
+  virtual environment runs is refused before the checkout moves**, with that
+  environment and its interpreter path named.
+- **A managed install's update can now be armed from the update and What's new
+  dialogs too**: both offer the same host approval step Settings → About already
+  had, showing one command to run on the gateway host inside a countdown that
+  says when the approval window closes.
+
+### Channels carry more
+
+- **Any file type reaches the agent from a chat channel**: a video, archive, SVG
+  or otherwise unrecognized attachment sent through Slack, Discord, Telegram,
+  Teams, Webex, WeChat or WeCom is downloaded up to fifty megabytes and handed to
+  the agent as a local path with its original name, type and size.
+- **A message that arrives while the gateway is restarting gets an answer**: on
+  the next start the sender is told in the same conversation that it was never
+  processed, with the original text quoted back to resend and nothing replayed as
+  a turn, unless it came from an incognito or temporary conversation or a
+  WhatsApp group.
+- **The agent can edit a Slack message it already sent**: the new
+  `update_message` tool updates a message in place instead of deleting and
+  reposting, in a tracked channel or the owner's own direct message.
+
+### Voice and dictation
+
+- **Local Piper replies stream as they synthesize** instead of waiting for the
+  whole clip, and a blocked playback now says why instead of staying silent.
+- **Dictation stops losing text**: dictated words splice into the draft without
+  gluing onto what is already there or dropping a selection, an unselectable
+  anonymous microphone no longer appears in the Microphone picker under Settings
+  → Voice, and an over long recording is refused with a reason instead of being
+  silently cut.
+
+### The Browser panel gets hands
+
+- **Annotate mode in the packaged desktop app's built-in Browser panel**, on a
+  page open in that app's own embedded browser view, lets you pick page elements
+  and attach notes, then sends the numbered list and a screenshot into the chat
+  composer for the agent to act on.
+- **The address bar now opens a real public website whose address carries no
+  query string or fragment**: in an ordinary web browser the page opens in the
+  gateway host's own managed browser and is framed back into the panel, so it
+  needs that browser installed and only the owner can drive it.
+
+### Watches beyond GitHub
+
+- **A pull request watch now accepts GitHub, GitLab, Bitbucket Cloud or Azure
+  DevOps Services URLs**: paste one into the composer's Watch a pull request
+  instead form, which needs `glab` for GitLab, `az` with its azure-devops
+  extension plus either an `az login` session or a stored `AZURE_DEVOPS_EXT_PAT`
+  for Azure DevOps, and `BITBUCKET_EMAIL` with `BITBUCKET_API_TOKEN` for a
+  private Bitbucket pull request.
+- **Azure DevOps Server and Bitbucket Data Center are not supported**, and an
+  Azure DevOps or private Bitbucket watch must be started from a dashboard
+  conversation.
+- **Stopping a monitoring loop works whichever kind is armed**: asking the agent
+  to stop or inspect the loop on your session now reaches a plain timer loop as
+  well as a pull request or workflow watch, and answers from a Webex session too,
+  where a stop used to be refused or silently do nothing.
+
+### Guided OAuth app setup
+
+- **GitHub and Asana now show setup cards in Agent Capabilities →
+  Connections**: Needs configuration leads to Settings → OAuth Apps instead of
+  offering a connection that cannot yet work.
+- **The owner can configure an OAuth app in Settings → OAuth Apps**: follow the
+  provider guide, copy the required redirect URI, and save the client ID and
+  write-only client secret without exposing the stored secret in the UI.
+- **Configuration is not a verified connection**: after setup, return to the
+  provider's normal Connect flow, which still performs its first-connection
+  checks rather than treating saved credentials as proof of readiness.
+
+### New seams for app developers
+
+- **An installed app you enable under Apps → Library can add its own tab to the
+  chat side panel**, and its own rows to the file overflow menu, workspace tree
+  and folder panel.
+- **App developers get `ctx.scrub` and `ctx.audit`**: the first redacts
+  credentials and exfiltration URLs from outbound data using the same patterns
+  the gateway enforces internally, the second writes an app's own
+  security-relevant decisions into the same audit log the gateway uses.
+- **An MCP server's embedded UI inherits the dashboard's colours, font families,
+  radii and shadows**, and re-inherits them when you change theme, for a server
+  you route through the gateway stub under Developer → MCP Management with
+  Developer Mode on.
+
+### Agents you can shape
+
+- **On the Kiro backend, an agent can inherit its capabilities from a parent
+  template**: Agent Capabilities → Agents → the agent's Capabilities pane offers
+  Follow the parent template with per row Inherited, Override or Removed choices,
+  a review step for incoming template changes, and a preview of what a save will
+  write.
+- **The model and skills on an agent's template are editable in place, unless
+  that agent follows a parent template**: the Agent Template pane shows the
+  definition's main fields and your first edit forks a private copy rather than
+  changing the shared template, with a Customized marker, a live count of your
+  changes and Save as new template.
+- **Agents interrupt with a question far less often**: the question card is
+  reserved for a permission, an irreversible or costly action and a preference
+  nothing can infer, with everything else decided and the choice reported in one
+  line.
+
+### Cheaper cron runs, broader knowledge
+
+- **A cron job can ask for minimal context**: creating or editing an agent job on
+  the Schedule page offers a Minimal context toggle with an inline hint
+  suggesting when it fits, cutting the token cost of jobs that do not need the
+  full injected context.
+- **Ask the agent to audit your scheduled-job costs**: the new
+  `cron-cost-optimize` skill uses recorded run history to recommend a cheaper
+  execution mode and never applies a change on its own.
+- **Knowledge takes four more languages and reports what it holds**: C#, Kotlin,
+  Swift and Scala files are ingested by a folder scan that used to skip them,
+  `local_knowledge_search` can be scoped to one namespace, and `kirocrew
+  knowledge stats` reports how many sources, documents and items the library
+  holds.
+
+### More agent backends (Preview)
+
+- **OpenCode joins Claude Code, Codex and KAS as a selectable backend**: turn on
+  Developer Mode under Settings → Developer and install the `opencode` binary on
+  the gateway host, then pick the opencode option on the Developer page's Agent
+  Backend tab.
+- **Kiro Crew's own tools now reach OpenCode and Codex sessions** the same way
+  they already reached Claude, except that an OpenCode session withholds one of
+  Crew's own servers whole when any of that server's tools is switched off.
+- **A policy-blocked tool call on Codex no longer silently ends the chat**, and
+  an agent that an installed app registers now starts on KAS, resolved by the
+  name it declares rather than by its file name.
+
+### Pi, with its limits up front (Preview)
+
+- **Pi is another choice on the Developer page's Agent Backend tab once Developer
+  Mode is on under Settings → Developer**: install both `pi` and `pi-acp` on the
+  gateway, with the selector naming missing components and Kiro Crew refusing a
+  session whose tool-permission gate cannot be verified.
+- **Pi sessions do not carry Kiro Crew's own MCP tools**, which `kirocrew doctor`
+  reports, so choose another backend when you need its subagents, scheduling or
+  memory tools.
+
+### Notable fixes
+
+For anyone checking whether their particular annoyance is gone.
+
+**Chat and sessions.** Rewinding or regenerating a message no longer discards a
+workflow or cron message that arrived at the same moment, and a compaction
+summary folds into one expandable Context compacted card instead of a multi
+kilobyte reply in the middle of the conversation. You can fork an incognito or
+temporary session, and download a persistent one from its session menu with
+Export to a file to move it to another machine. A sub-agent wave also stops
+claiming completion while a member's own nested work is still running.
+
+**On a phone.** Chat opens and stays at the bottom of the transcript, composer
+menus follow the box when the on screen keyboard opens or closes, nested menus
+open inline instead of running off screen, and the empty strip above the header
+in Android browsers is gone. The dashboard also makes fewer small requests at
+startup, which removes one source of mobile loading failures behind proxied
+connections, and a failed boot-critical script now shows a visible failure panel
+instead of a blank screen.
+
+**Security.** Inbound WeCom media downloads now connect only to the addresses
+that were checked, and the dashboard's link preview fetch uses the same pinned
+connector. Configuration import vets an archive's declared inventory before
+extracting anything, and a configuration export no longer follows a link out of
+the crew directory. A local security policy that cannot be read is skipped with
+one warning where a central governance document is present, and a signature it
+cannot verify reads as unverified rather than ungoverned.
+
+**Approvals and the command gate.** A file edit is now judged by the path it
+writes rather than by scanning its text, so an edit that merely quotes a blocked
+command goes through while one naming no resolvable target is denied. A narrower
+auto-approve grant correctly covers a matching subagent tool call, and an
+approval card for a command the gateway could not fully parse keeps its
+session-wide Trust option. Channel agents can no longer create or retarget a
+scheduled job, so move that scheduling to a dashboard session.
+
+**Tools and files under load.** A failed re-probe of an MCP server keeps its last
+known tool list instead of reporting a server that lost every tool, and on an
+install that has stubbed a server under Developer → MCP Management, slow replies
+no longer make the shared broker's supervisor kill a healthy daemon. Files with
+punctuation or emoji in the path open again, and the dashboard's file endpoints
+do their filesystem work off the gateway loop, so a wedged mount can no longer
+freeze chat, scheduled runs and tunnels.
+
+**Messaging.** Prose that merely mentions the steering marker is no longer cut
+off mid sentence on any chat channel, and several more option marker spellings
+whose brackets do not pair up render as plain text instead of reply buttons.
+Slack no longer shows a false error when a progress card update is merely
+rate-limited.
+
+**Lessons and remote crews.** Removing a lesson can name one repository scope, so
+a repo scoped lesson and a global one that share the same wording no longer both
+vanish. A chat bound to a remote instance also fills its model list instead of
+showing an empty one, allowing the remote gateway a longer first read and
+re-polling a partial answer rather than caching it.
+
+**Dashboard polish.** Switching between chats honors each conversation's
+folded-steps preference from the first paint, without briefly expanding the
+transcript and moving your reading position. Reading a session in one open window
+clears its unread badge everywhere else, a session link to a closed session
+declines gracefully instead of navigating to a dead page, and widgets detected as
+hardcoded light canvases stay readable in dark mode wherever they render,
+including artifact pages and library thumbnails.
+
+**The terminal, artifacts and shortcuts.** Ctrl+Shift+C copies the selection in
+the packaged desktop app, Enter runs the line you typed rather than a completion
+you never arrowed onto, and command completion can be switched off under Settings
+→ Display. The Add comment popover on artifact pages copies the original selected
+text, including surrounding whitespace, with a Copy button or Cmd/Ctrl+C while
+the comment draft is empty, and reports a clipboard failure instead of false
+success. Settings → Shortcuts records Control separately from Command on macOS,
+so custom Control-based Search Everywhere and panel-toggle shortcuts work as
+configured.
+
+**Error reports and privacy.** Ask the agent opens a pre-filled error report at
+its first line and keeps the taller composer until you start editing. Failed
+Browser installs mask npm credentials before displaying or handing errors to
+chat, and structured legacy assistant or tool messages render safely with
+consistent redaction in both live chat and history.
+
+**Windows links and file reads.** A file read can no longer be redirected by a
+junction or symlink planted at the last part of a path, which is how it has
+always behaved on macOS and Linux. Rebuilding the dashboard from source replaces
+a broken directory link instead of failing partway, and removes obsolete links
+without deleting the folders they point to.
+
 ## [0.6.0] - 2026-09-05
 
 Kiro Crew stops being one agent on one machine: choose the harness that runs
