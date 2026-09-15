@@ -336,6 +336,22 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "kas",
     "ops_mission_control_secrets.json",
     "ops_mission_control_policy.json",
+    # The mediated-secret request authorization: per Custom secret, the exact
+    # https origin the agent may reach with it and the credential placement. It
+    # is read ONLY by the host dashboard process (the /api/mediated-secret-request
+    # endpoint), never by in-sandbox code — the sandboxed kirocrew-secrets tool
+    # forwards over loopback and never touches this file. Masked (not read-only)
+    # for the same reason as .vault directly related to it: a spawned ``python -c
+    # open(...)`` inside the agent's namespace would otherwise let the agent
+    # rewrite its own egress allowlist and turn the mediation into an
+    # exfiltration oracle, which the tool-gate leaf alone (an in-process check)
+    # cannot stop. Hiding it costs no in-sandbox consumer.
+    "secret_request_policy.json",
+    # The cross-process lock guarding that policy's read-modify-write. Masked on
+    # the same floor as the policy so a spawned command cannot pre-create or swap
+    # the lock inode and split the authorize mutex (a lost-update race). No
+    # in-sandbox consumer.
+    ".secret_request_policy.json.lock",
     # No producer and no consumer left in the tree; masked so a backup restore that
     # resurrects a stale file cannot make it readable either.
     ".kiro_cli_binary_trust.json",
@@ -1238,6 +1254,136 @@ def _materialize_sealable_ceilings() -> list[str]:
                 "inside the sandbox"
             )
 
+    return created
+
+
+#: The mediated-secret authorization file, materialised as its own absent-equivalent
+#: before the ``SENSITIVE_FILES`` mask installs over it. ``policy.load_authorization``
+#: treats an ``authorizations`` map with no matching entry exactly as it treats an
+#: absent file — every secret is unauthorized — so this document grants nothing. It is
+#: a direct child of the data home (like the ceiling files, unlike the nested
+#: md-notebook leaves), so no intermediate-link walk is needed.
+_SECRET_REQUEST_POLICY_LEAF: str = "secret_request_policy.json"
+_SECRET_REQUEST_POLICY_ABSENT_EQUIVALENT: bytes = b'{"version": 1, "authorizations": {}}\n'
+#: The authorize lock leaf (masked in ``_CREW_HIDDEN_LEAVES``). Its content is
+#: irrelevant — it is only a mutex — so its absent-equivalent is an empty file.
+_SECRET_REQUEST_POLICY_LOCK_LEAF: str = ".secret_request_policy.json.lock"
+
+
+def _materialize_absent_mask_leaf(target: str, content: bytes) -> list[str]:
+    """No-follow-create ``target`` with ``content`` if absent, so its mask applies.
+
+    Shared by the policy and its lock: a ``_CREW_HIDDEN_LEAVES`` entry whose
+    ``SENSITIVE_FILES`` mask loop guards on ``isfile`` gets NO bind when the path
+    is absent, leaving an in-sandbox process free to author it. Materialising an
+    absent-equivalent first makes the mask non-vacuous. Fails closed on any
+    non-regular / aliased target so a spawn never proceeds with a mask the
+    launcher silently skipped. Returns the paths it created.
+    """
+    created: list[str] = []
+    # No-follow throughout: a pre-planted SYMLINK at this name would otherwise let
+    # the mask seal the link's referent while the replaceable name stays writable.
+    # Refuse any target that is not an alias-free regular file, and create with
+    # O_NOFOLLOW so a link planted between the check and the create cannot win.
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        st = None
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot stat {target} to seal the mediated-secret authorization mask: {exc}"
+        )
+    if st is not None:
+        if not stat.S_ISREG(st.st_mode):
+            raise SandboxCeilingUnsealable(
+                f"{target} is not a regular file (mode={stat.S_IFMT(st.st_mode):#o}); "
+                "refusing to seal a non-regular mediated-secret authorization path"
+            )
+        if st.st_nlink != 1:
+            raise SandboxCeilingUnsealable(
+                f"{target} has {st.st_nlink} hard links; refusing to seal a "
+                "mediated-secret authorization path reachable through an alias"
+            )
+        return created  # a real, alias-free file: never touched
+    try:
+        # O_EXCL | O_NOFOLLOW: create only, and never through a link planted at the
+        # final component. O_NOFOLLOW is POSIX-only (absent on Windows, where the
+        # lstat regular-file check above is the guard); getattr keeps it a no-op
+        # flag there rather than an AttributeError.
+        fd = os.open(
+            target,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            if content:
+                os.write(fd, content)
+        finally:
+            os.close(fd)
+        created.append(target)
+    except FileExistsError:
+        # A concurrent creator won the O_EXCL race between the lstat above and this
+        # create. Do NOT silently trust the winner — re-validate no-follow and fail
+        # closed unless it is an alias-free regular file.
+        try:
+            race_st = os.lstat(target)
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot re-stat {target} after a create race while sealing the "
+                f"mediated-secret authorization mask: {exc}"
+            )
+        if not stat.S_ISREG(race_st.st_mode):
+            raise SandboxCeilingUnsealable(
+                f"{target} was replaced during sealing by a non-regular file "
+                f"(mode={stat.S_IFMT(race_st.st_mode):#o}); refusing to seal a "
+                "mediated-secret authorization path that is not an alias-free regular file"
+            )
+        if race_st.st_nlink != 1:
+            raise SandboxCeilingUnsealable(
+                f"{target} won the create race with {race_st.st_nlink} hard links; "
+                "refusing to seal a path reachable through a writable alias"
+            )
+        return created
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot materialise {target} to seal the mediated-secret authorization mask; "
+            f"it would stay writable inside the sandbox: {exc}"
+        )
+    return created
+
+
+def _materialize_secret_request_policy_mask_target() -> list[str]:
+    """Create absent-equivalent policy + lock files so their masks apply.
+
+    Both ``secret_request_policy.json`` and its ``.lock`` are
+    ``_CREW_HIDDEN_LEAVES`` entries, but the ``SENSITIVE_FILES`` mask loop guards
+    on ``isfile`` and ``mount(2)`` cannot mask an absent path. Absent is the
+    DEFAULT state on any install with no mediated secret configured, so without
+    this the names are unmasked: an in-sandbox ``open(...,'w')`` on the policy
+    could author its own egress authorization, and one on the lock could pre-seat
+    the mutex inode. Materialising each absent-equivalent first makes the masks
+    non-vacuous; the agent's view is then the pinned empty MASK files.
+
+    Linux spawn path only (Seatbelt denies cover not-yet-existing names). Writes
+    only under the LIVE data home, never truncates an existing file, and fails
+    closed so a spawn never proceeds with a mask the launcher silently skipped.
+    """
+    created: list[str] = []
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for policy masking", exc_info=True)
+        return created
+    if not os.path.isdir(root):
+        return created
+    created += _materialize_absent_mask_leaf(
+        os.path.join(root, _SECRET_REQUEST_POLICY_LEAF),
+        _SECRET_REQUEST_POLICY_ABSENT_EQUIVALENT,
+    )
+    created += _materialize_absent_mask_leaf(
+        os.path.join(root, _SECRET_REQUEST_POLICY_LOCK_LEAF),
+        b"",
+    )
     return created
 
 
@@ -5738,6 +5884,10 @@ def namespace_argv(
     # leaves — creatable on a sandboxed host now that the backend carve-out exists —
     # need a mount target too.
     _materialize_md_notebook_mask_targets()
+    # The mediated-secret authorization file has the same absent-leaf hazard: absent is
+    # the default install state, so materialise its absent-equivalent before the mask so
+    # an in-sandbox process cannot author its own egress authorization.
+    _materialize_secret_request_policy_mask_target()
     # A pre-upgrade orphan already ON disk is a different problem from an absent mask
     # target, and this one is not Linux-specific: see the sweep's own docstring for why
     # the macOS path calls it too.

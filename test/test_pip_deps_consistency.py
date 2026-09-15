@@ -54,6 +54,11 @@ _EXEMPT: set[str] = {
     "yarl",
     # httpx is optional for quip connector; guarded.
     "httpx",
+    # urllib3 is a hard dependency of requests (declared in install_requires),
+    # so it is always present wherever requests is; secrets_mediation/dispatch.py
+    # imports it directly to pin the DNS resolution for a credential-bearing
+    # request. Not a new runtime dep.
+    "urllib3",
 }
 
 # Sub-trees within kiro_crew that are NOT core startup and have their own

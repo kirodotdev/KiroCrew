@@ -1189,6 +1189,19 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-work"),
         "opt_in": True,
     },
+    # Mediated secret requests: the ONE trusted tool that lets an agent
+    # call an owner-authorized API with a Custom secret without ever seeing the
+    # value. Always-on (no spec_gate / opt_in) so the capability cannot be
+    # toggled away from the trust boundary it enforces.
+    #
+    # DELIBERATELY NO ``autoApprove`` — like kirocrew-computer/-dashboard: an
+    # autoApproved MCP tool is approved inside kiro-cli and never reaches
+    # ``hooks.on_tool_call``, so the governance ceiling and approval gate would
+    # be bypassed for a credential-bearing egress. Injecting a stored secret into
+    # an outbound request is exactly the action that must stay gated.
+    "kirocrew-secrets": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-secrets"),
+    },
 }
 
 
@@ -2391,12 +2404,49 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
         logger.debug("SEL audit for kiro_hooks merge failed", exc_info=True)
 
 
+#: Managed servers that must NEVER carry an autoApprove grant, in any mode: a
+#: credential-bearing or governance-authorizing egress whose calls must always
+#: reach ``hooks.on_tool_call``. An inherited grant on one of these (a migrated
+#: config, a wildcard) is stripped even under "preserve"; other managed servers
+#: keep a user's own preference. ``kirocrew-secrets`` injects a stored secret
+#: into an outbound request — exactly the action the approval gate exists for.
+_NEVER_AUTO_APPROVE_SERVERS: frozenset[str] = frozenset({"kirocrew-secrets"})
+
+#: The mediated-secret tool's identifiers, for scrubbing any allowedTools grant
+#: that would auto-approve it (auto-approve never reaches hooks.on_tool_call).
+_SECRET_TOOL_REF = "kirocrew-secrets/call_api_with_secret"
+_SECRET_TOOL_BARE = "call_api_with_secret"
+_SECRET_SERVER_ALIAS = "kirocrew-secrets"
+
+
+def _grant_reaches_secret_tool(ref: object) -> bool:
+    """True if allowedTools entry *ref* would auto-approve ``call_api_with_secret``.
+
+    A grant is a glob (kiro-cli matches *, ?, [seq]); test it against BOTH the
+    full ``server/tool`` ref and the bare tool name, plus the server alias, so a
+    partial glob (``@kirocrew-secrets/call_*``, ``@kirocrew*``, ``*``) or a
+    bare-name grant cannot slip an auto-approve past the credential gate. A plain
+    (glob-free) ref still matches its exact target. The leading ``@`` is optional.
+    """
+    if not isinstance(ref, str):
+        return False
+    pattern = ref.strip().lstrip("@")
+    if not pattern:
+        return False
+    return (
+        fnmatchcase(_SECRET_TOOL_REF, pattern)
+        or fnmatchcase(_SECRET_TOOL_BARE, pattern)
+        or fnmatchcase(_SECRET_SERVER_ALIAS, pattern)
+    )
+
+
 def _enforce_managed_mcp_ownership(
     entry: dict,
     spec: dict,
     registry_mode: bool,
     *,
     auto_approve: str,
+    server_name: str = "",
 ) -> None:
     """Strip/re-pin the fields Kiro Crew owns on one managed-server entry.
 
@@ -2562,6 +2612,14 @@ def _enforce_managed_mcp_ownership(
             entry.pop("autoApprove", None)
     elif auto_approve == "seed" and "autoApprove" in spec:
         entry["autoApprove"] = list(spec["autoApprove"])
+    elif "autoApprove" not in spec and server_name in _NEVER_AUTO_APPROVE_SERVERS:
+        # A NEVER-auto-approved credential/governance server (kirocrew-secrets)
+        # must never carry an inherited autoApprove — not even under "preserve" on
+        # an existing config, where a prior or wildcard grant would otherwise
+        # survive and silently bypass hooks.on_tool_call (the governance ceiling +
+        # approval gate) on a credential-bearing egress. Scoped to that set so an
+        # unrelated managed server's user-removed grant is left as the user left it.
+        entry.pop("autoApprove", None)
 
 
 def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
@@ -2647,7 +2705,9 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
         entry = dict(existing) if isinstance(existing, dict) else {}
         entry["command"] = cmd
         entry["args"] = args
-        _enforce_managed_mcp_ownership(entry, spec, registry_mode, auto_approve="own")
+        _enforce_managed_mcp_ownership(
+            entry, spec, registry_mode, auto_approve="own", server_name=name
+        )
         mcp[name] = entry
 
     # Edition-contributed MCP servers (PlatformContext).  ADD-only: standalone
@@ -2800,7 +2860,11 @@ def _refresh_dynamic_fields(
         # genuinely new entry — all via the same helper the fresh-build loop
         # uses, so the two ownership rules cannot hand-drift.
         _enforce_managed_mcp_ownership(
-            entry, spec, registry_mode, auto_approve="seed" if is_new else "preserve"
+            entry,
+            spec,
+            registry_mode,
+            auto_approve="seed" if is_new else "preserve",
+            server_name=name,
         )
 
     # Edition-contributed MCP servers (PlatformContext).  ADD-only: only seed a
@@ -4873,6 +4937,63 @@ def rebuild_agent_config(
                 source="install_agent",
                 resources=f"{cu_ref} added to tools (existing config upgrade)",
             )
+
+    # Same narrow ADD-only migration for the always-on mediated-secret server:
+    # an UPGRADING install gains its ``mcpServers`` entry but never the
+    # ``@kirocrew-secrets`` tools ref (the fresh-install loop above is the only
+    # other place a ref is added), so kiro-cli would expose the server and none
+    # of its tools — the mediated-secret feature silently absent for every
+    # pre-existing user. DELIBERATELY tools-only, never ``allowedTools``: this
+    # server has no autoApprove precisely so ``call_api_with_secret`` reaches
+    # ``hooks.on_tool_call`` (the credential-egress approval gate); adding it to
+    # the blanket auto-approve list would delete that plane. Gated on the shipped
+    # template granting the ref and on the server having resolved, scoped to this
+    # one server so no other managed ref is re-added behind the user's back.
+    if "kirocrew-secrets" in valid_servers:
+        sec_ref = "@kirocrew-secrets"
+        # Before mounting, scrub any EXISTING allowedTools grant that would
+        # auto-approve this credential tool — an exact ref, a server-wide
+        # ``@kirocrew-secrets`` ref, or a bare ``*`` wildcard. allowedTools is the
+        # one path that never reaches hooks.on_tool_call, so a pre-existing broad
+        # grant (migrated config, a user's wildcard) would silently bypass the
+        # approval gate on a credential-bearing egress. Mounting the tool is not
+        # auto-approving it; its calls go through the gate instead.
+        existing_allowed = config.get("allowedTools")
+        if isinstance(existing_allowed, list):
+            scrubbed = [r for r in existing_allowed if not _grant_reaches_secret_tool(r)]
+            if scrubbed != existing_allowed:
+                config["allowedTools"] = scrubbed
+                try:
+                    sel().log_api_access(
+                        caller="system",
+                        operation="mcp_auto_approve_withheld",
+                        outcome="ok",
+                        source="install_agent",
+                        resources=(
+                            "removed an existing allowedTools grant matching "
+                            f"{sec_ref} (credential egress must reach the approval gate)"
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 — audit must not break the install
+                    logger.debug("SEL audit unavailable for secrets grant scrub", exc_info=True)
+        # The tools-ref ADD is only for an UPGRADING install (a fresh build gets
+        # the ref from the shipped template); the scrub above runs on both paths.
+        if not fresh_install:
+            shipped_tools = get_shipped_tools().get("tools", [])
+            existing_tools = config.get("tools")
+            if (
+                isinstance(existing_tools, list)
+                and sec_ref in shipped_tools
+                and sec_ref not in existing_tools
+            ):
+                existing_tools.append(sec_ref)
+                sel().log_api_access(
+                    caller="system",
+                    operation="mcp_tools_added",
+                    outcome="ok",
+                    source="install_agent",
+                    resources=f"{sec_ref} added to tools (existing config upgrade)",
+                )
 
     # Audit the DECISION, not a config delta. Nothing in the spec changes shape
     # when a gate closes — the ``@ref`` stays exactly where the template put it

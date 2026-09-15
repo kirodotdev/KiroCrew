@@ -26,7 +26,7 @@ from kiro_crew.kiro_cli import (
     signed_in_via_idc,
 )
 
-MANAGED = ("kirocrew-core", "kirocrew-cron", "kirocrew-computer")
+MANAGED = ("kirocrew-core", "kirocrew-cron", "kirocrew-computer", "kirocrew-secrets")
 
 # ``kirocrew-computer`` carries a ``spec_gate`` and is therefore absent from an
 # emitted spec on any non-macOS host (and on macOS with the keystone off) -- see

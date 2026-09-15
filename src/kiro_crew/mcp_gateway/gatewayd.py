@@ -37,6 +37,7 @@ _ensure_ssl_certs()
 import argparse
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -3416,8 +3417,13 @@ async def _handle_connection(
                 captured_init = dict(msg)
 
             try:
+                _pool_key = getattr(backend, "pool_key", None)
+                _audience = getattr(_pool_key, "server_name", "") if _pool_key else ""
                 call_caller = await _caller_with_member_proof(
-                    caller, member_peer_pid, msg.get("method")
+                    caller,
+                    member_peer_pid,
+                    msg.get("method"),
+                    audience=_audience,
                 )
                 await backend.forward_from_stub(
                     stub_uuid, msg, caller=call_caller, tenant_nonce=conn.tenant_nonce
@@ -4143,7 +4149,7 @@ class _MemberCallerRefused(RuntimeError):
 
 
 async def _caller_with_member_proof(
-    caller: Optional[CallerContext], peer_pid: Optional[int], method: Any
+    caller: Optional[CallerContext], peer_pid: Optional[int], method: Any, audience: str = ""
 ) -> Optional[CallerContext]:
     """Delegate private-memory authority for this call, never for a connection.
 
@@ -4171,7 +4177,13 @@ async def _caller_with_member_proof(
         if caller is not None and caller.session_key:
             try:
                 proof = await asyncio.get_running_loop().run_in_executor(
-                    subprocess_executor(), issue_member_session_proof, caller.session_key, peer_pid
+                    subprocess_executor(),
+                    functools.partial(
+                        issue_member_session_proof,
+                        caller.session_key,
+                        peer_pid,
+                        audience=audience,
+                    ),
                 )
             except Exception:
                 # Neither diagnostics nor tool results may expose token material.

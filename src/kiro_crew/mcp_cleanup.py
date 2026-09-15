@@ -52,6 +52,7 @@ ALWAYS_ON_BIN_MCP_SERVERS = (
     "kirocrew-cron",
     "kirocrew-core",
     "kirocrew-computer",
+    "kirocrew-secrets",
 )
 OPT_IN_BIN_MCP_SERVERS = ("kirocrew-dashboard", "kirocrew-work")
 

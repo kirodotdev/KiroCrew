@@ -788,3 +788,33 @@ def test_tcp_proof_uses_exact_kernel_endpoints_and_protected_identity(
     resolve.reset_mock()
     assert not auth.private_memory_request_verified(req)
     resolve.assert_not_called()
+
+
+def test_member_proof_audience_binds_to_the_target_server(env, monkeypatch):
+    """A proof minted with a server audience verifies ONLY when the same audience
+    is required, so a proof the gateway minted for one (e.g. auto-approved) server
+    cannot be relayed to a different server's endpoint. An audience-less verify
+    (the member-memory path) still accepts it, preserving backward compatibility.
+    """
+    monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: f"test-start-{pid}")
+    auth.publish_member_session_pid(os.getpid(), "dashboard:alice", memory_store="member-alice")
+
+    bound = auth.issue_member_session_proof(
+        "dashboard:alice", os.getpid(), audience="kirocrew-secrets"
+    )
+    assert bound
+    # Correct audience → accepted.
+    assert auth.verify_member_session_proof(bound, "dashboard:alice", audience="kirocrew-secrets")
+    # Wrong audience → refused (a relay to a different server's endpoint).
+    assert not auth.verify_member_session_proof(bound, "dashboard:alice", audience="kirocrew-core")
+    # No audience required → the bound proof still verifies (member-memory path).
+    assert auth.verify_member_session_proof(bound, "dashboard:alice")
+
+    # A GENERIC (aud-less) proof cannot satisfy a required audience.
+    generic = auth.issue_member_session_proof("dashboard:alice", os.getpid())
+    assert generic
+    assert not auth.verify_member_session_proof(
+        generic, "dashboard:alice", audience="kirocrew-secrets"
+    )
+    # …but still verifies where no audience is required.
+    assert auth.verify_member_session_proof(generic, "dashboard:alice")
