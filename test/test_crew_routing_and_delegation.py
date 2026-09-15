@@ -372,8 +372,8 @@ class TestTheMembersRosterCarriesIdentity:
         from kiro_crew.dashboard.handlers import members as members_handler
 
         src = inspect.getsource(members_handler)
-        assert '"description": agent_cfg.description' in src
-        assert '"triggers": agent_cfg.triggers' in src
+        assert '"description": _mask_agent_free_text(agent_cfg.description)' in src
+        assert '"triggers": _mask_agent_free_text(agent_cfg.triggers)' in src
 
 
 class TestTheSpawnEndpointActuallyDelegates:

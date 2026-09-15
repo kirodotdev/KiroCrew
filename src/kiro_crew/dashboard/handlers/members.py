@@ -153,12 +153,27 @@ async def api_members(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "members.list")
     if denied is not None:
         return denied
+    # Function-local: ``handlers/__init__`` imports this module before
+    # ``core``, so a module-level import risks a cycle — same reason
+    # ``agents.py`` imports ``core`` inside its functions.
+    from kiro_crew.dashboard.handlers.core import _mask_agent_free_text
+
     state: DashboardState | None = request.app.get("state")
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
 
     rows: list[dict] = []
     for name, agent_cfg in cfg.agents.items():
         if not _AGENT_NAME_RE.match(name):
+            continue
+        if _mask_agent_free_text(name) != name:
+            # DROP the row rather than mask the name: `name` is the row
+            # identity — it feeds slug_for_name, the binding's
+            # `member == row["name"]` check and the DM thread route, so a
+            # masked name would be unaddressable. Same policy as
+            # ``_masked_config_dict``, which removes a credential-shaped
+            # agent key: the grammar gate above admits alphanumeric
+            # key-shaped strings the redactors would alter, so it is not
+            # sufficient on its own.
             continue
         try:
             slug = members_mod.slug_for_name(name)
@@ -167,7 +182,13 @@ async def api_members(request: web.Request) -> web.Response:
         store = agent_cfg.memory_store
         record = getattr(cfg, "memory_stores", {}).get(store)
         version = getattr(record, "memory_version", 1 if store == "default" else None)
-        owner = getattr(record, "owner_member", "")
+        # Normalize "no owner" to "" BEFORE masking: the loader passes a
+        # JSON ``null`` through as ``None``, and ``_mask_agent_free_text``
+        # masks every non-string, so an absent owner would otherwise ship
+        # as the truthy sentinel and read as an ownership mismatch on the
+        # frontend. Absence stays "" (falsy); a truthy suspicious value
+        # still masks below.
+        owner = getattr(record, "owner_member", "") or ""
         if name != "default" and version == 1 and not owner:
             if any(item.owner_member == name for item in cfg.memory_stores.values()):
                 version = None
@@ -180,12 +201,28 @@ async def api_members(request: web.Request) -> web.Response:
                 # here because a caller renders or routes on it.
                 "name": name,
                 "slug": slug,
-                "kiro_agent": agent_cfg.kiro_agent,
-                "workspace": agent_cfg.workspace,
-                "memory_store": agent_cfg.memory_store,
+                # Agent- and package-writable free text with no load-time
+                # shape guard: a value the redactors would alter ships as
+                # the fixed sentinel instead, the same rule the config
+                # endpoint applies. Benign values are byte-identical.
+                "kiro_agent": _mask_agent_free_text(agent_cfg.kiro_agent),
+                "workspace": _mask_agent_free_text(agent_cfg.workspace),
+                # Unlike ``name``, a masked ``memory_store`` keeps its row: it
+                # is not row identity (the raw value above still drives the
+                # version lookup), so a credential-shaped store name degrades
+                # to an unroutable sentinel instead of leaking.
+                "memory_store": _mask_agent_free_text(agent_cfg.memory_store),
                 "memory_version": version,
-                "memory_owner": owner,
-                "model": agent_cfg.model,
+                # A member-name reference off the memory-store record: free
+                # text that, like ``name``, can be credential-shaped and pass
+                # the grammar. Masking is comparison-safe — the frontend only
+                # tests it for truthiness and against ``row["name"]``: ``""``
+                # (no owner, normalized above) stays falsy, and a surviving
+                # row's name is redactor-clean, so a masked owner compares
+                # unequal exactly as the raw suspicious value does
+                # (fail-closed: ownership_mismatch, never legacy/private).
+                "memory_owner": _mask_agent_free_text(owner),
+                "model": _mask_agent_free_text(agent_cfg.model),
                 # Presentation-only and validated by _safe_avatar at load, so
                 # it cannot carry a credential-shaped value. Without it every
                 # Members surface silently falls back to the name-derived face.
@@ -204,8 +241,8 @@ async def api_members(request: web.Request) -> web.Response:
                 # of these should handle a ticket", by the reader or by a router.
                 # An empty `triggers` is meaningful rather than missing: it is the
                 # operator's opt-out from being routed to at all.
-                "description": agent_cfg.description,
-                "triggers": agent_cfg.triggers,
+                "description": _mask_agent_free_text(agent_cfg.description),
+                "triggers": _mask_agent_free_text(agent_cfg.triggers),
             }
         )
 
