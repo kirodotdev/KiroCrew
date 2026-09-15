@@ -880,6 +880,26 @@ def redact_via_context(text: str) -> str:
 #: the failed companion composition, not the missing line.
 LOG_WITHHELD_PLACEHOLDER = "<withheld: redaction unavailable>"
 
+#: Prefix of every tag the redactors substitute. The locale gate already treats this
+#: literal as a contract, so keying on the shape adds no coupling to the tag constants.
+_REDACTION_TAG_PREFIX = "[REDACTED: "
+
+
+def carries_redaction_marker(text: str) -> bool:
+    """True when *text* is a REWRITTEN row rather than what its author wrote.
+
+    Detected from the stored text, not by comparing against the original, because a
+    persister keeps no original: the row on disk IS the rewrite. That makes this the
+    only test available to a reader, and it answers for a row scrubbed by any caller
+    rather than only for the write boundary's own half.
+
+    A row whose author literally typed the tag reads as rewritten. That direction is
+    the safe one -- it over-marks a cue, where missing the mark hides a mutation.
+    """
+    if not text:
+        return False
+    return _REDACTION_TAG_PREFIX in text or LOG_WITHHELD_PLACEHOLDER in text
+
 
 def redact_log_via_context(text: str) -> str:
     """Context-aware redaction for an operational LOG line, which must not raise.
@@ -944,3 +964,22 @@ def redact_log_via_context(text: str) -> str:
         return redact_via_context(text)
     except PlatformCompositionError:
         return LOG_WITHHELD_PLACEHOLDER
+
+
+def redact_row_via_context(text: str) -> str:
+    """A persisted conversation row: the same contract as :func:`redact_log_via_context`.
+
+    A row and a log line answer both no-companion states alike, so this is that function
+    under the name its call sites read by, not a second implementation of it.
+
+    Warns when the row CHANGED, giving the ten persisters the visibility the write
+    boundary has. Safe to log -- no stdio MCP server calls this. No text is logged.
+    """
+    out = redact_log_via_context(text)
+    if out != text:
+        _logger.warning(
+            "conversation row rewritten at the write boundary: %d chars in, %d out",
+            len(text),
+            len(out),
+        )
+    return out

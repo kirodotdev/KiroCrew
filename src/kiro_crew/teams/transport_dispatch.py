@@ -80,6 +80,7 @@ from kiro_crew.messaging.queue_receipt import (
 )
 from kiro_crew.messaging.session_resume import refused_resume_is_restricted
 from kiro_crew.messaging.upload_gate import session_is_restricted
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
 from kiro_crew.teams.approvals import TeamsApprovalDecider
@@ -1176,6 +1177,8 @@ class TeamsDispatcher:
         """Record the turn to conversation_log (dashboard visibility + restart)."""
         if self.conv_log is None:
             return
+        # This row is an EGRESS: persisted, then served to dashboard readers.
+        user_text = redact_row_via_context(user_text)
         self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
             self.conv_log.append(
