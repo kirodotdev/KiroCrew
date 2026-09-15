@@ -493,6 +493,20 @@ class TestWarmPool:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_consolidation_session_is_stateless_and_not_expired(self, cfg):
+        from kiro_crew.session import CONSOLIDATE_KEY
+
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create(CONSOLIDATE_KEY, agent="kirocrew-lite")
+        mgr.release(CONSOLIDATE_KEY)
+        mgr._sessions[CONSOLIDATE_KEY].last_used = time.monotonic() - 9999
+        await mgr._expire_idle(1)
+
+        assert CONSOLIDATE_KEY in mgr._sessions
+        assert not mgr._session_map.get(CONSOLIDATE_KEY)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_channel_session_not_expired_by_idle(self, cfg):
         """Channel-agent sessions survive idle expiry (managed by channel lifecycle)."""
         import time
