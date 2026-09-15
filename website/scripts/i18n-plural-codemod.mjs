@@ -94,7 +94,7 @@ const HARDCODED_CEILING = 10
  *   {expr} {i18nT('key')}{expr !== 1 ? 's' : ''}
  */
 const PATTERNS = [
-  // eslint-disable-next-line no-useless-escape
+   
   /\{([^{}]+?)\}(\s*)\{i18nT\('([^']+)'\)\}\{([^{}]+?) === 1 \? '' : 's'\}/g,
   /\{([^{}]+?)\}(\s*)\{i18nT\('([^']+)'\)\}\{([^{}]+?) !== 1 \? 's' : ''\}/g,
   // `> 1 ? 's' : ''` — same defect, different spelling. Worth matching

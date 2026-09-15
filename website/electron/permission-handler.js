@@ -191,7 +191,7 @@ function isNoteworthyDenial(permission, details, isVideo) {
 
 /** One-line breadcrumb so a denial is visible without attaching a debugger. */
 function logDeny(kind, permission, wc, origin, details) {
-  // eslint-disable-next-line no-console -- see module header: silent denials
+   
   // cost two debugging sessions.
   console.warn(
     `[permission] ${kind} DENY permission=${permission}`,

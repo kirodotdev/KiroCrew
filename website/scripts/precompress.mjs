@@ -145,7 +145,7 @@ export function precompressPlugin({ outDir = 'dist', subdir = 'assets', log = tr
       const stats = compressDir(target)
       if (log && stats.files > 0) {
         const mb = n => (n / 1e6).toFixed(2)
-        // eslint-disable-next-line no-console -- build-time progress output
+         
         console.log(
           `precompress: ${stats.files} assets, ${mb(stats.rawBytes)}MB raw -> ` +
           `${mb(stats.gzipBytes)}MB gzip / ${mb(stats.brotliBytes)}MB brotli`

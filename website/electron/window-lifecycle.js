@@ -1532,7 +1532,7 @@ function createWindowLifecycle(options) {
           // permission-handler.js logs its denials -- a silent refusal is
           // indistinguishable from an OS one when someone has to diagnose it.
           if (reason === "untrusted-frame") {
-            // eslint-disable-next-line no-console -- see the note above
+             
             console.warn(
               "[display-media] DENY capture: requester is not a registered capture surface",
             );
