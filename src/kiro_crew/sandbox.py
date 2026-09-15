@@ -6501,7 +6501,8 @@ def _wsl2_windows_side_masking(sandbox_level: str) -> tuple[list[str], list[str]
     dispositions (hidden / read-only / visible) across DrvFs:
 
     - hidden: the mode's sensitive dirs (which carry the crew secret leaves
-      in every mode), the relocated governance cache and secret leaves, the
+      in every mode), the credential files of :data:`_CC_FILES` at the cc and
+      strict tiers, the relocated governance cache and secret leaves, the
       voice runtime snapshot, and ``.ssh`` at the strict tier (the launcher's
       own ``HIDE_SSH`` check only sees the guest home);
     - read-only: the crew ceilings in both spellings, their relocated
@@ -6512,6 +6513,23 @@ def _wsl2_windows_side_masking(sandbox_level: str) -> tuple[list[str], list[str]
     """
     windows_home = str(Path.home())
     hidden = [os.path.join(windows_home, d) for d in _sensitive_dir_names(sandbox_level)]
+    # The credential FILES, for the same reason as the dirs above and with the
+    # same failure mode if omitted. ``_build_launcher_script`` joins ``_CC_FILES``
+    # to ``home``, which under an identity is the GUEST home, so every one of
+    # them named a path holding none of the operator's secrets while
+    # ``.npmrc``, ``.pypirc``, ``.netrc`` and ``.git-credentials`` sat readable
+    # through DrvFs at the cc and strict tiers -- tiers whose whole contract is
+    # that those files are masked. Only ``~/.kiro/crew/.env`` survived, and by
+    # accident: it is also a crew hidden leaf, so the dir derivation covered it.
+    #
+    # These are plain files, and they reach the right loop: the launcher folds
+    # ``hidden_dirs`` into SENSITIVE_FILES as well as SENSITIVE_DIRS, and the two
+    # loops guard on ``isfile`` and ``isdir`` respectively, so the guest
+    # classifies each entry by what it actually is. Putting a file here is
+    # therefore correct rather than a no-op -- but note that it is a no-op if
+    # only the dirs loop ever sees it, which is why the fold matters.
+    if sandbox_level in ("cc", "strict"):
+        hidden.extend(os.path.join(windows_home, name) for name in _CC_FILES)
     hidden.extend(_relocated_policy_cache_dirs())
     hidden.extend(_relocated_crew_targets(_CREW_HIDDEN_LEAVES))
     hidden.extend(_voice_runtime_sandbox_paths())

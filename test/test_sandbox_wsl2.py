@@ -606,6 +606,48 @@ def test_wsl2_windows_side_masking_carries_the_relocated_and_runtime_paths(monke
     assert sb.os.path.join(_FAKE_WINDOWS_HOME, ".kiro/crew/security_policy.json") in readonly
 
 
+@pytest.mark.parametrize("level", ["cc", "strict"])
+def test_wsl2_windows_side_masking_carries_the_credential_files(monkeypatch, level):
+    """The cc and strict tiers promise these files are masked, and under wsl2
+    only this derivation can keep that promise.
+
+    ``_build_launcher_script`` joins ``_CC_FILES`` to ``home``, which under an
+    identity is the GUEST home. That path holds none of the operator's secrets,
+    so without a Windows-side term ``.npmrc``, ``.pypirc``, ``.netrc`` and
+    ``.git-credentials`` stayed readable through DrvFs at exactly the two tiers
+    whose contract is that they are not. ``~/.kiro/crew/.env`` hid the gap by
+    surviving on its own: it is also a crew hidden leaf, so the DIR derivation
+    already covered it.
+    """
+    monkeypatch.setattr(sb.Path, "home", staticmethod(lambda: sb.Path(_FAKE_WINDOWS_HOME)))
+
+    hidden, _ = sb._wsl2_windows_side_masking(level)
+
+    for name in sb._CC_FILES:
+        assert sb.os.path.join(_FAKE_WINDOWS_HOME, name) in hidden, name
+
+
+def test_wsl2_windows_side_masking_leaves_the_credential_files_at_standard(monkeypatch):
+    """Tier parity with the launcher, which gates the same list on cc/strict.
+
+    Masking them at ``standard`` would be stricter than the native backend at
+    the same tier, and a per-backend divergence in EITHER direction is what this
+    function exists to prevent.
+    """
+    monkeypatch.setattr(sb.Path, "home", staticmethod(lambda: sb.Path(_FAKE_WINDOWS_HOME)))
+
+    hidden, _ = sb._wsl2_windows_side_masking("standard")
+
+    # The two crew `.env` spellings are exempt: `.env` is a crew hidden LEAF,
+    # so the dir derivation covers them at every tier on both backends. Compare
+    # leaf names rather than whole entries -- `_CREW_HIDDEN_LEAVES` holds `.env`,
+    # never `.kiro/crew/.env`, so matching the whole entry exempts nothing.
+    for name in sb._CC_FILES:
+        if name.rsplit("/", 1)[-1] in sb._CREW_HIDDEN_LEAVES:
+            continue
+        assert sb.os.path.join(_FAKE_WINDOWS_HOME, name) not in hidden, name
+
+
 def test_build_launcher_script_under_an_identity_uses_only_caller_supplied_host_paths(
     monkeypatch,
 ):
