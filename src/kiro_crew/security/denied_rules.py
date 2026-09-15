@@ -1542,6 +1542,13 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     DeniedCommandRule(
         id="network-exposure-tailscale-node-mutate",
         # Node-state and identity mutations: ``up``/``set`` can enable an SSH
+        # server; ``down`` is ``up``'s inverse and takes this node OFF the
+        # tailnet, which is the same exposure STATE the ``drive`` and
+        # ``exit-node`` rows govern in both directions. It also has a cost the
+        # others do not: ``publish()`` puts the operator's dashboard on the
+        # tailnet, so an agent that runs ``down`` severs the operator's own
+        # control path and cannot restore it, because ``up`` is denied to it.
+        # There is no read spelling of ``down``, so it needs no carve-out.
         # server (``--ssh``), advertise this node as an exit node or subnet
         # router, or accept routes; ``login``/``logout``/``switch`` change which
         # tailnet -- and therefore which ACLs -- this node is on; ``cert``
@@ -1564,11 +1571,11 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         # separately from the rows themselves.
         pattern=(
             ".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*"
-            "\\s+(?:up|set|login|logout|switch|cert|web)\\b.*"
+            "\\s+(?:up|down|set|login|logout|switch|cert|web)\\b.*"
         ),
         category="network-exposure",
         description=(
-            "Blocks `tailscale up`, `set`, `login`, `logout`, `switch`, `cert`, and `web` — "
+            "Blocks `tailscale up`, `down`, `set`, `login`, `logout`, `switch`, `cert`, and `web` — "
             "node-state and identity mutations that can enable an SSH server, advertise this "
             "node as an exit node or subnet router, change which tailnet it is on, provision a "
             "serve certificate, or start a listener serving the node-configuration UI. Read "
@@ -1591,6 +1598,32 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "Blocks `tailscale drive` mutations (`share`, `rename`, `unshare`), which expose a "
             "host directory to every node on the tailnet or change what is already exposed. "
             "`tailscale drive list` (the read) stays allowed. Scope: the direct command. Containment for tailnet exposure is the OS sandbox and the owner-only publish path."
+        ),
+    ),
+    DeniedCommandRule(
+        id="network-exposure-tailscale-file-cp",
+        # ``file cp`` pushes an arbitrary host FILE to a named tailnet node. The
+        # ``drive`` row above denies exposing a host DIRECTORY to the tailnet and
+        # this is the same question asked one object smaller, so a rule set that
+        # denies one and allows the other is not the boundary it claims to be.
+        # Nothing else catches it: no ``curl``/``scp``/``nc`` and no credential
+        # path appears in the text, so the ``credential-exfil`` rows never see it,
+        # and this tier matches text rather than consulting ``is_sensitive_path``.
+        #
+        # Names the mutating verb rather than denying the ``file`` subtree behind a
+        # read carve-out, which is the shape the ``drive`` row uses. The carve-out
+        # shape is better when the read subcommands are known; the reads here were
+        # not verifiable against a live CLI from where this was written, and a
+        # guessed carve-out refuses an ordinary read rather than admitting an
+        # exposure. Naming ``cp`` cannot do that.
+        pattern=".*tailscale(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+file\\s+cp\\b.*",
+        category="network-exposure",
+        description=(
+            "Blocks `tailscale file cp`, which pushes a host file to another node on the tailnet "
+            "(Taildrop). No credential path or transfer tool appears in such a command, so no other "
+            "rule sees it. Reads such as `tailscale file get` stay allowed. Scope: the direct "
+            "command. Containment for tailnet exposure is the OS sandbox and the owner-only "
+            "publish path."
         ),
     ),
     DeniedCommandRule(
