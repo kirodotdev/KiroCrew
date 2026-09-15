@@ -52,6 +52,7 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
+    _WSL2_PROBE_TIMEOUT_SECS,
     SandboxUnavailableError,
     _operator_wants_wsl2,
     cgroup_scope_argv,
@@ -2120,11 +2121,22 @@ def _shell_is_posix_strict(shell: str, *, cache_key: str | None = None) -> bool:
         # ceilings as a real command cron. run_limited applies them after exec,
         # and is a no-op on Windows where there are no POSIX rlimits.
         argv = cgroup_scope_argv(argv)
+        # Under wsl2 this probe is a `wsl.exe` round trip, not a native `sh -c`.
+        # sandbox.py owns that cost and measured it at 7.5s cold -- over any
+        # timeout sized for a local shell -- and states why a short one is wrong
+        # in exactly this shape: it misclassifies a merely-slow-to-boot distro as
+        # permanently unavailable and poisons the cache for the process lifetime.
+        # That is what the assignment to _POSIX_STRICT_CACHE below does with the
+        # answer, so a 5s ceiling here made the FIRST command cron after a
+        # gateway start refuse, and every later one refuse with it, on the one
+        # backend whose whole purpose is to provide the POSIX shell they need.
+        # Borrowing the constant rather than restating it keeps the number owned
+        # by the module that measured it.
         proc = run_limited(
             argv,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=_WSL2_PROBE_TIMEOUT_SECS if wsl2_selected() else 5,
             env=_clean_cron_env(),
         )
         result = proc.returncode == 0 and proc.stdout.strip() == "x.{a,a}"
