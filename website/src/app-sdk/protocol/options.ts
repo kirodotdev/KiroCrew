@@ -215,3 +215,12 @@ export function deriveFollowUpOptions(
   }
   return NONE
 }
+
+/**
+ * A zero-turn action a model may offer alongside its options. The action and the label are
+ * separate fields so the label stays inert prose: shown, never interpreted.
+ */
+export interface OptionAction {
+  action: 'close'
+  label: string
+}
