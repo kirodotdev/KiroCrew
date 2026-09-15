@@ -1863,6 +1863,13 @@ toggle while the sidebar is collapsed, on mobile it renders that toggle inline,
 so the sessions list stays reachable from a split. Every split pane except the
 focused one is dimmed by a background-coloured overlay at `--pane-dim-opacity`,
 which fades as focus moves; a pane outside split view is never dimmed.
+The workspace and terminal tab strips offer Close, Close other tabs, Close
+tabs to the right, and Close all tabs on right-click, or on touch by holding a
+tab and lifting the finger without moving it. The same hold followed by
+movement reorders the tab; touch swipes scroll these strips, and mouse
+dragging reorders tabs. Bulk workspace closes exclude its fixed views and
+confirm before discarding unsaved file edits. Closing terminal tabs deletes
+their PTYs; hiding a panel keeps them alive.
 
 `KiroPrerequisiteGate` wraps the main dashboard route (the independent
 `/worlds-popout` route is not gated). `DashboardBootstrap` mounts the proactive
