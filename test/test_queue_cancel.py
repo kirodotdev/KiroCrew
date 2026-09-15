@@ -59,6 +59,91 @@ class TestQueueHelpers:
         assert item["content"] == "first"
         assert slot._queue[0]["content"] == "second"
 
+    def test_discard_callback_runs_only_for_discard_not_consumption(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        consumed_id = slot.queue_insert(
+            0, "consume", on_discarded=lambda: discarded.append("consumed")
+        )
+        discarded_id = slot.queue_insert(
+            1, "discard", on_discarded=lambda: discarded.append("discarded")
+        )
+
+        assert slot.queue_pop(0)["id"] == consumed_id
+        assert discarded == []
+        assert slot.queue_remove_by_id(discarded_id) == "discard"
+        assert discarded == ["discarded"]
+
+    def test_bulk_discard_retires_each_callback_once(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        slot.queue_insert(0, "one", on_discarded=lambda: discarded.append("one"))
+        slot.queue_insert(1, "two", on_discarded=lambda: discarded.append("two"))
+
+        removed = slot.queue_discard_all()
+
+        assert [item["content"] for item in removed] == ["one", "two"]
+        assert discarded == ["one", "two"]
+        assert slot._queue == []
+        slot.discard_queue_entries(removed)
+        assert discarded == ["one", "two"], "callbacks must be one-shot"
+
+    def test_discard_callback_failure_does_not_restore_the_row(self):
+        slot = _ChatSlot("s1")
+
+        def _reject() -> None:
+            raise RuntimeError("retirement unavailable")
+
+        queue_id = slot.queue_insert(0, "discard", on_discarded=_reject)
+
+        assert slot.queue_remove_by_id(queue_id) == "discard"
+        assert slot._queue == []
+
+    def test_capacity_eviction_skips_callback_owned_rows(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        owned_id = slot.queue_insert(
+            0,
+            "completion",
+            on_consumed=lambda _consumed: None,
+            on_discarded=lambda: discarded.append("completion"),
+        )
+        ordinary_id = slot.queue_append("ordinary")
+
+        assert slot.queue_evict_oldest_if_unowned() is None
+        assert [item["id"] for item in slot._queue] == [owned_id, ordinary_id]
+        assert discarded == []
+
+    def test_capacity_eviction_removes_an_unowned_head(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        ordinary_id = slot.queue_append("ordinary")
+        owned_id = slot.queue_insert(
+            1,
+            "completion",
+            on_discarded=lambda: discarded.append("completion"),
+        )
+
+        evicted = slot.queue_evict_oldest_if_unowned()
+
+        assert evicted is not None
+        assert evicted["id"] == ordinary_id
+        assert [item["id"] for item in slot._queue] == [owned_id]
+        assert discarded == []
+
+    def test_capacity_eviction_refuses_when_every_row_is_owned(self):
+        slot = _ChatSlot("s1")
+        discarded: list[str] = []
+        owned_id = slot.queue_insert(
+            0,
+            "completion",
+            on_discarded=lambda: discarded.append("completion"),
+        )
+
+        assert slot.queue_evict_oldest_if_unowned() is None
+        assert [item["id"] for item in slot._queue] == [owned_id]
+        assert discarded == []
+
     def test_queue_remove_by_id_found(self):
         slot = _ChatSlot("s1")
         slot.queue_append("keep")

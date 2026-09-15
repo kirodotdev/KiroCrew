@@ -265,10 +265,20 @@ because the policy can become stricter after monitor creation. After its advisor
 busy check, Slack also takes the SessionManager's non-waiting semaphore claim; a
 user turn that wins that boundary returns `BUSY` without waiting, starting a turn,
 or creating completion evidence. A claimed Slack structured wake runs through
-the same `TurnDriver` directive consumer as ordinary channel turns, so an
-authenticated `monitor_update`, `monitor_stop`, or structured
-`autonudge_stop` result is applied to that Slack session before a later raw
-completion is accounted; legacy nudges retain their existing collector path.
+the same `TurnDriver` directive consumer as ordinary channel turns. Slack,
+Discord, and Webex pass the live subagent manager into the slot-less fallback,
+so an authenticated agent-issued `autonudge_stop` or `monitor_stop` refuses
+while child work is running or queued, while any terminal report (including a
+spawn rejection) is owned, or while a dashboard slot retains an accepted
+completion/failure retry awaiting consumption. Queued completion rows carry a
+separate discard callback through cancellation and bulk teardown, so a row with
+no consumer or retry releases the goal fence and cannot be resurrected on
+restart. Automatic queue-cap eviction never invokes that callback: it removes
+the FIFO head only when that row is unowned, otherwise the incoming notification
+uses fallback without skipping through or growing the queue. Authenticated
+`monitor_update`, `monitor_stop`, and eligible stop results are applied to that
+channel session before a later raw completion is accounted; legacy nudges retain
+their existing collector path.
 If Slack's bounded timeout fires before the structured completion hook is
 accepted, the claim is retryable and returns `BUSY`; after acceptance it remains
 `DISPATCHED`, and the durable completion-evidence deadline owns recovery.

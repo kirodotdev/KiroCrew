@@ -299,9 +299,9 @@ async def apply_session_directive(
                 producer_is_channel=producer_is_channel,
             )
         elif kind == "monitor_stop":
-            result = await _monitor_stop(slot, session_key, args)
+            result = await _monitor_stop(state, slot, session_key, args)
         elif kind == "autonudge_stop":
-            result = await _autonudge_stop(slot, session_key, args)
+            result = await _autonudge_stop(state, slot, session_key, args)
         elif kind == "set_project":
             result = await _set_project(state, slot, args)
         elif kind == "reset_conversation":
@@ -947,8 +947,14 @@ async def _stop_resolved_loop(
     )
 
 
-async def _monitor_stop(slot: Any, session_key: str, args: dict[str, Any]) -> str:
-    from kiro_crew.autonudge import get_instance
+async def _monitor_stop(
+    state: Any,
+    slot: Any,
+    session_key: str,
+    args: dict[str, Any],
+) -> str:
+    from kiro_crew.autonudge import get_instance, is_structured_monitor_loop
+    from kiro_crew.dashboard.chat_utils import subagents_attached
 
     svc = get_instance()
     if svc is None:
@@ -963,11 +969,24 @@ async def _monitor_stop(slot: Any, session_key: str, args: dict[str, Any]) -> st
     loop = svc.get_by_slot(binding)
     if not loop:
         return _no_loop_message(svc, binding)
+    if subagents_attached(state, slot, session_key, "monitor_stop"):
+        label = "Structured monitor" if is_structured_monitor_loop(loop) else "Auto-nudge loop"
+        raise _DirectiveDenied(
+            f"Error: {label} was not stopped: sub-agent work is still attached "
+            "to this session. Wait for running, queued, and completing sub-agents to "
+            "settle, then stop only if the goal is complete."
+        )
     return await _stop_resolved_loop(slot, svc, binding, loop, args)
 
 
-async def _autonudge_stop(slot: Any, session_key: str, args: dict[str, Any]) -> str:
+async def _autonudge_stop(
+    state: Any,
+    slot: Any,
+    session_key: str,
+    args: dict[str, Any],
+) -> str:
     from kiro_crew.autonudge import get_instance
+    from kiro_crew.dashboard.chat_utils import subagents_attached
 
     svc = get_instance()
     # "Nothing to stop" is an IDEMPOTENT success — the goal (no loop running on
@@ -983,6 +1002,12 @@ async def _autonudge_stop(slot: Any, session_key: str, args: dict[str, Any]) -> 
     loop = svc.get_by_slot(binding)
     if not loop:
         return _no_loop_message(svc, binding)
+    if subagents_attached(state, slot, session_key, "autonudge_stop"):
+        raise _DirectiveDenied(
+            "Error: Auto-nudge loop was not stopped: sub-agent work is still attached "
+            "to this session. Wait for running, queued, and completing sub-agents to "
+            "settle, then stop only if the goal is complete."
+        )
     return await _stop_resolved_loop(slot, svc, binding, loop, args)
 
 

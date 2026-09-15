@@ -316,8 +316,10 @@ class TestBatchIdentity:
         mgr.spawn = lambda **kw: rejected
 
         mgr._drain_queue()
-        assert "reject-q-reject" in mgr._tasks, "a rejection at drain time was dropped on the floor"
-        await mgr._tasks["reject-q-reject"]
+        assert any(
+            owner.id == "q-reject" for owner in mgr._report_owners.values()
+        ), "a rejection at drain time was dropped on the floor"
+        await asyncio.gather(*list(mgr._report_tasks))
         assert [i.id for i in announced] == ["q-reject"]
 
     def test_a_drained_batch_rejection_is_not_double_announced(self):
@@ -351,8 +353,9 @@ class TestBatchIdentity:
         )
 
         mgr._drain_queue()
+        assert "reject-q-batch" not in mgr._tasks
         assert (
-            "reject-q-batch" not in mgr._tasks
+            not mgr._report_tasks
         ), "the drain announced a batch rejection that spawn already announced"
 
     def test_a_drained_success_is_not_announced_twice(self):
@@ -1594,11 +1597,13 @@ class TestWaveDigest:
         slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
+        slot._subagent_completion_pending = {}
         slot._subagents_inline_collected = set()
+        slot._queue = []
         queued: list[dict] = []
-        slot.queue_append = MagicMock(
-            side_effect=lambda content, kind="", meta=None: (
-                queued.append({"content": content, "kind": kind, "meta": meta}) or "qid"
+        slot.queue_insert = MagicMock(
+            side_effect=lambda index, content, **kwargs: (
+                queued.append({"index": index, "content": content, **kwargs}) or "qid"
             )
         )
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1640,6 +1645,19 @@ class TestWaveDigest:
         held = [members[i].id for i in range(9)]
         assert list(ledger.keys()) == [queued[0]["content"]]
         assert ledger[queued[0]["content"]] == [members[9].id] + held
+        assert slot._subagent_completion_pending == {members[9].id: 1}
+        discard = queued[0].get("on_discarded")
+        assert callable(discard), "queued completion has no terminal discard owner"
+
+        discard()
+        await _settle(lambda: bool(settled))
+
+        assert slot._subagent_completion_pending == {}
+        assert ledger == {}
+        assert settled == [[members[9].id] + held]
+        discard()
+        await asyncio.sleep(0)
+        assert settled == [[members[9].id] + held], "discard settlement duplicated"
 
     @pytest.mark.asyncio
     async def test_an_auth_required_turn_is_not_a_confirmed_hand_off(self):

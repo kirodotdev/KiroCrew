@@ -111,8 +111,21 @@ tests in `test_autonudge_stop_auth.py` pin those distinctions.
 `autonudge_stop` is deliberately non-confirming at tool-call time because the
 consumer applies it after the turn result is processed. The applier removes an
 ordinary monitor loop on the calling binding and reports an idempotent local
-miss. It never exposes a cross-session target; `test_autonudge_stop_auth.py`
-pins both the request wording and the local-binding behavior.
+miss. Before removal, both it and the structured `monitor_stop` directive call
+the shared `chat_utils.subagents_attached` predicate and refuse while the session
+has running or queued children, an owned terminal report (including a spawn
+rejection), an accepted completion turn not yet consumed, or a failed delivery
+retained for the next-turn retry. Completion consumption owns a retractable
+callback, so the first empty-response requeue keeps the fence and a landed retry
+releases it exactly once. An explicit queue discard carries a separate terminal
+callback: it releases the fence and retires delivery debt because no consumer or
+retry remains. This keeps a goal driver active until its delegated work has
+settled; the dashboard's direct Stop/Delete control remains the user-owned
+override and deliberately does not consult this agent-only fence. It never
+exposes a cross-session target; `test_autonudge_stop_auth.py`,
+`test_monitor_directive_apply.py`, and `test_autonudge_handlers_cov80.py` pin the
+request wording, local-binding behavior, child-work refusal, and direct-user
+opposite case.
 
 ## PR watch probe
 

@@ -605,6 +605,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 slot._queue[:] = [
                     entry for entry in slot._queue if entry["id"] not in discarded_queue_ids
                 ]
+                slot.discard_queue_entries(discarded_queue)
                 # ``_pending`` is edited in place for the same reason the question
                 # set is: ``drain()`` does ``slot._pending.clear()``, so a client
                 # that drains mid-boundary has already DELIVERED those rows.

@@ -316,6 +316,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     EMPTY_RUNG_CONTINUE,
     EMPTY_RUNG_GIVE_UP,
     EMPTY_RUNG_REPLAY,
+    LIFECYCLE_RECOVERY_KIND,
     MODEL_UNENTITLED_KIND,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
@@ -5640,9 +5641,9 @@ def _queue_entry_is_orchestration(item: dict) -> bool:
     must NOT block or purge a pending recovery.
 
     Classification is PURELY STRUCTURAL — the `kind` tag stamped at enqueue, never
-    the message text. `is_system_injection_item` covers the three orchestration
-    kinds (`CRON_NOTIFICATION_KIND`, `SUBAGENT_COMPLETION_KIND`,
-    `SYNTHETIC_RECOVERY_KIND`); `is_synthetic_payload_item` additionally covers a
+    the message text. `is_system_injection_item` covers cron notifications,
+    sub-agent completions, ordinary synthetic recoveries, and lifecycle-owned
+    completion retries; `is_synthetic_payload_item` additionally covers a
     recovery entry that replays runner-authored text. There is deliberately NO
     content match: a `CRON_NOTIFY_RE.match` / prefix test is prefix-anchored and
     therefore spoofable — a user could queue
@@ -5692,12 +5693,12 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
     links — as do all other constraints (see
     `session_control.newly_held_constraints`).
 
-    Structural exemption is narrow: cron notifications and sub-agent
-    completions only (`CRON_NOTIFICATION_KIND` / `SUBAGENT_COMPLETION_KIND`) —
-    runner machinery minted fresh by trusted internal producers, which
-    channel-born sessions receive by design. Synthetic-recovery entries are
-    NOT exempt: a recovery replays externally admitted content verbatim, so it
-    is re-validated like any plain entry against the admission stamp its
+    Structural exemption is narrow: cron notifications, sub-agent completions,
+    and lifecycle-owned completion retries (`CRON_NOTIFICATION_KIND` /
+    `SUBAGENT_COMPLETION_KIND` / `LIFECYCLE_RECOVERY_KIND`) — runner machinery
+    minted for this slot's own turn lifecycle. Ordinary synthetic-recovery
+    entries are NOT exempt: they replay externally admitted content verbatim
+    and are re-validated like any plain entry against the admission stamp their
     requeue recorded (`_queue_recovery`), failing closed when unmarked.
 
     Runs at the top of the drain with no suspension point between the snapshot
@@ -5716,16 +5717,15 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
     _mirror_unverified = bool(now.get("mirror_unverified"))
     doomed: list[tuple[dict, list[str]]] = []
     for q in slot._queue:
-        # Exempt ONLY cron notifications and sub-agent completions: both are
-        # minted fresh by trusted internal producers for THIS slot's own turn
-        # lifecycle, and channel-born sessions receive them by design. A
-        # synthetic-recovery entry is deliberately NOT exempt — it replays
-        # externally admitted content verbatim under a fresh queue id, so an
-        # exemption would let the retry ride past a link that appeared during
-        # the recovery window. Every recovery producer stamps admission context
-        # at requeue (`_queue_recovery`, the manual continue), so a recovery in
-        # a channel-born session still drains: its stamp records linked=True.
-        if q.get("kind") in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND):
+        # Exempt cron notifications, sub-agent completions, and an exact
+        # lifecycle-owned retry of a completion popped for a failed turn. Those
+        # rows are internal delivery state for THIS slot, not externally admitted
+        # user prompts. Ordinary synthetic recovery remains revalidated below.
+        if q.get("kind") in (
+            CRON_NOTIFICATION_KIND,
+            SUBAGENT_COMPLETION_KIND,
+            LIFECYCLE_RECOVERY_KIND,
+        ):
             continue
         changed = _sc.newly_held_constraints(
             now,
@@ -6032,7 +6032,12 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     _revalidated_ids = [
         item["id"]
         for item in consumed
-        if item.get("kind") not in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND)
+        if item.get("kind")
+        not in (
+            CRON_NOTIFICATION_KIND,
+            SUBAGENT_COMPLETION_KIND,
+            LIFECYCLE_RECOVERY_KIND,
+        )
     ]
     if _revalidated_ids:
         audit_queued_allow(slot, _revalidated_ids)
@@ -6117,7 +6122,12 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     _settleable = [
         item["content"]
         for item in consumed
-        if item.get("kind") in (SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND)
+        if item.get("kind")
+        in (
+            SUBAGENT_COMPLETION_KIND,
+            SYNTHETIC_RECOVERY_KIND,
+            LIFECYCLE_RECOVERY_KIND,
+        )
     ]
 
     if _settleable and not slot.owes_subagent_delivery(_settleable):
@@ -6130,6 +6140,9 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     ]
     _irreversible_delivery_callbacks = [
         callback for item in consumed if callable(callback := item.get("_on_irreversibly_consumed"))
+    ]
+    _discard_callbacks = [
+        callback for item in consumed if callable(callback := item.get("_on_discarded"))
     ]
 
     def _note_consumed(consumed: bool = True) -> None:
@@ -6145,6 +6158,10 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
             if inspect.isawaitable(result):
                 await result
 
+    def _note_discarded() -> None:
+        for callback in _discard_callbacks:
+            callback()
+
     _run_kwargs: dict[str, Any] = {
         "_current_message": current_row,
         "_synthetic_payload": synthetic_payload,
@@ -6155,6 +6172,8 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:
         _run_kwargs["_on_irreversibly_consumed"] = _note_irreversibly_consumed
+    if _discard_callbacks:
+        _run_kwargs["_on_discarded"] = _note_discarded
     task = spawn_guarded_turn(
         state,
         slot,
@@ -6401,6 +6420,8 @@ async def _run_chat(
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
+    _on_discarded: "Callable[[], None] | None" = None,
+    _on_lifecycle_recovery_retained: "Callable[[], None] | None" = None,
     monitor_completion: MonitorCompletionHook | None = None,
     _current_message: dict | None = None,
 ) -> None:
@@ -6772,6 +6793,11 @@ async def _run_chat(
     # stays consumed.
     _consumed_reported = False
     _irreversible_consumption_reported = False
+    _discard_transferred = False
+    # An unconsumed completion is still owned by its producer unless a user or
+    # teardown explicitly removes it. Errors and system cancellations retain
+    # that ownership on an exact held queue row.
+    _completion_retry_held = False
 
     async def _report_consumed(consumed: bool = True, *, irreversible: bool = False) -> None:
         nonlocal _consumed_reported, _irreversible_consumption_reported
@@ -6804,30 +6830,42 @@ async def _run_chat(
     ) -> str:
         """Queue a retry without losing a producer's consumption settlement.
 
-        Stamps FRESH admission context: a recovery entry replays
-        externally admitted content verbatim under a new queue id, so without
-        its own stamp the drain would either wave it past a link that appeared
-        during the retry window (exemption) or destroy every recovery in a
-        channel-born session (fail-closed). The requeue is the moment its
-        admission is re-affirmed, and the turn's directive provenance rides
-        along so the audience exemption follows the original author.
+        Stamps FRESH admission context for ordinary prompt recovery: an entry
+        replays externally admitted content verbatim under a new queue id, so
+        without its own stamp the drain would either wave it past a link that
+        appeared during the retry window (exemption) or destroy every recovery
+        in a channel-born session (fail-closed). While an unconsumed completion
+        still supplies ``on_discarded``, the row instead receives the explicit
+        lifecycle-owned kind; every later model/system requeue preserves that
+        internal identity and cannot enter the user-prompt discard path.
+        The turn's directive provenance rides along so the audience exemption
+        follows the original author.
         """
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
-        return slot.queue_insert(
+        nonlocal _discard_transferred
+        discard_callback = _on_discarded if not _consumed_reported else None
+        queued_kind = LIFECYCLE_RECOVERY_KIND if discard_callback is not None else kind
+        queue_id = slot.queue_insert(
             index,
             content,
-            kind=kind,
+            kind=queued_kind,
             payload=payload,
             meta=containment_meta(state, slot),
             on_consumed=_on_consumed if not _consumed_reported else None,
             on_irreversibly_consumed=(
                 _on_irreversibly_consumed if not _irreversible_consumption_reported else None
             ),
+            on_discarded=discard_callback,
             directive_user_origin=_directive_user_origin,
             directive_channel_origin=_directive_channel_origin,
         )
+        if discard_callback is not None:
+            _discard_transferred = True
+            if _on_lifecycle_recovery_retained is not None:
+                _on_lifecycle_recovery_retained()
+        return queue_id
 
     # Model-activity marker for the poisoned-conversation streak ONLY:
     # flipped True on thinking chunks. Deliberately separate from
@@ -13629,6 +13667,31 @@ async def _run_chat(
         # individually cancellable — a user who meant "discard" clicks ✕;
         # nothing is ever silently lost.
         _requeue_unconsumed_steers(state, slot)
+        # A completion row popped for this turn has no queue entry left to own
+        # its one-shot callbacks. Error/auth/authorization exits and system
+        # cancellation are not a user decision to discard the result: transfer
+        # the callbacks to an exact recovery row and hold it until a later turn
+        # consumes it or the user removes it. A direct Stop or slot teardown is
+        # an explicit removal boundary and retires the callbacks immediately.
+        if _on_discarded is not None and not _consumed_reported and not _discard_transferred:
+            _explicit_completion_discard = _stop_pressed() or state._slots.get(slot.key) is not slot
+            if _explicit_completion_discard:
+                try:
+                    _on_discarded()
+                except Exception:
+                    logger.warning(
+                        "completion discard callback failed for slot %s",
+                        slot.key,
+                        exc_info=True,
+                    )
+            else:
+                _queue_recovery(
+                    0,
+                    message,
+                    kind=LIFECYCLE_RECOVERY_KIND,
+                    payload=payload_for_replay(_is_synthetic),
+                )
+                _completion_retry_held = True
         # ── Retire any wait countdown ──
         # A healthy `wait` clears its own state with a final keepalive ping, but
         # that ping is best-effort and cannot run at all if the MCP subprocess
@@ -13652,7 +13715,12 @@ async def _run_chat(
         # "hold the queue for post-login resume" guard on its end-of-plan handoff.
         slot._last_turn_auth_required = _auth_required
         next_turn_started = False
-        if slot._queue and not _auth_required and _memory_preparation_admitted:
+        if (
+            slot._queue
+            and not _auth_required
+            and not _completion_retry_held
+            and _memory_preparation_admitted
+        ):
             # After startup admission, the successor's own ACP attempt remains
             # the authority for a later sign-out. A turn cancelled while waiting
             # on shared preparation retains the queue instead of walking every
@@ -13670,5 +13738,7 @@ async def _run_chat(
             _finish_queue_cycle(
                 state,
                 slot,
-                allow_automatic_successor=_memory_preparation_admitted,
+                allow_automatic_successor=(
+                    _memory_preparation_admitted and not _completion_retry_held
+                ),
             )

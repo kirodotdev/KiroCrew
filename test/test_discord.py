@@ -2405,6 +2405,28 @@ class TestDispatcher:
         ), f"typing must start before the cold start, got {order}"
 
     @pytest.mark.asyncio
+    async def test_slotless_directive_consumer_gets_live_subagent_manager(
+        self, monkeypatch
+    ) -> None:
+        manager = object()
+        d, _cli, _sess = _dispatcher({"u1"})
+        d.subagent_manager = manager
+        seen: list[dict[str, Any]] = []
+        real_builder = td_mod.build_directive_consumer
+
+        def _capture(**kwargs: Any):
+            seen.append(kwargs)
+            return real_builder(**kwargs)
+
+        monkeypatch.setattr(td_mod, "build_directive_consumer", _capture)
+
+        await d.handle_message(self._msg("hello world"))
+
+        assert getattr(d, "dashboard_state", None) is None
+        assert len(seen) == 1
+        assert seen[0]["subagents"] is manager
+
+    @pytest.mark.asyncio
     async def test_normal_turn_streams_and_releases(self) -> None:
         d, cli, sess = _dispatcher({"u1"})
         await d.handle_message(self._msg("hello world"))

@@ -352,6 +352,52 @@ async def test_refused_structured_monitor_stop_is_audited_as_denied(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_structured_monitor_stop_refuses_while_subagent_work_is_attached(tmp_path):
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add_monitor(
+        slot_key="chat-1",
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+    )
+
+    class _Subagents:
+        def running_agents_for(self, session_key):
+            return ["child-1"]
+
+        def _queued_depth(self, session_key):
+            return 0
+
+    slot = SimpleNamespace(key="chat-1", _app="")
+    state = SimpleNamespace(
+        subagents=_Subagents(),
+        _slots={"chat-1": slot},
+        sessions=None,
+        channel_transports={},
+    )
+    audit = MagicMock()
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch("kiro_crew.dashboard.session_directive_apply._audit", audit),
+    ):
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "monitor_stop",
+            {"reason": "child reports automatically"},
+        )
+
+    assert result.startswith("Error: Structured monitor was not stopped")
+    assert loop.active
+    assert loop.monitor is not None and loop.monitor.outcome is None
+    audit.assert_called_once_with("dashboard:chat-1", "monitor_stop", "denied")
+    service.stop()
+
+
+@pytest.mark.asyncio
 async def test_watch_update_and_stop_are_authoritative_and_owned(tmp_path):
     service = AutoNudgeService(base_dir=tmp_path)
     state = SimpleNamespace(

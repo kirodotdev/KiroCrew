@@ -1006,6 +1006,30 @@ class TestMirrorBinding:
 
 class TestApprovals:
     @pytest.mark.asyncio
+    async def test_slotless_directive_consumer_gets_live_subagent_manager(
+        self, monkeypatch
+    ) -> None:
+        manager = object()
+        provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
+        sessions = FakeSessions(provider)
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        d.subagent_manager = manager
+        seen: list[dict] = []
+        real_builder = webex_dispatch.build_directive_consumer
+
+        def _capture(**kwargs):
+            seen.append(kwargs)
+            return real_builder(**kwargs)
+
+        monkeypatch.setattr(webex_dispatch, "build_directive_consumer", _capture)
+
+        await d.handle_message(_inbound("hello"))
+
+        assert getattr(d, "dashboard_state", None) is None
+        assert len(seen) == 1
+        assert seen[0]["subagents"] is manager
+
+    @pytest.mark.asyncio
     async def test_interactive_mode_builds_a_decider(self) -> None:
         """Without one the driver denies by default.
 
