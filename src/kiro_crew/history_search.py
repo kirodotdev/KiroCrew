@@ -962,7 +962,7 @@ class SessionCatalogProjection:
         """Return metadata for all session files, newest first.
 
         Deduplicates stacked ``dashboard_`` prefix files, keeping the
-        most recently modified version.  Uses mtime-based metadata cache
+        most recently modified version. Uses the metadata cache
         when available, falling back to reading only the first line for
         title extraction.
         """
@@ -974,15 +974,15 @@ class SessionCatalogProjection:
         for path in self._log._dir.glob("*.jsonl"):
             key = path.stem
             # Snapshot the invalidation generation BEFORE the stat: the
-            # first-line fill below publishes under this stat's mtime, and a
-            # housekeeping rewrite restores the pre-write mtime
-            # (``_restore_mtime``), so only the generation can prove the
-            # stat → read → publish window stayed write-free for this key.
+            # The first-line fill records this stat's cache identity. The
+            # generation independently proves the stat → read → publish window
+            # stayed write-free for this process.
             gen = self._log._cache_gen(key)
             try:
                 stat = path.stat()
             except OSError:
                 continue
+            identity = self._log._cache_identity(stat)
             # Skip symlinks — these are handoff aliases pointing to the real session
             if path.is_symlink():
                 continue
@@ -996,7 +996,7 @@ class SessionCatalogProjection:
             cached_meta = self._log._meta_cache.get(key)
             if (
                 cached_meta
-                and cached_meta[0] == stat.st_mtime
+                and cached_meta[0] == identity
                 and cached_meta[1] == self._log._cache_gen(key)
             ):
                 d = cached_meta[2]
@@ -1032,7 +1032,7 @@ class SessionCatalogProjection:
                             self._log._publish_if_current(
                                 self._log._meta_cache,
                                 key,
-                                (stat.st_mtime, gen, d),
+                                (identity, gen, d),
                                 key=key,
                                 gen=gen,
                             )
@@ -1045,7 +1045,7 @@ class SessionCatalogProjection:
                 msg_cached = self._log._msg_cache.get(key)
                 if (
                     msg_cached
-                    and msg_cached[0] == stat.st_mtime
+                    and msg_cached[0] == identity
                     and msg_cached[1] == self._log._cache_gen(key)
                 ):
                     for m in msg_cached[2]:
@@ -1444,7 +1444,7 @@ class SessionCatalogProjection:
 
     def _folded_content(self, key: str) -> tuple[int, str]:
         """Return ``(doc_chars, casefolded_content)`` for *key*, memoized by
-        mtime plus invalidation generation.
+        cache identity plus invalidation generation.
 
         ``doc_chars`` counts the ORIGINAL (unfolded) characters, because it
         feeds the length normalizer in :meth:`search_sessions` and folding can
@@ -1460,7 +1460,7 @@ class SessionCatalogProjection:
         """
         path = self._log._path(key)
         try:
-            mtime = path.stat().st_mtime
+            identity = self._log._cache_identity(path.stat())
         except OSError:
             self._log._folded_cache.pop(key, None)
             self._log._snippet_cache.pop(key, None)
@@ -1469,18 +1469,15 @@ class SessionCatalogProjection:
         # The hit wants the LATEST generation (a moved counter means a write
         # landed, so a miss is the correct answer), so it is read at check
         # time rather than snapshotted earlier — matching ``_snippet_texts``.
-        if cached and cached[0] == mtime and cached[1] == self._log._cache_gen(key):
+        if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
             return (cached[2], cached[3])
         # Cold: serialize against this key's writers for the whole
         # stat -> read -> store sequence.
         #
-        # The mtime guard cannot protect this window, because the housekeeping
-        # rewrites deliberately RESTORE the pre-write mtime (``_restore_mtime``,
-        # so compaction does not reorder ``list_sessions``). A fold that started
-        # before such a rewrite and stored after its ``_invalidate_cache`` would
-        # sit in the cache holding pre-rewrite text under a mtime the file still
-        # has — undetectable, so the newly saved messages would be missing from
-        # every later search for the life of the process.
+        # The cache identity catches normal atomic housekeeping rewrites even
+        # when they restore the pre-write mtime. The generation protects this
+        # fill window too: a local writer can invalidate while a cache miss is
+        # being built, so the store must not publish under its older generation.
         #
         # ``_file_lock`` is the same process-wide, path-keyed RLock every writer
         # takes first in ``_locked`` — shared across every ``ConversationLog``
@@ -1491,28 +1488,27 @@ class SessionCatalogProjection:
         # (the re-check below). What the lock CANNOT fix is invalidation reach:
         # a writer's ``_invalidate_cache`` pops only its own instance's caches,
         # so an entry already sitting warm in THIS instance survives a rewrite
-        # performed through a different instance, mtime restored and all. That
+        # performed through a different instance. That
         # is why entries carry the generation and the warm-hit checks above and
         # below require it to match.
         with self._log._file_lock(key):
-            # Snapshot the fill baseline under the lock and BEFORE the stat:
-            # the mtime that stat returns can survive a housekeeping rewrite
-            # (``_restore_mtime``), so only an unmoved generation can prove the
-            # stat → read → publish window stayed write-free. A writer that ran
+            # Snapshot the fill baseline under the lock and BEFORE the stat.
+            # An unmoved generation proves the stat → read → publish window
+            # stayed write-free for this process. A writer that ran
             # between the lock-free probe and the acquire already bumped the
             # counter, and the fold below is ordered AFTER it, so its result is
             # current for this newer generation.
             gen = self._log._cache_gen(key)
             try:
-                mtime = path.stat().st_mtime
+                identity = self._log._cache_identity(path.stat())
             except OSError:
                 self._log._folded_cache.pop(key, None)
                 self._log._snippet_cache.pop(key, None)
                 return (0, "")
             cached = self._log._folded_cache.get(key)
-            if cached and cached[0] == mtime and cached[1] == self._log._cache_gen(key):
+            if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
                 return (cached[2], cached[3])
-            built = self._log._build_folded(key, mtime, gen)
+            built = self._log._build_folded(key, identity, gen)
             if built is None:
                 # The read failed rather than finding no content. Caching that
                 # would be keyed by an mtime the file still has, so a session
@@ -1523,7 +1519,7 @@ class SessionCatalogProjection:
                 # report empty for this query and retry on the next one.
                 return (0, "")
             self._log._publish_if_current(
-                self._log._folded_cache, key, (mtime, gen, built[0], built[1]), key=key, gen=gen
+                self._log._folded_cache, key, (identity, gen, built[0], built[1]), key=key, gen=gen
             )
             return built
 
@@ -1547,7 +1543,12 @@ class SessionCatalogProjection:
             if cache.refused_since_prune():
                 cache.retain(live_keys)
 
-    def _build_folded(self, key: str, mtime: float, gen: int) -> tuple[int, str] | None:
+    def _build_folded(
+        self,
+        key: str,
+        identity: tuple[int, int, int],
+        gen: int,
+    ) -> tuple[int, str] | None:
         """Parse *key* and fold its content — the cache-miss half of
         :meth:`_folded_content`.
 
@@ -1565,25 +1566,18 @@ class SessionCatalogProjection:
         dicts versus ~37 MB for the folded strings this actually needs.
 
         Correctness: ``_msg_cache`` is filled by callers that do not hold this
-        key's write lock, so an entry can be a pre-rewrite parse stored under a
-        restored (unchanged) mtime. Folding from it would launder that staleness
-        into the search cache, which the caller's lock cannot prevent. Reading
-        the file makes the fold a function of the file alone.
+        key's write lock. Reading the file makes the fold a function of the file
+        alone, rather than coupling it to another cache's fill timing.
 
         The caller holds ``_file_lock``, which orders this read against writers
         in THIS process — the lock table is class-level and path-keyed, so that
         includes writers using other ``ConversationLog`` instances. A writer in
         another process holds only the cross-process flock, so it can still
-        interleave; if it bumps the mtime, the caller's pre-read stat leaves the
-        cached mtime older than the file's and the next access re-folds. A
-        cross-process PRESERVED-mtime rewrite, however, is caught by neither
-        the lock nor the generation (the counter lives in this process) — a
-        known residual gap shared with every memo in this class. *gen* is the
-        invalidation-generation snapshot the caller took alongside its stat;
-        the snippet store below publishes under it and records it in the entry,
-        which is what lets a warm hit notice an in-process rewrite performed
-        through a different instance (whose ``_invalidate_cache`` pops only its
-        own instance's caches).
+        interleave. The cache identity catches the normal atomic rewrite even
+        when it restores mtime; the process-local generation covers writers
+        through another in-process instance. *gen* is the invalidation-generation
+        snapshot the caller took alongside its stat; the snippet store below
+        publishes under it and records it in the entry.
 
         Separated from :meth:`_folded_content` so the memoization is observable:
         a caller (or a test) can count how often the expensive fold actually
@@ -1597,7 +1591,7 @@ class SessionCatalogProjection:
         if not texts:
             return (0, "")
         # Hand the same list to the snippet memo. The caller has already stat'ed
-        # under ``_file_lock`` and passes that mtime and its generation
+        # under ``_file_lock`` and passes that identity and its generation
         # snapshot, so both memos are keyed by one observation of the file and
         # cannot disagree about which revision they hold. Storing here is why
         # the second corpus costs no extra read. The publish guard here is
@@ -1606,7 +1600,7 @@ class SessionCatalogProjection:
         # already-superseded generation — the recorded generation is what the
         # warm-hit checks compare against.
         self._log._publish_if_current(
-            self._log._snippet_cache, key, (mtime, gen, texts), key=key, gen=gen
+            self._log._snippet_cache, key, (identity, gen, texts), key=key, gen=gen
         )
         return (sum(len(t) for t in texts), "\x00".join(texts).casefold())
 
@@ -1652,17 +1646,15 @@ class SessionCatalogProjection:
         Prefers ``_snippet_cache`` — filled by :meth:`_build_folded` from the same
         read that produced the fold — and falls back to re-reading the file.
 
-        The memo is validated against the file's current mtime AND the current
+        The memo is validated against the file's current cache identity AND the current
         invalidation generation (:meth:`_cache_gen`), so it degrades to the
-        file read rather than serving a stale snippet. The mtime alone cannot
-        catch a preserved-mtime rewrite performed through a DIFFERENT
-        ``ConversationLog`` instance (its ``_invalidate_cache`` pops only its
-        own instance's caches); the generation clause is what unhits such an
-        entry. Both checks are cheap relative to the parse they avoid, and
-        unlike the fold this path does NOT need ``_file_lock``: a snippet is
-        display-only, so the worst case for a preserved-mtime rewrite racing
-        here is one stale preview line, not a session that stops matching. The
-        fold — which decides whether a row appears at all — keeps the lock.
+        file read rather than serving a stale snippet. The generation clause
+        covers a rewrite through a different in-process ``ConversationLog``
+        instance (its ``_invalidate_cache`` pops only its own instance's caches).
+        Both checks are cheap relative to the parse they avoid, and unlike the
+        fold this path does NOT need ``_file_lock``: a snippet is display-only,
+        so a racing rewrite can produce at most one stale preview line. The fold
+        — which decides whether a row appears at all — keeps the lock.
 
         Falls back for four reasons, all of which must stay non-fatal: the entry
         was refused admission by the byte budget, the fold cached ``(0, "")`` for
@@ -1674,8 +1666,8 @@ class SessionCatalogProjection:
         cached = self._log._snippet_cache.get(key)
         if cached is not None:
             try:
-                mtime_now = self._log._path(key).stat().st_mtime
-                if cached[0] == mtime_now and cached[1] == self._log._cache_gen(key):
+                identity_now = self._log._cache_identity(self._log._path(key).stat())
+                if cached[0] == identity_now and cached[1] == self._log._cache_gen(key):
                     return iter(cached[2])
             except OSError:
                 # Let the fallback read raise the OSError the caller handles,

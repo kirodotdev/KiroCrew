@@ -13,6 +13,7 @@ import pytest
 from windows_sim import builtin_open_sharing_violation
 
 from kiro_crew import history, history_search
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.history import (
     _CONSOLIDATION_THRESHOLD,
     _METADATA_CACHE_MAX,
@@ -91,6 +92,40 @@ class TestConversationLog:
     def test_mark_consolidated_nonexistent(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
         log.mark_consolidated("nonexistent", 5)  # should not raise
+
+    def test_caches_refresh_after_mtime_preserving_external_rewrite(self, tmp_path):
+        writer = ConversationLog(base_dir=tmp_path)
+        writer.append("t1", "user", "first")
+        reader = ConversationLog(base_dir=tmp_path)
+        assert reader.get_metadata("t1").get("last_consolidated", 0) == 0
+        assert [message["content"] for message in reader._read_messages("t1")] == ["first"]
+        assert [message["content"] for message in reader.recent("t1")] == ["first"]
+
+        path = writer._path("t1")
+        before = path.stat()
+        rows = path.read_text(encoding="utf-8").splitlines()
+        metadata = json.loads(rows[0])
+        metadata["last_consolidated"] = 1
+        atomic_write(
+            path,
+            "\n".join(
+                [
+                    json.dumps(metadata),
+                    *rows[1:],
+                    json.dumps({"role": "user", "content": "second"}),
+                ]
+            )
+            + "\n",
+        )
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+        assert path.stat().st_mtime_ns == before.st_mtime_ns
+        assert reader.get_metadata("t1")["last_consolidated"] == 1
+        assert [message["content"] for message in reader._read_messages("t1")] == [
+            "first",
+            "second",
+        ]
+        assert [message["content"] for message in reader.recent("t1")] == ["first", "second"]
 
     def test_safe_key_sanitizes(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
