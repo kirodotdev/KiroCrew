@@ -6270,6 +6270,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}}（インストールされていません）",
+      "agent_not_installed_notice": "このエージェントはインストールされていないため、ここでのチャットでは使用されません。インストール済みのエージェントを選んでください。",
       "browse": "参照",
       "cancel": "キャンセル",
       "color": "色",

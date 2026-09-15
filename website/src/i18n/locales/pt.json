@@ -6470,6 +6470,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (não instalado)",
+      "agent_not_installed_notice": "Este agente não está instalado, então as conversas daqui não vão usá-lo. Escolha um agente instalado.",
       "browse": "Procurar",
       "cancel": "Cancelar",
       "color": "Cor",

@@ -6270,6 +6270,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (설치되지 않음)",
+      "agent_not_installed_notice": "이 에이전트는 설치되지 않아 여기의 채팅에서 사용되지 않습니다. 설치된 에이전트를 선택하세요.",
       "browse": "찾아보기",
       "cancel": "취소",
       "color": "색상",

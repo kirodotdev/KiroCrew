@@ -85,11 +85,17 @@ export interface SimpleSelectProps {
    *  rows and their badges still render whole. */
   contentClassName?: string
   'aria-label'?: string
+  /** Forwarded to the trigger so a helper/notice element's id can be announced
+   *  with the control (the `aria-describedby` half of the label/description
+   *  pair `aria-label`/`id` cover). A disabled or misconfigured control that
+   *  does not say why is itself the defect, so the reason must reach a screen
+   *  reader, not just sighted users. */
+  'aria-describedby'?: string
   /** Full trigger text for controls whose visible label may be ellipsized. */
   title?: string
 }
 
-export default function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, style, id, className, contentClassName, 'aria-label': ariaLabel, title }: SimpleSelectProps) {
+export default function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title }: SimpleSelectProps) {
   const isTouch = useIsTouchDevice()
   const toRadix = (v: string) => (v === '' ? EMPTY_VALUE_SENTINEL : v)
   const fromRadix = (v: string) => (v === EMPTY_VALUE_SENTINEL ? '' : v)
@@ -117,6 +123,7 @@ export default function SimpleSelect({ options, optionLabels, optionIcons, value
       <NativeSelect
         id={id}
         aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
         title={title}
         disabled={disabled}
         // `style` lands on the WRAPPER on both paths. It is layout intent (a flex
@@ -165,7 +172,7 @@ export default function SimpleSelect({ options, optionLabels, optionIcons, value
         }}
         disabled={disabled}
       >
-        <SelectTrigger id={id} aria-label={ariaLabel} title={title} className={className}>
+        <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title} className={className}>
           <SelectValue placeholder={triggerFallback ?? clearLabel ?? (value || '—')}>
             {/* Children override the selected item's text. Passed only when there
                 IS a selectable non-empty value, so an unset control still falls

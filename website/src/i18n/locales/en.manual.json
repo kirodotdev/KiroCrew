@@ -1992,6 +1992,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (not installed)",
+      "agent_not_installed_notice": "This agent isn’t installed, so chats here won’t use it. Pick an installed agent.",
       "browse": "Browse",
       "cancel": "Cancel",
       "color": "Color",

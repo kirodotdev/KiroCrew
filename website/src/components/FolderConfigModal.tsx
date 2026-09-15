@@ -496,6 +496,13 @@ export default function FolderConfigModal({
             </span>
             <SimpleSelect
               aria-label={i18nT('components.folderConfigModal.default_agent')}
+              // Bind the orphan notice to the control so a screen reader reaches
+              // the reason WITH the field, not as text that merely sits near it:
+              // a control whose state has a cause the user cannot hear is the
+              // same defect as a disabled button that never says why. Only while
+              // an orphan is selected — an ordinary selection has nothing to
+              // describe, and a dangling id here would drop the description.
+              aria-describedby={orphanAgent ? 'folder-config-agent-notice' : undefined}
               options={agentOptions}
               optionLabels={agentOptionLabels}
               clearLabel={inheritedAgent
@@ -504,7 +511,22 @@ export default function FolderConfigModal({
               value={draft.defaultAgent}
               onChange={v => setDraft(d => ({ ...d, defaultAgent: v }))}
             />
-            <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_agent_hint')}</span>
+            {orphanAgent ? (
+              // The orphan is round-tripped, not blocked — Save stays enabled so
+              // a rename of the folder never wipes a temporarily-uninstalled
+              // agent (the round-trip guarantee this picker was built on). The
+              // notice therefore explains why the SELECTED AGENT will not run and
+              // names the fix. Its id is what `aria-describedby` above targets.
+              <span
+                id="folder-config-agent-notice"
+                data-testid="folder-config-agent-notice"
+                className="text-[11px] text-warn"
+              >
+                {i18nT('components.folderConfigModal.agent_not_installed_notice')}
+              </span>
+            ) : (
+              <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_agent_hint')}</span>
+            )}
           </div>
         </div>
       </Modal>

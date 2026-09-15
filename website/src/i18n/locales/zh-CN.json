@@ -6270,6 +6270,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}}（未安装）",
+      "agent_not_installed_notice": "该智能体未安装，因此这里的对话不会使用它。请选择一个已安装的智能体。",
       "browse": "浏览",
       "cancel": "取消",
       "color": "颜色",

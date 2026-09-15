@@ -6570,6 +6570,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (не установлен)",
+      "agent_not_installed_notice": "Этот агент не установлен, поэтому чаты здесь не будут его использовать. Выбери установленного агента.",
       "browse": "Обзор",
       "cancel": "Отмена",
       "color": "Цвет",
