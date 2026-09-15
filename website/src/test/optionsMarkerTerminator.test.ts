@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   findLastOptionMarker,
   findOptionMarkers,
   stripOptionMarkers,
   labelsHaveUnmatchedOpener,
+  OPTION_MARKER_PATTERN_SOURCE,
 } from '../app-sdk/protocol/optionMarker'
 import { parseOptions } from '../app-sdk/protocol/options'
 
@@ -194,6 +195,79 @@ describe('what the check gives up', () => {
   })
 })
 
+describe('a same-line chain whose SIBLING does not balance', () => {
+  /**
+   * REGRESSION introduced by `SIBLING_CHAIN`: measured on 59baad44ab these shapes deleted
+   * nothing, because the tail required end-of-line and the leading marker could not match.
+   *
+   * The lookahead admits a sibling through the LOOSE tempered body while acceptance re-checks
+   * each marker's OWN balance, so the first marker was stripped and the second left as prose —
+   * the deleted span came back as a chip nobody wrote, which is the one failure direction this
+   * grammar refuses everywhere else. All-or-nothing is therefore decided per LINE.
+   */
+  const CHAINS: [string, string][] = [
+    ['content pair', '[OPTIONS: A] [OPTIONS: B then arr[0]'],
+    ['three, last malformed', '[OPTIONS: A] [OPTIONS: B] [OPTIONS: C then arr[0]'],
+  ]
+
+  it('offers nothing and deletes no prose', () => {
+    for (const [name, raw] of CHAINS) {
+      expect(findOptionMarkers(raw), name).toEqual([])
+      expect(parseOptions(raw).text, name).toBe(raw)
+      expect(stripOptionMarkers(raw), name).toBe(raw)
+    }
+  })
+
+  it('NEGATIVE CONTROL: a BALANCED chain still parses, the last marker winning', () => {
+    // Differs from the first row only by the `]` closing `arr[0`, so over-rejection fails here.
+    const ok = '[OPTIONS: A] [OPTIONS: B then arr[0]]'
+    expect(parseOptions(ok).options).toEqual(['B then arr[0]'])
+    expect(parseOptions(ok).text).toBe('')
+  })
+
+  it('NEGATIVE CONTROL: a broken chain does not poison a marker on ANOTHER line', () => {
+    const two = '[OPTIONS: A] [OPTIONS: B then arr[0]\n[OPTIONS: C]'
+    expect(parseOptions(two).options).toEqual(['C'])
+    expect(parseOptions(two).text).toBe('[OPTIONS: A] [OPTIONS: B then arr[0]')
+  })
+})
+
+describe('two markers on ONE line', () => {
+  it('strips both, and the LAST supplies the options', () => {
+    const { options, text } = parseOptions('Body [OPTIONS: A] [OPTIONS: B]')
+    expect(options).toEqual(['B'])
+    expect(text).toBe('Body')
+  })
+
+  it('still refuses a marker followed by ordinary prose on the same line', () => {
+    const raw = 'See [OPTIONS: A | B] for details'
+    expect(parseOptions(raw)).toEqual({ text: raw, options: [], multi: true })
+  })
+
+  it.each([
+    ['two markers', '[OPTIONS: A] [OPTIONS: B] in docs'],
+    ['three markers', '[OPTIONS: A] [OPTIONS: B] [OPTIONS: C] see above'],
+    ['a non-marker bracket after it', '[OPTIONS: A | B] [OPTION-ACTIONS: close=Done]'],
+  ])('a chain that does not reach the line end parses NOTHING — %s', (_name, raw) => {
+    // All-or-nothing: the first marker must not be deleted while the rest stays prose.
+    expect(parseOptions(raw).options, raw).toEqual([])
+    expect(parseOptions(raw).text, raw).toBe(raw)
+  })
+
+  it('looks only ONE head ahead, so a long line costs linear work', () => {
+    // A lookahead that re-tiled the rest of the line ran once per candidate: markers times
+    // line length on one untrusted line. The tiling is decided after matching instead.
+    expect(OPTION_MARKER_PATTERN_SOURCE).not.toMatch(/\(\?=\(\?:\\\[/)
+    expect(OPTION_MARKER_PATTERN_SOURCE).toContain('(?=\\[(?:OPTIONS?:))')
+  })
+
+  it('leaves a fenced example of a same-line pair as written, offering no pills', () => {
+    const raw = 'Emit it like this:\n```\n[OPTIONS: A | B] [OPTION-ACTIONS: close=Done]\n```'
+    expect(parseOptions(raw).options).toEqual([])
+    expect(stripOptionMarkers(raw)).toBe(raw)
+  })
+})
+
 describe('cost', () => {
   it('stays linear on many failing openers', () => {
     // The adversarial shape: an unterminated marker of bare openers, so the pattern
@@ -208,5 +282,36 @@ describe('cost', () => {
     const started = Date.now()
     expect(labelsHaveUnmatchedOpener('a['.repeat(200_000))).toBe(true)
     expect(Date.now() - started).toBeLessThan(1000)
+  })
+
+  it('refuses an over-cap same-line chain WHOLE, without running a marker pattern', () => {
+    const unit = '[OPTIONS: A] '
+    // `parseOptions` cannot witness this: its probes are guarded, so it skips the strip entirely.
+    // The cost is counted as work: over the cap, the head count is the only scan that runs.
+    const scanned = (src: string): Set<string> => {
+      const sources = new Set<string>()
+      const realMatchAll = String.prototype.matchAll
+      const realReplace = String.prototype.replace
+      const matchAll = vi.spyOn(String.prototype, 'matchAll').mockImplementation(function (this: string, re: RegExp) {
+        sources.add(re.source)
+        return realMatchAll.call(this, re)
+      })
+      const replace = vi.spyOn(String.prototype, 'replace').mockImplementation(function (this: string, re: string | RegExp, by: never) {
+        if (re instanceof RegExp) sources.add(re.source)
+        return realReplace.call(this, re, by)
+      })
+      try {
+        stripOptionMarkers(src)
+      } finally {
+        matchAll.mockRestore()
+        replace.mockRestore()
+      }
+      return sources
+    }
+    const over = unit.repeat(257).trimEnd()
+    expect(stripOptionMarkers(over)).toBe(over)
+    expect(scanned(over).size, 'only the head count runs over the cap').toBe(1)
+    // Under the cap the marker pattern does run, so the count above can tell the two apart.
+    expect(scanned(unit.repeat(2).trimEnd()).size).toBeGreaterThan(1)
   })
 })

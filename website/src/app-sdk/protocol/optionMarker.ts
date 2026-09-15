@@ -1,17 +1,14 @@
-// Canonical [OPTION(S):] follow-up-pill marker regex — the single source of truth
-// for the frontend, mirroring the backend's ReDoS-hardened OPTIONS_RE_LINE
-// (src/kiro_crew/constants.py). Import this instead of hand-rolling a copy so the
-// grammar can't drift between the dashboard's several parsers.
+// Canonical marker regexes — import these rather than re-spelling one, or the grammar drifts
+// between parsers. The head mirrors the backend's.
 //
-// The tempered body matches any run of characters in which no alternative begins a
-// fresh `[OPTION(S):` marker — both bracket forms carry that guard — which gives
-// three properties:
+// The tempered body matches any run of characters in which no alternative begins a fresh
+// marker — both bracket forms carry that guard — which gives three properties:
 //   1. a label may itself contain a closer, so the block does not end at the FIRST
 //      one (so "[OPTIONS: a] | b]]" → ["a]", "b]"]) — but it is admitted
 //      CONDITIONALLY, not freely: see #9284 below for the rule and why an
 //      unconditional `]` ran the body past the marker and deleted prose;
 //   2. two same-line markers can't merge into one garbage label — including a
-//      NESTED head, which the pair form's own `(?!OPTIONS?:)` is what preserves;
+//      NESTED head, which the pair form's own head guard is what preserves;
 //   3. it fails in O(1) per `[OPTIONS:` prefix instead of rescanning the line, so
 //      untrusted model output with thousands of `[OPTIONS:` prefixes can't drive
 //      quadratic (ReDoS-class) backtracking in the synchronous render path.
@@ -152,8 +149,89 @@
 // `findLastOptionMarker` and `stripOptionMarkers` are the API; they apply both halves
 // and clone the regex internally, which also retires the `lastIndex` hazard that used
 // to be every caller's problem.
-const OPTION_MARKER_RE =
-  /(?:^[ \t]*[`*_]{1,3}\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3010(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\u3011(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\uFF3B(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\uFF3D(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3014(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\u3015(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[[\u3010\uFF3B\u3014](?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}|\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3010(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\u3011(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\uFF3B(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\uFF3D(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3014(?!OPTIONS?:)[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\u3015(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[[\u3010\uFF3B\u3014](?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?)[ \t]*$/gim
+// `String#replace` is the only use that is safe on this shared const as-is: it resets `lastIndex`.
+// `String#matchAll` does NOT — it seeds its internal clone from `lastIndex`, so pass a fresh
+// `new RegExp(OPTION_MARKER_RE)` there. Never call `.exec`/`.test` on it: both leave the index
+// advanced, and the next reader silently scans from the wrong offset.
+
+/** The head a tempered body must refuse to cross: `[OPTIONS:` and the single-choice `[OPTION:`. */
+// Fragments are regex literals read through `.source`, so a malformed one is a syntax error
+// at author time, needs one level of backslash, and is not read as copy by the i18n gate.
+const MARKER_HEADS = /OPTIONS?:/.source
+/** The bracket pairs a label may nest, index-aligned: `[`<->`]`, `【`<->`】`,
+ *  `［`<->`］`, `〔`<->`〕`. Mirrors the backend's `MARKER_OPENERS` / `MARKER_CLOSERS`.
+ *  A closer partners exactly ONE opener, so `[OPTIONS: 【x】 | Skip]` parses as
+ *  `[OPTIONS: [x] | Skip]` does while a MISMATCHED pair (`【 … ]`) has no pair parse
+ *  and declines toward a visible marker rather than deleted prose. */
+const OPENERS = [/\[/, /\u3010/, /\uFF3B/, /\u3014/].map((r) => r.source)
+const CLOSERS = [/\]/, /\u3011/, /\uFF3D/, /\u3015/].map((r) => r.source)
+const OPENER_CHARS = OPENERS.join('')
+const CLOSER_CHARS = CLOSERS.join('')
+const OPENER_CLASS = `[${OPENER_CHARS}]`
+const CLOSER_CLASS = `[${CLOSER_CHARS}]`
+/** An opener that does NOT open a fresh marker. */
+const TEMPER = `${OPENER_CLASS}(?!${MARKER_HEADS})`
+/** One ordinary body character: no bracket of either polarity — an opener could start a
+ *  head or a pair, a closer is admitted only conditionally (below) — and not a newline
+ *  (a negated class matches `\n` regardless of flags, so it must be explicit). */
+const NEWLINE = /\n/.source
+const BODY_CHAR = `[^${OPENER_CHARS}${CLOSER_CHARS}${NEWLINE}]`
+/** What must FOLLOW a closer for the label list to be continuing rather than ended:
+ *  a separator, or another closer. */
+const SEPARATOR = /[ \t]*[|,]/.source
+const CONTINUES = `${SEPARATOR}|${CLOSER_CLASS}`
+const CONTINUES_AT = new RegExp(CONTINUES, 'y') // sticky, so no slice; lastIndex set per use
+/**
+ * A closer inside a label is admitted only in a matched pair or when the list continues
+ * (#9284); admitting it freely swallowed a later sentence into a pill label.
+ *
+ *   MATCHED PAIR      `[OPTIONS: Fix [x] logging | Skip]`
+ *   MATCHED PAIR      `[OPTIONS: 修复【x】 | 跳过]`
+ *   LIST CONTINUES    `[OPTIONS: Alpha ] | Bravo ]]`
+ *   NEITHER           `Use [OPTIONS: A | B] then arr[0]`    declined, stays prose
+ *
+ * The forms are disjoint on what follows the closer, so no span has two parses. Each pair
+ * closes on its own closer, so a mismatched pair stays unparsed; every negated class
+ * excludes every bracket, which keeps the arms linear.
+ */
+const LABEL_PAIRS = OPENERS.map(
+  (o, i) => `${o}(?!${MARKER_HEADS})${BODY_CHAR}*${CLOSERS[i]}(?!${CONTINUES})`,
+).join('|')
+const LABEL_CONTINUES = `${CLOSER_CLASS}(?=${CONTINUES})`
+/** The body's alternation, group-free, so the sibling lookahead below can reuse it
+ *  without shifting any capture number. */
+const BODY_RUN = `(?:${LABEL_PAIRS}|${TEMPER}|${LABEL_CONTINUES}|${BODY_CHAR})*`
+/** The captured label body, single-line. Exactly one capture group. */
+const BODY_LINE = `(${BODY_RUN})`
+/** The closer class, the optional stray markdown-link close, and the trailing blanks. */
+const TAIL_CLOSE_RUN = /[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?/.source
+const TAIL_SPACE = /[ \t]*/.source
+const TAIL_CLOSER = `${TAIL_CLOSE_RUN}${TAIL_SPACE}`
+/** One Markdown wrapper character — mirrors the backend's `MARKER_WRAPPERS`. */
+const WRAP_CLASS = /[`*_]/.source
+/**
+ * Where a marker line may END: the `m`-flag end anchor, OR immediately before a
+ * sibling HEAD. With `$` alone only the trailing marker of `[OPTIONS: A] [OPTIONS: B]`
+ * matched, so the first leaked as raw text.
+ *
+ * The lookahead checks only the next head, so each candidate costs O(1) past its own
+ * body. Whether the siblings really run out the line is decided afterwards, in one pass
+ * (`untiledMarkers`): re-tiling the rest of the line inside the lookahead cost O(markers ×
+ * line length) on one long line of untrusted output.
+ */
+const SIBLING_CHAIN = `(?=\\[(?:${MARKER_HEADS}))`
+const TAIL_LINE = `${TAIL_CLOSER}(?:$|${SIBLING_CHAIN})`
+/** The wrapper-tolerant tail: the closer, then the run that only a marker which
+ *  OPENED one may carry, then the same line end. */
+const TAIL_LINE_WRAPPED = `${TAIL_CLOSE_RUN}${WRAP_CLASS}{0,3}${TAIL_SPACE}(?:$|${SIBLING_CHAIN})`
+
+// Group 1 = the optional "S"; group 2 = the labels.
+const OPTION_MARKER_RE = new RegExp(
+  `(?:^[ \\t]*${WRAP_CLASS}{1,3}\\[OPTION(S)?:${BODY_LINE}${TAIL_LINE_WRAPPED}`
+    + `|\\[OPTION(S)?:${BODY_LINE}${TAIL_LINE})`,
+  'gim',
+)
+
 
 /** The pattern's source text, for the tests that pin its shape.
  *
@@ -198,6 +276,7 @@ export const OPTION_MARKER_PATTERN_SOURCE = OPTION_MARKER_RE.source
  * Mirrors `_marker_labels_have_unmatched_opener` in `constants.py`. */
 const PAIR_OPENERS = '[【［〔'
 const PAIR_CLOSERS = ']】］〕' // index-aligned with PAIR_OPENERS
+const HEAD_FRAME = -1 // a stack frame for a marker HEAD; no opener index is negative
 
 export function labelsHaveUnmatchedOpener(labels: string): boolean {
   const open: number[] = []
@@ -219,17 +298,62 @@ function labelsOf(match: RegExpMatchArray): string {
   return (match[2] ?? match[4]) ?? ''
 }
 
+/** Line index of each offset, ascending, in ONE pass. Offsets MUST already be sorted. */
+function lineIndices(text: string, offsets: number[]): number[] {
+  let line = 0
+  let at = 0
+  return offsets.map(off => {
+    for (; at < off; at++) if (text[at] === '\n') line++
+    return line
+  })
+}
+
+/** Candidates that end before a sibling head the NEXT candidate does not start at.
+ *
+ * `SIBLING_CHAIN` checks only that a head follows, so this decides whether the siblings tile
+ * out the line: `[OPTIONS: A] [OPTIONS: B] in docs` matches A (a head follows) while B fails, and
+ * A must not parse alone. One pass, since `matchAll` returns candidates in order. */
+function untiledMarkers(text: string, matches: RegExpMatchArray[]): boolean[] {
+  return matches.map((m, i) => {
+    const end = (m.index ?? 0) + m[0].length
+    if (end >= text.length || /[\n\r\u2028\u2029]/.test(text[end] ?? '')) return false
+    return (matches[i + 1]?.index ?? -1) !== end
+  })
+}
+
+/** Lines whose marker chain carries a member that acceptance refuses.
+ *
+ * `SIBLING_CHAIN` admits a sibling through the LOOSE tempered body, while acceptance re-checks
+ * each marker's OWN balance with `labelsHaveUnmatchedOpener`. The two disagree, so without a
+ * chain-level verdict `[OPTIONS: A] [OPTIONS: B then arr[0]` stripped the first marker and left
+ * the second as prose: the deleted span came back as a chip nobody wrote. That is the
+ * all-or-nothing invariant `SIBLING_CHAIN` claims, so the verdict belongs to the whole line. */
+function refusedChainLines(matches: RegExpMatchArray[], rejected: boolean[], lines: number[]): Set<number> {
+  const out = new Set<number>()
+  matches.forEach((_m, i) => {
+    if (rejected[i]) out.add(lines[i] ?? 0)
+  })
+  return out
+}
+
 /** Every marker in `content` whose terminator is its own, in order.
  *
  * Clones the pattern per call, so the g-flag `lastIndex` hazard cannot reach a
- * caller. A refused candidate cannot hide an accepted one inside its span: the body
- * refuses a nested `[OPTION(S):`, so no candidate ever contains another head. */
+ * caller. Depth-filtered: the tempered body stops one CANDIDATE containing another
+ * head, but an UNCLOSED head is no candidate and still nests one. */
 export function findOptionMarkers(content: string): RegExpMatchArray[] {
-  const out: RegExpMatchArray[] = []
-  for (const m of content.matchAll(new RegExp(OPTION_MARKER_RE))) {
-    if (!labelsHaveUnmatchedOpener(labelsOf(m))) out.push(m)
-  }
-  return out
+  if (overHeadCap(content)) return []
+  const matches = [...content.matchAll(new RegExp(OPTION_MARKER_RE))]
+  // No candidate, so the refusal passes below have nothing to judge — and every one of them
+  // scans the whole text. An ordinary row without a marker is the overwhelming common case.
+  if (matches.length === 0) return matches
+  const offsets = matches.map(m => m.index ?? 0)
+  const flags = unclosedMarkerFlags(content, offsets)
+  const lines = lineIndices(content, offsets)
+  const untiled = untiledMarkers(content, matches)
+  const rejected = matches.map((m, i) => labelsHaveUnmatchedOpener(labelsOf(m)) || flags[i] || untiled[i])
+  const refused = refusedChainLines(matches, rejected, lines)
+  return matches.filter((_m, i) => !rejected[i] && !refused.has(lines[i] ?? 0))
 }
 
 /** The LAST accepted marker, which is the one whose options a turn offers. */
@@ -259,6 +383,10 @@ export function stripOptionMarkers(content: string): string {
  *  probed body), so the g-flag `lastIndex` hazard never applies. */
 const CLOSER_RE = /[\]\u3011\uFF3D\u3015]/g
 
+/** The openers those closers pair with, in the same order — mirrors `MARKER_OPENERS`.
+ *  A closer has to know which bracket it closes, or a citation `[1]` cancels an open head. */
+const OPENER_RE = /[[\u3010\uFF3B\u3014]/g
+
 /** What follows the LAST closer when the label list is still being written.
  *
  * A label may legitimately contain a closer (`[OPTIONS: Alpha ] | Bravo ]]` is a
@@ -273,10 +401,17 @@ const CLOSER_RE = /[\]\u3011\uFF3D\u3015]/g
  * `Explain the literal [OPTIONS:] syntax here` for the rest of the turn. */
 const CONTINUES_LABELS_RE = /^[ \t]*[|,]/
 
-/** A COMPLETE head in any casing. Two fixed literals under one optional `S`, so
- *  it cannot backtrack. Module-private and used with matchAll only (to take the
- *  LAST head in the probed tail), so the g-flag `lastIndex` hazard never applies. */
-const HEAD_RE = /\[OPTIONS?:/gi
+/** A COMPLETE head in any casing, built from the same `MARKER_HEADS` the tempered body
+ *  excludes. Two fixed literals under one optional `S`, so it cannot backtrack.
+ *  Module-private and used with matchAll only (to take the LAST head in the probed tail),
+ *  so the g-flag `lastIndex` hazard never applies. */
+const HEAD_RE = new RegExp(`\\[(?:${MARKER_HEADS})`, 'gi')
+
+/** Marker heads one message may carry before EVERY marker in it is refused, which bounds
+ *  the per-message refusal passes. */
+const HEAD_CAP = 256
+const overHeadCap = (text: string): boolean =>
+  [...text.matchAll(new RegExp(HEAD_RE))].length > HEAD_CAP
 
 /** One Markdown wrapper character — mirrors OPTION_MARKER_RE's wrapper class. */
 const WRAP_CHAR_RE = /[`*_]/
@@ -295,6 +430,80 @@ function wrapperStart(tail: string, p: number): number {
   while (w > 0 && p - w < 3 && WRAP_CHAR_RE.test(tail[w - 1])) w--
   if (w === p) return p
   return /^[ \t]*$/.test(tail.slice(0, w)) ? w : p
+}
+
+/**
+ * For each ASCENDING offset in `starts`, does it sit inside an EARLIER UNCLOSED marker?
+ *
+ * A marker nested in an unclosed head (one dropped `]`) is not a marker, so it is neither
+ * offered nor stripped: it stays visible as written.
+ *
+ * A per-line stack of HEAD brackets decides it. A nested frame pops only on its own closer;
+ * the head pops on any closer type except a continuation closer (label text). So a citation
+ * `[1]` inside an open head does not close it. The stack resets at each newline.
+ *
+ * O(n + k): each class is indexed once and three pointers only advance, so callers must pass
+ * offsets left to right, as `matchAll` and `replace` do.
+ */
+function unclosedMarkerFlags(text: string, starts: number[]): boolean[] {
+  // Nothing to flag, so none of the four full-text scans below are worth paying for. This is
+  // the common case on the render path: `hasOptionsMarker` asks about every transcript row.
+  if (starts.length === 0) return []
+  const positions = (re: RegExp): number[] => {
+    const out: number[] = []
+    // Clone per scan: the source patterns are `g`-flagged, so a shared traversal would
+    // seed from a stale `lastIndex`. Same rule the rest of this module follows.
+    for (const m of text.matchAll(new RegExp(re))) if (m.index !== undefined) out.push(m.index)
+    return out
+  }
+  const heads = positions(HEAD_RE)
+  const openers = positions(new RegExp(OPENER_RE.source, 'g'))
+  const closers = positions(new RegExp(CLOSER_RE.source, 'g'))
+  const newlines = positions(/\n/g)
+  let headI = 0
+  let openI = 0
+  let closeI = 0
+  let lineI = 0
+  // Innermost-last: `HEAD_FRAME` marks a marker head, anything else the opener's index in
+  // `PAIR_OPENERS`. `depth` counts the head frames, so the flag stays O(1) per offset.
+  const stack: number[] = []
+  let depth = 0
+  return starts.map(start => {
+    // OFFSET order matters: a closer must pop the bracket it actually closes, so draining
+    // openers before closers mispairs them. Each pointer only moves forward.
+    for (;;) {
+      const o = openI < openers.length && openers[openI] < start ? openers[openI] : Infinity
+      const c = closeI < closers.length && closers[closeI] < start ? closers[closeI] : Infinity
+      const n = lineI < newlines.length && newlines[lineI] < start ? newlines[lineI] : Infinity
+      const next = Math.min(o, c, n)
+      if (next === Infinity) break
+      if (next === n) {
+        // The head is a LINE form, so an unclosed head cannot reach past its newline.
+        stack.length = 0
+        depth = 0
+        lineI++
+      } else if (next === o) {
+        // A head IS an opener, so the ascending head pointer classifies it in O(1).
+        while (headI < heads.length && heads[headI] < next) headI++
+        const isHead = headI < heads.length && heads[headI] === next
+        if (isHead) {
+          headI++
+          depth++
+        }
+        stack.push(isHead ? HEAD_FRAME : PAIR_OPENERS.indexOf(text[next] ?? ''))
+        openI++
+      } else {
+        CONTINUES_AT.lastIndex = next + 1
+        const top = stack[stack.length - 1]
+        const headEnds = top === HEAD_FRAME && !CONTINUES_AT.test(text)
+        if (headEnds || top === PAIR_CLOSERS.indexOf(text[next] ?? '')) {
+          if (stack.pop() === HEAD_FRAME) depth--
+        }
+        closeI++
+      }
+    }
+    return depth > 0
+  })
 }
 
 /** A head that is still being TYPED — every prefix of `[OPTIONS:` / `[OPTION:`,
@@ -359,12 +568,8 @@ function cutAt(text: string, idx: number): string {
  *      casing must be consistent (see PARTIAL_HEAD_UPPER_RE).
  *
  * Cutting is safe in case 1 because `parseOptions` runs FIRST, so a head reaching
- * this function almost always belongs to a marker that is not yet
- * complete-and-line-final. "Almost": a SAME-LINE PAIR survives it, because
- * OPTION_MARKER_RE's tempered body cannot match the earlier of two markers on one
- * line, so `[OPTIONS: A] [OPTIONS: B]` loses only the second and the first arrives
- * here complete. Hiding it mid-stream is the wanted behaviour anyway — it is a
- * marker, not prose — and the isStreaming gate returns it at turn end.
+ * this function belongs to a marker that is not yet complete-and-line-final. A
+ * same-line pair is consumed whole there, since the tail also ends before a sibling.
  *
  * The residual limit, stated so it is not mistaken for an oversight: a label that
  * contains a closer AND continues with words rather than a separator
@@ -422,3 +627,6 @@ export function stripPartialOptionMarker(text: string): string {
   const partial = PARTIAL_HEAD_UPPER_RE.test(frag) || PARTIAL_HEAD_LOWER_RE.test(frag)
   return partial ? cutAt(text, start + (lineLeading ? run : open)) : text
 }
+
+/** The marker pattern's flag set, so a test can rebuild it from its exported source. */
+export const MARKER_PATTERN_FLAGS = OPTION_MARKER_RE.flags
