@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
-from kiro_crew import cli, pinned_fs
+from kiro_crew import cli, pinned_fs, platform_compat
 from kiro_crew import seed as seed_mod
 
 
@@ -1106,3 +1106,75 @@ def test_seed_dangling_symlink_rejected(tmp_path: Path, monkeypatch: pytest.Monk
     assert link.is_symlink()
     # Target must still not exist (no side-effect creation).
     assert not missing_target.exists()
+
+
+def test_seed_dangling_junction_shaped_link_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dangling-link guard must use the reparse-point oracle, not ``is_symlink()``.
+
+    ``$KIROCREW_HOME`` can be published by ``platform_compat.symlink_or_junction``
+    (or by any unelevated Windows writer), which produces a directory JUNCTION on
+    Windows. A junction answers False to ``is_symlink()`` and, once dangling, to
+    ``exists()`` as well — so a guard spelled ``is_symlink() and not exists()``
+    skipped it, every ``exists()``-gated guardrail below skipped it too, and
+    ``shutil.copytree`` crashed on the surviving entry with a raw
+    ``FileExistsError``. Built with the product's own link helper, so each
+    platform exercises the shape it actually produces (a symlink on POSIX, a
+    junction on an unelevated Windows shard — which is where the old guard was
+    blind).
+    """
+    target = tmp_path / "removed-target"
+    target.mkdir()
+    link = tmp_path / "dangling"
+    platform_compat.symlink_or_junction(str(target), str(link))
+    target.rmdir()
+    # Guard the guard, through oracles OUTSIDE the module under test: the entry
+    # is a link, and it does not resolve.
+    assert platform_compat.is_link_or_junction(link)
+    assert not link.exists(), "precondition: link must resolve to a missing target"
+
+    monkeypatch.setenv("KIROCREW_HOME", str(link))
+
+    with pytest.raises(seed_mod.SeedError) as excinfo:
+        seed_mod.seed("empty")
+
+    assert excinfo.value.code == seed_mod.EXIT_GUARDRAIL
+    assert excinfo.value.guardrail == seed_mod.SeedError.GUARDRAIL_DANGLING_SYMLINK
+    assert "dangling symlink or junction" in str(excinfo.value)
+    # The link is left in place, and nothing was created behind it.
+    assert platform_compat.is_link_or_junction(link)
+    assert not target.exists()
+
+
+def test_seed_dangling_guard_consults_the_reparse_oracle_not_is_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same guard, with the junction SHAPE simulated so every platform pins it.
+
+    A junction cannot be created on POSIX, so this stands one in through the
+    oracle the module uses for its sibling guardrails: ``pinned_fs.is_reparse_point``
+    is made to answer True for the target path while every ``pathlib`` predicate
+    keeps its real answer — ``is_symlink()`` False (nothing is linked), ``exists()``
+    False (nothing is there). That is exactly the answer set a dangling junction
+    gives. The old ``is_symlink()`` guard falls through and ``seed`` proceeds to
+    copy; the fixed guard refuses with the dangling guardrail. A monkeypatched
+    oracle is the accepted stand-in here; the test above exercises the real shape
+    on the Windows shards.
+    """
+    dst = tmp_path / "junction-shaped"
+    assert not dst.exists() and not dst.is_symlink()
+    real_oracle = pinned_fs.is_reparse_point
+
+    def fake_oracle(path: str | Path) -> bool:
+        return Path(path) == dst or real_oracle(path)
+
+    monkeypatch.setattr(seed_mod.pinned_fs, "is_reparse_point", fake_oracle)
+    monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+    with pytest.raises(seed_mod.SeedError) as excinfo:
+        seed_mod.seed("empty")
+
+    assert excinfo.value.guardrail == seed_mod.SeedError.GUARDRAIL_DANGLING_SYMLINK
+    # Refused BEFORE copytree: nothing was created at the name.
+    assert not dst.exists()

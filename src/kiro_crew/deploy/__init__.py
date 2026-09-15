@@ -11,7 +11,12 @@ import shutil
 from pathlib import Path
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.platform_compat import ensure_owner_rwx_dirs, rmtree_force
+from kiro_crew.platform_compat import (
+    ensure_owner_rwx_dirs,
+    is_link_or_junction,
+    rmtree_force,
+    unlink_link_or_junction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +47,20 @@ def _register_core_skills() -> None:
             continue
         link = target / skill_dir.name
 
-        # Migration: if an existing entry is a symlink (from older versions),
-        # unlink it and replace with a fresh copy regardless of target match.
-        if link.is_symlink():
-            link.unlink()
+        # Migration: if an existing entry is a LINK (from older versions, or
+        # an app whose skill shares this name -- apps/bridges.py publishes
+        # ``<home>/skills/<skill>`` through ``symlink_or_junction``, which is
+        # a directory JUNCTION on unelevated Windows), detach it and replace
+        # it with a fresh copy regardless of target match. Link-first, and
+        # through the junction-aware pair: ``is_symlink()`` answers False for
+        # a junction, so a live one reached the ``exists()`` branch below and
+        # ``rmtree_force`` refused it (stdlib rmtree will not descend a
+        # junction root), aborting gateway startup; a dangling one answers
+        # False to ``exists()`` too, fell through every branch, and the
+        # copytree crashed on the surviving entry with FileExistsError.
+        # ``unlink_link_or_junction`` removes the LINK, never its target.
+        if is_link_or_junction(link):
+            unlink_link_or_junction(link)
         elif link.exists():
             # Real directory exists at that name — only remove if we created it
             if not (link / _MANAGED_MARKER).exists():
