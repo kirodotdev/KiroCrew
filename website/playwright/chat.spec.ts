@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { composer, expectComposerText } from './helpers/composer'
 
 // Prompt sentinels understood by the stub ACP backend. Keep in sync with
 // SLOW_TRIGGER / SLOW_NOACK_TRIGGER / SLOW_LATEACK_TRIGGER in
@@ -23,14 +24,14 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/chat', { waitUntil: 'domcontentloaded' })
     // Wait for chat interface to be ready
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
+    await expect(composer(page)).toBeVisible({ timeout: 10000 })
   })
 
   test('navigates to chat page and displays interface', async ({ page }) => {
     // Should see chat interface. Match the Send button by its exact accessible
     // name — a loose /send/i also matches the "Edit & Resend" buttons on seeded
     // assistant messages (strict-mode violation).
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
+    await expect(composer(page)).toBeVisible({ timeout: 10000 })
     // Type first: the composer's primary button only READS "Send" when there is
     // something to send. On an EMPTY composer over a slot that already holds a
     // conversation it morphs into Continue (`selectContinuable`), so asserting
@@ -38,12 +39,12 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
     // on happens to carry history — passing or failing on leftover state rather
     // than on the interface rendering. Filling the box pins the state the
     // assertion is actually about.
-    await page.getByPlaceholder(/message/i).fill('hello')
+    await composer(page).fill('hello')
     await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible()
   })
 
   test('sends a chat message and displays it', async ({ page }) => {
-    const messageInput = page.getByPlaceholder(/message/i)
+    const messageInput = composer(page)
     await expect(messageInput).toBeVisible({ timeout: 10000 })
 
     // Type a message
@@ -56,12 +57,12 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
     await expect(page.getByText('What is 2+2?').first()).toBeVisible({ timeout: 5000 })
     
     // Wait for input to be cleared as confirmation message was sent
-    await expect(messageInput).toHaveValue('', { timeout: 2000 })
+    await expectComposerText(messageInput, '', { timeout: 2000 })
   })
 
   test('displays streaming response', async ({ page }) => {
     // Send a message first
-    const messageInput = page.getByPlaceholder(/message/i)
+    const messageInput = composer(page)
     await messageInput.fill('Hello')
     await page.keyboard.press('Enter')
     
@@ -70,14 +71,14 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
   })
 
   test('clears message input after sending', async ({ page }) => {
-    const messageInput = page.getByPlaceholder(/message/i)
+    const messageInput = composer(page)
     await expect(messageInput).toBeVisible({ timeout: 10000 })
 
     await messageInput.fill('Test message')
     await page.keyboard.press('Enter')
 
     // Input should be cleared
-    await expect(messageInput).toHaveValue('', { timeout: 2000 })
+    await expectComposerText(messageInput, '', { timeout: 2000 })
   })
 
   test('creates new chat slot', async ({ page }) => {
@@ -89,7 +90,7 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
     await newChatButton.click()
 
     // Should see empty message input (confirmed by waiting for it)
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible()
+    await expect(composer(page)).toBeVisible()
   })
 
   test('switches between chat slots', async ({ page }) => {
@@ -98,7 +99,7 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
     await expect(newChatButton).toBeVisible()
     await newChatButton.click()
     // Wait for new slot to be created
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible()
+    await expect(composer(page)).toBeVisible()
     
     // Look for chat history/slots in sidebar
     const chatSlots = page.locator('[class*="slot"], [class*="session"]')
@@ -130,7 +131,7 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
   })
 
   test('shows typing indicator when sending message', async ({ page }) => {
-    const messageInput = page.getByPlaceholder(/message/i)
+    const messageInput = composer(page)
     await expect(messageInput).toBeVisible({ timeout: 10000 })
 
     await messageInput.fill('Hello')
@@ -140,7 +141,7 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
     await expect(page.getByText('Hello').first()).toBeVisible({ timeout: 5000 })
     
     // Input should be cleared quickly, indicating send was successful
-    await expect(messageInput).toHaveValue('', { timeout: 2000 })
+    await expectComposerText(messageInput, '', { timeout: 2000 })
   })
   // Cleanup: Skip automated cleanup to avoid accidentally deleting user data
   // Chat slots created during tests will persist, but this is safer than
@@ -166,7 +167,7 @@ const STOP_CARD = '[data-testid="stop-event-card"]'
 test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/chat', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
+    await expect(composer(page)).toBeVisible({ timeout: 10000 })
   })
 
   /**
@@ -194,7 +195,7 @@ test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
   test('stop mid-tool-call triggers pulsing', async ({ page }) => {
     // A cancel-aware slow turn that winds down before acking, so the
     // soft_pending state is observable rather than a ~250ms race.
-    const messageInput = page.getByPlaceholder(/message/i)
+    const messageInput = composer(page)
     await messageInput.fill(`Run a long command: sleep 30 ${SLOW_LATEACK}`)
     await page.keyboard.press('Enter')
 
@@ -209,7 +210,7 @@ test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
   })
 
   test('stop resolves to Stopped on soft ack', async ({ page }) => {
-    const messageInput = page.getByPlaceholder(/message/i)
+    const messageInput = composer(page)
     await messageInput.fill(`Hello, please respond slowly ${SLOW}`)
     await page.keyboard.press('Enter')
 
@@ -251,9 +252,9 @@ test.describe('Soft-Stop E2E Tests', { tag: '@needs-agent' }, () => {
 test.describe('Soft-Stop budget expiry', { tag: '@needs-agent' }, () => {
   test('stop resolves to Stop Failed on budget expiry', async ({ page }) => {
     await page.goto('/chat', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
+    await expect(composer(page)).toBeVisible({ timeout: 10000 })
 
-    const messageInput = page.getByPlaceholder(/message/i)
+    const messageInput = composer(page)
     await messageInput.fill(`Run a very long command: sleep 120 ${SLOW_NOACK}`)
     await page.keyboard.press('Enter')
 

@@ -83,6 +83,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { awaitComposer, composerValue, setComposerValue } from './helpers'
 
 const SENT_TEXT = 'did this arrive?'
 
@@ -149,8 +150,8 @@ async function sendPastTheDeadline({ echo = false, busy = false, confirmed = fal
       </QueryClientProvider>,
     )
   })
-  const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
-  fireEvent.change(input, { target: { value: SENT_TEXT } })
+  const input = await awaitComposer()
+  await setComposerValue(SENT_TEXT, input)
   await act(async () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     await Promise.resolve()
@@ -199,7 +200,7 @@ describe('a plain send whose POST hits the deadline (response-late)', { timeout:
     // The notice lands directly after the bubble it describes.
     expect(messages().indexOf(notice)).toBe(messages().indexOf(bubbles[0]) + 1)
     // No restore and no error row: nothing proved the send failed.
-    expect(input.value).toBe('')
+    expect(composerValue(input)).toBe('')
     expect(messages().some(m => m.role === 'error')).toBe(false)
   })
 
@@ -218,7 +219,7 @@ describe('a plain send whose POST hits the deadline (response-late)', { timeout:
     expect(bubbles[0].meta?.optimistic).toBeUndefined()
     expect(bubbles[0].meta?.deliveryUnconfirmed).toBeUndefined()
     expect(messages().some(m => m.role === 'notice' || m.role === 'error')).toBe(false)
-    expect(input.value).toBe('')
+    expect(composerValue(input)).toBe('')
   })
 
   it('posts no notice for a busy-slot Queue send, which minted no bubble to describe', async () => {
@@ -230,7 +231,7 @@ describe('a plain send whose POST hits the deadline (response-late)', { timeout:
     const { messages, input } = await sendPastTheDeadline({ busy: true })
     expect(messages().some(m => m.role === 'user' && m.content === SENT_TEXT)).toBe(false)
     expect(messages().some(m => m.role === 'notice' || m.role === 'error')).toBe(false)
-    expect(input.value).toBe('')
+    expect(composerValue(input)).toBe('')
   })
 })
 

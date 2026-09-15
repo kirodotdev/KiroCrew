@@ -70,4 +70,24 @@ describe('remapCarriedBlocks', () => {
       expect(expanded.split(want).length - 1).toBe(1)
     }
   })
+
+  it('rewrites EVERY occurrence of a re-sequenced marker, not just the first', () => {
+    // A restored draft (or a short paste of the marker text) can hold the same
+    // marker twice. Only the first occurrence is a pill; the copy is an inert
+    // literal — but it still carries seq #1, which after the remap belongs to a
+    // KEPT block. If the copy survives as `#1` and lands before the kept block's
+    // own marker after merging, first-occurrence expansion binds the kept
+    // content to the stray and sends the kept marker raw. Every copy must move
+    // to the fresh seq, where it collides with nothing.
+    const carried = blk('c', 1, 1, 'CARRIED')
+    const marker = formatToken(carried)
+    const text = `${marker} then again ${marker}`
+    const { text: out, blocks } = remapCarriedBlocks(text, [carried], new Set([1]))
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].seq).toBe(2)
+    const fresh = formatToken(blocks[0])
+    expect(out).toBe(`${fresh} then again ${fresh}`)
+    expect(out).not.toContain('[ Paste #1 ')
+  })
 })

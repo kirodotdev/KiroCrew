@@ -7507,8 +7507,6 @@
     "pastedChip": {
       "collapse_paste": "ペーストを折りたたむ",
       "expand_paste": "ペーストを展開",
-      "hide_paste_preview": "貼り付けのプレビューを非表示",
-      "show_paste_preview": "貼り付けのプレビューを表示",
       "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]",
       "preview_more_lines_other": "… 他{{count}}行"
     },
@@ -9112,6 +9110,21 @@
       "over_tokens": "プロンプトは、このモデルの上限 {{limit}} トークンを約 {{over}} 超えています。送信する前に短くしてください。",
       "sr_near": "プロンプトが長さの上限に近づいています。",
       "sr_over": "プロンプトが長さの上限を超えています。"
+    },
+    "pasteBlockChip": {
+      "count_other": "{{count}} 行",
+      "label_other": "貼り付けたテキスト · {{count}} 行",
+      "remove": "貼り付けたテキストを削除",
+      "seq": "#{{seq}} · {{lines}}",
+      "actions": "クリックで編集 · ドラッグで並べ替え · Backspaceで削除"
+    },
+    "pastePreviewEditor": {
+      "cancel": "キャンセル",
+      "editor_aria": "貼り付けたテキストを編集",
+      "save": "保存",
+      "lines_other": "{{count}} 行",
+      "resize_aria": "プレビューのサイズを変更",
+      "unsaved_hint": "未保存の変更があります — 破棄するにはもう一度 Esc を押し、保持するには外側をクリックしてください"
     }
   },
   "hooks": {

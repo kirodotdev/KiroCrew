@@ -61,11 +61,14 @@ import {
   shouldCollapse as shouldCollapsePaste,
   countLines,
   makePasteId,
+  allocateSeq,
   formatToken,
   tokenRangeAt,
   pruneBlocks,
-  nextSeq,
+  nextSeqIn,
   findTokenRanges,
+  splitDuplicateMarkers,
+  PASTE_TOKEN_REGEX,
 } from '../utils/pasteTokens'
 import type { SendMode } from '../pages/chat/ChatSettings'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -76,6 +79,81 @@ import {
   hasPlainClipboardText,
   stripTrailingBlankLines,
 } from './composerPastePolicy'
+
+/**
+ * A textarea paste event is the provenance boundary that can distinguish new
+ * literal marker text from an existing backed marker. When the pasted text
+ * carries an existing block's seq, move that block (and only its already-backed
+ * occurrence) before inserting the literal. The literal bytes then stay inert
+ * regardless of whether they land before or after the pill.
+ *
+ * The repair assumes the replaced selection does not split an existing marker's
+ * bytes -- a caret can only rest on marker boundaries because handleSelectSnap
+ * and the arrow-key hopping keep it there -- so a clipboard fragment can never
+ * be spliced into a synthetic marker.
+ */
+function repairTextareaPasteCollision(
+  value: string,
+  selectionStart: number,
+  selectionEnd: number,
+  pasted: string,
+  blocks: PasteBlock[],
+): { before: string; after: string; blocks: PasteBlock[] } | null {
+  if (!pasted || !blocks.length) return null
+
+  const pastedSeqs = new Set<number>()
+  PASTE_TOKEN_REGEX.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = PASTE_TOKEN_REGEX.exec(pasted)) !== null) pastedSeqs.add(Number(match[1]))
+  if (!blocks.some(block => pastedSeqs.has(block.seq))) return null
+
+  const used = new Set<number>()
+  let max = 0
+  const reserve = (seq: number) => {
+    used.add(seq)
+    if (seq > max) max = seq
+  }
+  for (const block of blocks) reserve(block.seq)
+  PASTE_TOKEN_REGEX.lastIndex = 0
+  while ((match = PASTE_TOKEN_REGEX.exec(value)) !== null) reserve(Number(match[1]))
+  for (const seq of pastedSeqs) reserve(seq)
+
+  const moved = new Map<PasteBlock, PasteBlock>()
+  const nextBlocks = blocks.map(block => {
+    if (!pastedSeqs.has(block.seq)) return block
+    const seq = allocateSeq(max, used)
+    reserve(seq)
+    const next = { ...block, id: makePasteId(), seq }
+    moved.set(block, next)
+    return next
+  })
+
+  let before = value.slice(0, selectionStart)
+  let after = value.slice(selectionEnd)
+  const beforeRewrites: Array<{ start: number; end: number; block: PasteBlock }> = []
+  const afterRewrites: Array<{ start: number; end: number; block: PasteBlock }> = []
+  for (const range of findTokenRanges(value, blocks)) {
+    const block = moved.get(range.block)
+    if (!block) continue
+    if (range.end <= selectionStart) beforeRewrites.push({ start: range.start, end: range.end, block })
+    else if (range.start >= selectionEnd) {
+      afterRewrites.push({ start: range.start - selectionEnd, end: range.end - selectionEnd, block })
+    }
+    // A marker intersecting the replaced selection is deleted by the paste.
+    // Its moved block is intentionally left orphaned so the pasted literal can
+    // never claim it; the existing prune effect drops the orphan next render.
+  }
+  for (let i = beforeRewrites.length - 1; i >= 0; i--) {
+    const rewrite = beforeRewrites[i]
+    before = before.slice(0, rewrite.start) + formatToken(rewrite.block) + before.slice(rewrite.end)
+  }
+  for (let i = afterRewrites.length - 1; i >= 0; i--) {
+    const rewrite = afterRewrites[i]
+    after = after.slice(0, rewrite.start) + formatToken(rewrite.block) + after.slice(rewrite.end)
+  }
+
+  return { before, after, blocks: nextBlocks }
+}
 
 const LexicalComposerInput = lazy(() => import('./LexicalComposerInput'))
 
@@ -717,8 +795,12 @@ interface ChatInputProps {
    *  behaviour, and it is what keeps a very large paste off the main thread.
    *  Cmd/Ctrl+Shift+V still forces one raw paste when this is off. */
   showFullPastes?: boolean
-  /** Opt into the first Lexical composer migration slice. Defaults off so the
-   *  established textarea path remains the production fallback until parity is complete. */
+  /** Render the Lexical composer (inline paste pills). Every product surface
+   *  passes this; the default stays off so a bare <ChatInput> — and the textarea
+   *  path that remains the lazy-load FAILURE fallback — keep their contract.
+   *  `test/chatInputHosts.lexicalComposer.test.ts` holds that line: every
+   *  product mount must name the prop, so a new host cannot fall back to the
+   *  textarea by omission. */
   lexicalComposer?: boolean
   /** Optional knowledge chip rendered above the input */
   knowledgeChip?: React.ReactNode
@@ -1055,7 +1137,7 @@ function ChatInput({
   followUpPendingOptions,
   followUpRefusedOptions,
   followUpError,
-  pasteBlocks = [],
+  pasteBlocks: hostPasteBlocks = [],
   onPasteBlocksChange,
   showFullPastes = false,
   lexicalComposer = false,
@@ -1072,7 +1154,24 @@ function ChatInput({
   // Under a `<Composer draft>` root the text arrives through the root's store,
   // subscribed HERE, so a keystroke re-renders this composer and not its host.
   const draftText = useComposerDraftText()
-  const value = draftText ?? valueProp ?? ''
+  const hostValue = draftText ?? valueProp ?? ''
+  // Canonicalise the host's value + paste blocks BEFORE either composer is
+  // chosen, so the textarea path (touch devices, chunk-load fallback) is held to
+  // the same contract as the Lexical one: every marker names its own block and
+  // no two blocks share a seq. A persisted draft can violate both (the same
+  // marker twice, or two records carrying one seq), and a marker resolves by seq
+  // alone — `expandAll` would then send one block for both and the textarea's
+  // id-keyed pill removal would drop a twin. `splitDuplicateMarkers` returns the
+  // SAME references when nothing changed; a rewrite is handed back to the host
+  // through the ordinary onChange / onPasteBlocksChange, after which the props
+  // are canonical and this is a no-op.
+  const canonical = useMemo(() => splitDuplicateMarkers(hostValue, hostPasteBlocks), [hostPasteBlocks, hostValue])
+  const value = canonical.text
+  const pasteBlocks = canonical.blocks
+  useEffect(() => {
+    if (value !== hostValue) onChange(value)
+    if (pasteBlocks !== hostPasteBlocks) onPasteBlocksChange?.(pasteBlocks)
+  }, [hostPasteBlocks, hostValue, onChange, onPasteBlocksChange, pasteBlocks, value])
   // Dictation state comes from the Composer root's Voice atom (mounted by the
   // root beside this input), not from host-wired props: one hook, the same
   // values the atom computes for every surface, and a host cannot forget to
@@ -1397,6 +1496,15 @@ function ChatInput({
     composerAnchorRef.current = lexicalControlRef.current?.getRootElement() ?? null
     setLexicalControlRevision(value => value + 1)
   }, [])
+  const markLexicalLoadFailed = useCallback(() => {
+    setLexicalLoadFailed(true)
+  }, [])
+  const pendingSlot = autoFocusKey ?? slotId
+  // Whole-value actions need the Lexical control to create their undo entry.
+  // Gate those actions during the one-time lazy mount instead of queuing stale
+  // text across a slot/value change. Host-side writes in that pre-mount window
+  // remain the accepted initial-state edge described by ControlledValuePlugin.
+  const composerReady = !lexicalComposer || lexicalLoadFailed || lexicalControlRevision > 0
   // Attribute the Lexical editor's own growth to the composer (see
   // composerResize.ts). The textarea path attributes inside `applyHeight`, which
   // the contenteditable never runs — its box grows through CSS min/max-height as
@@ -1451,6 +1559,16 @@ function ChatInput({
     () => lexicalComposer && !lexicalLoadFailed ? lexicalControlRef.current : textareaControl,
     [lexicalComposer, lexicalLoadFailed, textareaControl],
   )
+  const replaceLexicalText = useCallback((text: string) => {
+    if (!lexicalComposer || lexicalLoadFailed) return false
+    const control = lexicalControlRef.current
+    if (!control?.replaceText) return false
+    control.replaceText(text)
+    return true
+  }, [lexicalComposer, lexicalLoadFailed])
+  const replaceInSlot = useCallback((text: string) => {
+    if (!replaceLexicalText(text)) onChange(text)
+  }, [onChange, replaceLexicalText])
   // Publish the live caret so ChatPage's dictation handler can splice a
   // transcript in at the cursor instead of appending. Written on every caret
   // move (typing, click, selection); the value persists through blur (clicking
@@ -1731,6 +1849,10 @@ function ChatInput({
    */
   const fireComposer = useCallback((alternate?: unknown) => {
     if (disabled) return
+    // Enter from the Lexical composer routes directly here, so keep this guard
+    // identical to the Send button and textarea keydown path: offline drafts
+    // must remain untouched regardless of which composer is active.
+    if (!connected) return
     // A batch dictation is still transcribing: block the send so the pending
     // transcript isn't left behind. Otherwise Enter/Send fires the current draft
     // BEFORE the transcript lands, orphaning the dictation into the emptied
@@ -1749,7 +1871,7 @@ function ChatInput({
     if (value.trim() || pendingFiles.length || pendingSessions.length) haptic('light')
     if (steerNow && onSteer) onSteer(steerAuto && !flip ? { auto: true } : undefined)
     else onSend()
-  }, [disabled, voiceTranscribing, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFiles.length, pendingSessions.length])
+  }, [disabled, connected, voiceTranscribing, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFiles.length, pendingSessions.length])
   // Every stop button in the row goes through this, so the tap and the truthiness
   // checks on `onStop` (which decide whether a button renders at all) stay apart.
   const stopWithTap = useCallback(() => {
@@ -1831,7 +1953,7 @@ function ChatInput({
     setPlusOpen(false)
     let nextValue = '/'
     if (sigil === '/') {
-      onChange(nextValue)
+      replaceInSlot(nextValue)
       setSlashMenuOpen(true); setFilePickerOpen(false); setSkillPickerOpen(false)
     } else {
       // Append at the end, exactly as the base textarea path always has —
@@ -1840,7 +1962,7 @@ function ChatInput({
       // behavior must not change.
       const sep = value === '' || /\s$/.test(value) ? '' : ' '
       nextValue = value + sep + sigil
-      onChange(nextValue)
+      replaceInSlot(nextValue)
       setSlashMenuOpen(false)
       if (sigil === '@') { setFilePickerOpen(true); setFileQuery(''); setSkillPickerOpen(false) }
       else { setSkillPickerOpen(true); setSkillQuery(''); setFilePickerOpen(false) }
@@ -1978,9 +2100,9 @@ function ChatInput({
   const applyPickedToken = useCallback((tokenRe: RegExp, token: string) => {
     const selection = composerControl()?.getSelection()
     const next = replaceTokenAtCaret(value, selection?.start ?? value.length, tokenRe, token)
-    onChange(next.value)
+    replaceInSlot(next.value)
     requestAnimationFrame(() => composerControl()?.setSelection(next.caret, next.caret, { focus: true }))
-  }, [value, onChange, composerControl])
+  }, [value, replaceInSlot, composerControl])
   // The optimizer's context is the ONLY reader of this slot's message history,
   // and only when "Optimize prompt" is clicked. Subscribing here forced every
   // mounted composer to re-render on each streamed frame (Immer hands back a new
@@ -2058,10 +2180,11 @@ function ChatInput({
   /**
    * Typing intent is an implicit expand.
    *
-   * Every programmatic route to the composer resolves through the textarea
-   * (`queryComposer` finds `textarea[data-composer-input]`; the `/` shortcut and
-   * the autoFocusKey effect call `inputRef.current?.focus()`), and a collapsed
-   * composer has no textarea -- so without this, `/`, quote-to-compose, a widget
+   * Every programmatic route to the composer resolves through the editable
+   * element (`queryComposer` finds `[data-composer-input]` — the textarea or the
+   * Lexical root; the `/` shortcut and the autoFocusKey effect call the
+   * composer control's `focus()`), and a collapsed composer has no editable
+   * element -- so without this, `/`, quote-to-compose, a widget
    * send and post-create focus all silently do nothing, and a pre-fill lands in a
    * draft the user cannot see. Review named this correctly against the ghost
    * precedent this collapse otherwise inherits: the ghost is transient and the app
@@ -2606,10 +2729,7 @@ function ChatInput({
 
   const setTextUndoable = useCallback((text: string) => {
     if (lexicalComposer && !lexicalLoadFailed) {
-      valueFromUserRef.current = true
-      onChange(text)
-      requestAnimationFrame(() => composerControl()?.setSelection(text.length, text.length, { focus: true }))
-      return
+      return replaceInSlot(text)
     }
     const el = inputRef.current
     if (!el) { onChange(text); return }
@@ -2640,7 +2760,7 @@ function ChatInput({
     requestAnimationFrame(() => {
       if (el && document.activeElement === el) el.setSelectionRange(text.length, text.length)
     })
-  }, [onChange, lexicalComposer, lexicalLoadFailed, composerControl])
+  }, [onChange, lexicalComposer, lexicalLoadFailed, replaceInSlot])
 
   const optimizeMutation = useMutation({
     onMutate: () => { setOptimizeError('') },
@@ -3023,7 +3143,7 @@ function ChatInput({
     // the disabled-state on the Optimize button (line ~1734).
     if (promptOptimizer && e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
       e.preventDefault()
-      if (connected) optimizePrompt()
+      if (connected && composerReady) optimizePrompt()
       return
     }
     // Mode: enter-ctrl-newline — Ctrl/Cmd+Enter inserts newline, Enter sends
@@ -3125,7 +3245,7 @@ function ChatInput({
       }
       e.preventDefault()
     }
-  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer])
+  }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer, composerReady])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -3171,7 +3291,7 @@ function ChatInput({
     // for one; the paste then falls through to the plain-insert path below.
     if (onPasteBlocksChange && !forceRaw && !showFullPastes && shouldCollapsePaste(cleaned)) {
       e.preventDefault()
-      const block: PasteBlock = { id: makePasteId(), seq: nextSeq(pasteBlocks), lines: countLines(cleaned), content: cleaned }
+      const block: PasteBlock = { id: makePasteId(), seq: nextSeqIn(value, pasteBlocks), lines: countLines(cleaned), content: cleaned }
       const token = formatToken(block)
       // Surround the token with newlines so the chip lives on its own line —
       // long-form pasted content rarely flows with typed text around it.
@@ -3192,6 +3312,29 @@ function ChatInput({
       requestAnimationFrame(() => {
         if (ta && document.activeElement === ta) {
           const pos = before.length + insert.length
+          ta.setSelectionRange(pos, pos)
+        }
+      })
+      return
+    }
+
+    // A small literal paste can carry the seq of an existing backed marker.
+    // Native insertion would let text-order canonicalisation bind the block to
+    // whichever copy comes first, so repair the existing identity while this
+    // event still tells us which bytes are the new literal. This controlled
+    // branch covers both cleaned pastes and the otherwise-native fall-through.
+    const collision = onPasteBlocksChange
+      ? repairTextareaPasteCollision(value, start, end, cleaned, pasteBlocks)
+      : null
+    if (collision && onPasteBlocksChange) {
+      e.preventDefault()
+      const next = collision.before + cleaned + collision.after
+      valueFromUserRef.current = true
+      onChange(next)
+      onPasteBlocksChange(collision.blocks)
+      requestAnimationFrame(() => {
+        if (ta && document.activeElement === ta) {
+          const pos = collision.before.length + cleaned.length
           ta.setSelectionRange(pos, pos)
         }
       })
@@ -4158,7 +4301,7 @@ function ChatInput({
         <SketchDialog open={sketchOpen} onOpenChange={setSketchOpen} onInsert={onUploadFiles} returnFocusRef={composerAnchorRef} />
       )}
 
-      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
+      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={composerAnchorRef} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { replaceInSlot(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
 
       {onFileSelect && (
         <FilePickerMenu
@@ -4416,7 +4559,7 @@ function ChatInput({
         )}
         <div className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
         {lexicalComposer && !lexicalLoadFailed ? (
-          <ComposerLoadBoundary onError={() => setLexicalLoadFailed(true)}>
+          <ComposerLoadBoundary onError={markLexicalLoadFailed}>
             <Suspense fallback={
               <div
                 role="status"
@@ -4430,6 +4573,7 @@ function ChatInput({
               <LexicalComposerInput
                 value={value}
                 blocks={pasteBlocks}
+                historyKey={pendingSlot}
                 onChange={handleLexicalChange}
                 onBlocksChange={onPasteBlocksChange}
                 showFullPastes={showFullPastes}
@@ -4441,6 +4585,7 @@ function ChatInput({
                 sentMessages={sentMessages}
                 ariaLabel={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
                 placeholder={activePlaceholder}
+                placeholderOneLine={placeholderIsHint}
                 disabled={disabled}
                 readOnly={optimizing}
                 sendOnEnter={sendOnEnter}
@@ -4655,8 +4800,9 @@ function ChatInput({
                       {typedCommandMenus && <button
                         type="button"
                         onClick={() => openTrigger('/')}
+                        disabled={!composerReady}
                         title={i18nT('components.chatInput.slash_commands')}
-                        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
+                        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                       >
                         <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">/</span>
                         <div className="min-w-0">
@@ -4668,8 +4814,9 @@ function ChatInput({
                         <button
                           type="button"
                           onClick={() => openTrigger('@')}
+                          disabled={!composerReady}
                           title={i18nT('components.chatInput.reference_a_file')}
-                          className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
+                          className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                         >
                           <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">@</span>
                           <div className="min-w-0">
@@ -4681,8 +4828,9 @@ function ChatInput({
                       {typedCommandMenus && <button
                         type="button"
                         onClick={() => openTrigger('$')}
+                        disabled={!composerReady}
                         title={i18nT('components.chatInput.use_a_skill')}
-                        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
+                        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                       >
                         <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">$</span>
                         <div className="min-w-0">
@@ -4974,13 +5122,17 @@ function ChatInput({
                     mode={effectiveBusyMode}
                     onModeChange={setBusySendMode}
                     onFire={fireComposer}
-                    disabled={disabled}
+                    // Offline mid-turn the fire half must read disabled, not sit
+                    // enabled over a `fireComposer` that swallows the press — the
+                    // rule the idle Send button and steer-only send already follow.
+                    // The caret stays live: picking steer-vs-queue is not a send.
+                    disabled={disabled || !connected}
                     altChordAvailable={sendOnEnter === 'enter'}
                     autoAvailable={jevAutoAvailable}
                   />
                   )
                 ) : (
-                  <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled} title={i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')}>
+                  <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled || !connected} title={i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')} {...offlineProps(connected, 'send', i18nT('components.chatInput.queue_message'))}>
                     <ArrowUpFromLine size={18} />
                   </button>
                 )
@@ -5023,7 +5175,7 @@ function ChatInput({
                 // still in flight — matching the re-entrancy guard in
                 // optimizePrompt(). optimizing ⊂ optimizePending, so this stays
                 // disabled on the originating session too.
-                disabled={!value.trim() || optimizePending || !connected}
+                disabled={!value.trim() || optimizePending || !connected || !composerReady}
                 aria-label={optimizePending && !optimizing ? i18nT('components.chatInput.optimize_prompt_busy_optimizing_another_chat') : i18nT('components.chatInput.optimize_prompt')}
                 title={optimizePending && !optimizing ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : i18nT('components.chatInput.optimize_prompt_2', { shortcut: platformShortcut('Cmd+Shift+Enter') })}
                 {...offlineProps(connected, 'optimize', 'Optimize')}

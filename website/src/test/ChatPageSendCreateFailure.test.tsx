@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { composerValue, setComposerValue } from './helpers'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -155,7 +156,8 @@ async function renderPage(store: ReturnType<typeof makeStore>) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await waitFor(() => expect(document.querySelector('[data-composer-input]')).not.toBeNull())
+  await act(async () => {})
 }
 
 beforeEach(() => {
@@ -181,7 +183,7 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     expect(sendChat).not.toHaveBeenCalled()
     // ...the text is recovered into the composer and persisted per-slot...
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('do not lose me')
+      expect(composerValue()).toBe('do not lose me')
     })
     await waitFor(() => {
       expect(JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')['slot-a']).toBe('do not lose me')
@@ -206,7 +208,7 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     await act(async () => { await Promise.resolve() })
 
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value)
+      expect(composerValue())
         .toBe('my own unsent draft\n\ndo not lose me')
     })
     await waitFor(() => {
@@ -224,19 +226,18 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     const store = makeStore()
     await renderPage(store)
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(input, { target: { value: 'typed while waiting' } })
+    await setComposerValue('typed while waiting')
     await act(async () => {
       rejectCreate(new Error('gateway unavailable'))
       await Promise.resolve()
     })
 
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value)
+      expect(composerValue())
         .toBe('typed while waiting\n\ndo not lose me')
     })
     // The payload appears exactly once — the merge must not re-append it.
-    const value = (screen.getByLabelText('Message input') as HTMLTextAreaElement).value
+    const value = composerValue()
     expect(value.split('do not lose me').length - 1).toBe(1)
     expect(sendChat).not.toHaveBeenCalled()
   })
@@ -249,14 +250,14 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     const store = makeStore('test')
     await renderPage(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'latest' } })
+    await setComposerValue('latest')
     await act(async () => {
       rejectCreate(new Error('gateway unavailable'))
       await Promise.resolve()
     })
 
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value)
+      expect(composerValue())
         .toBe('latest\n\ntest')
     })
   })
@@ -278,7 +279,7 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     await waitFor(() => {
       expect(JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')['slot-a']).toBe('do not lose me')
     })
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('')
+    expect(composerValue()).toBe('')
     // No error bubble in slot-b (the message never belonged there) — a notification
     // carries the failure instead, so it is not silent.
     expect(store.getState().chat.messages.filter(m => m.role === 'error')).toHaveLength(0)
@@ -291,7 +292,7 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     createChatSlot.mockReset()
     createChatSlot.mockResolvedValue({ key: 'slot-c', title: 'slot-c', messages: 0, running: false })
     const input = screen.getByLabelText('Message input')
-    fireEvent.change(input, { target: { value: 'a normal message' } })
+    await setComposerValue('a normal message')
     await act(async () => {
       fireEvent.keyDown(input, { key: 'Enter' })
       await Promise.resolve()
@@ -313,7 +314,7 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     await act(async () => { await Promise.resolve() })
 
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('do not lose me')
+      expect(composerValue()).toBe('do not lose me')
     })
     expect(sendChat).not.toHaveBeenCalled()
   })
@@ -327,14 +328,14 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     const store = makeStore('test')
     await renderPage(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'latest test' } })
+    await setComposerValue('latest test')
     await act(async () => {
       rejectCreate(new Error('gateway unavailable'))
       await Promise.resolve()
     })
 
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value)
+      expect(composerValue())
         .toBe('latest test\n\ntest')
     })
   })
@@ -398,14 +399,14 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     const store = makeStore('run tests')
     await renderPage(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'please run tests first' } })
+    await setComposerValue('please run tests first')
     await act(async () => {
       rejectCreate(new Error('gateway unavailable'))
       await Promise.resolve()
     })
 
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value)
+      expect(composerValue())
         .toBe('please run tests first\n\nrun tests')
     })
   })

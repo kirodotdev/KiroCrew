@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { useRef } from 'react'
 import type { RootState } from '../store'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders, createTestStore, composerRoot, composerSelection, composerValue, setComposerValue, pressInComposer, awaitComposer } from './helpers'
 import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import SelectionToolbar, { useSelectionActions, type SelectionAction } from '../components/SelectionToolbar'
@@ -84,20 +84,29 @@ describe('Select-to-Ask', () => {
     expect(onAsk).toHaveBeenCalledWith('hi', expect.anything())
   })
 
-  it('SideChat renders a seed written into its slot as a grounding quote, and puts the caret after it', () => {
+  it('SideChat renders a seed written into its slot as a grounding quote, and puts the caret after it', async () => {
     const SLOT = 'seed-slot'
     const store = createTestStore({
       dashboard: dashInitial,
       chat: { ...chatInitial, activeSlot: SLOT, slotHistory: [SLOT], activityOpen: true, activityTab: 'side' } as unknown as RootState['chat'],
     })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
-    const ta = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    expect(ta.value).toBe('')
+    await waitFor(() => expect(document.querySelector('[data-side-chat-input] [data-composer-input]')).not.toBeNull())
+    await act(async () => {})
+    const root = composerRoot(document.querySelector('[data-side-chat-input]') as HTMLElement)
+    expect(composerValue(root)).toBe('')
     act(() => { seedSideChatDraft(SLOT, 'line one\nline two') })
-    expect(ta.value).toBe('> line one\n> line two\n\n')
+    await waitFor(() => expect(composerValue(root)).toBe('> line one\n> line two\n\n'))
+    // The nudge (Opus finding on 51d533776): it probed `textarea[...]`, found
+    // nothing on the Lexical root, skipped focus + caret and still consumed the
+    // seed. Now it places the caret after the quote through the root's control
+    // handle and focuses the editable root.
+    await waitFor(() => expect(document.activeElement).toBe(root))
+    const len = '> line one\n> line two\n\n'.length
+    expect(composerSelection(root)).toEqual({ start: len, end: len })
   })
 
-  it('a seed for another slot never shows in this panel; a seed written BEFORE mount is waiting when it mounts', () => {
+  it('a seed for another slot never shows in this panel; a seed written BEFORE mount is waiting when it mounts', async () => {
     const SLOT = 'seed-slot'
     const store = createTestStore({
       dashboard: dashInitial,
@@ -106,16 +115,16 @@ describe('Select-to-Ask', () => {
     // Late-panel case: the Ask landed while the panel was still coming up.
     seedSideChatDraft(SLOT, 'asked before mount')
     renderWithProviders(<SideChat slot={SLOT} />, { store })
-    const ta = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    expect(ta.value).toBe('> asked before mount\n\n')
+    const ta = await awaitComposer(document.querySelector('[data-side-chat-input]') as HTMLElement)
+    expect(composerValue(ta)).toBe('> asked before mount\n\n')
     // The composer wrapper names its slot — a test / capture-harness hook.
     expect(ta.closest('[data-side-chat-input]')?.getAttribute('data-side-chat-slot')).toBe(SLOT)
     act(() => { seedSideChatDraft('other-slot', 'not mine') })
-    expect(ta.value).toBe('> asked before mount\n\n')
+    expect(composerValue(ta)).toBe('> asked before mount\n\n')
     expect(readSideChatDraft('other-slot')).toBe('> not mine\n\n')
   })
 
-  it('a Side Chat draft survives the panel unmounting and is kept per slot', () => {
+  it('a Side Chat draft survives the panel unmounting and is kept per slot', async () => {
     // Every host unmounts the panel through a control beside the composer
     // (another tab, the Members drawer's "Details", a member switch); the
     // draft must not die with it.
@@ -126,19 +135,23 @@ describe('Select-to-Ask', () => {
       chat: { ...chatInitial, activeSlot: 'slot-a', slotHistory: ['slot-a'], activityOpen: true, activityTab: 'side' } as unknown as RootState['chat'],
     })
     const first = renderWithProviders(<SideChat slot="slot-a" />, { store })
-    const ta = () => screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    fireEvent.change(ta(), { target: { value: 'half a question' } })
-    expect(ta().value).toBe('half a question')
+    const side = () => document.querySelector('[data-side-chat-input]') as HTMLElement
+    const ta = () => composerRoot(side())
+    await awaitComposer(side())
+    await setComposerValue('half a question', ta())
+    expect(composerValue(ta())).toBe('half a question')
     first.unmount()
 
     // Another slot's panel does not see it …
     const other = renderWithProviders(<SideChat slot="slot-b" />, { store })
-    expect(ta().value).toBe('')
+    await awaitComposer(side())
+    expect(composerValue(ta())).toBe('')
     other.unmount()
 
     // … and the same slot's panel gets it back.
     renderWithProviders(<SideChat slot="slot-a" />, { store })
-    expect(ta().value).toBe('half a question')
+    await awaitComposer(side())
+    await waitFor(() => expect(composerValue(ta())).toBe('half a question'))
   })
 
   it('a failed submit hands the text back to the slot it was SUBMITTED for, not the slot now shown', async () => {
@@ -154,28 +167,32 @@ describe('Select-to-Ask', () => {
       chat: { ...chatInitial, activeSlot: 'slot-a', slotHistory: ['slot-a'], activityOpen: true, activityTab: 'side' } as unknown as RootState['chat'],
     })
     const view = renderWithProviders(<SideChat slot="slot-a" />, { store })
-    const ta = () => screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    fireEvent.change(ta(), { target: { value: 'question for A' } })
-    fireEvent.keyDown(ta(), { key: 'Enter', code: 'Enter' })
+    const side = () => document.querySelector('[data-side-chat-input]') as HTMLElement
+    const ta = () => composerRoot(side())
+    await awaitComposer(side())
+    await setComposerValue('question for A', ta())
+    pressInComposer('Enter', { code: 'Enter' }, ta())
     await waitFor(() => expect(sideTurn).toHaveBeenCalled())
-    expect(ta().value).toBe('')
+    expect(composerValue(ta())).toBe('')
 
     // Re-bind the SAME instance to slot B while A's request is in flight.
     view.rerender(<SideChat slot="slot-b" />)
-    fireEvent.change(ta(), { target: { value: 'typing in B' } })
+    await act(async () => {})
+    await setComposerValue('typing in B', ta())
 
     await act(async () => { rejectTurn(new Error('network')); await Promise.resolve() })
     await waitFor(() => expect(readSideChatDraft('slot-a')).toContain('question for A'))
     // B's visible draft is untouched by A's failure.
-    expect(ta().value).toBe('typing in B')
+    expect(composerValue(ta())).toBe('typing in B')
     expect(readSideChatDraft('slot-b')).toBe('typing in B')
 
     // Back to A: the restored question is what the composer SHOWS — the store
     // is the single source of truth, no cached copy from before the submit
     // can shadow it — and typing on appends to it instead of overwriting.
     view.rerender(<SideChat slot="slot-a" />)
-    expect(ta().value).toContain('question for A')
-    fireEvent.change(ta(), { target: { value: `${ta().value} and more` } })
+    await act(async () => {})
+    await waitFor(() => expect(composerValue(ta())).toContain('question for A'))
+    await setComposerValue(`${composerValue(ta())} and more`, ta())
     expect(readSideChatDraft('slot-a')).toContain('question for A')
     expect(readSideChatDraft('slot-a')).toContain('and more')
   })

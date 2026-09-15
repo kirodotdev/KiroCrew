@@ -7507,8 +7507,6 @@
     "pastedChip": {
       "collapse_paste": "折叠粘贴内容",
       "expand_paste": "展开粘贴内容",
-      "hide_paste_preview": "隐藏粘贴预览",
-      "show_paste_preview": "显示粘贴预览",
       "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]",
       "preview_more_lines_other": "… 还有 {{count}} 行"
     },
@@ -9112,6 +9110,21 @@
       "over_tokens": "提示超出此模型 {{limit}} 个 token 的上限约 {{over}}。请先缩短再发送。",
       "sr_near": "提示接近长度上限。",
       "sr_over": "提示超出长度上限。"
+    },
+    "pasteBlockChip": {
+      "count_other": "{{count}} 行",
+      "label_other": "粘贴的文本 · {{count}} 行",
+      "remove": "移除粘贴的文本",
+      "seq": "#{{seq}} · {{lines}}",
+      "actions": "点击编辑 · 拖动重新排序 · Backspace 移除"
+    },
+    "pastePreviewEditor": {
+      "cancel": "取消",
+      "editor_aria": "编辑粘贴的文本",
+      "save": "保存",
+      "lines_other": "{{count}} 行",
+      "resize_aria": "调整预览大小",
+      "unsaved_hint": "有未保存的修改 — 再按一次 Esc 放弃，点击外部则保留"
     }
   },
   "hooks": {

@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
+import { render, act, waitFor, fireEvent } from '@testing-library/react'
 import type { RootState } from '../store'
 import { store as appStore } from '../store'
 import type { ChatMessage } from '../types'
@@ -77,6 +77,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPage from '../pages/ChatPage'
+import { awaitComposer, setComposerValue, composerValue } from './helpers'
 
 const STEERED_TEXT = 'change course now'
 
@@ -145,8 +146,8 @@ async function steerWithReceipt(
       </QueryClientProvider>,
     )
   })
-  const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
-  fireEvent.change(input, { target: { value: STEERED_TEXT } })
+  const input = await awaitComposer()
+  await setComposerValue(STEERED_TEXT, input)
   await act(async () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     await Promise.resolve()
@@ -181,13 +182,13 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
     expect(rows[0].meta?.mid).toBe('m-delivered')
     expect(rows[0].meta?.optimistic).toBeUndefined()
     expect(!!rows[0].meta?.steer).toBe(echo === 'steer')
-    expect(rows.input.value).toBe('')
+    expect(composerValue(rows.input)).toBe('')
     expect(rows.store.getState().chat.messages.some(m => m.role === 'notice' || m.role === 'error')).toBe(false)
   })
 
   it('does not count an identical message from another send as delivery', async () => {
     const rows = await steerWithReceipt({ reject: new DOMException('aborted', 'AbortError') }, 'another-send')
-    expect(rows.input.value).toBe(STEERED_TEXT)
+    expect(composerValue(rows.input)).toBe(STEERED_TEXT)
     expect(rows).toHaveLength(1)
     expect(rows[0].meta?.sendId).toBe('s-another-tab')
     expect(rows.store.getState().chat.messages.some(m => m.role === 'notice')).toBe(true)
@@ -211,7 +212,7 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
     const rows = await steerWithReceipt({ ok: true, steered: true })
     expect(rows).toHaveLength(1)
     expect(rows[0].meta?.steer).toBe(true)
-    expect(rows.input.value).toBe('')
+    expect(composerValue(rows.input)).toBe('')
   })
 
   it('a refused steer hands the text back AND says why, framed as a send failure', async () => {
@@ -220,7 +221,7 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
     // the server's reason ("no running turn") is the user's next step, not a
     // console line.
     const rows = await steerWithReceipt({ httpStatus: 409, body: { ok: false, error: 'no running turn' } })
-    await waitFor(() => expect(rows.input.value).toBe(STEERED_TEXT))
+    await waitFor(() => expect(composerValue(rows.input)).toBe(STEERED_TEXT))
     const err = (rows.store.getState().chat.messages as ChatMessage[]).find(m => m.role === 'error')
     expect(err?.content).toBe('Send failed: no running turn')
     expect((rows.store.getState().chat.messages as ChatMessage[]).some(m => m.role === 'notice')).toBe(false)
@@ -237,7 +238,7 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
     // The bubble goes too: standing, it would read as delivered and make
     // "check the transcript" unanswerable.
     const rows = await steerWithReceipt({ reject: new DOMException('aborted', 'AbortError') })
-    await waitFor(() => expect(rows.input.value).toBe(STEERED_TEXT))
+    await waitFor(() => expect(composerValue(rows.input)).toBe(STEERED_TEXT))
     const notice = (rows.store.getState().chat.messages as ChatMessage[]).find(m => m.role === 'notice')
     expect(notice?.content).toMatch(/^\u26A0\uFE0F Delivery not confirmed/)
     await waitFor(() => expect(
@@ -247,7 +248,7 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
 
   it('a never-left steer hands the text back with the connection copy', async () => {
     const rows = await steerWithReceipt({ reject: new TypeError('Failed to fetch') })
-    await waitFor(() => expect(rows.input.value).toBe(STEERED_TEXT))
+    await waitFor(() => expect(composerValue(rows.input)).toBe(STEERED_TEXT))
     const err = (rows.store.getState().chat.messages as ChatMessage[]).find(m => m.role === 'error')
     expect(err?.content).toBe(i18nT('pages.chatPage.send_failed_connection'))
     await waitFor(() => expect(
@@ -272,19 +273,19 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
         </QueryClientProvider>,
       )
     })
-    const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
-    fireEvent.change(input, { target: { value: STEERED_TEXT } })
+    const input = await awaitComposer()
+    await setComposerValue(STEERED_TEXT, input)
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }); await Promise.resolve() })
     await waitFor(() => expect(sendChat).toHaveBeenCalled())
     // Switch to another session and start typing there.
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
-    const inputB = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
+    const inputB = await awaitComposer()
     expect(store.getState().chat.activeSlot).toBe('slot-b')
-    fireEvent.change(inputB, { target: { value: 'typing in B' } })
+    await setComposerValue('typing in B', inputB)
     await act(async () => { rejectSend(new TypeError('Failed to fetch')); for (let i = 0; i < 6; i++) await Promise.resolve() })
     // B's composer is untouched; A's draft holds the steer text; the error row
     // is in A's transcript, not B's.
-    expect(inputB.value).toBe('typing in B')
+    expect(composerValue(inputB)).toBe('typing in B')
     expect(store.getState().chat.slotMessages['slot-a']?.some(m => m.role === 'error')).toBe(true)
     expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(false)
     expect(JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? '{}')['slot-a']).toBe(STEERED_TEXT)

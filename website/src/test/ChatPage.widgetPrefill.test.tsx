@@ -3,7 +3,8 @@
 // pre-fill the composer, requiring an explicit human gesture (Enter) to send.
 // When the user does send pre-filled text, the turn is tagged meta.origin=widget.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, act, waitFor } from '@testing-library/react'
+import { composerValue, setComposerValue, pressInComposer, awaitComposer } from './helpers'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -93,7 +94,7 @@ async function renderAndWaitForInput(store: ReturnType<typeof makeStore>) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await awaitComposer()
 }
 
 beforeEach(() => {
@@ -111,8 +112,8 @@ describe('ChatPage widget action pre-fill', { timeout: 15_000 }, () => {
       window.dispatchEvent(new CustomEvent('mc-widget-send', { detail: { text: '[UI] approve: {"id":"123"}' } }))
     })
 
-    const ta = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
-    expect(ta.value).toContain('[UI] approve: {"id":"123"}')
+    await waitFor(() => expect(composerValue()).toContain('[UI] approve: {"id":"123"}'))
+    expect(composerValue()).toContain('[UI] approve: {"id":"123"}')
     // The forged turn must NOT have been submitted without a human gesture.
     await new Promise(r => setTimeout(r, 50))
     expect(api.sendChat).not.toHaveBeenCalled()
@@ -125,11 +126,11 @@ describe('ChatPage widget action pre-fill', { timeout: 15_000 }, () => {
     act(() => {
       window.dispatchEvent(new CustomEvent('mc-widget-send', { detail: { text: '[UI] approve' } }))
     })
-    const ta = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
-    await waitFor(() => expect(ta.value).toContain('[UI] approve'))
+    await waitFor(() => expect(composerValue()).toContain('[UI] approve'))
 
     // Human gesture: press Enter to actually send.
-    await act(async () => { fireEvent.keyDown(ta, { key: 'Enter' }) })
+    pressInComposer('Enter')
+    await act(async () => {})
 
     await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
     const metaArg = vi.mocked(api.sendChat).mock.calls[0][4]
@@ -140,9 +141,9 @@ describe('ChatPage widget action pre-fill', { timeout: 15_000 }, () => {
     const store = makeStore('slot-w', [{ key: 'slot-w' }])
     await renderAndWaitForInput(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'hello from scratch' } })
-    await act(async () => { fireEvent.keyDown(ta, { key: 'Enter' }) })
+    await setComposerValue('hello from scratch')
+    pressInComposer('Enter')
+    await act(async () => {})
 
     await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
     const metaArg = vi.mocked(api.sendChat).mock.calls[0][4]

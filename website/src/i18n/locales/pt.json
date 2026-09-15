@@ -7729,8 +7729,6 @@
     "pastedChip": {
       "collapse_paste": "Recolher texto colado",
       "expand_paste": "Expandir texto colado",
-      "hide_paste_preview": "Ocultar prévia do conteúdo colado",
-      "show_paste_preview": "Mostrar prévia do conteúdo colado",
       "paste_lines_many": "[ Colado #{{seq}} · {{count}} linhas ]",
       "paste_lines_one": "[ Colado #{{seq}} · {{count}} linha ]",
       "paste_lines_other": "[ Colado #{{seq}} · {{count}} linhas ]",
@@ -9364,6 +9362,27 @@
       "over_tokens": "O prompt excede em ~{{over}} o limite de {{limit}} tokens deste modelo. Reduza-o antes de enviar.",
       "sr_near": "O prompt está perto do limite de tamanho.",
       "sr_over": "O prompt excede o limite de tamanho."
+    },
+    "pasteBlockChip": {
+      "count_many": "{{count}} linhas",
+      "count_one": "{{count}} linha",
+      "count_other": "{{count}} linhas",
+      "label_many": "Texto colado · {{count}} linhas",
+      "label_one": "Texto colado · {{count}} linha",
+      "label_other": "Texto colado · {{count}} linhas",
+      "remove": "Remover o texto colado",
+      "seq": "#{{seq}} · {{lines}}",
+      "actions": "Clique para editar · arraste para reordenar · Backspace remove"
+    },
+    "pastePreviewEditor": {
+      "cancel": "Cancelar",
+      "editor_aria": "Editar o texto colado",
+      "save": "Salvar",
+      "lines_many": "{{count}} linhas",
+      "lines_one": "{{count}} linha",
+      "lines_other": "{{count}} linhas",
+      "resize_aria": "Redimensionar a pré-visualização",
+      "unsaved_hint": "Alterações não salvas: pressione Esc novamente para descartar ou clique fora para manter"
     }
   },
   "hooks": {

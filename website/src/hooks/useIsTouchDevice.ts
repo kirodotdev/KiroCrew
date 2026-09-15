@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { isTouchDevice } from '../utils/isTouchDevice'
 
 /**
@@ -26,4 +26,21 @@ function subscribe(cb: () => void) {
 
 export function useIsTouchDevice(): boolean {
   return useSyncExternalStore(subscribe, isTouchDevice, () => false)
+}
+
+/**
+ * `isTouchDevice()` read ONCE, when the component mounts, and held for its
+ * lifetime.
+ *
+ * For a decision that picks one of two editors (`lexicalComposer={!touch}`) the
+ * reactive form above is the wrong shape: a pointer-capability change mid-session
+ * — a mouse attached to a tablet, a keyboard detached from a convertible — would
+ * flip the prop and hard-swap `<LexicalComposerInput>` for the `<textarea>`
+ * under a live draft, discarding caret, selection, an IME composition and the
+ * undo history. The composer kind is therefore settled at mount; the next mount
+ * (a reload, a session that re-creates the host) reads the capability afresh.
+ */
+export function useTouchDeviceAtMount(): boolean {
+  const [touch] = useState(isTouchDevice)
+  return touch
 }
