@@ -61,6 +61,7 @@ import os
 import re
 import shutil
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -82,8 +83,13 @@ SERVICE_TRANSCRIBE = "transcribe"
 #: can be confirmed per account before either capability ships.
 SERVICE_S3 = "s3"
 SERVICE_COST_EXPLORER = "ce"
+#: Bedrock KB retrieval (knowledge sources of type ``bedrock_kb``): each
+#: Retrieve is a paid call billed to whatever account the source's profile
+#: NAME currently resolves to, and knowledge search triggers it with nobody
+#: watching -- the same shape as Polly/Transcribe above, so the same gate.
+SERVICE_BEDROCK_KB = "bedrock-kb"
 GATED_SERVICES: frozenset[str] = frozenset(
-    {SERVICE_POLLY, SERVICE_TRANSCRIBE, SERVICE_S3, SERVICE_COST_EXPLORER}
+    {SERVICE_POLLY, SERVICE_TRANSCRIBE, SERVICE_S3, SERVICE_COST_EXPLORER, SERVICE_BEDROCK_KB}
 )
 
 #: Human-facing service names for the confirmation surfaces and the log lines.
@@ -92,6 +98,7 @@ SERVICE_LABELS: dict[str, str] = {
     SERVICE_TRANSCRIBE: "Amazon Transcribe",
     SERVICE_S3: "Amazon S3 (cloud drive storage)",
     SERVICE_COST_EXPLORER: "AWS Cost Explorer",
+    SERVICE_BEDROCK_KB: "Amazon Bedrock (knowledge base retrieval)",
 }
 
 #: Lock filename beside the consent file -- NOT the file itself, because
@@ -136,6 +143,13 @@ class Grant:
     account: str
     arn: str
     granted_at: str
+    # Unique per RECORDING, not per content: two byte-identical confirmations
+    # (same target, same account, same second -- granted_at is second-granular)
+    # are still two different authorizations, and the compare-and-delete
+    # revocation paths must be able to tell a replacement from the grant
+    # their drift evidence was about. Empty on rows written before the field
+    # existed, which compares equal against itself and keeps legacy behavior.
+    grant_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,6 +159,7 @@ class Grant:
             "account": self.account,
             "arn": self.arn,
             "granted_at": self.granted_at,
+            "grant_id": self.grant_id,
         }
 
 
@@ -308,6 +323,7 @@ def read_grant(service: str) -> Grant | None:
             account=str(row.get("account", "")),
             arn=str(row.get("arn", "")),
             granted_at=str(row.get("granted_at", "")),
+            grant_id=str(row.get("grant_id", "")),
         )
     except (KeyError, TypeError):
         logger.warning("AWS consent record for %r is malformed; treating as absent", service)
@@ -327,6 +343,7 @@ def record_grant(
         account=account,
         arn=arn,
         granted_at=granted_at,
+        grant_id=uuid.uuid4().hex,
     )
     with _ConsentLock():
         # Inside the lock, before the read: a concurrent writer must not be able
@@ -349,6 +366,55 @@ def revoke(service: str) -> bool:
     with _ConsentLock():
         data = _read_all()
         if service not in data:
+            return False
+        del data[service]
+        _write_all(data)
+    audit_decision(service, outcome="revoked")
+    return True
+
+
+# CONTRACT: every revocation that acts on evidence read before the lock (drift
+# probes, mismatch checks) goes through revoke_if_matches with the FULL
+# captured grant identity — never key-wise revoke(). This holds for ALL
+# gated services, not only bedrock-kb: the read-to-delete gap is generic,
+# and a future service regressing to revoke() re-opens the replaced-grant
+# deletion class (found and closed across three call sites in review).
+def revoke_if_matches(
+    service: str,
+    *,
+    profile: str,
+    region: str,
+    account: str,
+    arn: str,
+    granted_at: str,
+    grant_id: str = "",
+) -> bool:
+    """Compare-and-delete: drop the grant only if it is STILL the one compared.
+
+    ``reconcile_drift`` decides to revoke from a grant it read; a grant
+    recorded concurrently (one store key per service) would be deleted by a
+    plain key-wise ``revoke`` even though the drift evidence was about its
+    predecessor. The read-back and the delete here share ONE lock hold, and
+    EVERY persisted field is compared -- ``granted_at`` differs on each
+    re-confirmation, so even a same-target same-account replacement is
+    recognizably a different grant and spared. Returns True when a grant
+    was removed.
+    """
+    with _ConsentLock():
+        data = _read_all()
+        row = data.get(service)
+        if not isinstance(row, dict):
+            return False
+        if (
+            str(row.get("profile", "")) != profile
+            or str(row.get("region", "")) != region
+            or str(row.get("account", "")) != account
+            or str(row.get("arn", "")) != arn
+            or str(row.get("granted_at", "")) != granted_at
+            or str(row.get("grant_id", "")) != grant_id
+        ):
+            # A different grant now occupies the key: the drift evidence was
+            # about its predecessor, so it is not ours to delete.
             return False
         del data[service]
         _write_all(data)
@@ -493,8 +559,21 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
         )
 
     if identity.account != grant.account:
-        # Off the event loop: revoke does file I/O behind a cross-process lock.
-        await asyncio.to_thread(revoke, service)
+        # Off the event loop: the revoke does file I/O behind a cross-process
+        # lock. Compare-and-delete with the CAPTURED grant: the probe is a
+        # multi-second suspension point, and a replacement grant recorded
+        # during it (the owner confirming another target) must not be deleted
+        # on evidence about its predecessor.
+        await asyncio.to_thread(
+            revoke_if_matches,
+            service,
+            profile=grant.profile,
+            region=grant.region,
+            account=grant.account,
+            arn=grant.arn,
+            granted_at=grant.granted_at,
+            grant_id=grant.grant_id,
+        )
         return False, (
             f"{label} was confirmed for AWS account {grant.account}, but "
             f"{credential_source(profile)} now resolves to account "
@@ -505,7 +584,7 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
     # Re-assert the grant AFTER the probe, immediately before allowing. The probe
     # spawns a subprocess, so it is a real suspension point -- long enough for the
     # operator to press Withdraw, or for a drift check on another request to
-    # revoke. Without this the decision could be made from a grant that no longer
+    # revoke. Without this the decision could be made from a grant that does not
     # exists. Same gate-and-act adjacency the repo already applies elsewhere.
     still = read_grant(service)
     if still is None or still.to_dict() != grant.to_dict():
@@ -691,7 +770,14 @@ def _run_aws(args: list[str], profile: str, region: str) -> tuple[int, str, str]
     return run_aws(args, profile, region, timeout=15)
 
 
-def reconcile_drift(service: str, identity: Identity) -> bool:
+def reconcile_drift(
+    service: str,
+    identity: Identity,
+    *,
+    probed_profile: str | None = None,
+    probed_region: str | None = None,
+    expected_grant_id: str | None = None,
+) -> bool:
     """Revoke the grant when the live account is not the confirmed one.
 
     Returns True when a grant was revoked. Called from the confirmation
@@ -699,11 +785,30 @@ def reconcile_drift(service: str, identity: Identity) -> bool:
     where the profile-repointed-at-a-new-account case is caught. A failed probe
     is NOT drift (it proves nothing about the account), so it leaves the grant
     alone.
+
+    ``probed_profile``/``probed_region`` name the target the identity was
+    probed FROM. When given, the comparison only proceeds if the stored grant
+    is for that same target -- checked HERE, against the same read whose grant
+    would be revoked, so a grant recorded concurrently for a different target
+    cannot be judged by another target's identity (a caller-side pre-check
+    reads the grant once and reconcile reads it again; the gap between those
+    two reads is exactly where a concurrent POST landed).
     """
     if not identity.ok or not identity.account:
         return False
     grant = read_grant(service)
     if grant is None or not grant.account or grant.account == identity.account:
+        return False
+    if expected_grant_id is not None and grant.grant_id != expected_grant_id:
+        # The stored grant is not the one the caller captured before probing:
+        # a replacement (even for the SAME target) was recorded while the
+        # probe ran, and this identity is evidence about its predecessor.
+        return False
+    if probed_profile is not None and (
+        grant.profile != probed_profile or grant.region != probed_region
+    ):
+        # The stored grant is not for the target this identity came from:
+        # the identity proves nothing about it. Not drift.
         return False
     logger.warning(
         "AWS consent for %s revoked: it was confirmed for account %s but %s now resolves to a "
@@ -712,7 +817,19 @@ def reconcile_drift(service: str, identity: Identity) -> bool:
         grant.account,
         credential_source(grant.profile),
     )
-    return revoke(service)
+    # Compare-and-delete: only the exact grant this drift evidence is about.
+    # A grant recorded between the read above and this call occupies the same
+    # store key but is a DIFFERENT authorization; key-wise revoke would
+    # delete it on stale evidence.
+    return revoke_if_matches(
+        service,
+        profile=grant.profile,
+        region=grant.region,
+        account=grant.account,
+        arn=grant.arn,
+        granted_at=grant.granted_at,
+        grant_id=grant.grant_id,
+    )
 
 
 def _redacted(raw: str) -> str:

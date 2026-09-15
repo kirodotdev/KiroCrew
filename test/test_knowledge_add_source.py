@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers.knowledge import (
     _folder_picker_available,
@@ -363,3 +364,157 @@ class TestConfigFolderPickerFlag:
         async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
             resp = await client.get("/api/knowledge/config")
             assert (await resp.json())["folder_picker"] is False
+
+
+class TestAddSourceBedrockGrantRecheck:
+    """The locked insert re-reads the LIVE grant for the exact target and
+    refuses a grantless registration: ``is_granted`` returns ``(granted,
+    reason)``, so the guard must test the boolean, not the tuple."""
+
+    # The body the dashboard sends (SourcesList.tsx): a derived logical uri
+    # plus kb_ids / region / profile in properties.
+    _BODY = {
+        "name": "kb",
+        "source_type": "bedrock_kb",
+        "uri": "bedrock-kb://us-east-1/ABCDEFGHIJ",
+        "properties": {"kb_ids": "ABCDEFGHIJ", "region": "us-east-1", "profile": "team-a"},
+    }
+
+    @staticmethod
+    def _app(store, *, owner: str = ""):
+        # A registered connector whose validation passes, so the request
+        # reaches the locked insert (an unregistered type stops at the
+        # https:// rule and never gets there). Owner-shaped: the bedrock_kb
+        # branch is owner-gated before validation, and ``as_owner`` leaves a
+        # fixture's own ``state`` alone, so the MagicMock state needs an
+        # explicit ``owner_id`` (a MagicMock attribute is a truthy, unmatched
+        # owner and would refuse the default ``local-app`` caller).
+        app = _make_app(store)
+        app["state"].owner_id = owner
+        connector = MagicMock(validate_config=MagicMock(return_value=(True, None)))
+        app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=connector))
+        return as_owner(app)
+
+    @pytest.mark.asyncio
+    async def test_no_grant_for_the_target_refuses_and_persists_nothing(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(aws_consent, "read_grant", lambda service: None)
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 409
+            data = await resp.json()
+            assert data["code"] == "bedrock_kb_grant_changed"
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+            ).fetchone()[0]
+            == 0
+        )
+
+    @pytest.mark.asyncio
+    async def test_matching_grant_lets_the_insert_through(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        async with TestClient(TestServer(self._app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json=self._BODY)
+            assert resp.status == 201
+
+
+class TestAddSourceBedrockIsOwnerOnly:
+    """Registering a Bedrock source is an OWNER action, like the grant it rides.
+
+    ``add_source`` is open to any authenticated dashboard caller, which is fine
+    for a local folder. A ``bedrock_kb`` source validates by probing the KB with
+    the owner's AWS credentials and then registers a KB the gateway queries on
+    the owner's account, so the same two caller classes the consent endpoint
+    shuts out are refused here, BEFORE validation: an allow-listed messaging
+    user (``app == ""``, caller is not the owner) and an app token. Found in
+    review.
+    """
+
+    _BODY = TestAddSourceBedrockGrantRecheck._BODY
+
+    @staticmethod
+    def _app(store):
+        return TestAddSourceBedrockGrantRecheck._app(store, owner="owner-1")
+
+    @staticmethod
+    def _assert_refused_before_validation(app, store, resp_status, payload):
+        assert resp_status == 403
+        assert payload["code"] == "owner_only"
+        connector = app["knowledge_sync"].get_connector.return_value
+        connector.validate_config.assert_not_called()
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM sources WHERE source_type = 'bedrock_kb'"
+            ).fetchone()[0]
+            == 0
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_owner_messaging_user_is_refused(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json=self._BODY,
+                headers={"X-Test-User": "slack-guest"},
+            )
+            self._assert_refused_before_validation(app, store, resp.status, await resp.json())
+
+    @pytest.mark.asyncio
+    async def test_app_token_is_refused(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json=self._BODY,
+                headers={"X-Test-User": "owner-1", "X-Test-App": "some-app"},
+            )
+            self._assert_refused_before_validation(app, store, resp.status, await resp.json())
+
+    @pytest.mark.asyncio
+    async def test_the_owner_still_gets_through(self, store, monkeypatch):
+        from kiro_crew import aws_consent
+
+        monkeypatch.setattr(
+            aws_consent, "is_granted", lambda service, *, profile, region: (True, "")
+        )
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json=self._BODY,
+                headers={"X-Test-User": "owner-1"},
+            )
+            assert resp.status == 201
+        app["knowledge_sync"].get_connector.return_value.validate_config.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_local_sources_are_not_gated(self, store, tmp_path):
+        """The gate is scoped to bedrock_kb: a local folder from a non-owner
+        keeps today's behaviour (no owner check on ``add_source`` itself)."""
+        folder = tmp_path / "notes"
+        folder.mkdir()
+        app = self._app(store)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources",
+                json={"name": "notes", "source_type": "local_folder", "uri": str(folder)},
+                headers={"X-Test-User": "slack-guest"},
+            )
+            assert resp.status == 201, await resp.text()
