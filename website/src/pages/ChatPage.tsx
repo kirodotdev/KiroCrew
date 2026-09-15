@@ -29,7 +29,7 @@ import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMess
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone,
-  appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
+  appendMessage, appendSlotMessage, recordSendAttempt, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy, selectSendConfirmed,
   selectContinuable,
@@ -62,6 +62,7 @@ import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
+import { buildRecallHistory } from '../lib/recallHistory'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
 import {
@@ -629,11 +630,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const knowledgeFetch = useKnowledgeFetch(activeSlot)
   const knowledgeFetchRef = useRef(knowledgeFetch)
   knowledgeFetchRef.current = knowledgeFetch
-  // User-sent messages (oldest → newest) for ↑/↓ prompt history in the input.
-  // Deduplicate consecutive identical prompts to match shell/REPL behavior.
-  // `messages` gets a new reference on every streaming chunk; preserve the
-  // previous array when user-message content is unchanged so `sentMessages`
-  // stays referentially stable and doesn't re-run downstream effects.
+  // Referential stability for ↑/↓ history: `messages` gets a new reference on
+  // every chunk, so an unchanged derivation must return the previous array.
   const sentMessagesRef = useRef<string[]>([])
   const sentMessagesSlotRef = useRef<string | null>(null)
   // Per-slot timestamp (ms) of the last soft-stop press, used to arm the
@@ -643,14 +641,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // mashing Stop. Keyed by slot so switching slots can't measure one slot's
   // press against another slot's timestamp.
   const softStopAtMapRef = useRef<Map<string, number>>(new Map())
+  // Prompts this slot submitted, whatever became of them (see `attemptedSends`).
+  const attemptedSends = useAppSelector(s => (activeSlot ? s.chat.attemptedSends?.[activeSlot] : undefined))
   const sentMessages = useMemo(() => {
-    const out: string[] = []
-    for (const m of messages) {
-      if (m.role !== 'user') continue
-      const text = m.rawText ?? m.content
-      if (!text || text === out[out.length - 1]) continue
-      out.push(text)
-    }
+    const out = buildRecallHistory(messages, attemptedSends)
     // Reset the cached reference when switching slots — otherwise two
     // conversations with matching length+tail would share the prior array.
     if (sentMessagesSlotRef.current !== activeSlot) {
@@ -665,7 +659,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     sentMessagesRef.current = out
     return out
-  }, [messages, activeSlot])
+  }, [messages, activeSlot, attemptedSends])
   const slotRunning = useAppSelector(s => s.chat.slotRunning)
   // Live mirror for `autoFollowAllowed`, a stable callback several effects
   // depend on: taking `slotRunning` as a dependency would re-attach those
@@ -2409,6 +2403,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
     setPrefillHint(false)
     if (!optionText) {
+      // Before the POST deliberately: past the clear below the composer no
+      // longer holds the text, so recall is the only copy if the send is lost.
+      if (uiSlot) dispatch(recordSendAttempt({ slot: uiSlot, text: displayTxt }))
       setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
       // The challenge-handoff prompt is seeded into PREFILL_STORAGE_KEY and the
       // slot-restore effect re-applies it on slot changes. Once that prompt is
