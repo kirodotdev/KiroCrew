@@ -15298,7 +15298,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "Un tour est en cours — réessayez quand il sera terminé."
+      "turn_in_flight": "Un tour est en cours — réessayez quand il sera terminé.",
+      "workspace_unavailable": "Le dossier de projet configuré n'est pas disponible — vérifiez qu'il existe, puis réessayez."
     },
     "channelOrigin": {
       "direct_message": "Message privé"
