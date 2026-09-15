@@ -103,6 +103,11 @@ describe('JobForm script/command edit path', () => {
     expect(screen.getByText('Script')).toBeInTheDocument()
     expect(screen.queryByText('Agent')).not.toBeInTheDocument()
     expect(screen.queryByText('Approval')).not.toBeInTheDocument()
+    // Working directory is an agent/message concept -- a script job's fire-time
+    // dispatch in cron.py never reads project_path, so the field (and its
+    // agent-specific help text) must not render for this job kind either.
+    expect(screen.queryByText('Working directory')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Working directory')).not.toBeInTheDocument()
     // Channel still available for all kinds
     expect(screen.getByText('Channel ID')).toBeInTheDocument()
   })
@@ -119,5 +124,10 @@ describe('JobForm script/command edit path', () => {
     )
     expect(screen.getByText('Agent')).toBeInTheDocument()
     expect(screen.getByText('Approval')).toBeInTheDocument()
+    // An agent/message job's fire-time path DOES read project_path (the
+    // single-agent and sequential cron paths in gateway.py), so the working
+    // directory field must render for this job kind.
+    expect(screen.getByText('Working directory')).toBeInTheDocument()
+    expect(screen.getByLabelText('Working directory')).toBeInTheDocument()
   })
 })

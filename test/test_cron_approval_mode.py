@@ -59,6 +59,7 @@ class TestCronApprovalModeGateway:
         gw._owner_id = "U000"
         gw.subagent_mgr = None
         gw._cron_injecting = {}
+        gw._cron_session_binding = {}
         gw._no_crons = False
         gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
         gw.sessions.release = MagicMock()
@@ -84,9 +85,10 @@ class TestCronApprovalModeGateway:
 
         captured_cb = None
 
-        with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
-            "kiro_crew.slack.gateway.CronService"
-        ) as mock_cron_cls:
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream),
+            patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+        ):
 
             def capture_cron(on_job=None, **kw):
                 nonlocal captured_cb
@@ -137,6 +139,7 @@ class TestCronApprovalModeExtraEnv:
         gw._owner_id = "U000"
         gw.subagent_mgr = None
         gw._cron_injecting = {}
+        gw._cron_session_binding = {}
         gw._no_crons = False
 
         captured_kwargs: dict = {}
@@ -166,9 +169,10 @@ class TestCronApprovalModeExtraEnv:
 
         captured_cb = None
 
-        with patch("kiro_crew.slack.gateway.stream_and_collect", AsyncMock(return_value="done")), patch(
-            "kiro_crew.slack.gateway.CronService"
-        ) as mock_cron_cls:
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", AsyncMock(return_value="done")),
+            patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+        ):
 
             def capture_cron(on_job=None, **kw):
                 nonlocal captured_cb
@@ -316,7 +320,9 @@ class TestSessionApprovalPolicy:
 class TestSubagentInheritsPolicy:
     """Subagent _run_inner passes parent's approval_policy to get_or_create."""
 
-    def _run_inner_and_capture(self, parent_policy: str, parent_session_key: str = "parent-key") -> dict:
+    def _run_inner_and_capture(
+        self, parent_policy: str, parent_session_key: str = "parent-key"
+    ) -> dict:
         """Invoke the real _run_inner and capture get_or_create kwargs."""
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
         from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -366,7 +372,9 @@ class TestSubagentInheritsPolicy:
             captured = self._run_inner_and_capture("", parent_session_key="")
         assert captured["approval_policy"] == "auto"
 
-    def _run_inner_with_tool_event(self, parent_policy: str, on_tool_approval=None, parent_session_key: str = "parent-key") -> MagicMock:
+    def _run_inner_with_tool_event(
+        self, parent_policy: str, on_tool_approval=None, parent_session_key: str = "parent-key"
+    ) -> MagicMock:
         """Invoke _run_inner with a PERMISSION_REQUEST event and return the mock client."""
         from kiro_crew.hooks import TOOL_ALLOW, ToolHookResult
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, LLMEvent
@@ -421,7 +429,9 @@ class TestSubagentInheritsPolicy:
             "kiro_crew.subagent.KiroCrewConfig.load",
             return_value=MagicMock(agent=MagicMock(approval_mode="interactive")),
         ):
-            client = self._run_inner_with_tool_event("", on_tool_approval=None, parent_session_key="")
+            client = self._run_inner_with_tool_event(
+                "", on_tool_approval=None, parent_session_key=""
+            )
         client.reject_tool.assert_called_once_with("req-1")
         client.approve_tool.assert_not_called()
 
@@ -463,6 +473,7 @@ class TestCronSubagentInjection:
         gw.dashboard_state = None
         gw._owner_id = "U000"
         gw._cron_injecting = {}
+        gw._cron_session_binding = {}
         gw._cfg = MagicMock()
         gw._cfg.agent.max_subagents = 5
         gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
@@ -582,10 +593,14 @@ class TestCronSubagentInjection:
                 return_value=("", False),
             ),
         )
-        with patch(
-            "kiro_crew.slack.gateway.stream_and_collect",
-            AsyncMock(side_effect=RuntimeError("boom")),
-        ), p2, p3:
+        with (
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            p2,
+            p3,
+        ):
             asyncio.run(done_cb(info))
 
         assert gw._cron_injecting == {}
@@ -688,10 +703,13 @@ class TestNoCronsFlag:
 
     def test_default_starts_crons_after_app_reconcile(self) -> None:
         gw = self._make_gateway(no_crons=False)
-        with patch("kiro_crew.slack.gateway.CronService") as mock_cls, patch(
-            "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
-            new_callable=AsyncMock,
-        ) as reconcile:
+        with (
+            patch("kiro_crew.slack.gateway.CronService") as mock_cls,
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new_callable=AsyncMock,
+            ) as reconcile,
+        ):
             svc = MagicMock()
             svc.start = AsyncMock()
             mock_cls.return_value = svc
@@ -702,10 +720,13 @@ class TestNoCronsFlag:
 
     def test_reconcile_failure_leaves_cron_scheduler_stopped(self) -> None:
         gw = self._make_gateway(no_crons=False)
-        with patch("kiro_crew.slack.gateway.CronService") as mock_cls, patch(
-            "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
-            new_callable=AsyncMock,
-            side_effect=OSError("cron store unavailable"),
+        with (
+            patch("kiro_crew.slack.gateway.CronService") as mock_cls,
+            patch(
+                "kiro_crew.apps.bridges.reconcile_app_crons_for_execution",
+                new_callable=AsyncMock,
+                side_effect=OSError("cron store unavailable"),
+            ),
         ):
             svc = MagicMock()
             svc.start = AsyncMock()
@@ -770,11 +791,11 @@ class TestNoCronsFlag:
         """CLI _gateway function forwards no_crons to run_gateway."""
         from kiro_crew.cli_server import _gateway
 
-        with patch("kiro_crew.cli_server.config_path") as mock_cp, patch(
-            "kiro_crew.cli_server.KiroCrewConfig"
-        ) as mock_cfg_cls, patch(
-            "kiro_crew.cli_server.run_gateway", new_callable=AsyncMock
-        ) as mock_run:
+        with (
+            patch("kiro_crew.cli_server.config_path") as mock_cp,
+            patch("kiro_crew.cli_server.KiroCrewConfig") as mock_cfg_cls,
+            patch("kiro_crew.cli_server.run_gateway", new_callable=AsyncMock) as mock_run,
+        ):
             mock_cp.return_value.exists.return_value = True
             mock_cfg_cls.load.return_value = MagicMock()
             asyncio.run(_gateway(no_crons=True))
@@ -788,9 +809,10 @@ class TestNoCronsFlag:
         with patch.object(sys, "argv", ["kirocrew", "gateway", "--no-crons"]):
             from kiro_crew.cli import main
 
-            with patch("kiro_crew.cli_server._gateway", new_callable=AsyncMock) as mock_gw, patch(
-                "kiro_crew.cli.asyncio"
-            ) as mock_asyncio:
+            with (
+                patch("kiro_crew.cli_server._gateway", new_callable=AsyncMock) as mock_gw,
+                patch("kiro_crew.cli.asyncio") as mock_asyncio,
+            ):
                 mock_asyncio.run = MagicMock()
                 main()
                 mock_gw.assert_called_once()
@@ -838,9 +860,11 @@ class TestSubagentRoleModelForcesDedicatedPath:
             side_effect=AssertionError("shared path taken despite a per-role override")
         )
         info = SubagentInfo(id="sub1", task="test", parent_session_key="parent-key")
-        with patch.object(runner, "_create_shared_session", shared), patch.object(
-            runner, "_should_use_session_sharing", return_value=True
-        ), patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)):
+        with (
+            patch.object(runner, "_create_shared_session", shared),
+            patch.object(runner, "_should_use_session_sharing", return_value=True),
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+        ):
             asyncio.run(runner._run_inner(info, "subagent:sub1"))
         return captured, shared
 

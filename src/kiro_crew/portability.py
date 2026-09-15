@@ -34,7 +34,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.member_memory_backup import hold_stores_for_read
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import is_sensitive_path, resolve_project_path
 from kiro_crew.snapshot import (
     _DB_SIDECAR_GLOBS,
     EXPORT_MANIFEST_VERSION,
@@ -630,7 +630,7 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
     dropped job is gone; a paused one is fully restored and simply waiting to be
     switched on. Rewrites *crons_path* in place. A missing file is left alone.
 
-    Three rules, each closing a different way an archive can act on the host:
+    Four rules, each closing a different way an archive can act on the host:
 
     1. A job that is not an object, or whose ``schedule`` is not one, is DROPPED.
        ``CronService._load`` skips such a record with a warning and it is then
@@ -652,8 +652,32 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
        name resolves against whatever the target already has there. Both become an
        ambush if they start running on their own. Disabling keeps the restore — the
        jobs, their schedules and their history are all still there — while making
-       the first run an explicit human action. Message-only jobs are untouched:
-       they prompt an agent, they do not execute anything on the host.
+       the first run an explicit human action.
+
+    4. A ``project_path`` is re-validated exactly as ``CronService.
+       _validate_project_path`` would at ``cron_add``/``cron_update`` time
+       (``security.resolve_project_path``: realpath, sensitivity, ``isdir``).
+       ``_job_from_record`` trusts an imported job's ``project_path`` as a bare
+       string with no such check (rule 3 above only gates jobs that EXECUTE a
+       command/script; a message-only job binds an agent to a directory and
+       runs no code of its own, so this rule is the only one that checks it) —
+       the fire-time guard, ``_project_path_still_canonical``, only re-checks
+       existence and symlink-canonicality against the STORED value, never
+       sensitivity, so nothing downstream of this function ever re-validates a
+       restored binding either. A crafted archive containing an ENABLED
+       message-only job whose ``project_path`` names a credential home would
+       otherwise survive untouched and schedule an agent against it on the very
+       next fire. A path that resolves as sensitive, or that fails to resolve
+       at all (e.g. an embedded null byte), has its binding CLEARED
+       (``project_path`` reset to the CronJob default, ``""``) rather than the
+       whole job dropped — the job itself, its message, and its schedule are
+       still useful without a folder scope, and clearing degrades it to the
+       same unbound state a job that never had a ``project_path`` starts in.
+       Any job that keeps a non-empty ``project_path`` after this check is
+       PAUSED (rule 3's own outcome) rather than left live, so re-arming an
+       imported project binding is always an explicit, informed human action
+       — even a genuinely benign directory should not start firing against a
+       filesystem the archive's own origin machine chose, unreviewed.
     """
     if not crons_path.is_file():
         return [], []
@@ -733,6 +757,46 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
                 "Error: an imported job that runs a command or script is "
                 "restored paused until it is enabled by hand",
             )
+
+        # Rule 4: a project_path binding is re-validated exactly as cron_add
+        # would validate it -- `_job_from_record` trusts an imported job's
+        # `project_path` as a bare string with no sensitivity/resolvability
+        # check of its own, and rule 3 above only gates jobs that EXECUTE a
+        # command/script, leaving a message-only job's project binding
+        # untouched. A sensitive or unresolvable path (e.g. an embedded null
+        # byte) has its binding CLEARED rather than the whole job dropped.
+        project_path = job.get("project_path", "")
+        if isinstance(project_path, str) and project_path:
+            try:
+                verdict = resolve_project_path(project_path)
+                path_ok = not verdict.sensitive and verdict.is_dir
+            except Exception:  # noqa: BLE001 — an unresolvable path is not a usable binding
+                path_ok = False
+            if not path_ok:
+                job["project_path"] = ""
+                changed = True
+                _log_cron_denial(
+                    "settings_import",
+                    "Error: an imported job's project_path referred to a "
+                    "sensitive, nonexistent, or unresolvable path and was "
+                    "cleared",
+                )
+                project_path = ""
+            # Any job that still names a directory after the check above is
+            # PAUSED -- rule 3's own outcome -- so re-arming an imported
+            # project binding is always an explicit, informed human action,
+            # even when the directory itself is benign.
+            if project_path and not job.get("user_paused", False):
+                job["user_paused"] = True
+                job["enabled"] = False
+                changed = True
+                paused.append(_name_of(job))
+                _log_cron_denial(
+                    "settings_import",
+                    "Error: an imported job bound to a project folder is "
+                    "restored paused until it is enabled by hand",
+                )
+
         kept.append(job)
 
     if changed:

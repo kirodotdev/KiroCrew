@@ -104,32 +104,56 @@ def fake_kirocrew_home(tmp_path):
     # memory.db (SQLite)
     db_path = mc / "memory.db"
     conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE semantic_memory (key TEXT PRIMARY KEY, value_json TEXT, confidence REAL, source TEXT, created_at TEXT, updated_at TEXT, embedding BLOB, is_deleted INTEGER DEFAULT 0)")
-    conn.execute("INSERT INTO semantic_memory (key, value_json, confidence, source, created_at, updated_at, is_deleted) VALUES ('user.name', '\"Alice\"', 0.9, 'agent', '2026-01-01', '2026-01-01', 0)")
-    conn.execute("CREATE TABLE episodic_memories (id TEXT PRIMARY KEY, conversation_id TEXT, text TEXT, embedding BLOB, tags TEXT, importance REAL, created_at TEXT, last_accessed_at TEXT, is_deleted INTEGER DEFAULT 0)")
-    conn.execute("INSERT INTO episodic_memories (id, conversation_id, text, importance, created_at, last_accessed_at, is_deleted) VALUES ('ep1', 'conv1', 'user asked about deployment', 0.8, '2026-01-01', '2026-01-01', 0)")
-    conn.execute("CREATE TABLE knowledge_facts (subject TEXT, predicate TEXT, object TEXT, episode_id TEXT, created_at TEXT)")
-    conn.execute("CREATE TABLE knowledge_edges (source_key TEXT, target_key TEXT, relation TEXT, weight REAL, metadata TEXT, created_at TEXT)")
+    conn.execute(
+        "CREATE TABLE semantic_memory (key TEXT PRIMARY KEY, value_json TEXT, confidence REAL, source TEXT, created_at TEXT, updated_at TEXT, embedding BLOB, is_deleted INTEGER DEFAULT 0)"
+    )
+    conn.execute(
+        "INSERT INTO semantic_memory (key, value_json, confidence, source, created_at, updated_at, is_deleted) VALUES ('user.name', '\"Alice\"', 0.9, 'agent', '2026-01-01', '2026-01-01', 0)"
+    )
+    conn.execute(
+        "CREATE TABLE episodic_memories (id TEXT PRIMARY KEY, conversation_id TEXT, text TEXT, embedding BLOB, tags TEXT, importance REAL, created_at TEXT, last_accessed_at TEXT, is_deleted INTEGER DEFAULT 0)"
+    )
+    conn.execute(
+        "INSERT INTO episodic_memories (id, conversation_id, text, importance, created_at, last_accessed_at, is_deleted) VALUES ('ep1', 'conv1', 'user asked about deployment', 0.8, '2026-01-01', '2026-01-01', 0)"
+    )
+    conn.execute(
+        "CREATE TABLE knowledge_facts (subject TEXT, predicate TEXT, object TEXT, episode_id TEXT, created_at TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE knowledge_edges (source_key TEXT, target_key TEXT, relation TEXT, weight REAL, metadata TEXT, created_at TEXT)"
+    )
     conn.commit()
     conn.close()
 
     # memory_index.db (FTS5)
     idx_path = mc / "memory_index.db"
     conn = sqlite3.connect(str(idx_path))
-    conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(path, content, tokenize='porter unicode61')")
-    conn.execute("INSERT INTO memory_fts (path, content) VALUES ('preferences.md', 'user prefers dark mode')")
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(path, content, tokenize='porter unicode61')"
+    )
+    conn.execute(
+        "INSERT INTO memory_fts (path, content) VALUES ('preferences.md', 'user prefers dark mode')"
+    )
     conn.commit()
     conn.close()
 
     # workspace/memory/
     mem_dir = mc / "workspace" / "memory"
     mem_dir.mkdir(parents=True)
-    (mem_dir / "preferences.md").write_text("# User Preferences\n\n- Prefers dark mode\n- Uses vim\n")
-    (mem_dir / "projects.md").write_text("# Active Projects\n\n## KiroCrew\nWorking on portability feature\n")
+    (mem_dir / "preferences.md").write_text(
+        "# User Preferences\n\n- Prefers dark mode\n- Uses vim\n"
+    )
+    (mem_dir / "projects.md").write_text(
+        "# Active Projects\n\n## KiroCrew\nWorking on portability feature\n"
+    )
     hist_dir = mem_dir / "history"
     hist_dir.mkdir()
-    (hist_dir / "2026-05-17.md").write_text("# 2026-05-17\n\n#### 09:00 PDT\nDiscussed architecture\n")
-    (hist_dir / "2026-05-18.md").write_text("# 2026-05-18\n\n#### 10:00 PDT\nImplemented export feature\n")
+    (hist_dir / "2026-05-17.md").write_text(
+        "# 2026-05-17\n\n#### 09:00 PDT\nDiscussed architecture\n"
+    )
+    (hist_dir / "2026-05-18.md").write_text(
+        "# 2026-05-18\n\n#### 10:00 PDT\nImplemented export feature\n"
+    )
 
     # plan_memory/
     pm_dir = mc / "plan_memory"
@@ -139,7 +163,9 @@ def fake_kirocrew_home(tmp_path):
     # skills/
     sk_dir = mc / "skills" / "my-skill"
     sk_dir.mkdir(parents=True)
-    (sk_dir / "SKILL.md").write_text("---\nname: my-skill\ndescription: Test skill\n---\n# My Skill\n")
+    (sk_dir / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: Test skill\n---\n# My Skill\n"
+    )
 
     # Credential files that must be EXCLUDED
     (mc / ".env").write_text("SLACK_BOT_TOKEN=xoxb-secret\nSLACK_APP_TOKEN=xapp-secret\n")
@@ -325,9 +351,7 @@ class TestExport:
         # Walking from the link would descend on every platform and prove nothing
         # about whether `workspace/`'s own walk ever gets there.
         reached = [
-            p
-            for p in (patched_config_dir / "workspace").rglob("*")
-            if p.name == "not-ours.md"
+            p for p in (patched_config_dir / "workspace").rglob("*") if p.name == "not-ours.md"
         ]
         assert reached, "the walk never descended the link, so nothing was under test"
         assert reached[0].is_file() and not reached[0].is_symlink()
@@ -336,13 +360,11 @@ class TestExport:
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
         names = zf.namelist()
         zf.close()
-        assert not any("not-ours" in n for n in names), (
-            f"content from outside the crew dir was packaged: {names}"
-        )
+        assert not any(
+            "not-ours" in n for n in names
+        ), f"content from outside the crew dir was packaged: {names}"
 
-    def test_export_still_packages_a_real_nested_workspace_file(
-        self, patched_config_dir
-    ):
+    def test_export_still_packages_a_real_nested_workspace_file(self, patched_config_dir):
         """Negative control: ordinary nested content must still be exported."""
         nested = patched_config_dir / "workspace" / "memory" / "deep" / "keep.md"
         nested.parent.mkdir(parents=True, exist_ok=True)
@@ -431,18 +453,14 @@ class TestTheArchivedBytesAreTheValidatedBytes:
         nested.parent.mkdir(parents=True, exist_ok=True)
         nested.write_text("ours", encoding="utf-8")
 
-        fd = portability._open_verified(
-            str(nested), os.path.realpath(patched_config_dir)
-        )
+        fd = portability._open_verified(str(nested), os.path.realpath(patched_config_dir))
         assert fd is not None
         try:
             assert os.read(fd, 64) == b"ours"
         finally:
             os.close(fd)
 
-    def test_retargeting_the_link_after_validation_cannot_change_what_is_archived(
-        self, tmp_path
-    ):
+    def test_retargeting_the_link_after_validation_cannot_change_what_is_archived(self, tmp_path):
         """The race itself: a link accepted at validation is then retargeted out.
 
         The link resolves INSIDE the crew directory when the candidate is
@@ -491,9 +509,9 @@ class TestTheArchivedBytesAreTheValidatedBytes:
             # call touches what the link points at.
             _detach_dir_link(link)
             make_dir_link(link, outside)
-            assert candidate.read_text(encoding="utf-8") == "private notes", (
-                "the swap did not take effect, so the race was never simulated"
-            )
+            assert (
+                candidate.read_text(encoding="utf-8") == "private notes"
+            ), "the swap did not take effect, so the race was never simulated"
 
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
                 portability._add_from_fd(zf, fd, "export/note.md")
@@ -518,9 +536,7 @@ class TestTheArchivedBytesAreTheValidatedBytes:
         monkeypatch.setattr(portability.pinned_fs, "fd_real_path", lambda _fd: None)
         assert portability._open_verified(str(nested), root) is None
 
-    def test_a_sensitive_target_is_refused_on_the_descriptor(
-        self, patched_config_dir, monkeypatch
-    ):
+    def test_a_sensitive_target_is_refused_on_the_descriptor(self, patched_config_dir, monkeypatch):
         """`is_sensitive_path` runs again on the fd's real path, not only the name.
 
         Re-running it there is what keeps the protected-location rule from being
@@ -583,9 +599,7 @@ class TestTheArchivedBytesAreTheValidatedBytes:
         ordinary.write_text("ours", encoding="utf-8")
         assert os.stat(ordinary).st_nlink == 1
 
-        fd = portability._open_verified(
-            str(ordinary), os.path.realpath(patched_config_dir)
-        )
+        fd = portability._open_verified(str(ordinary), os.path.realpath(patched_config_dir))
         assert fd is not None
         os.close(fd)
 
@@ -611,9 +625,10 @@ class TestTheArchivedBytesAreTheValidatedBytes:
         zip_bytes, _ = create_export_zip()
 
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-            assert zf.read(
-                next(n for n in zf.namelist() if n.endswith("workspace/big.bin"))
-            ) == payload
+            assert (
+                zf.read(next(n for n in zf.namelist() if n.endswith("workspace/big.bin")))
+                == payload
+            )
 
     def test_the_zip64_guard_can_actually_fail(self, patched_config_dir, monkeypatch):
         """Guard the guard: prove the lowered limit really selects the ZIP64 branch.
@@ -641,10 +656,7 @@ class TestTheArchivedBytesAreTheValidatedBytes:
         it reaches that, not turned into an unreadable archive entry."""
         adir = patched_config_dir / "workspace" / "adir"
         adir.mkdir(parents=True, exist_ok=True)
-        assert (
-            portability._open_verified(str(adir), os.path.realpath(patched_config_dir))
-            is None
-        )
+        assert portability._open_verified(str(adir), os.path.realpath(patched_config_dir)) is None
 
 
 pins_are_a_windows_property = pytest.mark.skipif(
@@ -730,9 +742,9 @@ class TestTheAncestorSwapIsRefusedNotDetected:
             )
         )
         try:
-            assert attempts and attempts[0].startswith("refused:"), (
-                f"the racing writer swapped a verified ancestor: {attempts}"
-            )
+            assert attempts and attempts[0].startswith(
+                "refused:"
+            ), f"the racing writer swapped a verified ancestor: {attempts}"
             assert found, "the guard refused every legitimate file; nothing proven"
             fd = next(fd for rel, fd in found if rel.name == "keep.md")
             assert os.read(fd, 64) == b"ours"
@@ -741,9 +753,7 @@ class TestTheAncestorSwapIsRefusedNotDetected:
                 with contextlib.suppress(OSError):
                     os.close(fd)
 
-    def test_the_same_rename_succeeds_once_nothing_is_pinned(
-        self, patched_config_dir, tmp_path
-    ):
+    def test_the_same_rename_succeeds_once_nothing_is_pinned(self, patched_config_dir, tmp_path):
         """Guard the guard: prove the refusal above is the pin and not the filesystem.
 
         Without this, the test above would pass just as happily on a host where that
@@ -786,9 +796,7 @@ class TestTheAncestorSwapIsRefusedNotDetected:
         finally:
             os.close(fd)
 
-    def test_an_ordinary_file_still_opens_through_the_no_follow_open(
-        self, patched_config_dir
-    ):
+    def test_an_ordinary_file_still_opens_through_the_no_follow_open(self, patched_config_dir):
         """Negative control for the leaf open: it must still return usable bytes.
 
         The descriptor is also the one `_add_from_fd` streams from, so it has to
@@ -854,9 +862,9 @@ class TestTheAncestorSwapIsRefusedNotDetected:
             == []
         )
         assert opened, "no component was pinned, so nothing was under test"
-        assert set(opened) <= set(closed), (
-            f"pinned descriptors leaked: opened={opened} closed={closed}"
-        )
+        assert set(opened) <= set(
+            closed
+        ), f"pinned descriptors leaked: opened={opened} closed={closed}"
 
 
 #: Calls that RESOLVE the pathname handed to them, i.e. follow a reparse point at
@@ -1031,9 +1039,7 @@ class TestNothingIsProbedThroughAPlantedReparsePoint:
         not platform_compat.IS_WINDOWS,
         reason="the recorder is exercised against a Windows junction",
     )
-    def test_the_recorder_actually_catches_a_probe(
-        self, patched_config_dir, tmp_path, monkeypatch
-    ):
+    def test_the_recorder_actually_catches_a_probe(self, patched_config_dir, tmp_path, monkeypatch):
         """Guard the guard: an oracle that can never fire proves nothing.
 
         Every call here is one the previous build made on this exact path, so this
@@ -1215,11 +1221,21 @@ class TestImportMerge:
             target.mkdir()
             dst_db = target / "memory.db"
             conn = sqlite3.connect(str(dst_db))
-            conn.execute("CREATE TABLE semantic_memory (key TEXT PRIMARY KEY, value_json TEXT, confidence REAL, source TEXT, created_at TEXT, updated_at TEXT, embedding BLOB, is_deleted INTEGER DEFAULT 0)")
-            conn.execute("INSERT INTO semantic_memory (key, value_json, confidence, source, created_at, updated_at, is_deleted) VALUES ('user.team', '\"Platform\"', 0.95, 'agent', '2026-01-01', '2026-01-01', 0)")
-            conn.execute("CREATE TABLE episodic_memories (id TEXT PRIMARY KEY, conversation_id TEXT, text TEXT, embedding BLOB, tags TEXT, importance REAL, created_at TEXT, last_accessed_at TEXT, is_deleted INTEGER DEFAULT 0)")
-            conn.execute("CREATE TABLE knowledge_facts (subject TEXT, predicate TEXT, object TEXT, episode_id TEXT, created_at TEXT)")
-            conn.execute("CREATE TABLE knowledge_edges (source_key TEXT, target_key TEXT, relation TEXT, weight REAL, metadata TEXT, created_at TEXT)")
+            conn.execute(
+                "CREATE TABLE semantic_memory (key TEXT PRIMARY KEY, value_json TEXT, confidence REAL, source TEXT, created_at TEXT, updated_at TEXT, embedding BLOB, is_deleted INTEGER DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO semantic_memory (key, value_json, confidence, source, created_at, updated_at, is_deleted) VALUES ('user.team', '\"Platform\"', 0.95, 'agent', '2026-01-01', '2026-01-01', 0)"
+            )
+            conn.execute(
+                "CREATE TABLE episodic_memories (id TEXT PRIMARY KEY, conversation_id TEXT, text TEXT, embedding BLOB, tags TEXT, importance REAL, created_at TEXT, last_accessed_at TEXT, is_deleted INTEGER DEFAULT 0)"
+            )
+            conn.execute(
+                "CREATE TABLE knowledge_facts (subject TEXT, predicate TEXT, object TEXT, episode_id TEXT, created_at TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE knowledge_edges (source_key TEXT, target_key TEXT, relation TEXT, weight REAL, metadata TEXT, created_at TEXT)"
+            )
             conn.commit()
             conn.close()
 
@@ -1275,7 +1291,13 @@ class TestImportMerge:
                     apply_import_zip(zip_path, mode="merge")
 
             # Should still have only 1 entry (same ts)
-            lines = [line for line in (target / "notifications.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+            lines = [
+                line
+                for line in (target / "notifications.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line.strip()
+            ]
             assert len(lines) == 1
         finally:
             os.unlink(str(zip_path))
@@ -1307,9 +1329,9 @@ class TestImportMerge:
                     with pytest.raises(UnreadableRecord):
                         apply_import_zip(zip_path, mode="merge")
 
-            assert not (target / "notifications.jsonl").exists(), (
-                "an unvalidated prefix was installed where the reader will find it"
-            )
+            assert not (
+                target / "notifications.jsonl"
+            ).exists(), "an unvalidated prefix was installed where the reader will find it"
         finally:
             os.unlink(str(zip_path))
 
@@ -1404,10 +1426,12 @@ class TestImportReplace:
 class TestExclusionLogic:
     def test_excludes_env_file(self):
         from pathlib import PurePosixPath
+
         assert _is_excluded(PurePosixPath(".env"))
 
     def test_excludes_local_secret(self):
         from pathlib import PurePosixPath
+
         assert _is_excluded(PurePosixPath(".local_secret"))
 
     def test_excludes_sel_hmac_key_at_trust_path(self):
@@ -1420,27 +1444,33 @@ class TestExclusionLogic:
 
     def test_excludes_pid_files(self):
         from pathlib import PurePosixPath
+
         assert _is_excluded(PurePosixPath("gateway.pid"))
         assert _is_excluded(PurePosixPath("some/nested/thing.pid"))
 
     def test_excludes_snapshots_dir(self):
         from pathlib import PurePosixPath
+
         assert _is_excluded(PurePosixPath("snapshots/backup.tar.gz"))
 
     def test_excludes_outbox_dir(self):
         from pathlib import PurePosixPath
+
         assert _is_excluded(PurePosixPath("outbox/file.txt"))
 
     def test_allows_config_json(self):
         from pathlib import PurePosixPath
+
         assert not _is_excluded(PurePosixPath("config.json"))
 
     def test_allows_memory_files(self):
         from pathlib import PurePosixPath
+
         assert not _is_excluded(PurePosixPath("workspace/memory/preferences.md"))
 
     def test_allows_skills(self):
         from pathlib import PurePosixPath
+
         assert not _is_excluded(PurePosixPath("skills/my-skill/SKILL.md"))
 
 
@@ -1471,7 +1501,9 @@ class TestRoundTrip:
                 _, manifest_b = create_export_zip()
 
         # Content counts should match
-        assert manifest_b["contents"]["workspace_files"] == manifest_a["contents"]["workspace_files"]
+        assert (
+            manifest_b["contents"]["workspace_files"] == manifest_a["contents"]["workspace_files"]
+        )
         assert manifest_b["contents"]["skill_count"] == manifest_a["contents"]["skill_count"]
 
     def test_export_import_preserves_semantic_memory(self, patched_config_dir, tmp_path):
@@ -1795,6 +1827,162 @@ def test_an_imported_job_that_executes_is_restored_paused(tmp_path):
     assert len(events) == 2, events
 
 
+def test_an_imported_message_only_job_with_a_sensitive_project_path_is_cleared_and_paused(tmp_path):
+    """GPT 5.6 Review F1: a message-only job binds an agent to a directory and
+    runs no code of its own, so rule 3 (execute-only) never touched its
+    ``project_path`` before this fix -- `_job_from_record` trusts it as a bare
+    string, and the fire-time guard (``_project_path_still_canonical``) only
+    re-checks existence/canonicality, never sensitivity. A crafted archive
+    containing an ENABLED message-only job whose ``project_path`` names a
+    credential home would survive import untouched and schedule an agent
+    against it on the very next fire. Fixed: rule 4 re-validates
+    ``project_path`` exactly as ``cron_add`` would, clearing a sensitive
+    binding rather than dropping the whole job, and pausing anything that
+    still names a directory afterward.
+    """
+    import kiro_crew.portability as port
+
+    z = _make_cron_import_zip(
+        tmp_path / "sensitive-path.zip",
+        [
+            _cron_job(
+                "m1",
+                "sensitive-binding",
+                message="summarize",
+                project_path="/var/lib/kirocrew-secrets",
+            )
+        ],
+    )
+    target = tmp_path / "target_sensitive_path"
+    target.mkdir()
+
+    class _SensitiveVerdict:
+        sensitive = True
+
+    with patch.object(port, "resolve_project_path", return_value=_SensitiveVerdict()):
+        with patch.object(port, "config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                summary = port.apply_import_zip(z, mode="merge")
+
+    jobs = {j["name"]: j for j in json.loads((target / "crons.json").read_text())["jobs"]}
+    job = jobs["sensitive-binding"]
+    # The binding is cleared, not the whole job dropped.
+    assert "rejected_crons" not in summary
+    assert job["project_path"] == ""
+    # A cleared binding needs no pause: it is now an ordinary global job.
+    assert job.get("user_paused", False) is False
+    assert job.get("enabled", True) is True
+
+
+def test_an_imported_message_only_job_with_a_benign_project_path_is_kept_but_paused(tmp_path):
+    """A NON-sensitive, resolvable ``project_path`` on a message-only job is
+    kept (not cleared) but still arrives paused, same outcome as rule 3's
+    command/script jobs -- re-arming an imported project binding is always an
+    explicit human action, even for a directory that is itself perfectly
+    safe, since the archive's own origin machine chose it unreviewed.
+    """
+    import kiro_crew.portability as port
+
+    real_dir = str(tmp_path / "some-project")
+    os.makedirs(real_dir, exist_ok=True)
+    z = _make_cron_import_zip(
+        tmp_path / "benign-path.zip",
+        [_cron_job("m2", "benign-binding", message="summarize", project_path=real_dir)],
+    )
+    target = tmp_path / "target_benign_path"
+    target.mkdir()
+
+    class _BenignVerdict:
+        sensitive = False
+        is_dir = True
+
+    with patch.object(port, "resolve_project_path", return_value=_BenignVerdict()):
+        with patch.object(port, "config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                summary = port.apply_import_zip(z, mode="merge")
+
+    jobs = {j["name"]: j for j in json.loads((target / "crons.json").read_text())["jobs"]}
+    job = jobs["benign-binding"]
+    assert "rejected_crons" not in summary
+    assert job["project_path"] == real_dir
+    assert sorted(summary.get("paused_crons", [])) == ["benign-binding"]
+    assert job["user_paused"] is True
+    assert job["enabled"] is False
+
+
+def test_an_imported_job_with_a_nonexistent_project_path_is_cleared_not_kept(tmp_path):
+    """GPT 5.6 Review FINDING: rule 4's own docstring states it re-validates
+    ``project_path`` exactly as ``cron_add`` would (realpath, sensitivity,
+    ``isdir``), but the ORIGINAL implementation computed
+    ``path_ok = not verdict.sensitive`` alone -- never checking
+    ``verdict.is_dir`` -- so a resolvable, non-sensitive path that simply
+    does not exist as a directory on the TARGET machine (e.g. the archive's
+    origin machine had it, this one never did, or it was since deleted)
+    passed unchanged and the binding was WRONGLY kept. Fixed:
+    ``path_ok = not verdict.sensitive and verdict.is_dir``.
+    """
+    import kiro_crew.portability as port
+
+    z = _make_cron_import_zip(
+        tmp_path / "nonexistent-path.zip",
+        [
+            _cron_job(
+                "m4", "nonexistent-binding", message="summarize", project_path="/not/a/real/dir"
+            )
+        ],
+    )
+    target = tmp_path / "target_nonexistent_path"
+    target.mkdir()
+
+    class _NonexistentVerdict:
+        sensitive = False
+        is_dir = False
+
+    with patch.object(port, "resolve_project_path", return_value=_NonexistentVerdict()):
+        with patch.object(port, "config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                summary = port.apply_import_zip(z, mode="merge")
+
+    jobs = {j["name"]: j for j in json.loads((target / "crons.json").read_text())["jobs"]}
+    job = jobs["nonexistent-binding"]
+    assert "rejected_crons" not in summary
+    assert job["project_path"] == ""
+    assert job.get("user_paused", False) is False
+
+
+def test_an_imported_job_with_an_unresolvable_project_path_is_cleared_not_dropped(tmp_path):
+    """An embedded-null-byte (or otherwise unresolvable) ``project_path`` must
+    fail CLOSED like a sensitive one, not crash the import or leave the raw
+    value in place -- `resolve_project_path` calls `os.path.realpath` with no
+    guard of its own (GPT 5.6 Review F3's exact crash surface, reached here
+    instead of the live HTTP endpoint), so the sanitizer's own call is
+    wrapped to treat any resolution failure as "not a usable binding" and
+    clear it, same as a confirmed-sensitive one.
+    """
+    import kiro_crew.portability as port
+
+    z = _make_cron_import_zip(
+        tmp_path / "unresolvable-path.zip",
+        [_cron_job("m3", "unresolvable-binding", message="summarize", project_path="/tmp/\x00bad")],
+    )
+    target = tmp_path / "target_unresolvable_path"
+    target.mkdir()
+
+    def _boom(_raw):
+        raise ValueError("embedded null byte")
+
+    with patch.object(port, "resolve_project_path", side_effect=_boom):
+        with patch.object(port, "config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                summary = port.apply_import_zip(z, mode="merge")
+
+    jobs = {j["name"]: j for j in json.loads((target / "crons.json").read_text())["jobs"]}
+    job = jobs["unresolvable-binding"]
+    assert "rejected_crons" not in summary
+    assert job["project_path"] == ""
+    assert job.get("user_paused", False) is False
+
+
 def test_a_malformed_job_cannot_reach_the_cron_loader(tmp_path):
     """The importer must not be able to write a store the loader cannot read.
 
@@ -2108,16 +2296,16 @@ class TestExclusionsSurviveAWindowsSeparator:
         ],
     )
     def test_an_excluded_basename_is_excluded_below_the_top_level(self, rel: str) -> None:
-        assert portability._keep_for_export(PureWindowsPath(rel)) is False, (
-            f"{rel} would be packaged on Windows"
-        )
+        assert (
+            portability._keep_for_export(PureWindowsPath(rel)) is False
+        ), f"{rel} would be packaged on Windows"
 
     @pytest.mark.parametrize("bad_dir", sorted(portability.EXCLUDE_DIRS))
     def test_an_excluded_directory_is_excluded_below_the_top_level(self, bad_dir: str) -> None:
         rel = PureWindowsPath(f"workspace/{bad_dir}/inner.txt")
-        assert portability._keep_for_export(rel) is False, (
-            f"workspace/{bad_dir}/ would be packaged on Windows"
-        )
+        assert (
+            portability._keep_for_export(rel) is False
+        ), f"workspace/{bad_dir}/ would be packaged on Windows"
 
     def test_an_ordinary_nested_file_is_still_kept(self) -> None:
         """Negative control: the rebuild must not start excluding everything."""
