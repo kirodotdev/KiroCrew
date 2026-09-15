@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import threading
@@ -591,6 +592,148 @@ class TestValueSizeLimit:
         store = VectorMemoryStore(db_path=tmp_path / "mem.db")
         store.init()
         assert store.set_semantic("pref.os", "macos", 1.0, "user_explicit") is None
+
+    def test_non_ascii_value_gets_the_full_raw_byte_budget(self, tmp_path: Path) -> None:
+        # "\ud55c" is U+D55C, the Hangul syllable HAN (below the surrogate
+        # range, which starts at U+D800). 800 of them = 2400 raw UTF-8 bytes
+        # (+2 JSON quotes), well under the 4096 cap. The escaped dump is 4802
+        # bytes: measuring it instead of the raw bytes refuses this value at
+        # one sixth of the budget.
+        from kiro_crew.vector_memory import _MAX_VALUE_BYTES
+
+        korean = "\ud55c" * 800
+        raw_bytes = len(json.dumps(korean, ensure_ascii=False).encode("utf-8"))
+        escaped_bytes = len(json.dumps(korean).encode("utf-8"))
+        assert raw_bytes <= _MAX_VALUE_BYTES < escaped_bytes
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.validate_semantic("pref.os", korean, 1.0, "user_explicit") is None
+        assert store.set_semantic("pref.os", korean, 1.0, "user_explicit") is None
+        entry = store.get_semantic("pref.os")
+        assert entry is not None
+        # The persisted representation is the raw dump the gate measured.
+        assert entry["value_json"] == json.dumps(korean, ensure_ascii=False)
+        assert json.loads(entry["value_json"]) == korean
+
+    def test_over_cap_raw_non_ascii_value_still_refused(self, tmp_path: Path) -> None:
+        # 1400 Hangul syllables = 4200 raw bytes (+2 quotes) > 4096: refused,
+        # and the message quotes the raw measurement, not the escaped count.
+        from kiro_crew.vector_memory import _MAX_VALUE_BYTES
+
+        korean = "\ud55c" * 1400
+        raw_bytes = len(json.dumps(korean, ensure_ascii=False).encode("utf-8"))
+        assert raw_bytes > _MAX_VALUE_BYTES
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        result = store.validate_semantic("pref.os", korean, 1.0, "user_explicit")
+        assert result is not None
+        code, msg = result
+        assert code.value == "value_size"
+        assert f"({raw_bytes} bytes" in msg
+        assert store.set_semantic("pref.os", korean, 1.0, "user_explicit") is not None
+
+    def test_non_ascii_value_accepted_by_set_semantic_if_absent(self, tmp_path: Path) -> None:
+        korean = "\ud55c" * 800  # U+D55C Hangul syllable HAN; 2400 raw bytes
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.set_semantic_if_absent("pref.os", korean, 1.0, "user_explicit") == "imported"
+        entry = store.get_semantic("pref.os")
+        assert entry is not None
+        assert json.loads(entry["value_json"]) == korean
+
+    def test_stored_value_equality_is_type_strict(self) -> None:
+        # Python's == conflates bool with int (and int with float); a decoded
+        # compare must not treat an existing 1 and a submitted true as
+        # unchanged, or the automated write is silently skipped and the stale
+        # value never self-corrects.
+        from kiro_crew.vector_memory import _json_value_equal
+
+        assert not _json_value_equal("1", "true")
+        assert not _json_value_equal("0", "false")
+        assert not _json_value_equal("1", "1.0")
+        assert not _json_value_equal('{"a": 1}', '{"a": true}')
+        assert not _json_value_equal("[0]", "[false]")
+        assert _json_value_equal("1", "1")
+        assert _json_value_equal('{"a": [1.5, "x"]}', '{"a": [1.5, "x"]}')
+        # The purpose of the helper: escaped and raw dumps of one value match.
+        korean = "\ud55c\uad6d\uc5b4"  # U+D55C U+AD6D U+C5B4, hangugeo
+        assert _json_value_equal(json.dumps(korean), json.dumps(korean, ensure_ascii=False))
+        # A value nested past the recursion limit must not crash the compare:
+        # it reports "changed" (safe) rather than raising and aborting the write.
+        deep = "\ud55c"
+        for _ in range(999):
+            deep = [deep]
+        assert _json_value_equal(json.dumps(deep), json.dumps(deep, ensure_ascii=False)) is False
+
+    def test_bool_reset_of_numeric_fact_is_not_silently_skipped(self, tmp_path: Path) -> None:
+        # An existing 1 re-set as true must register as a change (update on
+        # this policy), never the reaffirm no-op that retains the stale value.
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.set_semantic("pref.os", 1, 1.0, "user_explicit") is None
+        assert store.set_semantic("pref.os", True, 1.0, "user_explicit") is None
+        assert json.loads(store.get_semantic("pref.os")["value_json"]) is True
+
+    def test_lone_surrogate_is_rejected_not_raised(
+        self, tmp_path: Path
+    ) -> None:  # json.dumps/loads accept a lone surrogate but the result cannot be
+        # UTF-8 encoded; the gate must refuse it as a validation outcome
+        # instead of letting UnicodeEncodeError escape set_semantic.
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        for value in ("\ud800", {"note": "x" + "\udfff"}):
+            result = store.validate_semantic("pref.os", value, 1.0, "user_explicit")
+            assert result is not None
+            code, msg = result
+            assert code.value == "value_encoding"
+            assert "surrogate" in msg
+            assert store.set_semantic("pref.os", value, 1.0, "user_explicit") == result
+        assert store.get_semantic("pref.os") is None
+
+    def test_lone_surrogate_in_lesson_rule_is_rejected_not_raised(self, tmp_path: Path) -> None:
+        # The lesson branch measures the raw rule text and reaches the same
+        # encode; the shared guard covers it too.
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        result = store.validate_semantic(
+            "lesson.dev.x",
+            {"rule": "bad \ud800 rule", "category": None, "negative": None},
+            1.0,
+            "user_explicit",
+        )
+        assert result is not None
+        assert result[0].value == "value_encoding"
+
+    def test_non_ascii_lesson_embedding_is_persisted(self, tmp_path: Path) -> None:
+        # write_lesson persists the row via set_semantic (raw UTF-8) and then
+        # attaches the embedding with an UPDATE guarded on value_json. The
+        # guard must serialize with the same ensure_ascii=False flavor: an
+        # escaped dump matches no row for a non-ASCII rule, so the embedding
+        # stays NULL and the lesson is invisible to semantic search.
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = lambda text: [0.1] * 8
+
+        korean = "\ud55c\uad6d\uc5b4 rule that must be embeddable"
+        store.write_lesson(korean, category="knowledge", source="user_explicit")
+        row = store.db.execute(
+            "SELECT value_json, embedding FROM semantic_memory "
+            "WHERE is_deleted = 0 AND value_json LIKE '%\ud55c\uad6d\uc5b4%'"
+        ).fetchone()
+        assert row is not None
+        assert json.loads(row[0])["rule"] == korean
+        assert row[1] is not None  # embedding landed on the raw-persisted row
+
+        # ASCII control: unaffected by the serialization flavor.
+        store.write_lesson(
+            "an ascii rule that is also embeddable", category="knowledge", source="user_explicit"
+        )
+        ascii_row = store.db.execute(
+            "SELECT embedding FROM semantic_memory "
+            "WHERE is_deleted = 0 AND value_json LIKE '%ascii rule%'"
+        ).fetchone()
+        assert ascii_row is not None
+        assert ascii_row[0] is not None
 
 
 class TestEventLog:
@@ -1209,8 +1352,18 @@ class TestStemWords:
         pin that against the stemmer directly rather than against itself.
         """
         words = {
-            "testing", "deployment", "shipped", "fixes", "running", "caches",
-            "relevance", "ranked", "lessons", "workspaces", "bug", "run",
+            "testing",
+            "deployment",
+            "shipped",
+            "fixes",
+            "running",
+            "caches",
+            "relevance",
+            "ranked",
+            "lessons",
+            "workspaces",
+            "bug",
+            "run",
         }
         direct = words | set(_get_snowball().stemWords(sorted(words)))
 
@@ -1896,9 +2049,7 @@ class TestVectorStoreConcurrency:
         thread: hammering _stem_words from many threads must neither raise nor
         diverge from the single-threaded result.
         """
-        vocab = [
-            f"word{i} running jumped happily nationalization {i}" for i in range(50)
-        ]
+        vocab = [f"word{i} running jumped happily nationalization {i}" for i in range(50)]
         word_sets = [set(v.split()) for v in vocab]
         expected = [_stem_words(ws) for ws in word_sets]
 
@@ -3180,9 +3331,21 @@ class TestSharedConnectionLockDiscipline:
         store._faiss_index = None  # deterministic: exercise the fallback tier
 
         fillers = [
-            "alpha", "bravo", "charlie", "delta", "echo",
-            "foxtrot", "golf", "hotel", "india", "juliet",
-            "kilo", "lima", "mike", "november", "oscar",
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
+            "echo",
+            "foxtrot",
+            "golf",
+            "hotel",
+            "india",
+            "juliet",
+            "kilo",
+            "lima",
+            "mike",
+            "november",
+            "oscar",
         ]
         # Tokens {vim, editor, <filler>} give cosine ~0.82 against the retire
         # query "editor: vim" (tokens {editor, vim}) under the bag-of-words
@@ -3513,10 +3676,7 @@ class TestAsyncInitOffloadGuard:
         def _is_store_ctor(node: object) -> bool:
             return isinstance(node, ast.Call) and (
                 (isinstance(node.func, ast.Name) and node.func.id == "VectorMemoryStore")
-                or (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "VectorMemoryStore"
-                )
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == "VectorMemoryStore")
             )
 
         # Pass 1: collect module-local bindings created from the constructor.
@@ -3570,9 +3730,7 @@ class TestAsyncInitOffloadGuard:
                     and self.async_stack[-1]
                 ):
                     receiver = func.value
-                    hit = (
-                        isinstance(receiver, ast.Name) and receiver.id in store_names
-                    ) or (
+                    hit = (isinstance(receiver, ast.Name) and receiver.id in store_names) or (
                         isinstance(receiver, ast.Attribute)
                         and receiver.attr in store_attrs
                         and isinstance(receiver.value, ast.Name)
@@ -3867,11 +4025,7 @@ class TestHandlerOffload1947:
                 # Offloaded forms pass the method as an OBJECT
                 # (asyncio.to_thread(store.get_events, ...)), which is an
                 # Attribute argument, not a Call, so they do not match here.
-                if (
-                    self.async_stack
-                    and isinstance(func, ast.Attribute)
-                    and func.attr in locked
-                ):
+                if self.async_stack and isinstance(func, ast.Attribute) and func.attr in locked:
                     violations.append(
                         f"{label} line {node.lineno} "
                         f"(async {self.async_stack[-1]}): inline .{func.attr}() call — "
@@ -3910,8 +4064,7 @@ class TestHandlerOffload1947:
         import ast
         import textwrap
 
-        seeded = textwrap.dedent(
-            """
+        seeded = textwrap.dedent("""
             async def handler(store):
                 return store.get_lessons()
 
@@ -3921,11 +4074,8 @@ class TestHandlerOffload1947:
             async def compliant(store):
                 import asyncio
                 return await asyncio.to_thread(store.get_lessons)
-            """
-        )
-        violations = self._find_inline_calls(
-            ast.parse(seeded), {"get_lessons"}, "<seeded>"
-        )
+            """)
+        violations = self._find_inline_calls(ast.parse(seeded), {"get_lessons"}, "<seeded>")
         assert len(violations) == 1
         assert "async handler" in violations[0]
         assert ".get_lessons()" in violations[0]
@@ -3940,9 +4090,7 @@ class TestHandlerOffload1947:
             if path.name == "vector_memory.py":
                 continue  # the store may call its own methods inline
             tree = ast.parse(path.read_text(encoding="utf-8"))
-            violations.extend(
-                self._find_inline_calls(tree, locked, str(path.relative_to(root)))
-            )
+            violations.extend(self._find_inline_calls(tree, locked, str(path.relative_to(root))))
         assert not violations, "\n".join(violations)
 
 
@@ -4138,7 +4286,9 @@ class TestSemanticWriteTimeEmbedding:
         # Legacy row written while the model was absent: NULL vector, but a
         # perfect keyword overlap with the query (key + value hit every word).
         assert (
-            store.set_semantic("pref.tokyo_travel_plans", "tokyo travel plans", 1.0, "user_explicit")
+            store.set_semantic(
+                "pref.tokyo_travel_plans", "tokyo travel plans", 1.0, "user_explicit"
+            )
             is None
         )
         # Embedded row: zero keyword overlap, perfect vector match ("nippon"

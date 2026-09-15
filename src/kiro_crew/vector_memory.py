@@ -148,6 +148,47 @@ _MAX_KEY_LEN = 100
 _MAX_VALUE_BYTES = 4096
 # Serialized forms, not truthiness: 0/false/[]/{} are legitimate values.
 _EMPTY_VALUE_JSON = frozenset({"null", '""'})
+
+
+def _strict_json_equal(a: object, b: object) -> bool:
+    """Type-strict equality over decoded JSON: 1 != True, 1 != 1.0.
+
+    Python's == conflates bool with int (and int with float), so a decoded
+    compare alone would treat an existing ``1`` and a submitted ``true`` as
+    unchanged and silently retain the stale value. Requiring identical types
+    errs toward "changed", which routes to an update or conflict proposal --
+    never a silent skip.
+    """
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        assert isinstance(b, dict)
+        return a.keys() == b.keys() and all(_strict_json_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        assert isinstance(b, list)
+        return len(a) == len(b) and all(map(_strict_json_equal, a, b))
+    return a == b
+
+
+def _json_value_equal(a: str, b: str) -> bool:
+    """Representation-insensitive equality for two stored JSON texts.
+
+    Rows can persist the default escaped dump while current writes persist
+    ensure_ascii=False; a byte compare reports an identical non-ASCII value
+    as changed on every automated re-set, routing it to a conflict proposal
+    indefinitely instead of a no-op reaffirm.
+    """
+    if a == b:
+        return True
+    # A deeply nested value can exhaust the recursion limit in the decoded
+    # compare; treating that as "changed" routes it to an update or conflict
+    # proposal rather than aborting the write, which errs on the safe side.
+    try:
+        return _strict_json_equal(json.loads(a), json.loads(b))
+    except (TypeError, ValueError, RecursionError):
+        return False
+
+
 MAX_MEMORY_SEARCH_QUERY = 2000
 
 
@@ -193,6 +234,7 @@ class SemanticRejectCode(str, Enum):
     CONFIDENCE = "low_confidence"
     VALUE_SIZE = "value_size"
     VALUE_EMPTY = "value_empty"
+    VALUE_ENCODING = "value_encoding"
     INJECTION = "injection_blocked"
     CONFLICT = "conflict_skip"
 
@@ -1701,7 +1743,12 @@ class VectorMemoryStore:
                 SemanticRejectCode.CONFIDENCE,
                 f"Confidence {confidence:.2f} below threshold {self._confidence_threshold}",
             )
-        vj = value_json if value_json is not None else json.dumps(value)
+        # ensure_ascii=False matches the representation the write paths
+        # persist: measuring the escaped dump charges every non-ASCII
+        # character 6 bytes (12 for an astral pair) against _MAX_VALUE_BYTES,
+        # refusing a Korean/Chinese/Cyrillic value at roughly one sixth of
+        # the real byte budget and quoting an inflated count in the error.
+        vj = value_json if value_json is not None else json.dumps(value, ensure_ascii=False)
         if not vj.strip() or vj.strip() in _EMPTY_VALUE_JSON:
             return SemanticRejectCode.VALUE_EMPTY, "Value must not be null or empty"
         # A lesson mapping is size-gated on its CONTENT (the legacy-equivalent
@@ -1747,7 +1794,19 @@ class VectorMemoryStore:
                 # caller with a JSONL fallback reported it saved.
                 if isinstance(raw_scope, str):
                     size_basis = f"{size_basis}{_LESSON_NEGATIVE_SEP}{raw_scope}"
-        vj_bytes = len(size_basis.encode("utf-8"))
+        # json.dumps(..., ensure_ascii=False) accepts a lone surrogate (and so
+        # does json.loads, so an LLM payload can carry one), but the result
+        # cannot be UTF-8 encoded -- neither here nor by SQLite. Reject it as
+        # a validation outcome instead of letting UnicodeEncodeError escape
+        # set_semantic. This also covers the lesson branch's raw rule text,
+        # which reaches the same encode.
+        try:
+            vj_bytes = len(size_basis.encode("utf-8"))
+        except UnicodeEncodeError:
+            return (
+                SemanticRejectCode.VALUE_ENCODING,
+                "Value contains unpaired surrogate characters and cannot be stored as UTF-8",
+            )
         if vj_bytes > _MAX_VALUE_BYTES:
             return (
                 SemanticRejectCode.VALUE_SIZE,
@@ -1895,7 +1954,10 @@ class VectorMemoryStore:
         applied only on a SUCCESSFUL write, so a rejected value leaves no axis
         behind pointing at a row that does not exist.
         """
-        value_json = json.dumps(value)
+        # Persist the raw UTF-8 dump (as memory_edit._json does for user
+        # edits) so the size gate in validate_semantic measures exactly the
+        # bytes that land in SQLite.
+        value_json = json.dumps(value, ensure_ascii=False)
         result = self.validate_semantic(key, value, confidence, source, value_json=value_json)
         if result is not None:
             code, reason = result
@@ -1941,7 +2003,9 @@ class VectorMemoryStore:
         facets: "memory_schema.MemoryFacets | None" = None,
     ) -> str:
         """Insert a semantic value without replacing a concurrent native write."""
-        value_json = json.dumps(value)
+        # Raw dump for the same reason as set_semantic: the gate must measure
+        # the persisted bytes, not an ensure_ascii-escaped inflation.
+        value_json = json.dumps(value, ensure_ascii=False)
         result = self.validate_semantic(key, value, confidence, source, value_json=value_json)
         if result is not None:
             code, reason = result
@@ -2262,7 +2326,11 @@ class VectorMemoryStore:
                     and any(current.get(field, "") != value for field, value in metadata.items())
                 )
                 changed = bool(
-                    existing and (existing["value_json"] != value_json or existing["is_deleted"])
+                    existing
+                    and (
+                        not _json_value_equal(existing["value_json"], value_json)
+                        or existing["is_deleted"]
+                    )
                 )
                 if (
                     private_policy
@@ -2404,7 +2472,14 @@ class VectorMemoryStore:
         if (
             existing
             and not existing["is_deleted"]
-            and (self.algorithm_version != "v2" or existing["value_json"] != value_json)
+            and (
+                self.algorithm_version != "v2"
+                # Value-level equality, not a byte compare: a legacy row can
+                # persist the escaped dump, so a byte compare sees an
+                # identical non-ASCII value as changed and retires episodes
+                # that assert the still-current value.
+                or not _json_value_equal(existing["value_json"], value_json)
+            )
         ):
             old_val = existing["value_json"]
             try:
@@ -5140,11 +5215,14 @@ class VectorMemoryStore:
                 else:
                     # Body equality pins the actual embedding input. A later edit,
                     # tombstone or completed backfill must win this tail race.
+                    # ensure_ascii=False matches the representation set_semantic
+                    # persists; an escaped dump would match no row for a
+                    # non-ASCII lesson, leaving its embedding NULL.
                     self.db.execute(
                         f"UPDATE {self._sem_rel} SET embedding = ? WHERE key = ? "
                         f"AND value_json = ? AND embedding IS NULL AND is_deleted = 0"
                         f"{self._sem_guard}",
-                        (emb_blob, key, json.dumps(value)),
+                        (emb_blob, key, json.dumps(value, ensure_ascii=False)),
                     )
         # ``matched`` is pass 1's verdict: it rewrote an EXISTING row under that row's
         # own key to attach a clause, which is an enrichment. Every other route here
