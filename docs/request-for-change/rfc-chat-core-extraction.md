@@ -31,7 +31,7 @@ The dashboard ships at least five chat UIs. Only the message list is partially s
 | Main chat | `pages/ChatPage.tsx` | 7,347 | own (`ChatPage.send`) | WebSocket | real `ChatInput` | own `renderMessage` (9 role cases) |
 | Session grid pane | `components/ChatPane.tsx` | 626 | own (mirrors `ChatPage.send`, comment says so) | shared store | real `ChatInput` | app-sdk `ChatMessageList` |
 | Side panel chat | `pages/chat/SideChat.tsx` | 647 | own submit queue | shared store | bare `<textarea>` | app-sdk `ChatMessageList` |
-| App embed | `app-sdk/ChatEmbed.tsx` | 220 | own | **polling** (1s/5s `refetchInterval`; bounded to a page since P5-e) | bare `<input>` | app-sdk `ChatMessageList` |
+| App embed | `app-sdk/ChatEmbed.tsx` | 220 | own | **polling** (1s/5s `refetchInterval`; bounded to a page since P5-e) | one-row `<textarea>` on `useComposerDraft`'s auto-grow ref | app-sdk `ChatMessageList` |
 | Full-page app mount | `app-sdk/ChatPanel.tsx` | 37 | delegates | (mounts entire ChatPage) | (entire ChatPage) | (entire ChatPage) |
 
 The real composer, `components/ChatInput.tsx`, was **2,981 lines** (queue stack, IME guard, attachments, slash menu, skill picker, browser-use toggle) and reached only two of the five surfaces. `app-sdk/` is an earlier partial extraction (`ChatMessageList`, `useChatSession`, `useComposerDraft`) that stopped at the message list.
