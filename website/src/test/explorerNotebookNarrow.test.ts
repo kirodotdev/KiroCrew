@@ -92,4 +92,16 @@ describe('md-notebook at phone widths', () => {
     expect(s, 'expected the viewport hook').toContain('useIsMobile')
     expect(s).toMatch(/subtitle=\{isMobile \? undefined : i18nT\('apps\.fileExplorer\.fileViewer\.tip_ctrl_cmd_f_to_search'\)\}/)
   })
+
+  it('removes the squeezed note column from layout while the panel owns the width', async () => {
+    // At 390px the open panel takes 100% and the note column squeezes to
+    // zero -- but its absolutely-positioned header controls (sync pill, view
+    // switch) escape the zero box and land on the panel's tree rows (#10254).
+    // display:none keeps it mounted (queries keep running) while removing it
+    // from layout, paint, tab order and the accessibility tree.
+    const s = await app('md-notebook/MdNotebookPage.tsx')
+    expect(s, 'expected the narrow hide rule').toMatch(
+      /display: isMobile && panelShown \? 'none' : 'flex'/
+    )
+  })
 })
