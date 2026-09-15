@@ -60,6 +60,7 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
+import { stripSentByPrefix } from '../chat/SentByCard'
 import { markSlotRead } from '../../store/dashboardSlice'
 import { emitSlotRead } from '../../lib/slotReadRelay'
 import CrewAvatar from '../../components/CrewAvatar'
@@ -1071,6 +1072,17 @@ export default function MembersPage() {
     },
     [slotKeyOf, unreadSlots],
   )
+  // How many of the unread rows came from ANOTHER session (a peer member's
+  // message, a worker's report) while this thread was not open. Zero when the
+  // unread is only the member's own reply, so the plain dot keeps that case.
+  const sentByUnread = useAppSelector((s) => s.dashboard.sentByUnread)
+  const sentByUnreadCount = useCallback(
+    (m: MemberRosterRow) => {
+      const key = slotKeyOf(m)
+      return key ? (sentByUnread?.[key] ?? 0) : 0
+    },
+    [slotKeyOf, sentByUnread],
+  )
 
   // Auto patrol: the auto-nudge loop (monitor / goal loop) bound to a member's
   // own DM slot. This is the thing that wakes a standing member without anyone
@@ -1714,7 +1726,7 @@ export default function MembersPage() {
                         {t('pages.membersPage.stopped_indicator')}
                       </span>
                     )}
-                    <span className="block truncate min-w-0">{m.last_message || '\u00a0'}</span>
+                    <span className="block truncate min-w-0">{stripSentByPrefix(m.last_message || '') || '\u00a0'}</span>
                   </span>
                 </span>
                 {/* Unread marker on the row's right edge — the IM convention
@@ -1723,7 +1735,23 @@ export default function MembersPage() {
                     unread dot, with a real accessible name: nothing else on
                     the row says "unread". The left side is taken — presence
                     rides the avatar. */}
-                {isUnread(m) && (
+                {isUnread(m) && sentByUnreadCount(m) > 0 ? (
+                  // Rows from other sessions are worth a NUMBER: the person
+                  // decides whether to open the thread by how many colleagues
+                  // and workers spoke, not merely that something changed. Same
+                  // pill shape as the rail badge; the plain dot below stays
+                  // for an unread that is only the member's own reply.
+                  <span
+                    className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold tabular-nums flex items-center justify-center"
+                    style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+                    role="img"
+                    aria-label={t('pages.membersPage.sent_by_unread_count', { count: sentByUnreadCount(m) })}
+                    title={t('pages.membersPage.sent_by_unread_count', { count: sentByUnreadCount(m) })}
+                    data-testid="member-sent-by-unread-count"
+                  >
+                    {sentByUnreadCount(m) > 99 ? '99+' : sentByUnreadCount(m)}
+                  </span>
+                ) : isUnread(m) && (
                   <span
                     className="w-2 h-2 rounded-full shrink-0"
                     style={{ background: 'var(--accent)' }}

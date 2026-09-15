@@ -1,6 +1,7 @@
 import type { DisplayItem } from '../pages/chat/types'
 import type { ChatMessage } from '../types'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
+import { isSentByMeta } from './sentBy'
 import { mdImageDestToPath } from './fileTokens'
 import { type PasteBlock, expandAll } from './pasteTokens'
 
@@ -82,6 +83,11 @@ export function pinHandoffY(foldY: number, collapsedCardH: number): number {
  * - A subagent completion in OLDER scrollback was persisted under role `user`
  *   (before the `subagent` role existed). The same completion-event parser the
  *   transcript card uses recognises it, so it is excluded by SHAPE, not by role.
+ * - A row ANOTHER SESSION authored (`meta.sent_by`, stamped by the gateway on a
+ *   peer member's `session_send` or a worker's report) is a user-role row too,
+ *   but not what this user typed: the transcript draws it as a "From <sender>"
+ *   card, and a band quoting it -- raw, with its `[sent by session …]` line --
+ *   as the person's own prompt claims they said something they did not.
  */
 function isSteer(msg: ChatMessage): boolean {
   return !!(msg.meta as { steer?: boolean } | undefined)?.steer
@@ -91,6 +97,7 @@ function isPrompt(item: DisplayItem | undefined): boolean {
   if (!item || item.kind !== 'single') return false
   const { msg } = item
   return msg.role === 'user' && !isSteer(msg) && !isSubagentCompletionMessage(msg)
+    && !isSentByMeta(msg.meta)
 }
 
 /**

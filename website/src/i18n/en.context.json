@@ -414,6 +414,20 @@
     "apps.meetings.broadcastBar.pausingPlaceholder": "Compose-bar placeholder while the pause request is still in flight; must not claim the meeting is already paused.",
     "apps.meetings.broadcastBar.resumingPlaceholder": "Compose-bar placeholder while the resume request is in flight; must not instruct the user to click Resume again.",
     "apps.meetings.transcript.emptyHintPaused": "Empty-transcript hint while the meeting is paused; reassures nothing was discarded without promising live speech.",
-    "apps.meetings.meeting.endingReview": "Transitional badge and compose placeholder while the End-and-review request is in flight; explains why controls are disabled."
+    "apps.meetings.meeting.endingReview": "Transitional badge and compose placeholder while the End-and-review request is in flight; explains why controls are disabled.",
+    "pages.chat.sentByCard.from": "Header of a chat row that another session wrote (not the person). {{name}} is a crew member's short name or a session title. Keep short.",
+    "pages.chat.sentByCard.kind_member": "Small badge on that row: the sender is another crew member (a peer). One word.",
+    "pages.chat.sentByCard.kind_worker": "Small badge on that row: the sender is a 'worker' session -- a background helper session this member started. 'Worker' is product vocabulary; keep or transliterate.",
+    "pages.chat.sentByCard.kind_session": "Small badge on that row: the sender is some other chat session -- \"other\" distinguishes it from the Sessions page and from the sessions a member drives. Two short words.",
+    "pages.chat.sentByCard.kind_member_tip": "Tooltip for the 'Member' badge.",
+    "pages.chat.sentByCard.kind_worker_tip": "Tooltip for the 'Worker' badge: the sender is a session this crew member started for a task; the quoted label is the Crew summary panel's own heading for that list (pages.membersPage.driving_sessions) and must match it.",
+    "pages.chat.sentByCard.kind_session_tip": "Tooltip for the 'Session' badge on a row another chat session wrote: anchors the word to the app's 'Sessions' list (the sidebar page of chat sessions) so it is not confused with other uses of 'session'.",
+    "pages.chat.sentByCard.show_message": "Tooltip on the row header when the message body is collapsed; clicking expands it.",
+    "pages.chat.sentByCard.hide_message": "Tooltip on the row header when the message body is expanded; clicking collapses it.",
+    "pages.membersPage.sent_by_unread_count_one": "Accessible name / tooltip of a numbered badge on a crew member's roster row: how many messages from OTHER sessions (peer members, worker sessions) arrived while that member's thread was not open; the singular form for exactly one.",
+    "pages.membersPage.sent_by_unread_count_other": "Accessible name / tooltip of a numbered badge on a crew member's roster row: how many messages from OTHER sessions (peer members, worker sessions) arrived while that member's thread was not open; the plural form.",
+    "pages.chat.sentByCard.another_session": "Fallback for {{name}} in 'From {{name}}' when the sending session has no title: 'From another session'. Lower-case noun phrase that reads naturally after 'From'.",
+    "pages.chat.sentByCard.agent_tip": "Tooltip on the 'From <name>' label of a row another session wrote: which agent configuration that session runs. {{agent}} is an agent name (an identifier, keep verbatim).",
+    "pages.chat.sentByCard.from_quoted": "Header of a chat row another SESSION (not a crew member) wrote, when that session has a title: the title is quoted so an auto-generated title does not read as a broken sentence. {{name}} is the title."
   }
 }

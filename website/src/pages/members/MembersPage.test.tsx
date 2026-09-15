@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
-import { markSlotUnread, sseConnected, sseSlots } from '../../store/dashboardSlice'
+import { markSlotUnread, sseConnected, sseSlots, bumpSentByUnread } from '../../store/dashboardSlice'
 import { memberThreadQueryKey } from '../../api/membersQuery'
 import {
   __resetErrorJournalForTests,
@@ -1297,6 +1297,43 @@ describe('MembersPage unread drain', () => {
     })
     // Exactly one dot: the flagged member's, not every row's.
     expect(screen.getAllByTestId('member-unread-dot')).toHaveLength(1)
+  })
+
+  it('rows from other sessions replace the dot with a count, which opening the thread clears', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'scout')
+    const { store } = await renderPage([
+      row({ bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'scout', slug: 'scout' }),
+    ])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-scout')
+    act(() => {
+      store.dispatch(markSlotUnread({ slot: 'member-oncall', ts: '2026-09-14T03:00:00.000Z' }))
+      store.dispatch(bumpSentByUnread('member-oncall'))
+      store.dispatch(bumpSentByUnread('member-oncall'))
+    })
+    const badge = await screen.findByTestId('member-sent-by-unread-count')
+    expect(badge).toHaveTextContent('2')
+    expect(badge).toHaveAccessibleName('2 new messages from other sessions')
+    // The count stands in for the dot; the row does not show both.
+    expect(screen.queryByTestId('member-unread-dot')).toBeNull()
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall'))
+    await waitFor(() => expect(screen.queryByTestId('member-sent-by-unread-count')).toBeNull())
+    expect(store.getState().dashboard.sentByUnread['member-oncall']).toBeUndefined()
+  })
+
+  it('an unread that is only the member\'s own reply keeps the plain dot', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'scout')
+    const { store } = await renderPage([
+      row({ bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'scout', slug: 'scout' }),
+    ])
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    act(() => {
+      store.dispatch(markSlotUnread('member-oncall'))
+    })
+    expect(await screen.findByTestId('member-unread-dot')).toBeInTheDocument()
+    expect(screen.queryByTestId('member-sent-by-unread-count')).toBeNull()
   })
 
   it('opening the thread clears the roster dot along with the badge', async () => {

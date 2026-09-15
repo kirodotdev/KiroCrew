@@ -871,8 +871,22 @@ way; the channel-`session` leg was not migrated with it.
 the value would fail every such send closed with no useful reason.
 
 **The delivery ladder**, in `dashboard/handlers/messaging.py::api_send_message`:
-origin session injection (`session="origin"`, unchanged) → `_deliver_to_channel`
-→ Slack. `_deliver_to_channel` rides
+origin session injection (`session="origin"`) → `_deliver_to_channel` → Slack.
+Origin has two resolvers, tried in this order. A **non-cron** caller identified by
+the kernel-attested `X-Session-Key` header -- honoured only on a request that proved
+the `X-Internal-Secret` (`request["internal_auth"]`), so an app-token caller cannot
+name another session's key -- is delivered to the session that
+CREATED it (`session_control.deliver_to_creator`: the caller slot's
+`_created_by`, admitted through `authorize_target` with the child→creator
+`send` allow, landed through `deliver_sent_by` as a user row carrying
+`meta.sent_by` with `via: "send_message_origin"` -- steered into a busy member's
+running turn, otherwise started or queued); the MCP tool forwards only a STRICTLY
+resolved key for this, and sends no key at all when it cannot, so an unattributed
+sub-agent never reports into its parent's creator. A **cron** caller keeps the
+job-keyed resolver (`_resolve_session_target`: the job's stored `session_key`,
+injected as a cron notification). A caller with no creator, a refused or vanished
+creator, or a job with no origin falls through to the rest of the ladder and,
+failing that, the bell -- "never silently dropped, not always notified". `_deliver_to_channel` rides
 `chat_runner._resolve_channel_target`, the same governed cross-surface seam as the
 outbound mirror, the auto-compact notice and the inbound-unbind notice, so a
 proactive send is capability-checked, `channels`-vetted (fail-closed) and

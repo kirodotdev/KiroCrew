@@ -17,6 +17,7 @@ import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
+import { isSentByMeta } from '../utils/sentBy'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../utils/thunkError'
 import { jsonEqual } from '../utils/structuralEqual'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
@@ -237,12 +238,19 @@ const QUESTION_RETIRING_ROLES = new Set(['user'])
  *  slot stop), and a blocked wait can legitimately outlive a mid-turn steer
  *  frame — clearing on it would strand the blocked tool call with no card.
  *
+ *  A `user` row ANOTHER SESSION authored (the gateway's `meta.sent_by`: a peer
+ *  member's send, a worker's report) is not the human's next message and spends
+ *  nothing -- the card stays, as it does across a nudge. The backend's `append`
+ *  applies the same exemption (`authored_by_another_session`), so the two sides
+ *  keep agreeing on which rows retire a card.
+ *
  *  Shared by the two hand-synced frame appliers (active `sseChatMessage` and
  *  background `applyNonActiveFrame`) so the paths cannot drift; both call it
  *  AFTER their redelivery guard so a replayed old frame cannot wipe a new
  *  card. */
-const dropStaleStatelessQuestion = (state: ChatState, slot: string, role: string): void => {
+const dropStaleStatelessQuestion = (state: ChatState, slot: string, role: string, meta?: unknown): void => {
   if (!QUESTION_RETIRING_ROLES.has(role)) return
+  if (isSentByMeta(meta)) return
   const card = state.pendingQuestions?.[safeKey(slot)]
   if (card && !card.ask_id) {
     // Never destroy work in progress: a non-empty custom answer lives only in
@@ -525,7 +533,7 @@ export const shouldResolveAskOnSend = (
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
-type SlotQueueItem = { content: string; queueId: string; ts: string }
+type SlotQueueItem = { content: string; queueId: string; ts: string; sentBy?: Record<string, unknown> }
 
 /** Field-for-field equality over every `ChatMessage` field a consumer can render. */
 function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
@@ -563,8 +571,10 @@ function hydrateQueuedBubbles(
   queue: SlotQueueItem[] | undefined,
 ): ChatMessage[] {
   const base = list.filter((m) => m.role !== 'queued')
-  for (const { content, queueId, ts } of queue ?? []) {
-    base.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
+  for (const { content, queueId, ts, sentBy } of queue ?? []) {
+    // A peer-authored entry keeps its record on the card so the stack can
+    // draw it as the peer's (prefix hidden, not editable), like the live one.
+    base.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(sentBy ? { sent_by: sentBy } : {}) } })
   }
   return base
 }
@@ -1363,7 +1373,7 @@ function applyNonActiveFrame(
   // A turn-consuming frame makes a pending stateless question card stale —
   // placed after the redelivery guard so a replayed frame cannot clear a
   // live card (see dropStaleStatelessQuestion).
-  dropStaleStatelessQuestion(state, slot, role)
+  dropStaleStatelessQuestion(state, slot, role, effectiveMeta)
   // An inject row (cron, continue, auto-nudge) starts a turn like a user
   // message does — count it (see `ChatState.runEpoch`). A `/note` is also an
   // inject row but is PASSIVE: it starts no turn, so counting it would make a
@@ -2055,8 +2065,8 @@ async function fetchSlotDetail(key: string, limit?: number) {
   // COUNT-MATCHED one instead, see REFRESH_LIMIT_CEILING. Omit the arg when
   // unbounded to keep the one-arg shape.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
-  type QueueItem = string | { content: string; id: string }
-  return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+  type QueueItem = string | { content: string; id: string; sent_by?: Record<string, unknown> }
+  return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(q.sent_by ? { sentBy: q.sent_by } : {}) }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
 }
 
 /** SINGLE hydration path for the slot-detail context-meter fields — the one
@@ -5716,7 +5726,7 @@ const chatSlice = createSlice({
       // A turn-consuming frame makes a pending stateless question card stale —
       // placed after the redelivery guard so a replayed frame cannot clear a
       // live card (see dropStaleStatelessQuestion).
-      dropStaleStatelessQuestion(state, slot, role)
+      dropStaleStatelessQuestion(state, slot, role, effectiveMeta)
       // An inject row starts a turn like a user message does (see runEpoch);
       // a passive `/note` does not (GPT round 10).
       if (role === 'inject' && !isNoteRow({ cls, meta })) bumpRunEpoch(state, slot)
@@ -5888,16 +5898,19 @@ const chatSlice = createSlice({
     },
     /** Add a queued message (from backend queue_push WS event). */
     appendQueuedMessage: {
-      reducer(state, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string }>) {
-        const { slot, content, ts, queueId } = action.payload
+      reducer(state, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string; sent_by?: unknown }>) {
+        const { slot, content, ts, queueId, sent_by } = action.payload
         const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
         // A row with this queueId may ALREADY exist: slot-detail hydration
         // can land before a delayed `queue_push` for the same entry. Appending
         // blindly would duplicate the row; keep the existing one.
         if (msgs.some(m => m.role === 'queued' && (m.meta?.queueId as string) === queueId)) return
-        msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
+        // A peer-authored card carries the gateway's record (shape-checked), so
+        // the stack draws it as the peer's and offers no edit.
+        const peer = isSentByMeta({ sent_by }) ? { sent_by } : {}
+        msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...peer } })
       },
-      prepare(payload: { slot: string; content: string; ts: string; queue_id?: string }) {
+      prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; sent_by?: unknown }) {
         return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }
       },
     },

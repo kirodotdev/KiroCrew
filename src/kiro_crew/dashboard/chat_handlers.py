@@ -141,6 +141,7 @@ from kiro_crew.dashboard.state import (
     _normalize_slot_key,
     _slots_serialization_note,
     append_and_surface,
+    authored_by_another_session,
     chat_message_frame,
     durable_row_count,
     is_stop_event_row,
@@ -253,6 +254,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     user_meta = body.get("meta")  # knowledge/files/pastes metadata from frontend
     if not isinstance(user_meta, dict):
         user_meta = None
+    else:
+        # Drop the gateway-only provenance key before anything below reads or
+        # persists this dict: `_redact_meta` keeps keys, so a forged `sent_by`
+        # would otherwise land on the row and draw as "From <member>".
+        from kiro_crew.dashboard.session_control import strip_reserved_client_meta
+
+        user_meta = strip_reserved_client_meta(user_meta)
     theme_consent = body.get("theme_consent") is True
     # Content-bound persona consent: the sha256 hex the user
     # granted in the consent modal. Injection is gated on this matching the
@@ -1995,6 +2003,18 @@ def _append_unflushed_tail(
         return merged_idless
 
 
+def _queue_item_view(q: dict[str, Any]) -> dict[str, Any]:
+    """The slot-detail shape of one queue entry: id, display-redacted content
+    and -- for an entry ANOTHER SESSION authored -- its ``sent_by`` record, so a
+    hydrated queue card can draw the peer's message as the peer's (prefix line
+    hidden, no edit affordance) the way the live ``queue_push`` card does."""
+    view: dict[str, Any] = {"id": q["id"], "content": _redact_for_display(q["content"])}
+    meta = q.get("meta")
+    if isinstance(meta, dict) and authored_by_another_session(meta):
+        view["sent_by"] = dict(meta["sent_by"])
+    return view
+
+
 async def api_chat_slot_detail(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot} — message history for a slot.
 
@@ -2319,7 +2339,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     running = slot.running
     stopping = slot._stopping
     display_title = slot.display_title
-    queue_snapshot = [{"id": q["id"], "content": q["content"]} for q in slot._queue]
+    # The snapshot keeps `meta` too: `_queue_item_view` reads `sent_by` off it
+    # so a hydrated peer card draws (and is offered) the way the live one is.
+    queue_snapshot = [
+        {"id": q["id"], "content": q["content"], "meta": dict(q.get("meta") or {})}
+        for q in slot._queue
+    ]
     context_fields = await _context_snapshot_fields(state, slot)
 
     def _render(live_child: str) -> str:
@@ -2340,10 +2365,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 "running": running,
                 "stopping": stopping,
                 "messages": prepared,
-                "queue": [
-                    {"id": q["id"], "content": _redact_for_display(q["content"])}
-                    for q in queue_snapshot
-                ],
+                "queue": [_queue_item_view(q) for q in queue_snapshot],
                 "total": total,
                 "has_more": has_more,
                 "next_before": next_before,
@@ -4118,6 +4140,8 @@ async def stop_slot_turn(
             # kill discards the text, so there is no requeued entry left to carry
             # the client's send id onto.
             slot._steer_send_ids.pop(_discarded, None)
+            slot._steer_sent_by.pop(_discarded, None)
+            slot._steer_admission.pop(_discarded, None)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
@@ -4777,6 +4801,14 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     content = body.get("content")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content must be a non-empty string"}, status=400)
+    target_entry = next((i for i in slot._queue if i["id"] == queue_id), None)
+    if target_entry is not None and authored_by_another_session(target_entry.get("meta")):
+        # Refused by the repository too; named here so the client can tell
+        # "not yours to edit" from "gone".
+        return web.json_response(
+            {"error": "a message from another session cannot be edited", "code": "peer_authored"},
+            status=409,
+        )
     if not slot.queue_edit_by_id(
         queue_id,
         content,
@@ -9132,10 +9164,7 @@ async def _live_slot_resume_response(
                 "ok": True,
                 "key": existing.key,
                 "messages": prepared,
-                "queue": [
-                    {"id": q["id"], "content": _redact_for_display(q["content"])}
-                    for q in existing._queue
-                ],
+                "queue": [_queue_item_view(q) for q in existing._queue],
                 "total": total,
                 "has_more": next_before > 0,
                 "next_before": next_before,
@@ -9733,9 +9762,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             "messages": _prepare_messages(
                 recent, slot.running, live_child=_live_child_instance(state, slot)
             ),
-            "queue": [
-                {"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue
-            ],
+            "queue": [_queue_item_view(q) for q in slot._queue],
             "total": total,
             "has_more": total > len(recent),
             "memory_mode": slot.memory_mode,

@@ -51,6 +51,13 @@ interface DashboardState {
    *  as ONE shared record entry written atomically, so the pair can never
    *  tear apart and there are no orphans to reconcile at boot. */
   unreadSince: Record<string, string>
+  /** Per-slot count of rows ANOTHER SESSION authored (`meta.sent_by`: a peer
+   *  member's `session_send`, a worker's report) that landed while the slot was
+   *  not this window's active one. The Members roster shows it as a numbered
+   *  badge where the plain unread dot otherwise sits. Window-local and never
+   *  persisted -- it is a glance count, not the read/unread record, which
+   *  stays with `unreadSlots`; it clears whenever that badge clears. */
+  sentByUnread: Record<string, number>
   slotsLoaded: boolean
   updateProgress: { step: string; detail: string } | null
   // Desktop updater: an update is discoverable/staged (found|downloading|
@@ -220,6 +227,7 @@ const initialState: DashboardState = {
   channelTrusted: false,
   refreshTrigger: 0,
   ...(() => { const since = restoreUnreadSince(); return { unreadSlots: restoreUnreadBadges(since), unreadSince: since } })(),
+  sentByUnread: {},
   slotsLoaded: false,
   updateProgress: null,
   desktopUpdateAvailable: false,
@@ -311,6 +319,10 @@ const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale
   for (const key of Object.keys(state.subagentRunning ?? {})) {
     if (!liveKeys.has(key)) evictSlotSubagents(state, key)
   }
+  // A peer-message count is a live signal with no self-heal (the row that lit it
+  // does not arrive twice), so it is dropped only with the rest of a slot's
+  // teardown -- never on a stale HTTP reply that merely predates the slot.
+  for (const k of Object.keys(state.sentByUnread ?? {})) if (!liveKeys.has(k)) delete state.sentByUnread[k]
 }
 
 const evictSlotSubagents = (state: DashboardState, slotKey: string): void => {
@@ -633,6 +645,7 @@ const dashboardSlice = createSlice({
       _relayUnreadToParent(JSON.stringify(state.unreadSlots))
     },
     markSlotRead(state, action: PayloadAction<string>) {
+      if (state.sentByUnread?.[action.payload]) delete state.sentByUnread[action.payload]
       if (state.unreadSince?.[action.payload] !== undefined) {
         const wasManual = state.unreadSince[action.payload] === MANUAL_UNREAD
         delete state.unreadSince[action.payload]
@@ -682,9 +695,19 @@ const dashboardSlice = createSlice({
         // deleted key is always a shared message watermark.
         delete state.unreadSince[slot]
       }
+      if (state.sentByUnread?.[slot]) delete state.sentByUnread[slot]
       if (!state.unreadSlots.includes(slot)) return
       state.unreadSlots = state.unreadSlots.filter(k => k !== slot)
       _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+    },
+    /** A `meta.sent_by` row landed in a slot other than this window's active
+     *  one: bump its count. Call sites gate on the active slot the same way the
+     *  `markSlotUnread` arrival sites do, so the count and the dot agree. */
+    bumpSentByUnread(state, action: PayloadAction<string>) {
+      const slot = action.payload
+      if (!slot || isUnsafeKey(slot)) return
+      if (!state.sentByUnread) state.sentByUnread = {}  // partial preloaded test state
+      state.sentByUnread[slot] = (state.sentByUnread[slot] ?? 0) + 1
     },
     setUpdateProgress(state, action: PayloadAction<{ step: string; detail: string } | null>) {
       state.updateProgress = action.payload
@@ -791,7 +814,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, bumpSentByUnread, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink } = dashboardSlice.actions
 
 /**

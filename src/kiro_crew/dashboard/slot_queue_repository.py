@@ -263,6 +263,13 @@ class SlotQueueRepository:
             # moving them to replacement text would acknowledge the wrong work.
             if "_on_consumed" in item or "_on_irreversibly_consumed" in item:
                 return False
+            # An entry ANOTHER SESSION authored (``meta.sent_by``) is not this
+            # user's to rewrite: the record stays on the entry, so the drained
+            # row would attribute the edited text to the peer -- and the edit
+            # would stamp the human-origin flag onto a peer's message.
+            meta = item.get("meta")
+            if isinstance(meta, dict) and isinstance(meta.get("sent_by"), dict):
+                return False
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors
             # (prune_attachment_meta). An entry the old text never named is

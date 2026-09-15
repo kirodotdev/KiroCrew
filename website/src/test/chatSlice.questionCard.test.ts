@@ -132,6 +132,23 @@ describe('stateless card staleness on turn-consuming frames', () => {
     expect(state.pendingQuestions['chat-1']).toBeDefined()
   })
 
+  it('a user frame ANOTHER SESSION authored (meta.sent_by) KEEPS the card, on both paths', () => {
+    // A peer member's session_send / a worker's report lands as a `user` row so
+    // the model reads it as a prompt, but it is not this user's next message:
+    // the answer channel is intact and the card must stay, as across a nudge.
+    const peer = { sent_by: { session_key: 'member-kirocrew-conductor', via: 'session_send', member_slug: 'kirocrew-conductor' } }
+    let active = { ...legacy('chat-1'), activeSlot: 'chat-1' }
+    active = reducer(active, sseChatMessage({ slot: 'chat-1', role: 'user', content: '[sent by session member-kirocrew-conductor via session_send]\n\nping', meta: peer }))
+    expect(active.pendingQuestions['chat-1']).toBeDefined()
+    let pane = { ...legacy('chat-1'), activeSlot: 'other-slot' }
+    pane = reducer(pane, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'ping', meta: peer }))
+    expect(pane.pendingQuestions['chat-1']).toBeDefined()
+    // A malformed record does not qualify: the row is treated as the user's own.
+    let own = { ...legacy('chat-1'), activeSlot: 'chat-1' }
+    own = reducer(own, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'ping', meta: { sent_by: 'conductor' } }))
+    expect(own.pendingQuestions['chat-1']).toBeUndefined()
+  })
+
   it('a server-owned (ask_id) card survives user and nudge frames', () => {
     // Its lifecycle is question_card_resolved; a steer frame mid-block must
     // not strand the waiting tool call by deleting its card.

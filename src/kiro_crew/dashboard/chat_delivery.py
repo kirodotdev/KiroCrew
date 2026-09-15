@@ -232,8 +232,23 @@ async def steer_into_running_turn(
     message: str,
     *,
     send_id: str | None = None,
+    sent_by: dict[str, Any] | None = None,
+    admission: dict[str, Any] | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
+
+    ``admission`` (with ``sent_by``) is the containment record the peer's message
+    was authorized under (``session_control.containment_meta``). Registered
+    beside the author for as long as the steer is pending, so a steer the turn's
+    end never confirmed re-enters the queue stamped with the admission that
+    actually held -- not a snapshot taken at teardown, after the RPC's
+    suspension, which would record a link gained meanwhile as already admitted.
+
+    ``sent_by`` is the provenance record of a message that came from ANOTHER
+    session (``session_control.sent_by_meta``). It is stamped onto the persisted
+    row as ``meta.sent_by`` and echoed on the ``steer_push`` frame as ``sentBy``,
+    so the transcript renders the row as a peer's message rather than something
+    the person at this dashboard typed. Optional and additive.
 
     Requires a live, steer-capable inner ACP client that the turn published on
     the slot. Fire-and-forget by design: the inline steer card materializes when
@@ -314,6 +329,12 @@ async def steer_into_running_turn(
     # requeued entry's meta unchanged.
     if send_id:
         slot._steer_send_ids[message] = send_id
+    if sent_by:
+        # Same lockstep as `_steer_send_ids`: the requeue moves this onto the
+        # queue entry so a steer the turn never confirmed keeps its author.
+        slot._steer_sent_by[message] = dict(sent_by)
+        if admission:
+            slot._steer_admission[message] = dict(admission)
     slot._pending_steers.append(message)
     try:
         steered = await client.steer(message)
@@ -337,6 +358,8 @@ async def steer_into_running_turn(
         # every intermediate transition, including a merged row.
         slot._steer_delivery_ids.pop(message, None)
         slot._steer_send_ids.pop(message, None)
+        slot._steer_sent_by.pop(message, None)
+        slot._steer_admission.pop(message, None)
         logger.info(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
@@ -356,6 +379,8 @@ async def steer_into_running_turn(
             slot._pending_steers.remove(message)
             slot._steer_delivery_ids.pop(message, None)
             slot._steer_send_ids.pop(message, None)
+            slot._steer_sent_by.pop(message, None)
+            slot._steer_admission.pop(message, None)
             return STEER_UNAVAILABLE
         if stopped:
             # Still registered means the teardown has not run yet and will
@@ -433,6 +458,11 @@ async def steer_into_running_turn(
     # few lines below, so nothing will read the map entry again and leaving it
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
+    # `_steer_sent_by` is deliberately NOT released here: the steer is still
+    # pending, and `_settle_consumed_steers` reads the author when the consumed
+    # echo lands to decide whether the settled steer may retire a stateless
+    # question card. It is released there, or by the requeue / hard-stop paths,
+    # so the entry lives exactly as long as the pending steer does.
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
@@ -494,6 +524,8 @@ async def steer_into_running_turn(
         STEER_STATE_CONSUMED if (not still_registered and _had_evidence) else STEER_STATE_WRITTEN
     )
     meta: dict[str, Any] = {"steer": True, "steerState": _state}
+    if sent_by:
+        meta["sent_by"] = dict(sent_by)
     if send_id:
         # Persist the client correlation id alongside the steer flag: the
         # transcript page is what mergePreservedThinking reads to resolve an
@@ -523,6 +555,11 @@ async def steer_into_running_turn(
         # id; omitted when absent so the payload shape is unchanged for sends
         # that never minted one.
         push_payload["sendId"] = send_id
+    if sent_by:
+        # The client builds the live row from this frame, so the provenance has
+        # to ride along or the row renders as the person's own words until a
+        # reload reads the persisted meta.
+        push_payload["sentBy"] = dict(sent_by)
     state.broadcast_ws("steer_push", push_payload)
     return STEER_STEERED
 

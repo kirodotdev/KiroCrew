@@ -236,13 +236,19 @@ async def api_members(request: web.Request) -> web.Response:
         if state is None or state.conversation_log is None:
             return {}
 
+        from kiro_crew.dashboard.session_control import strip_sent_by_prefix
+
         def _sanitize(text: str) -> str:
             # Same redaction chain the sessions list uses, injected so it
             # runs BEFORE the preview's length cap — a credential split by
             # truncation leaves a partial token the patterns cannot match.
             text, _ = _h.redact_exfiltration_urls(text)
             text, _ = _h.redact_credentials(text)
-            return text
+            # The provenance line a peer-authored row carries for the model
+            # goes the same way, for the same reason: stripped here, before the
+            # cap, the preview reads the message; capped first, a bracket
+            # fragment survives that no later strip can recognise.
+            return strip_sent_by_prefix(text)
 
         out: dict[str, tuple[float, str, bool]] = {}
         for row in rows:

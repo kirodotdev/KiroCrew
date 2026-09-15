@@ -10005,6 +10005,20 @@
       "deepLink": {
         "message_unavailable": "Diese Nachricht ist nicht mehr in dieser Unterhaltung."
       },
+      "sentByCard": {
+        "agent_tip": "Agent: {{agent}}",
+        "another_session": "einer anderen Sitzung",
+        "from": "Von {{name}}",
+        "from_quoted": "Von „{{name}}“",
+        "hide_message": "Nachricht ausblenden",
+        "kind_member": "Mitglied",
+        "kind_member_tip": "Von einem anderen Crew-Mitglied gesendet",
+        "kind_session": "Andere Sitzung",
+        "kind_session_tip": "Von einem anderen Chat in Ihrer Sitzungsliste gesendet",
+        "kind_worker": "Worker",
+        "kind_worker_tip": "Eine Sitzung, die dieses Mitglied für eine Aufgabe gestartet hat (in der Crew-Übersicht unter „Sitzungen, die es steuert“ aufgeführt); ihr Bericht landet hier",
+        "show_message": "Nachricht anzeigen"
+      },
       "share": {
         "title": "In sozialen Medien teilen",
         "description": "Verwandelt diese Antwort in eine Share-Card, die du überall posten kannst.",
@@ -14911,6 +14925,8 @@
       "filter_source_builtin_description": "Crews, die mit {{productName}} ausgeliefert werden",
       "filter_source_package_description": "Crews, die von Capability-Paketen installiert wurden",
       "member_count_filtered": "{{shown}} von {{count}} Mitgliedern",
+      "sent_by_unread_count_one": "{{count}} neue Nachricht aus einer anderen Sitzung",
+      "sent_by_unread_count_other": "{{count}} neue Nachrichten aus anderen Sitzungen",
       "setup_in_crew_manager": "Privaten Speicher einrichten"
     }
   },

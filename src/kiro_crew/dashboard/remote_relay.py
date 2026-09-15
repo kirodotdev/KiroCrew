@@ -65,6 +65,7 @@ from kiro_crew.apps.version import parse_version
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import _redact_deep, chunk_generation
 from kiro_crew.dashboard.remote_mirror import MIRROR_CLS_PREFIX
+from kiro_crew.dashboard.state import GATEWAY_STAMPED_META_KEYS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -312,6 +313,7 @@ def _replay_mirrored_frame(
     if not isinstance(data, dict):
         return
     data = _redact_deep(data)
+    _strip_peer_frame_provenance(data)
     if "slot" in data:
         data["slot"] = slot.key
     if "key" in data:  # slot_title / session_summary carry `key`, not `slot`
@@ -336,6 +338,34 @@ def _replay_mirrored_frame(
     state.broadcast_ws(event, data)
 
 
+#: Frame fields that carry the gateway-stamped provenance record on the wire:
+#: ``sent_by`` on ``queue_push`` / ``queue_pop``, ``sentBy`` on ``steer_push``, and
+#: the row meta on ``chat_message`` (covered by ``GATEWAY_STAMPED_META_KEYS``).
+_PEER_FRAME_PROVENANCE_KEYS = frozenset(GATEWAY_STAMPED_META_KEYS | {"sentBy"})
+
+
+def _strip_peer_frame_provenance(data: dict[str, Any]) -> None:
+    """Drop the provenance a PEER stamped on a mirrored frame, in place.
+
+    The frame is re-broadcast to this dashboard under a local slot key, and the
+    frontend reads ``sent_by`` / ``sentBy`` / ``meta.sent_by`` as "another
+    session on THIS gateway authored this row" -- naming a local member or
+    worker by slug or title. A peer's record cannot be that: the names in it
+    are the peer's, and trusting it would draw a local member as the author of
+    text this gateway never authorized. Same rule the stored rows already
+    follow (``peer_row_meta``), applied to the live frames.
+    """
+    for key in _PEER_FRAME_PROVENANCE_KEYS:
+        data.pop(key, None)
+    meta = data.get("meta")
+    if isinstance(meta, dict):
+        kept = {k: v for k, v in meta.items() if k not in GATEWAY_STAMPED_META_KEYS}
+        if kept:
+            data["meta"] = kept
+        else:
+            data.pop("meta", None)
+
+
 class _ChunkSequencer:
     """Local ``seq`` numbers for relayed chunks, drawn from the slot's counter.
 
@@ -353,6 +383,22 @@ class _ChunkSequencer:
     def next(self) -> int:
         self._slot._chunk_seq += 1
         return int(self._slot._chunk_seq)
+
+
+#: Row-meta keys a PEER's row never keeps on this side. ``mid`` is a per-gateway
+#: row delivery id (adopting the peer's would collide with the local mid space;
+#: ``slot.append`` mints a fresh one); the gateway-stamped keys are provenance
+#: only this gateway may write -- a peer's ``sent_by`` would draw its row as
+#: "From <local member>" on a transcript that member never wrote into.
+_PEER_ROW_META_DROP = frozenset({"mid"}) | GATEWAY_STAMPED_META_KEYS
+
+
+def peer_row_meta(meta: Any) -> dict[str, Any] | None:
+    """A peer row's ``meta`` as this gateway stores it: deep-redacted, minus
+    ``_PEER_ROW_META_DROP``; ``None`` when nothing is left or nothing usable came."""
+    if not isinstance(meta, dict):
+        return None
+    return {k: v for k, v in _redact_deep(meta).items() if k not in _PEER_ROW_META_DROP} or None
 
 
 def _apply_row(
@@ -384,16 +430,9 @@ def _apply_row(
     # stored row, so a peer that puts a credential here reaches every surface the
     # text would have.
     cls = _redact_relayed(cls) if isinstance(cls, str) else ""
-    meta = row.get("meta")
-    if isinstance(meta, dict):
-        meta = _redact_deep(meta)
-        # Keep the durable tool correlation (tool name, input, output, call id)
-        # the peer stored, but DROP its ``mid``: that is a per-gateway row
-        # delivery id, and adopting the peer's would collide with the local mid
-        # space — ``slot.append`` mints a fresh local one when none is supplied.
-        meta = {k: v for k, v in meta.items() if k != "mid"} or None
-    else:
-        meta = None
+    # Keep the durable tool correlation (tool name, input, output, call id) the
+    # peer stored; drop what a peer may not write here (``_PEER_ROW_META_DROP``).
+    meta = peer_row_meta(row.get("meta"))
 
     if role == "chunk":
         seq = sequencer.next()

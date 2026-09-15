@@ -9862,6 +9862,20 @@
       "deepLink": {
         "message_unavailable": "이 메시지는 이 대화에 더 이상 없습니다."
       },
+      "sentByCard": {
+        "agent_tip": "에이전트: {{agent}}",
+        "another_session": "다른 세션",
+        "from": "{{name}} 님으로부터",
+        "from_quoted": "‘{{name}}’ 님으로부터",
+        "hide_message": "메시지 숨기기",
+        "kind_member": "멤버",
+        "kind_member_tip": "다른 크루 멤버가 보냄",
+        "kind_session": "다른 세션",
+        "kind_session_tip": "세션 목록의 다른 채팅이 보냄",
+        "kind_worker": "워커",
+        "kind_worker_tip": "이 멤버가 작업을 위해 시작한 세션(크루 요약의 “이 멤버가 구동 중인 세션” 아래 표시됨). 그 보고가 여기에 도착합니다",
+        "show_message": "메시지 표시"
+      },
       "share": {
         "title": "소셜 미디어에 공유",
         "description": "이 답변을 어디든 게시할 수 있는 공유 카드로 만듭니다.",
@@ -14714,6 +14728,7 @@
       "filter_source_builtin_description": "{{productName}}에 기본 포함된 크루",
       "filter_source_package_description": "기능 패키지로 설치된 크루",
       "member_count_filtered": "멤버 {{count}}명 중 {{shown}}명",
+      "sent_by_unread_count_other": "다른 세션의 새 메시지 {{count}}개",
       "setup_in_crew_manager": "비공개 메모리 설정"
     }
   },

@@ -1880,6 +1880,28 @@ file-tree-container{
    centre track, whose item is not a size container, may be `auto`. Pinned by
    test/topbarMenuButtonNarrow.test.ts. */
 
+/* SentByCard (pages/chat/SentByCard.tsx). The folded "From <sender>" header
+   holds a badge, the sender's name, a one-line preview and the time. Badge and
+   time are fixed (70px and 97px measured); name and preview share what is left.
+   Below this width the two cannot both be read -- at the default 1280x820 layout
+   with the Crew summary open the thread pane is 294px, and the name rendered
+   18-24px of its text while the preview still drew -- so the preview is dropped
+   and the name takes the row (still clamped at 45% by its own utility class).
+   Keyed off the CARD's own width, not the viewport, for the same reason as the
+   topbar ladder below: the pane's width depends on which side panels are open.
+   Threshold = fixed parts (badge, time, chevron, gaps: ~211px) + a readable
+   name (~160px) + a preview worth drawing (~75px). */
+.sent-by-card{container-type:inline-size}
+@container (max-width:28rem){
+  .sent-by-card .sent-by-preview{display:none}
+  /* With the preview gone the name is the only flexible child; the 45% cap
+     (its utility class) would still cut it at ~130px in the 294px pane, so the
+     cap is lifted here and `min-w-0 truncate` alone keeps the time on the row.
+     Measured: 83px of a 175px title at 1280 with the cap, the full 175px
+     without it (fixed parts total ~203px). */
+  .sent-by-card .sent-by-name{max-width:none}
+}
+
 /* The collapse ladder. Each rung is keyed off the GROUP's own width, so it
    responds to the space actually handed to it rather than to a viewport
    breakpoint that cannot know what the group currently holds (usage pill

@@ -1424,6 +1424,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 f"\U0001f4e8 Delivered to `{target}` — it started a turn on your message. "
                 "Watch the result with session_read_message."
             )
+        if resp.get("steered"):
+            # A busy crew member takes a peer's message INTO its running turn;
+            # telling the sender "runs when the current turn ends" would be false
+            # and would make it wait for a turn boundary that already passed.
+            return (
+                f"\U0001f4e8 Steered into `{target}` — it is mid-turn and your message was "
+                "injected into that turn, so it is being read now. Watch the result with "
+                "session_read_message."
+            )
         return (
             f"\U0001f4e8 Queued for `{target}` — it is mid-turn, so your message runs "
             "when the current turn ends. Poll with session_read_message."

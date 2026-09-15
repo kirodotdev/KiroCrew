@@ -9862,6 +9862,20 @@
       "deepLink": {
         "message_unavailable": "このメッセージはこの会話にはもうありません。"
       },
+      "sentByCard": {
+        "agent_tip": "エージェント: {{agent}}",
+        "another_session": "別のセッション",
+        "from": "{{name}} から",
+        "from_quoted": "「{{name}}」から",
+        "hide_message": "メッセージを隠す",
+        "kind_member": "メンバー",
+        "kind_member_tip": "別のクルーメンバーから送信",
+        "kind_session": "別のセッション",
+        "kind_session_tip": "「セッション」一覧にある別のチャットから送信",
+        "kind_worker": "ワーカー",
+        "kind_worker_tip": "このメンバーがタスクのために開始したセッション（クルー概要の「このメンバーが操作中のセッション」に表示）。その報告はここに届きます",
+        "show_message": "メッセージを表示"
+      },
       "share": {
         "title": "SNS に共有",
         "description": "この返信をどこにでも投稿できるシェアカードにします。",
@@ -14714,6 +14728,7 @@
       "filter_source_builtin_description": "{{productName}} に同梱されているクルー",
       "filter_source_package_description": "ケイパビリティパッケージによってインストールされたクルー",
       "member_count_filtered": "{{count}} 人中 {{shown}} 人のメンバー",
+      "sent_by_unread_count_other": "他のセッションからの新しいメッセージ {{count}} 件",
       "setup_in_crew_manager": "プライベートメモリを設定"
     }
   },

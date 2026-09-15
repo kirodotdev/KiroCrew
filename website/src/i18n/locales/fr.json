@@ -10148,6 +10148,20 @@
       "deepLink": {
         "message_unavailable": "Ce message n’est plus dans cette conversation."
       },
+      "sentByCard": {
+        "agent_tip": "Agent : {{agent}}",
+        "another_session": "une autre session",
+        "from": "De {{name}}",
+        "from_quoted": "De « {{name}} »",
+        "hide_message": "Masquer le message",
+        "kind_member": "Membre",
+        "kind_member_tip": "Envoyé par un autre membre de l'équipe",
+        "kind_session": "Autre session",
+        "kind_session_tip": "Envoyé par une autre discussion de votre liste Sessions",
+        "kind_worker": "Worker",
+        "kind_worker_tip": "Une session lancée par ce membre pour une tâche (listée sous « Sessions qu'il pilote » dans le résumé de l'équipe) ; son rapport arrive ici",
+        "show_message": "Afficher le message"
+      },
       "share": {
         "title": "Partager sur les réseaux sociaux",
         "description": "Transforme cette réponse en carte à partager où vous voulez.",
@@ -15109,6 +15123,9 @@
       "filter_source_builtin_description": "Crews fournis avec {{productName}}",
       "filter_source_package_description": "Crews installés par des packages de capacités",
       "member_count_filtered": "{{shown}} membres sur {{count}}",
+      "sent_by_unread_count_many": "{{count}} nouveaux messages d'autres sessions",
+      "sent_by_unread_count_one": "{{count}} nouveau message d'une autre session",
+      "sent_by_unread_count_other": "{{count}} nouveaux messages d'autres sessions",
       "setup_in_crew_manager": "Configurer la mémoire privée"
     }
   },

@@ -35,6 +35,7 @@ import type React from 'react'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
+import SentByCard, { parseSentBy } from './SentByCard'
 import RecoveryCard, { resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import { ErrorCard, isAuthRequired, isModelUnentitled } from './ErrorCard'
@@ -380,6 +381,27 @@ export function createTranscriptRenderers(
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
             unentitledElsewhere={unentitled}
           />,
+        )
+      },
+    },
+    {
+      // A user row ANOTHER SESSION authored -- a peer member's `session_send`, a
+      // worker's report to the session that created it -- carries the gateway's
+      // `meta.sent_by` record. Drawn on EVERY surface this set serves as a
+      // distinct "From <name>" row instead of the person's own bubble, with the
+      // model-facing provenance prefix hidden from display: the row is the same
+      // row wherever the thread is viewed, and a pane that drew it as the
+      // person's own words would claim they said something they did not.
+      // Listed BEFORE the `user` override below: the resolver takes the first
+      // matching entry, and a row without the record falls through unchanged.
+      id: 'sent_by',
+      roles: ['user'],
+      match: m => parseSentBy(m) !== null,
+      render: (m, ctx) => {
+        const sentBy = parseSentBy(m)
+        if (!sentBy) return null
+        return ctx.row(
+          <SentByCard message={m} sentBy={sentBy} disclosureKey={ctx.key} onFileOpen={ctx.onFileOpen} />,
         )
       },
     },

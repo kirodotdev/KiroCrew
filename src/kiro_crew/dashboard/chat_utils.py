@@ -41,6 +41,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _normalize_slot_key,
     append_and_surface,
+    authored_by_another_session,
     parse_cls_meta,
 )
 from kiro_crew.history import transcript_sort_key
@@ -2836,17 +2837,31 @@ def carries_attachments(item: dict) -> bool:
     return any(isinstance(meta.get(k), list) and meta.get(k) for k in ATTACHMENT_META_KEYS)
 
 
+def carries_sent_by(item: dict) -> bool:
+    """Whether a queue entry was authored by ANOTHER session (``meta.sent_by``).
+
+    Such an entry drains ALONE, for the same reason an attachment-bearing one
+    does: a merged row has one meta for several texts, and the union is
+    last-writer-wins, so a merge of two peers' messages -- or of a peer's message
+    with the person's own -- would attribute every merged line to whichever
+    ``sent_by`` (or absence of one) landed last. Provenance is the whole point of
+    the record; a row that names the wrong author is worse than two rows.
+    """
+    return authored_by_another_session(item.get("meta"))
+
+
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
 
-    A merge run stops at a system injection and at an attachment-bearing entry
-    (see :func:`carries_attachments`); an attachment-bearing entry at the head
-    of the queue pops alone.
+    A merge run stops at a system injection, at an attachment-bearing entry
+    (see :func:`carries_attachments`) and at a peer-authored entry (see
+    :func:`carries_sent_by`); an entry of either kind at the head of the queue
+    pops alone.
     """
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
         for item in list(slot._queue):
-            if is_system_injection_item(item) or carries_attachments(item):
+            if is_system_injection_item(item) or carries_attachments(item) or carries_sent_by(item):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

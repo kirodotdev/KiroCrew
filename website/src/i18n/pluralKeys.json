@@ -173,6 +173,7 @@
   "pages.membersPage.activity_projects_more",
   "pages.membersPage.activity_routed_count",
   "pages.membersPage.member_count",
+  "pages.membersPage.sent_by_unread_count",
   "pages.overview.mcpTab.applied_change",
   "pages.overview.mcpTab.pending_change",
   "pages.overview.memoryTab.session",

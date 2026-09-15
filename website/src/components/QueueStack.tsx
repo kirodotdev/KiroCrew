@@ -8,6 +8,8 @@ import { i18nT } from '../i18n/t'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
 import { hasSubagentCompletionPrefix } from '../pages/chat/subagentCompletion'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { isSentByMeta } from '../utils/sentBy'
+import { stripSentByPrefix } from '../pages/chat/SentByCard'
 /** System-injected sub-agent completion deliveries waiting for the busy slot.
  *  These are NOT user messages: they must not be editable/cancellable (either
  *  would silently lose a finished agent's result) and rendering each as a
@@ -336,6 +338,13 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
             const fused = isFrontCollapsed && fuseBelow
             const queueId = m.meta?.queueId as string | undefined
             const isEditing = !!queueId && editingId === queueId
+            // A card ANOTHER SESSION queued (the gateway's `meta.sent_by`) is
+            // not this user's to rewrite -- the record stays on the entry, so
+            // an edit would attribute the new text to the peer. No edit
+            // affordance; the model-facing provenance line is hidden from the
+            // card the way the drained row hides it. The server refuses the
+            // edit too (409 `peer_authored`).
+            const peerAuthored = isSentByMeta(m.meta)
             const isPending = !!queueId && !!pendingIds?.has(queueId)
             // Per-card actions show on the front single card or when expanded.
             const showActions = (expanded || messages.length === 1) && !!queueId
@@ -371,11 +380,11 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                       <Hourglass size={13} />
                     </span>
                   )}
-                  {isEditing && onEdit ? (
+                  {isEditing && onEdit && !peerAuthored ? (
                     <EditInput initial={m.content} onCommit={v => commitEdit(queueId!, v)} onCancel={cancelEdit} />
                   ) : (
                     <>
-                      <span className="truncate flex-1">{m.content}</span>
+                      <span className="truncate flex-1" data-testid={peerAuthored ? 'queue-card-peer-content' : undefined}>{peerAuthored ? stripSentByPrefix(m.content) : m.content}</span>
                       {/* Reorder arrows only make sense with 2+ cards, and only
                           in the expanded stack where the run order is visible.
                           Index 0 runs first and renders at the BOTTOM of the
@@ -403,7 +412,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                           </button>
                         </>
                       )}
-                      {onEdit && showActions && (
+                      {onEdit && showActions && !peerAuthored && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.edit_queued_message')}

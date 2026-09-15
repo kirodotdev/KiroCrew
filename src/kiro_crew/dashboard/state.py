@@ -2415,6 +2415,33 @@ def append_and_surface(
 #: not) or renders a card whose answer channel is already gone (server retired,
 #: client did not). Widening coverage is a data edit here.
 _QUESTION_RETIRING_ROLES = frozenset({"user"})
+
+
+#: Row-meta keys only THIS gateway may write. ``sent_by`` is provenance the
+#: gateway stamps from the caller's RESOLVED slot (``session_control.sent_by_meta``)
+#: and the transcript draws any row carrying it as "From <that session>"; a copy
+#: of the key that arrives from outside -- a client's ``/api/chat`` body, a peer
+#: crew's relayed or adopted row -- would name a LOCAL member or worker as the
+#: author of text this gateway never authorized. Every ingress that accepts row
+#: meta from outside drops these keys (``session_control.strip_reserved_client_meta``,
+#: ``remote_relay.peer_row_meta``).
+GATEWAY_STAMPED_META_KEYS = frozenset({"sent_by"})
+
+
+def authored_by_another_session(meta: dict | None) -> bool:
+    """Whether a row's meta carries the gateway's ``sent_by`` record -- the row
+    was written INTO this session by a peer member's ``session_send`` or a
+    worker's ``send_message(session="origin")``, not typed by this session's
+    user. Such a row wears role ``user`` (the model must read it as an inbound
+    prompt) but is not the human's next message, so nothing that is contracted
+    to "the user's next message" -- an unanswered stateless question card in
+    particular -- may be spent by it. One predicate for the retirement gate in
+    ``append`` and for the queue drain (``chat_utils.carries_sent_by``); the
+    frontend's ``utils/sentBy.isSentByMeta`` asks the same question of a frame.
+    """
+    return isinstance(meta, dict) and isinstance(meta.get("sent_by"), dict)
+
+
 #: Roles that carry an inbound PROMPT -- the rows that ask this session to do
 #: something, as opposed to the rows produced while it works. ``user`` is a human
 #: send from any surface; ``inject`` is automation delivering a cron notification
@@ -3613,6 +3640,8 @@ class _ChatSlot:
         "_pending_steers",
         "_steer_delivery_ids",
         "_steer_send_ids",
+        "_steer_sent_by",
+        "_steer_admission",
         "_wait_state",
         "_end_wait_request",
         "_wait_last_ping",
@@ -4306,6 +4335,26 @@ class _ChatSlot:
         # carries `meta.sendId` like an accepted steer's row does. A steer
         # that persists its own row stamps the id directly and drops this entry.
         self._steer_send_ids: dict[str, str] = {}
+        # The `sent_by` provenance of an in-flight steer ANOTHER SESSION sent,
+        # keyed like the two maps above but in lockstep with `_pending_steers`
+        # rather than with them: it lives exactly as long as the steer is
+        # pending. Two readers. The requeue moves it onto the queue entry, so a
+        # steer the turn's end never confirmed keeps its author instead of
+        # being admitted as the person's own speech; the consumed-echo settle
+        # (`_settle_consumed_steers`) reads it to decide whether the settled
+        # steer was the user's -- only the user's next message retires an
+        # unanswered stateless question card -- and releases it. The hard stop
+        # releases it with the rest.
+        self._steer_sent_by: dict[str, dict[str, Any]] = {}
+        # The containment ADMISSION a peer steer was authorized under
+        # (`containment_meta`-shaped), keyed and released in lockstep with
+        # `_steer_sent_by`. One reader: the requeue of a steer the turn's end
+        # never confirmed, which stamps the queue entry with THIS record instead
+        # of a fresh snapshot -- a link the target gained while the steer RPC was
+        # suspended would otherwise be recorded as already admitted and waved
+        # through at the drain. A human steer registers nothing here (the requeue
+        # keeps its fresh stamp: the person's own speech re-entering their queue).
+        self._steer_admission: dict[str, dict[str, Any]] = {}
         # In-flight `wait` tool sleep, as reported by the tool's own keepalive
         # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
         # deadline is on the dashboard's clock (see api_session_keepalive) so
@@ -4566,7 +4615,17 @@ class _ChatSlot:
         # working while its tool call is still stuck on the answer. Those are
         # owned by the round-trip in request_question, which retires its own entry
         # on every exit.
-        if role in _QUESTION_RETIRING_ROLES and broadcast and self._question_pending:
+        #
+        # A row ANOTHER SESSION authored (``meta.sent_by``: a peer member's send,
+        # a worker's report) is role ``user`` but is not the human's next message,
+        # so it spends nothing: the card stays, its record stays, and the answer
+        # channel survives the peer's message the way it survives a nudge.
+        if (
+            role in _QUESTION_RETIRING_ROLES
+            and broadcast
+            and self._question_pending
+            and not authored_by_another_session(meta)
+        ):
             retired = [
                 cid for cid, rec in self._question_pending.items() if not rec.get("blocking")
             ]
@@ -5045,12 +5104,38 @@ class _ChatSlot:
         prompt: str,
         run_chat_coro: Callable[[DashboardState, _ChatSlot, str], Coroutine[Any, Any, None]],
         state: DashboardState,
+        *,
+        meta: dict[str, Any] | None = None,
+        broadcast_user: bool = False,
+        on_queued: Callable[[str], None] | None = None,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
+
+        ``on_queued`` is called synchronously -- same loop tick, before this
+        method returns -- with the new entry's queue id when the prompt was
+        QUEUED. The composer's own send path broadcasts a ``queue_push`` for
+        every entry it appends, and the client rebuilds the drained row from
+        that card when ``queue_pop`` arrives; a producer whose entry no
+        composer rendered (a peer session's message behind a busy turn) has to
+        emit that card itself or the row is missing from the live transcript
+        until a reload. The callback is where such a producer does that, with
+        the id it needs to bind the card to the entry.
 
         Encapsulates the queue-vs-run decision so callers don't need to
         touch ``_queue``, ``task``, or ``_background_tasks`` directly.
         Always registers :func:`_log_task_exception` to prevent silent failures.
+
+        ``meta`` rides on the user row either way: stamped onto the queue entry
+        (the drain unions entry meta into the row it appends) or onto the row
+        the immediate path appends. ``broadcast_user`` makes the immediate row
+        reach open dashboards live, for a prompt no composer rendered
+        optimistically (see :meth:`append`).
+
+        Busy means a turn is live OR a multi-stage plan is mid-flight: between
+        stages ``task`` is ``None`` (so ``running`` reads False) while
+        ``_in_stage_execution`` stays set, and a turn started in that window
+        would overwrite the plan's state -- the same predicate the composer's
+        own send path uses.
 
         Returns ``True`` if the prompt started an agent turn, ``False`` if
         it was queued. Lets callers gate UI-visible side-effects (notifications,
@@ -5061,7 +5146,7 @@ class _ChatSlot:
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        if self.running:
+        if self.running or self._in_stage_execution:
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.session_control import containment_meta
 
@@ -5069,9 +5154,11 @@ class _ChatSlot:
             # queue drain can re-assert them at delivery: a target
             # that gains a channel/mirror link while this prompt waits must not
             # execute it under the weaker constraints that admitted it.
-            self.queue_append(prompt, meta=containment_meta(state, self))
+            qid = self.queue_append(prompt, meta={**containment_meta(state, self), **(meta or {})})
+            if on_queued is not None:
+                on_queued(qid)
             return False
-        self.append("user", prompt, "msg msg-u")
+        self.append("user", prompt, "msg msg-u", broadcast_user=broadcast_user, meta=meta)
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)

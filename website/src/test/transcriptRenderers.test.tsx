@@ -216,6 +216,29 @@ describe('the error row offers Continue only where the single-chat surface does'
   })
 })
 
+describe('a user row another session authored', () => {
+  const SENT_BY = { session_key: 'member-conductor', via: 'session_send', title: 'conductor', agent: 'kirocrew-conductor', member_slug: 'conductor' }
+  const peerRow = msg('user', { content: '[sent by session member-conductor via session_send]\n\nhello', meta: { sent_by: SENT_BY } })
+
+  it('draws as the From-row on every surface this set serves', () => {
+    expect(idFor(peerRow)).toBe('sent_by')
+    expect(idFor(peerRow, { slot: 's1', hideSteerBadge: true })).toBe('sent_by')
+  })
+
+  it('wins over the steer-only user override, and a row without the record still falls through', () => {
+    expect(idFor(msg('user', { content: 'typed here' }), { slot: 's1', hideSteerBadge: true })).toBe('user')
+    expect(idFor(msg('user', { content: 'typed here' }))).toBe('user')
+    // A malformed record is not a peer row.
+    expect(idFor(msg('user', { content: 'x', meta: { sent_by: 'member-conductor' } }))).toBe('user')
+  })
+
+  it('actually renders the card', () => {
+    const el = render(peerRow)
+    expect(el).not.toBeNull()
+    expect(((el as ReactElement).props as { message?: ChatMessage }).message).toBe(peerRow)
+  })
+})
+
 describe('rows the defaults already draw correctly are left to them', () => {
   it('keeps the default entry for the rows this module does not claim', () => {
     expect(idFor(msg('user'))).toBe('user')

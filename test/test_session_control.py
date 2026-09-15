@@ -1902,7 +1902,7 @@ def test_send_to_an_idle_target_starts_a_turn_with_provenance(tmp_path, monkeypa
 
     out = asyncio.run(_drive())
 
-    assert out == {"ok": True, "target": "chat-2", "started": True}
+    assert out == {"ok": True, "target": "chat-2", "started": True, "steered": False}
     assert ran["slot"] == "chat-2"
     assert ran["prompt"].startswith("[sent by session ")
     assert ran["prompt"].endswith("do the thing")

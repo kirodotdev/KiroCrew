@@ -12,6 +12,8 @@ import reducer, {
   triggerRefresh,
   markSlotUnread,
   markSlotRead,
+  remoteSlotRead,
+  bumpSentByUnread,
   fetchSlots,
   selectUnreadByMode,
   sseSubagentStatus,
@@ -515,5 +517,49 @@ describe('dashboardSlice per-slot sub-agent teardown', () => {
     expect(next.subagentDetails['chat-2']).toBeUndefined()
     expect(next.subagentText['chat-2']).toBeUndefined()
     expect(next.subagentRunning['chat-1']).toBe(1)
+  })
+})
+
+describe('sentByUnread (rows another session authored)', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+
+  it('counts per slot and clears with the local read', () => {
+    let state = reducer(initial, markSlotUnread({ slot: 'member-a', ts: '2026-09-14T03:00:00.000Z' }))
+    state = reducer(state, bumpSentByUnread('member-a'))
+    state = reducer(state, bumpSentByUnread('member-a'))
+    state = reducer(state, bumpSentByUnread('member-b'))
+    expect(state.sentByUnread).toEqual({ 'member-a': 2, 'member-b': 1 })
+    state = reducer(state, markSlotRead('member-a'))
+    expect(state.sentByUnread).toEqual({ 'member-b': 1 })
+    expect(state.unreadSlots).not.toContain('member-a')
+  })
+
+  it('clears with a relayed read that covers the badge, and survives one that does not', () => {
+    let state = reducer(initial, markSlotUnread({ slot: 'member-a', ts: '2026-09-14T03:00:00.000Z' }))
+    state = reducer(state, bumpSentByUnread('member-a'))
+    // An older relay does not clear the badge, so the count stays too.
+    state = reducer(state, remoteSlotRead({ slot: 'member-a', readTs: '2026-09-14T02:00:00.000Z' }))
+    expect(state.sentByUnread['member-a']).toBe(1)
+    expect(state.unreadSlots).toContain('member-a')
+    state = reducer(state, remoteSlotRead({ slot: 'member-a', readTs: '2026-09-14T03:00:01.000Z' }))
+    expect(state.sentByUnread['member-a']).toBeUndefined()
+    expect(state.unreadSlots).not.toContain('member-a')
+  })
+
+  it('ignores an empty or unsafe key', () => {
+    let state = reducer(initial, bumpSentByUnread(''))
+    state = reducer(state, bumpSentByUnread('__proto__'))
+    expect(state.sentByUnread).toEqual({})
+  })
+
+  it('survives a stale slots reply that predates the slot, and goes with the slot on a live teardown', () => {
+    let state = reducer(initial, sseSlots([slot1, slot2]))
+    state = reducer(state, bumpSentByUnread('chat-2'))
+    // A late HTTP reply from before chat-2 existed: badge drain runs, eviction is withheld.
+    state = reducer(state, { type: fetchSlots.fulfilled.type, payload: [slot1] })
+    expect(state.sentByUnread['chat-2']).toBe(1)
+    // The live stream drops the slot: the count goes with it.
+    state = reducer(state, sseSlots([slot1]))
+    expect(state.sentByUnread['chat-2']).toBeUndefined()
   })
 })

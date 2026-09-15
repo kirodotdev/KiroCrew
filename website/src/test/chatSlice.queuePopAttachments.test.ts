@@ -43,6 +43,14 @@ describe('removeQueuedMessage — attachment lists survive the queue_pop rebuild
     expect(state.messages.find(m => m.role === 'user')?.meta).toEqual({ dirs: ['/home/u/my designs/'] })
   })
 
+  it('carries a peer author (sent_by) the same way, so the rebuilt row draws as the From-row', () => {
+    const wire = '[sent by session member-conductor via session_send]\n\ntake the first task'
+    const sentBy = { session_key: 'member-conductor', via: 'session_send', title: 'conductor', agent: 'kirocrew-conductor', member_slug: 'conductor' }
+    const st = { ...withQueued('chat-1'), messages: [{ role: 'queued', content: wire, cls: 'msg msg-queued', ts: 't1', meta: { queueId: 'q-1' } }] }
+    const state = reducer(st, removeQueuedMessage({ slot: 'chat-1', content: wire, queue_id: 'q-1', meta: { sent_by: sentBy } }))
+    expect(state.messages.find(m => m.role === 'user')?.meta).toEqual({ sent_by: sentBy })
+  })
+
   it('a frame without meta rebuilds the prior row shape (no meta key)', () => {
     // Pinned as an ABSENT key: an empty `meta: {}` would be a shape change every
     // meta-keyed consumer (mid lookups, pin controls) would have to tolerate.

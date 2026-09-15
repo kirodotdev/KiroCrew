@@ -41,7 +41,6 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from kiro_crew.dashboard.chat_utils import _redact_deep
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.handlers_instances import (
     PeerSlotsUnavailable,
@@ -52,6 +51,7 @@ from kiro_crew.dashboard.remote_relay import (
     RemoteTurnError,
     _require_manager,
     ensure_version_parity,
+    peer_row_meta,
     redact_peer_text,
 )
 from kiro_crew.validation import sanitize_string
@@ -442,16 +442,9 @@ def prepare_backfill_rows(
         ts = row.get("ts", "")
         if not isinstance(ts, str):
             ts = ""
-        meta = row.get("meta")
-        if isinstance(meta, dict):
-            meta = _redact_deep(meta)
-            # Keep the durable tool correlation the peer stored but DROP its
-            # ``mid``: that is a per-gateway row delivery id, and adopting the
-            # peer's would collide with the local mid space. Same rule as
-            # ``_apply_row``.
-            meta = {k: v for k, v in meta.items() if k != "mid"} or None
-        else:
-            meta = None
+        # Same rule as ``_apply_row``: keep the durable tool correlation the peer
+        # stored, drop its ``mid`` and the gateway-stamped provenance keys.
+        meta = peer_row_meta(row.get("meta"))
         kept.append({"role": role, "content": content, "cls": cls, "ts": ts, "meta": meta})
     dropped_older = max(0, len(kept) - PEER_TRANSCRIPT_MAX_ROWS)
     if dropped_older:

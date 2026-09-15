@@ -2432,7 +2432,38 @@ async def api_send_message(request: web.Request) -> web.Response:
             send_to_slack = False
         if target_session == "slack":
             target_session = ""
-        if target_session:
+        if (
+            target_session
+            and not is_cron_caller
+            and declared_session
+            and request.get("internal_auth") is True
+        ):
+            # A caller that is NOT a cron job -- a worker a member dispatched, a
+            # session an agent created -- asked for its origin. Its origin is the
+            # session that created it (``_created_by``), and the message lands
+            # there as a peer-authored row through the same steer-or-turn path
+            # ``session_send`` uses; the job-keyed resolver below covers only
+            # cron callers. ``None`` means no creator or a refused creator: the
+            # bell fallback below still runs, so the message is never dropped.
+            #
+            # Gated on the proven ``X-Internal-Secret`` (``internal_auth``): the
+            # ``X-Session-Key`` header is kernel-attested only for the MCP
+            # process behind that secret. This route also admits app tokens,
+            # and an app naming another session's key in the header would
+            # otherwise run its text as that session's creator's turn. An app's
+            # origin send keeps the bell.
+            from kiro_crew.dashboard.session_control import deliver_to_creator
+
+            landed = await deliver_to_creator(state, caller_session_key=declared_session, text=text)
+            if landed is not None:
+                logger.info(
+                    "send_message session=origin delivered to creator %s started=%s steered=%s",
+                    landed.get("target"),
+                    landed.get("started"),
+                    landed.get("steered"),
+                )
+                sent_session = True
+        if target_session and not sent_session:
             slot_key, job_name = _resolve_session_target(state, target_session, caller_session)
             if slot_key:
                 # Resolve the origin slot. get_slot is the hot path (fast,

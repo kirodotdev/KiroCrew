@@ -10005,6 +10005,20 @@
       "deepLink": {
         "message_unavailable": "यह संदेश अब इस बातचीत में नहीं है।"
       },
+      "sentByCard": {
+        "agent_tip": "एजेंट: {{agent}}",
+        "another_session": "किसी अन्य सत्र",
+        "from": "{{name}} से",
+        "from_quoted": "“{{name}}” से",
+        "hide_message": "संदेश छिपाएँ",
+        "kind_member": "सदस्य",
+        "kind_member_tip": "किसी अन्य क्रू सदस्य द्वारा भेजा गया",
+        "kind_session": "अन्य सत्र",
+        "kind_session_tip": "तुम्हारी सत्र सूची की किसी अन्य चैट द्वारा भेजा गया",
+        "kind_worker": "वर्कर",
+        "kind_worker_tip": "इस सदस्य द्वारा किसी कार्य के लिए शुरू किया गया सत्र (क्रू सारांश में “सेशन जिन्हें यह संचालित कर रहा है” के अंतर्गत सूचीबद्ध); इसकी रिपोर्ट यहाँ आती है",
+        "show_message": "संदेश दिखाएँ"
+      },
       "share": {
         "title": "सोशल मीडिया पर साझा करें",
         "description": "इस जवाब को एक शेयर कार्ड में बदलें जिसे कहीं भी पोस्ट किया जा सकता है।",
@@ -14912,6 +14926,8 @@
       "filter_source_builtin_description": "{{productName}} के साथ आने वाले क्रू",
       "filter_source_package_description": "क्षमता पैकेजों द्वारा इंस्टॉल किए गए क्रू",
       "member_count_filtered": "{{count}} में से {{shown}} सदस्य",
+      "sent_by_unread_count_one": "किसी अन्य सत्र से {{count}} नया संदेश",
+      "sent_by_unread_count_other": "अन्य सत्रों से {{count}} नए संदेश",
       "setup_in_crew_manager": "निजी मेमोरी सेट अप करें"
     }
   },

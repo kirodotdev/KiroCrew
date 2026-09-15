@@ -3981,6 +3981,20 @@
       "errorCard": {
         "sign_in": "Sign in to Kiro",
         "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again."
+      },
+      "sentByCard": {
+        "agent_tip": "Agent: {{agent}}",
+        "another_session": "another session",
+        "from": "From {{name}}",
+        "from_quoted": "From “{{name}}”",
+        "hide_message": "Hide message",
+        "kind_member": "Member",
+        "kind_member_tip": "Sent by another crew member",
+        "kind_session": "Other session",
+        "kind_session_tip": "Sent by another chat in your Sessions list",
+        "kind_worker": "Worker",
+        "kind_worker_tip": "A session this member started to do a task for it (listed under “Sessions it's driving” in the Crew summary); its report lands here",
+        "show_message": "Show message"
       }
     },
     "chatPage": {
@@ -6279,6 +6293,8 @@
       "failed_to_load_app": "Failed to load app"
     },
     "membersPage": {
+      "sent_by_unread_count_one": "{{count}} new message from another session",
+      "sent_by_unread_count_other": "{{count}} new messages from other sessions",
       "setup_in_crew_manager": "Set up private memory"
     }
   },

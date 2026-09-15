@@ -531,6 +531,23 @@ def send_message(name: str, args: dict[str, Any]) -> str:
         )
         if not verified_session:
             return _strict_err
+    #: The ``X-Session-Key`` the POST carries. ``None`` lets ``_post`` resolve the
+    #: lenient key (the ancestor walk) as every non-identity-bearing send does; a
+    #: strict key is forwarded verbatim; ``""`` sends NO header at all.
+    post_session_key: str | None = None
+    if session == "origin" and not caller_session.startswith("cron:"):
+        # A non-cron caller's origin is the session that CREATED it, which the
+        # gateway reads off the caller's own slot -- so the caller has to be
+        # attributable, under the same bar as a channel send. The gateway
+        # kernel-attests the forwarded key against the peer's process ancestry
+        # (``_channel_delivery_key``), and a body field carries no such check.
+        # Not attributable is not an error here: the send still goes out and
+        # takes the documented bell fallback. It must then carry NO session key:
+        # ``_post``'s default is the lenient ancestor walk, under which an
+        # unidentified sub-agent resolves to its PARENT, and the gateway would
+        # deliver into the parent's creator as if the parent had spoken.
+        verified_session, _ = mcp_core.require_strict_session_key("")
+        post_session_key = verified_session or ""
     # ``gov_session`` is the identity every gate below is keyed on. It is the
     # STRICT key whenever one was required, so the identity that is checked is
     # the identity the request is later sent under (``_post`` gets the same
@@ -604,6 +621,8 @@ def send_message(name: str, args: dict[str, Any]) -> str:
             return f"Error: {_gov_chan}"
     if verified_session:
         resp = mcp_core._post("/api/send-message", payload, session_key=verified_session)
+    elif post_session_key is not None:
+        resp = mcp_core._post("/api/send-message", payload, session_key=post_session_key)
     else:
         resp = mcp_core._post("/api/send-message", payload)
     if not resp.get("ok"):

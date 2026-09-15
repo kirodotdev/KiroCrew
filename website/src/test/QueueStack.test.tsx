@@ -155,3 +155,26 @@ describe('isNonInteractiveQueued (composer QueueStack exclusion)', () => {
     expect(isNonInteractiveQueued(queued('why did I see [Tool refusal — automatic recovery]?', 'q2'))).toBe(false)
   })
 })
+
+describe('a queue card another session authored', () => {
+  const peer = { session_key: 'member-kirocrew-conductor', via: 'session_send', member_slug: 'kirocrew-conductor' }
+  function peerQueued(content: string, queueId: string): ChatMessage {
+    return { role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId, sent_by: peer } } as ChatMessage
+  }
+
+  it('offers no edit and hides the provenance line, while a user card keeps both', () => {
+    const onEdit = vi.fn()
+    render(<QueueStack messages={[peerQueued('[sent by session member-kirocrew-conductor via session_send]\n\nplease re-run the suite', 'q1')]} onEdit={onEdit} onCancel={vi.fn()} />)
+    expect(screen.queryByLabelText('Edit queued message')).toBeNull()
+    expect(screen.getByTestId('queue-card-peer-content')).toHaveTextContent('please re-run the suite')
+    expect(screen.getByTestId('queue-card-peer-content').textContent).not.toContain('[sent by session')
+    // Cancelling stays available: the thread's owner may still drop it.
+    expect(screen.getByLabelText(/cancel/i)).toBeTruthy()
+  })
+
+  it('a malformed record does not qualify: the card stays the user\'s own', () => {
+    const own = { role: 'queued', content: 'mine', cls: 'msg msg-queued', ts: '', meta: { queueId: 'q2', sent_by: 'conductor' } } as ChatMessage
+    render(<QueueStack messages={[own]} onEdit={vi.fn()} />)
+    expect(screen.getByLabelText('Edit queued message')).toBeTruthy()
+  })
+})

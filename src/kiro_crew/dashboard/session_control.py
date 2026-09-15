@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import (
@@ -49,15 +51,22 @@ from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENC
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create
 from kiro_crew.dashboard.state import (
+    GATEWAY_STAMPED_META_KEYS,
     MAX_LIVE_SLOTS,
     MAX_SLOTS_PER_CREATOR,
+    NEW_SESSION_TITLE,
     SlotOrigin,
     _safe_folder_tree,
 )
 from kiro_crew.dashboard.stop_retry import allow_escalation
 from kiro_crew.history import metadata_now_iso, transcript_stem
 from kiro_crew.memory_stores import named_store_or_empty
-from kiro_crew.security import redact, redact_and_truncate
+from kiro_crew.security import (
+    redact,
+    redact_and_truncate,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import sel
 from kiro_crew.validation import MAX_LONG_STRING
 
@@ -134,6 +143,56 @@ def _member_caller(caller_key: str) -> bool:
     from kiro_crew.members import DM_SLOT_KEY_PREFIX
 
     return caller_key.startswith(DM_SLOT_KEY_PREFIX)
+
+
+def _member_target(slot: Any) -> bool:
+    """Whether *slot* is a crew member's pinned DM thread.
+
+    Both the key prefix AND the slot mode, so a foreign slot squatting a
+    ``member-`` key (the case the members handler guards on bind) is not taken
+    for a member. Mirrors the two facts the members handler mints the slot
+    with.
+    """
+    from kiro_crew.members import DM_SLOT_KEY_PREFIX, DM_SLOT_MODE
+
+    key = str(getattr(slot, "key", "") or "")
+    return key.startswith(DM_SLOT_KEY_PREFIX) and getattr(slot, "mode", "") == DM_SLOT_MODE
+
+
+def _peer_member_send(caller_slot: Any, slot: Any, operation: str) -> bool:
+    """The member->member allow: one member may SEND to another member's thread.
+
+    Narrow on purpose. Only ``send`` -- a member still cannot create into,
+    stop, close or read a peer's thread -- and only between two member DM
+    slots, so a member's reach into the user's own sessions is unchanged. The
+    delivered row carries ``meta.sent_by`` (see :func:`sent_by_meta`) so the
+    receiving thread shows who spoke. There is deliberately no hop cap or
+    pair rate limit: the owner's decision is to trust the agents to recognise
+    and stop a ping-pong themselves.
+
+    BOTH ends are judged by :func:`_member_target` -- key prefix AND member
+    mode -- not the caller by its key alone: a ``member-``-keyed slot that is
+    not in member mode (a restore that lost the mode, a squatter on the key)
+    must not pass as a member here any more than it does as a target, or it
+    would reach a real member's thread through this allow and be attributed as
+    a member on the row.
+    """
+    return operation == "send" and _member_target(caller_slot) and _member_target(slot)
+
+
+def _report_to_creator(caller_slot: Any, slot: Any, operation: str) -> bool:
+    """The child->creator allow: a session may SEND to the session that created it.
+
+    A worker a member dispatched reports back into the member's thread; a cron
+    child reports into the session that spawned the job. ``_created_by`` is
+    written once at birth and rehydrated on restart, so the relation cannot be
+    claimed by the caller -- it is read off the CALLER's slot and compared to
+    the target's key. ``send`` only, like the peer allow.
+    """
+    if operation != "send" or caller_slot is None:
+        return False
+    creator = str(getattr(caller_slot, "_created_by", "") or "")
+    return bool(creator) and creator == str(getattr(slot, "key", "") or "")
 
 
 def _cron_caller(caller_key: str) -> bool:
@@ -1596,6 +1655,8 @@ def authorize_target(
     if (
         _caller_is_ownership_fenced(state, caller_key)
         and getattr(slot, "_created_by", "") != caller_key
+        and not _peer_member_send(caller_slot, slot, operation)
+        and not _report_to_creator(caller_slot, slot, operation)
     ):
         # The fence every exempted caller class is bounded by, plus anything they
         # created. It reaches ONLY the sessions the caller made itself
@@ -1909,6 +1970,245 @@ MAX_SEND_MESSAGE_CHARS = MAX_LONG_STRING
 #: so it can weigh the instruction as coming from a peer session, not its user.
 _SEND_PROVENANCE = "[sent by session {caller} via session_send]\n\n"
 
+#: Same shape for a worker reporting back to the session that created it via
+#: ``send_message(session="origin")``; the ``via`` word is the only difference,
+#: so a reader of the transcript can tell the two doors apart.
+_ORIGIN_PROVENANCE = "[sent by session {caller} via send_message]\n\n"
+
+#: ``meta.sent_by.via`` values -- the door a peer-authored row came through.
+SENT_BY_VIA_SESSION_SEND = "session_send"
+SENT_BY_VIA_SEND_MESSAGE_ORIGIN = "send_message_origin"
+
+#: The provenance line either door prepends, as a pattern -- for DISPLAY surfaces
+#: that preview a row's text (the Members roster's last-message line). Mirrors
+#: the frontend's ``SENT_BY_PREFIX_RE``; applied server-side BEFORE a preview is
+#: length-capped, because a cap that lands inside the bracket leaves a fragment
+#: the closing-bracket pattern cannot recognise. Both fields are single tokens
+#: (a slot key, a ``via`` word -- neither contains whitespace or ``]``), matched
+#: as ``[^\s\]]+`` so the pattern is linear: two ``[^\]]*`` runs split by a
+#: literal `` via `` would backtrack polynomially on a row with many `` via ``.
+_SENT_BY_PREFIX_RE = re.compile(r"^\[sent by session [^\s\]]+ via [^\s\]]+\]\s*")
+
+
+def strip_sent_by_prefix(text: str) -> str:
+    """Display-only: *text* minus the ``[sent by session … via …]`` line. The
+    persisted row, and what the model reads, keep it."""
+    return _SENT_BY_PREFIX_RE.sub("", text, count=1)
+
+
+#: The meta key ``sent_by_meta`` writes. Reserved to the gateway: the transcript
+#: draws any row carrying it as "From <that session>", so a CLIENT body must not
+#: be able to name it (see ``strip_reserved_client_meta``).
+SENT_BY_META_KEY = "sent_by"
+
+
+def strip_reserved_client_meta(meta: dict[str, Any] | None) -> dict[str, Any] | None:
+    """*meta* as a client sent it, minus the keys only the gateway may stamp.
+
+    ``POST /api/chat`` accepts a ``meta`` object from the frontend (knowledge,
+    files, pastes, ``sendId``) and persists it on the user row after
+    ``_redact_meta``, which redacts string VALUES and keeps every key. A body
+    naming ``sent_by`` would therefore persist a forged provenance record and
+    the thread would attribute the person's own message to a crew member or a
+    worker. The record is only ever written by ``sent_by_meta`` from the
+    caller's RESOLVED slot; a client cannot have a legitimate reason to send
+    it. The key set is ``state.GATEWAY_STAMPED_META_KEYS`` -- the same list the
+    peer-crew ingress (``remote_relay.peer_row_meta``) drops, so a key reserved
+    here is reserved at every door. Returns ``None`` when nothing is left,
+    matching the "no meta" shape the caller already handles.
+    """
+    if not meta:
+        return meta
+    if not any(k in meta for k in GATEWAY_STAMPED_META_KEYS):
+        return meta
+    kept = {k: v for k, v in meta.items() if k not in GATEWAY_STAMPED_META_KEYS}
+    return kept or None
+
+
+def sent_by_meta(
+    state: "DashboardState", caller_key: str, *, via: str, target_key: str = ""
+) -> dict[str, Any]:
+    """The provenance record stamped on a row another session authored.
+
+    The text prefix (``_SEND_PROVENANCE``) is what the MODEL sees and stays
+    exactly as it was; this record is what the TRANSCRIPT reads, so the row can
+    render as "from <title>" with the prefix line hidden instead of as a user
+    bubble with bracket text in it. Written by the gateway from the caller's
+    resolved slot, never from caller-supplied fields, so it cannot be forged
+    by the message body. ``member_slug`` is present only for a member caller;
+    ``child`` is present (True) only when the caller is a session the TARGET
+    created, so the transcript names the relationship (a worker reporting back)
+    rather than the tool the report came through -- the same child reads the
+    same whichever door it used.
+    """
+    from kiro_crew.members import DM_SLOT_KEY_PREFIX
+
+    caller_slot = state.get_slot(caller_key)
+    record: dict[str, Any] = {"session_key": caller_key, "via": via}
+    if (
+        target_key
+        and caller_slot is not None
+        and str(getattr(caller_slot, "_created_by", "") or "") == target_key
+    ):
+        record["child"] = True
+    title = ""
+    agent = ""
+    if caller_slot is not None:
+        title = str(getattr(caller_slot, "display_title", "") or "")
+        agent = str(getattr(caller_slot, "agent", "") or "")
+    # An UNTITLED caller reads as the sidebar's placeholder ("New Session…");
+    # copied onto the row it would draw as `From "New Session…"`, a name that
+    # looks broken. The record carries no title instead, and the transcript's
+    # localized "another session" fallback names the sender.
+    if title == NEW_SESSION_TITLE:
+        title = ""
+    record["title"] = redact(title)[:MAX_LONG_STRING]
+    record["agent"] = agent
+    # Named as a member only when the RESOLVED slot is one (prefix AND mode),
+    # the same test the allow applies: a member-keyed slot that is not in
+    # member mode is attributed as an ordinary session, never as the member
+    # whose key it wears.
+    if caller_slot is not None and _member_target(caller_slot):
+        record["member_slug"] = caller_key[len(DM_SLOT_KEY_PREFIX) :].split(".memory-", 1)[0]
+    return record
+
+
+#: ``deliver_sent_by`` result key naming the containment constraints that
+#: became held between the caller's authorization and the steer, when the
+#: message was refused for that reason. Absent otherwise.
+DELIVERY_REFUSED_KEY = "refused"
+
+
+async def deliver_sent_by(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    prompt: str,
+    *,
+    sent_by: dict[str, Any],
+    admission: dict[str, Any],
+) -> dict[str, Any]:
+    """Land a peer-authored *prompt* on *slot*: steer, start, or queue.
+
+    A BUSY member thread takes the message the way the Members page does for
+    the person -- steered into the running turn (``busyMode="steer-only"``)
+    rather than queued behind it, so a peer's message reaches the member while
+    it is still working on what prompted it. Any other busy target keeps the
+    queue behaviour; an idle target starts a turn. The row carries
+    ``meta.sent_by`` on every path, and the immediate path broadcasts the user
+    row because no composer rendered it; the queued path broadcasts the queue
+    card for the same reason (``on_queued``), so the drained row can be rebuilt
+    live instead of appearing only after a reload.
+
+    *admission* is ``containment_meta(state, slot)`` taken by the caller right
+    after ``authorize_target`` admitted the target. The queue path re-validates
+    it at the drain; the STEER path has no drain, so it re-validates HERE, in
+    the same loop tick as the steer RPC's write: ``steer_into_running_turn``
+    does not suspend before ``client.steer``, and the ACP transport writes the
+    request to the process before its first ``await`` (``_send_request``), so a
+    containment mutation -- a channel link, a new mirror -- can only interleave
+    before this check or after the injection, never between the two. A
+    constraint newly held since admission REFUSES the message (a notice on the
+    target's transcript, an SEL row, and ``refused`` in the result). The check
+    runs again when a steer came back UNAVAILABLE (the RPC suspended and landed
+    nothing) before the message falls through to the queue. The queue entry
+    itself carries the ORIGINAL admission rather than a fresh stamp, so the
+    drain re-validates against what ``authorize_target`` saw even if a future
+    caller reaches the queue without either check.
+
+    Returns ``{"started", "steered"}``: exactly one is True for an idle or a
+    steered target; both are False when the message was queued (including a
+    steer that the turn's end requeued for the next turn) or refused (then
+    ``refused`` lists the constraints).
+    """
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.dashboard.chat_delivery import STEER_STEERED, steer_into_running_turn
+    from kiro_crew.dashboard.chat_runner import _run_chat
+
+    # The queue entry carries the ORIGINAL admission, not a fresh stamp:
+    # `enqueue_or_run_prompt` merges `meta` over `containment_meta(...)`, so
+    # this key wins, and the drain re-validates against what `authorize_target`
+    # actually saw. A fresh stamp taken after any suspension would record a
+    # constraint held by then as already admitted and wave the message through.
+    meta = {"sent_by": dict(sent_by), **admission}
+
+    def _refuse_if_changed(where: str) -> list[str]:
+        now = containment_snapshot(state, slot, on_probe_failure=True)
+        changed = newly_held_constraints(now, admission)
+        if changed:
+            slot.append(
+                "notice",
+                "⚠️ Message from another session dropped: "
+                + describe_containment_change(
+                    changed, mirror_unverified=bool(now.get("mirror_unverified"))
+                )
+                + " after it was authorized, so the authorization that admitted it no longer holds.",
+                "msg msg-info",
+            )
+            _audit_queue_drain(slot, outcome="denied", queue_ids=[where], newly_held=changed)
+            logger.info(
+                "Refused peer %s into %s: containment changed since admission (%s)",
+                where,
+                slot.key,
+                ",".join(changed),
+            )
+        return changed
+
+    if slot.running and _member_target(slot):
+        changed = _refuse_if_changed("steer")
+        if changed:
+            return {"started": False, "steered": False, DELIVERY_REFUSED_KEY: list(changed)}
+        outcome = await steer_into_running_turn(
+            state, slot, prompt, sent_by=sent_by, admission=admission
+        )
+        if outcome == STEER_STEERED:
+            return {"started": False, "steered": True}
+        # Requeued: the turn ended under the steer and the text is already on
+        # the queue for the next turn. Unavailable: no steer-capable client
+        # published on the slot -- fall through to the ordinary queue.
+        from kiro_crew.dashboard.chat_delivery import STEER_REQUEUED
+
+        if outcome == STEER_REQUEUED:
+            return {"started": False, "steered": False}
+        # Unavailable: the steer RPC suspended and landed nothing, so the
+        # admission is re-checked again here, in the tick that decides the
+        # fallback -- a link that arrived during the failed drain refuses the
+        # message now instead of riding the queue (whose entry would, even so,
+        # carry the original admission and be dropped at the drain).
+        changed = _refuse_if_changed("steer_fallback")
+        if changed:
+            return {"started": False, "steered": False, DELIVERY_REFUSED_KEY: list(changed)}
+
+    def _announce_queued(qid: str) -> None:
+        # The card the composer would have drawn. Display-only content: the
+        # model-facing provenance line is stripped and the text redacted the
+        # way every non-user row is before it is broadcast.
+        shown, _ = redact_exfiltration_urls(strip_sent_by_prefix(prompt))
+        shown, _ = redact_credentials(shown)
+        state.broadcast_ws(
+            "queue_push",
+            {
+                "slot": slot.key,
+                "content": shown,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "queue_id": qid,
+                # The card is a peer's message, not this user's: the client
+                # hides the edit affordance (the server refuses the edit too).
+                "sent_by": dict(sent_by),
+            },
+        )
+
+    started = bool(
+        slot.enqueue_or_run_prompt(
+            prompt,
+            _run_chat,
+            state,
+            meta=meta,
+            broadcast_user=True,
+            on_queued=_announce_queued,
+        )
+    )
+    return {"started": started, "steered": False}
+
 
 async def send_to_target(
     state: "DashboardState",
@@ -1975,9 +2275,6 @@ async def send_to_target(
             status=409,
         )
 
-    # Deferred for the same import cycle `stop_target` documents.
-    from kiro_crew.dashboard.chat_runner import _run_chat
-
     caller_key = caller_slot_key(state, caller_session_key)
     # Sanitized on the same grounds as the steer path (``chat_delivery`` sanitizes
     # before ``slot.append``): this body comes from ANOTHER session and is persisted
@@ -1987,16 +2284,43 @@ async def send_to_target(
     # limit and keeps the error keyed to what the caller actually sent.
     prompt = _SEND_PROVENANCE.format(caller=caller_key or "unknown") + sanitize_outbound(body)
 
-    # `_run_chat` is passed straight through, NOT wrapped in
-    # `state.run_background_turn`: that cap is structurally unreachable here.
-    # `run_background_turn` returns the coroutine untouched for an attended slot
-    # (`state.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
-    # `bool(self._app) and not self._human_seen`, and `authorize_target` refuses
-    # every `_app` target above (`app_scoped_target`) — so no target this
-    # function can reach is ever unattended, and a wrapper would only add a
-    # never-taken timeout arm. The composer's own queued path does the same
-    # (`server.py` passes `_run_chat` directly).
-    started = bool(slot.enqueue_or_run_prompt(prompt, _run_chat, state))
+    # `_run_chat` is passed straight through (inside `deliver_sent_by`), NOT
+    # wrapped in `state.run_background_turn`: that cap is structurally
+    # unreachable here. `run_background_turn` returns the coroutine untouched
+    # for an attended slot (`state.py`, "this wrapper is inert"),
+    # `_ChatSlot.unattended` is `bool(self._app) and not self._human_seen`, and
+    # `authorize_target` refuses every `_app` target above (`app_scoped_target`)
+    # — so no target this function can reach is ever unattended, and a wrapper
+    # would only add a never-taken timeout arm. The composer's own queued path
+    # does the same (`server.py` passes `_run_chat` directly).
+    landed = await deliver_sent_by(
+        state,
+        slot,
+        prompt,
+        sent_by=sent_by_meta(
+            state, caller_key or "unknown", via=SENT_BY_VIA_SESSION_SEND, target_key=slot.key
+        ),
+        admission=containment_meta(state, slot),
+    )
+    if landed.get(DELIVERY_REFUSED_KEY):
+        _audit(
+            caller_session_key=caller_session_key,
+            operation="send",
+            slot_key=slot.key,
+            outcome="denied",
+            detail={
+                "code": "containment_changed",
+                "newly_held": ",".join(landed[DELIVERY_REFUSED_KEY]),
+            },
+        )
+        raise SessionControlError(
+            "the target's containment changed while the message was being delivered; "
+            "it was not delivered",
+            code="containment_changed",
+            status=409,
+        )
+    started = bool(landed["started"])
+    steered = bool(landed["steered"])
     try:
         state.push_slots_update()
     except Exception:  # pragma: no cover - sidebar refresh is best-effort
@@ -2007,9 +2331,90 @@ async def send_to_target(
         operation="send",
         slot_key=slot.key,
         outcome="allowed",
-        detail={"started": started, "chars": len(body)},
+        detail={"started": started, "steered": steered, "chars": len(body)},
     )
-    return {"ok": True, "target": slot.key, "started": started}
+    return {"ok": True, "target": slot.key, "started": started, "steered": steered}
+
+
+async def deliver_to_creator(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    text: str,
+) -> dict[str, Any] | None:
+    """``send_message(session="origin")`` for a caller that is not a cron job.
+
+    Resolves the caller's slot, reads the session that CREATED it
+    (``_created_by``), and lands *text* in that session as a peer-authored row
+    (``meta.sent_by.via == "send_message_origin"``) through
+    :func:`deliver_sent_by` -- steered into a busy member's running turn,
+    otherwise started or queued. The creator is admitted by
+    :func:`authorize_target` with the child->creator allow, so every other
+    containment refusal (workspace, channel link, mirror, ephemeral, app) still
+    applies; the ``session_control`` opt-in is not required, like the cron
+    origin path it sits beside.
+
+    Returns ``None`` when there is nothing to deliver into -- no resolvable
+    caller, no creator, a creator that is gone, or a refusal -- and the caller
+    falls back to the bell, which is the only place a report from a session
+    without a creator can go.
+    """
+    caller_key = caller_slot_key(state, caller_session_key)
+    if not caller_key:
+        return None
+    caller_slot = state.get_slot(caller_key)
+    creator = str(getattr(caller_slot, "_created_by", "") or "") if caller_slot else ""
+    if not creator:
+        return None
+    if state.get_slot(creator) is None:
+        # Deferred: chat_persistence imports this module's neighbours.
+        from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+
+        if await rehydrate_slot_from_history_async(state, creator) is None:
+            return None
+    body = text.strip()
+    if not body or len(body) > MAX_SEND_MESSAGE_CHARS:
+        return None
+    try:
+        slot = authorize_target(
+            state,
+            caller_session_key=caller_session_key,
+            target=creator,
+            operation="send",
+            skip_enabled_check=True,
+        )
+    except SessionControlError as exc:
+        logger.info("send_message origin: creator %s refused (%s)", creator, exc.code)
+        return None
+    if slot.executor == "remote":
+        return None
+    prompt = _ORIGIN_PROVENANCE.format(caller=caller_key) + sanitize_outbound(body)
+    landed = await deliver_sent_by(
+        state,
+        slot,
+        prompt,
+        sent_by=sent_by_meta(
+            state, caller_key, via=SENT_BY_VIA_SEND_MESSAGE_ORIGIN, target_key=slot.key
+        ),
+        admission=containment_meta(state, slot),
+    )
+    if landed.get(DELIVERY_REFUSED_KEY):
+        # Refused at the steer for a constraint newly held since authorization:
+        # the notice is on the creator's transcript; the report falls back to
+        # the bell like every other undeliverable origin send.
+        return None
+    try:
+        state.push_slots_update()
+    except Exception:  # pragma: no cover - sidebar refresh is best-effort
+        logger.debug("send_message origin: push_slots_update failed", exc_info=True)
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="send",
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={**landed, "chars": len(body), "via": SENT_BY_VIA_SEND_MESSAGE_ORIGIN},
+    )
+    return {"target": slot.key, **landed}
 
 
 def read_messages(

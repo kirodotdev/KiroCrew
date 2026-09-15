@@ -194,6 +194,113 @@ operator configuration. Two rules give it that shape:
 
 Ordinary (non-member) callers are untouched: they still require the switch.
 
+### Two `send`-only allows in front of the fence
+
+The ownership fence has exactly two exemptions, both for the `send` operation
+alone -- `create`, `stop`, `close` and `read` are refused `not_creator` exactly as
+above:
+
+- **Member -> member.** A member DM slot may send to another member's DM slot
+  (`_peer_member_send`: BOTH the resolved caller slot and the target satisfy
+  `_member_target` -- key prefixed `member-` AND `mode == "member"` -- so a
+  foreign or restored slot squatting a member key is admitted at neither end,
+  and `sent_by_meta` names a sender as a member by the same test). A member's reach into the person's own sessions is
+  unchanged. There is deliberately no hop cap and no pair rate limit on
+  member<->member traffic, and no runtime anti-loop of any kind: the owner's
+  decision is to trust the agents to recognise and stop a ping-pong
+  themselves. Nothing in this module or in the shipped prompts enforces that;
+  the remedy for a runaway pair is stopping a member, and every hop is visible
+  as its own SEL `session_send` row.
+- **Child -> creator.** A session may send to the session that created it
+  (`_report_to_creator`: the CALLER slot's `_created_by` equals the target key).
+  This is what lets a worker report back into the member thread that dispatched
+  it, and what `send_message(session="origin")` resolves to for a non-cron caller
+  (`deliver_to_creator`): the creator is admitted through `authorize_target` with
+  this allow, so every other containment refusal -- workspace, channel link,
+  mirror, ephemeral, app -- still applies, and a refused or vanished creator falls
+  back to the bell notification.
+
+**A delivered row carries who spoke.** `send_to_target` and `deliver_to_creator`
+stamp `meta.sent_by = {session_key, title, agent, via, member_slug?, child?}` on the user
+row they append (`sent_by_meta`, built by the gateway from the caller's resolved
+slot, never from the message body), with `via` naming the door --
+`session_send` or `send_message_origin`, and `child: true` present only when the caller is a
+session the target created (the transcript names the relationship, not the door). The text
+prefix the MODEL reads
+(`[sent by session <caller> via session_send]`, `via send_message` for the origin
+door) is unchanged; the record is what the transcript reads, so the Members thread
+draws the row as a collapsible "From <name>" row (peer-member rows open, worker
+rows folded) with the prefix line hidden from display only. **A busy member is
+steered, not queued** (`deliver_sent_by`): the message enters the member's running
+turn the way the Members page composer does (`busyMode="steer-only"`), and the
+`steer_push` frame carries the same record as `sentBy`; a member whose turn has no
+steer-capable client, and every non-member target, keeps the queue behaviour. Busy
+means a turn is live OR a multi-stage plan is between stages (`_in_stage_execution`),
+the composer's own predicate, so a delivery never starts a turn that overwrites a
+plan. A peer-authored queue entry DRAINS ALONE: the drain's merge of queued user
+messages unions entry meta last-writer-wins, and a merged row would attribute every
+line to one author (`chat_utils.carries_sent_by`, beside `carries_attachments`). The
+immediate path broadcasts the user row (`broadcast_user=True`) because no
+composer rendered it, and the queued path broadcasts the queue card
+(`enqueue_or_run_prompt(on_queued=...)` → `queue_push` with the entry id and a
+display-safe body) for the same reason: the client rebuilds a drained row from
+that card when `queue_pop` arrives, so without it a peer's queued message is
+missing from the live transcript until a reload. **The steer path re-validates
+containment in the steer's own tick.** The queue path re-asserts the
+admission-time containment at the drain; a steer has no drain, so
+`deliver_sent_by` takes `admission` (`containment_meta` captured right after
+`authorize_target`) and compares it against a fresh `containment_snapshot` with
+no `await` between the comparison and `steer_into_running_turn`, which itself
+does not suspend before `client.steer` (the ACP transport writes the request
+before its first `await`). A constraint newly held since admission refuses the
+message — notice on the target's transcript, SEL `queue_drain_revalidation`
+denied row, `containment_changed` (409) to a `session_send` caller, the bell for
+an origin report — rather than queueing it. The check runs again when the steer comes back
+UNAVAILABLE (the RPC suspended and landed nothing) before the message falls
+through to the queue, and the queue entry carries the ORIGINAL admission rather
+than a fresh stamp (`meta` is merged over `containment_meta` at enqueue, so the
+recorded admission wins), so the drain re-validates against what
+`authorize_target` saw even on a path that reaches the queue without either
+check. The same holds for a peer steer the turn's end never confirmed: the
+admission is registered beside the author while the steer is pending
+(`_steer_admission`, in lockstep with `_steer_sent_by`) and the requeue stamps
+the entry with it instead of a teardown-time snapshot. **A peer's queue entry is not the user's to edit**: `queue_edit_by_id` refuses
+an entry whose meta carries `sent_by` (the record would attribute the rewritten
+text to the peer, and the edit would stamp the human-origin flag onto it), the
+edit endpoint answers `peer_authored` (409), and the queue card — live
+(`queue_push` carries `sent_by`, from `deliver_sent_by` and from the requeue of
+an unconsumed peer steer alike) or hydrated (slot-detail queue items carry it)
+— offers no edit affordance and hides the provenance line; cancel stays
+available to the thread's owner. **The record is the gateway's alone.** `POST /api/chat`
+accepts a client `meta` object (knowledge, files, pastes, `sendId`) and
+persists it on the user row after value redaction, which keeps every key; a body
+naming `sent_by` would therefore persist a forged provenance record and the
+thread would attribute the person's own message to a crew member. The handler
+drops the key at its one ingress (`strip_reserved_client_meta`, before any
+reader of the client meta). A connected peer crew's rows are the other door:
+relayed (`remote_relay._apply_row`) and adopted (`remote_adopt.prepare_backfill_rows`)
+rows keep their meta, so both go through `remote_relay.peer_row_meta`, which
+drops the same gateway-stamped keys (`state.GATEWAY_STAMPED_META_KEYS`) beside
+the peer's `mid`, and the live frames a peer mirrors (`_replay_mirrored_frame`)
+lose `sent_by`, `sentBy` and `meta.sent_by` before the local broadcast
+(`_strip_peer_frame_provenance`) -- a peer-stamped record would name a LOCAL
+member as the author of text this gateway never authorized. So `sent_by` on a persisted row
+always came from this gateway's `sent_by_meta`. The pinned-prompt band skips such rows too (`utils/pinnedPrompt`
+`isPrompt`): they are user-role but not what the user typed. For the same
+reason a `sent_by` row **spends no stateless question card**: `_ChatSlot.append`
+retires unanswered stateless questions on a live `user` row because that row is
+"the user's next message", and a peer's message is not (`authored_by_another_session`,
+mirrored by the frontend's `dropStaleStatelessQuestion`), so the card, its
+record and the answer channel survive a peer's send the way they survive a
+nudge. The steer path has the same rule at its own retirement point: the
+consumed echo that settles a steer (`chat_runner._settle_consumed_steers`)
+retires the card only when at least one settled steer was the user's own, read
+from `_steer_sent_by`, which for that reason lives as long as the steer is
+pending (released by the settle, the requeue or the hard stop) rather than being
+dropped when the accepted steer stamps its row. An untitled caller (`display_title` is the sidebar placeholder) yields a
+record with an empty `title`, so the transcript names it with its localized
+"another session" fallback rather than `From "New Session…"`.
+
 ### The fence propagates to what a fenced caller creates
 
 `_caller_is_ownership_fenced` covers three populations, not two: a member DM slot,

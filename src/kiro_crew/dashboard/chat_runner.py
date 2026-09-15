@@ -5342,6 +5342,23 @@ def _settle_consumed_steers(
     previous = list(slot._pending_steers)
     remaining = settle_consumed_steers(previous, snapshot)
     settled_count = len(previous) - len(remaining)
+    # Which of the settled steers were the USER's. `_steer_sent_by` holds the
+    # author of every in-flight steer ANOTHER SESSION sent, for as long as the
+    # steer is pending (registered in `steer_into_running_turn`, released here or
+    # by the requeue / hard-stop paths). Popped for exactly the entries this echo
+    # accounted for -- a multiset difference, so a twin that stayed pending keeps
+    # its author -- and the question-card retirement below runs only when at
+    # least one settled steer was the person's own: a peer's message is not "the
+    # user's next message" the card was waiting on (see `_ChatSlot.append`).
+    _still_pending = list(remaining)
+    _human_settled = False
+    for _settled in previous:
+        if _settled in _still_pending:
+            _still_pending.remove(_settled)
+            continue
+        getattr(slot, "_steer_admission", {}).pop(_settled, None)
+        if getattr(slot, "_steer_sent_by", {}).pop(_settled, None) is None:
+            _human_settled = True
     logger.debug(
         "Steer consumed for slot %s (%d settled, %d still pending)",
         slot.key,
@@ -5388,7 +5405,7 @@ def _settle_consumed_steers(
             # own keys. When a twin stayed pending the count is 2 again and the
             # refusal stands, because then which row is which is unknowable.
             _mark_steer_row_state(state, slot, _msg, STEER_STATE_CONSUMED, remaining + [_msg])
-        if settled_count:
+        if settled_count and _human_settled:
             # A steer row is persisted as soon as the RPC accepts it, while this
             # echo is the later authority that the running turn actually consumed
             # the user's message. The agent can post an ``ask_question`` card in
@@ -5399,7 +5416,9 @@ def _settle_consumed_steers(
             # and a legacy blocking ask owns a parked wait that only its
             # round-trip may resolve. ``clear_question_pending`` also broadcasts
             # the card ids and pushes the slot status, so reconnecting clients
-            # cannot rehydrate the stale card.
+            # cannot rehydrate the stale card. A steer a PEER session sent
+            # (`_human_settled` False for every settled entry) retires nothing:
+            # the answer channel survives it as it survives a nudge.
             state.clear_question_pending(slot.key, blocking=False)
     slot._pending_steers[:] = remaining
 
@@ -5423,7 +5442,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     if not slot._pending_steers:
         return
     # circular import: session_control imports this package's modules at module level.
-    from kiro_crew.dashboard.session_control import containment_meta
+    from kiro_crew.dashboard.session_control import containment_meta, strip_sent_by_prefix
 
     requeued = slot._pending_steers[:]
     slot._pending_steers.clear()
@@ -5475,31 +5494,53 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         _sid = getattr(slot, "_steer_send_ids", {}).pop(steer_msg, "")
         if _sid:
             _meta["sendId"] = _sid
-        # Provenance is derivable, not guessed: `steer_into_running_turn` has
-        # exactly one caller (the api_chat composer branch), and app isolation
-        # confines app-surface requests to app-scoped slots — so every steer
-        # into a NON-app slot came from the authenticated human composer. That
-        # provenance is what exempts the requeued card from the LINKED drop,
-        # exactly as the composer's own queued
-        # fallback is exempt; an app slot's steers stay unexempted (False).
+        # A steer ANOTHER SESSION sent (`session_control.deliver_sent_by`) keeps
+        # its author across the requeue: the drain unions this onto the row, so
+        # the requeued row reads "From <peer>" like the accepted steer's row
+        # would have, and the authorization below knows it is not user speech.
+        _sent_by = getattr(slot, "_steer_sent_by", {}).pop(steer_msg, None)
+        if _sent_by:
+            _meta["sent_by"] = dict(_sent_by)
+        # ... and the admission it was AUTHORIZED under replaces the fresh stamp
+        # above: the steer RPC suspended, and a link the target gained meanwhile
+        # must read as newly held at the drain, not as already admitted.
+        _admission = getattr(slot, "_steer_admission", {}).pop(steer_msg, None)
+        if _sent_by and _admission:
+            _meta.update(_admission)
+        # Provenance is derivable, not guessed. A steer into a NON-app slot came
+        # from one of two doors: the authenticated human composer (api_chat), or
+        # a peer session through `deliver_sent_by`, which is the case `_sent_by`
+        # names. App isolation confines app-surface requests to app-scoped
+        # slots. So a steer with no `sent_by` into a non-app slot is the human's
+        # own speech, and THAT provenance is what exempts the requeued card from
+        # the LINKED drop, exactly as the composer's own queued fallback is
+        # exempt. A peer's steer is not user speech: it stays unexempted, so a
+        # link the target gains before the drain drops it like any other
+        # cross-session prompt; an app slot's steers stay unexempted too (False).
         qid = slot.queue_insert(
             0,
             steer_msg,
             meta=_meta,
-            directive_user_origin=not bool(getattr(slot, "_app", "")),
+            directive_user_origin=not bool(getattr(slot, "_app", "")) and not _sent_by,
         )
         try:
             content, _ = redact_exfiltration_urls(steer_msg)
             content, _ = redact_credentials(content)
-            state.broadcast_ws(
-                "queue_push",
-                {
-                    "slot": slot.key,
-                    "content": _redact_for_display(content),
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "queue_id": qid,
-                },
-            )
+            frame: dict[str, Any] = {
+                "slot": slot.key,
+                "content": _redact_for_display(content),
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "queue_id": qid,
+            }
+            if _sent_by:
+                # The card is a peer's message, like the entry: the client hides
+                # the edit affordance and the provenance line off this record,
+                # as it does for a card `deliver_sent_by` announces itself.
+                # Without it the requeued card would draw as the user's own and
+                # offer an edit the server refuses (`peer_authored`).
+                frame["sent_by"] = dict(_sent_by)
+                frame["content"] = _redact_for_display(strip_sent_by_prefix(content))
+            state.broadcast_ws("queue_push", frame)
         except Exception:
             # Broadcast is best-effort — the message is already safely in the
             # queue; clients reconcile from slot detail on next fetch.
@@ -5958,9 +5999,16 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
             "content": _redact_for_display(content),
             "queue_id": item["id"],
         }
-        _pop_attachments = attachment_meta(item.get("meta"))
-        if _pop_attachments:
-            _pop["meta"] = _pop_attachments
+        _pop_meta: dict = dict(attachment_meta(item.get("meta")) or {})
+        # The author of a row ANOTHER SESSION queued travels the same way, for
+        # the same reason: the client rebuilds the drained row from this frame,
+        # and without the record it would render a peer's message as the
+        # person's own bubble (and count it as nothing) until a reload.
+        _item_meta = item.get("meta")
+        if isinstance(_item_meta, dict) and isinstance(_item_meta.get("sent_by"), dict):
+            _pop_meta["sent_by"] = dict(_item_meta["sent_by"])
+        if _pop_meta:
+            _pop["meta"] = _pop_meta
         state.broadcast_ws("queue_pop", _pop)
         _remove_queued_by_id(slot.messages, item["id"])
 

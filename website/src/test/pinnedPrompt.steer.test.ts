@@ -67,3 +67,32 @@ describe('pinned prompt with a steer inside the turn', () => {
     expect(findPinnedPromptIdx(items, steerIdx + 1)).toBe(rowIdx(items, 'add the resolution memo'))
   })
 })
+
+describe('pinned prompt with a row another session authored', () => {
+  /** A peer member's `session_send` (or a worker's report) lands as a user-role
+   *  row carrying the gateway's `meta.sent_by`. The transcript draws it as a
+   *  "From <sender>" card; the band must not quote it as this user's prompt. */
+  function peerThenReply(withSentBy: boolean): ChatMessage[] {
+    const out: ChatMessage[] = []
+    const push = (role: string, content: string, meta?: Record<string, unknown>) =>
+      out.push({ role, content, ts: '2026-09-14T06:45:00Z', meta } as unknown as ChatMessage)
+    push('user', 'please confirm the retry test is green')
+    push('assistant', 'It is green.')
+    push('user', '[sent by session member-kirocrew-conductor via session_send]\n\nPEER-HELLO, one-line confirmation please.',
+      withSentBy ? { sent_by: { session_key: 'member-kirocrew-conductor', via: 'session_send', member_slug: 'kirocrew-conductor' } } : undefined)
+    push('assistant', 'Got it: PEER-HELLO received.')
+    return out
+  }
+
+  it('skips the peer row and pins the last prompt the user typed', () => {
+    const items = applyRunningState(groupDisplayItems(peerThenReply(true)), false)
+    const pinned = findPinnedPromptIdx(items, items.length)
+    expect(pinned).toBe(rowIdx(items, 'please confirm the retry test'))
+  })
+
+  it('a bare user row with the same text but no record is still a prompt (control)', () => {
+    const items = applyRunningState(groupDisplayItems(peerThenReply(false)), false)
+    const pinned = findPinnedPromptIdx(items, items.length)
+    expect(pinned).toBe(rowIdx(items, 'PEER-HELLO'))
+  })
+})
