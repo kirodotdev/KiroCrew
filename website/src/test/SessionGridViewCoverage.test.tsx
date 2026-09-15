@@ -471,6 +471,34 @@ describe('SessionGridView — picker list', () => {
     expect(titles[3]).toContain('Older one')
   })
 
+  it('ranks recency by INSTANT, not by timestamp text', async () => {
+    // The test above cannot catch this: its stamps are same-shaped, so text
+    // order and instant order agree and either implementation passes.
+    //
+    // `last_activity_ts` is the raw transcript `ts`, forwarded verbatim by
+    // slot_projection, and the backend states those rows do NOT share one
+    // format (`history.transcript_sort_key`). Two aware stamps under different
+    // offsets separate the two orderings: `09:00+08:00` is 01:00Z and
+    // `02:30+00:00` is 02:30Z, so the LATER session carries the SMALLER string
+    // and a text compare lists it second. Both carry an offset, so the instants
+    // are the same on any runner — no host-timezone dependency.
+    const EARLIER = '2026-09-14T09:00:00+08:00'
+    const LATER = '2026-09-14T02:30:00+00:00'
+    expect(EARLIER.localeCompare(LATER)).toBeGreaterThan(0)
+    expect(Date.parse(EARLIER)).toBeLessThan(Date.parse(LATER))
+
+    seedApi([
+      { key: 'stale', title: 'Stale one', last_activity_ts: EARLIER },
+      { key: 'live', title: 'Live one', last_activity_ts: LATER },
+    ])
+    renderGrid(null)
+
+    await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(2))
+    const titles = rowsOf(onlyPicker()).map((r) => r.textContent)
+    expect(titles[0]).toContain('Live one')
+    expect(titles[1]).toContain('Stale one')
+  })
+
   it('ranks a session waiting on your answer with the approvals, above running', async () => {
     // Both are things the user owes the session, and this list is where a pane's
     // session gets picked — so the ones that cannot advance come first, whatever
