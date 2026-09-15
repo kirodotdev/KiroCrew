@@ -59,6 +59,12 @@ export interface ChatEmbedProps {
    */
   onSend?: (message: string) => Promise<unknown> | void
   /**
+   * Open a file in the host's file viewer. Embed hosts with no viewer leave
+   * it unset (capability by omission, like `onSend`): attachment cards still
+   * render, without an opener.
+   */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /**
    * Content rendered in normal flow directly ABOVE the composer, inside the
    * embed's own column, so it always sits on top of the input regardless of the
    * composer's height. A host uses this for a docked quote / reference bar
@@ -89,7 +95,7 @@ export const EMBED_PAGE_LIMIT = 200
 /** The handler clamps `limit` here; a wider ask is silently this. */
 export const EMBED_PAGE_LIMIT_MAX = 500
 
-function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend, aboveComposer }: ChatEmbedProps) {
+function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend, onFileOpen, aboveComposer }: ChatEmbedProps) {
   const api = useAppApi()
   const lastHashRef = useRef('')
   // The transcript is ChatMessageList's virtualized mount: it owns the scroller
@@ -319,6 +325,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         onApprove={approve}
         onApproveBatch={approveBatch}
         canTrust
+        onFileOpen={onFileOpen}
         transcript={{
           sessionId: `embed:${slotKey}`,
           followOutput: !!startAtBottom,
