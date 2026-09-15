@@ -87,11 +87,6 @@ _FAKE_HEADER = "TIERS = {tiers!r}\n"
 #: such attribute at all, which is a different tree from one whose check allows
 #: everything -- and the two must not be conflated.
 _FAKE_TIER_SOURCE = {
-    "sensitive-path": """
-
-def is_sensitive_path(value, base_dir=None):
-    return value in TIERS["sensitive-path"]
-""",
     "sensitive-bash": """
 
 def is_sensitive_bash_command(command, *, enabled_ids=None):
@@ -109,7 +104,7 @@ def is_denied(command, *args, **kwargs):
 """,
 }
 
-_TIER_NAMES = ("sensitive-path", "sensitive-bash", "exfil", "deny-rules")
+_TIER_NAMES = ("sensitive-bash", "exfil", "deny-rules")
 
 
 def _fake_tree(
@@ -221,9 +216,9 @@ def test_newly_refused_golden_path_is_a_regression(staged):
     assert "head refuses at the `deny-rules` tier" in text
 
 
-@pytest.mark.parametrize("tier", ["sensitive-path", "sensitive-bash", "exfil"])
+@pytest.mark.parametrize("tier", ["sensitive-bash", "exfil"])
 def test_a_regression_on_a_non_catalog_tier_is_caught_and_named(staged, tier):
-    """The path fence and the exfil shapes are deny tiers too, and this gate runs on them.
+    """The exfil shapes are a deny tier too, and this gate runs on them.
 
     A catalog-only differential reads a tightening of ``paths.py`` or ``exfil.py``
     as clean -- both are inside this workflow's trigger paths -- and the green then
@@ -310,22 +305,28 @@ def test_the_measured_checks_are_the_checks_the_tool_gate_applies():
         if line.strip() and not line.startswith(" " * 12):
             break
         body.append(line)
-    applied = set(re.findall(r"\b(\w+)\(target\b", "\n".join(body)))
+    body_text = "\n".join(body)
+    applied = set(re.findall(r"\b(\w+)\(target\b", body_text))
     assert applied == {
-        "is_sensitive_path",
+        "sensitive_path_refusal",
         "is_sensitive_bash_command",
         "audit_bash_exfiltration",
     }, f"the tool gate's per-target checks changed: {sorted(applied)}"
+    # The path tier reads a PATH and the gate exempts shell text from it; this
+    # differential classifies shell rows only, so its composite is the other three.
+    assert re.search(
+        r"if not is_shell:\s*\n\s*reason = sensitive_path_refusal\(target\)", body_text
+    ), "the gate's shell-text exemption of the path tier moved; re-derive the composite"
+    shell_applied = applied - {"sensitive_path_refusal"}
 
     # ``is_denied`` is applied by the same gate, outside the per-target loop.
     assert "is_denied(" in source
 
     # The DECLARED table, not a regex over call sites: a tier dropped from the table
-    # leaves its helper's call behind, so grepping calls would still see four.
+    # leaves its helper's call behind, so grepping calls would still see them all.
     measured = {attribute for _, attribute in deny_diff._TIERS}
-    assert measured == applied | {"is_denied"}, f"deny_diff measures {sorted(measured)}"
-    assert [name for name, _ in deny_diff._TIERS][:3] == [
-        "sensitive-path",
+    assert measured == shell_applied | {"is_denied"}, f"deny_diff measures {sorted(measured)}"
+    assert [name for name, _ in deny_diff._TIERS][:2] == [
         "sensitive-bash",
         "exfil",
     ], "tier order must follow the gate's own order"

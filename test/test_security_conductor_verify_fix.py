@@ -98,10 +98,6 @@ def _refuses(command):
     return MARKER is not None and MARKER in command
 
 
-def is_sensitive_path(command, *args, **kwargs):
-    return TIER == "is_sensitive_path" and _refuses(command)
-
-
 def is_sensitive_bash_command(command, *args, **kwargs):
     if TIER == "is_sensitive_bash_command" and _refuses(command):
         return "stub sensitive: %s" % MARKER
@@ -185,7 +181,7 @@ def fence(
 ) -> dict:
     """What fake fence a test wants staged; :func:`run_fix` writes it.
 
-    ``tier`` names which of the four checks refuses the marker; ``omit`` deletes one
+    ``tier`` names which of the three checks refuses the marker; ``omit`` deletes one
     check from the fake module, which is what a tree missing a tier looks like.
     """
     return {"marker": marker, "available": available, "tier": tier, "omit": omit}
@@ -460,7 +456,6 @@ class TestABrokenGoldenPathRejectsTheFix:
     @pytest.mark.parametrize(
         "tier, tag",
         [
-            ("is_sensitive_path", "sensitive-path"),
             ("is_sensitive_bash_command", "sensitive-bash"),
             ("audit_bash_exfiltration", "exfil"),
             ("is_denied", "deny-rules"),
@@ -497,7 +492,7 @@ class TestHoldsIsUnreachableWhileAnythingIsUnverifiable:
     def test_a_tree_missing_one_tier_is_unverifiable(
         self, staged: Path, tmp_path: Path, worktree: Path
     ) -> None:
-        """Three checks out of four is coverage lost, not three permits."""
+        """Two checks out of three is coverage lost, not two permits."""
         db = tmp_path / "findings.db"
         a_golden_path(staged, command="gh pr view 1 --json state")
         install_verifier(staged, VERIFIER_REJECTED)
@@ -1162,7 +1157,7 @@ class TestTheShippedCorpusIsALiveGate:
     def test_every_shipped_shell_row_is_permitted_by_the_real_deny_composite(
         self, mod, rows: list[dict]
     ) -> None:
-        """All four tiers, in the tool gate's order -- the same composite the probe
+        """Every tier the gate applies to shell text, in its order -- the same composite the probe
         applies and `scripts/deny_diff.py` measures."""
         import kiro_crew.security as security
 

@@ -317,6 +317,19 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # directories. Called from a worker thread, never the event loop --
         # ``test/test_acp_pi_backend.py`` pins that.
         "acp/client.py::_verify_pi_gate",
+        # The sensitive-path resolver helper (security/pathres_helper.py). Nothing
+        # about the spawn is agent-influenced: the argv is fixed
+        # (``sys.executable -I -c <helper source captured at import>``, never the
+        # file by path, so an edit to it waits for a restart), the env is what
+        # the interpreter needs to start (PATH; SystemRoot/TEMP/TMP on Windows), and
+        # the agent-supplied PATHS travel as JSON DATA on the child's stdin, never
+        # as arguments. It cannot route through sandboxed_spawn_argv because it IS
+        # part of the gate that decides what the sandboxed agent may touch: it
+        # canonicalises paths on the gateway's behalf so a sandboxed shell's symlink
+        # cannot mask a credential store, and a helper confined to the agent's own
+        # sandbox view would resolve exactly the masked spellings the gate exists to
+        # see through.
+        "security/pathres_client.py::_spawn",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent

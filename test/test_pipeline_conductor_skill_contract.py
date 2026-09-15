@@ -465,8 +465,8 @@ class TestSpecCheckReadsThroughTheSensitivePathGate:
         """Plant a credential store and classify ONLY it as sensitive.
 
         Returns the planted path. ``safe_read_file`` calls the bare
-        ``is_sensitive_path`` name out of ``kiro_crew.hooks``' module globals, so
-        patching the attribute there intercepts the real call site rather than a
+        ``sensitive_path_refusal`` name out of ``kiro_crew.hooks``' module globals,
+        so patching the attribute there intercepts the real call site rather than a
         copy. The wrapper compares canonical paths, which is what makes the
         symlink case meaningful: the link resolves to the planted target.
         """
@@ -477,17 +477,17 @@ class TestSpecCheckReadsThroughTheSensitivePathGate:
         # "malformed spec: verifier.repro_gate ...", never a refusal.
         cred.write_text(json.dumps({"verifier": {"repro_gate": "pod-required"}}), encoding="utf-8")
 
-        real_is_sensitive_path = hooks.is_sensitive_path
+        real_refusal = hooks.sensitive_path_refusal
         planted = os.path.realpath(str(cred))
 
         def classify(path_str, *args, **kwargs):
             if os.path.realpath(os.path.expanduser(str(path_str))) == planted:
-                return True
+                return f"Blocked: access to sensitive path: {path_str}"
             # Everything else is the real gate's call, so the ordinary-spec
             # assertions below are answered by production code.
-            return real_is_sensitive_path(path_str, *args, **kwargs)
+            return real_refusal(path_str, *args, **kwargs)
 
-        monkeypatch.setattr(hooks, "is_sensitive_path", classify)
+        monkeypatch.setattr(hooks, "sensitive_path_refusal", classify)
         return cred
 
     def test_a_spec_path_inside_a_credential_store_is_refused_not_parsed(
