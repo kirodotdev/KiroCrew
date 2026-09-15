@@ -1190,6 +1190,20 @@ HTTP receipts still confirm delivery but never insert a skipped bubble.
 Uncorrelated sends, actual queued/steered sends, and in-band/relay streams keep
 their existing event paths.
 
+### Queue stack display order and motion
+
+The expanded `QueueStack` lists messages top-down in run order: the next message
+is first, `Run sooner` moves a card up, and `Run later` moves it down. The
+collapse chevron sits on the bottom card beside the composer. The collapsed
+stack keeps the next message in front, with later messages peeking above it.
+
+The same card elements persist through expansion and collapse. The front card
+stays above the others and rises first on expansion; the remaining cards follow
+after `LIFT_STAGGER_S`. Collapse reverses that timing so the front card lands
+last. Adding, removing or reordering messages introduces no stagger. Reduced
+motion makes the cards, stack height and composer margin change immediately.
+Reorder controls retain their queue-id callbacks and endpoint behavior.
+
 ### Queue turn boundary finalize
 
 A successor turn dispatched WITHOUT a `chat_done` -- the tail-drain starting a

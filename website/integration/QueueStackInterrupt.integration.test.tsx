@@ -10,6 +10,7 @@ vi.mock('framer-motion', () => ({
   motion: { div: React.forwardRef(({ children, ...props }: any, ref: any) => <div ref={ref} {...props}>{children}</div>) },
   useMotionValue: () => ({ set: vi.fn(), get: () => 0, jump: vi.fn() }),
   useSpring: () => ({ set: vi.fn(), get: () => 0, jump: vi.fn() }),
+  useReducedMotion: () => false,
 }))
 
 import QueueStack from '../src/components/QueueStack'

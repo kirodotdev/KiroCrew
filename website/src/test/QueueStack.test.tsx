@@ -3,8 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 
-// QueueStack renders framer-motion cards; we only exercise the inline
-// EditInput, which is plain DOM and needs no special test polyfill.
+// Exercise card controls in the DOM; browser verification covers spring geometry.
 
 function queued(content: string, queueId: string): ChatMessage {
   return { role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId } } as ChatMessage
@@ -16,6 +15,41 @@ function openEditor() {
   fireEvent.click(pencil)
   return screen.getByLabelText('Edit queued message') as HTMLTextAreaElement
 }
+
+describe('QueueStack expanded controls', () => {
+  it('keeps card identity while moving the collapse affordance to the bottom card', () => {
+    const { container } = render(
+      <QueueStack messages={[queued('first', 'q1'), queued('second', 'q2'), queued('third', 'q3')]} />,
+    )
+    const toggle = container.querySelector('[role="button"]')!
+    const cards = Array.from(container.querySelectorAll('.queue-card'))
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(cards[2].querySelector('.rotate-180')).not.toBeNull()
+    expect(cards[0].querySelector('.rotate-180')).toBeNull()
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    const collapsed = container.querySelectorAll('.queue-card')
+    cards.forEach((card, index) => expect(collapsed[index]).toBe(card))
+  })
+
+  it('points sooner up and later down with queue ids and first/last boundaries', () => {
+    const onReorder = vi.fn()
+    const { container } = render(
+      <QueueStack messages={[queued('first', 'q1'), queued('second', 'q2')]} onReorder={onReorder} />,
+    )
+    fireEvent.click(container.querySelector('[role="button"]')!)
+    const sooner = screen.getAllByLabelText('Run sooner') as HTMLButtonElement[]
+    const later = screen.getAllByLabelText('Run later') as HTMLButtonElement[]
+    expect(sooner[0]).toBeDisabled()
+    expect(later[1]).toBeDisabled()
+    expect(sooner[1].querySelector('.lucide-arrow-up')).not.toBeNull()
+    expect(later[0].querySelector('.lucide-arrow-down')).not.toBeNull()
+    fireEvent.click(sooner[1])
+    fireEvent.click(later[0])
+    expect(onReorder.mock.calls).toEqual([['q2', 'next'], ['q1', 'later']])
+  })
+})
 
 describe('QueueStack inline edit', () => {
   it('commits a real change on Enter', () => {
