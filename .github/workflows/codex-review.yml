@@ -393,9 +393,7 @@ jobs:
           # transient class with a bounded retry; a COMMENTS read that never
           # succeeds fails this run CLOSED while naming the read as the cause
           # -- re-running the job is cheaper than re-litigating disposed
-          # findings. (The collaborator-permission read below still fail-opens
-          # to "not a writer"; that residual half is tracked separately and
-          # needs 404-vs-transport handling, not this mechanical shape.)
+          # findings.
           ledger_comments=""
           ledger_read_ok=""
           for attempt in 1 2 3; do
@@ -416,16 +414,54 @@ jobs:
           disp_authors="$(printf '%s' "$comments_json" \
             | jq -r '.[] | select((.body // "") | startswith("<!-- ai-review-disposition ")) | (.user.login // empty)' 2>/dev/null \
             | sort -u || true)"
+          # The authority read that decides whose dispositions this ledger
+          # trusts. A permission read that FAILED is not a read that answered
+          # "no": an empty `perm` matches no `case` arm below, so a transient
+          # 5xx resolves a repository writer to non-writer and drops the
+          # records they already ruled on. The two are split, the same contract
+          # ai-review-human-override.yml applies to this API:
+          #   HTTP 404 -> the API answering "not a collaborator". A legitimate
+          #     negative; resolves to non-writer, no retry.
+          #   any other failure -> unknown. The common case is transient, so
+          #     absorb it with a bounded three attempts and a short backoff
+          #     (<= 3s added), then fail this run CLOSED while NAMING the read.
+          #     The bound is what keeps a fail-closed read from wedging the
+          #     lane: a permanently failing API cannot hold the job open.
+          # The read's stderr goes to an absolute `mktemp` file rather than a
+          # workspace path, so nothing committed at that name can capture the
+          # write or abort the step.
           writers="[]"
+          perm_err="$(mktemp)"
           for author in $disp_authors; do
-            perm="$(gh api "repos/$REPO/collaborators/$author/permission" \
-              --jq '.permission' 2>/dev/null || true)"
+            perm=""
+            perm_read_ok=""
+            for attempt in 1 2 3; do
+              if perm="$(gh api "repos/$REPO/collaborators/$author/permission" \
+                --jq '.permission' 2>"$perm_err")"; then
+                perm_read_ok=1
+                break
+              fi
+              if grep -qiE 'HTTP 404|Not Found' "$perm_err"; then
+                perm=""
+                perm_read_ok=1
+                break
+              fi
+              echo "Reading $author's collaborator permission failed on attempt $attempt."
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            if [ -z "$perm_read_ok" ]; then
+              echo "::error::Could not read $author's collaborator permission after 3 attempts, so this step cannot tell a non-writer from an unreadable permission API and would drop a writer's dispositions from the round-convergence ledger. Failing closed -- re-run this job."
+              exit 1
+            fi
             case "$perm" in
               admin|maintain|write)
                 writers="$(printf '%s' "$writers" | jq --arg a "$author" '. + [$a]' 2>/dev/null || printf '[]')"
                 ;;
             esac
           done
+          rm -f "$perm_err"
           ledger_full="$(printf '%s' "$comments_json" \
             | jq -r --argjson writers "$writers" '[.[]
                 | select((.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- ai-review-human-override ")))
