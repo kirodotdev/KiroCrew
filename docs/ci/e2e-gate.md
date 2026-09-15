@@ -540,9 +540,14 @@ be set for an operator gateway. The strict reporter enforces the executed-test f
 
 Everything above is `ubuntu-latest`. `test/e2e/test_gateway_boot_matrix.py` is the
 one asset that boots a real gateway on **macOS and Windows too**, and `ci.yml`'s
-`e2e-boot-matrix` job is what runs it: `strategy.matrix.os` of `ubuntu-latest`,
-`macos-15` and `windows-latest`, `fail-fast: false`, `needs: [await-fast-gate]`,
-20 minutes.
+`e2e-boot-matrix` job is what runs it: `fail-fast: false`,
+`needs: [await-fast-gate]`, 20 minutes, and `strategy.matrix.os` of `ubuntu-latest`
+and `windows-latest` on a pull request, plus `macos-15` on the push-to-main path.
+The mac leg is event-conditional for the queue, not the runtime: it waited ~200
+minutes for a `macos-15` runner on every pull request and was the only leg that did,
+while on main the wait costs nobody a merge. The real-Darwin boot stays covered
+twice — that leg, and `nightly.yml`'s `pod-scenarios`, which boots a real
+service-managed pod on `macos-15`.
 
 ### Why it exists
 

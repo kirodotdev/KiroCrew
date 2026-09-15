@@ -1,0 +1,170 @@
+name: macOS Tests (on demand)
+
+# The full macOS backend suite, on the pull-request path, behind three opt-in
+# switches (see the `decide` job). This is what is left of `ci.yml`'s macOS pytest
+# lane in front of a pull request: the SAME suite, run by calling
+# platform-tests.yml -- the nightly's workflow -- against the PR's own head, but
+# only for the pull requests that ask for it or are drawn for it.
+#
+# WHY IT IS ITS OWN WORKFLOW AND NOT A JOB IN ci.yml. A macOS job inside ci.yml
+# holds that workflow's COMPLETION even with `continue-on-error: true`, and
+# `pr-readiness.yml` -- which produces this repository's only required check --
+# triggers on ci.yml's `workflow_run` completion. So an "advisory" macOS job in
+# ci.yml is not advisory at all: it still puts a 176-213 minute runner queue in
+# front of the merge button, which is exactly what moving the lane was for. Living
+# in a separate workflow that readiness does not evaluate (it is absent from both
+# `on.workflow_run.workflows` and the `workflow_specs` lane list) makes advisory
+# mean advisory. test_macos_platform_tests_gate.py pins that absence.
+#
+# WHAT IT BUYS, given it usually reports late. The queue is unchanged for the pull
+# requests that run it, so the verdict often lands after the merge. It is still
+# worth having: it names ONE pull request, where the nightly names a day of
+# merges, and it arrives hours rather than up to a day later.
+#
+# WHY THE WHOLE SUITE AND NOT A SUBSET. Calling platform-tests.yml means the PR
+# path and the nightly run byte-identical steps: the three shards, the darwin gap
+# lists, and the three admission-gating contracts asserted by name in shard 1
+# (peer identity, the compiled Seatbelt private-memory boundary, the terminal
+# handler suite that test/macos-collect-ignore.txt keeps out of every shard). A
+# hand-maintained subset here would be a second copy of those steps that could
+# drift from the nightly's without any test noticing.
+
+on:
+  pull_request:
+    branches: [main]
+    # `labeled` is on the list because the `decide` job is cheap enough to afford
+    # it: the label is meant to act the moment it is applied, and re-running a
+    # ~1-minute Linux job on every bot label costs nothing. ci.yml cannot make
+    # the same choice (its comment on `ci-full-run` says why: every label would
+    # re-run the whole matrix), which is why its two label switches take effect
+    # only on the next push.
+    #
+    # There is deliberately NO `paths:` filter here. A `paths:` filter applies to
+    # EVERY event type, so it would silently discard the `labeled` event on any
+    # pull request that does not touch a darwin-sensitive file -- and a PR that
+    # touches a shared helper the path list cannot foresee is precisely the one
+    # someone reaches for the label on. The path test lives in `decide` instead,
+    # where it is one of three switches rather than a gate in front of them.
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-on-demand-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Three switches, any one of which runs the suite. All on Linux, ~1 minute,
+  # so the macOS runner is requested only when a switch is on.
+  #
+  #   paths   -- the diff touches a darwin-sensitive file (list below). The
+  #              default reason; roughly 5 percent of pull requests.
+  #   label   -- the PR carries `ci:macos` (same convention as ci.yml's
+  #              `ci:pod-scenarios`). The on-demand path for a fixer who
+  #              repairs a red nightly, and the one to reach for when a change
+  #              to a shared helper might have a darwin edge the path list does
+  #              not know about.
+  #   sample  -- one pull request in twenty, chosen by the HEAD SHA. What it
+  #              buys over the nightly is ATTRIBUTION, not speed: it runs the
+  #              suite against one pull request's own head, so a darwin break in
+  #              a file outside the path list is pinned to ONE PR where the
+  #              nightly pins it to a day of merges. The verdict lands before
+  #              merge only on a PR that stays open longer than the runner queue
+  #              (see the header); on the rest it is the same-day, single-suspect
+  #              version of the nightly's evidence. Chosen by SHA and not by
+  #              `$RANDOM` on purpose: the same commit always gets the same
+  #              answer, so a re-run cannot make a red run disappear, and a
+  #              rebase re-rolls. `github.event.pull_request.head.sha` rather
+  #              than `github.sha` because the latter is the synthetic merge
+  #              commit, which changes whenever main moves.
+  #
+  # Whatever the reason, the lane stays advisory: it is absent from both of
+  # pr-readiness.yml's lists, and test_macos_platform_tests_gate.py pins that
+  # absence, so none of these switches can put a macOS queue in front of a merge.
+  decide:
+    name: Decide whether the macOS suite runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.verdict.outputs.run }}
+      reason: ${{ steps.verdict.outputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # dorny/paths-filter with `token: ''` diffs locally against the PR base
+          # commit, so that commit must be present.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          # Same reason as ci.yml's `changes` job: an empty token switches the
+          # action to local git change detection, so it spends none of the
+          # installation-token quota every workflow in this repository shares.
+          token: ''
+          filters: |
+            darwin:
+              # The macOS-only identity primitives (LOCAL_PEERPID for the peer
+              # pid, libproc for the process start id) and their callers.
+              - "src/kiro_crew/mcp_gateway/socketsec.py"
+              - "src/kiro_crew/peer_resolve.py"
+              - "src/kiro_crew/platform_compat.py"
+              # The Seatbelt profile the private-memory boundary compiles.
+              - "src/kiro_crew/sandbox.py"
+              # launchd is the macOS pod backend.
+              - "src/kiro_crew/pod/**"
+              # darwin PTY behaviour.
+              - "src/kiro_crew/dashboard/handlers/terminal.py"
+              - "src/kiro_crew/dashboard/terminal_commands.py"
+              - "src/kiro_crew/subagent_manager/terminal.py"
+              # The contracts themselves, and the two darwin gap lists a change
+              # here can silently widen.
+              - "test/test_socketsec.py"
+              - "test/test_member_memory_filesystem.py"
+              - "test/test_terminal_handler.py"
+              - "test/macos-expected-failures.txt"
+              - "test/macos-collect-ignore.txt"
+              # This lane and the workflow it calls.
+              - ".github/workflows/macos-on-demand.yml"
+              - ".github/workflows/platform-tests.yml"
+
+      - name: Combine the three switches
+        id: verdict
+        env:
+          PATHS_HIT: ${{ steps.filter.outputs.darwin }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:macos') }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SAMPLE_ONE_IN: "20"
+        run: |
+          set -euo pipefail
+          # The first 8 hex digits of the head SHA, read as an integer, modulo
+          # the sample rate. Deterministic per commit (see the job comment).
+          bucket=$(( 16#${HEAD_SHA:0:8} % SAMPLE_ONE_IN ))
+          reason=""
+          if [ "$PATHS_HIT" = "true" ]; then reason="paths"; fi
+          if [ "$LABELLED" = "true" ]; then reason="${reason:+$reason,}label"; fi
+          if [ "$bucket" -eq 0 ]; then reason="${reason:+$reason,}sample"; fi
+          if [ -n "$reason" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "reason=$reason" >> "$GITHUB_OUTPUT"
+            echo "::notice::macOS suite runs on ${HEAD_SHA:0:12}: $reason (sample bucket $bucket of $SAMPLE_ONE_IN)"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "reason=none" >> "$GITHUB_OUTPUT"
+            echo "macOS suite skipped on ${HEAD_SHA:0:12}: no darwin path, no ci:macos label, sample bucket $bucket of $SAMPLE_ONE_IN"
+          fi
+
+  # The nightly's own workflow, called against this pull request's head. Same
+  # three shards, same 40-minute cap per shard, same contracts -- and the same
+  # runner queue, which is why it is behind `decide` and outside readiness.
+  platform-tests:
+    name: macOS Tests
+    needs: [decide]
+    if: needs.decide.outputs.run == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/platform-tests.yml

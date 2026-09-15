@@ -1,0 +1,248 @@
+name: Platform Tests
+
+# The macOS regression lane, and the only lane that runs the backend suite on real
+# Darwin. It ran on every pull request until it moved here, and the reason it moved
+# is QUEUEING, not runtime.
+#
+# MEASURED on three consecutive green PR runs (34866269260, 34864945056,
+# 34863753125): the macOS jobs waited 176, 190 and 213 minutes for a macos-15
+# runner, then ran for 26-33. Everything non-macOS in `ci.yml` finished at 78-98
+# minutes; the runs took 248-268. `PR Readiness` -- the repository's only required
+# check -- is triggered by `workflow_run` on ci.yml's completion, so that queue was
+# sitting on the merge button of every pull request. In the same window this lane
+# failed 0 times and was CANCELLED 129 times, usually still queued when a newer
+# push superseded the run: it billed every pull request ~2.8 hours and typically
+# returned no verdict.
+#
+# Linux escapes this because `changes` routes it to this repository's CodeBuild
+# runners. There is no self-hosted macOS pool, so the queue is not tunable here.
+# At nightly hours it is also mostly absent: the macOS legs of the last three
+# nightlies queued 0-33 minutes (runs 34812522447, 34742163687, 34677364214),
+# which is what makes this workflow's placement cheap.
+#
+# WHAT REPLACES IT ON THE PULL REQUEST PATH
+#   - macos-on-demand.yml -- THIS workflow, called against a pull request's own
+#     head when the diff touches a darwin-sensitive path, the PR carries the
+#     `ci:macos` label, or the head SHA falls in a 1-in-20 sample. Outside
+#     readiness' lane list, so it can never hold a merge.
+#   - ci.yml's `e2e-boot-matrix` still boots a real gateway on macos-15, on the
+#     push-to-main path.
+#   - nightly.yml's `pod-scenarios` boots a real service-managed pod on macos-15.
+#
+# HOW A FAILURE REACHES A HUMAN. It GATES PUBLICATION: nightly.yml's publish jobs
+# `needs:` the caller job, so a red macOS suite means no bytes reach a
+# nightly-channel user, and the nightly run shows red in Actions the way every
+# other red nightly does. Deliberately not a `needs:` of the BUILD jobs -- the
+# artifacts are the evidence a fixer needs, and the same shape is already
+# load-bearing for `dependency-vulnerability-gate` (see nightly.yml, and
+# test_dependency_vulnerability_gate.py which pins it). Each shard uploads its
+# pytest log so a fixer can read the failing node ids without re-running.
+#
+# `workflow_dispatch` is the escape hatch: a fixer can run this against a branch
+# from the Actions UI instead of waiting for the next nightly. For a single
+# pull request there is also the `ci:macos` label, which makes
+# macos-on-demand.yml call this workflow against that PR's own head.
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  # macOS regression line. Until this job existed macOS had ZERO pytest coverage in
+  # CI -- the macOS runners appeared only in build.yml, build-desktop.yml and
+  # sign-and-notarize.yml, all of which merely build and notarize the desktop
+  # app. That left the macOS-only identity primitives (LOCAL_PEERPID for the
+  # peer pid, libproc for the process start id) verified by nothing, on the
+  # platform several maintainers develop on.
+  #
+  # It shipped SCOPED to a 51-file glob (gateway, socketsec, platform-compat, pod,
+  # MCP-apps) because a full run needed its own exclusion burn-down first. That
+  # burn-down is done, so this job now runs the WHOLE suite in duration-balanced
+  # shards, the same shape as backend-test-windows. 51 of 2094 test files was 2.4
+  # percent of the tree: a POSIX-but-not-Linux regression outside that glob (the
+  # `ru_maxrss` unit difference, BSD `ps`/`stat` argv, case-insensitive HFS+ path
+  # comparison) had no CI that could catch it.
+  #
+  # macos-15 (Apple Silicon), pinned by label rather than macos-latest: macos-14 is
+  # deprecated by GitHub, and macos-latest moves under us, which would turn an image
+  # rollout into an unexplained red on an unrelated pull request.
+  #
+  # 3 shards, not Windows' 4. macOS bills at 10x Linux per minute, so the shard
+  # count is the billing knob; 3 is the smallest count that keeps the slowest shard
+  # inside a budget comparable to the Windows job.
+  backend-test-macos:
+    name: Backend Tests (macOS)
+    runs-on: macos-15
+    # 40, matching backend-test-windows. MEASURED on the first full-suite run of
+    # this branch (run 34288884863): shards 1 and 2 finished their pytest step in
+    # 20.3 and 20.1 minutes, and shard 3 was still running past 27, so a 30-minute
+    # cap cancelled it. 1.5x the slowest observed shard is therefore at least 40.
+    # This is still a spend guard, not just a hang guard: a runaway macOS shard
+    # costs about ten times a Linux one.
+    timeout-minutes: 40
+    strategy:
+      # Full failure picture across shards, same as backend-test.
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
+    env:
+      SHARD_COUNT: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # `enable-cache: true` in ci.yml, false HERE, and the difference is the
+          # move itself: this workflow is reachable from nightly.yml and it GATES
+          # PUBLICATION, which puts it inside the publish graph
+          # test_workflow_secret_and_cache_scope.py walks. An Actions cache is
+          # writable from any branch and readable by a tag run, so on a lane that
+          # decides whether released bytes ship, a restored entry is an input a
+          # lower-trust context can influence -- "a gate that can be handed its own
+          # answer is not a gate". `enable-cache` defaults to `auto`, which is ON
+          # for a hosted runner in a uv-managed project, so omitting the key is not
+          # neutral and an explicit false is required. The cost is one cold uv
+          # resolve per shard at nightly hours, against a lane whose runners
+          # already arrive in 0-33 minutes.
+          enable-cache: false
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # The macOS peer-identity check is admission-gating: gatewayd refuses any
+      # connection that is not MATCH, so this canary -- a real transport.serve /
+      # connect round trip asserting MATCH on real Darwin hardware -- is the ONLY
+      # evidence that the gate admits its own peer. `pytest -q` does not name
+      # passing tests and a skip exits 0, so a canary that quietly stopped running
+      # (a changed skipif, a collection change) would leave this job green while
+      # the gate it proves went unverified. That is the same blindness that let
+      # four mutation-verified tests sit unrun inside conftest's Windows
+      # collect_ignore. Run it by node id and fail unless it actually PASSED.
+      #
+      # Kept on every shard, not folded into the sharded run: the sharded step is
+      # `-q` and cannot prove a named test passed, and pytest-split would put this
+      # node id on exactly one shard, so a shard-1-only canary would go unrun
+      # whenever that shard died early.
+      - name: Assert the macOS peer-identity canary runs (not skipped)
+        run: |
+          set -o pipefail
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves" \
+            | tee canary.log
+          # Anchored, and this one was the worst of the family: an unanchored
+          # "1 passed" matches "11 passed", "101 passed" and "231 passed", so the
+          # pin held for almost any outcome. Measured.
+          grep -qE '(^|[^0-9])1 passed' canary.log || {
+            echo "::error::macOS peer-identity canary did not PASS (skipped or not collected)"
+            exit 1
+          }
+
+      - name: Require real Darwin private-memory Seatbelt enforcement
+        run: |
+          set -o pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_member_memory_filesystem.py::test_darwin_kernel_private_memory_boundary" \
+            | tee member-memory-canary.log
+          grep -q "2 passed" member-memory-canary.log || {
+            echo "::error::Darwin V1 and private-memory canaries must both PASS (no skips)"
+            exit 1
+          }
+      - name: Terminal handler suite (verbose, so a darwin PTY hang names its test)
+        # test/macos-collect-ignore.txt keeps this file out of the shards and this
+        # step runs it instead: -v -n0 so every test name streams to the log the
+        # moment it starts, and a 90 s per-test timeout so a PTY read that darwin
+        # never wakes fails by name in the log rather than as 180 s of silence
+        # inside a -q shard. Runs on shard 1 only; the file is one process either way.
+        if: matrix.group == 1
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -o pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov --timeout=90 -o faulthandler_timeout=75 \
+            -p no:cacheprovider test/test_terminal_handler.py 2>&1 | tee terminal.log
+          # A FLOOR, not "at least one pass". This file carries ~277 tests and this
+          # step is its only execution on macOS (test/macos-collect-ignore.txt keeps
+          # it out of every shard, and test/windows-collect-ignore.txt out of the
+          # Windows ones), so what has to be caught here is a COLLECTION COLLAPSE --
+          # and `[1-9][0-9]* passed` was satisfied by "1 passed, 276 skipped". The
+          # count is read numerically instead: growth is fine, a handful of
+          # platform skips is fine, and a collapse to a few tests is not. `pipefail`
+          # above already reds the step on a real test failure, so this guards only
+          # the "it did not really run" direction.
+          passed=$(sed -n 's/.*[^0-9]\([0-9][0-9]*\) passed.*/\1/p' terminal.log | tail -1)
+          echo "terminal handler suite: ${passed:-0} passed"
+          if [ "${passed:-0}" -lt 200 ]; then
+            echo "::error::terminal handler suite reported only ${passed:-0} passes on macOS; expected ~277 (collection collapse, mass skip, or the file was not collected)"
+            exit 1
+          fi
+
+      - name: Run tests (macOS shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        # Flags copied verbatim from backend-test-windows, including
+        # --max-worker-restart=0. That flag's stated reason is Windows-specific
+        # (no SIGALRM, so pytest-timeout kills the whole xdist worker), but the
+        # xdist node-replacement path it avoids -- #2803's broken invariant, and
+        # #4227's session that never completes and burns the full cap -- is
+        # platform-independent, and a burnt cap costs 10x here. --no-cov because
+        # coverage-combine merges ubuntu shards only.
+        #
+        # No surface selector and nothing deselected, same as the Windows job:
+        # `-n auto` already saturates the runner, so a shorter file list does not
+        # shorten a shard. Residual darwin gaps are node ids in
+        # test/macos-expected-failures.txt, applied by the rootdir conftest through
+        # the same matcher as the Windows list.
+        # PYTHONUNBUFFERED plus faulthandler_timeout: the first full run of shard
+        # 3 on macos-15 hit the 40-minute cap having printed NOTHING after the
+        # pytest command line, and the runner then reaped nine orphan bash and two
+        # Python processes. A hang that leaves no output is a lost run, not a
+        # failed test (testing-conventions.md, class 6). faulthandler fires at
+        # 150 s, while the test is still stuck, and dumps every thread's traceback
+        # to stderr naming the frame; the per-test --timeout then fails it by
+        # name at 180.
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          # `set -o pipefail` is LOAD-BEARING, not tidiness: pytest is piped to
+          # `tee`, and without it the step's status is tee's, so every failing
+          # macOS shard would report success and this whole lane would gate
+          # nothing. test_macos_platform_tests_gate.py asserts it.
+          set -o pipefail
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
+            -o faulthandler_timeout=150 \
+            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            2>&1 | tee "shard-macos-${{ matrix.group }}.log"
+
+      # The log carries pytest's own `FAILED <nodeid> - <msg>` summary lines, so a
+      # fixer can name the failing tests from the run page without re-queueing a
+      # mac runner.
+      #
+      # `if: always()` and not `failure()`: a shard that times out at the
+      # 40-minute cap is `cancelled`, which is exactly the outcome whose node ids
+      # a human most needs, and `failure()` would drop it. `tee` has already
+      # written whatever ran before the cap.
+      - name: Upload the shard's pytest log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shard-macos-${{ matrix.group }}
+          path: shard-macos-${{ matrix.group }}.log
+          if-no-files-found: ignore
+          retention-days: 7

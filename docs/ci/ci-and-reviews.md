@@ -292,7 +292,6 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `backend-test` | 4 pytest-split shards on Python 3.12, `-n auto` within each; 50-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Stays on `ubuntu-latest`: the CodeBuild runner runs jobs as root and this suite asserts permission semantics root does not have (pilot, below) |
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-windows-fail-closed` | windows-latest, single `-n0` run of `test/test_windows_fail_closed_optin.py` BY NODE ID with the pass count grepped, so a silent skip cannot go green. It is the only lane that boots a real gateway and drives one ACP prompt turn on Windows, against real filesystem state instead of a `sys.platform` mock: the pair of assertions [PR #8117](https://github.com/kirodotdev/KiroCrew/pull/8117) broke and no test could see |
-| `backend-test-macos` | macos-15 (pinned label, not `macos-latest`), 3 shards, `--no-cov`, 180s per-test timeout. The full suite, same shape as the Windows line. It shipped scoped to a 51-file glob while the darwin gap list was burned down; that list is `test/macos-expected-failures.txt` now and the glob is gone, so a POSIX-but-not-Linux regression outside those 51 files can no longer land unseen. 3 shards rather than Windows' 4 because macOS bills at 10x Linux per minute |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
 | `backend-test-crew-container` | "Backend Tests (crew container)". The only lane that runs the crew container image's suite (`aws_control/crew/runtime/container_tests/`, 327 tests). It is separate from the shards because it installs the image's own runtime pins (`container/requirements.txt`: fastapi, uvicorn, httpx, boto3), which that file's header forbids becoming dependencies of the application, and the shards' environment IS the application's, so there the suite's conftest collects nothing. Sets `CREW_CONTAINER_TESTS_REQUIRED=1`, which turns every reason that conftest would decline to collect into a hard error and checks the collection against the tree |
 | `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block). **CodeBuild-hosted runner** (pilot, below) except for forks |
@@ -305,6 +304,30 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
 | `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and then runs TWO checks over that one build: per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there, and an acyclic-graph check from `website/scripts/check-chunk-cycles.mjs`. The job name is narrower than its scope on purpose — it is a required check, so renaming it would silently stop satisfying branch protection. **An acyclic chunk graph is a deliberate invariant and the cycle check has no allowlist**, unlike the size ceilings: a chunk cycle has no valid initialization order, so a body can run against a binding that is still uninitialized and blank the page before React mounts, and whether a given cycle does that is not decidable from the chunk graph. Fix the chunking rather than waiving it. Skipped on a backend-only diff, which cannot change the bundle |
 | `e2e` | The i18n render-time gate, then `python setup.py test_e2e` |
+
+### macOS is not a pull-request gate any more
+
+The macOS pytest lane ran in this table until the queue was measured. On three
+consecutive green PR runs (34866269260, 34864945056, 34863753125) the macOS jobs
+waited **176, 190 and 213 minutes** for a `macos-15` runner and then ran for 26-33.
+Everything non-macOS finished at 78-98 minutes while the runs took 248-268, so ~64%
+of a pull request's CI wall clock was macOS queue time — and since `PR Readiness`
+is triggered by `workflow_run` on `ci.yml`'s completion, that queue sat on the merge
+button. In the same window the lane failed 0 times and was **cancelled 129 times**,
+usually still queued when a newer push superseded the run. Linux escapes this
+because `changes` routes it to the CodeBuild runners; there is no self-hosted macOS
+pool, so the queue is not tunable here.
+
+Where the coverage went:
+
+| Lane | Where | Blocking? |
+|---|---|---|
+| `backend-test-macos` (full suite, 3 shards) | `platform-tests.yml`: called by `nightly.yml` at 06:00 UTC, plus `workflow_dispatch` against any branch | Holds the nightly **publish** jobs, never the builds — the artifacts are the evidence a fixer works from. Maintains one tracking issue (`platform-tests-macos` label) carrying the failing node ids and the pull requests merged in the last 24h |
+| The same suite, on demand | `macos-on-demand.yml`, `pull_request`, calls `platform-tests.yml` against the PR head; a Linux `decide` job runs it when the diff touches a darwin-sensitive path, **or** the PR carries the `ci:macos` label, **or** the head SHA falls in a 1-in-20 sample (`16#${HEAD_SHA:0:8} % 20`, deterministic per commit) (acts immediately -- the workflow listens for `labeled`) | Advisory. It is a separate workflow ON PURPOSE: a macOS job inside `ci.yml` holds that workflow's completion even with `continue-on-error`, so it would still hold readiness. Readiness evaluates neither this workflow nor its check |
+| Real gateway boot on macOS | `ci.yml`'s `e2e-boot-matrix`, push-to-main leg; `nightly.yml`'s `pod-scenarios` | Blocking on main / holds nothing in the nightly |
+
+`test/test_macos_platform_tests_gate.py` pins all of it, including the property that
+nothing on the `pull_request` path may instantiate a macOS runner.
 
 Details worth knowing:
 

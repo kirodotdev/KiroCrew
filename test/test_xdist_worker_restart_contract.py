@@ -36,7 +36,14 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-CI = ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOWS = ROOT / ".github" / "workflows"
+# Two files, because the macOS shards MOVED. They ran in ci.yml until the runner
+# queue was measured (176-213 minutes on the pull_request path, against 26-33
+# minutes of runtime) and they now run nightly from platform-tests.yml. A guard
+# still pointed at ci.yml alone would have kept passing on the Windows
+# invocations while the macOS ones -- the runner where a burnt cap costs the most
+# -- left its scope entirely.
+SCANNED = (WORKFLOWS / "ci.yml", WORKFLOWS / "platform-tests.yml")
 
 FLAG = "--max-worker-restart=0"
 
@@ -60,20 +67,21 @@ def _windows_xdist_invocations() -> list[tuple[str, str]]:
     burnt cap costs about ten times as much on a macOS runner. Without this the
     macOS invocation would carry the flag with nothing holding it in place.
     """
-    workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
     found: list[tuple[str, str]] = []
-    for job_name, job in workflow["jobs"].items():
-        runner = str(job.get("runs-on", "")).lower()
-        if "windows" not in runner and "macos" not in runner:
-            continue
-        for step in job.get("steps") or []:
-            if not isinstance(step, dict):
+    for path in SCANNED:
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in (workflow.get("jobs") or {}).items():
+            runner = str(job.get("runs-on", "")).lower()
+            if "windows" not in runner and "macos" not in runner:
                 continue
-            for line in _logical_lines(str(step.get("run", ""))):
-                # `-n` is what makes a replacement possible at all; without
-                # xdist there is no worker to lose.
-                if "pytest" in line and re.search(r"\s-n\s", line):
-                    found.append((job_name, line.strip()))
+            for step in job.get("steps") or []:
+                if not isinstance(step, dict):
+                    continue
+                for line in _logical_lines(str(step.get("run", ""))):
+                    # `-n` is what makes a replacement possible at all; without
+                    # xdist there is no worker to lose.
+                    if "pytest" in line and re.search(r"\s-n\s", line):
+                        found.append((f"{path.name}:{job_name}", line.strip()))
     return found
 
 
@@ -83,8 +91,9 @@ def test_ci_has_a_windows_xdist_job_to_guard() -> None:
     # a job rename or a shard removal would do.
     invocations = _windows_xdist_invocations()
     assert invocations, (
-        "ci.yml has no Windows or macOS job running pytest under xdist. If that "
-        "is deliberate, delete this file; if it is a rename, update the discovery "
+        "neither ci.yml nor platform-tests.yml has a Windows or macOS job running "
+        "pytest under xdist. If that is deliberate, delete this file; if it is a "
+        "rename or another move between workflows, update SCANNED and the discovery "
         "in _windows_xdist_invocations so the guard keeps applying."
     )
     # Both hosts, named. One list covering two runners can go half-blind: a

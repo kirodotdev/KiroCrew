@@ -136,7 +136,15 @@ regressions are in `test/test_platform_compat.py`, `TestProcessDescendants`.
 CI holds all three platforms at the UNIT layer: the `backend-test` shards cover
 Linux, `backend-test-windows` covers Windows, and `backend-test-macos` covers
 macOS. All three run the whole suite, so a POSIX call that only works on Linux
-goes red on the macOS shards rather than shipping. A shard passing is still not
+goes red on the macOS shards rather than shipping — but the macOS shards are
+NIGHTLY (`platform-tests.yml`, called by `nightly.yml`), not per-pull-request: a
+`macos-15` runner took 176-213 minutes to arrive on the PR path, which is ~64% of a
+pull request's CI wall clock, and the queue sat on the required check. So a
+POSIX-but-not-Linux regression is caught within a day and before any nightly bytes
+are published, rather than before merge. In front of a pull request there is
+`macos-on-demand.yml` (the same full suite, called against the PR head, advisory;
+runs on a darwin-sensitive path, on the `ci:macos` label, or on a 1-in-20 SHA sample) and the static side of
+this table. A shard passing is still not
 evidence that a gateway starts: 25 whole files are excluded on Windows by
 `test/windows-collect-ignore.txt` and further node ids by
 `test/windows-expected-failures.txt` and `test/macos-expected-failures.txt`.

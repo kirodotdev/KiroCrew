@@ -684,7 +684,10 @@ which testpath asked for the workers.
   **macOS uses the same list mechanism, not a second one.**
   `test/macos-expected-failures.txt` is applied by the same rootdir
   `_apply_tracked_gap_list` matcher, with the same plain-node-id spelling and the same
-  burn-down semantics: anything not on the list still fails the macOS shards. Prefer a
+  burn-down semantics: anything not on the list still fails the macOS shards — which
+  since the lane moved to `platform-tests.yml` means it fails the NIGHTLY and holds the
+  nightly publish, not a pull request, so a widened list is worth the same scrutiny with
+  a day's delay before anyone notices. Prefer a
   precise `skipif(sys.platform == "darwin", reason=...)` on the test when the reason is
   a named capability difference; use the list when the gap is a real one to be fixed
   later, with a `# TODO` reason line above the entry. `test/macos-collect-ignore.txt`

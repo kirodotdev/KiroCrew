@@ -334,8 +334,11 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
             "ci.yml:backend-test",
             "ci.yml:backend-test-windows",
             "ci.yml:backend-test-windows-fail-closed",
-            "ci.yml:backend-test-macos",
             "ci.yml:backend-test-sandbox",
+            # The macOS suite moved out of ci.yml (the runner queue sat on the
+            # required check); macos-on-demand.yml calls this same job on the PR
+            # path, so the one entry covers both.
+            "platform-tests.yml:backend-test-macos",
             "release.yml:release-candidate-tests",
             "test-durations.yml:refresh",
         }, set(self._pytest_jobs())

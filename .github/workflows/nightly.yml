@@ -137,6 +137,39 @@ jobs:
     name: Production Dependency Vulnerability Gate
     uses: ./.github/workflows/dependency-vulnerability.yml
 
+  # ── macOS platform tests ──────────────────────────────────────────────
+  # The backend suite on real Darwin. It ran on every pull request until it moved
+  # here: on the PR path a macos-15 runner took 176-213 MINUTES to arrive and then
+  # 26-33 to run, which was ~64 percent of a pull request's CI wall clock sitting on
+  # the required `PR Readiness` check, while the lane itself failed 0 times and was
+  # cancelled 129 times in the same window (usually still queued). At nightly hours
+  # the same runners arrive in 0-33 minutes. platform-tests.yml carries the full
+  # measurement and the pull-request-side replacements.
+  #
+  # Gated the same way as the dependency audit, and for the same reason in reverse:
+  # this one is a `needs:` of every PUBLISH job and of no BUILD job. A red macOS
+  # suite must stop bytes reaching a nightly-channel user, but the built artifacts
+  # are the evidence a fixer works from, so they still get produced and uploaded --
+  # exactly the trade the audit's own comment describes. A build job growing this
+  # `needs:` reintroduces the outage that shape exists to avoid;
+  # test_dependency_vulnerability_gate.py and test_macos_platform_tests_gate.py both
+  # pin the partition.
+  #
+  # ALL publish jobs gate on it, not only the darwin-shipping `sign-and-notarize`,
+  # so the nightly channel stays version-coherent: every platform ships the same
+  # nightly build or none does, never a macOS desktop a version behind the CLI,
+  # Linux and Windows builds it has to interoperate with. The cost this widens is a
+  # darwin flake holding every platform's bytes for a night -- real, but bounded:
+  # the suite failed 0 times and was cancelled 129 times over the measured window,
+  # the builds are ungated so the evidence survives, and the remedy is a human
+  # "re-run failed jobs". A skewed-version nightly would ship with no signal at all.
+  #
+  platform-tests:
+    name: Platform Tests
+    permissions:
+      contents: read
+    uses: ./.github/workflows/platform-tests.yml
+
   # ── Pod scenario E2E ──────────────────────────────────────────────────
   # Scenario-level E2E over the shipped `kirocrew pod` tooling: one real
   # service-managed pod, five user-visible flows (test/e2e/scenarios/).
@@ -364,7 +397,7 @@ jobs:
   # never blocks the CLI release. See docs/build/release.md.
   publish-cli:
     name: Publish CLI (nightly channel)
-    needs: [version, build-wheel, dependency-vulnerability-gate]
+    needs: [version, build-wheel, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -404,7 +437,7 @@ jobs:
   # tracked in #2645 rather than reshaped here.
   publish-linux-appimage-x64:
     name: Publish Linux appimage (nightly channel · x64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -422,7 +455,7 @@ jobs:
 
   publish-linux-appimage-arm64:
     name: Publish Linux appimage (nightly channel · arm64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -440,7 +473,7 @@ jobs:
 
   publish-linux-deb-x64:
     name: Publish Linux deb (nightly channel · x64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -458,7 +491,7 @@ jobs:
 
   publish-linux-deb-arm64:
     name: Publish Linux deb (nightly channel · arm64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -476,7 +509,7 @@ jobs:
 
   publish-linux-rpm-x64:
     name: Publish Linux rpm (nightly channel · x64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -494,7 +527,7 @@ jobs:
 
   publish-linux-rpm-arm64:
     name: Publish Linux rpm (nightly channel · arm64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -534,7 +567,7 @@ jobs:
   # jobs.
   publish-windows-x64:
     name: Publish Windows Desktop (nightly channel · x64)
-    needs: [version, build-windows, dependency-vulnerability-gate]
+    needs: [version, build-windows, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       # A called workflow cannot exceed the caller job's grants, so the probe's
@@ -560,7 +593,7 @@ jobs:
   # alone (see test_workflow_permissions.py).
   publish-docker:
     name: Publish Docker Image (nightly channel)
-    needs: [version, build-wheel, dependency-vulnerability-gate]
+    needs: [version, build-wheel, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       packages: write
@@ -586,7 +619,7 @@ jobs:
   # attestation (signed + stapled bytes).
   sign-and-notarize:
     name: Sign + Notarize macOS
-    needs: [version, build-wheel, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-wheel, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       id-token: write
       contents: read
