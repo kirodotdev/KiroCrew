@@ -9086,6 +9086,7 @@
       "click_the_bookmark_icon_on_any_rendered_widget_i": "채팅에서 렌더링된 위젯의 북마크 아이콘을 클릭하면 여기에 저장됩니다.",
       "color": "색상",
       "compact_table": "간단한 표",
+      "couldn_t_load_your_artifacts": "아티팩트를 불러오지 못했습니다",
       "create_a_folder_to_organize_your_artifacts": "아티팩트를 정리할 폴더 만들기",
       "delete": "삭제…",
       "deploying": "배포 중…",

@@ -9086,6 +9086,7 @@
       "click_the_bookmark_icon_on_any_rendered_widget_i": "チャットの任意のレンダリングされたウィジェットのブックマークアイコンをクリックして、ここに保存します。",
       "color": "色",
       "compact_table": "コンパクトテーブル",
+      "couldn_t_load_your_artifacts": "アーティファクトを読み込めませんでした",
       "create_a_folder_to_organize_your_artifacts": "アーティファクトを整理するためのフォルダーを作成",
       "delete": "削除…",
       "deploying": "デプロイ中…",

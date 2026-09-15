@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentType } from 'react'
 import ArtifactsPage from '../pages/ArtifactsPage'
@@ -712,5 +712,76 @@ describe('ArtifactsPage — New Artifact split button', () => {
     expect(screen.queryByText(/Import from a file/i)).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: /More ways to add an artifact/i }))
     expect(await screen.findByText(/Import from a file/i)).toBeInTheDocument()
+  })
+})
+
+/**
+ * A failed list fetch must not masquerade as an empty library (#10867).
+ *
+ * When the artifacts query errors (gateway restart 403s, connection refused),
+ * `data` is undefined and the derived list is [] — indistinguishable, before
+ * this fix, from a genuinely empty library. The contract under test:
+ *
+ * - The page-level <ErrorNotice> banner carries the actual error + the agent
+ *   hand-off (errors-use-error-notice), AND the gallery renders a truthful
+ *   "couldn't load" placeholder instead of "No artifacts yet". Both together:
+ *   the placeholder does not replace the banner, it replaces the lie.
+ * - The placeholder's Retry refetches in place and the library recovers.
+ */
+describe('ArtifactsPage list-fetch failure', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.removeItem('mc-artifacts-view')
+  })
+
+  it('renders the error banner AND the truthful placeholder together — never "No artifacts yet"', async () => {
+    vi.mocked(api).artifacts = vi.fn().mockRejectedValue(new Error('boom 403'))
+    renderWithProviders(<ArtifactsPage />)
+
+    // Truthful placeholder in the gallery slot…
+    await waitFor(() => expect(screen.getByTestId('artifacts-error-state')).toBeInTheDocument())
+    expect(screen.getByText(/Couldn’t load your artifacts/i)).toBeInTheDocument()
+    // …while the banner still surfaces the real error (the placeholder
+    // supplements the ErrorNotice contract, it does not replace it).
+    expect(screen.getByText(/boom 403/)).toBeInTheDocument()
+    // The lie this fix removes:
+    expect(screen.queryByText(/No artifacts yet/i)).not.toBeInTheDocument()
+  })
+
+  it('Retry refetches in place and the library recovers', async () => {
+    let fail = true
+    vi.mocked(api).artifacts = vi.fn().mockImplementation(() =>
+      fail ? Promise.reject(new Error('boom 403')) : Promise.resolve({ artifacts: [mkArtifact('recovered-artifact')] }),
+    )
+    // The folder list fails under the same trigger (every endpoint 403s).
+    vi.mocked(api).artifactFolders = vi.fn().mockImplementation(() =>
+      fail ? Promise.reject(new Error('boom 403')) : Promise.resolve({ folders: [] }),
+    )
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByTestId('artifacts-error-state')).toBeInTheDocument())
+    const foldersCallsBefore = vi.mocked(api.artifactFolders).mock.calls.length
+
+    fail = false
+    // Target the placeholder's own action: aux-read rows render their own
+    // Retry buttons for unrelated failures, so the click must be scoped.
+    await userEvent.click(within(screen.getByTestId('artifacts-error-state-action')).getByRole('button'))
+
+    // mkArtifact renders the slug de-hyphenated as the card title.
+    await waitFor(() => expect(screen.getByText('recovered artifact')).toBeInTheDocument())
+    expect(screen.queryByTestId('artifacts-error-state')).not.toBeInTheDocument()
+    // One click heals the co-failed folder read too — not just the list.
+    await waitFor(() => expect(vi.mocked(api.artifactFolders).mock.calls.length).toBeGreaterThan(foldersCallsBefore))
+  })
+
+  it('renders the truthful placeholder in the unfiltered Table view too — not an empty tree', async () => {
+    // #10867's misread must not survive in the other view mode: a user whose
+    // persisted view is Table (no filters) gets the same unknown-not-absent
+    // placeholder, never LibraryTree rendered over zero items.
+    localStorage.setItem('mc-artifacts-view', 'table')
+    vi.mocked(api).artifacts = vi.fn().mockRejectedValue(new Error('boom 403'))
+    renderWithProviders(<ArtifactsPage />)
+
+    await waitFor(() => expect(screen.getByTestId('artifacts-error-state')).toBeInTheDocument())
+    expect(screen.queryByText(/No artifacts yet/i)).not.toBeInTheDocument()
   })
 })

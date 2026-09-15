@@ -1158,7 +1158,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     }
   }, [deletingFolder, folders, scopeFolderId, openFolder, invalidateFolders])
 
-  const { data, isLoading, error } = useQuery<{ artifacts: Artifact[] }>({
+  const { data, isLoading, error, refetch } = useQuery<{ artifacts: Artifact[] }>({
     queryKey: ['artifacts', { tag: tagFilter, kind: kindFilter }],
     queryFn: () =>
       api.artifacts({
@@ -1961,7 +1961,25 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             )}
             </div>
 
-            {gridEntries.length === 0 && (view === 'grid' || filtersActive) ? (
+            {errMessage && artifacts.length === 0 ? (
+              /* The list query FAILED with nothing cached — the library's
+                 contents are unknown, not absent. Rendered in EVERY view mode
+                 (grid, table, filtered or not): the persisted-Table lane must
+                 not show an empty tree over intact artifacts, which is the
+                 exact misread #10867 describes. The error itself (message +
+                 agent hand-off) is already on screen in the page-level
+                 <ErrorNotice> banner above (errors-use-error-notice); this
+                 placeholder exists so the gallery does not claim "No
+                 artifacts yet" about a library it never read. Retry heals
+                 every read that fails under the same trigger: the list, the
+                 tag options, and the folder list. */
+              <EmptyState
+                testId="artifacts-error-state"
+                icon={<AlertTriangle className="lucide-inline" />}
+                title={i18nT('pages.artifactsPage.couldn_t_load_your_artifacts')}
+                action={<Btn onClick={() => { void refetch(); void allTagsQ.refetch(); void qc.invalidateQueries({ queryKey: ['artifact-folders'] }) }}>{i18nT('pages.artifactsPage.retry')}</Btn>}
+              />
+            ) : gridEntries.length === 0 && (view === 'grid' || filtersActive) ? (
               (artifacts.length === 0 && folders.length === 0) ? (
                 <EmptyState
                   icon={<Bookmark className="lucide-inline" />}

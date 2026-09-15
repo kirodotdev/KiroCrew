@@ -101,6 +101,17 @@ function invalidateRefreshQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['default-agent'] })
   qc.invalidateQueries({ queryKey: ['workspaces'] })
   qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  // Prefix match on purpose: covers the filtered library list
+  // (['artifacts', {tag, kind}]) and the tag-options read
+  // (['artifacts', 'all-tags']) in one shot. The `artifact_update` frame
+  // already heals these on live mutations; this covers the server's generic
+  // refresh broadcast so an errored or stale list recovers without a reload
+  // (#10867).
+  qc.invalidateQueries({ queryKey: ['artifacts'] })
+  // The folder list fails alongside it under the same trigger (an
+  // auth-expired window 403s every endpoint) and renders `?? []` the same
+  // way — heal both or the library recovers half-empty (#10867).
+  qc.invalidateQueries({ queryKey: ['artifact-folders'] })
 }
 
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */
@@ -1070,6 +1081,16 @@ export function useWebSocket() {
         // Invalidate every slot's summary (the key is per-slot and we cannot
         // know which ones moved); react-query only refetches the observed ones.
         queryClient.invalidateQueries({ queryKey: ['session-summary'] })
+        // Same one-shot problem for the artifact library: `artifact_update`
+        // frames pushed while the socket was down were never delivered, and a
+        // list query that ERRORED during the gap (gateway restart 403s /
+        // connection refused) holds no data at all. Invalidate the whole
+        // ['artifacts'] prefix (filtered list + all-tags) so a recovered
+        // window heals without a manual hard refresh (#10867). The folder
+        // list errors under the same trigger — heal it too, or the library
+        // comes back with its folders missing.
+        queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+        queryClient.invalidateQueries({ queryKey: ['artifact-folders'] })
         // A dropped socket is the one client-visible sign the gateway may have
         // restarted — and a restart drops an unmessaged member slot while its
         // binding survives. The Crew Members page mounts a cached thread key
