@@ -79,6 +79,7 @@ import { i18nT } from '../../i18n/t'
 import { AddInstanceForm, StatusBadge } from './InstancesPanel'
 import {
   EditInstanceForm,
+  instanceConnectionTarget,
   instanceFormFromView,
   type InstanceDraft,
 } from './InstanceFormFields'
@@ -352,7 +353,7 @@ function CrewRow({
   // States that occupy the row's second control slot with an inline button.
   const transient =
     deleting || lifecycleBusy || (isCloud && confirmDelete) || (!isCloud && confirmRemove)
-  const target = inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host
+  const target = instanceConnectionTarget(inst)
   return (
     <div className="py-2.5 border-b border-border last:border-b-0" data-crew-id={inst.id}>
     <div className="flex items-start justify-between gap-3">
@@ -972,7 +973,14 @@ export function RemoteCrewPanel() {
       && (persistedProvisioner === '' || (builtinProvisioner && !provisionersQuery.isLoading)),
   })
 
-  const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data])
+  // Loopback is a pod-only verification seam, not a product-configurable crew.
+  // Filter it before counts, row actions, and draft restoration can expose it.
+  const instances = useMemo(
+    () => (instancesQuery.data?.instances ?? []).filter(
+      inst => String(inst.connection_method).trim().toLowerCase() !== 'loopback',
+    ),
+    [instancesQuery.data],
+  )
   const warmCap = instancesQuery.data?.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
 
   // A draft outlives its form ON PURPOSE, which means it can also outlive the CREW
@@ -1082,7 +1090,7 @@ export function RemoteCrewPanel() {
       setDiagReport(reportInstanceFailure({
         id,
         name: inst?.name || id,
-        transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
+        transport: inst?.connection_method ?? 'ssh',
         status: st,
         stage: 'connect',
         fallbackMessage: reason || '',

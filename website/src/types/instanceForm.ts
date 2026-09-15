@@ -6,9 +6,11 @@
  * inverts the dependency — harmless while the import is type-only, but the
  * inversion is what makes it easy to grow a runtime one later.
  */
+import type { InstanceConnectionMethod } from '../api/client'
+
 export interface InstanceFormValues {
   name: string
-  method: 'ssh' | 'ssm'
+  method: InstanceConnectionMethod
   sshHost: string
   ssmTarget: string
   awsProfile: string

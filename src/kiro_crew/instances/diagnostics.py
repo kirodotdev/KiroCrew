@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass, field
 
 from kiro_crew.cloud import ssm as cloud_ssm
+from kiro_crew.instances.constants import LOOPBACK_HOST as _LOOPBACK
 from kiro_crew.instances.token_mint import _build_ssh_argv
 from kiro_crew.instances.validation import (
     SshValidationError,
@@ -35,7 +36,6 @@ from kiro_crew.instances.validation import (
 
 logger = logging.getLogger(__name__)
 
-_LOOPBACK = "127.0.0.1"
 # Fallback ssh ConnectTimeout when a caller doesn't pass one (matches
 # token_mint._build_ssh_argv's own fallback default). Real callers pass the
 # configured instances.connect_timeout_secs, capped for diagnostics use — see
@@ -84,6 +84,19 @@ _SSM_REASONS = {
     "reachable (tunnel down — reconnect).",
     NOT_CONNECTED: "SSM and the remote dashboard are up. This instance isn't connected yet "
     "(no local tunnel) — click Connect.",
+}
+
+# Loopback variants. This transport has only ONE thing to probe — whether a
+# gateway answers on the destination port — because there is no forwarder
+# between the hub and it. So the TUNNEL_DOWN rung has no analogue here and is
+# deliberately absent rather than reworded: a rung that can never fire would
+# tell an operator to reconnect a tunnel that does not exist.
+_LOOPBACK_REASONS = {
+    OK: "The gateway on this host's loopback port is answering.",
+    REMOTE_DOWN: "Nothing is listening on that loopback port — is the other gateway "
+    "running, and is that its port?",
+    NOT_CONNECTED: "The gateway on that loopback port is answering. This instance isn't "
+    "connected yet — click Connect.",
 }
 
 
@@ -378,3 +391,31 @@ async def diagnose_instance_ssm(
         return DiagnosisResult(TUNNEL_DOWN, _SSM_REASONS[TUNNEL_DOWN], probes)
 
     return DiagnosisResult(OK, _SSM_REASONS[OK], probes)
+
+
+async def diagnose_instance_loopback(remote_port: int, local_port: int) -> DiagnosisResult:
+    """Loopback-transport diagnosis ladder — the shortest of the three.
+
+        1. Gateway answering on the destination? TCP connect → no ⇒ remote_down
+        2. Instance connected?                   local_port set → no ⇒ not_connected
+        else                                                        ⇒ ok
+
+    There is no third rung. The ssh and ssm ladders separate "the remote is up"
+    from "our forward to it is up" because a forwarder CHILD can fail on its own
+    while the remote stays healthy. This transport's relay is in-process: it
+    cannot be alive-but-not-forwarding independently of this gateway, so a
+    ``tunnel_down`` verdict could never be true and the destination probe is the
+    whole question.
+
+    The destination address is the fixed ``constants.LOOPBACK_HOST``, which is
+    the address the probe dials for every transport, so there is nothing to
+    validate before dialling.
+    """
+    probes: list[dict] = []
+    up = await _probe_local_forward(remote_port)
+    probes.append({"name": "local_gateway", "ok": up})
+    if not up:
+        return DiagnosisResult(REMOTE_DOWN, _LOOPBACK_REASONS[REMOTE_DOWN], probes)
+    if not local_port:
+        return DiagnosisResult(NOT_CONNECTED, _LOOPBACK_REASONS[NOT_CONNECTED], probes)
+    return DiagnosisResult(OK, _LOOPBACK_REASONS[OK], probes)
