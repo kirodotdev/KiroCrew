@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types'
-import { stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
+import { stripMarkersForDisplay } from '../app-sdk/protocol/optionMarker'
 import { stripKeepVisibleMarker } from '../app-sdk/protocol/keepVisibleMarker'
 
 // `<mcwidget>...</mcwidget>` bodies render as a sandboxed iframe (WidgetFrame).
@@ -19,12 +19,29 @@ const MCWIDGET_RE = /<mcwidget\b[^>]*>[\s\S]*?<\/mcwidget>/gi
  * highlighted marks all stay consistent. Searching raw content would surface
  * "phantom" matches (inside OPTIONS buttons or widget iframes) the user can
  * never see highlighted.
+ *
+ * `stripMarkersForDisplay` removes BOTH marker kinds. Stripping only the content
+ * marker left action-marker text searchable, which is precisely the phantom match
+ * the paragraph above forbids: a hit is counted and reported, then the highlighter's
+ * TreeWalker finds nothing to mark because the marker never rendered as body text.
+ *
+ * It is the DISPLAY helper rather than `stripOptionMarkers` so this index cannot drift
+ * from what the transcript actually shows. The one row that helper retains a marker for
+ * — a message whose only content is an action marker — does render it as body text, so
+ * excluding it would invert the rule above: a hit the user can see but never find.
+ *
+ * ORDER MATTERS, and it is markers FIRST: that helper's "nothing left to read" test has to
+ * run on the same string the transcript renders, and the transcript passes the WHOLE
+ * message to `parseOptions` (`AssistantMessage.tsx` — `parseOptions(effectiveContent)`),
+ * widget included. Removing the widget first made a marker beside one look like the row's
+ * only content, so the index retained its raw text while the transcript still had the
+ * widget to render and stripped it — a phantom hit, the exact failure above.
  */
 export function searchableText(m: ChatMessage): string {
   if (m.role === 'assistant' || m.role === 'streaming') {
     // stripKeepVisibleMarker: the marker is an HTML comment the renderer never
     // shows (#7948), so a search hit inside it would be a phantom match.
-    return stripKeepVisibleMarker(stripOptionMarkers(m.content.replace(MCWIDGET_RE, ''))).trimEnd()
+    return stripKeepVisibleMarker(stripMarkersForDisplay(m.content).replace(MCWIDGET_RE, '')).trimEnd()
   }
   return m.content
 }
