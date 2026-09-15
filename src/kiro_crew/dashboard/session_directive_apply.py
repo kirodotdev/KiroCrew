@@ -564,6 +564,9 @@ async def _monitor_update(
     loop = svc.get_by_slot(binding)
     if not loop:
         raise _DirectiveDenied("No active monitor loop on this session to update.")
+    # Read HERE, not at the write: ``get_by_slot`` hands back the LIVE row, so a token read
+    # at the call site would already carry a concurrent rotation and never fail the compare.
+    baseline_token = str(getattr(loop, "goal_token", "") or "")
     patch = dict(args.get("patch") or {})
     if is_structured_monitor_loop(loop):
         if _structured_binding(session_key) != binding:
@@ -742,6 +745,9 @@ async def _monitor_update(
         # as "leave unchanged", while an explicit "" reaches it as a clear -- the
         # distinction the handler preserved by keeping a blank banner in the patch.
         banner=patch.get("banner"),
+        # A message write with NO baseline SKIPS the stale check rather than failing it, so
+        # hand it the token read above -- scoped to the message case, as the handler's 409 is.
+        expect_fingerprint=(baseline_token if patch.get("message") is not None else None),
         source="mcp-directive",
         caller="session-directive",
     )
