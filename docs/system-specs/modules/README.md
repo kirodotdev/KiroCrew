@@ -90,6 +90,7 @@ agent loads only the one it needs.
 | [mcp-gateway-daemon-lifecycle.md](mcp-gateway-daemon-lifecycle.md) | The MCP gateway daemon has one owning gateway and one code revision: owner-liveness self-exit, the fingerprint adoption gate, the CLI stop, and the stale-backend diagnosis. |
 | [mcp-probe-quarantine.md](mcp-probe-quarantine.md) | A durable consecutive-probe-failure count per MCP server, surfaced on its dashboard row with a reset control. The unmount half is deferred; the spec records why. |
 | [app-notifications.md](app-notifications.md) | How an app publishes a notification to the local bus, and the two shipped producers. |
+| [recipes.md](recipes.md) | Seams for an edition-supplied recipes app: the `recipes` manifest vocabulary plus brokered Slack channel provisioning and routing. Core ships no recipes implementation. |
 | [artifacts.md](artifacts.md) | Artifact identity, versioning, and the companion chat panel. |
 | [prompt-optimizer.md](prompt-optimizer.md) | Rewriting a draft prompt on demand, and the paste-forwarding surface. |
 | [steering-viewer.md](steering-viewer.md) | Reading, creating, editing and deleting the steering files a session loads, and the declared-`inclusion` reporting. |
