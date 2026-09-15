@@ -80,6 +80,14 @@ export interface ContributedCommand {
   prompt: string
   /** Send the seeded prompt immediately rather than leaving it in the composer. */
   autoSend: boolean
+  /**
+   * Agent the seeded session is created with; '' means the dashboard default.
+   * Selects WHICH tool-enabled agent receives the prompt — the prompt reached
+   * one either way, so this grants nothing new. A value that is not a bare
+   * config stem is dropped to '' rather than dropping the row: a wrong agent
+   * still lands the visible prompt in a visible session.
+   */
+  agent: string
   argument: ContributedArgument | null
 }
 
@@ -443,6 +451,7 @@ function readCommand(app: CommandAppRecord, raw: unknown): ContributedCommand | 
     // reaches here with it. This clamp is for the app that skipped that check: an
     // unknown manifest key arrives through `extra` having passed no schema at all.
     autoSend: obj.autoSend === true && argument !== undefined,
+    agent: typeof obj.agent === 'string' && /^[A-Za-z0-9._-]{1,120}$/.test(obj.agent) ? obj.agent : '',
     argument: argument ?? null,
   }
 }

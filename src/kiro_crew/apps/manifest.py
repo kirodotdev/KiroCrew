@@ -1614,6 +1614,11 @@ class CommandContribution:
     keywords: list[str] = field(default_factory=list)
     prompt: str = ""
     autoSend: bool = False
+    #: Agent the seeded session is created with. A bare config stem (the same
+    #: resolution a cron's ``agent`` gets); empty means the dashboard default.
+    #: The prompt goes to a tool-enabled agent either way — this only selects
+    #: WHICH one, so it grants nothing the prompt did not already reach.
+    agent: str = ""
     argument: CommandArgument | None = None
     #: Whether the manifest's ``argument`` was present but not an object. Same shape as
     #: ``Contributes.bad_commands``, and the one place where erasing it also DIVERGES
@@ -1659,6 +1664,8 @@ class CommandContribution:
             d["keywords"] = list(self.keywords)
         if self.autoSend:
             d["autoSend"] = True
+        if self.agent:
+            d["agent"] = self.agent
         if self.argument is not None:
             arg_d = self.argument.to_dict()
             if arg_d:
@@ -1669,6 +1676,7 @@ class CommandContribution:
     def from_dict(cls, data: dict[str, Any]) -> CommandContribution:
         arg_raw = data.get("argument")
         keywords_raw = data.get("keywords", [])
+        agent_raw = data.get("agent")
         return cls(
             id=str(data.get("id", "")),
             title=str(data.get("title", "")),
@@ -1682,6 +1690,7 @@ class CommandContribution:
             # silently enabling the one capability that sends text on the reader's
             # behalf. Only the literal ``true`` turns it on.
             autoSend=data.get("autoSend") is True,
+            agent=agent_raw if isinstance(agent_raw, str) else "",
             argument=CommandArgument.from_dict(arg_raw) if isinstance(arg_raw, dict) else None,
             # A present-but-not-an-object ``argument`` would otherwise coerce to "no
             # argument declared", which is a DIFFERENT command rather than an invalid
@@ -1718,6 +1727,15 @@ class CommandContribution:
                     f"({_mirrored_len(kw)})"
                 )
                 break
+        if self.agent:
+            if "/" in self.agent or "\\" in self.agent:
+                # The host resolves this two ways: kiro-cli matches the config's
+                # declared name, and the KAS projection loads
+                # ``<agents dir>/<agent>.json`` by stem. A separator breaks the
+                # second and would escape the directory.
+                errors.append(f"{where}: agent must be a bare config stem, got {self.agent!r}")
+            elif len(self.agent) > _MAX_TITLE:
+                errors.append(f"{where}: agent exceeds {_MAX_TITLE} characters")
         if not self.title:
             errors.append(f"{where}: missing title")
         elif _mirrored_len(self.title) > _MAX_TITLE:
