@@ -28,6 +28,7 @@ What these tests pin, per the issue's regression gates:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -116,6 +117,120 @@ class TestEnqueueDurability:
         app.router.add_post("/api/chat/slots/{slot}/note", api_chat_slot_note)
         async with TestClient(TestServer(app)) as c:
             yield c
+
+    @pytest.mark.asyncio
+    async def test_an_immediate_note_is_committed_and_visible_in_one_step(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """No row is held back, so a concurrent persist cannot disagree with the response.
+
+        The periodic dirty-slot flush runs unlocked every few seconds and can persist the
+        slot window at any point during this POST. Appending and broadcasting in one step
+        leaves no interval in which the row exists but is not yet owned, so any line that
+        flush writes is one the response already claims.
+        """
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "one-step")
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/one-step/note", json={"content": "visible at once"}
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+
+        assert body["appended"] is True, f"the row was added, so the response must say so; {body}"
+        rows = [r for r in slot.messages if r.get("cls") == "reconcile-note"]
+        assert len(rows) == 1, f"expected exactly one note row; got {rows}"
+
+    @pytest.mark.asyncio
+    async def test_a_save_that_commits_despite_cancellation_keeps_both_halves(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """If the save commits, cancellation must not strip the note's context half.
+
+        Shutdown cancels the handler but the executor save runs on and commits the row, so
+        a cleanup that withdraws the in-memory halves leaves a restored note the model has
+        no context for. The decision therefore follows the save rather than the unwind:
+        committed means both halves live, and the context half is released to a drain.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "commits-despite-cancel")
+        slot._pending_context.clear()
+
+        async def _save_commits_after_the_cancel(state_, slot_, *a, **kw):
+            await _asyncio.sleep(0.25)
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_commits_after_the_cancel)
+
+        async with self._make_client(state) as client:
+            posting = _asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/commits-despite-cancel/note",
+                    json={"content": "committed but abandoned"},
+                )
+            )
+            await _asyncio.sleep(0.08)
+            posting.cancel()
+            with contextlib.suppress(_asyncio.CancelledError, Exception):
+                await posting
+            # Let the shielded save finish and its resolution callback run.
+            await _asyncio.sleep(0.35)
+
+        rows = [m for m in slot.messages if "committed but abandoned" in str(m.get("content", ""))]
+        drained = runner_mod.drain_pending_context(slot)
+        assert rows and "committed but abandoned" in drained, (
+            "the save committed the row, but cancellation settled the note against the "
+            "unwind instead of the save, so the halves disagree: "
+            f"row_kept={bool(rows)} context_drainable={'committed but abandoned' in drained}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_time_held_for_a_commit_does_not_consume_a_notes_ttl(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Being held for its own commit must not expire a note's context.
+
+        A drain during the durability window holds the entry rather than emitting it, so a
+        short-TTL note whose save outlasts that TTL would be re-queued already expired and
+        silently dropped by the next drain -- lost to the race, not to the caller's TTL.
+        The clock restarts when the entry becomes drainable, so the hold costs it nothing.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "held-past-its-ttl")
+        slot._pending_context.clear()
+
+        async def _save_outlasting_the_ttl(state_, slot_, *a, **kw):
+            runner_mod.drain_pending_context(slot_)
+            await _asyncio.sleep(0.30)
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_outlasting_the_ttl)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/held-past-its-ttl/note",
+                json={"content": "short lived note", "maxAge": 0.2},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["contextSkipped"] is False
+
+        after = runner_mod.drain_pending_context(slot)
+        assert "short lived note" in after, (
+            "the entry expired while held for its own commit, so the note was lost to the "
+            f"race rather than to its TTL; got {after!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_200_means_the_hold_is_already_durable(self, tmp_path: Path, monkeypatch):

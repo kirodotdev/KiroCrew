@@ -871,8 +871,8 @@ way; the channel-`session` leg was not migrated with it.
 the value would fail every such send closed with no useful reason.
 
 **The delivery ladder**, in `dashboard/handlers/messaging.py::api_send_message`:
-origin session injection (`session="origin"`, unchanged) → `_deliver_to_channel`
-→ Slack. `_deliver_to_channel` rides
+origin session injection (`session="origin"`, unchanged) → `deliver_to_channel`
+→ Slack. `deliver_to_channel` rides
 `chat_runner._resolve_channel_target`, the same governed cross-surface seam as the
 outbound mirror, the auto-compact notice and the inbound-unbind notice, so a
 proactive send is capability-checked, `channels`-vetted (fail-closed) and
@@ -891,12 +891,212 @@ Four properties are load-bearing:
   caller never named, which is worse than not delivering it.
 - **Failure is reported, not absorbed.** Every refusal — no link, a link on
   another transport, a governance denial, an unregistered transport, one that
-  cannot send proactively, a transport error — returns `False`, is audited with
+  cannot send proactively, a transport error, a binding that MOVED between
+  authorization and the send, or one that moved between chunks of a multi-part
+  message — returns False, is audited with
   its reason, and surfaces as HTTP 502 `channel_delivery_failed`. The bell is not
   a substitute for the surface the user is reading, so a notification-only
   outcome must not read as success. `delivered_to` gained a fourth value,
   `"channel"`, for the same reason: without it a successful Telegram send still
   reported the "reached the dashboard notification only" warning.
+- **`deliver_to_channel` answers WHETHER it delivered**, and logs which row the
+  ladder selected rather than returning it. The ladder chooses between the origin
+  and mirror rows and a `skip_paused` caller can have the paused one skipped, so
+  the row that was picked is not derivable by the caller — a caller that re-read
+  the link to label the result named the paused origin while the ladder had
+  selected the active mirror. That is why no caller may name the selection; it is
+  also why none needs it back, so the helper logs it at the one place that knows
+  it instead of widening its return for a value only a log line read.
+- **A caller that delivers from a background task passes the binding it was
+  AUTHORED for.** `authored_link` seeds the revalidation; without it the helper
+  compares against its own ladder walk, which for a deferred caller happens after
+  any rebind and therefore reads the replacement as if it were the original. A
+  mismatch is a refusal, never a retarget. `snapshot_channel_link` produces that
+  value through the SAME pause-aware ladder the send walks, so the two agree by
+  construction.
+
+  Its `skip_slack` argument is OPT-IN, and only the note mirror passes it. Slack
+  cannot be delivered by this ladder at all, so a Slack row ending the walk hands the
+  transport leg a link it cannot resolve and withholds the note from a live non-Slack
+  row the walk had not reached yet. The note mirror wants that skip because its Slack
+  half travels on its own leg. Every other caller keeps the base behaviour of stopping
+  on the first live row, so no other sender's delivery set moves with this change:
+  widening one of those belongs in a change where the widening is the subject under
+  review.
+
+  **Deferred, and owned by one document rather than restated here.** The same
+  resolve-then-send shape survives at other sites, each resolving a link, awaiting,
+  then sending on the value captured before that await with no re-walk. Direct Slack
+  senders likewise still bypass the `channel_egress_permitted` gate, and two further
+  copies of that gate exist. Adopting the hardened chain at any of them widens
+  that site's refusal set, which is a behaviour change to a surface this change does
+  not otherwise touch, so each belongs in a change where that tightening is the
+  subject under review.
+
+  **The deferred inventory, by symbol** — named by symbol rather than by line so the
+  list does not rot as the files move. SEVEN resolve-then-send sites across five
+  symbols: `state._notify_inbound_unbind`, `chat_mirror.api_chat_slot_mirror_link`
+  (three distinct paths in one function), `slack/gateway._deliver_channel_reply`,
+  `handlers/messaging._deliver_channel_dm`, and
+  `chat_compaction_notice._deliver_via_transport`. THREE direct Slack senders bypass
+  `channel_egress_permitted` entirely — `server.py`'s owner DM, `handlers/hooks.py`'s
+  hook notification DM, and `api_send_message`'s Slack leg. The compaction notice's own
+  Slack leg is NOT among them: `_deliver_slack` calls that gate, so it is gated but
+  UNHARDENED — it takes neither the recipient re-authorization nor the per-part re-ask,
+  which is why the tier map files it as gate-only rather than hardened.
+  TWO further copies of the gate body, neither reachable by the census test,
+  which greps for `post_message(`: `upload_destination._slack_egress_permitted`, missed
+  because a file upload never calls `post_message`, and `_vet_channel_send`, missed
+  because it authorizes rather than sends. The tier sets themselves are pinned
+  mechanically by `TestTheProactiveSlackTierMapIsMechanical`, which owns them
+  executably. The governance profile store's
+  COLD LOAD is CLOSED here rather than deferred: the store serialises its own first
+  load, so a concurrent first-touch caller waits for the owner's load and reads its
+  result instead of being answered "not yet loaded". Caller-side ordering could never
+  have covered it, because two notes written close together race the same load
+  independently of what one note does with its own two legs.
+
+  **The consolidation is tracked HERE, and this states what discharging it means.**
+  Three surfaces stay plain-client — `server.py`'s owner DM, `handlers/hooks.py`'s hook
+  notification DM, and `api_send_message`'s Slack leg — and the seven resolve-then-send
+  sites stay unhardened. Discharging this list means each of those sites routes either through
+  `deliver_to_channel`, gaining the post-await re-walk and the per-part re-ask, or, for a
+  Slack leg, through `slack_egress._deliver_slack_governed`, gaining the per-chunk
+  recipient re-authorization — and the tier map's gate-only and plain-client sets shrink
+  to empty. Until that happens the posture is THREE TIERS rather than one, and
+  `test_a_recipient_no_authority_names_is_still_delivered` holds the weakest tier green
+  deliberately, so adopting the chain there has to change a test rather than discover the
+  boundary by accident. THE TRIGGER IS MECHANICAL AND NEEDS NO ASSIGNEE:
+  `TestTheProactiveSlackTierMapIsMechanical` fails as soon as a proactive Slack sender is
+  added or a named symbol changes tier, and that failure is the point at which this list
+  is either discharged site-by-site or consciously re-accepted. THE OWNER IS UNASSIGNED —
+  naming one is a repository-owner decision, so this paragraph carries the commitment and
+  the trip-wire instead of asserting an owner it cannot appoint.
+
+  **One further deferral is tracked in this inventory rather than by an external
+  item**, because filing a tracking item is a maintainer action and an unfiled one is
+  not something a later reader can be asked to satisfy: the revalidation protocol
+  spelled twice (next paragraph). Recording it here makes this list the thing
+  that has to be discharged, so it does not depend on an issue that may never be filed.
+  Note what this does and does not buy. The tier
+  SETS above are pinned executably by `TestTheProactiveSlackTierMapIsMechanical`, and the
+  twice-spelled revalidation protocol is now pinned too, by
+  `TestTheRevalidationProtocolCannotDivergeSilently`: it extracts both chains and fails if
+  either loses the off-loop sample, the governance-token re-check or its destination
+  re-check, and fails if a THIRD consumer of the shared driver appears. A deferral that
+  only prose carries is one that gets carried silently, so
+  that one no longer is. The HELD note's mirror gap is CLOSED, not deferred: the held
+  record carries the destinations it was authored for and `flush_deferred_notes` dispatches
+  them, pinned by `TestAHeldNoteMirrorsAtFlush`.
+
+  **The revalidation protocol is spelled TWICE, and that duplication is deferred too.**
+  `deliver_to_channel` and `slack_egress._deliver_slack_governed` each write out the
+  sample → resolve → walk → re-ask sequence for their own transport. What they share is
+  exactly one function: `messaging/renderer.send_parts_revalidating`, the per-part driver,
+  which has precisely those two consumers. Nothing else is common, so a fix applied to one
+  chain does NOT reach the other — the same class of drift this change already closed once,
+  when `deliver_to_channel`'s hand-written `_walk_ladder` copy was replaced by the shared
+  `snapshot_channel_link`. Consolidating the two into one chain is a behaviour change to the
+  Slack path, which is why it is recorded here rather than ridden in: the deferral is the
+  claim, and the risk it carries is that drift, not a latent defect today.
+
+  **What `api_send_message` can refuse, and when.** The shared helper's inline caller
+  is `api_send_message`, and the widening reaches exactly as far as the COMPARAND
+  allows. Gating it on `authored_link` is a fail-OPEN, not a narrower capability: two
+  holes reopen with named pins,
+  `test_an_inline_send_stops_remaining_parts_when_unlinked` (content reaches a revoked
+  conversation) and
+  `test_an_inline_send_refuses_when_governance_tightens_during_resolve` (part 1 goes
+  out under a superseded permit). So `api_send_message` answers with EIGHT codes the
+  gated form cannot reach. Four can refuse before part 1 goes out:
+  `link_changed_during_resolve`, `governance_changed_before_part_1`,
+  `link_changed_during_recheck_before_part_1`, and the error
+  `resolve_failed_before_part_1`. Four fire only on a part after the first:
+  `not_permitted_mid_send_before_part_N`, `link_changed_during_recheck_before_part_N`,
+  `governance_changed_mid_send_before_part_N`, and the error
+  `resolve_failed_mid_send_before_part_N`. Exactly one stays dispatch-only,
+  `link_changed_before_dispatch`, because it compares against a link the caller
+  CAPTURED and an inline caller captures none. None of the eight retargets a send, and
+  none changes the outcome of a send that remains permitted.
+
+  **Asked unconditionally, because the comparand needs no captured link.** Three
+  questions fall here. "Was the permit authorized under the ceiling STILL INSTALLED"
+  compares a ceiling sampled before the target resolve — and that resolve is offloaded
+  because it walks the profile directory, so it is an unbounded await for every caller.
+  A MOVED TOKEN IS NOT A REFUSAL: the token spans the ceiling and the profile layer
+  together, so unrelated profile churn moves it, and the answer is to re-ask the
+  permission once and refuse only if that re-ask also denies
+  (`governance_changed_before_part_1`, or `resolve_failed_before_part_1` when the re-ask
+  itself cannot complete). "Is the
+  live binding still the one THIS SEND SELECTED" compares the post-resolve walk against
+  `link`, the send's own resolved destination (`link_changed_during_resolve`). And the
+  per-chunk CONTINUATION re-ask asks the same of every later part
+  (`not_permitted_mid_send_before_part_N`, `link_changed_during_recheck_before_part_N`,
+  `governance_changed_mid_send_before_part_N`, and the error
+  `resolve_failed_mid_send_before_part_N`). Gating any of these on `authored_link` is a
+  fail-OPEN rather than a narrower capability, because being inline bounds only the
+  window before part 1. Every transport send is an await, so a multi-part inline send
+  spans the same window a dispatched one does, and parts 2..N were reaching a
+  conversation already unlinked. `test_an_inline_send_refuses_when_governance_tightens_during_resolve`,
+  `test_an_inline_send_refuses_when_the_binding_moves_during_resolve` and
+  `test_an_inline_send_stops_remaining_parts_when_unlinked` pin the three.
+
+  **The audit row names the SELECTED transport, not the caller's filter.** `channel_type`
+  on `deliver_to_channel` is a caller-supplied FILTER — "deliver only if the link is this
+  type" — and it is EMPTY for any caller that does not constrain the walk. The note
+  mirror is exactly that caller: it selects by `authored_link` plus `skip_slack` rather
+  than by type. Auditing with the filter therefore labelled every one of its egress rows
+  `channel`, so an operator filtering by transport could not see those sends at all and
+  two different destinations were indistinguishable in the trail. The label is now taken
+  from the selected link's own `channel_type` as soon as a link is selected, in BOTH
+  arms — the authored one and the walked one — which is what the note mirror's own leg
+  rows (`leg_timeout`, `leg_error`) already did. Rows filed before any selection
+  (`no_session_key`, `empty_text`) still carry the filter, because at that point no
+  destination has been chosen and there is nothing truthful to name.
+  `test_a_refusal_audit_names_the_selected_transport_not_the_generic_label` pins it.
+
+  **A Slack-only binding is not an absence, and the transport leg stays silent for it.**
+  The transport walk runs with `skip_slack=True`, because the Slack half is carried by the
+  sibling snapshot. So for a session whose ONLY live binding is its Slack row that walk
+  legitimately finds nothing and captures a real `None` — and reading that as "the slot had
+  no binding at all" is false, since the note was delivered on the Slack leg. Auditing it
+  as `unbound_at_authoring` put a denial row on every `/note` for the commonest binding
+  there is, which is worse than filing none: an operator filtering egress denials would
+  read past one phantom per note to reach a real refusal. `_deliver_via_transport` is
+  therefore told whether a Slack row was bound, and returns silently in that case exactly
+  as it does for an empty transport registry. The predicate is the Slack conversation ID,
+  not the tuple: an unbound slot still carries a `("", "")` pair and a 2-tuple of empty
+  strings is truthy, so testing the tuple would silence the genuinely-unbound denial too.
+  `test_a_slack_only_binding_files_no_denial_on_the_transport_leg` pins it.
+
+  **A moved governance token is a reason to re-ask, not to stop.** The token
+  `governance_ceiling_unchanged` compares spans both layers, ceiling and profile, and it
+  is deliberately narrower than the answer: comparing the answer means `vet_and_audit`,
+  which walks the profile directory and files an audit row, so a send-adjacent check
+  cannot afford it per chunk. The consequence is that ANY profile publication moves the
+  token, including one that permits this destination exactly as before. Refusing on that
+  alone abandoned a multi-part message after a delivered prefix — a partial delivery
+  caused by an edit that authorized nothing differently. So on a later part the
+  continuation re-ask treats a moved token as uncertainty rather than as a denial: it
+  re-resolves once, and only a genuine narrowing (`confirm is None` or a different
+  destination), a binding that moved, or a token that will not SETTLE refuses. The
+  refusal keeps its own reason code, `governance_changed_mid_send_before_part_N`.
+  `test_an_unrelated_profile_edit_mid_send_does_not_truncate` pins the delivery, and
+  `test_a_ceiling_change_during_the_mid_send_reresolve_refuses` pins the fail-closed arm
+  against a token that keeps moving.
+
+  **Gated on `authored_link`, because the comparand does not otherwise exist.** One
+  question remains dispatched-only: "is the live binding the one this WORK WAS AUTHORED
+  FOR" (`link_changed_before_dispatch`). It compares against the binding a caller
+  captured before its work was queued, and a caller that never captured one has nothing
+  to compare — the parameter is where `link` comes from on that path, not a switch. A
+  mismatch is a refusal, never a retarget, in every one of these: delivering to the
+  replacement is the exposure, and delivering to the original may be equally wrong once
+  the session has moved. The per-chunk cost is accepted, not overlooked: every chunk
+  after the first costs a ladder re-walk plus an off-loop governance resolve, bounded
+  per chunk rather than per byte. If it ever needs reducing, the resolve is the part to
+  cache within one message; the re-ask is not, because the value it re-reads is exactly
+  what can change mid-send.
 - **The caller does not get to name the conversation.** A cron's destination
   comes from its job's stored `session_key` (gateway-owned scheduler state);
   every other caller is identified by the `X-Session-Key` header, which
@@ -1961,7 +2161,7 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **A turn reads the SESSION's memory silo, never the one its `agent` name suggests**: every channel turn resolves `memory_store=` through `context.session_store_for_turn(ctx_builder, session_key)`, which reads the session's own recorded binding and stands up that silo's vector tier before the build is offloaded. `drive_turn` does it on the shared seam for the same reason it owns `minimal_context`: every channel on the pipeline has the identical exposure, and one that forgot would read the operator's private memory for a crew bound elsewhere. **The store must not be derived from `agent`** — on every channel that field is a kiro-cli agent name, a namespace disjoint from `cfg.agents`, so a derivation resolves to `default` for exactly the crew that configured otherwise. A session with no recorded binding resolves `""` and runs the global path unchanged, which is nearly every channel conversation; one reaches a silo when it was taken over from, or resumed into, a crew-bound dashboard session. `scripts/check_memory_store_seam.py` gates the omission on any line a change touches; see [memory-skills-hooks](memory-skills-hooks.md#how-a-turn-running-surface-names-its-store).
 - **Channel dashboard visibility is immediate**: after the first successful turn of a Discord, Telegram, Webex, Teams, WeCom, Weixin, or Feishu-owned session is persisted, the dispatcher triggers the channel-slot reconciler immediately when `dashboard.surface_channel_sessions` is enabled. `DashboardState.register_channel_transport` injects the dashboard state into the bound dispatcher; the lifetime 30-second reconciler remains the recovery path, but the normal first-turn path does not wait for it. Turns that resume an existing `dashboard:` session skip this step because that session already owns a slot.
 - **An owner notification is not Slack-only**: `dashboard/server.py::_dm_owner` prefers the owner's Slack DM and falls back to registered channel transports (`_notify_owner_channels`). It used to no-op entirely without Slack, so an expiring unattended grant was invisible on a Teams-only, Discord-only or Telegram-only install — silence about a security grant lapsing is exactly what the notice exists to prevent. Fallback, not addition: an operator with Slack gets one notice, not one per channel. Reachability is the transport's OWN answer, so this can only reach a destination that channel already authorized. **And a channel must be able to NAME the owner: exactly one configured target, or nothing.** The notice carries the operator's own security state, while an allow-list is a list of people permitted to talk to the agent — not a claim that any one of them is the operator. With several configured targets there is no unambiguous owner, and sending to the first reachable one hands one allow-listed human another's auto-approve state; the count is over ALL configured targets, because a three-person allow-list with one learned route is still a guess. Same premise as `/sessions`' owner-only rule. Per-identity authority within an allow-list would let this deliver on a multi-person install; it does not exist yet on any channel.
-- **The proactive PRODUCERS started Slack-shaped, and the parity claim tracks how far that has moved**: `api_send_message` (the LLM-facing `send_message` tool) began with exactly two legs — the origin dashboard slot and `state.slack_client` — and `file_send` still posts to the Slack upload route. The tool's own explicit addressing now exists for every registered channel and does consult `state.channel_transports`: `channel_type` (+ optional `target_id`) for the conversation the session belongs to, and `session="<channel>"` for that channel's configured owner. See § Proactive sends. What remains Slack-only is the shape of `channel`/`user`/`thread_ts`/`unfurl_*`, whose allow-list, threading and unfurl semantics are Slack concepts, and `file_send`'s upload route. A cron result also still reaches a non-Slack channel when its origin slot is MIRRORED there (`/link`).
+- **The proactive PRODUCERS started Slack-shaped, and the parity claim tracks how far that has moved**: `api_send_message` (the LLM-facing `send_message` tool) began with exactly two legs — the origin dashboard slot and `state.slack_client` — and `file_send` still posts to the Slack upload route. The tool's own explicit addressing now exists for every registered channel and does consult `state.channel_transports`: `channel_type` (+ optional `target_id`) for the conversation the session belongs to, and `session="<channel>"` for that channel's configured owner. See § Proactive sends. What remains Slack-only is the shape of `channel`/`user`/`thread_ts`/`unfurl_*`, whose allow-list, threading and unfurl semantics are Slack concepts, and `file_send`'s upload route. A cron result also still reaches a non-Slack channel when its origin slot is MIRRORED there (`/link`). **The `/note` channel mirror joins that producer set on its own terms**: `dashboard/chat_note_mirror.py` runs two legs — a hardened Slack send and the governed transport ladder — so a note reaches a Telegram- or Discord-bound session without a `/link` mirror standing in for explicit addressing. It is dispatched in the background and reports nothing, so it widens the producer set without widening `send_message`'s contract. **A HELD note's mirror does NOT survive a gateway restart, and that is deliberate.** The hold itself is durable — the visible line and the queued context are persisted into the slot's metadata before the 200 and replayed after a restart — but the mirror is an in-memory callable only, so a restart drops the channel copy. That loss is the same class as the six drop reasons the mirror's contract already permits (governance denial, pause, no proactive send, error, timeout, empty id): the note's own two halves are what the 200 acknowledges, and both are replayed. Persisting the destinations was tried and withdrawn — it widened the durable allowlist from five fields to seven and added a disk trust boundary, to save one best-effort copy in the restart-during-hold window, with no reported harm naming that window.
 - **Configured outbound targets are transport-owned**: `MessagingTransport.configured_targets()` returns opaque `ConfiguredChannelTarget` records for the user-configured destinations a dashboard session may link to, including an explicit unavailable reason when a protocol needs prior inbound state or cannot send proactively. `resolve_configured_target()` revalidates the selected opaque id at the side-effect boundary and resolves it to `(conversation_id, thread_id)`; the browser never supplies an unchecked platform conversation id. Discord exposes configured users and threads, and fail-closes thread resolution unless Discord still reports the allow-listed id as an actual thread rather than a normal shared guild channel; Telegram exposes configured DMs; Webex exposes configured DMs plus, when `webex.allow_group_rooms` is on, each space in `webex.allowed_room_ids` as a `room:` target — and `resolve_configured_target` re-validates a `room:` id against BOTH the switch and the list, because an advertised target id travels through the browser and the LLM (it is the `target_id` an MCP send may name) and the config can narrow after one was minted; Weixin exposes allow-listed DMs plus authorized peers learned under its open policy; Teams destinations become available after an authorized inbound activity supplies a conversation/service URL; and WeCom advertises its allow-listed userids plus, under its allow-all policy, the peers it has learned — each either offered or listed with a reason, because `aibot_send_msg` needs no token but the platform only delivers into a conversation the user has already written to. Feishu destinations are visible but unavailable because replies are anchored to an inbound message (no proactive DM in v1).
 - **Configured-target egress is governed at every yield boundary**: the dashboard mirror-link endpoint enters the shared fail-closed `channels` governance ladder before resolving an opaque target (resolution may itself open a remote DM), rechecks before the initial link message, and rechecks before each historical-context message. A profile that narrows after transport startup therefore stops both target resolution and all subsequent sends.
 - **`/link` and `/unlink` are one pair with one location**: `rebind_conversation_location` claims what `release_conversation_location` frees, and both take the channel's single `_origin_mirror_link()` value — the release matches an occupied location by VALUE, so a second spelling of "this conversation" lets it miss the binding the bind wrote. Inside the rebind the **claim goes first**: `batched_save` writes on the way out even when the block raises, so an opt-out withdrawal ordered ahead of a refused claim would persist for a link that never happened and silently turn mirroring back on.
@@ -1971,7 +2171,7 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **A proactive send addresses an OPAQUE target, never a platform id**: `POST
   /api/send-message` reads `channel_type` as the transport and `target_id` as the
   optional destination on it — `channel_type` alone means the conversation the
-  SESSION already belongs to (`_deliver_to_channel`), and the pair names an
+  SESSION already belongs to (`deliver_to_channel`), and the pair names an
   explicit configured destination (`_send_to_channel_target`), so `target_id` is
   what selects the addressed leg and a `target_id` with no transport to resolve it
   against is the one under-specified combination. The addressed leg
