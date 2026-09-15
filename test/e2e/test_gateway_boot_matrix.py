@@ -53,6 +53,7 @@ import os
 import socket
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterator, NoReturn
@@ -165,6 +166,34 @@ class _Client:
             ) from exc
 
 
+def _await_memory_recovery(client: _Client, *, secs: float = 60) -> None:
+    """Wait out startup recovery before the caller writes anything.
+
+    The gateway binds its socket and prints ``KIROCREW_READY`` before memory
+    recovery finishes, so a write issued right after boot lands inside that
+    window and is refused. Both refusals are the same ``MemoryStartupUnavailable``
+    seen through two shapes -- 503 on a read, 409 ``member_memory_unavailable``
+    on a write -- so a read the gateway admits proves the write gate is open too.
+
+    A store that never becomes ready fails HERE, carrying the gateway's own body
+    and diagnostics, instead of at whichever line happened to write first.
+    """
+    deadline = time.monotonic() + secs
+    while True:
+        try:
+            client.get("/api/memory/stats?store=default")
+            return
+        except AssertionError as exc:
+            cause = exc.__cause__
+            still_recovering = isinstance(cause, urllib.error.HTTPError) and cause.code in (
+                409,
+                503,
+            )
+            if not still_recovering or time.monotonic() >= deadline:
+                raise
+        time.sleep(0.25)
+
+
 @contextlib.contextmanager
 def _booted(fixture: str) -> Iterator[tuple[Any, _Client]]:
     """Boot one gateway whose agent binary is the packaged fake ACP backend.
@@ -180,6 +209,9 @@ def _booted(fixture: str) -> Iterator[tuple[Any, _Client]]:
     connection reports the gateway's exit status and stderr tail instead of a
     bare socket error: on a platform nobody can reproduce locally, that tail is
     the whole diagnosis.
+
+    The client is handed over only once startup recovery has finished, so a test
+    may write on its first line. See ``_await_memory_recovery``.
     """
     try:
         from kiro_crew.testing import fake_acp_backend
@@ -204,6 +236,7 @@ def _booted(fixture: str) -> Iterator[tuple[Any, _Client]]:
                         f"first request to the booted gateway failed: {exc!r}\n"
                         f"{handle.diagnostics()}"
                     ) from exc
+                _await_memory_recovery(client)
                 yield handle, client
         finally:
             if previous is None:

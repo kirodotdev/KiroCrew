@@ -201,7 +201,7 @@ def test_private_workflows_execute_over_real_projected_mcp():
             assert f"WF_E2E_{marker}_PRIVATE_LESSON" in content
             for other in {"A", "B", "V"} - {marker}:
                 assert f"WF_E2E_{other}_PRIVATE_LESSON" not in content
-        from e2e.test_gateway_boot_matrix import _Client
+        from e2e.test_gateway_boot_matrix import _await_memory_recovery, _Client
 
         old_pid, old_home = handle.proc.pid, handle.home
         handle = handle.restart()
@@ -209,6 +209,9 @@ def test_private_workflows_execute_over_real_projected_mcp():
         assert handle.home == old_home
         client = _Client(handle.port, handle.token)
         client.diagnostics = handle.diagnostics
+        # A restart re-enters the READY-before-recovery window, and a run read
+        # validates its memory store, so it is refused until recovery ends.
+        _await_memory_recovery(client)
         restored = client.get(f"/api/workflows/runs/{starts['A']}")
         _assert_result(restored, "A")
         replay = _post_as(
