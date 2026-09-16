@@ -977,11 +977,20 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="local-destructive-chmod-777",
-        pattern="chmod 777.*",
+        # Flag-spelling tolerant with NO ``.*`` gap: one packed flag token, one
+        # ``--recursive``, and any run of single-letter flags may precede the
+        # mode, so the pattern stays ONE fragment with exact full-input
+        # semantics (all three units are ReDoS-screen invisible: ``?``-only
+        # groups and a bare ``*`` over a quantifier-free body).
+        # Residuals: symbolic modes (``a+rwx``/``a=rwx`` are a different grammar),
+        # long-flag padding (``--verbose``), packs after ``--recursive``,
+        # 4+-letter packs, and quoted operands.
+        pattern=r"chmod(?: -[a-z][a-z]?[a-z]?)?(?: --recursive)?(?: -[a-z])* 0?777.*",
         category="local-destructive",
         description=(
             "Blocks chmod 777, which grants world read/write/execute permissions and creates a "
-            "serious security exposure."
+            "serious security exposure. Packed (-Rv), split (-R -v), --recursive, and leading-zero "
+            "(0777) spellings match, with runs of single-letter flags allowed around them."
         ),
     ),
     DeniedCommandRule(
