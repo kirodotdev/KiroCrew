@@ -18,9 +18,10 @@ import { i18nT } from '../../i18n/t'
 import { api } from '../../api/client'
 
 /**
- * SettingsSearch — in-page search over SETTINGS_REGISTRY, rendered in the
- * Settings page header (SidePanelLayout's `headerRight`, both desktop and
- * narrow branches).
+ * SettingsSearch — in-page search over SETTINGS_REGISTRY. On desktop it is the
+ * Settings sidebar-top slot (SidePanelLayout's `navTop`, dock 'nav'), pinned
+ * above the tab list; on the narrow layout it is the floating bottom capsule
+ * (`headerRight` + dock 'bottom-float').
  *
  * Search and ranking are the command palette's, literally: both surfaces call
  * `scoreSettingEntry` in settingsSearchCore, so a query ranks identically here
@@ -140,6 +141,10 @@ export default function SettingsSearch() {
   // of the screen, a downward panel would be off-screen.
   const dock = useContext(SidePanelDockContext)
   const floating = dock === 'bottom-float'
+  // Desktop sidebar-top slot: full-width boxed input, dropdown opens downward
+  // and spans the rail (left-0 right-0) so it stays inside the 200px sidebar
+  // rather than spilling into the clipped content area.
+  const inNav = dock === 'nav'
 
   return (
     <div ref={rootRef} className="relative shrink-0">
@@ -160,6 +165,8 @@ export default function SettingsSearch() {
         onBlur={close}
         className={floating
           ? 'w-full bg-transparent border-none rounded-full pl-8 pr-4 py-2.5 text-[14px] text-text placeholder:text-muted focus:outline-hidden'
+          : inNav
+          ? 'w-full bg-bg-elevated border border-border rounded-lg pl-8 pr-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:outline-hidden focus-visible:border-accent'
           : 'w-44 sm:w-56 bg-bg-elevated border border-border rounded-lg pl-8 pr-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:outline-hidden focus-visible:border-accent'}
       />
       {open && (
@@ -167,9 +174,11 @@ export default function SettingsSearch() {
           id={LISTBOX_ID}
           role="listbox"
           aria-label={i18nT('pages.settingsPage.search.aria_label')}
-          className={`absolute right-0 max-h-80 overflow-y-auto bg-card border border-border rounded-lg shadow-lg z-50 py-1 ${floating
-            ? 'bottom-full mb-2 left-0 w-full'
-            : 'top-full mt-1 w-80 max-w-[calc(100vw-2rem)]'}`}
+          className={`absolute max-h-80 overflow-y-auto bg-card border border-border rounded-lg shadow-lg z-50 py-1 ${floating
+            ? 'bottom-full mb-2 left-0 right-0'
+            : inNav
+            ? 'top-full mt-1 left-0 right-0'
+            : 'right-0 top-full mt-1 w-80 max-w-[calc(100vw-2rem)]'}`}
         >
           {results.length === 0 ? (
             <div className="px-3 py-3 text-[12px] text-muted">{i18nT('pages.settingsPage.search.no_results')}</div>
@@ -185,8 +194,8 @@ export default function SettingsSearch() {
               onMouseEnter={() => setSelected(i)}
               onMouseDown={e => { e.preventDefault(); activate(m) }}
             >
-              <div className="text-[13px] font-medium text-text-strong truncate">{m.label}</div>
-              <div className="text-[11px] text-muted truncate">{settingsSubtitle(m.entry)}</div>
+              <div className={`text-[13px] font-medium text-text-strong ${inNav ? 'break-words' : 'truncate'}`}>{m.label}</div>
+              <div className={`text-[11px] text-muted ${inNav ? 'break-words' : 'truncate'}`}>{settingsSubtitle(m.entry)}</div>
             </div>
           ))}
         </div>
