@@ -2819,6 +2819,20 @@ def _credential_free_external_registry_entries(
     return [_credential_free_external_registry_value(entry) for entry in entries]
 
 
+def _external_registry_cache_identity(reg: Any) -> str:
+    """Stable cache identity for one configured registry source.
+
+    A display name is not provenance: operators may repoint the same name to a
+    different repository or branch. Include the normalized credential-free
+    source coordinates so stale-fallback readers cannot answer from the old
+    source after that change.
+    """
+    name = _public_registry_name(reg)
+    repo = _normalize_git_target(reg.repo)
+    branch = str(reg.branch or "")
+    return f"{name}|{repo}|{branch}"
+
+
 def _external_registry_cache_path_for_identity(name: str) -> Path:
 
     # Pure-safe names keep the historical byte-identical path (no hash suffix)
@@ -3256,7 +3270,7 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
         entry.setdefault("repo", public_registry_repo)
         entry["_registry"] = name
     _apply_configured_branch(entries, reg, warn=True)
-    await asyncio.to_thread(_write_external_registry_cache, name, entries)
+    await asyncio.to_thread(_write_external_registry_cache, _external_registry_cache_identity(reg), entries)
     return entries
 
 
@@ -3274,7 +3288,7 @@ async def _load_external_registries() -> list[dict[str, Any]]:
     all_entries: list[dict[str, Any]] = []
 
     async def _load_one(reg) -> list[dict[str, Any]]:
-        cache_name = reg.name or reg.repo
+        cache_name = _external_registry_cache_identity(reg)
         public_name = _public_registry_name(reg)
 
         # Try cache first
@@ -3399,7 +3413,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     failed: list[str] = []
     results: list[dict[str, Any]] = []
     for reg in registries:
-        name = reg.name or reg.repo
+        name = _external_registry_cache_identity(reg)
         display_name = _public_registry_name(reg)
         # Read the (possibly stale) prior index up front so we know which
         # per-app manifest caches this registry contributed, even if the
@@ -3999,7 +4013,7 @@ def _external_registry_row(name: str) -> dict[str, Any] | None:
     attached here at the lookup boundary so a stale cache cannot omit it.
     """
     for reg in _effective_registries():
-        cache_name = reg.name or reg.repo
+        cache_name = _external_registry_cache_identity(reg)
         public_name = _public_registry_name(reg)
         cached = _read_external_registry_cache(cache_name, ignore_ttl=True)
         if cached:
@@ -4073,7 +4087,7 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
         # this is its sibling and must refuse the same way.
         return []
     for reg in _effective_registries():
-        cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+        cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
         for entry in cached or []:
             if isinstance(entry, dict) and entry.get("name") == name:
                 _apply_configured_branch([entry], reg)
@@ -4148,7 +4162,7 @@ def _external_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
     blob-proxy worker. Fails open to ``None``."""
     try:
         for reg in _effective_registries():
-            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
             for entry in cached or []:
                 if (
                     isinstance(entry, dict)
@@ -4197,7 +4211,7 @@ def _external_registry_repos() -> set[str]:
     repos: set[str] = set()
     try:
         for reg in _effective_registries():
-            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
             for entry in cached or []:
                 if (
                     isinstance(entry, dict)
