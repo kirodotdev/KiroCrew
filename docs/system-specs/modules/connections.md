@@ -8,6 +8,8 @@ disconnect, and the two launch-gate rungs. The subsystem is
 `l0_record.py`, `l1_smoke.py`, `tool_test.py`), plus
 `dashboard/handlers/connections.py` and `website/src/pages/connections/`.
 
+The `src/kiro_crew/connections/vendors/zoom/` subtree is a separate connector-campaign slice with its own owning spec — [connector-zoom.md](connector-zoom.md) (`W11-A` Zoom contract semantics) — not this subsystem's OAuth-grant plumbing.
+
 **Kiro Crew never holds a connection's credential.** kiro-cli owns the OAuth chain
 end to end; Kiro Crew observes grant presence by `stat`, and every rule below follows
 from that boundary. The credential-boundary detail lives in

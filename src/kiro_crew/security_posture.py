@@ -1902,6 +1902,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # -- the surface that eventually RENDERS a connector error is the egress
         # boundary and is a registered sink there, not here.
         "connections/control_plane/errors.py",
+        # Same class, one layer out: the Zoom vendor slice's `redact_zoom_secrets`
+        # scrubs Zoom-SHAPE credentials (signed `/rec/` media URLs, bare token
+        # fields the site-wide scanner does not recognize) as the error `detail`
+        # is BUILT in `zoom_operation_error`, composed BEFORE the control plane's
+        # `redacted_detail`. It owns no output and crosses no transport -- the
+        # surface that eventually renders a Zoom connector error is the egress
+        # boundary and is a registered sink there, not here.
+        "connections/vendors/zoom/errors.py",
     }
 )
 
