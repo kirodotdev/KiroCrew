@@ -2,6 +2,8 @@ import { memo, useState, useRef, useEffect, useMemo, useCallback, type ReactNode
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
 import type { DisplayItem, TurnItem } from './types'
+import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
+import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { isWorkflowRunTool } from './WorkflowRunCard'
@@ -280,6 +282,30 @@ function mergeTurnThinking(items: TurnItem[]): TurnItem[] {
   return out
 }
 
+/* Row keys, by message identity.
+ *
+ * The keys for a turn's rows come from `uniqueRowKeys` — the transcript's own
+ * `row-<identity>` / `grp-<identity>` scheme with its collision tie-break — fed
+ * by `useStableMessageKey`, the ONE spelling of the per-message identity rule
+ * (`clientTs` → `ts` → a minted id) every virtualized host keys rows with. So a
+ * turn's rows are keyed exactly as the transcript keys the turn, and a change to
+ * that rule cannot de-sync the two.
+ *
+ * Why identity and not an index: a `single`'s `idx` and a `group`'s `startIdx`
+ * are array positions in the transcript, and a history backfill (older page
+ * landing) renumbers every one of them while leaving message identities intact
+ * — so an index-keyed wrapper would remount every row below the prepend, an
+ * inline MCP App iframe among them. The mapped position is worse still:
+ * `mergeTurnThinking` hoists a later reasoning burst above earlier rows on the
+ * next flush. Every render path keys visible rows through these, in the
+ * streaming and the folded render alike (#11083).
+ *
+ * The minted-id fallback only ever applies to a message with neither timestamp.
+ * `mergeTurnThinking`'s merged row spreads its first burst, so it carries that
+ * burst's `ts` and keys on it; a timestamp-less burst would mint a new id per
+ * flush (a fresh object each time) and re-key that one collapsed row, never an
+ * app row, which is always a tool message with a `ts`. */
+
 /** Collapsible agent turn. collapseAll=false (default): only tool calls collapse. collapseAll=true: all working steps collapse, only final assistant text visible.
  *
  *  ``appToolCallIds``: tool_call_ids in THIS pane's slot that have a live MCP
@@ -326,6 +352,12 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // turn.items, so a running turn shows one live reasoning line and a settled
   // turn shows one collapsed "Thought process" instead of a per-burst wall.
   const items = useMemo(() => mergeTurnThinking(turn.items), [turn.items])
+  // One React key per row of `items`, by message identity (see the block
+  // comment above); `rowKey(i)` indexes THIS list, so every render path below
+  // must pass the item's position in `items`, never a segment index.
+  const msgKey = useStableMessageKey()
+  const keys = useMemo(() => uniqueRowKeys(items, msgKey), [items, msgKey])
+  const rowKey = (i: number): string => keys[i] ?? `pos-${i}`
 
   // Auto-expand only when the active search match lives inside a COLLAPSED
   // segment of this turn — collapsed reasoning is mounted but height-0, so the
@@ -380,21 +412,35 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     const segs = splitSegments(items, appToolCallIds)
     const stepCount = countCollapsedSteps(segs)
     if (!turn.complete || stepCount === 0) {
-      return <>{items.map((it, i) => renderItem(it, i))}</>
+      // Each always-visible row is wrapped in `<div key={rowKey(i)}>` — its
+      // message-identity key (see "Row keys" above), the same element type, parent and
+      // key the folded render below gives it — and emitted as ONE keyed array
+      // (the fragment's single child slot) so adding the toggle in the folded
+      // render does not shift the array into a different slot. Neither the
+      // completion flip (turn.complete flips ~2.5s after a turn ends via
+      // ChatPage's running latch), a mid-turn reorder (mergeTurnThinking hoisting
+      // a later burst) nor a history backfill renumbering indices may change a
+      // visible row's React identity, or React unmounts and remounts it —
+      // harmless for text, but it re-creates an inline MCP App iframe and loses
+      // in-canvas state (#11083).
+      return <>{items.map((it, i) => <div key={rowKey(i)}>{renderItem(it, i)}</div>)}</>
     }
-    return (
-      <>
-        <CollapseToggle expanded={expanded} onToggle={toggle}
-          label={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.turnBlock.worked_through_step', { count: stepCount })} />
-        {segs.map((seg, si) => seg.type === 'visible' ? (
-          <div key={`v-${si}`}>{renderItem(seg.it, seg.idx)}</div>
-        ) : (
-          <CollapsibleSection key={`c-${si}`} expanded={expanded}>
+    const children: ReactNode[] = [
+      <CollapseToggle key="toggle" expanded={expanded} onToggle={toggle}
+        label={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.turnBlock.worked_through_step', { count: stepCount })} />,
+    ]
+    for (const seg of segs) {
+      if (seg.type === 'visible') {
+        children.push(<div key={rowKey(seg.idx)}>{renderItem(seg.it, seg.idx)}</div>)
+      } else {
+        children.push(
+          <CollapsibleSection key={`c-${rowKey(seg.items[0].idx)}`} expanded={expanded}>
             {seg.items.map(({ it, idx }) => renderItem(it, idx))}
-          </CollapsibleSection>
-        ))}
-      </>
-    )
+          </CollapsibleSection>,
+        )
+      }
+    }
+    return <>{children}</>
   }
 
   // collapseAll mode: collapse everything except the last assistant message (original behavior)
@@ -412,24 +458,31 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     const stepCount = countCollapsedSteps(segs)
 
     if (!turn.complete || stepCount === 0) {
-      return <>{items.map((it, i) => renderItem(it, i))}</>
+      // Wrap every row as `<div key={rowKey(i)}>` (message identity) so the
+      // completion flip, mid-turn reorders and history backfills preserve each
+      // visible row's React identity — see the #11083 comment on the interim
+      // flat render above.
+      return <>{items.map((it, i) => <div key={rowKey(i)}>{renderItem(it, i)}</div>)}</>
     }
 
-    return (
-      <>
-        <CollapseToggle expanded={expanded} onToggle={toggle}
-          label={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.turnBlock.worked_through_step', { count: stepCount })} />
-        {segs.map((seg, si) => seg.type === 'visible' ? (
-          <div key={`v-${si}`}>{renderItem(seg.it, seg.idx)}</div>
-        ) : (
-          <CollapsibleSection key={`c-${si}`} expanded={expanded}>
+    const children: ReactNode[] = [
+      <CollapseToggle key="toggle" expanded={expanded} onToggle={toggle}
+        label={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.turnBlock.worked_through_step', { count: stepCount })} />,
+    ]
+    for (const seg of segs) {
+      if (seg.type === 'visible') {
+        children.push(<div key={rowKey(seg.idx)}>{renderItem(seg.it, seg.idx)}</div>)
+      } else {
+        children.push(
+          <CollapsibleSection key={`c-${rowKey(seg.items[0].idx)}`} expanded={expanded}>
             {seg.items.map(({ it, idx }) => renderItem(it, idx))}
-          </CollapsibleSection>
-        ))}
-        {conclusion && renderItem(conclusion, conclusionIdx)}
-        {after.map((it, i) => renderItem(it, conclusionIdx + 1 + i))}
-      </>
-    )
+          </CollapsibleSection>,
+        )
+      }
+    }
+    if (conclusion) children.push(<div key={rowKey(conclusionIdx)}>{renderItem(conclusion, conclusionIdx)}</div>)
+    after.forEach((it, i) => children.push(<div key={rowKey(conclusionIdx + 1 + i)}>{renderItem(it, conclusionIdx + 1 + i)}</div>))
+    return <>{children}</>
   }
 
   // Default: only collapse tool calls
@@ -445,7 +498,11 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // the claim about how many calls it hides moved.
   const toolCount = items.filter(it => isTool(it, appToolCallIds) && !isHiddenTool(it)).length
   if (!turn.complete || toolCount === 0) {
-    return <>{items.map((it, i) => renderItem(it, i))}</>
+    // Wrap every row as `<div key={rowKey(i)}>` (message identity) so the
+    // completion flip, mid-turn reorders and history backfills preserve each
+    // visible row's React identity — see the #11083 comment on the interim
+    // flat render above.
+    return <>{items.map((it, i) => <div key={rowKey(i)}>{renderItem(it, i)}</div>)}</>
   }
 
   type Segment = { type: 'tools'; items: { it: TurnItem; idx: number }[] } | { type: 'visible'; it: TurnItem; idx: number }
@@ -461,23 +518,26 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     }
   }
 
-  return (
-    <>
-      <CollapseToggle expanded={expanded} onToggle={toggle}
-        label={expanded ? i18nT('pages.chat.turnBlock.hide_tool_calls') : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: toolCount })} />
-      {segments.map((seg, si) => seg.type === 'visible' ? (
-        <div key={si}>{renderItem(seg.it, seg.idx)}</div>
-      ) : (
-        <AnimatePresence key={si} initial={false}>
+  const children: ReactNode[] = [
+    <CollapseToggle key="toggle" expanded={expanded} onToggle={toggle}
+      label={expanded ? i18nT('pages.chat.turnBlock.hide_tool_calls') : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: toolCount })} />,
+  ]
+  for (const seg of segments) {
+    if (seg.type === 'visible') {
+      children.push(<div key={rowKey(seg.idx)}>{renderItem(seg.it, seg.idx)}</div>)
+    } else {
+      children.push(
+        <AnimatePresence key={`c-${rowKey(seg.items[0].idx)}`} initial={false}>
           {expanded && (
             <CollapsibleSection expanded={true}>
               {seg.items.map(({ it, idx }) => renderItem(it, idx))}
             </CollapsibleSection>
           )}
-        </AnimatePresence>
-      ))}
-    </>
-  )
+        </AnimatePresence>,
+      )
+    }
+  }
+  return <>{children}</>
 }
 
 function CollapseToggle({ expanded, onToggle, label }: { expanded: boolean; onToggle: () => void; label: string }) {
