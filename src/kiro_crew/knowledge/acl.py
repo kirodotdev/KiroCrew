@@ -43,8 +43,9 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 # The public-visibility sentinel a grant record uses to mark an item every
 # authenticated subject in its tenant may see (e.g. a public repo, a
@@ -246,6 +247,82 @@ class RevalidationOutcome:
     UNVERIFIABLE = "unverifiable"
 
 
+@dataclass(frozen=True)
+class ProviderResourceRef:
+    """WHICH provider object a managed item was ingested from -- the resource
+    locator a revalidation probe needs to ask 'does this subject still have
+    access to THIS?'.
+
+    This is the per-source provenance the ingest path must persist alongside the
+    grant (it is NOT derivable from item text). The exact fields a given provider
+    needs vary, so ``locator`` is a provider-shaped dict, but every managed
+    ingest MUST populate at least ``provider`` + enough of ``locator`` to
+    re-identify the object:
+
+    * ``provider``   -- the connector id (e.g. 'sharepoint', 'google_drive',
+                        'salesforce', 'github_structured'); selects which probe
+                        implementation and which credential binding to use.
+    * ``account``    -- the provider account / tenant the object lives in (a
+                        Graph tenant id, a Salesforce org id, a Drive
+                        corpora/driveId). Distinct from AccessContext.tenant,
+                        which is the KiroCrew-side boundary; this is the VENDOR
+                        side.
+    * ``resource_id``-- the object's stable provider id (a driveItem id, a
+                        SharePoint listItem id, an SObject id, a repo+path).
+    * ``locator``    -- any additional provider-shaped coordinates the probe
+                        needs (site id, drive id, list id, object type, field
+                        set). Free-form per provider, kept opaque here.
+
+    Examples of the minimal locator per provider family (for the connector
+    owners wiring the probe):
+      sharepoint/onedrive: {siteId|driveId, itemId, [listId]}
+      google_drive:        {fileId, [driveId/corpora]}
+      salesforce:          {sobjectType, recordId, [fieldSet]}
+      github_structured:   {owner, repo, path|objectId}
+    """
+
+    provider: str
+    account: str = ""
+    resource_id: str = ""
+    locator: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RevalidationRequest:
+    """The complete input a :class:`RevalidationHook` needs to probe one item.
+
+    Assembled by the retriever/caller boundary from three sources, so the hook
+    implementation never has to reach back into the store or guess identity:
+
+    * ``ctx``          -- the VERIFIED querying identity. For a managed item this
+                          MUST be the PROVIDER-MAPPED subject/tenant (W01
+                          Binding.subject_ref / tenant_ref from the verifier),
+                          NOT a raw KiroCrew session key and NOT one binding
+                          reused for every source.
+    * ``item_id``      -- the KiroCrew knowledge item under test (audit key).
+    * ``grant``        -- the stored grant (subjects/tenant/acl_version/managed/
+                          fresh_as_of) -- the snapshot being revalidated.
+    * ``resource``     -- WHICH provider object to probe (:class:`ProviderResourceRef`).
+    * ``credential_ref``-- an OPAQUE handle naming the credential binding to call
+                          the provider AS this subject. It is a reference the
+                          host resolves at probe time (a vault key / connection
+                          id), never a raw secret carried here. Which binding is
+                          correct is decided by W01's trusted binding association
+                          for (provider, account, subject) -- this field only
+                          NAMES it.
+
+    The hook returns a :class:`RevalidationOutcome`. Any field it cannot resolve
+    (missing resource, unresolvable credential binding, provider error) MUST
+    yield UNVERIFIABLE, never FRESH.
+    """
+
+    ctx: "AccessContext"
+    item_id: str
+    grant: "ItemGrant"
+    resource: ProviderResourceRef | None = None
+    credential_ref: str = ""
+
+
 @runtime_checkable
 class RevalidationHook(Protocol):
     """The provider live-permission interface (a DEPENDENCY, not implemented here).
@@ -256,10 +333,22 @@ class RevalidationHook(Protocol):
     managed grant is :data:`RevalidationOutcome.UNVERIFIABLE` and therefore
     denied.
 
+    The retriever calls ``revalidate(ctx, item_id, grant)`` -- the minimal keys
+    it holds at query time. A REAL implementation additionally needs, per item,
+    the :class:`ProviderResourceRef` (which provider object to probe) and the
+    ``credential_ref`` (which binding to call the provider AS this subject) --
+    together the :class:`RevalidationRequest`. Those two are the named INGEST-SIDE
+    + W01 dependencies: the ingest path must persist the resource ref alongside
+    the grant, and W01's trusted binding association resolves the credential for
+    (provider, account, subject). An implementation looks those up by ``item_id``
+    (and ``ctx``) to build the full request; until they exist it cannot answer
+    FRESH and every managed grant stays denied.
+
     An implementation performs the provider I/O (a permission probe, a delta/ACL
     read) and MAY cache within the staleness window; it must return
-    :data:`RevalidationOutcome.UNVERIFIABLE` on any error/timeout rather than
-    guessing FRESH, so the fail-closed posture holds end to end.
+    :data:`RevalidationOutcome.UNVERIFIABLE` on any error/timeout/unresolvable
+    input rather than guessing FRESH, so the fail-closed posture holds end to
+    end.
     """
 
     def revalidate(self, ctx: "AccessContext", item_id: str, grant: "ItemGrant") -> str:

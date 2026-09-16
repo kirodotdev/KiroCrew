@@ -181,6 +181,33 @@ def test_enforcing_context_requires_subject():
         AccessContext(subject="", tenant="t1")
 
 
+def test_revalidation_request_contract_fields():
+    """The named per-source revalidation input contract is expressible."""
+    from kiro_crew.knowledge.acl import ProviderResourceRef, RevalidationRequest
+    ref = ProviderResourceRef(
+        provider="sharepoint", account="tenant-guid", resource_id="item-123",
+        locator={"siteId": "s1", "driveId": "d1"},
+    )
+    assert ref.provider == "sharepoint"
+    assert ref.locator["driveId"] == "d1"
+    req = RevalidationRequest(
+        ctx=AccessContext(subject="alice", tenant="acme"),
+        item_id="it-1",
+        grant=ItemGrant(subjects=frozenset({"alice"}), tenant="acme", managed=True),
+        resource=ref,
+        credential_ref="vault://sp/alice",
+    )
+    assert req.resource.provider == "sharepoint"
+    assert req.credential_ref == "vault://sp/alice"
+    # Defaults: no resource / no credential (the unwired state).
+    bare = RevalidationRequest(
+        ctx=AccessContext(subject="a", tenant="t"), item_id="x",
+        grant=ItemGrant(subjects=frozenset(), tenant="t"),
+    )
+    assert bare.resource is None
+    assert bare.credential_ref == ""
+
+
 # --------------------------------------------------------------------------
 # MIXED-LIBRARY end-to-end: trusted-local + managed in ONE store
 # --------------------------------------------------------------------------
