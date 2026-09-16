@@ -319,7 +319,7 @@ export default function FeaturedSpotlight({
         <img
           src={artSrc}
           alt={editorial.src ? editorial.alt : ''}
-          className="absolute inset-0 w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
+          className="absolute inset-0 w-full h-full object-cover"
           onError={onArtError}
         />
       ) : (
@@ -496,7 +496,7 @@ export default function FeaturedSpotlight({
                 <img
                   src={artSrc}
                   alt={editorial.src ? editorial.alt : ''}
-                  className="absolute inset-0 w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
+                  className="absolute inset-0 w-full h-full object-cover"
                   onError={onArtError}
                 />
               </div>

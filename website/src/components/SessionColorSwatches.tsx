@@ -145,16 +145,16 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- stopPropagation barrier, not an activatable control; there is no behaviour for a keyboard to be given
     <div onKeyDown={e => e.stopPropagation()}>
       <div className="flex items-center gap-1.5 px-3 py-1.5">
-        <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('components.sessionColorSwatches.no_color')} />
+        <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-110 ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('components.sessionColorSwatches.no_color')} />
         {paletteColors.map((c, i) => (
-          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
+          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-110 ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
         ))}
         <button
           type="button"
           aria-label={i18nT('components.sessionColorSwatches.custom_color')}
           aria-expanded={customOpen}
           title={colorHex ? `${i18nT('components.sessionColorSwatches.custom_color')} (${colorHex})` : i18nT('components.sessionColorSwatches.custom_color')}
-          className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 ${colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`}
+          className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-110 ${colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`}
           // Always the multicolor wheel: it is the cell's identity as the
           // "pick any color" affordance. The active ring marks a set custom
           // color; the actual hex shows in the tooltip and on the row itself.

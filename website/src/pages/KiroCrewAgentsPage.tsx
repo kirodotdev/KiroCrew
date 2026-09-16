@@ -595,7 +595,7 @@ export function SessionColorField({ value, onChange, subject }: { value: string;
               // purple in most themes, so an accent ring on the indigo and violet
               // entries reads as no ring at all. The near-white ring is what
               // SessionColorSwatches uses, and it separates from every hue here.
-              className={`h-5 w-5 p-0 cursor-pointer rounded-full border-2 transition-transform hover:scale-110 ${active ? 'border-text-strong scale-110' : 'border-border'}`}
+              className={`h-5 w-5 p-0 cursor-pointer rounded-full border-2 transition-transform hover:brightness-110 ${active ? 'border-text-strong scale-110' : 'border-border'}`}
               style={{ background: c }}
               onClick={() => onChange(c)}
             />

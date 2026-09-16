@@ -209,7 +209,7 @@ export function MetricCard({ label, value, sub, accent, delay, testId, onClick }
       />
       {sub && (
         <span
-          className="pointer-events-none absolute inset-x-4 bottom-3 truncate text-[12px] text-muted transition-all group-hover:-translate-y-0.5"
+          className="pointer-events-none absolute inset-x-4 bottom-3 truncate text-[12px] text-muted"
           data-testid={testId ? `${testId}-sub` : undefined}
         >
           {sub}
