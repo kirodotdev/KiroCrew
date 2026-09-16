@@ -4414,6 +4414,14 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.kiro/crew/.env") is True
         assert is_sensitive_path("~/.kirocrew/.env") is True
 
+    def test_auto_skill_private_claim_state(self) -> None:
+        home = str(Path.home())
+        private = f"{home}/.kiro/crew/skills/auto/.private"
+        assert is_sensitive_path(private) is True
+        assert is_sensitive_path(f"{private}/claims/demo--token/scripts/run.py") is True
+        assert is_sensitive_path(f"{private}/locks/claims/demo--token.lock") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/skills/auto/.pending/demo") is False
+
     def test_browser_auth_cookie_paths(self) -> None:
         # The browser-auth cookie jar + the Playwright storage-state derived from
         # it hold reusable authenticated-session cookies. Agent file tools must
@@ -8307,11 +8315,10 @@ class TestPrefilledGitHubIssueUrl:
         assert oauth_url_contains_credential(_issue_link()) is True
 
     def test_a_generic_long_query_url_is_redacted_the_same_way(self) -> None:
-        """The other host in the report. It gets the same verdict as the prefill link.
+        """A generic long query URL gets the same verdict as the prefill link.
 
-        Both were false positives in the report and both stay redacted: the fix for
-        a long legitimate URL is to narrow this heuristic for every host on its own
-        merits, not to carve out one shape.
+        Both shapes stay redacted: the fix for a long legitimate URL is to narrow
+        this heuristic for every host on its own merits, not to carve out one shape.
         """
         self._assert_redacted(
             "https://monitorportal.amazon.com/metrics?namespace=AWS/SageMaker"
@@ -8322,7 +8329,7 @@ class TestPrefilledGitHubIssueUrl:
 
 
 class TestTrustedIssueLinkChannel:
-    """The prefilled link the report wanted, delivered without a redactor waiver.
+    """A trusted prefilled issue link is delivered without a redactor waiver.
 
     Provenance cannot be recovered from model prose, so it comes from a different
     channel: ``diagnostics._issue_url`` assembles the query from STRUCTURED fields

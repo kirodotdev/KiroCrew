@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import contextlib
 import difflib
 import errno
 import fnmatch
@@ -12,19 +15,21 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import stat
 import time
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from itertools import zip_longest
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterator
 
-from kiro_crew import pinned_fs, skill_trust
+from kiro_crew import pinned_fs, platform_compat, skill_trust
 from kiro_crew.atomic_write import (
     atomic_write,
+    fsync_dir,
     open_access_control_source,
     pinned_parent_replace_supported,
 )
@@ -192,6 +197,85 @@ VERSIONS_DIRNAME = ".versions"
 # Cap on retained per-skill version snapshots; oldest are pruned past this.
 MAX_SKILL_VERSIONS = 20
 
+# Agent-denied same-filesystem area for active candidate claims and their locks.
+# The whole subtree is on security.is_sensitive_path's permanent deny floor, so
+# a prompt-injected agent cannot enumerate or mutate a snapshot after validation.
+AUTO_PRIVATE_DIRNAME = ".private"
+AUTO_CLAIMS_DIRNAME = "claims"
+
+# ``pending.lock`` serializes pending publish/claim/restore; target-specific
+# files serialize live updates or first publication to one auto-skill.
+AUTO_LOCKS_DIRNAME = "locks"
+_PROMOTE_LOCK_TIMEOUT_S = 10.0
+_PROMOTE_LOCK_POLL_S = 0.05
+_CLAIM_LOCK_MAX_STATE_BYTES = 1_500_000
+
+# Whole-generation snapshots retain file bytes until publication completes. Generated
+# skill bodies and scripts are capped far below these ceilings, while live trees may also
+# carry version history. Bound every allocation axis so a planted candidate or live tree
+# fails closed instead of exhausting the gateway while it is authenticated.
+_SKILL_SNAPSHOT_MAX_FILE_BYTES = 1024 * 1024
+_SKILL_SNAPSHOT_MAX_TOTAL_BYTES = 8 * 1024 * 1024
+_SKILL_SNAPSHOT_MAX_ENTRIES = 512
+_SKILL_SNAPSHOT_MAX_DEPTH = 32
+
+
+@dataclass(frozen=True)
+class _SkillTreeSnapshot:
+    """One immutable tree generation captured from authenticated opened inodes."""
+
+    files: dict[Path, bytes]
+    file_modes: dict[Path, int]
+    dir_modes: dict[Path, int]
+    generation_hash: str
+
+
+@dataclass(frozen=True)
+class _ValidatedCandidateSnapshot:
+    """One authenticated candidate generation captured at the claim boundary."""
+
+    source_files: dict[Path, bytes]
+    files: dict[Path, bytes]
+    modes: dict[Path, int]
+    metadata: dict[str, object]
+    generation_hash: str
+
+
+@dataclass(frozen=True)
+class _ClaimSnapshot:
+    """Immutable facts captured immediately before a pending claim rename.
+
+    ``tree`` is process-local snapshot authority. The durable lock record keeps
+    only the generation witness and metadata needed by restart recovery; no
+    recovered path may publish a candidate without a fresh pre-claim snapshot.
+    """
+
+    generation_hash: str | None
+    metadata_bytes: bytes | None
+    tree: _SkillTreeSnapshot | None = field(default=None, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class _PinnedSkillParent:
+    """One opened skill-state parent and the identity captured from its handle."""
+
+    path: Path
+    fd: int
+    identity: tuple[int, int]
+
+
+def canonical_skill_text_hash(content: str | bytes) -> str:
+    """Hash UTF-8 skill text after canonicalizing CRLF/CR newlines to LF.
+
+    Text-mode reads normalize newlines while descriptor snapshots retain raw
+    bytes.  A base-content binding must describe the logical SKILL.md text, not
+    which platform wrote it; candidate-generation hashes remain byte-exact.
+    """
+    text = content.decode("utf-8") if isinstance(content, bytes) else content
+    canonical = text.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 # ── Pending-staged observer hook ──────────────────────────────────────────────
 # A candidate can be staged by ANY ``SkillsLoader`` instance (consolidation uses
 # the ContextBuilder's loader; dashboard requests build their own), so the
@@ -259,6 +343,28 @@ def _emit_pending_consumed(payload: dict) -> None:
         fn(payload)
     except Exception:  # pragma: no cover - defensive
         logger.debug("pending-consumed hook failed", exc_info=True)
+
+
+# Informational observer for prose-only updates promoted without review. This is
+# separate from the staged hook because the candidate is already live.
+_UPDATE_AUTO_APPLIED_HOOK: "Callable[[dict], None] | None" = None
+
+
+def set_update_auto_applied_hook(fn: "Callable[[dict], None] | None") -> None:
+    """Register (or clear) the unattended-update observer."""
+    global _UPDATE_AUTO_APPLIED_HOOK
+    _UPDATE_AUTO_APPLIED_HOOK = fn
+
+
+def _emit_update_auto_applied(payload: dict) -> None:
+    """Invoke the unattended-update observer without affecting promotion."""
+    fn = _UPDATE_AUTO_APPLIED_HOOK
+    if fn is None:
+        return
+    try:
+        fn(payload)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("update-auto-applied hook failed", exc_info=True)
 
 
 # Frontmatter field used to mark a skill as auto-generated.  Absence means
@@ -2936,6 +3042,14 @@ class SkillsLoader:
         """Create a new skill directory with SKILL.md.  Returns True on success."""
         if not self._safe_name(name):
             return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Create lock unavailable for %s", name)
+                return False
+            return self._create_skill_unlocked(name, content)
+
+    def _create_skill_unlocked(self, name: str, content: str) -> bool:
+        """Create one skill while any required target lock is held."""
         skill_dir = self._dir / name
         if skill_dir.exists():
             return False
@@ -3136,6 +3250,14 @@ class SkillsLoader:
         """Overwrite an existing skill's SKILL.md.  Returns True if found."""
         if not self._safe_name(name):
             return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Update lock unavailable for %s", name)
+                return False
+            return self._update_skill_unlocked(name, content)
+
+    def _update_skill_unlocked(self, name: str, content: str) -> bool:
+        """Write one skill body while any required target lock is held."""
         skill_dir = self._dir / name
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.exists():
@@ -3232,6 +3354,14 @@ class SkillsLoader:
         """Delete a skill directory.  Returns True if found and removed."""
         if not self._safe_name(name):
             return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Delete lock unavailable for %s", name)
+                return False
+            return self._delete_skill_unlocked(name)
+
+    def _delete_skill_unlocked(self, name: str) -> bool:
+        """Delete one skill while any required target lock is held."""
         skill_dir = self._dir / name
         if not skill_dir.is_dir():
             return False
@@ -3335,6 +3465,32 @@ class SkillsLoader:
         procedure_md: str,
         provenance: AutoSkillProvenance,
     ) -> str | None:
+        """Create an auto-skill under its target publication lock."""
+        if not _AUTO_NAME_PATTERN.match(slug):
+            logger.warning("Rejected auto skill: slug %r failed validation", slug)
+            return None
+        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Create lock unavailable for %s", name)
+                return None
+            return self._create_auto_skill_unlocked(
+                slug,
+                description=description,
+                triggers=triggers,
+                procedure_md=procedure_md,
+                provenance=provenance,
+            )
+
+    def _create_auto_skill_unlocked(
+        self,
+        slug: str,
+        *,
+        description: str,
+        triggers: str,
+        procedure_md: str,
+        provenance: AutoSkillProvenance,
+    ) -> str | None:
         """Write a new auto-generated skill under ``auto/<slug>/SKILL.md``.
 
         Returns the full skill name (``auto/<slug>``) on success, or
@@ -3376,6 +3532,35 @@ class SkillsLoader:
         return name
 
     def update_auto_skill(
+        self,
+        name: str,
+        *,
+        description: str,
+        triggers: str,
+        procedure_md: str,
+        provenance: AutoSkillProvenance,
+    ) -> bool:
+        """Refine an auto-skill under its target promotion lock."""
+        if not self.is_auto_generated(name):
+            logger.warning(
+                "Refusing to auto-refine non-auto skill: %s (not in %s/)",
+                name,
+                AUTO_SKILL_NAMESPACE,
+            )
+            return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Refine lock unavailable for %s", name)
+                return False
+            return self._update_auto_skill_unlocked(
+                name,
+                description=description,
+                triggers=triggers,
+                procedure_md=procedure_md,
+                provenance=provenance,
+            )
+
+    def _update_auto_skill_unlocked(
         self,
         name: str,
         *,
@@ -3544,6 +3729,14 @@ class SkillsLoader:
         return hits, anchor
 
     def set_pinned(self, name: str, pinned: bool) -> bool:
+        """Pin/unpin an auto-skill under its promotion lock."""
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Pin lock unavailable for %s", name)
+                return False
+            return self._set_pinned_unlocked(name, pinned)
+
+    def _set_pinned_unlocked(self, name: str, pinned: bool) -> bool:
         """Pin/unpin an auto-skill (exempt from lifecycle eviction).
 
         Edits the ``pinned:`` frontmatter line in place. Returns True on
@@ -3570,6 +3763,14 @@ class SkillsLoader:
         return True
 
     def set_inject_on_trigger(self, name: str, inject: bool) -> bool:
+        """Change auto-skill injection mode under its promotion lock."""
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Injection lock unavailable for %s", name)
+                return False
+            return self._set_inject_on_trigger_unlocked(name, inject)
+
+    def _set_inject_on_trigger_unlocked(self, name: str, inject: bool) -> bool:
         """Opt a skill in or out of full-body injection on a trigger match.
 
         Edits the ``inject_on_trigger:`` frontmatter line in place, mirroring
@@ -3650,6 +3851,14 @@ class SkillsLoader:
         )
 
     def archive_auto_skill(self, name: str) -> bool:
+        """Move an auto-skill into the archive under its promotion lock."""
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Archive lock unavailable for %s", name)
+                return False
+            return self._archive_auto_skill_unlocked(name)
+
+    def _archive_auto_skill_unlocked(self, name: str) -> bool:
         """Move an auto-skill into the archive (recoverable, never deleted).
 
         Refuses non-auto skills. Returns True on success.
@@ -3676,6 +3885,17 @@ class SkillsLoader:
         return True
 
     def restore_auto_skill(self, slug: str) -> str | None:
+        """Restore an archived auto-skill under its target publication lock."""
+        if not self._is_pending_slug_safe(slug):
+            return None
+        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Restore lock unavailable for %s", name)
+                return None
+            return self._restore_auto_skill_unlocked(slug)
+
+    def _restore_auto_skill_unlocked(self, slug: str) -> str | None:
         """Restore an archived auto-skill back to ``auto/<slug>``.
 
         Returns the restored skill name, or None if not found / name clash.
@@ -3792,6 +4012,1070 @@ class SkillsLoader:
     def _pending_root(self) -> Path:
         return self._dir / AUTO_SKILL_NAMESPACE / AUTO_PENDING_DIRNAME
 
+    def _private_root(self) -> Path:
+        return self._dir / AUTO_SKILL_NAMESPACE / AUTO_PRIVATE_DIRNAME
+
+    def _claims_root(self) -> Path:
+        return self._private_root() / AUTO_CLAIMS_DIRNAME
+
+    def _locks_root(self) -> Path:
+        return self._private_root() / AUTO_LOCKS_DIRNAME
+
+    @staticmethod
+    def _pinned_parent_matches(pin: _PinnedSkillParent) -> bool:
+        """Whether *pin.path* still names the directory held by *pin.fd*."""
+        try:
+            opened = os.fstat(pin.fd)
+            if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != pin.identity:
+                return False
+            if os.name == "nt":
+                return platform_compat.opened_path_identity_matches(pin.fd, pin.path)
+            named = os.stat(pin.path, follow_symlinks=False)
+            return stat.S_ISDIR(named.st_mode) and os.path.samestat(opened, named)
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _opened_path_matches(fd: int, path: Path, expected: os.stat_result) -> bool:
+        """Authenticate an opened entry against a pre-open lstat result.
+
+        Windows CRT inode fields are not a stable comparison between a by-name
+        stat and a handle. Once the native no-reparse identity check authenticates
+        the held descriptor, it is the authority there. POSIX retains ``samestat``
+        because its descriptor-relative paths depend on that inode comparison.
+        """
+        if platform_compat.IS_WINDOWS:
+            return platform_compat.opened_path_identity_matches(fd, path)
+        return os.path.samestat(expected, os.fstat(fd))
+
+    @contextlib.contextmanager
+    def _pin_skill_parent(self, path: Path) -> Iterator[_PinnedSkillParent]:
+        """Open one real directory and keep its name-to-identity binding live."""
+        fd = platform_compat.pin_directory(path)
+        try:
+            opened = os.fstat(fd)
+            pin = _PinnedSkillParent(path, fd, (opened.st_dev, opened.st_ino))
+            if not self._pinned_parent_matches(pin):
+                raise OSError(f"skill-state parent changed while opening: {path}")
+            yield pin
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _stat_pinned_child(pin: _PinnedSkillParent, name: str) -> os.stat_result:
+        """lstat one child under *pin* without following the child itself."""
+        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+            raise OSError("unsafe skill-state child name")
+        if os.name == "nt":
+            return os.stat(pin.path / name, follow_symlinks=False)
+        return os.stat(name, dir_fd=pin.fd, follow_symlinks=False)
+
+    def _rename_skill_child_no_replace(
+        self,
+        source: _PinnedSkillParent,
+        source_name: str,
+        destination: _PinnedSkillParent,
+        destination_name: str,
+    ) -> os.stat_result:
+        """Move one exact child between captured parents without replacing."""
+        if not self._pinned_parent_matches(source) or not self._pinned_parent_matches(destination):
+            raise OSError("skill-state parent changed before rename")
+        before = self._stat_pinned_child(source, source_name)
+        if os.name == "nt":
+            # Windows directory handles opened without FILE_SHARE_DELETE pin
+            # both parents and their ancestors. MoveFileW (os.rename) already
+            # refuses an existing destination.
+            os.rename(source.path / source_name, destination.path / destination_name)
+        else:
+            platform_compat.rename_noreplace(
+                source_name,
+                destination_name,
+                src_dir_fd=source.fd,
+                dst_dir_fd=destination.fd,
+            )
+        if not self._pinned_parent_matches(source) or not self._pinned_parent_matches(destination):
+            raise OSError("skill-state parent changed during rename")
+        after = self._stat_pinned_child(destination, destination_name)
+        if not os.path.samestat(before, after):
+            raise OSError("skill-state child changed during rename")
+        return after
+
+    def _unlink_skill_child(
+        self,
+        parent: _PinnedSkillParent,
+        name: str,
+        *,
+        expected: os.stat_result | None = None,
+        directory: bool = False,
+    ) -> bool:
+        """Remove only the captured child under one revalidated parent."""
+        if not self._pinned_parent_matches(parent):
+            return False
+        try:
+            current = self._stat_pinned_child(parent, name)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        if expected is not None and not os.path.samestat(current, expected):
+            return False
+        try:
+            if os.name == "nt":
+                path = parent.path / name
+                if is_link_or_junction(path):
+                    platform_compat.unlink_link_or_junction(path)
+                elif directory:
+                    os.rmdir(path)
+                else:
+                    os.unlink(path)
+            elif directory:
+                os.rmdir(name, dir_fd=parent.fd)
+            else:
+                os.unlink(name, dir_fd=parent.fd)
+        except OSError:
+            return False
+        return self._pinned_parent_matches(parent)
+
+    def _remove_private_tree(
+        self,
+        path: Path,
+        *,
+        what: str,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> bool:
+        """Remove one opened private tree without traversing a mutable name.
+
+        POSIX delegates the recursive walk to ``pinned_fs`` and requires that
+        its independently opened root is the same inode captured here. Windows
+        keeps a no-reparse, non-delete-sharing handle on the root while deleting
+        children bottom-up; it closes that handle only for the final empty
+        ``rmdir``, with the parent handle still pinning every ancestor.
+        """
+        if not os.path.lexists(path):
+            return True
+        try:
+            with self._pin_skill_parent(path.parent) as parent:
+                root_fd = platform_compat.pin_directory(path)
+                try:
+                    root_info = os.fstat(root_fd)
+                    root_identity = (root_info.st_dev, root_info.st_ino)
+                    if expected_identity is not None and root_identity != expected_identity:
+                        return False
+                    if os.name == "nt":
+                        if not platform_compat.opened_path_identity_matches(root_fd, path):
+                            return False
+                        # Validate the complete tree before the first mutation.
+                        if self._skill_tree_snapshot(path) is None:
+                            return False
+                        for current_root, dirs, files in os.walk(
+                            path, topdown=False, followlinks=False
+                        ):
+                            current_path = Path(current_root)
+                            with self._pin_skill_parent(current_path) as current_parent:
+                                for filename in files:
+                                    child = self._stat_pinned_child(current_parent, filename)
+                                    if (
+                                        not stat.S_ISREG(child.st_mode)
+                                        or child.st_nlink != 1
+                                        or not self._unlink_skill_child(
+                                            current_parent,
+                                            filename,
+                                            expected=child,
+                                        )
+                                    ):
+                                        return False
+                                for dirname in dirs:
+                                    child_path = current_path / dirname
+                                    if is_link_or_junction(child_path):
+                                        return False
+                                    child = self._stat_pinned_child(current_parent, dirname)
+                                    if not stat.S_ISDIR(
+                                        child.st_mode
+                                    ) or not self._unlink_skill_child(
+                                        current_parent,
+                                        dirname,
+                                        expected=child,
+                                        directory=True,
+                                    ):
+                                        return False
+                    else:
+                        resolved = str(path.resolve(strict=True))
+
+                        def approve_root(fd: int, tree: pinned_fs.PinnedTree) -> str | None:
+                            opened = os.fstat(fd)
+                            if (opened.st_dev, opened.st_ino) != root_identity:
+                                return "private tree changed identity"
+                            if tree.links:
+                                return "private tree contains links"
+                            return None
+
+                        removed = pinned_fs.remove_tree_pinned(
+                            resolved,
+                            what=what,
+                            approve=approve_root,
+                            refusal=OSError,
+                        )
+                        return removed.removed
+                finally:
+                    os.close(root_fd)
+                # The target is empty. The held parent still prevents an
+                # ancestor swap; refuse a replacement/reparse point and remove
+                # only the captured empty directory.
+                if not self._pinned_parent_matches(parent):
+                    return False
+                root_now = self._stat_pinned_child(parent, path.name)
+                if (
+                    not stat.S_ISDIR(root_now.st_mode)
+                    or (root_now.st_dev, root_now.st_ino) != root_identity
+                    or is_link_or_junction(path)
+                ):
+                    return False
+                return self._unlink_skill_child(
+                    parent,
+                    path.name,
+                    expected=root_now,
+                    directory=True,
+                )
+        except (OSError, ValueError):
+            logger.warning("Could not safely remove %s %s", what, path)
+            return False
+
+    def _private_state_roots_safe(self, *, create: bool, require_sensitive: bool = False) -> bool:
+        """Authenticate private state roots before any claim or lock operation.
+
+        This path check is only the admission gate. Every later claim rename,
+        restore, unlink, and recursive cleanup captures the relevant parent with
+        :meth:`_pin_skill_parent`, revalidates that name-to-identity binding at
+        the mutation boundary, and addresses children relative to the captured
+        parent where the platform supports ``dir_fd``. On Windows the equivalent
+        no-reparse handle omits ``FILE_SHARE_DELETE``, pinning the parent and all
+        ancestors for the operation. A by-name check here is therefore never the
+        authority for a later destructive action.
+        """
+        private_root = self._private_root()
+        descendants = (
+            self._claims_root(),
+            self._locks_root(),
+            self._locks_root() / "claims",
+        )
+        try:
+            # Reject linked ANCESTORS on the agent-writable segment before any
+            # mkdir or rename traverses them. Scope matters: components at or
+            # above ``self._dir`` are operator-controlled and are legitimately
+            # links on common platforms (macOS ``/tmp`` -> ``/private/tmp``,
+            # ostree ``/home`` -> ``/var/home``), so an unscoped
+            # ``first_linked_ancestor`` walk would refuse healthy installs.
+            # Everything BELOW ``self._dir`` is writable by generated skill
+            # content. ``auto`` is the one component between ``self._dir`` and
+            # the private roots authenticated below; ``auto/.pending`` is a
+            # SIBLING of ``.private`` checked here as a separate source root,
+            # because the claim rename reads candidates out of it.
+            namespace_root = private_root.parent
+            if is_link_or_junction(namespace_root):
+                raise OSError("auto namespace root is a link or junction")
+            pending_root = self._pending_root()
+            if is_link_or_junction(pending_root):
+                raise OSError("pending root is a link or junction")
+            if is_link_or_junction(private_root):
+                raise OSError("private root is a link or junction")
+            if create:
+                private_root.mkdir(parents=True, exist_ok=True)
+            elif not os.path.lexists(private_root):
+                return True
+            if is_link_or_junction(private_root) or not private_root.is_dir():
+                raise OSError("private root is not a real directory")
+            resolved_private = private_root.resolve(strict=True)
+            if require_sensitive and (
+                not is_sensitive_path(str(private_root))
+                or not is_sensitive_path(str(resolved_private))
+            ):
+                raise OSError("private root is not agent-denied")
+            if os.path.lexists(self._dir):
+                # Containment: the resolved private root must live under the
+                # resolved skills dir (the resolve() follows only the
+                # operator-controlled prefix, which the scoped checks above
+                # deliberately allow to be linked).
+                resolved_private.relative_to(self._dir.resolve(strict=True))
+            for root in descendants:
+                if is_link_or_junction(root):
+                    raise OSError(f"private descendant is a link or junction: {root}")
+                if create:
+                    root.mkdir(exist_ok=True)
+                elif not os.path.lexists(root):
+                    continue
+                if is_link_or_junction(root) or not root.is_dir():
+                    raise OSError(f"private descendant is not a real directory: {root}")
+                resolved = root.resolve(strict=True)
+                resolved.relative_to(resolved_private)
+        except (OSError, RuntimeError, ValueError):
+            logger.error("Refusing unsafe auto-skill private state under %s", private_root)
+            return False
+        return True
+
+    @staticmethod
+    def _open_skill_lock(path: Path) -> int:
+        """Open an authenticated lone regular lock file without following links."""
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | nofollow
+        fd: int | None = None
+        pre: os.stat_result | None = None
+        try:
+            try:
+                pre = os.lstat(path)
+            except FileNotFoundError:
+                fd = os.open(str(path), flags | os.O_CREAT | os.O_EXCL, 0o600)
+            else:
+                if is_link_or_junction(path) or not stat.S_ISREG(pre.st_mode) or pre.st_nlink != 1:
+                    raise OSError(f"refusing unsafe skill lock {path}")
+                fd = os.open(str(path), flags)
+            opened = os.fstat(fd)
+            if pre is not None and not SkillsLoader._opened_path_matches(fd, path, pre):
+                raise OSError(f"skill lock changed during open: {path}")
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                raise OSError(f"refusing unsafe skill lock {path}")
+            platform_compat.prepare_lock_file(fd)
+            return fd
+        except OSError:
+            if fd is not None:
+                os.close(fd)
+            raise
+
+    @contextlib.contextmanager
+    def _file_lock(self, name: str) -> Iterator[bool]:
+        """Yield whether a bounded cross-process advisory lock was acquired."""
+        if not self._private_state_roots_safe(create=True):
+            yield False
+            return
+        path = self._locks_root() / name
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = self._open_skill_lock(path)
+        except OSError:
+            logger.warning("Could not open skill lock %s", path)
+            yield False
+            return
+        acquired = False
+        try:
+            deadline = time.monotonic() + _PROMOTE_LOCK_TIMEOUT_S
+            while True:
+                if platform_compat.try_acquire_lock(fd, exclusive=True):
+                    acquired = True
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_PROMOTE_LOCK_POLL_S)
+            yield acquired
+        finally:
+            if acquired:
+                platform_compat.release_lock(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    @contextlib.contextmanager
+    def _promotion_lock(self, target_slug: str) -> Iterator[bool]:
+        """Serialize promotions to one live auto-skill across processes.
+
+        Refuses a non-canonical slug instead of locking it: the lock file is
+        NAMED by the slug while the live directory is RESOLVED by the
+        filesystem, and the two disagree on aliases. On a case-insensitive
+        filesystem ``Foo`` opens ``auto/foo`` but locks ``target-Foo.lock``;
+        Win32 strips trailing dots/spaces from path components, so ``foo.``
+        opens ``auto/foo`` while locking ``target-foo..lock``. Either way two
+        writers hold different locks over one directory and updates are lost.
+        Every product-created slug already matches ``_AUTO_NAME_PATTERN`` (all
+        creation paths enforce it), so canonical callers are unaffected and an
+        alias fails closed here — at the one choke point every locked mutation
+        routes through — rather than at each caller.
+        """
+        if not _AUTO_NAME_PATTERN.fullmatch(target_slug):
+            logger.warning("Refusing promotion lock for non-canonical slug: %r", target_slug)
+            yield False
+            return
+        with self._file_lock(f"target-{target_slug}.lock") as acquired:
+            yield acquired
+
+    @staticmethod
+    def _audit_reserved_auto_mutation_denial(name: str) -> None:
+        """Record a reserved-namespace mutation refusal without changing its verdict."""
+        try:
+            sel().log_tool_invocation(
+                session_key="skills",
+                tool_name="skill_mutation",
+                tool_kind="permission",
+                outcome="denied",
+                metadata={
+                    "target": name,
+                    "reason": "reserved_auto_namespace",
+                },
+            )
+        except Exception:  # noqa: BLE001 — audit failure cannot allow the mutation
+            logger.warning("Could not audit reserved auto-skill mutation denial", exc_info=True)
+
+    @contextlib.contextmanager
+    def _live_auto_mutation_lock(self, name: str) -> Iterator[bool]:
+        """Serialize a live auto-skill mutation with candidate promotion."""
+        if not self.is_auto_generated(name):
+            namespace, _separator, _slug = name.partition("/")
+            # Case-insensitive filesystems resolve e.g. ``AUTO/x`` to the same
+            # directory as ``auto/x``, and Win32 strips trailing dots/spaces
+            # from path components, so ``auto.`` (or ``auto ``) opens the
+            # ``auto`` directory too.  The bare reserved namespace — in any of
+            # those alias spellings — would otherwise take the lock-free
+            # manual-skill branch and let a delete remove every live, pending,
+            # and private auto-skill entry.
+            if namespace.rstrip(" .").casefold() == AUTO_SKILL_NAMESPACE.casefold():
+                self._audit_reserved_auto_mutation_denial(name)
+                logger.warning("Refusing reserved auto-skill path: %s", name)
+                yield False
+                return
+            yield True
+            return
+        target_slug = self._auto_slug_from_name(name)
+        if not self._is_pending_slug_safe(target_slug):
+            yield False
+            return
+        with self._promotion_lock(target_slug) as acquired:
+            yield acquired
+
+    def _pending_slug_claimed(self, slug: str) -> bool:
+        if not self._private_state_roots_safe(create=False):
+            return False
+        root = self._claims_root()
+        return root.is_dir() and any(
+            claim.name.rsplit("--", 1)[0] == slug for claim in root.glob(f"{slug}--*")
+        )
+
+    def _probe_no_replace_rename(self) -> bool:
+        """Verify atomic no-replace support under one captured claims parent."""
+        token = secrets.token_hex(16)
+        source_name = f".rename-probe-{token}-source"
+        destination_name = f".rename-probe-{token}-destination"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd: int | None = None
+        try:
+            with self._pin_skill_parent(self._claims_root()) as claims:
+                if os.name == "nt":
+                    fd = os.open(str(claims.path / source_name), flags, 0o600)
+                else:
+                    fd = os.open(source_name, flags, 0o600, dir_fd=claims.fd)
+                os.close(fd)
+                fd = None
+                self._rename_skill_child_no_replace(
+                    claims,
+                    source_name,
+                    claims,
+                    destination_name,
+                )
+                destination = self._stat_pinned_child(claims, destination_name)
+                return self._unlink_skill_child(
+                    claims,
+                    destination_name,
+                    expected=destination,
+                )
+        except OSError:
+            logger.warning(
+                "Atomic no-replace rename is unavailable under %s",
+                self._claims_root(),
+                exc_info=True,
+            )
+            return False
+        finally:
+            if fd is not None:
+                os.close(fd)
+            try:
+                with self._pin_skill_parent(self._claims_root()) as claims:
+                    for probe_name in (source_name, destination_name):
+                        try:
+                            probe = self._stat_pinned_child(claims, probe_name)
+                        except OSError:
+                            continue
+                        self._unlink_skill_child(
+                            claims,
+                            probe_name,
+                            expected=probe,
+                        )
+            except OSError:
+                logger.debug("Could not remove a rename probe", exc_info=True)
+
+    def _claim_lock_path(self, claim_name: str) -> Path:
+        return self._locks_root() / "claims" / f"{claim_name}.lock"
+
+    @staticmethod
+    def _claim_lock_state_payload(claim_name: str, *, completed: bool) -> bytes:
+        return (("C" if completed else "A") + claim_name + "\n").encode("utf-8")
+
+    @classmethod
+    def _read_authenticated_claim_lock_payload(
+        cls, fd: int, lock_path: Path, claim_name: str
+    ) -> bytes | None:
+        """Read a bounded payload only from the held lock file's authenticated inode."""
+        if is_link_or_junction(lock_path):
+            return None
+        try:
+            linked = os.lstat(lock_path)
+            opened = os.fstat(fd)
+            if (
+                not stat.S_ISREG(linked.st_mode)
+                or not stat.S_ISREG(opened.st_mode)
+                or linked.st_nlink != 1
+                or opened.st_nlink != 1
+                or not cls._opened_path_matches(fd, lock_path, linked)
+                or opened.st_size > _CLAIM_LOCK_MAX_STATE_BYTES
+            ):
+                return None
+            os.lseek(fd, 0, os.SEEK_SET)
+            payload = os.read(fd, _CLAIM_LOCK_MAX_STATE_BYTES + 1)
+        except OSError:
+            return None
+        if len(payload) != opened.st_size:
+            return None
+        return payload
+
+    @classmethod
+    def _authenticated_claim_lock_state(
+        cls,
+        fd: int,
+        lock_path: Path,
+        claim_name: str,
+        *,
+        completed: bool,
+    ) -> bool:
+        """Authenticate a fixed-size active/completed record in a held claim lock."""
+        payload = cls._read_authenticated_claim_lock_payload(fd, lock_path, claim_name)
+        return payload == cls._claim_lock_state_payload(claim_name, completed=completed)
+
+    @classmethod
+    def _write_claim_lock_payload(
+        cls,
+        fd: int,
+        lock_path: Path,
+        claim_name: str,
+        payload: bytes,
+    ) -> bool:
+        """Durably replace the held claim lock's authenticated bounded payload."""
+        if not payload or len(payload) > _CLAIM_LOCK_MAX_STATE_BYTES:
+            return False
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(fd, remaining)
+                if written <= 0:
+                    raise OSError("short claim-lock state write")
+                remaining = remaining[written:]
+            os.ftruncate(fd, len(payload))
+            os.fsync(fd)
+        except OSError:
+            logger.warning("Could not write claim lock state %s", lock_path)
+            return False
+        return cls._read_authenticated_claim_lock_payload(fd, lock_path, claim_name) == payload
+
+    def _initialize_claim_lock_state(self, fd: int, lock_path: Path, claim_name: str) -> bool:
+        """Durably bind a fresh claim lock to its active claim before claiming."""
+        return self._write_claim_lock_payload(
+            fd,
+            lock_path,
+            claim_name,
+            self._claim_lock_state_payload(claim_name, completed=False),
+        )
+
+    @staticmethod
+    def _claim_snapshot_fields(snapshot: _ClaimSnapshot) -> dict[str, object]:
+        return {
+            "claim_generation": snapshot.generation_hash,
+            "claim_metadata": (
+                base64.b64encode(snapshot.metadata_bytes).decode("ascii")
+                if snapshot.metadata_bytes is not None
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _claim_snapshot_from_fields(data: dict[str, object]) -> _ClaimSnapshot | None:
+        generation = data.get("claim_generation")
+        encoded_metadata = data.get("claim_metadata")
+        if not isinstance(generation, str) or re.fullmatch(r"[0-9a-f]{64}", generation) is None:
+            return None
+        if encoded_metadata is None:
+            metadata_bytes = None
+        elif isinstance(encoded_metadata, str):
+            try:
+                metadata_bytes = base64.b64decode(encoded_metadata, validate=True)
+            except (ValueError, binascii.Error):
+                return None
+        else:
+            return None
+        return _ClaimSnapshot(generation, metadata_bytes)
+
+    def _write_claim_snapshot_state(
+        self,
+        fd: int,
+        lock_path: Path,
+        claim_name: str,
+        snapshot: _ClaimSnapshot,
+    ) -> bool:
+        """Durably bind recovery to exact pre-rename generation and metadata."""
+        if not self._authenticated_claim_lock_state(
+            fd,
+            lock_path,
+            claim_name,
+            completed=False,
+        ):
+            return False
+        payload = json.dumps(
+            {
+                "state": "claimed",
+                "format": 1,
+                "claim": claim_name,
+                **self._claim_snapshot_fields(snapshot),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return self._write_claim_lock_payload(fd, lock_path, claim_name, payload)
+
+    def _authenticated_claim_snapshot_state(
+        self,
+        fd: int,
+        lock_path: Path,
+        claim_name: str,
+    ) -> _ClaimSnapshot | None:
+        """Return the durable pre-rename claim snapshot, if authenticated."""
+        payload = self._read_authenticated_claim_lock_payload(fd, lock_path, claim_name)
+        if payload is None:
+            return None
+        try:
+            data = json.loads(payload)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        if (
+            data.get("state") != "claimed"
+            or data.get("format") != 1
+            or data.get("claim") != claim_name
+        ):
+            return None
+        return self._claim_snapshot_from_fields(data)
+
+    def _prepare_claim_publication(
+        self,
+        fd: int,
+        lock_path: Path,
+        claim_name: str,
+        *,
+        kind: str,
+        target_slug: str,
+        before_hash: str | None,
+        after_hash: str,
+        claim_snapshot: _ClaimSnapshot,
+        snapshot_version: int | None,
+        new_version: int | None,
+    ) -> bool:
+        """Durably journal the exact publication recovery must reconcile."""
+        if (
+            not self._authenticated_claim_lock_state(
+                fd,
+                lock_path,
+                claim_name,
+                completed=False,
+            )
+            and self._authenticated_claim_snapshot_state(fd, lock_path, claim_name) is None
+        ):
+            return False
+        payload = json.dumps(
+            {
+                "state": "prepared",
+                "format": 2,
+                "claim": claim_name,
+                "kind": kind,
+                "target": target_slug,
+                "before": before_hash,
+                "after": after_hash,
+                **self._claim_snapshot_fields(claim_snapshot),
+                "snapshot": snapshot_version,
+                "version": new_version,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return self._write_claim_lock_payload(fd, lock_path, claim_name, payload)
+
+    def _authenticated_claim_publication(
+        self, fd: int, lock_path: Path, claim_name: str
+    ) -> dict[str, object] | None:
+        """Parse a prepared publication only after authenticating its lock inode."""
+        payload = self._read_authenticated_claim_lock_payload(fd, lock_path, claim_name)
+        if payload is None:
+            return None
+        try:
+            data = json.loads(payload)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        if data.get("state") != "prepared" or data.get("claim") != claim_name:
+            return None
+        journal_format = data.get("format", 1)
+        if journal_format not in (1, 2):
+            return None
+        kind = data.get("kind")
+        target = data.get("target")
+        before_hash = data.get("before")
+        after_hash = data.get("after")
+        claim_generation = data.get("claim_generation")
+        claim_metadata = data.get("claim_metadata")
+        snapshot_version = data.get("snapshot")
+        new_version = data.get("version")
+        if kind not in ("new", "update"):
+            return None
+        if not isinstance(target, str) or not self._is_pending_slug_safe(target):
+            return None
+        if before_hash is not None and (
+            not isinstance(before_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", before_hash)
+        ):
+            return None
+        if not isinstance(after_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", after_hash):
+            return None
+        if claim_generation is not None and (
+            not isinstance(claim_generation, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", claim_generation)
+        ):
+            return None
+        if (claim_generation is not None or claim_metadata is not None) and (
+            self._claim_snapshot_from_fields(data) is None
+        ):
+            return None
+        if snapshot_version is not None and (
+            not isinstance(snapshot_version, int) or snapshot_version < 1
+        ):
+            return None
+        if new_version is not None and (not isinstance(new_version, int) or new_version < 1):
+            return None
+        if kind == "update" and (
+            before_hash is None or snapshot_version is None or new_version is None
+        ):
+            return None
+        return data
+
+    def _commit_claim_lock_state(self, fd: int, lock_path: Path, claim_name: str) -> bool:
+        """Durably transition a held active/prepared claim to completed."""
+        if self._authenticated_claim_lock_state(fd, lock_path, claim_name, completed=True):
+            return True
+        payload = self._claim_lock_state_payload(claim_name, completed=True)
+        return self._write_claim_lock_payload(fd, lock_path, claim_name, payload)
+
+    def _commit_claim_consumption(self, claim: Path, claim_fd: int) -> bool:
+        """Make a published claim durably recoverable before reporting success.
+
+        The in-tree marker and the external lock state are independent records.
+        Write the marker first. If it commits, a failed completion-state write is
+        recoverable from that marker. If marker publication fails, do *not*
+        overwrite the prepared journal: that exact before/after record is already
+        durable and restart recovery can classify the live generation from it.
+        """
+        lock_path = self._claim_lock_path(claim.name)
+        marker_completed = self._write_completion_marker(claim)
+        if marker_completed:
+            if not self._commit_claim_lock_state(claim_fd, lock_path, claim.name):
+                logger.warning(
+                    "Completion state write failed for %s; authenticated marker retained",
+                    claim,
+                )
+            return True
+        if self._authenticated_claim_publication(claim_fd, lock_path, claim.name) is not None:
+            logger.warning(
+                "Completion marker write failed for %s; prepared journal retained",
+                claim,
+            )
+            return True
+        logger.error("Published claim has no durable consumption record: %s", claim)
+        return False
+
+    def _cleanup_claim_lock(self, claim_name: str) -> None:
+        """Remove a completed claim lock under captured private parents."""
+        if not self._private_state_roots_safe(create=False, require_sensitive=True):
+            return
+        try:
+            with self._pin_skill_parent(self._claims_root()) as claims:
+                try:
+                    self._stat_pinned_child(claims, claim_name)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    return
+                else:
+                    return
+            with self._pin_skill_parent(self._claim_lock_path(claim_name).parent) as locks:
+                lock_name = self._claim_lock_path(claim_name).name
+                try:
+                    lock_info = self._stat_pinned_child(locks, lock_name)
+                except FileNotFoundError:
+                    return
+                if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_nlink != 1:
+                    return
+                if not self._unlink_skill_child(
+                    locks,
+                    lock_name,
+                    expected=lock_info,
+                ):
+                    logger.debug("Could not remove completed claim lock %s", claim_name)
+        except OSError:
+            logger.debug("Could not pin completed claim lock %s", claim_name, exc_info=True)
+
+    def _completion_marker_present(
+        self,
+        claim: Path,
+        expected_claim_identity: tuple[int, int] | None = None,
+    ) -> bool:
+        """Check the reserved marker through a pinned claim directory."""
+        try:
+            with self._pin_skill_parent(claim) as parent:
+                if (
+                    expected_claim_identity is not None
+                    and parent.identity != expected_claim_identity
+                ):
+                    return False
+                self._stat_pinned_child(parent, ".promoted")
+                return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
+    def _remove_untrusted_completion_marker(
+        self,
+        claim: Path,
+        expected_claim_identity: tuple[int, int] | None = None,
+    ) -> bool:
+        """Remove only one reserved marker entry, never a linked/replaced tree."""
+        try:
+            with self._pin_skill_parent(claim) as parent:
+                if (
+                    expected_claim_identity is not None
+                    and parent.identity != expected_claim_identity
+                ):
+                    return False
+                try:
+                    marker = self._stat_pinned_child(parent, ".promoted")
+                except FileNotFoundError:
+                    return True
+                if stat.S_ISDIR(marker.st_mode):
+                    # Never recurse through an untrusted marker name. An empty
+                    # directory can be removed exactly; a non-empty one leaves
+                    # the claim private for later inspection.
+                    return self._unlink_skill_child(
+                        parent,
+                        ".promoted",
+                        expected=marker,
+                        directory=True,
+                    )
+                return self._unlink_skill_child(
+                    parent,
+                    ".promoted",
+                    expected=marker,
+                )
+        except OSError:
+            logger.warning("Could not remove untrusted completion marker from %s", claim)
+            return False
+
+    def _authenticated_completion_marker(
+        self,
+        claim: Path,
+        expected_claim_identity: tuple[int, int] | None = None,
+    ) -> bool:
+        """Recognize only this claim's regular, single-link completion marker."""
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd: int | None = None
+        try:
+            with self._pin_skill_parent(claim) as parent:
+                if (
+                    expected_claim_identity is not None
+                    and parent.identity != expected_claim_identity
+                ):
+                    return False
+                marker = self._stat_pinned_child(parent, ".promoted")
+                if not stat.S_ISREG(marker.st_mode) or marker.st_nlink != 1:
+                    return False
+                if os.name == "nt":
+                    fd = platform_compat.open_file_no_reparse(claim / ".promoted")
+                else:
+                    fd = os.open(".promoted", flags, dir_fd=parent.fd)
+                opened = os.fstat(fd)
+                if (
+                    not self._opened_path_matches(fd, claim / ".promoted", marker)
+                    or opened.st_size > 256
+                ):
+                    return False
+                payload = os.read(fd, 257)
+                return payload == (claim.name + "\n").encode("utf-8")
+        except OSError:
+            return False
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    def _write_completion_marker(
+        self,
+        claim: Path,
+        expected_claim_identity: tuple[int, int] | None = None,
+    ) -> bool:
+        """Exclusively commit a claim outcome under its captured directory."""
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd: int | None = None
+        created: os.stat_result | None = None
+        wrote = False
+        try:
+            with self._pin_skill_parent(claim) as parent:
+                if (
+                    expected_claim_identity is not None
+                    and parent.identity != expected_claim_identity
+                ):
+                    return False
+                if os.name == "nt":
+                    fd = os.open(str(claim / ".promoted"), flags, 0o600)
+                else:
+                    fd = os.open(".promoted", flags, 0o600, dir_fd=parent.fd)
+                created = os.fstat(fd)
+                remaining = memoryview((claim.name + "\n").encode("utf-8"))
+                while remaining:
+                    written = os.write(fd, remaining)
+                    if written <= 0:
+                        raise OSError("short completion-marker write")
+                    remaining = remaining[written:]
+                os.fsync(fd)
+                wrote = True
+        except OSError:
+            logger.warning("Could not commit claim completion marker in %s", claim)
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    wrote = False
+        if wrote and self._authenticated_completion_marker(
+            claim,
+            expected_claim_identity,
+        ):
+            return True
+        if created is not None:
+            try:
+                with self._pin_skill_parent(claim) as parent:
+                    if (
+                        expected_claim_identity is not None
+                        and parent.identity != expected_claim_identity
+                    ):
+                        return False
+                    self._unlink_skill_child(
+                        parent,
+                        ".promoted",
+                        expected=created,
+                    )
+            except OSError:
+                pass
+        return False
+
+    def _cleanup_completed_claim(self, claim: Path, claim_fd: int) -> bool:
+        """Delete one completed claim without following a replacement name.
+
+        The held per-claim lock is the durable completion record. The claim
+        directory identity is captured before any cleanup and is required by
+        recursive removal plus every marker fallback, so a parent/name swap can
+        only defer cleanup; it cannot redirect deletion or marker publication.
+        """
+        try:
+            with self._pin_skill_parent(claim) as claim_parent:
+                claim_identity = claim_parent.identity
+        except OSError:
+            logger.error("Refusing to clean replaced/linked claim %s", claim)
+            return False
+        lock_path = self._claim_lock_path(claim.name)
+        lock_completed = self._authenticated_claim_lock_state(
+            claim_fd, lock_path, claim.name, completed=True
+        )
+        marker_completed = self._authenticated_completion_marker(
+            claim,
+            claim_identity,
+        )
+        if not lock_completed and marker_completed:
+            lock_completed = self._commit_claim_lock_state(claim_fd, lock_path, claim.name)
+        if not lock_completed:
+            if marker_completed:
+                logger.warning(
+                    "Deferred completed-claim cleanup until lock outcome is durable: %s",
+                    claim,
+                )
+                return True
+            logger.error("No authenticated committed outcome for claim %s", claim)
+            return False
+        if not self._cleanup_publication_artifacts(claim.name):
+            logger.warning(
+                "Deferred completed-claim cleanup until generation artifacts are removed: %s",
+                claim,
+            )
+            return True
+        if not self._remove_private_tree(
+            claim,
+            what="completed skill claim",
+            expected_identity=claim_identity,
+        ):
+            logger.warning("Deferred completed-claim cleanup for %s", claim)
+        if not os.path.lexists(claim):
+            return True
+        try:
+            with self._pin_skill_parent(claim) as current_claim:
+                if current_claim.identity != claim_identity:
+                    logger.error("Completed claim changed identity during cleanup: %s", claim)
+                    return False
+        except OSError:
+            logger.error("Completed claim became unreadable during cleanup: %s", claim)
+            return False
+        if self._authenticated_completion_marker(claim, claim_identity):
+            return True
+        if self._completion_marker_present(
+            claim,
+            claim_identity,
+        ) and not self._remove_untrusted_completion_marker(
+            claim,
+            claim_identity,
+        ):
+            return False
+        if self._write_completion_marker(claim, claim_identity):
+            return True
+        if self._authenticated_claim_lock_state(claim_fd, lock_path, claim.name, completed=True):
+            logger.warning(
+                "Claim marker could not be repaired; authenticated lock outcome retained for %s",
+                claim,
+            )
+            return True
+        logger.error("Could not preserve committed outcome for claim %s", claim)
+        return False
+
+    @staticmethod
+    def _auto_apply_candidate_binding(
+        skill_bytes: bytes,
+        *,
+        target: object,
+        base_version: object,
+        base_content_hash: object,
+    ) -> str:
+        """Bind unattended apply to exact staged bytes and live-base identity."""
+        fields = json.dumps(
+            [target, base_version, base_content_hash],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hashlib.sha256()
+        digest.update(len(skill_bytes).to_bytes(8, "big"))
+        digest.update(skill_bytes)
+        digest.update(fields)
+        return digest.hexdigest()
+
     def stage_skill_candidate(
         self,
         slug: str,
@@ -3805,6 +5089,50 @@ class SkillsLoader:
         kind: str = "new",
         target: str | None = None,
         base_version: int | None = None,
+        notify: bool = True,
+        base_content_hash: str | None = None,
+        unattended_binding_out: list[str] | None = None,
+    ) -> str | None:
+        """Publish a complete candidate under the pending namespace."""
+        with self._file_lock("pending.lock") as acquired:
+            if not acquired:
+                logger.warning("Could not acquire pending-skill namespace lock")
+                return None
+            name = self._stage_skill_candidate_locked(
+                slug,
+                description=description,
+                triggers=triggers,
+                procedure_md=procedure_md,
+                provenance=provenance,
+                scripts=scripts,
+                source=source,
+                kind=kind,
+                target=target,
+                base_version=base_version,
+                notify=notify,
+                base_content_hash=base_content_hash,
+                unattended_binding_out=unattended_binding_out,
+            )
+        if name and notify:
+            self.emit_pending_staged(name.split("/", 1)[-1])
+        return name
+
+    def _stage_skill_candidate_locked(
+        self,
+        slug: str,
+        *,
+        description: str,
+        triggers: str,
+        procedure_md: str,
+        provenance: AutoSkillProvenance,
+        scripts: list[dict] | None = None,
+        source: str = "consolidation",
+        kind: str = "new",
+        target: str | None = None,
+        base_version: int | None = None,
+        notify: bool = True,
+        base_content_hash: str | None = None,
+        unattended_binding_out: list[str] | None = None,
     ) -> str | None:
         """Write a skill candidate to the pending queue (not live).
 
@@ -3843,11 +5171,15 @@ class SkillsLoader:
         # staging, so this does not flood the queue with duplicates.
         pdir = root / slug
         try:
+            if self._pending_slug_claimed(slug):
+                raise FileExistsError(slug)
             pdir.mkdir(exist_ok=False)
         except FileExistsError:
             claimed: "Path | None" = None
             for _n in range(2, 51):
                 cand_dir = root / f"{slug}-{_n}"
+                if self._pending_slug_claimed(cand_dir.name):
+                    continue
                 try:
                     cand_dir.mkdir(exist_ok=False)
                 except FileExistsError:
@@ -3855,8 +5187,8 @@ class SkillsLoader:
                 claimed = cand_dir
                 break
             if claimed is None:
-                logger.warning("Too many pending candidates for slug %s; deferring re-stage", slug)
-                return name
+                logger.warning("Too many pending candidates for slug %s; rejecting re-stage", slug)
+                return None
             pdir = claimed
             slug = claimed.name
             name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
@@ -3869,7 +5201,14 @@ class SkillsLoader:
                 procedure_md=procedure_md,
                 provenance=provenance,
             )
-            (pdir / "SKILL.md").write_text(content, encoding="utf-8")
+            # Encode ONCE and write exactly these bytes. The unattended binding
+            # below must hash the byte object in memory, never a re-read of the
+            # file: the pending root is publicly writable, so a concurrent
+            # overwrite landing between this write and a read-back would let the
+            # binding vouch for bytes nobody validated — and the unattended
+            # promotion trusts the binding.
+            content_bytes = content.encode("utf-8")
+            (pdir / "SKILL.md").write_bytes(content_bytes)
             script_names: list[str] = []
             clean_scripts = [s for s in (scripts or []) if isinstance(s, dict)]
             if clean_scripts:
@@ -3892,68 +5231,1027 @@ class SkillsLoader:
                 "has_scripts": bool(script_names),
                 "scripts": script_names,
                 "kind": kind or "new",
+                "notify_suppressed": not notify,
             }
             if target is not None:
                 meta["target"] = target
             if base_version is not None:
                 meta["base_version"] = base_version
+            if base_content_hash is not None:
+                meta["base_content_hash"] = base_content_hash
             (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            if unattended_binding_out is not None:
+                unattended_binding_out[:] = [
+                    self._auto_apply_candidate_binding(
+                        content_bytes,
+                        target=target,
+                        base_version=base_version,
+                        base_content_hash=base_content_hash,
+                    )
+                ]
         except Exception:
             # A partial write (e.g. disk full) must not leave a CLAIMED but empty
             # dir behind: a later stage would see it exists and report the slug as
             # "already awaiting review" while no reviewable candidate exists.
             # Roll back the atomic claim so the slug can be re-staged cleanly.
-            shutil.rmtree(pdir, ignore_errors=True)
+            self._remove_private_tree(pdir, what="partial pending skill candidate")
             raise
         logger.info("Staged pending skill candidate: %s (scripts=%d)", name, len(script_names))
-        # Notify any registered observer (the gateway wires a bell-feed
-        # notification + a ``skills.pending_changed`` WS event) so a candidate
-        # awaiting review surfaces instead of sitting unseen in the queue. Fired
-        # for BOTH new and update candidates, from every producer that stages
-        # through this choke point. Best-effort: an observer failure must never
-        # fail the staging that already succeeded on disk.
-        #
-        # ``description``/``triggers`` ride along because the observer's only
-        # other option is to re-read ``.meta.json`` off disk (a second read of
-        # what was just written, on the staging path) -- and without them a
-        # notification can only say THAT a skill was generated, never what it
-        # does, which is the one fact a reviewer needs to decide whether to open
-        # the queue at all.
-        _emit_pending_staged(
-            {
-                "name": name,
-                "slug": slug,
-                "kind": kind or "new",
-                "target": target,
-                "source": source,
-                "has_scripts": bool(script_names),
-                "description": description,
-                "triggers": triggers,
-            }
-        )
         return name
 
-    def _read_pending_meta(self, slug: str) -> dict:
-        mf = self._pending_root() / slug / ".meta.json"
-        # Never follow an LLM-planted symlink (could point at a sensitive file).
-        if mf.is_symlink():
+    def _candidate_metadata_from_bytes(self, raw: bytes | None, *, redact: bool) -> dict:
+        """Parse metadata already captured from an authenticated tree snapshot."""
+        if raw is None:
             return {}
         try:
-            data = json.loads(mf.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            data = json.loads(raw)
+        except (TypeError, ValueError):
             return {}
         if not isinstance(data, dict):
             return {}
-        # Recursively redact secrets from LLM-produced metadata before it can
-        # surface via the pending list/detail API. The crystallize skill writes
-        # .meta.json directly, bypassing the consolidation redaction path, so a
-        # credential in ANY (incl. nested) value must be scrubbed here.
+        if not redact:
+            return data
         redacted = self._redact_deep(data)
         return redacted if isinstance(redacted, dict) else {}
+
+    def _capture_claim_snapshot(self, candidate_dir: Path) -> _ClaimSnapshot:
+        """Capture immutable candidate authority without reopening its metadata."""
+        tree = self._skill_tree_snapshot(candidate_dir)
+        return _ClaimSnapshot(
+            generation_hash=tree.generation_hash if tree is not None else None,
+            metadata_bytes=(tree.files.get(Path(".meta.json")) if tree is not None else None),
+            tree=tree,
+        )
+
+    def _read_candidate_meta(self, candidate_dir: Path) -> dict:
+        captured = self._capture_claim_snapshot(candidate_dir)
+        return self._candidate_metadata_from_bytes(captured.metadata_bytes, redact=True)
+
+    def _read_pending_meta(self, slug: str) -> dict:
+        return self._read_candidate_meta(self._pending_root() / slug)
+
+    @staticmethod
+    def _emit_pending_staged_metadata(slug: str, meta: dict) -> None:
+        """Emit one staged event from metadata the caller already captured."""
+        _emit_pending_staged(
+            {
+                "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{slug}"),
+                "slug": slug,
+                "kind": meta.get("kind", "new"),
+                "target": meta.get("target"),
+                "source": meta.get("source", ""),
+                "has_scripts": meta.get("has_scripts") is True,
+                "description": meta.get("description", ""),
+                "triggers": meta.get("triggers", ""),
+            }
+        )
+
+    def emit_pending_staged(self, slug: str) -> None:
+        """Emit a review notification from one captured pending generation."""
+        if not self._is_pending_slug_safe(slug):
+            return
+        candidate = self._pending_root() / slug
+        captured = self._capture_claim_snapshot(candidate)
+        if captured.generation_hash is None:
+            return
+        meta = self._candidate_metadata_from_bytes(captured.metadata_bytes, redact=True)
+        self._emit_pending_staged_metadata(slug, meta)
+
+    def _claim_pending_update(self, slug: str) -> tuple[Path, int, str, _ClaimSnapshot] | None:
+        """Atomically move a public candidate to a private claimed snapshot."""
+        if not self._is_pending_slug_safe(slug):
+            return None
+        if not self._private_state_roots_safe(create=True, require_sensitive=True):
+            logger.error(
+                "Refusing to claim pending skill %s: private state is unsafe",
+                slug,
+            )
+            return None
+        # Product writers recover every abandoned prepared publication before
+        # claiming more work, so a later update cannot hide whether the prior
+        # atomic live replace committed. The roots were authenticated above.
+        self._recover_abandoned_claims(roots_authenticated=True)
+        # Restoration and new-skill publication both require an atomic
+        # no-replace rename. Prove that primitive on this filesystem before the
+        # first candidate operation so an unsupported host leaves the public
+        # candidate untouched instead of stranding it in private storage.
+        if not self._probe_no_replace_rename():
+            return None
+        claim_name = f"{slug}--{secrets.token_hex(16)}"
+        claim = self._claims_root() / claim_name
+        lock_path = self._claim_lock_path(claim_name)
+        try:
+            claim.parent.mkdir(parents=True, exist_ok=True)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = self._open_skill_lock(lock_path)
+        except OSError:
+            return None
+        if not platform_compat.try_acquire_lock(fd, exclusive=True):
+            os.close(fd)
+            self._cleanup_claim_lock(claim_name)
+            return None
+        if not self._initialize_claim_lock_state(fd, lock_path, claim_name):
+            platform_compat.release_lock(fd)
+            os.close(fd)
+            self._cleanup_claim_lock(claim_name)
+            return None
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
+        claim_snapshot: _ClaimSnapshot | None = None
+        claimed = False
+        try:
+            with self._file_lock("pending.lock") as acquired:
+                if not acquired:
+                    raise OSError("pending namespace lock unavailable")
+                with (
+                    self._pin_skill_parent(self._pending_root()) as pending_parent,
+                    self._pin_skill_parent(self._claims_root()) as claims_parent,
+                ):
+                    # The pending namespace remains writable to the candidate
+                    # producer. A no-reparse read handle permits concurrent
+                    # writes on Windows (FILE_SHARE_WRITE) and a retained POSIX
+                    # fd survives rename, so the first authoritative generation
+                    # must be captured BEFORE moving the directory. The second
+                    # capture is comparison-only: it proves the rename did not
+                    # race a retained descriptor before the private boundary.
+                    candidate = self._pending_root() / slug
+                    linked_candidate = is_link_or_junction(candidate)
+                    marker_present = not linked_candidate and os.path.lexists(
+                        candidate / ".promoted"
+                    )
+                    claim_snapshot = self._capture_claim_snapshot(candidate)
+                    has_snapshot = (
+                        claim_snapshot.generation_hash is not None
+                        and claim_snapshot.tree is not None
+                    )
+                    # Linked candidates are never publishable, but dismissal must
+                    # unlink their claim without traversing the target. A planted
+                    # marker is likewise a refusal-cleanup case. Neither is
+                    # permitted to reach a publish path without snapshot authority.
+                    if not has_snapshot and not (linked_candidate or marker_present):
+                        raise OSError("pending candidate snapshot is unreadable")
+                    if has_snapshot and not self._write_claim_snapshot_state(
+                        fd,
+                        lock_path,
+                        claim_name,
+                        claim_snapshot,
+                    ):
+                        raise OSError("claim generation witness failed")
+                    self._rename_skill_child_no_replace(
+                        pending_parent,
+                        slug,
+                        claims_parent,
+                        claim_name,
+                    )
+                    claimed = True
+                    if has_snapshot:
+                        observed_claim = self._capture_claim_snapshot(claim)
+                        claim_hash = claim_snapshot.generation_hash
+                        observed_hash = observed_claim.generation_hash
+                        if (
+                            claim_hash is None
+                            or observed_hash is None
+                            or not secrets.compare_digest(claim_hash, observed_hash)
+                        ):
+                            raise OSError("candidate changed during claim transfer")
+        except OSError:
+            if claimed and claim_snapshot is not None:
+                self._restore_claimed_update(claim, slug, claim_snapshot)
+            platform_compat.release_lock(fd)
+            os.close(fd)
+            self._cleanup_claim_lock(claim_name)
+            return None
+        if claim_snapshot is None:
+            platform_compat.release_lock(fd)
+            os.close(fd)
+            self._cleanup_claim_lock(claim_name)
+            return None
+        if not is_link_or_junction(claim) and self._completion_marker_present(claim):
+            logger.warning("Refusing pending skill %s: reserved completion marker exists", slug)
+            try:
+                if self._remove_untrusted_completion_marker(claim):
+                    self._restore_claimed_update(claim, slug, claim_snapshot)
+            except OSError:
+                logger.error("Could not restore marker-bearing claim %s", claim, exc_info=True)
+            finally:
+                platform_compat.release_lock(fd)
+                os.close(fd)
+                self._cleanup_claim_lock(claim_name)
+            return None
+        return claim, fd, consumed_at, claim_snapshot
+
+    def _restore_claimed_update(
+        self,
+        claim: Path,
+        slug: str,
+        claim_snapshot: _ClaimSnapshot | None = None,
+    ) -> Path | None:
+        """Return a refused claim through captured claim/pending parents."""
+        notify = False
+        restored: Path | None = None
+        restored_meta: dict = {}
+        captured = claim_snapshot or _ClaimSnapshot(None, None)
+        with self._file_lock("pending.lock") as acquired:
+            if not acquired:
+                logger.error("Could not restore claimed update %s", claim)
+                return None
+            try:
+                with (
+                    self._pin_skill_parent(self._claims_root()) as claims_parent,
+                    self._pin_skill_parent(self._pending_root()) as pending_parent,
+                ):
+                    source = self._stat_pinned_child(claims_parent, claim.name)
+                    claim_linked = not stat.S_ISDIR(source.st_mode) or is_link_or_junction(claim)
+                    if captured.generation_hash is None and not claim_linked:
+                        captured = self._capture_claim_snapshot(claim)
+                    metadata = self._candidate_metadata_from_bytes(
+                        captured.metadata_bytes,
+                        redact=False,
+                    )
+                    for number in [None, *range(2, 51)]:
+                        if number is None:
+                            candidate_slug = slug
+                        else:
+                            suffix = f"-{number}"
+                            candidate_slug = f"{slug[: 64 - len(suffix)].rstrip('-')}{suffix}"
+                        notify = candidate_slug != slug
+                        restored_meta = {}
+                        if not claim_linked and metadata:
+                            restored_meta = dict(metadata)
+                            notify = (
+                                restored_meta.get("notify_suppressed") is True
+                                or candidate_slug != slug
+                            )
+                            restored_meta["slug"] = candidate_slug
+                            restored_meta["name"] = f"{AUTO_SKILL_NAMESPACE}/{candidate_slug}"
+                            restored_meta["notify_suppressed"] = False
+                            try:
+                                with self._pin_skill_parent(claim) as claim_parent:
+                                    if not self._opened_path_matches(
+                                        claim_parent.fd,
+                                        claim,
+                                        source,
+                                    ):
+                                        raise OSError("claim changed before metadata restore")
+                                    parent_fd = (
+                                        claim_parent.fd
+                                        if pinned_parent_replace_supported()
+                                        else None
+                                    )
+                                    atomic_write(
+                                        (
+                                            Path(".meta.json")
+                                            if parent_fd is not None
+                                            else claim / ".meta.json"
+                                        ),
+                                        json.dumps(restored_meta, indent=2),
+                                        parent_dir_fd=parent_fd,
+                                    )
+                            except OSError:
+                                restored_meta = {}
+                                notify = candidate_slug != slug
+                        try:
+                            self._rename_skill_child_no_replace(
+                                claims_parent,
+                                claim.name,
+                                pending_parent,
+                                candidate_slug,
+                            )
+                        except OSError as exc:
+                            if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                                continue
+                            raise
+                        restored = self._pending_root() / candidate_slug
+                        break
+            except OSError:
+                logger.error("Could not restore claimed update %s", claim, exc_info=True)
+                return None
+            if restored is None:
+                logger.error("No pending slot available to restore %s", claim)
+                return None
+        if notify:
+            safe_meta = self._redact_deep(restored_meta) if restored_meta else {}
+            self._emit_pending_staged_metadata(
+                restored.name,
+                safe_meta if isinstance(safe_meta, dict) else {},
+            )
+        return restored
+
+    @staticmethod
+    def _lone_regular_file_hash(path: Path) -> str | None:
+        """Hash a lone regular file without following a link or junction."""
+        if is_link_or_junction(path):
+            return None
+        try:
+            info = os.lstat(path)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                return None
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _skill_tree_entries_hash(entries: list[tuple[str, str, int, bytes]]) -> str:
+        """Hash one captured tree manifest with the publication digest format."""
+        digest = hashlib.sha256()
+        for kind, relative, mode, payload in sorted(entries):
+            path_bytes = relative.encode("utf-8")
+            digest.update(kind.encode("ascii"))
+            digest.update(len(path_bytes).to_bytes(8, "big"))
+            digest.update(path_bytes)
+            digest.update(mode.to_bytes(4, "big"))
+            digest.update(len(payload).to_bytes(8, "big"))
+            digest.update(payload)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _stable_file_payload(
+        fd: int,
+        opened: os.stat_result,
+        *,
+        max_bytes: int,
+    ) -> tuple[bytes, os.stat_result] | None:
+        """Read one bounded regular opened inode and prove it stayed unchanged."""
+        if opened.st_size < 0 or opened.st_size > max_bytes:
+            return None
+        payload = bytearray(opened.st_size)
+        view = memoryview(payload)
+        offset = 0
+        while offset < opened.st_size:
+            chunk = os.read(fd, min(opened.st_size - offset, 1024 * 1024))
+            if not chunk:
+                return None
+            view[offset : offset + len(chunk)] = chunk
+            offset += len(chunk)
+        if os.read(fd, 1):
+            return None
+        after = os.fstat(fd)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or after.st_nlink != 1
+            or (
+                not platform_compat.IS_WINDOWS
+                and (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)
+            )
+            or opened.st_size != after.st_size
+            or opened.st_mtime_ns != after.st_mtime_ns
+            or stat.S_IMODE(opened.st_mode) != stat.S_IMODE(after.st_mode)
+        ):
+            return None
+        return bytes(payload), after
+
+    @staticmethod
+    def _skill_tree_snapshot_pinned(root: Path) -> _SkillTreeSnapshot | None:
+        """Capture a tree through one pinned root and descriptor-relative descendants."""
+        root_fd: int | None = None
+        cache: dict[tuple[str, ...], int] = {}
+        try:
+            root_fd = pinned_fs.open_dir_pinned(root, what="live skill tree", refusal=OSError)
+            if root_fd is None:  # defensive typing; open_dir_pinned returns int or raises
+                return None
+            root_info = os.fstat(root_fd)
+            if not stat.S_ISDIR(root_info.st_mode):
+                return None
+            device = root_info.st_dev
+            tree = pinned_fs.scan_tree_pinned(
+                root_fd,
+                device=device,
+                max_entries=_SKILL_SNAPSHOT_MAX_ENTRIES,
+                max_depth=_SKILL_SNAPSHOT_MAX_DEPTH,
+            )
+            if tree.links:
+                return None
+
+            files: dict[Path, bytes] = {}
+            file_modes: dict[Path, int] = {}
+            dir_modes: dict[Path, int] = {Path("."): stat.S_IMODE(root_info.st_mode)}
+            entries: list[tuple[str, str, int, bytes]] = [
+                ("d", ".", stat.S_IMODE(root_info.st_mode), b"")
+            ]
+            total_bytes = 0
+            for parts in sorted(tree.dirs, key=lambda item: (len(item), item)):
+                fd = pinned_fs.open_verified_chain(
+                    root_fd,
+                    parts,
+                    cache=cache,
+                    dirs=tree.dirs,
+                    device=device,
+                )
+                info = os.fstat(fd)
+                relative = Path(*parts)
+                mode = stat.S_IMODE(info.st_mode)
+                dir_modes[relative] = mode
+                entries.append(("d", relative.as_posix(), mode, b""))
+
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+            )
+            for parts, expected_inode in sorted(tree.files.items()):
+                parent_fd = pinned_fs.open_verified_chain(
+                    root_fd,
+                    parts[:-1],
+                    cache=cache,
+                    dirs=tree.dirs,
+                    device=device,
+                )
+                before = pinned_fs.stat_at(parent_fd, parts[-1])
+                remaining_budget = _SKILL_SNAPSHOT_MAX_TOTAL_BYTES - total_bytes
+                read_limit = min(_SKILL_SNAPSHOT_MAX_FILE_BYTES, remaining_budget)
+                if (
+                    before is None
+                    or not stat.S_ISREG(before.st_mode)
+                    or before.st_nlink != 1
+                    or (before.st_dev, before.st_ino) != (device, expected_inode)
+                    or before.st_size < 0
+                    or before.st_size > read_limit
+                ):
+                    return None
+                fd = os.open(parts[-1], flags, dir_fd=parent_fd)
+                try:
+                    opened = os.fstat(fd)
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                        or (opened.st_dev, opened.st_ino) != (device, expected_inode)
+                        or opened.st_size < 0
+                        or opened.st_size > read_limit
+                    ):
+                        return None
+                    captured = SkillsLoader._stable_file_payload(
+                        fd,
+                        opened,
+                        max_bytes=read_limit,
+                    )
+                finally:
+                    os.close(fd)
+                if captured is None:
+                    return None
+                payload, after = captured
+                total_bytes += len(payload)
+                relative = Path(*parts)
+                mode = stat.S_IMODE(after.st_mode)
+                files[relative] = payload
+                file_modes[relative] = mode
+                entries.append(("f", relative.as_posix(), mode, payload))
+            return _SkillTreeSnapshot(
+                files=files,
+                file_modes=file_modes,
+                dir_modes=dir_modes,
+                generation_hash=SkillsLoader._skill_tree_entries_hash(entries),
+            )
+        except (OSError, ValueError):
+            return None
+        finally:
+            pinned_fs.drain_verified_chain(cache)
+            if root_fd is not None:
+                os.close(root_fd)
+
+    @staticmethod
+    def _snapshot_path_matches(fd: int, expected: str | Path) -> bool:
+        """Authenticate an opened snapshot entry against its expected location.
+
+        Windows compares native IDs from two no-reparse handles, so 8.3 and long
+        path spellings of one object agree without reopening through
+        ``os.path.samefile``. POSIX keeps the descriptor-derived path
+        comparison: directory handles there do not prevent renames, so a
+        by-name identity reopen would create a new race.
+        """
+        if platform_compat.IS_WINDOWS:
+            return platform_compat.opened_path_identity_matches(fd, expected)
+        opened = pinned_fs.fd_real_path(fd)
+        if opened is None:
+            return False
+        return os.path.normcase(os.path.normpath(opened)) == os.path.normcase(
+            os.path.normpath(expected)
+        )
+
+    @staticmethod
+    def _skill_tree_snapshot_by_name(root: Path) -> _SkillTreeSnapshot | None:
+        """Fallback: hold directories and authenticate each opened file by location."""
+        if is_link_or_junction(root):
+            return None
+        held_dirs: list[int] = []
+        try:
+            expected_root = os.path.realpath(root)
+            root_fd = platform_compat.pin_directory(root)
+            held_dirs.append(root_fd)
+            root_info = os.fstat(root_fd)
+            real_root = pinned_fs.fd_real_path(root_fd)
+            if (
+                not stat.S_ISDIR(root_info.st_mode)
+                or (not platform_compat.IS_WINDOWS and real_root is None)
+                or not SkillsLoader._snapshot_path_matches(root_fd, expected_root)
+            ):
+                return None
+            identity_root = expected_root if platform_compat.IS_WINDOWS else real_root
+            if identity_root is None:  # narrowed above for POSIX; defensive for typing
+                return None
+
+            files: dict[Path, bytes] = {}
+            file_modes: dict[Path, int] = {}
+            dir_modes: dict[Path, int] = {Path("."): stat.S_IMODE(root_info.st_mode)}
+            entries: list[tuple[str, str, int, bytes]] = [
+                ("d", ".", stat.S_IMODE(root_info.st_mode), b"")
+            ]
+            stack: list[tuple[Path, tuple[str, ...]]] = [(root, ())]
+            entry_count = 0
+            total_bytes = 0
+
+            def opened_at(fd: int, parts: tuple[str, ...]) -> bool:
+                expected = os.path.join(identity_root, *parts)
+                return SkillsLoader._snapshot_path_matches(fd, expected)
+
+            while stack:
+                current_path, parent_parts = stack.pop()
+                with os.scandir(current_path) as listing:
+                    for entry in listing:
+                        parts = parent_parts + (entry.name,)
+                        entry_count += 1
+                        if entry_count > _SKILL_SNAPSHOT_MAX_ENTRIES:
+                            return None
+                        if len(parts) > _SKILL_SNAPSHOT_MAX_DEPTH:
+                            return None
+                        entry_path = Path(entry.path)
+                        if entry.is_symlink() or is_link_or_junction(entry_path):
+                            return None
+                        before = entry.stat(follow_symlinks=False)
+                        relative = Path(*parts)
+                        if stat.S_ISDIR(before.st_mode):
+                            child_fd = platform_compat.pin_directory(entry_path)
+                            held_dirs.append(child_fd)
+                            opened = os.fstat(child_fd)
+                            if (
+                                not stat.S_ISDIR(opened.st_mode)
+                                or not SkillsLoader._opened_path_matches(
+                                    child_fd,
+                                    entry_path,
+                                    before,
+                                )
+                                or not opened_at(child_fd, parts)
+                            ):
+                                return None
+                            mode = stat.S_IMODE(opened.st_mode)
+                            dir_modes[relative] = mode
+                            entries.append(("d", relative.as_posix(), mode, b""))
+                            stack.append((entry_path, parts))
+                            continue
+                        # ``os.DirEntry.stat()`` sets st_ino, st_dev and
+                        # st_nlink to zero on Windows (the directory-enumeration
+                        # data carries no link count), so a pre-open
+                        # ``before.st_nlink != 1`` would refuse EVERY regular
+                        # file there and fail-close the whole fallback snapshot.
+                        # The single-link requirement is still enforced below on
+                        # the OPENED descriptor, whose ``os.fstat`` reads the
+                        # real ``nNumberOfLinks`` on Windows -- that is the
+                        # authoritative check the spec names ("the opened
+                        # inode's ... checks still run before bytes are
+                        # accepted"). POSIX keeps the pre-open gate as an early
+                        # reject.
+                        if not stat.S_ISREG(before.st_mode) or (
+                            not platform_compat.IS_WINDOWS and before.st_nlink != 1
+                        ):
+                            return None
+                        remaining_budget = _SKILL_SNAPSHOT_MAX_TOTAL_BYTES - total_bytes
+                        read_limit = min(_SKILL_SNAPSHOT_MAX_FILE_BYTES, remaining_budget)
+                        if before.st_size < 0 or before.st_size > read_limit:
+                            return None
+                        fd = platform_compat.open_file_no_reparse(
+                            entry_path,
+                            nonblocking=True,
+                        )
+                        try:
+                            opened = os.fstat(fd)
+                            if (
+                                not stat.S_ISREG(opened.st_mode)
+                                or opened.st_nlink != 1
+                                or not SkillsLoader._opened_path_matches(
+                                    fd,
+                                    entry_path,
+                                    before,
+                                )
+                                or not opened_at(fd, parts)
+                                or opened.st_size < 0
+                                or opened.st_size > read_limit
+                            ):
+                                return None
+                            captured = SkillsLoader._stable_file_payload(
+                                fd,
+                                opened,
+                                max_bytes=read_limit,
+                            )
+                        finally:
+                            os.close(fd)
+                        if captured is None:
+                            return None
+                        payload, after = captured
+                        total_bytes += len(payload)
+                        mode = stat.S_IMODE(after.st_mode)
+                        files[relative] = payload
+                        file_modes[relative] = mode
+                        entries.append(("f", relative.as_posix(), mode, payload))
+            if not SkillsLoader._snapshot_path_matches(root_fd, identity_root):
+                return None
+            return _SkillTreeSnapshot(
+                files=files,
+                file_modes=file_modes,
+                dir_modes=dir_modes,
+                generation_hash=SkillsLoader._skill_tree_entries_hash(entries),
+            )
+        except (OSError, ValueError):
+            return None
+        finally:
+            pinned_fs.close_all(held_dirs)
+
+    @staticmethod
+    def _skill_tree_snapshot(root: Path) -> _SkillTreeSnapshot | None:
+        if pinned_fs.supports_pinned_tree_walk():
+            return SkillsLoader._skill_tree_snapshot_pinned(root)
+        return SkillsLoader._skill_tree_snapshot_by_name(root)
+
+    @staticmethod
+    def _skill_tree_hash(root: Path) -> str | None:
+        """Hash one exact generation without following a file or ancestor link."""
+        snapshot = SkillsLoader._skill_tree_snapshot(root)
+        return snapshot.generation_hash if snapshot is not None else None
+
+    @staticmethod
+    def _sync_skill_tree(root: Path) -> None:
+        """Durably flush one authenticated staged generation before journaling.
+
+        Windows ``FlushFileBuffers`` requires a writable handle, so its files
+        are opened ``O_RDWR``.  Every platform still opens with ``O_NOFOLLOW``
+        where available and compares the descriptor with the lstat identity;
+        fixing Windows durability must not turn the flush into a link-following
+        read of an attacker-swapped entry.
+        """
+        directories: list[Path] = []
+        for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
+            current_path = Path(current)
+            if is_link_or_junction(current_path):
+                raise OSError("linked directory in staged skill tree")
+            directories.append(current_path)
+            for name in files:
+                entry = current_path / name
+                if is_link_or_junction(entry):
+                    raise OSError("linked file in staged skill tree")
+                before = os.lstat(entry)
+                if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                    raise OSError("unsafe file in staged skill tree")
+                access = os.O_RDWR if platform_compat.IS_WINDOWS else os.O_RDONLY
+                flags = access | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(str(entry), flags)
+                try:
+                    opened = os.fstat(fd)
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                        or not SkillsLoader._opened_path_matches(fd, entry, before)
+                    ):
+                        raise OSError("staged skill file changed during durable open")
+                    os.fsync(fd)
+                    after = os.fstat(fd)
+                    if (
+                        not stat.S_ISREG(after.st_mode)
+                        or after.st_nlink != 1
+                        or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)
+                    ):
+                        raise OSError("staged skill file changed during flush")
+                finally:
+                    os.close(fd)
+            for name in dirs:
+                entry = current_path / name
+                if is_link_or_junction(entry):
+                    raise OSError("linked directory in staged skill tree")
+        for directory in reversed(directories):
+            fsync_dir(directory)
+
+    def _publication_paths(self, claim_name: str) -> tuple[Path, Path]:
+        private = self._private_root()
+        return private / f".publish-{claim_name}", private / f".previous-{claim_name}"
+
+    def _cleanup_publication_artifacts(self, claim_name: str) -> bool:
+        """Remove only this claim's private stage/backup trees."""
+        clean = True
+        for path in self._publication_paths(claim_name):
+            if is_link_or_junction(path):
+                clean = False
+                continue
+            if os.path.lexists(path) and not self._remove_private_tree(
+                path,
+                what="skill publication artifact",
+            ):
+                clean = False
+        return clean
+
+    def _publish_prepared_skill_tree(
+        self,
+        *,
+        live_dir: Path,
+        stage: Path,
+        backup: Path | None,
+        before_hash: str | None,
+        after_hash: str,
+    ) -> str:
+        """Publish a prepared generation without overwriting concurrent live edits.
+
+        ``published`` means the exact authenticated before-generation was moved
+        aside and the exact prepared after-generation is live. ``drift`` means a
+        different live generation reached the mutation boundary and was restored
+        byte-for-byte. ``incomplete`` retains the prepared journal and artifacts
+        for recovery because the filesystem state cannot be classified safely.
+        """
+        captured_hash: str | None = None
+        moved_live = False
+        try:
+            if backup is not None:
+                if before_hash is None:
+                    return "incomplete"
+                platform_compat.rename_no_replace(live_dir, backup)
+                moved_live = True
+                fsync_dir(live_dir.parent)
+                # This hash is the authenticated mutation-boundary revalidation:
+                # the name has moved atomically, so a by-name editor cannot race
+                # between the check and capture. A retained handle still targets ``backup`` and is checked again below.
+                captured_hash = self._skill_tree_hash(backup)
+                if captured_hash != before_hash:
+                    if os.path.lexists(live_dir):
+                        return "incomplete"
+                    platform_compat.rename_no_replace(backup, live_dir)
+                    fsync_dir(live_dir.parent)
+                    moved_live = False
+                    return (
+                        "drift"
+                        if self._skill_tree_hash(live_dir) == captured_hash
+                        else "incomplete"
+                    )
+            elif before_hash is not None:
+                return "incomplete"
+
+            platform_compat.rename_no_replace(stage, live_dir)
+            fsync_dir(live_dir.parent)
+            # A writer retaining a handle to the pre-publication live inode can
+            # still modify ``backup`` after the first hash. Detect that before
+            # success and put its generation back; never replace a path a newer
+            # by-name writer has occupied in the meantime.
+            if backup is not None and self._skill_tree_hash(backup) != before_hash:
+                if os.path.lexists(stage):
+                    return "incomplete"
+                platform_compat.rename_no_replace(live_dir, stage)
+                if os.path.lexists(live_dir):
+                    return "incomplete"
+                platform_compat.rename_no_replace(backup, live_dir)
+                fsync_dir(live_dir.parent)
+                moved_live = False
+                return "drift"
+        except OSError:
+            if (
+                backup is not None
+                and moved_live
+                and not os.path.lexists(live_dir)
+                and backup.is_dir()
+                and not is_link_or_junction(backup)
+            ):
+                try:
+                    platform_compat.rename_no_replace(backup, live_dir)
+                    fsync_dir(live_dir.parent)
+                except OSError:
+                    logger.error(
+                        "Could not roll back interrupted skill generation swap for %s",
+                        live_dir,
+                    )
+            return "incomplete"
+        return "published" if self._skill_tree_hash(live_dir) == after_hash else "incomplete"
+
+    def _reconcile_prepared_claim(
+        self,
+        claim: Path,
+        claim_fd: int,
+        lock_path: Path,
+    ) -> bool | None:
+        """Return True if fully published, False if rolled back, else None.
+
+        Format-2 journals describe complete directory generations, not only the
+        live body.  Recovery consumes a claim only when every path, byte, mode,
+        script, snapshot, and metadata/version byte matches the immutable after
+        tree.  An interrupted two-rename swap is rolled back to the exact before
+        tree.  Anything else stays private for operator recovery.
+        """
+        journal = self._authenticated_claim_publication(claim_fd, lock_path, claim.name)
+        if journal is None:
+            return None
+        target_slug = str(journal["target"])
+        with self._promotion_lock(target_slug) as acquired:
+            if not acquired:
+                return None
+            live_dir = self._dir / AUTO_SKILL_NAMESPACE / target_slug
+            live_skill = live_dir / "SKILL.md"
+            kind = journal["kind"]
+            before_hash = journal.get("before")
+            after_hash = str(journal["after"])
+            journal_format = journal.get("format", 1)
+
+            # Body-only journals from an older process can safely prove only
+            # that an update never reached its body replacement.  They can
+            # never prove whole-tree completion, so a matching after body is
+            # retained rather than silently consuming a possibly partial script
+            # generation.
+            if journal_format == 1:
+                if kind == "new":
+                    return False if not os.path.lexists(live_dir) else None
+                current_hash = self._lone_regular_file_hash(live_skill)
+                if current_hash != before_hash:
+                    return None
+                snapshot_value = journal.get("snapshot")
+                if not isinstance(snapshot_value, int):
+                    return None
+                orphan = self._versions_root(target_slug) / f"v{snapshot_value}-SKILL.md"
+                if self._lone_regular_file_hash(orphan) == before_hash:
+                    try:
+                        orphan.unlink()
+                    except OSError:
+                        return None
+                elif os.path.lexists(orphan):
+                    return None
+                return False
+
+            stage, backup = self._publication_paths(claim.name)
+            live_hash = self._skill_tree_hash(live_dir) if live_dir.is_dir() else None
+            stage_hash = self._skill_tree_hash(stage) if stage.is_dir() else None
+            backup_hash = self._skill_tree_hash(backup) if backup.is_dir() else None
+
+            if live_hash == after_hash:
+                return True
+            if kind == "new":
+                if not os.path.lexists(live_dir) and stage_hash == after_hash:
+                    return False
+                return None
+            if not isinstance(before_hash, str):
+                return None
+
+            if live_hash == before_hash:
+                if stage_hash not in (None, after_hash):
+                    return None
+                if backup_hash not in (None, before_hash):
+                    return None
+                return False
+
+            # Crash between live->backup and stage->live: restore the exact old
+            # generation.  A partial/mutated live generation can also be moved
+            # back into the private stage slot first, but only when the complete
+            # before backup is authenticated and the slot is unoccupied.
+            if (
+                backup_hash == before_hash
+                and stage_hash == after_hash
+                and not os.path.lexists(live_dir)
+            ):
+                try:
+                    platform_compat.rename_no_replace(backup, live_dir)
+                    fsync_dir(live_dir.parent)
+                except OSError:
+                    return None
+                return False if self._skill_tree_hash(live_dir) == before_hash else None
+
+            if (
+                backup_hash == before_hash
+                and stage_hash is None
+                and live_dir.is_dir()
+                and not is_link_or_junction(live_dir)
+            ):
+                try:
+                    platform_compat.rename_no_replace(live_dir, stage)
+                    platform_compat.rename_no_replace(backup, live_dir)
+                    fsync_dir(live_dir.parent)
+                except OSError:
+                    if not os.path.lexists(live_dir) and stage.is_dir():
+                        try:
+                            platform_compat.rename_no_replace(stage, live_dir)
+                        except OSError:
+                            pass
+                    return None
+                return False if self._skill_tree_hash(live_dir) == before_hash else None
+            return None
+
+    def _restore_failed_promotion_claim(
+        self,
+        claim: Path,
+        claim_fd: int,
+        slug: str,
+        claim_snapshot: _ClaimSnapshot,
+    ) -> None:
+        """Restore only a claim proven not to have published."""
+        if not (claim.exists() or is_link_or_junction(claim)):
+            return
+        lock_path = self._claim_lock_path(claim.name)
+        journal = self._authenticated_claim_publication(claim_fd, lock_path, claim.name)
+        if journal is None:
+            if self._cleanup_publication_artifacts(claim.name):
+                self._restore_claimed_update(claim, slug, claim_snapshot)
+            return
+        published = self._reconcile_prepared_claim(claim, claim_fd, lock_path)
+        if published is False and self._cleanup_publication_artifacts(claim.name):
+            if self._completion_marker_present(claim):
+                if not self._remove_untrusted_completion_marker(claim):
+                    return
+            self._restore_claimed_update(claim, slug, claim_snapshot)
+        elif published is None:
+            logger.error(
+                "Prepared skill claim has ambiguous publication state; retaining %s",
+                claim,
+            )
+        else:
+            logger.info(
+                "Prepared skill generation is fully live; retaining %s for restart commit",
+                claim,
+            )
+
+    def _recover_abandoned_claims(self, *, roots_authenticated: bool = False) -> None:
+        """Restore or retire claims whose owning process exited mid-transaction."""
+        if not roots_authenticated and not self._private_state_roots_safe(
+            create=False, require_sensitive=True
+        ):
+            return
+        root = self._claims_root()
+        if not root.is_dir():
+            return
+        for claim in list(root.iterdir()):
+            claim_linked = is_link_or_junction(claim)
+            if (not claim_linked and not claim.is_dir()) or "--" not in claim.name:
+                continue
+            slug, _token = claim.name.rsplit("--", 1)
+            if not self._is_pending_slug_safe(slug):
+                continue
+            lock_path = self._claim_lock_path(claim.name)
+            try:
+                fd = self._open_skill_lock(lock_path)
+            except OSError:
+                continue
+            acquired = platform_compat.try_acquire_lock(fd, exclusive=True)
+            try:
+                if not acquired:
+                    continue
+                publication = (
+                    None
+                    if claim_linked
+                    else self._authenticated_claim_publication(fd, lock_path, claim.name)
+                )
+                claim_snapshot = self._authenticated_claim_snapshot_state(
+                    fd,
+                    lock_path,
+                    claim.name,
+                )
+                if claim_snapshot is None and publication is not None:
+                    claim_snapshot = self._claim_snapshot_from_fields(publication)
+                if claim_snapshot is None:
+                    claim_snapshot = _ClaimSnapshot(None, None)
+                lock_completed = self._authenticated_claim_lock_state(
+                    fd, lock_path, claim.name, completed=True
+                )
+                marker_completed = not claim_linked and self._authenticated_completion_marker(claim)
+                if not claim_linked and (lock_completed or marker_completed):
+                    if not self._cleanup_completed_claim(claim, fd):
+                        logger.error("Could not safely clean completed claim %s", claim)
+                    continue
+
+                prepared = publication is not None
+                published = (
+                    self._reconcile_prepared_claim(claim, fd, lock_path) if prepared else False
+                )
+                if published is True:
+                    if not self._commit_claim_lock_state(fd, lock_path, claim.name):
+                        logger.error("Could not commit recovered publication %s", claim)
+                        continue
+                    if not self._cleanup_completed_claim(claim, fd):
+                        logger.error("Could not safely clean recovered publication %s", claim)
+                    continue
+                if published is None:
+                    logger.error(
+                        "Prepared skill claim has ambiguous publication state; retaining %s",
+                        claim,
+                    )
+                    continue
+                if not self._cleanup_publication_artifacts(claim.name):
+                    logger.error(
+                        "Could not clean rolled-back publication artifacts; retaining %s",
+                        claim,
+                    )
+                    continue
+                if not claim_linked and self._completion_marker_present(claim):
+                    if not self._remove_untrusted_completion_marker(claim):
+                        continue
+                self._restore_claimed_update(claim, slug, claim_snapshot)
+            finally:
+                if acquired:
+                    platform_compat.release_lock(fd)
+                os.close(fd)
+                if acquired:
+                    self._cleanup_claim_lock(claim.name)
 
     def list_pending_skills(self) -> list[dict]:
         """Return ``{slug, name, description, triggers, has_scripts, created_at, path}``
         for every staged candidate."""
+        self._recover_abandoned_claims()
         root = self._pending_root()
         out: list[dict] = []
         if not root.is_dir():
@@ -3975,7 +6273,7 @@ class SkillsLoader:
                     "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
                     "description": meta.get("description", ""),
                     "triggers": meta.get("triggers", ""),
-                    "has_scripts": bool(meta.get("has_scripts")),
+                    "has_scripts": meta.get("has_scripts") is True,
                     "created_at": meta.get("created_at", ""),
                     "source": meta.get("source", ""),
                     "kind": meta.get("kind", "new"),
@@ -4020,35 +6318,44 @@ class SkillsLoader:
         return obj
 
     @staticmethod
-    def _candidate_has_symlink(pdir: Path) -> bool:
-        """True if the candidate dir itself or any entry under it is a symlink —
-        so the read/approve paths never follow an LLM-planted link to a
-        sensitive file. (Scripts always require human review before going live;
-        this is defense-in-depth, not the primary control.)"""
-        if os.path.islink(str(pdir)):
-            return True
-        for root, dirs, files in os.walk(pdir):
-            for nm in list(dirs) + list(files):
-                if os.path.islink(os.path.join(root, nm)):
-                    return True
-        return False
+    def _candidate_has_unsafe_inode(pdir: Path) -> bool:
+        """True unless a tree contains only real dirs and lone regular files.
 
-    def _redact_file_in_place(self, fp: Path) -> bool:
-        """Redact secrets from a file in place. Returns False if the file could
-        not be read or a required rewrite failed — the caller MUST abort
-        promotion so an unredacted secret never reaches a live skill."""
+        Renaming a candidate directory does not sever a hardlink to one of its
+        files. Reject every file whose inode has another name so no public alias
+        can mutate claimed bytes after review. Traversal and stat errors fail
+        closed because an uninspected entry is not safe to promote.
+        """
         try:
-            original = fp.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return False
-        safe = self._redact_text(original)
-        if safe == original:
-            return True
-        try:
-            fp.write_text(safe, encoding="utf-8")
+            if is_link_or_junction(pdir):
+                return True
+            if not stat.S_ISDIR(os.lstat(pdir).st_mode):
+                return True
+
+            def raise_walk_error(error: OSError) -> None:
+                raise error
+
+            for root, dirs, files in os.walk(
+                pdir,
+                onerror=raise_walk_error,
+                followlinks=False,
+            ):
+                for nm in dirs:
+                    entry = Path(root) / nm
+                    if is_link_or_junction(entry):
+                        return True
+                    if not stat.S_ISDIR(os.lstat(entry).st_mode):
+                        return True
+                for nm in files:
+                    entry = Path(root) / nm
+                    if is_link_or_junction(entry):
+                        return True
+                    entry_stat = os.lstat(entry)
+                    if not stat.S_ISREG(entry_stat.st_mode) or entry_stat.st_nlink != 1:
+                        return True
         except OSError:
-            return False
-        return True
+            return True
+        return False
 
     @staticmethod
     def _collect_scripts(sdir: Path) -> list[dict]:
@@ -4075,24 +6382,39 @@ class SkillsLoader:
         return out
 
     def get_pending_skill(self, slug: str) -> dict | None:
-        """Return full pending-candidate detail incl. SKILL.md body + script bodies."""
+        """Return one snapshot-consistent pending candidate detail payload."""
         if not self._is_pending_slug_safe(slug):
             return None
         pdir = self._pending_root() / slug
-        skill_file = pdir / "SKILL.md"
-        if not skill_file.exists():
+        # Detail is user-visible review evidence. Capture body, metadata and
+        # scripts once so a retained writer cannot make one response describe
+        # different candidate generations across its individual fields.
+        tree = self._skill_tree_snapshot(pdir)
+        if tree is None:
+            logger.warning("Refusing to read pending %s: candidate tree is unsafe", slug)
             return None
-        # Reject any symlink in the candidate on the read path too (approval
-        # already rejects them) so the detail API can't be tricked into reading
-        # a sensitive file a candidate symlinked SKILL.md / a nested file to.
-        if self._candidate_has_symlink(pdir):
-            logger.warning("Refusing to read pending %s: candidate contains a symlink", slug)
+        try:
+            content = tree.files[Path("SKILL.md")].decode("utf-8")
+        except (KeyError, UnicodeDecodeError):
             return None
-        meta = self._read_pending_meta(slug)
-        scripts = self._collect_scripts(pdir / "scripts")
-        for s in scripts:
-            s["filename"] = self._redact_text(s.get("filename", ""))
-            s["content"] = self._redact_text(s.get("content", ""))
+        meta = self._candidate_metadata_from_bytes(
+            tree.files.get(Path(".meta.json")),
+            redact=True,
+        )
+        scripts: list[dict[str, str]] = []
+        for relative, payload in sorted(tree.files.items(), key=lambda item: str(item[0])):
+            if not relative.parts or relative.parts[0] != "scripts":
+                continue
+            try:
+                script_content = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            scripts.append(
+                {
+                    "filename": self._redact_text(str(relative.relative_to("scripts"))),
+                    "content": self._redact_text(script_content),
+                }
+            )
         return {
             "slug": slug,
             "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{slug}"),
@@ -4100,24 +6422,24 @@ class SkillsLoader:
             "kind": meta.get("kind", "new"),
             "target": meta.get("target"),
             "base_version": meta.get("base_version"),
-            "content": self._redact_text(skill_file.read_text(encoding="utf-8")),
+            "content": self._redact_text(content),
             "scripts": scripts,
         }
 
     def _candidate_layout_ok(self, src: Path, name: str) -> bool:
         """Shared candidate-layout guard for BOTH approve paths.
 
-        Rejects (a) any symlink anywhere in the candidate (defense-in-depth on
-        top of the mandatory human review — promotion + chmod must only touch
-        real files), and (b) any unexpected top-level entry: only ``SKILL.md``,
+        Rejects (a) any link, hardlinked/non-regular file, or unstatable entry
+        anywhere in the candidate (promotion + chmod must touch only stable,
+        private inodes), and (b) any unexpected top-level entry: only ``SKILL.md``,
         ``.meta.json`` and a ``scripts`` DIRECTORY are allowed. An injected
         auxiliary file (dropped outside the validated set) would ride live
         WITHOUT validation or redaction; a regular file named ``scripts`` would
         skip the directory-only script validation + redaction walk. Returns True
         only when the layout is safe to promote.
         """
-        if self._candidate_has_symlink(src):
-            logger.warning("Refusing to approve %s: candidate contains a symlink", name)
+        if self._candidate_has_unsafe_inode(src):
+            logger.warning("Refusing to approve %s: candidate tree is unsafe", name)
             return False
         _allowed_top = {"SKILL.md", ".meta.json", "scripts"}
         for entry in src.iterdir():
@@ -4133,66 +6455,117 @@ class SkillsLoader:
                 return False
         return True
 
-    def _validate_and_redact_candidate(self, src: Path, name: str) -> dict[Path, bytes] | None:
-        """Re-validate + redact a candidate's SKILL.md and scripts IN PLACE.
+    def _validate_and_redact_candidate(
+        self, src: Path, name: str
+    ) -> _ValidatedCandidateSnapshot | None:
+        """Validate and redact one descriptor-authenticated claimed generation."""
+        if not self._candidate_layout_ok(src, name):
+            return None
+        tree = self._skill_tree_snapshot(src)
+        if tree is None:
+            logger.warning("Refusing to approve %s: candidate snapshot is unreadable", name)
+            return None
+        return self._validate_and_redact_snapshot(tree, name)
 
-        Shared by ``approve_pending_skill`` and ``approve_pending_update`` so
-        both enforce the identical discipline: validate every script (covers
-        crystallize direct-writes), snapshot each target's ORIGINAL bytes, redact
-        in place, then re-validate scripts (redacting a credential-shaped token
-        can break syntax). On ANY failure the originals are restored and ``None``
-        is returned so a rejected candidate is never left corrupted. On success
-        returns the ``{path: original_bytes}`` snapshot so the caller can restore
-        on a LATER failure (e.g. a failed move / snapshot).
-        """
-        sdir_src = src / "scripts"
-        # Pre-redaction script validation.
-        if sdir_src.is_dir():
-            ok, report = validate_scripts(self._collect_scripts(sdir_src))
+    def _validate_and_redact_snapshot(
+        self, tree: _SkillTreeSnapshot, name: str
+    ) -> _ValidatedCandidateSnapshot | None:
+        """Validate and redact one already-captured immutable candidate tree."""
+        source_files = tree.files
+        redacted_files: dict[Path, bytes] = {}
+        metadata: dict[str, object] = {}
+        try:
+            for relative, raw in source_files.items():
+                if relative == Path(".meta.json"):
+                    try:
+                        parsed = json.loads(raw)
+                    except (TypeError, ValueError):
+                        parsed = {}
+                    if isinstance(parsed, dict):
+                        redacted_meta = self._redact_deep(parsed)
+                        if isinstance(redacted_meta, dict):
+                            metadata = redacted_meta
+                    continue
+                redacted_files[relative] = self._redact_text(raw.decode("utf-8")).encode("utf-8")
+        except UnicodeDecodeError:
+            logger.warning("Refusing to approve %s: candidate snapshot is unreadable", name)
+            return None
+
+        skill_path = Path("SKILL.md")
+        if skill_path not in redacted_files:
+            return None
+
+        def _scripts(files: dict[Path, bytes]) -> list[dict[str, str]]:
+            scripts: list[dict[str, str]] = []
+            for relative, payload in sorted(files.items(), key=lambda item: str(item[0])):
+                if not relative.parts or relative.parts[0] != "scripts":
+                    continue
+                scripts.append(
+                    {
+                        "filename": str(relative.relative_to("scripts")),
+                        "content": payload.decode("utf-8"),
+                    }
+                )
+            return scripts
+
+        before_scripts = _scripts(source_files)
+        if before_scripts:
+            ok, report = validate_scripts(before_scripts)
             if not ok:
                 logger.warning("Refusing to approve %s: script validation failed: %s", name, report)
                 return None
-        # Snapshot each target FIRST so an abort after partial in-place redaction
-        # restores the candidate's ORIGINAL bytes.
-        redact_targets = [src / "SKILL.md"]
-        if sdir_src.is_dir():
-            for root, _dirs, files in os.walk(sdir_src):
-                for nm in files:
-                    fp = Path(root) / nm
-                    if fp.is_file() and not fp.is_symlink():
-                        redact_targets.append(fp)
-        redact_backup: dict[Path, bytes] = {}
-        for fp in redact_targets:
-            try:
-                redact_backup[fp] = fp.read_bytes()
-            except OSError:
-                pass
-
-        def _restore_redacted() -> None:
-            for _fp, _b in redact_backup.items():
-                try:
-                    _fp.write_bytes(_b)
-                except OSError:
-                    pass
-
-        for fp in redact_targets:
-            if not self._redact_file_in_place(fp):
-                _restore_redacted()
-                logger.warning(
-                    "Refusing to approve %s: could not redact %s before promotion", name, fp.name
-                )
-                return None
-        # Re-validate scripts AFTER redaction so a broken/altered helper never
-        # goes live and the pending draft is not corrupted.
-        if sdir_src.is_dir():
-            ok, report = validate_scripts(self._collect_scripts(sdir_src))
+        after_scripts = _scripts(redacted_files)
+        if after_scripts:
+            ok, report = validate_scripts(after_scripts)
             if not ok:
-                _restore_redacted()
                 logger.warning(
-                    "Refusing to approve %s: scripts invalid after redaction: %s", name, report
+                    "Refusing to approve %s: scripts invalid after redaction: %s",
+                    name,
+                    report,
                 )
                 return None
-        return redact_backup
+        return _ValidatedCandidateSnapshot(
+            source_files=source_files,
+            files=redacted_files,
+            modes=tree.file_modes,
+            metadata=metadata,
+            generation_hash=tree.generation_hash,
+        )
+
+    @staticmethod
+    def _materialize_candidate_snapshot(
+        snapshot: _ValidatedCandidateSnapshot, destination: Path
+    ) -> None:
+        """Write an immutable candidate snapshot into a fresh private directory."""
+        destination.mkdir(parents=True, exist_ok=False)
+        for relative, payload in sorted(snapshot.files.items(), key=lambda item: str(item[0])):
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            mode = snapshot.modes.get(relative, 0o600)
+            if relative.parts and relative.parts[0] == "scripts":
+                mode |= 0o111
+            atomic_write(target, payload, mode=mode, fsync=True)
+            platform_compat.chmod_safe(target, mode)
+
+    @staticmethod
+    def _materialize_skill_tree_snapshot(snapshot: _SkillTreeSnapshot, destination: Path) -> None:
+        """Materialize raw live bytes and modes without reopening the live tree."""
+        root_mode = snapshot.dir_modes.get(Path("."), 0o700)
+        destination.mkdir(mode=root_mode, parents=False, exist_ok=False)
+        platform_compat.chmod_safe(destination, root_mode)
+        for relative, mode in sorted(
+            snapshot.dir_modes.items(), key=lambda item: (len(item[0].parts), str(item[0]))
+        ):
+            if relative == Path("."):
+                continue
+            target = destination / relative
+            target.mkdir(mode=mode, parents=False, exist_ok=False)
+            platform_compat.chmod_safe(target, mode)
+        for relative, payload in sorted(snapshot.files.items(), key=lambda item: str(item[0])):
+            target = destination / relative
+            mode = snapshot.file_modes.get(relative, 0o600)
+            atomic_write(target, payload, mode=mode, fsync=True)
+            platform_compat.chmod_safe(target, mode)
 
     @staticmethod
     def _auto_slug_from_name(name: str) -> str:
@@ -4358,11 +6731,18 @@ class SkillsLoader:
         if not self._is_pending_slug_safe(slug):
             return None
         src = self._pending_root() / slug
-        cand_file = src / "SKILL.md"
-        if not cand_file.exists() or cand_file.is_symlink():
+        candidate_tree = self._skill_tree_snapshot(src)
+        if candidate_tree is None:
             return None
-        meta = self._read_pending_meta(slug)
+        meta = self._candidate_metadata_from_bytes(
+            candidate_tree.files.get(Path(".meta.json")),
+            redact=True,
+        )
         if meta.get("kind") != "update":
+            return None
+        try:
+            cand_body = candidate_tree.files[Path("SKILL.md")].decode("utf-8")
+        except (KeyError, UnicodeDecodeError):
             return None
         target = meta.get("target")
         if not isinstance(target, str) or not target:
@@ -4379,10 +6759,6 @@ class SkillsLoader:
         # feeds the dashboard API.
         live_body = self.read_auto_skill_body(target_name)
         if live_body is None:
-            return None
-        try:
-            cand_body = cand_file.read_text(encoding="utf-8")
-        except OSError:
             return None
         current_version = self.get_auto_skill_version(target_name)
         _live_fm = self._cached_frontmatter(live_file, within=None)
@@ -4419,130 +6795,229 @@ class SkillsLoader:
             "stale_base": isinstance(raw_base, int) and raw_base != current_version,
         }
 
-    def _resolve_snapshot_version(self, versions_dir: Path, fm_version: int) -> int:
-        """Return the version number to snapshot the CURRENT live body under.
-
-        Normally the live frontmatter's ``version`` is authoritative. But if a
-        snapshot already exists at that number the numbering has drifted (e.g. an
-        older refine stripped the ``version`` line, so the live skill reads as v1
-        again) — writing there would DESTROY the earlier snapshot. In that case
-        continue above the highest snapshot on disk instead, so history is only
-        ever appended to.
-        """
-        if not (versions_dir / f"v{fm_version}-SKILL.md").exists():
+    def _resolve_snapshot_version(
+        self,
+        versions_dir: Path,
+        fm_version: int,
+        live_snapshot: _SkillTreeSnapshot,
+    ) -> int:
+        """Choose a free version number from the authenticated live generation."""
+        versions: set[int] = set()
+        for relative in live_snapshot.files:
+            if len(relative.parts) != 2 or relative.parts[0] != VERSIONS_DIRNAME:
+                continue
+            match = re.match(r"^v(\d+)-SKILL\.md$", relative.name)
+            if match:
+                versions.add(int(match.group(1)))
+        if fm_version not in versions:
             return fm_version
-        highest = fm_version
-        for p in versions_dir.iterdir():
-            mm = re.match(r"^v(\d+)-SKILL\.md$", p.name)
-            if p.is_file() and mm:
-                highest = max(highest, int(mm.group(1)))
+        next_version = max(versions | {fm_version}) + 1
         logger.warning(
             "Version numbering drifted for %s: snapshot v%d exists; continuing at v%d",
             versions_dir.parent.name,
             fm_version,
-            highest + 1,
+            next_version,
         )
-        return highest + 1
+        return next_version
+
+    def _promote_pending_update(
+        self,
+        slug: str,
+        *,
+        refuse_scripts: bool = False,
+        expected_candidate_binding: str | None = None,
+        claimed_out: list[bool] | None = None,
+    ) -> tuple[str, int] | None:
+        """Claim and promote an update, returning its lock-authoritative version."""
+        claimed = self._claim_pending_update(slug)
+        if claimed is None:
+            return None
+        if claimed_out is not None:
+            claimed_out[:] = [True]
+        claim, claim_fd, consumed_at, claim_snapshot = claimed
+        result: tuple[str, int] | None = None
+        live_published = False
+        try:
+            if is_link_or_junction(claim):
+                return None
+            observed = self._validate_and_redact_candidate(claim, slug)
+            if (
+                observed is None
+                or claim_snapshot.generation_hash is None
+                or not secrets.compare_digest(
+                    observed.generation_hash,
+                    claim_snapshot.generation_hash,
+                )
+            ):
+                logger.warning("Refusing promotion of %s: claimed generation changed", slug)
+                return None
+            if claim_snapshot.tree is None:
+                logger.warning("Refusing promotion of %s: claim has no immutable authority", slug)
+                return None
+            snapshot = self._validate_and_redact_snapshot(claim_snapshot.tree, slug)
+            if snapshot is None:
+                logger.warning("Refusing promotion of %s: snapshot validation failed", slug)
+                return None
+            meta = snapshot.metadata
+            target = meta.get("target")
+            if meta.get("kind") != "update" or not isinstance(target, str) or not target:
+                return None
+            target_slug = self._auto_slug_from_name(target)
+            if not self._is_pending_slug_safe(target_slug):
+                return None
+            with self._promotion_lock(target_slug) as acquired:
+                if not acquired:
+                    logger.warning("Promotion lock unavailable for %s", target)
+                    return None
+                result = self._approve_claimed_update_locked(
+                    claim,
+                    claim_fd=claim_fd,
+                    slug=slug,
+                    meta=meta,
+                    snapshot=snapshot,
+                    refuse_scripts=refuse_scripts,
+                    expected_candidate_binding=expected_candidate_binding,
+                )
+                if result is None:
+                    return None
+                name, _new_version = result
+                live_published = True
+                if not self._commit_claim_consumption(claim, claim_fd):
+                    result = None
+                    return None
+            if not self._cleanup_completed_claim(claim, claim_fd):
+                logger.error("Could not safely clean promoted claim %s", claim)
+            _emit_pending_consumed(
+                {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
+            )
+            return result
+        finally:
+            try:
+                if result is None and not live_published:
+                    self._restore_failed_promotion_claim(
+                        claim,
+                        claim_fd,
+                        slug,
+                        claim_snapshot,
+                    )
+            except OSError:
+                logger.error("Could not restore claimed update %s", claim, exc_info=True)
+            finally:
+                platform_compat.release_lock(claim_fd)
+                os.close(claim_fd)
+                self._cleanup_claim_lock(claim.name)
 
     def approve_pending_update(self, slug: str) -> str | None:
-        """Promote a pending UPDATE candidate over its live target auto-skill.
+        """Atomically claim and promote a pending UPDATE candidate.
 
-        Preconditions (all checked BEFORE any live mutation; a failure here
-        leaves BOTH the live skill and the candidate untouched, returns None):
-        the slug is safe, the candidate has a ``SKILL.md``, its ``.meta.json``
-        has ``kind == "update"``, and ``target`` names an EXISTING live auto
-        skill. Then: the shared symlink/unexpected-entry guard runs, scripts are
-        re-validated, and SKILL.md + scripts are redacted in place (originals
-        restored on failure).
-
-        Promotion: snapshot the current live ``SKILL.md`` to
-        ``auto/<target>/.versions/v<N>-SKILL.md`` (N = current live version),
-        write the candidate over live with frontmatter rewritten (preserve live
-        ``created_at``, ``name`` = ``auto/<target>``, ``version`` = N+1), move the
-        candidate scripts into the live ``scripts/`` (exec bit set on POSIX),
-        prune ``.versions`` to the newest ``MAX_SKILL_VERSIONS``, delete the
-        pending dir, and SEL-audit. Returns ``auto/<target>`` on success.
+        An immutable pending generation is captured before the public directory
+        is renamed. The claimed directory is then compared against that capture;
+        publication uses only the captured bytes, while a refusal restores the
+        claimed candidate to review without replacing a new public candidate.
         """
-        if not self._is_pending_slug_safe(slug):
-            return None
-        src = self._pending_root() / slug
-        if not (src / "SKILL.md").exists():
-            return None
-        meta = self._read_pending_meta(slug)
-        if meta.get("kind") != "update":
+        result = self._promote_pending_update(slug)
+        return result[0] if result is not None else None
+
+    def _approve_claimed_update_locked(
+        self,
+        src: Path,
+        *,
+        claim_fd: int,
+        slug: str,
+        meta: dict[str, object],
+        snapshot: _ValidatedCandidateSnapshot,
+        refuse_scripts: bool,
+        expected_candidate_binding: str | None,
+    ) -> tuple[str, int] | None:
+        """Promote only the whole generation authenticated at the claim rename."""
+        bound_raw = snapshot.source_files.get(Path("SKILL.md"))
+        if expected_candidate_binding is not None:
+            if bound_raw is None:
+                logger.warning("Refusing unattended promotion of %s: body is unreadable", slug)
+                return None
+            try:
+                actual_binding = self._auto_apply_candidate_binding(
+                    bound_raw,
+                    target=meta.get("target"),
+                    base_version=meta.get("base_version"),
+                    base_content_hash=meta.get("base_content_hash"),
+                )
+            except (OSError, TypeError, ValueError):
+                logger.warning("Refusing unattended promotion of %s: binding is unreadable", slug)
+                return None
+            if not secrets.compare_digest(actual_binding, expected_candidate_binding):
+                logger.warning("Refusing unattended promotion of %s: candidate changed", slug)
+                return None
+        snapshot_has_scripts = any(
+            relative.parts and relative.parts[0] == "scripts" for relative in snapshot.files
+        )
+        if refuse_scripts and (meta.get("has_scripts") is True or snapshot_has_scripts):
+            logger.info("Refusing unattended promotion of %s: scripts require review", slug)
             return None
         target = meta.get("target")
         if not isinstance(target, str) or not target:
             return None
         target_slug = self._auto_slug_from_name(target)
-        if not self._is_pending_slug_safe(target_slug):
-            return None
         live_dir = self._dir / AUTO_SKILL_NAMESPACE / target_slug
         live_skill = live_dir / "SKILL.md"
-        if not live_skill.exists():
+        if not os.path.lexists(live_dir):
             logger.warning(
                 "Refusing to approve update %s: target %r is not a live auto skill", slug, target
             )
             return None
         target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
-        # The LIVE side is a write target here (unlike approve_pending_skill, which
-        # moves into a fresh dest), so it needs its own symlink guard: a symlinked
-        # ``scripts/`` (or any symlinked entry) would let ``mkdir``/``copy2`` follow
-        # the link and write candidate content OUTSIDE the skill directory.
-        if self._candidate_has_symlink(live_dir):
+        self._fm_cache.pop(str(live_skill), None)
+        live_snapshot = self._skill_tree_snapshot(live_dir)
+        if live_snapshot is None:
             logger.warning(
-                "Refusing to approve update %s: live skill directory contains a symlink",
+                "Refusing to approve update %s: live skill directory is unsafe",
                 target_name,
             )
             return None
-        # Shared symlink + unexpected-entry rejection.
-        if not self._candidate_layout_ok(src, target_name):
-            return None
-        # Re-validate + redact the candidate in place (restores originals on fail).
-        redact_backup = self._validate_and_redact_candidate(src, target_name)
-        if redact_backup is None:
-            return None
-
-        def _restore_redacted() -> None:
-            for _fp, _b in redact_backup.items():
-                try:
-                    _fp.write_bytes(_b)
-                except OSError:
-                    pass
-
-        # Compute the new live content from the redacted candidate BEFORE any
-        # live mutation — a read failure aborts with live + candidate intact.
         try:
-            candidate_body = (src / "SKILL.md").read_text(encoding="utf-8")
-        except OSError:
-            _restore_redacted()
+            live_prev = live_snapshot.files[Path("SKILL.md")].decode("utf-8")
+        except (KeyError, UnicodeDecodeError):
+            logger.warning("Refusing to approve update %s: live body is unreadable", target_name)
             return None
-        current_version = self.get_auto_skill_version(target_name)
+        if expected_candidate_binding is not None:
+            expected_hash = meta.get("base_content_hash")
+            if not isinstance(expected_hash, str) or not expected_hash:
+                logger.warning(
+                    "Refusing unattended promotion of %s: live-content hash is missing",
+                    target_name,
+                )
+                return None
+            actual_hash = canonical_skill_text_hash(live_prev)
+            if not secrets.compare_digest(expected_hash, actual_hash):
+                logger.warning(
+                    "Refusing unattended promotion of %s: live skill changed after staging",
+                    target_name,
+                )
+                return None
+        try:
+            candidate_body = snapshot.files[Path("SKILL.md")].decode("utf-8")
+        except (KeyError, UnicodeDecodeError):
+            return None
+        before_hash = live_snapshot.generation_hash
+        live_frontmatter = self._parse_frontmatter_text(live_prev)
+        try:
+            parsed_version = int(live_frontmatter.get("version", ""))
+        except (TypeError, ValueError):
+            parsed_version = 1
+        current_version = parsed_version if parsed_version >= 1 else 1
         # Snapshot under a number that is guaranteed free, so an earlier snapshot
         # can never be destroyed by drifted numbering.
         versions_dir = self._versions_root(target_slug)
-        snapshot_version = (
-            self._resolve_snapshot_version(versions_dir, current_version)
-            if versions_dir.is_dir()
-            else current_version
+        snapshot_version = self._resolve_snapshot_version(
+            versions_dir, current_version, live_snapshot
         )
         new_version = snapshot_version + 1
         # ``base_version`` records the live version the merge was computed
         # against. If the live skill advanced since staging, this candidate's body
         # was merged from an OLDER base, so writing it would replace whatever the
-        # intervening approval added. REFUSE rather than warn: the reviewer cannot
-        # be relied on to notice, because an already-open sibling candidate's diff
-        # is served from the frontend query cache and may still be the v1-based
-        # one. The candidate stays pending so it can be dismissed (a fresh
-        # proposal will be merged against the new base).
+        # intervening approval added. REFUSE rather than warn.
         raw_base = meta.get("base_version")
         if isinstance(raw_base, int) and raw_base != current_version:
-            # The candidate stays pending so the reviewer can dismiss it, which
-            # means it stays VISIBLE — so it must also stay byte-identical to what
-            # was staged. Redaction already ran in place above; undo it, or the
-            # rejected draft is left permanently altered and the diff the reviewer
-            # re-opens is not the one they staged.
-            _restore_redacted()
             logger.warning(
                 "Refusing to approve stale update for %s: candidate based on v%s, live is v%d",
                 target_name,
@@ -4562,21 +7037,14 @@ class SkillsLoader:
                 },
             )
             return None
-        live_created_at = self._cached_frontmatter(live_skill, within=None).get("created_at", "")
-        # Carry the live skill's pin forward: a pinned skill is exempt from the
-        # lifecycle's inactivity / max-N archival, and silently dropping the flag
-        # here would expose a user-pinned skill to being archived.
-        live_pinned = str(
-            self._cached_frontmatter(live_skill, within=None).get("pinned", "")
-        ).strip().lower() in ("true", "1", "yes")
-        # Same for the injection opt-out: the candidate never carries it, so
-        # writing it over live without this would silently turn full-body
-        # injection back on for a skill the user had made pointer-only.
+        live_created_at = live_frontmatter.get("created_at", "")
+        live_pinned = str(live_frontmatter.get("pinned", "")).strip().lower() in (
+            "true",
+            "1",
+            "yes",
+        )
         live_pointer_only = (
-            str(self._cached_frontmatter(live_skill, within=None).get("inject_on_trigger", ""))
-            .strip()
-            .lower()
-            == "false"
+            str(live_frontmatter.get("inject_on_trigger", "")).strip().lower() == "false"
         )
         new_live_content = self._rewrite_update_frontmatter(
             candidate_body,
@@ -4586,116 +7054,108 @@ class SkillsLoader:
             pinned=live_pinned,
             pointer_only=live_pointer_only,
         )
-        # Snapshot the current live SKILL.md into .versions/ (point-of-no-return
-        # is the live overwrite below; if the snapshot fails, live is untouched).
-        versions_dir = self._versions_root(target_slug)
-        snapshot = versions_dir / f"v{snapshot_version}-SKILL.md"
-        try:
-            versions_dir.mkdir(parents=True, exist_ok=True)
-            live_prev = live_skill.read_text(encoding="utf-8")
-            atomic_write(snapshot, live_prev)
-        except OSError:
-            _restore_redacted()
-            logger.warning(
-                "Refusing to approve update %s: could not snapshot live version", target_name
-            )
+
+        stage, backup = self._publication_paths(src.name)
+        if any(os.path.lexists(path) or is_link_or_junction(path) for path in (stage, backup)):
+            logger.error("Refusing to reuse skill publication artifacts for %s", target_name)
             return None
-        # (f) Write candidate over live.
+        script_modes = snapshot.modes
+        script_items = [
+            (relative, payload)
+            for relative, payload in snapshot.files.items()
+            if relative.parts and relative.parts[0] == "scripts"
+        ]
         try:
-            atomic_write(live_skill, new_live_content)
-        except OSError:
-            # atomic_write renames into place, so a failure leaves the live
-            # SKILL.md untouched; drop the snapshot we just wrote and restore.
-            try:
-                snapshot.unlink()
-            except OSError:
-                pass
-            _restore_redacted()
-            logger.warning(
-                "Refusing to approve update %s: could not write live SKILL.md", target_name
+            self._materialize_skill_tree_snapshot(live_snapshot, stage)
+            staged_skill = stage / "SKILL.md"
+            with staged_skill.open("wb") as handle:
+                handle.write(new_live_content.encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+
+            staged_versions = stage / VERSIONS_DIRNAME
+            staged_versions.mkdir(parents=True, exist_ok=True)
+            version_snapshot = staged_versions / f"v{snapshot_version}-SKILL.md"
+            atomic_write(version_snapshot, live_prev.encode("utf-8"), fsync=True)
+
+            if not refuse_scripts and script_items:
+                staged_scripts = stage / "scripts"
+                staged_scripts.mkdir(parents=True, exist_ok=True)
+                for relative, payload in sorted(script_items, key=lambda item: str(item[0])):
+                    script_relative = relative.relative_to("scripts")
+                    destination = staged_scripts / script_relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    mode = script_modes.get(relative, 0o600) | 0o111
+                    atomic_write(destination, payload, mode=mode, fsync=True)
+                    platform_compat.chmod_safe(destination, mode)
+
+            self._prune_versions(staged_versions)
+            self._sync_skill_tree(stage)
+            after_hash = self._skill_tree_hash(stage)
+            if after_hash is None or self._skill_tree_hash(live_dir) != before_hash:
+                raise OSError("live or staged skill generation changed during preparation")
+            if not self._prepare_claim_publication(
+                claim_fd,
+                self._claim_lock_path(src.name),
+                src.name,
+                kind="update",
+                target_slug=target_slug,
+                before_hash=before_hash,
+                after_hash=after_hash,
+                claim_snapshot=_ClaimSnapshot(
+                    snapshot.generation_hash,
+                    snapshot.source_files.get(Path(".meta.json")),
+                ),
+                snapshot_version=snapshot_version,
+                new_version=new_version,
+            ):
+                raise OSError("claim journal failed")
+            publication = self._publish_prepared_skill_tree(
+                live_dir=live_dir,
+                stage=stage,
+                backup=backup,
+                before_hash=before_hash,
+                after_hash=after_hash,
             )
-            return None
-        # (g) Promote candidate scripts into the live scripts/ dir (exec bit on
-        # POSIX). COPY rather than move: the pending dir is deleted in (i), so a
-        # move that fails partway would leave the approved script in neither
-        # place. Copying keeps the candidate intact as the rollback source, and
-        # any failure aborts the whole approval — restoring the live SKILL.md
-        # from the snapshot we just wrote and leaving the candidate reviewable.
-        src_scripts = src / "scripts"
-        copied: list[Path] = []
-        # Pre-existing destinations we OVERWRITE: keep their original bytes+mode so
-        # a rollback restores them. Without this, replacing an existing live script
-        # and then failing on a later file would roll SKILL.md back while leaving
-        # the replacement script live — an internally inconsistent skill.
-        overwritten: dict[Path, tuple[bytes, int]] = {}
-        if src_scripts.is_dir():
-            live_scripts = live_dir / "scripts"
-            try:
-                live_scripts.mkdir(parents=True, exist_ok=True)
-                for root, _dirs, files in os.walk(src_scripts):
-                    rel_root = Path(root).relative_to(src_scripts)
-                    for nm in files:
-                        sfp = Path(root) / nm
-                        if not sfp.is_file() or sfp.is_symlink():
-                            continue
-                        dest_dir = live_scripts / rel_root
-                        dest_dir.mkdir(parents=True, exist_ok=True)
-                        dfp = dest_dir / nm
-                        if dfp.exists():
-                            # Snapshot BEFORE the overwrite; a read failure here
-                            # aborts rather than clobbering un-restorable content.
-                            _st = dfp.stat()
-                            overwritten[dfp] = (dfp.read_bytes(), _st.st_mode)
-                        else:
-                            # Only track files WE created, so a rollback never
-                            # deletes a script the live skill already shipped.
-                            copied.append(dfp)
-                        shutil.copy2(str(sfp), str(dfp))
-                        dfp.chmod(dfp.stat().st_mode | 0o111)
-            except OSError:
-                for _p in copied:
-                    try:
-                        _p.unlink()
-                    except OSError:
-                        pass
-                for _p, (_b, _mode) in overwritten.items():
-                    try:
-                        _p.write_bytes(_b)
-                        _p.chmod(_mode)
-                    except OSError:
+            if publication != "published":
+                if publication == "drift":
+                    # The captured concurrent generation is live again and the
+                    # prepared after-tree never committed. Return the journal to
+                    # its active claim state so normal refusal recovery can put
+                    # the candidate back in the public review queue.
+                    if self._initialize_claim_lock_state(
+                        claim_fd,
+                        self._claim_lock_path(src.name),
+                        src.name,
+                    ):
+                        self._cleanup_publication_artifacts(src.name)
+                    else:
                         logger.error(
-                            "Update %s rollback could not restore live script %s",
-                            target_name,
-                            _p.name,
+                            "Retaining %s after live drift because claim rollback was not durable",
+                            src,
                         )
-                try:
-                    atomic_write(live_skill, live_prev)
-                except OSError:
-                    logger.error(
-                        "Update %s failed mid-promotion AND the live SKILL.md could "
-                        "not be restored; the snapshot remains at %s",
-                        target_name,
-                        snapshot,
-                    )
-                else:
-                    try:
-                        snapshot.unlink()
-                    except OSError:
-                        pass
-                _restore_redacted()
                 logger.warning(
-                    "Refusing to approve update %s: could not promote candidate scripts",
+                    "Refusing to approve update %s: whole-tree publication did not complete",
                     target_name,
                 )
                 return None
-        # (h) Prune version history to the cap.
-        self._prune_versions(versions_dir)
-        # (i) Remove the pending candidate.
-        # Captured BEFORE the removal so a same-slug replacement staged after
-        # this instant keeps its notification (see approve_pending_skill).
-        consumed_at = datetime.now(tz=timezone.utc).isoformat()
-        shutil.rmtree(src, ignore_errors=True)
-        # (j) Audit the approved update.
+        except OSError:
+            # Before the journal exists the stage is disposable. Once prepared,
+            # the claim and generation artifacts are recovery state and must not
+            # be guessed away here.
+            if (
+                self._authenticated_claim_publication(
+                    claim_fd, self._claim_lock_path(src.name), src.name
+                )
+                is None
+            ):
+                self._cleanup_publication_artifacts(src.name)
+            logger.warning(
+                "Refusing to approve update %s: could not prepare whole skill generation",
+                target_name,
+            )
+            return None
+        # (i) Audit the approved update.
         sel().log_tool_invocation(
             session_key="skills",
             tool_name="auto_skill_update_approve",
@@ -4709,152 +7169,243 @@ class SkillsLoader:
                 "stale_base": False,
             },
         )
-        # (8) Make the updated live skill visible to trigger matching now.
         self._invalidate_iter_cache()
         logger.info(
             "Approved pending update: %s (v%d -> v%d)", target_name, current_version, new_version
         )
-        # The candidate cleanup above ignores rmtree errors (e.g. a Windows
-        # file lock), so the candidate can survive in the pending queue even
-        # though the update went live. Only report it consumed when the
-        # directory is really gone — otherwise the queue still shows an
-        # actionable review and its notification must stay unread.
-        if not src.exists():
-            _emit_pending_consumed(
-                {
-                    "slug": slug,
-                    "outcome": "approved",
-                    "name": target_name,
-                    "consumed_at": consumed_at,
-                }
-            )
-        return target_name
+        return target_name, new_version
 
-    def approve_pending_skill(self, slug: str) -> str | None:
-        """Promote a pending candidate to a live auto-skill.
+    def auto_apply_pending_update(
+        self,
+        slug: str,
+        *,
+        expected_candidate_binding: str,
+    ) -> tuple[str, int] | None:
+        """Promote a prose-only update when approval is disabled."""
+        claimed: list[bool] = []
+        applied = self._promote_pending_update(
+            slug,
+            refuse_scripts=True,
+            expected_candidate_binding=expected_candidate_binding,
+            claimed_out=claimed,
+        )
+        if applied is None:
+            if not claimed:
+                # Auto-apply is the only caller that suppresses the initial
+                # staged event. Capture the still-public generation once; a
+                # claimed refusal already emitted from its immutable metadata.
+                self.emit_pending_staged(slug)
+            return None
+        name, version = applied
+        _emit_update_auto_applied(
+            {
+                "name": name,
+                "slug": slug,
+                "target": name,
+                "new_version": version,
+                # Deliberately no description: the only source would be the
+                # PUBLIC pending metadata read before the claim, which an
+                # attacker-writable sibling can rewrite so the notification
+                # describes different bytes than were promoted. The name,
+                # target and version above are computed from the claimed
+                # snapshot under the target lock.
+                "description": "",
+            }
+        )
+        return applied
 
-        Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
-        → ``auto/<slug>`` and marks any bundled scripts executable. Returns the
-        live name, or ``None`` if the candidate is missing, a live skill of that
-        name already exists, it contains a symlink, script validation fails, or
-        redaction fails. Every check runs BEFORE the move, so a rejected
-        candidate is left untouched in the pending queue.
-        """
-        if not self._is_pending_slug_safe(slug):
-            return None
-        src = self._pending_root() / slug
-        if not (src / "SKILL.md").exists():
-            return None
+    def _approve_claimed_skill_locked(
+        self,
+        src: Path,
+        claim_fd: int,
+        slug: str,
+        claim_snapshot: _ClaimSnapshot,
+    ) -> str | None:
+        """Publish one immutable claimed snapshot while its target lock is held."""
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         dest = self._dir / name
-        if dest.exists():
+        if is_link_or_junction(src):
+            return None
+        observed = self._validate_and_redact_candidate(src, name)
+        if (
+            observed is None
+            or claim_snapshot.generation_hash is None
+            or not secrets.compare_digest(
+                observed.generation_hash,
+                claim_snapshot.generation_hash,
+            )
+        ):
+            logger.warning("Refusing to approve %s: claimed generation changed", name)
+            return None
+        if claim_snapshot.tree is None:
+            logger.warning("Refusing to approve %s: claim has no immutable authority", name)
+            return None
+        snapshot = self._validate_and_redact_snapshot(claim_snapshot.tree, name)
+        if snapshot is None:
+            logger.warning("Refusing to approve %s: snapshot validation failed", name)
+            return None
+        if snapshot.metadata.get("kind") == "update":
+            logger.warning("Refusing to approve %s as new: claimed candidate is an update", name)
+            return None
+        if os.path.lexists(dest):
             logger.warning("Cannot approve %s: a live skill already exists", name)
             return None
-        # Reject any symlink in the candidate + any unexpected top-level entry
-        # (defense-in-depth on top of the mandatory human review); promotion +
-        # chmod must only touch known, real files. Factored into a shared helper
-        # so the update-approve path enforces the identical layout guard.
-        if not self._candidate_layout_ok(src, name):
+
+        stage, _backup = self._publication_paths(src.name)
+        if os.path.lexists(stage) or is_link_or_junction(stage):
+            logger.error("Refusing to reuse skill publication stage for %s", name)
             return None
-        # Re-validate every script + redact the body + scripts before going live;
-        # snapshots each file first so a failure restores the ORIGINAL bytes and
-        # never leaves a corrupted pending draft. Shared with the update path.
-        redact_backup = self._validate_and_redact_candidate(src, name)
-        if redact_backup is None:
+        try:
+            self._materialize_candidate_snapshot(snapshot, stage)
+            self._sync_skill_tree(stage)
+            after_hash = self._skill_tree_hash(stage)
+            if after_hash is None:
+                raise OSError("staged skill generation changed")
+            if not self._prepare_claim_publication(
+                claim_fd,
+                self._claim_lock_path(src.name),
+                src.name,
+                kind="new",
+                target_slug=slug,
+                before_hash=None,
+                after_hash=after_hash,
+                claim_snapshot=_ClaimSnapshot(
+                    snapshot.generation_hash,
+                    snapshot.source_files.get(Path(".meta.json")),
+                ),
+                snapshot_version=None,
+                new_version=1,
+            ):
+                raise OSError("claim journal failed")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if (
+                self._publish_prepared_skill_tree(
+                    live_dir=dest,
+                    stage=stage,
+                    backup=None,
+                    before_hash=None,
+                    after_hash=after_hash,
+                )
+                != "published"
+            ):
+                logger.warning(
+                    "Refusing to approve %s: whole-tree publication did not complete", name
+                )
+                return None
+        except (KeyError, OSError):
+            if (
+                self._authenticated_claim_publication(
+                    claim_fd, self._claim_lock_path(src.name), src.name
+                )
+                is None
+            ):
+                self._cleanup_publication_artifacts(src.name)
+            logger.warning("Refusing to approve %s: could not publish validated snapshot", name)
             return None
 
-        def _restore_redacted() -> None:
-            for _fp, _b in redact_backup.items():
-                try:
-                    _fp.write_bytes(_b)
-                except OSError:
-                    pass
-
-        # Drop pending-only bookkeeping ONLY after every check + redaction has
-        # passed and immediately before the move, so a failed approval leaves the
-        # candidate — including its .meta.json (description/triggers) — intact in
-        # the pending queue for re-review. A removal FAILURE (non-writable dir,
-        # etc.) must ABORT: otherwise the raw, possibly secret-bearing .meta.json
-        # would ride into the live skill dir and be exposed by the browser. Only
-        # an already-absent file (FileNotFoundError) is benign. We stash the meta
-        # bytes first so a subsequent MOVE failure can restore them (otherwise the
-        # candidate would be left stranded in pending without its metadata).
-        meta_path = src / ".meta.json"
-        meta_backup: bytes | None = None
-        try:
-            meta_backup = meta_path.read_bytes()
-        except FileNotFoundError:
-            meta_backup = None
-        except OSError:
-            _restore_redacted()
-            logger.warning(
-                "Refusing to approve %s: could not read pending .meta.json before promotion", name
-            )
-            return None
-        try:
-            meta_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            _restore_redacted()
-            logger.warning(
-                "Refusing to approve %s: could not remove pending .meta.json before promotion",
-                name,
-            )
-            return None
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        # Cutoff for notification resolution, captured BEFORE the candidate
-        # leaves the pending queue: staging refuses to overwrite an existing
-        # candidate, so a same-slug replacement can only be staged after this
-        # instant — its notification carries a strictly later ``ts`` and must
-        # survive the resolve.
-        consumed_at = datetime.now(tz=timezone.utc).isoformat()
-        try:
-            shutil.move(str(src), str(dest))
-        except OSError:
-            # Promotion failed after we deleted the pending bookkeeping — restore
-            # .meta.json AND the redacted files so the candidate stays intact in
-            # the pending queue for re-review instead of being left corrupted.
-            if meta_backup is not None and src.is_dir():
-                try:
-                    meta_path.write_bytes(meta_backup)
-                except OSError:
-                    pass
-            _restore_redacted()
-            logger.warning("Refusing to approve %s: could not move candidate live", name)
-            return None
-        # Mark scripts executable now that a human approved them (recursively).
-        sdir = dest / "scripts"
-        if sdir.is_dir():
-            for root, _dirs, files in os.walk(sdir):
-                for nm in files:
-                    sf = Path(root) / nm
-                    if sf.is_file() and not sf.is_symlink():
-                        try:
-                            sf.chmod(sf.stat().st_mode | 0o111)
-                        except OSError:
-                            pass
         self._invalidate_iter_cache()
         logger.info("Approved pending skill: %s", name)
-        _emit_pending_consumed(
-            {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
-        )
         return name
 
+    def approve_pending_skill(self, slug: str) -> str | None:
+        """Atomically claim and publish a pending candidate to a live auto-skill."""
+        claimed = self._claim_pending_update(slug)
+        if claimed is None:
+            return None
+        src, claim_fd, consumed_at, claim_snapshot = claimed
+        result: str | None = None
+        live_published = False
+        try:
+            with self._promotion_lock(slug) as acquired:
+                if not acquired:
+                    logger.warning("Could not acquire promotion lock for auto/%s", slug)
+                    return None
+                result = self._approve_claimed_skill_locked(
+                    src,
+                    claim_fd,
+                    slug,
+                    claim_snapshot,
+                )
+                if result is None:
+                    return None
+                live_published = True
+                if not self._commit_claim_consumption(src, claim_fd):
+                    result = None
+                    return None
+            if not self._cleanup_completed_claim(src, claim_fd):
+                logger.error("Could not safely clean published claim %s", src)
+            _emit_pending_consumed(
+                {"slug": slug, "outcome": "approved", "name": result, "consumed_at": consumed_at}
+            )
+            return result
+        finally:
+            try:
+                if result is None and not live_published:
+                    self._restore_failed_promotion_claim(
+                        src,
+                        claim_fd,
+                        slug,
+                        claim_snapshot,
+                    )
+            except OSError:
+                logger.error("Could not restore claimed skill %s", src, exc_info=True)
+            finally:
+                platform_compat.release_lock(claim_fd)
+                os.close(claim_fd)
+                self._cleanup_claim_lock(src.name)
+
     def dismiss_pending_skill(self, slug: str) -> bool:
-        """Delete a pending candidate. Returns True if it existed."""
-        if not self._is_pending_slug_safe(slug):
+        """Atomically claim and durably consume a pending candidate.
+
+        A committed marker makes a failed physical cleanup recoverable by the
+        same abandoned-claim pass used after promotion. Until that marker is
+        durable, every failure restores the exact claim to review.
+        """
+        claimed = self._claim_pending_update(slug)
+        if claimed is None:
             return False
-        pdir = self._pending_root() / slug
-        if not pdir.is_dir():
-            return False
-        # Captured BEFORE the removal so a same-slug replacement staged after
-        # this instant keeps its notification (see approve_pending_skill).
-        consumed_at = datetime.now(tz=timezone.utc).isoformat()
-        shutil.rmtree(pdir)
-        logger.info("Dismissed pending skill: %s", slug)
-        _emit_pending_consumed({"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at})
-        return True
+        claim, claim_fd, consumed_at, claim_snapshot = claimed
+        consumed = False
+        try:
+            if is_link_or_junction(claim):
+                try:
+                    with self._pin_skill_parent(self._claims_root()) as claims_parent:
+                        linked = self._stat_pinned_child(claims_parent, claim.name)
+                        if not self._unlink_skill_child(
+                            claims_parent,
+                            claim.name,
+                            expected=linked,
+                        ):
+                            raise OSError("linked claim changed before unlink")
+                except OSError:
+                    logger.warning("Could not unlink pending-skill link: %s", slug)
+                    return False
+                consumed = True
+            else:
+                if not self._write_completion_marker(claim):
+                    logger.warning("Could not commit pending-skill dismissal: %s", slug)
+                    return False
+                consumed = True
+                self._commit_claim_lock_state(
+                    claim_fd, self._claim_lock_path(claim.name), claim.name
+                )
+                if not self._cleanup_completed_claim(claim, claim_fd):
+                    logger.error("Could not safely clean dismissed claim %s", claim)
+            logger.info("Dismissed pending skill: %s", slug)
+            _emit_pending_consumed(
+                {"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at}
+            )
+            return True
+        finally:
+            try:
+                if not consumed and (claim.exists() or is_link_or_junction(claim)):
+                    self._restore_claimed_update(claim, slug, claim_snapshot)
+            except OSError:
+                logger.error("Could not restore failed dismissal claim %s", claim, exc_info=True)
+            finally:
+                platform_compat.release_lock(claim_fd)
+                os.close(claim_fd)
+                self._cleanup_claim_lock(claim.name)
 
     def dismiss_all_pending(self) -> int:
         """Delete all pending candidates. Returns count dismissed."""

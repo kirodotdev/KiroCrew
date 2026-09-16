@@ -3545,8 +3545,12 @@ class TestProcessAutoSkillsIntegration:
         assert [s["filename"] for s in detail["scripts"]] == ["run.py"]
 
     @pytest.mark.asyncio
-    async def test_dangerous_script_dropped_but_skill_staged(self, tmp_path):
-        """A script failing the static validator is dropped; the skill still stages."""
+    async def test_all_scripts_invalid_stages_for_attended_review(self, tmp_path):
+        """With review enabled, rejected scripts leave the prose reviewable.
+
+        Script-bearing candidates never auto-publish as prose, while the existing
+        attended-review path keeps the candidate pending with no executable helper.
+        """
         from kiro_crew.memory import MemoryStore
         from kiro_crew.skills import SkillsLoader
 
@@ -3579,8 +3583,9 @@ class TestProcessAutoSkillsIntegration:
             await consolidator._consolidate("dashboard:chat-bad", include_history=True)
 
         detail = skills.get_pending_skill("dangerous-skill")
-        assert detail is not None  # approval is enabled, so the prose still stages
-        assert detail["scripts"] == []  # dangerous script dropped by validator
+        assert detail is not None
+        assert detail["scripts"] == []
+        assert skills.list_auto_skills() == []  # never published live
 
 
 class TestAutoSkillSELAudit:
@@ -5139,9 +5144,10 @@ async def test_dedupe_candidate_uses_judge_when_configured(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_all_invalid_scripts_are_rejected_when_approval_disabled(tmp_path):
-    """A candidate whose supplied scripts all fail validation is rejected
-    instead of being auto-published or queued against the user's opt-out."""
+async def test_candidate_dropped_when_all_scripts_invalid(tmp_path):
+    """A candidate that SUPPLIED scripts but had EVERY script rejected by the
+    static validator is dropped AS A WHOLE (requirement A): never auto-published
+    as prose-only, and never staged as a misleading pending item."""
     from kiro_crew.memory import MemoryStore
     from kiro_crew.skills import SkillsLoader
 
@@ -5173,10 +5179,9 @@ async def test_all_invalid_scripts_are_rejected_when_approval_disabled(tmp_path)
     with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
         await consolidator._consolidate("dashboard:chat-x", include_history=True)
 
-    # The unsafe candidate is neither auto-published nor queued for a review the
-    # user disabled.
+    # Neither live nor staged: the whole candidate is dropped (requirement A).
     assert skills.list_auto_skills() == []
-    assert skills.list_pending_skills() == []
+    assert not any(s["slug"] == "scripted-skill" for s in skills.list_pending_skills())
 
 
 class TestMetadataReadSurvivesATransientSharingViolation:

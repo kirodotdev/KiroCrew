@@ -15,6 +15,7 @@ The third is the one worth failing loudly: an entry that quietly moves from "mas
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -753,3 +754,15 @@ class TestAPodChildsRemappedHomeIsMasked:
         assert "_pod_os_home_targets(" in launcher
         seatbelt = inspect.getsource(sandbox._build_seatbelt_profile)
         assert "_pod_os_home_targets(" in seatbelt
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("mode", _MODES)
+def test_launcher_only_masks_precreated_private_claim_root(mode):
+    """The launcher must not create security targets best-effort after fork."""
+    script = sandbox._build_launcher_script(mode)
+    target = os.path.join(_home(), ".kiro/crew/skills/auto/.private")
+
+    assert target in script
+    assert 'endswith("skills/auto/.private")' not in script
+    assert "_materialize_nested_maskable_dirs" in inspect.getsource(sandbox.namespace_argv)
