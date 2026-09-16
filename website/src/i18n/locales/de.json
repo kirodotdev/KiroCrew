@@ -1,4 +1,11 @@
 {
+  "appStoreSources": {
+    "all": "Alle Quellen",
+    "source": "Quelle",
+    "local": "Lokale Installation",
+    "unknown": "Unbekannt",
+    "empty": "Versuche eine andere Suche, Kategorie oder Quelle."
+  },
   "crewCapabilityEditing": {
     "sourceFailed": "Die gespeicherte Konfiguration konnte nicht geprüft werden. Laden Sie vom Server neu, um es erneut zu versuchen.",
     "keep": "Verborgener Wert bleibt erhalten. Zum Ersetzen tippen.",

@@ -28,8 +28,8 @@ import CategoryRail from '../../components/appstore/CategoryRail'
 import AppListRow from '../../components/appstore/AppListRow'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
 import SourcesPopover from '../../components/appstore/SourcesPopover'
-import { categoryFor, type Category } from '../../components/appstore/categories'
-import type { RegistryApp } from '../../components/appstore/types'
+import { categoryCounts, categoryFor, type Category } from '../../components/appstore/categories'
+import { sourceKey, sourceRowKey, type RegistryApp } from '../../components/appstore/types'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { compareText } from '../../i18n/format'
@@ -126,6 +126,7 @@ function DiscoverPageBody() {
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<Category | 'all'>('all')
+  const [source, setSource] = useState<string | null>(null)
   const [sort, setSort] = useState<'name' | 'category'>('name')
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [successMsg, setSuccessMsg] = useState('')
@@ -156,6 +157,12 @@ function DiscoverPageBody() {
     browseApps, featuredSections, categories, sources, updatables,
     announceAppsChanged,
   } = useAppsData()
+
+  useEffect(() => {
+    if (!loading && source !== null && !sources.some(row => sourceRowKey(row) === source)) {
+      setSource(null)
+    }
+  }, [loading, source, sources])
 
   const {
     setError, displayError, dismissError,
@@ -274,25 +281,33 @@ function DiscoverPageBody() {
     [apps],
   )
 
-  const filteredBrowse = useMemo(() => {
+  const sourceBrowse = useMemo(() => {
     const q = query.trim().toLowerCase()
-    const list = browseApps.filter(a => {
-      if (category !== 'all' && categoryFor(a.tags) !== category) return false
+    return browseApps.filter(a => {
+      if (source !== null && sourceKey(a) !== source) return false
       if (!q) return true
       return a.displayName.toLowerCase().includes(q)
         || a.description.toLowerCase().includes(q)
         || (a.tags || []).some(t => t.toLowerCase().includes(q))
     })
+  }, [browseApps, source, query])
+
+  const filteredCategories = useMemo(() => {
+    const counts = new Map(categoryCounts(sourceBrowse).map(row => [row.category, row.count]))
+    // Keep zero-count categories visible so a selected category never vanishes.
+    return categories.map(row => ({ ...row, count: counts.get(row.category) || 0 }))
+  }, [categories, sourceBrowse])
+
+  const filteredBrowse = useMemo(() => {
+    const list = sourceBrowse.filter(a => category === 'all' || categoryFor(a.tags) === category)
     return list.sort((a, b) => sort === 'category'
       ? compareText(categoryFor(a.tags), categoryFor(b.tags)) || compareText(a.displayName, b.displayName)
       : compareText(a.displayName, b.displayName))
-  }, [browseApps, category, query, sort])
+  }, [sourceBrowse, category, sort])
 
-  /* The editorial layer survives a CATEGORY pick -- curated placements are
-     content, not list rows, so the rail only filters the All-apps list below.
-     A SEARCH still hides it: a typed query is a stated intent to find one
-     thing, and the spotlight would push the results below the fold. */
-  const showEditorial = !query.trim() && featuredSections.length > 0
+  /* Editorial placements survive category picks, but not a search or source
+     filter: unrelated featured apps would contradict the selected source. */
+  const showEditorial = source === null && !query.trim() && featuredSections.length > 0
 
   // ---- Actions --------------------------------------------------------------
   // Detail navigation, install/update routing, the trust-consent target, and
@@ -554,6 +569,7 @@ function DiscoverPageBody() {
                   <FeaturedSpotlight
                     type={section.type}
                     apps={section.apps}
+                    sources={sources}
                     title={section.title}
                     blurb={section.blurb}
                     artwork={section.artwork}
@@ -595,17 +611,19 @@ function DiscoverPageBody() {
             <div className="grid grid-cols-1 md:grid-cols-[224px_minmax(0,1fr)] gap-6 items-start">
               <div className="md:sticky md:top-2">
                 <CategoryRail
-                  categories={categories}
-                  total={browseApps.length}
+                  categories={filteredCategories}
+                  total={sourceBrowse.length}
                   selected={category}
                   onSelect={setCategory}
                   sources={sources}
+                  selectedSource={source}
+                  onSelectSource={setSource}
                   onAddSource={() => setSourcesOpen(true)}
                 />
               </div>
               <div className="min-w-0">
                 <div className="flex items-center justify-between mb-3 text-[12.5px] text-muted">
-                  <span>{i18nT('pages.appsPage.app', { count: filteredBrowse.length })}</span>
+                  <span role="status" aria-live="polite">{i18nT('pages.appsPage.app', { count: filteredBrowse.length })}</span>
                   {/* A `<label>` cannot wrap this any more: `SimpleSelect`
                       renders a button, and a button takes its accessible name
                       from its own content, not from an enclosing label. The
@@ -623,7 +641,7 @@ function DiscoverPageBody() {
                   </span>
                 </div>
                 {filteredBrowse.length === 0 ? (
-                  <EmptyState icon={<ShoppingBag size={32} />} title={i18nT('pages.appsPage.no_matching_apps')} subtitle={i18nT('pages.appsPage.try_a_different_search_or_category')} />
+                  <EmptyState icon={<ShoppingBag size={32} />} title={i18nT('pages.appsPage.no_matching_apps')} subtitle={source !== null ? i18nT('appStoreSources.empty') : i18nT('pages.appsPage.try_a_different_search_or_category')} />
                 ) : (
                   /* Two rows to a line on a desktop dashboard. A row is a
                      name, a provenance line and one control -- it never needed
@@ -650,6 +668,7 @@ function DiscoverPageBody() {
                     >
                       <AppListRow
                         app={app}
+                        sources={sources}
                         /* Update All lives on the Library page, so the old
                            `|| !!updatingAll` freeze no longer applies here. */
                         busy={actionLoading === `${app.name}:enable`}

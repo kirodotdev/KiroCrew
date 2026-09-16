@@ -29,7 +29,8 @@ import { gradientFor } from './gradient'
 import { categoryFor } from './categories'
 import { useHeroArt, type InstalledArtSource } from './useHeroArt'
 import { useEditorialArt, type EditorialArtwork } from './useEditorialArt'
-import { sourceLabel, isVerified, type RegistryApp } from './types'
+import { isVerified, type RegistryApp } from './types'
+import AppSource, { type SourceName } from './AppSource'
 import { appDisplayName, appDescription } from './appManifest'
 import { needsDesktopApp } from '../../lib/electron'
 
@@ -53,6 +54,7 @@ import { i18nT } from '../../i18n/t'
  */
 function FeaturedAppRow({
   app,
+  sources,
   secondary,
   busy,
   onOpen,
@@ -60,6 +62,7 @@ function FeaturedAppRow({
   onEnable,
 }: {
   app: RegistryApp
+  sources?: SourceName[]
   /** The line under the name. The app's description, or its provenance meta. */
   secondary: string
   busy?: boolean
@@ -98,6 +101,7 @@ function FeaturedAppRow({
             on this same surface, so the gate still asserts both on every row of
             the list below. */}
         <p data-i18n-opaque className="text-[12px] text-muted truncate" title={secondary}>{secondary}</p>
+        <AppSource app={app} sources={sources} />
       </div>
     </>
   )
@@ -162,6 +166,7 @@ function FeaturedAppRow({
 export default function FeaturedSpotlight({
   type,
   apps,
+  sources,
   title,
   blurb,
   artwork,
@@ -178,6 +183,7 @@ export default function FeaturedSpotlight({
   type: 'app' | 'collection'
   /** Every app in the placement, in the curator's order. Never empty. */
   apps: RegistryApp[]
+  sources?: SourceName[]
   /** The curator's theme. Present for a collection, absent for a single app. */
   title?: string
   /** Curator copy, preferred over the app's own description when present. */
@@ -416,13 +422,14 @@ export default function FeaturedSpotlight({
           <FeaturedAppRow
             key={a.name}
             app={a}
+            sources={sources}
             /* A collection row describes the app, since the card's copy already
                carries the theme. A single-app card has already shown the
                description above, so its row carries provenance instead. */
             secondary={
               isCollection
                 ? appDescription(a)
-                : `${a.author} · ${categoryFor(a.tags)} · ${i18nT('components.appstore.featuredSpotlight.v')}${a.installedVersion || a.version} · ${sourceLabel(a)}`
+                : `${a.author} · ${categoryFor(a.tags)} · ${i18nT('components.appstore.featuredSpotlight.v')}${a.installedVersion || a.version}`
             }
             busy={busyName === a.name}
             /* Only a collection's rows are interactive; on a single-app card the
@@ -548,6 +555,7 @@ export default function FeaturedSpotlight({
                   <FeaturedAppRow
                     key={a.name}
                     app={a}
+                    sources={sources}
                     secondary={appDescription(a)}
                     busy={busyName === a.name}
                     onOpen={e => onOpenApp(a.name, e)}

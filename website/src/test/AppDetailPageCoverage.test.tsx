@@ -678,6 +678,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     await loaded()
 
     expect(screen.getByText('Built-in')).toBeInTheDocument()
+    expect(screen.getByText('Built-in · kirocrew')).toBeInTheDocument()
     expect(screen.getByText('Disabled')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /enable/i })).toBeInTheDocument()
     // Stated in text, not only in a hover title: a tooltip is unreachable by

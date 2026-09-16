@@ -1,4 +1,11 @@
 {
+  "appStoreSources": {
+    "all": "Toutes les sources",
+    "source": "Source",
+    "local": "Installation locale",
+    "unknown": "Inconnue",
+    "empty": "Essayez une autre recherche, catégorie ou source."
+  },
   "crewCapabilityEditing": {
     "sourceFailed": "La configuration enregistrée n’a pas pu être validée. Rechargez depuis le serveur pour réessayer.",
     "keep": "Valeur masquée conservée. Saisissez pour la remplacer.",

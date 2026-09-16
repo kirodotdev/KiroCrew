@@ -6,6 +6,7 @@
  * Shows full description, features, screenshots, tags, and action buttons.
  */
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useReducedMotion } from 'framer-motion'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
@@ -20,7 +21,8 @@ import { isNotFoundError } from '../api/apiError'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, { APP_EXECUTION_DENIED, isTrustDeniedError, useTrustGate } from '../components/appstore/TrustAppModal'
-import { isRegistrySourced, sanitizeStargazersCount } from '../components/appstore/types'
+import { isRegistrySourced, sanitizeStargazersCount, type RegistryApp } from '../components/appstore/types'
+import AppSource from '../components/appstore/AppSource'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../hooks/usePinchZoom'
@@ -36,7 +38,8 @@ import {
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
 import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
-type AppInfo = {
+type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
+  catalogListed?: boolean
   name: string
   displayName: string
   description: string
@@ -579,10 +582,17 @@ export function HeroBanner({ src, fallbackSrc, isDetail }: { src: string; fallba
 
 export default function AppDetailPage() {
   const { name } = useParams<{ name: string }>()
+  const [app, setApp] = useState<AppInfo | null>(null)
+  const { data: registriesData, error: registriesError } = useQuery({
+    queryKey: ['registries'],
+    queryFn: () => api.listRegistries(),
+    enabled: !!app?._registry && app.origin !== 'local',
+  })
+  const sourceNames = [...(registriesData?.pinned || []), ...(registriesData?.registries || [])]
+    .map(r => ({ name: r.name || r.repo, label: r.label || r.name || r.repo, review: r.review }))
   const navigate = useNavigate()
   const location = useLocation()
   const { theme: resolvedMode } = useTheme()
-  const [app, setApp] = useState<AppInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   /**
@@ -762,6 +772,9 @@ export default function AppDetailPage() {
             // records for `author`.
             version: installed.version || m.version || registryEntry?.version || '0.0.0',
             author: m.author || registryEntry?.author || '',
+            _registry: registryEntry?._registry,
+            provenance: registryEntry?.provenance,
+            catalogListed: !!registryEntry,
             icon: registryEntry?.icon || m.ui?.pages?.[0]?.icon || '',
             // `iconPath` is preferred over a manifest-declared `iconUrl` for the
             // same reason the backend honours only `iconPath`: a repo-relative
@@ -1325,6 +1338,13 @@ export default function AppDetailPage() {
                   · <Star size={13} className="shrink-0" role="img" aria-label={i18nT('pages.appDetailPage.github_stars')} />
                   {fmtCompact(app.stargazersCount)}
                 </span>
+              )}
+            </div>
+
+            <div className="mb-3">
+              <AppSource app={app} sources={sourceNames} unlisted={app.installed && (app.catalogListed === false || app.origin === 'local')} />
+              {app._registry && app.origin !== 'local' && registriesError && (
+                <ErrorNotice message={registriesError.message} variant="inline" askAgent />
               )}
             </div>
 

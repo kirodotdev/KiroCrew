@@ -5,18 +5,21 @@
  *  - CATEGORIES: canonical categories with app counts; selecting one filters
  *    the list ("All apps" resets).
  *  - SOURCES: where apps come from (trust provenance) — Built-in plus each
- *    configured external registry with its app count, and an Add-source
- *    action that opens the Sources popover.
+ *    configured external registry with its app count. Selecting a source filters
+ *    the list; All sources clears only that filter. Add source opens the popover.
  */
 import { BadgeCheck, Database, Plus, ShieldCheck, Users } from 'lucide-react'
 import type { Category } from './categories'
+import Clickable from '../Clickable'
+import { sourceRowKey } from './types'
 
 import { i18nT } from '../../i18n/t'
 /**
  * One SOURCES row.
  *
- * `name` is the IDENTITY the app counts are keyed by (a registry's `name`, or the
- * `__builtin__` / `__core__` sentinels) — `label` is only what is shown. `review`
+ * `name` is the raw registry id (or a first-party sentinel); `sourceRowKey`
+ * namespaces external ids for counts and selection. `label` is only what is
+ * shown. `review`
  * carries the registry's review tier so the row can say how thoroughly its
  * listings were vetted; it is display-only and says nothing about whether the
  * apps clone with the user's credentials.
@@ -39,11 +42,9 @@ function sourceTitle(s: SourceRow): string | undefined {
 /**
  * The VISIBLE one-word tier for a source row, or `''`.
  *
- * The claim cannot live in a `title` and an `aria-label` alone. These rows are
- * non-interactive divs, so a touch user has no hover and a keyboard user cannot
- * focus them: "not vetted" — the one fact a user wants before installing — would
- * reach neither. It rides the existing count line rather than adding a row, so
- * the rail keeps its height.
+ * The claim cannot live in a `title` and an `aria-label` alone. A touch user
+ * has no hover: "not vetted" must remain visible on the existing count line.
+ * The source row's filter action never changes what its review badge claims.
  *
  * The words come from `components.appstore.registryTier`, the same keys the
  * External Registries card's badges read, so one tier can never be named two
@@ -55,12 +56,14 @@ function sourceTier(s: SourceRow): string {
   return ''
 }
 
-export default function CategoryRail({ categories, total, selected, onSelect, sources, onAddSource }: {
+export default function CategoryRail({ categories, total, selected, onSelect, sources, selectedSource, onSelectSource, onAddSource }: {
   categories: { category: Category; count: number }[]
   total: number
   selected: Category | 'all'
   onSelect: (c: Category | 'all') => void
   sources: SourceRow[]
+  selectedSource: string | null
+  onSelectSource: (source: string | null) => void
   onAddSource: () => void
 }) {
   const item = (label: string, count: number, key: Category | 'all') => {
@@ -89,14 +92,23 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
       </div>
       <div>
         <div className="text-[11px] font-bold tracking-[.1em] text-muted mb-2">{i18nT('components.appstore.categoryRail.sources')}</div>
+        <Clickable
+          aria-pressed={selectedSource === null}
+          className={`focus-ring w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[13px] cursor-pointer mb-1.5 ${selectedSource === null ? 'bg-[var(--accent-subtle)] text-text-strong font-semibold' : 'text-text hover:bg-bg-hover'}`}
+          onClick={() => onSelectSource(null)}
+        >
+          {i18nT('appStoreSources.all')}
+        </Clickable>
         {sources.map(s => (
-          <div
-            key={s.name}
+          <Clickable
+            key={sourceRowKey(s)}
+            aria-pressed={selectedSource === sourceRowKey(s)}
+            onClick={() => onSelectSource(sourceRowKey(s))}
             /* The whole row carries the tooltip, not just the icon: the icon is a
                14px glyph and a hover target that small is easy to miss, while the
                review claim is the thing a user needs before installing. */
             title={sourceTitle(s)}
-            className="flex items-center gap-2 px-2.5 py-[7px] border border-border rounded-[9px] bg-card text-[12.5px] mb-1.5"
+            className={`focus-ring cursor-pointer flex items-center gap-2 px-2.5 py-[7px] border rounded-[9px] text-[12.5px] mb-1.5 ${selectedSource === sourceRowKey(s) ? 'border-accent bg-[var(--accent-subtle)] text-text-strong' : 'border-border bg-card text-text hover:border-border-strong'}`}
           >
             {/* ONE icon per tier, the same glyphs the External Registries card
                 uses, so the same source is not drawn two ways across the two
@@ -115,7 +127,7 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
                   ? <Users size={14} className="text-muted shrink-0" aria-label={i18nT('components.appstore.categoryRail.community_listed_not_vetted_by_the_kiro_crew_team')} />
                   : <Database size={14} className="text-muted shrink-0" />}
             <div className="min-w-0">
-              <div className="text-text truncate">{s.label}</div>
+              <div className="text-text truncate" title={s.label}>{s.label}</div>
               <div className="text-muted text-[11px] truncate">
                 {/* The tier is VISIBLE, ahead of the count: a hover title cannot
                     reach a touch or keyboard user, and this is the line they read
@@ -130,7 +142,7 @@ export default function CategoryRail({ categories, total, selected, onSelect, so
                 {i18nT('components.appstore.categoryRail.app', { count: s.count })}
               </div>
             </div>
-          </div>
+          </Clickable>
         ))}
         <button
           type="button"
