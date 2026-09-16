@@ -11,6 +11,7 @@ followed by one more turn the human did not ask for.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -128,6 +129,237 @@ class TestStopTurnRecordsASessionScopedStop:
         assert await mgr.stop_turn(LINKED_KEY) == "idle"
 
         assert mgr.stop_generation(LINKED_KEY) == 0
+        assert mgr.note_stop(LINKED_KEY) is False
+        assert mgr.stop_generation(LINKED_KEY) == 0
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_stop_inside_a_replay_gap_is_recorded_without_a_session(self, cfg):
+        """The channel pipelines reset the session and replay the same message
+        on a successor after a transient compaction failure. A Stop landing in
+        that window finds no session; the gap the turn opens around it is what
+        keeps the record, so the replay can see the Stop and stay dropped. The
+        gap is keyed canonically: a Slack Stop issued under the bare thread ts
+        and the turn reading under ``slack:<ts>`` meet in one bucket."""
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        await mgr.get_or_create(LINKED_KEY)
+        mgr.release(LINKED_KEY)
+        before = mgr.stop_generation(LINKED_KEY)
+
+        mgr.open_replay_gap(LINKED_KEY)
+        await mgr.reset(LINKED_KEY)
+        assert not mgr.has_session(LINKED_KEY)
+
+        bare = LINKED_KEY.split(":", 1)[1]
+        assert await mgr.stop_turn(bare) == "idle"
+        assert mgr.note_stop(LINKED_KEY) is True
+        assert mgr.stop_generation(LINKED_KEY) == before + 2
+        assert mgr.stop_generation(bare) == before + 2
+
+        # The successor reads the same bucket, so a turn that snapshotted
+        # ``before`` at entry sees the Stops after it reacquires.
+        await mgr.get_or_create(LINKED_KEY)
+        mgr.release(LINKED_KEY)
+        mgr.close_replay_gap(LINKED_KEY)
+        assert mgr.stop_generation(LINKED_KEY) == before + 2
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_another_task_claims_the_successor_only_after_the_replay(self, cfg):
+        """A newer message for the same key arriving inside the gap must not
+        claim the successor first, or it runs -- and persists -- ahead of the
+        older message's replay. Its ``get_or_create`` waits until the gap
+        closes; the replay's own task passes straight through, because its
+        claim is what closes the gap."""
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        await mgr.get_or_create(LINKED_KEY)
+        mgr.release(LINKED_KEY)
+
+        mgr.open_replay_gap(LINKED_KEY)
+        await mgr.reset(LINKED_KEY)
+
+        order: list[str] = []
+
+        async def newer_message() -> None:
+            await mgr.get_or_create(LINKED_KEY)
+            order.append("newer")
+            mgr.release(LINKED_KEY)
+
+        newer = asyncio.create_task(newer_message())
+        await asyncio.sleep(0.05)
+        assert order == [], "the newer message must wait behind the open gap"
+        assert not newer.done()
+
+        # The replay (this task owns the gap) claims without waiting ...
+        await mgr.get_or_create(LINKED_KEY)
+        order.append("replay")
+        mgr.close_replay_gap(LINKED_KEY)
+        # ... and still holds the successor's turn permit, so the newer message
+        # keeps waiting on the semaphore until the replay releases it.
+        await asyncio.sleep(0.05)
+        assert order == ["replay"]
+        mgr.release(LINKED_KEY)
+        await asyncio.wait_for(newer, timeout=2)
+
+        assert order == ["replay", "newer"]
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_reset_wakes_a_claimant_waiting_on_the_popped_permit(self, cfg):
+        """A message that found the key busy waits on that session's turn permit.
+        Popping the session (reset) must not leave it there for good: the permit
+        stays held by the turn being torn down, whose own release lands on the
+        successor. The reset wakes the waiter, which re-enters the claim and
+        gets a session -- here a fresh one, since nothing replaced the old."""
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        await mgr.get_or_create(LINKED_KEY)  # held: the running turn
+
+        async def waiting_message() -> str:
+            await mgr.get_or_create(LINKED_KEY)
+            mgr.release(LINKED_KEY)
+            return "claimed"
+
+        waiter = asyncio.create_task(waiting_message())
+        await asyncio.sleep(0.05)
+        assert not waiter.done(), "parked on the busy permit"
+
+        await mgr.reset(LINKED_KEY)
+
+        assert await asyncio.wait_for(waiter, timeout=5) == "claimed"
+        assert mgr.has_session(LINKED_KEY)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_torn_down_turns_late_release_cannot_unlock_the_successor(self, cfg):
+        """``release`` is key-only. Once a woken waiter has put a successor
+        under the key, the torn-down turn's own late release would land on that
+        successor and unlock a turn still in flight -- two turns on one session.
+        The reset records who held the popped permit, and that task's release
+        is absorbed; the successor stays busy until ITS holder releases."""
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        await mgr.get_or_create(LINKED_KEY)  # this task: the turn about to be torn down
+        successor_held = asyncio.Event()
+        let_go = asyncio.Event()
+
+        async def waiting_message() -> None:
+            await mgr.get_or_create(LINKED_KEY)
+            successor_held.set()
+            await let_go.wait()
+            mgr.release(LINKED_KEY)
+
+        waiter = asyncio.create_task(waiting_message())
+        await asyncio.sleep(0.05)
+
+        await mgr.reset(LINKED_KEY)
+        await asyncio.wait_for(successor_held.wait(), timeout=5)
+        assert mgr.is_busy(LINKED_KEY), "the woken waiter holds the successor"
+
+        mgr.release(LINKED_KEY)  # the torn-down turn's own finally
+        assert mgr.is_busy(LINKED_KEY), "absorbed: the successor's permit is not ours to give back"
+
+        let_go.set()
+        await asyncio.wait_for(waiter, timeout=5)
+        assert not mgr.is_busy(LINKED_KEY), "the holder's own release is the one that counts"
+        # Absorbed exactly once: a later release from this task is an ordinary one.
+        await mgr.get_or_create(LINKED_KEY)
+        mgr.release(LINKED_KEY)
+        assert not mgr.is_busy(LINKED_KEY)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_woken_claimant_lands_behind_the_successor(self, cfg):
+        """When the resetting turn reacquires first (a replay), the woken
+        waiter meets the successor at the front door and queues behind its
+        held permit, so it runs after the replay -- never on a permit a later
+        reset could pop from under it."""
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        await mgr.get_or_create(LINKED_KEY)
+        order: list[str] = []
+
+        async def waiting_message() -> None:
+            await mgr.get_or_create(LINKED_KEY)
+            order.append("newer")
+            mgr.release(LINKED_KEY)
+
+        waiter = asyncio.create_task(waiting_message())
+        await asyncio.sleep(0.05)
+
+        mgr.open_replay_gap(LINKED_KEY)
+        await mgr.reset(LINKED_KEY)
+        await mgr.get_or_create(LINKED_KEY)  # the replay's successor, held
+        order.append("replay")
+        await asyncio.sleep(0.05)
+        assert order == ["replay"], "the woken waiter waits behind the open gap"
+        mgr.release(LINKED_KEY)
+        mgr.close_replay_gap(LINKED_KEY)
+
+        await asyncio.wait_for(waiter, timeout=5)
+        assert order == ["replay", "newer"]
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_only_the_owning_task_can_close_a_replay_gap(self, cfg):
+        """The pipelines close the gap from a ``finally`` that runs on every
+        turn for the key, so a concurrent turn on the same key must not be able
+        to end the owner's gap early -- that would let a newer message claim the
+        successor ahead of the replay. Teardown keeps its forced discard."""
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        mgr.open_replay_gap(LINKED_KEY)
+
+        async def other_turn_finally() -> None:
+            mgr.close_replay_gap(LINKED_KEY)
+
+        await asyncio.create_task(other_turn_finally())
+
+        async def newer_message() -> None:
+            await mgr.await_replay_gap(LINKED_KEY)
+
+        newer = asyncio.create_task(newer_message())
+        await asyncio.sleep(0.02)
+        assert not newer.done(), "a stranger's close must leave the owner's gap open"
+
+        mgr.close_replay_gap(LINKED_KEY)  # the owner
+        await asyncio.wait_for(newer, timeout=2)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_drain_releases_anyone_waiting_behind_a_replay_gap(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        mgr.open_replay_gap(LINKED_KEY)
+
+        async def newer_message() -> None:
+            await mgr.await_replay_gap(LINKED_KEY)
+
+        newer = asyncio.create_task(newer_message())
+        await asyncio.sleep(0.01)
+        assert not newer.done()
+
+        await mgr.close_all()
+        await asyncio.wait_for(newer, timeout=2)
+
+    @pytest.mark.asyncio
+    async def test_a_closed_replay_gap_records_nothing_again(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        mgr.open_replay_gap(LINKED_KEY)
+        mgr.close_replay_gap(LINKED_KEY)
+        mgr.close_replay_gap(LINKED_KEY)  # idempotent
+
+        assert await mgr.stop_turn(LINKED_KEY) == "idle"
+
+        assert mgr.stop_generation(LINKED_KEY) == 0
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_note_stop_records_against_a_live_session(self, cfg):
+        """The direct-cancel channel stop paths record through ``note_stop``
+        rather than ``stop_turn``; a live session counts either way."""
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        await mgr.get_or_create(LINKED_KEY)
+        mgr.release(LINKED_KEY)
+
+        assert mgr.note_stop(LINKED_KEY) is True
+
+        assert mgr.stop_generation(LINKED_KEY) == 1
         await mgr.close_all()
 
     @pytest.mark.asyncio

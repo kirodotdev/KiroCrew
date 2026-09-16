@@ -457,22 +457,74 @@ class _Provider:
 
 
 class _RetrySessions(_Sessions):
-    """Counts acquisitions and hands out a provider carrying the verdict."""
+    """Counts acquisitions and hands out a provider carrying the verdict.
 
-    def __init__(self, *, transient: bool | None, reset_raises: bool = False) -> None:
+    Also models the manager's user-Stop record: ``stop_in_gap`` makes a Stop
+    land while the session is reset (the window with no live session), which
+    the real manager records only while the turn's replay gap is open.
+    """
+
+    def __init__(
+        self,
+        *,
+        transient: bool | None,
+        reset_raises: bool = False,
+        stop_in_gap: bool = False,
+        new_in_gap: bool = False,
+    ) -> None:
         super().__init__()
         self.transient = transient
         self.reset_raises = reset_raises
+        self.stop_in_gap = stop_in_gap
+        self.new_in_gap = new_in_gap
         self.acquired = 0
+        self.stops = 0
+        #: The conversation's persisted generation, as ``/new`` would advance it.
+        self.generation = 0
+        self.generation_reads: list[str] = []
+        self.gap_open = False
+        self.gap_events: list[str] = []
 
     async def get_or_create(self, key, agent=None, channel_id=None):
         self.acquired += 1
-        return _Provider(self.transient), False, False
+        # The conversation exists (first acquire: not new); a reacquire after a
+        # reset cold-starts a runtime and reports ``is_new=True``, exactly what
+        # the real manager does for a conversation that has existed for hours.
+        return _Provider(self.transient), self.acquired > 1, False
 
     async def reset(self, key):
         self.resets += 1
         if self.reset_raises:
             raise RuntimeError("reset failed")
+        if self.stop_in_gap and self.gap_open:
+            self.stops += 1
+        if self.new_in_gap and self.gap_open:
+            self.generation += 1
+
+    def stop_generation(self, key):
+        return self.stops
+
+    def max_generation(self, bucket):
+        self.generation_reads.append(bucket)
+        return self.generation
+
+    def open_replay_gap(self, key):
+        # Idempotent like the real manager: reopening an open gap keeps it.
+        if not self.gap_open:
+            self.gap_events.append("open")
+        self.gap_open = True
+
+    def release(self, key):
+        super().release(key)
+        self.gap_events.append("release")
+
+    def close_replay_gap(self, key):
+        self.gap_open = False
+        # Recorded IN SEQUENCE with the release: the gap must close only after
+        # the whole turn settled and gave its permit back, or a newer message
+        # admitted earlier would park on a semaphore a later reset could pop.
+        self.gap_events.append("close")
+        self.acquired_at_close = self.acquired
 
 
 class _RecordingRenderer(_Renderer):
@@ -493,7 +545,9 @@ class _RecordingRenderer(_Renderer):
         self.events.append(D.OutputEvent(kind=D.DONE, stop_reason=stop_reason))
 
 
-def _abandoning_driver(abandon_first: int, *, emit_before: bool = False) -> type:
+def _abandoning_driver(
+    abandon_first: int, *, emit_before: bool = False, emit_kind: str = D.TEXT_CHUNK
+) -> type:
     """A driver whose first ``abandon_first`` runs end in a COMPACTION_FAILED
     completion (delivered through the renderer, as the real driver does), and
     whose next run answers normally."""
@@ -508,7 +562,7 @@ def _abandoning_driver(abandon_first: int, *, emit_before: bool = False) -> type
             runs.append(message)
             if len(runs) <= abandon_first:
                 if emit_before:
-                    await self.renderer.dispatch(D.OutputEvent(kind=D.TEXT_CHUNK, text="part"))
+                    await self.renderer.dispatch(D.OutputEvent(kind=emit_kind, text="part"))
                 self.last_stop_reason = _COMPACTION_FAILED
                 await self.renderer.dispatch(
                     D.OutputEvent(kind=D.DONE, stop_reason=_COMPACTION_FAILED)
@@ -538,21 +592,38 @@ def test_a_transient_compaction_failure_replays_the_message_once(monkeypatch) ->
     sessions = _RetrySessions(transient=True)
     renderer = _RecordingRenderer()
     persisted: list[tuple[str, str, bool]] = []
+    after_persist_calls = 0
     turn = _turn(renderer)
     turn.persist = lambda text, reply, is_new: persisted.append((text, reply, is_new))
+
+    async def _after_persist() -> None:
+        nonlocal after_persist_calls
+        after_persist_calls += 1
+
+    turn.after_persist = _after_persist
 
     asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
 
     assert driver_cls.runs == ["hi", "hi"], "the same message is replayed verbatim"
     assert sessions.resets == 1, "the abandoned runtime is torn down before the replay"
     assert sessions.acquired == 2, "the replay runs on a freshly acquired session"
+    # The gap opens before the reset and closes only when the whole turn has
+    # settled and its permit is released -- never at the successor claim, where
+    # an admitted waiter would park on a semaphore a later reset could pop.
+    assert sessions.gap_events == ["open", "release", "close"]
+    assert sessions.gap_open is False
+    assert sessions.acquired_at_close == 2
     assert _dones(renderer) == ["end_turn"], "only the replay's completion reaches the channel"
     assert [e.text for e in renderer.events if e.kind == D.TEXT_CHUNK] == ["the reply"]
-    # Post-turn bookkeeping happens once, for the turn that actually landed.
+    # Post-turn bookkeeping happens once, for the turn that actually landed,
+    # and with the FIRST acquire's newness: the replay's reacquire reported a
+    # new runtime, which must not re-run the new-conversation work (title,
+    # dashboard surfacing) over an existing conversation.
     assert sessions.successes == 1
     assert sessions.released == 1
     assert renderer.closed == 1
     assert persisted == [("hi", "the reply", False)]
+    assert after_persist_calls == 0
 
 
 def test_a_permanent_compaction_failure_keeps_the_give_up_behaviour(monkeypatch) -> None:
@@ -572,6 +643,144 @@ def test_a_permanent_compaction_failure_keeps_the_give_up_behaviour(monkeypatch)
     assert sessions.acquired == 1
     assert _dones(renderer) == [_COMPACTION_FAILED]
     assert sessions.released == 1
+    assert "open" not in sessions.gap_events, "no replay owed, so no gap is opened"
+    assert sessions.gap_events == ["release", "close"], "the idempotent close still runs"
+
+
+def test_a_stop_during_the_reset_gap_keeps_the_message_dropped(monkeypatch) -> None:
+    """The user's intent wins over the recovery. A ``/stop`` that lands while
+    the abandoned session is being reset finds nothing to cancel -- no session
+    exists yet -- so without a record of it the replay would run the very prompt
+    the user stopped, and a destructive prompt would run twice-asked-once. The
+    manager records the Stop inside the replay gap the pipeline opens; the
+    pipeline re-reads the count right before the replay would open a prompt and
+    delivers the held completion instead."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True, stop_in_gap=True)
+    renderer = _RecordingRenderer()
+    persisted: list[tuple[str, str, bool]] = []
+    turn = _turn(renderer)
+    turn.persist = lambda text, reply, is_new: persisted.append((text, reply, is_new))
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"], "the stopped message must not run again"
+    assert sessions.resets == 1
+    assert sessions.acquired == 2, "the successor was acquired (and is released by the finally)"
+    assert _dones(renderer) == [_COMPACTION_FAILED], "the held completion finalizes the reply"
+    assert sessions.released == 1
+    assert renderer.closed == 1
+    assert sessions.gap_open is False
+    # Nothing ran, so nothing is recorded: a cancelled message must not be
+    # filed as a completed turn with an empty reply.
+    assert sessions.successes == 0
+    assert persisted == []
+
+
+def test_a_new_conversation_during_the_reset_gap_keeps_the_message_dropped(
+    monkeypatch,
+) -> None:
+    """``/new`` retires the conversation the abandoned message belonged to. Every
+    channel on this pipeline persists the new generation before acknowledging,
+    so the pipeline reads the bucket's highest generation at entry and again
+    right before the replay would open a prompt; a change means the retired
+    prompt must not run and post its reply after the fresh-conversation ack."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True, new_in_gap=True)
+    renderer = _RecordingRenderer()
+    persisted: list[tuple[str, str, bool]] = []
+    turn = _turn(renderer)
+    turn.persist = lambda text, reply, is_new: persisted.append((text, reply, is_new))
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"], "the retired message must not run again"
+    assert sessions.resets == 1
+    assert _dones(renderer) == [_COMPACTION_FAILED], "the held completion finalizes the reply"
+    assert sessions.released == 1
+    assert sessions.successes == 0 and persisted == [], "a retired message is not filed as a turn"
+    # Read against the BUCKET (generation stripped), which is what ``/new`` marks.
+    assert set(sessions.generation_reads) == {"weixin:agentA:direct:userA"}
+
+
+def test_a_hook_reply_persists_only_after_the_replay_gap_resolves(monkeypatch) -> None:
+    """A hook auto-reply acquires no session, so ``get_or_create``'s wait on the
+    replay gap never fences it. Arriving while an older message on the key sits
+    between its reset and its replay, its persist would file the exchange AHEAD
+    of the replayed turn the reader actually saw first. The reply itself still
+    goes out at once -- a canned answer must not wait on a model turn -- but the
+    record is written only once the gap owner has settled."""
+    from kiro_crew.hooks import HookResult
+
+    _patch_pipeline(monkeypatch)
+
+    class _GapSessions(_Sessions):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gap = asyncio.Event()
+            self.waited: list[str] = []
+
+        async def await_replay_gap(self, key):
+            self.waited.append(key)
+            await self.gap.wait()
+
+    class _Hooks:
+        auto_approve_subagent_spawn = False
+
+        def on_message(self, text):
+            return HookResult.reply("pong")
+
+    class _HookCtx(_CtxBuilder):
+        hooks = _Hooks()
+
+    class _HookRenderer(_RecordingRenderer):
+        async def on_text_chunk(self, text):
+            self.events.append(D.OutputEvent(kind=D.TEXT_CHUNK, text=text))
+
+    async def scenario() -> None:
+        sessions = _GapSessions()
+        renderer = _HookRenderer()
+        persisted: list[tuple[str, str, bool]] = []
+        turn = _turn(renderer)
+        turn.persist = lambda text, reply, is_new: persisted.append((text, reply, is_new))
+
+        task = asyncio.create_task(drive_turn(turn, sessions=sessions, ctx_builder=_HookCtx()))
+        for _ in range(200):
+            if sessions.waited:
+                break
+            await asyncio.sleep(0.01)
+        # The reply is out and the turn is parked on the gap, record unwritten.
+        assert sessions.waited == [turn.session_key]
+        assert [e.kind for e in renderer.events] == [D.TEXT_CHUNK, D.DONE]
+        assert persisted == [], "the record must wait for the replay to settle"
+        assert not task.done()
+
+        sessions.gap.set()
+        await asyncio.wait_for(task, 5)
+        assert persisted == [("hi", "pong", False)]
+        assert sessions.released == 0, "no session was acquired, so none is released"
+
+    asyncio.run(scenario())
+
+
+def test_the_generation_reader_is_a_noop_for_keys_without_one() -> None:
+    """A Slack thread key has no generation grammar and a double may lack the
+    reader; neither can manufacture a supersession."""
+
+    class _NoReader:
+        pass
+
+    class _Reader:
+        def max_generation(self, bucket):
+            return 7
+
+    assert D.session_conversation_generation(_Reader(), "slack:1700000000.000100") == 0
+    assert D.session_conversation_generation(_NoReader(), "weixin:agentA:direct:userA") == 0
+    assert D.session_conversation_generation(_Reader(), "weixin:agentA:direct:userA:gen3") == 7
 
 
 def test_a_provider_without_a_verdict_is_not_read_as_transient(monkeypatch) -> None:
@@ -586,6 +795,23 @@ def test_a_provider_without_a_verdict_is_not_read_as_transient(monkeypatch) -> N
     asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
 
     assert driver_cls.runs == ["hi"]
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+
+
+def test_a_consumed_steer_is_not_replayed_even_when_transient(monkeypatch) -> None:
+    """A folded mid-turn steer is a correction the replayed ``user_text`` does
+    not carry. Re-running the original prompt would silently drop what the user
+    was told was accepted, so a steered turn keeps the give-up behaviour."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1, emit_before=True, emit_kind=D.STEER_CONSUMED)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert sessions.resets == 1
     assert _dones(renderer) == [_COMPACTION_FAILED]
 
 
@@ -625,6 +851,9 @@ def test_the_replay_budget_is_bounded_per_turn(monkeypatch) -> None:
     assert _dones(renderer) == [_COMPACTION_FAILED], "the last attempt's completion goes through"
     assert sessions.released == 1
     assert renderer.closed == 1
+    # ONE gap spans every retry: a waiter admitted between retries would have
+    # parked on a semaphore the next reset pops.
+    assert sessions.gap_events == ["open", "release", "close"]
 
 
 def test_a_failed_reset_releases_the_held_completion_instead_of_replaying(
@@ -666,6 +895,35 @@ def test_the_guard_forwards_whole_events_through_the_inner_dispatch() -> None:
 
     asyncio.run(scenario())
     assert [e.kind for e in inner.events] == [THINKING, COMPACTION, D.TOOL_CALL]
+    # Every kind after which a verbatim replay is unsafe, and only those.
+    assert D._EMITTED_KINDS == {D.TEXT_CHUNK, D.TOOL_CALL, D.PROMPT_CHOICE, D.STEER_CONSUMED}
+
+
+def test_every_pipeline_channel_stop_path_records_the_stop() -> None:
+    """Discovery tripwire, not a hand-kept list. Every channel dispatcher that
+    rides ``drive_turn`` and offers a Stop must record it on the session
+    manager BEFORE its busy check -- through ``stop_turn`` or
+    ``stop_running_turn`` (which record on their own) or by calling
+    ``note_user_stop`` next to a direct ``provider.cancel``. A channel that
+    cancels the provider directly without recording leaves the transient
+    compaction replay blind to a Stop issued in the reset gap."""
+    root = Path(__file__).resolve().parents[1] / "src/kiro_crew"
+    checked: list[str] = []
+    for path in sorted(root.glob("*/transport_dispatch.py")):
+        source = path.read_text(encoding="utf-8")
+        if "drive_turn(" not in source:
+            continue
+        cancels_directly = "cancel(wait_ack_timeout=0)" in source
+        records = (
+            ".stop_turn(" in source or "stop_running_turn(" in source or "note_user_stop(" in source
+        )
+        if cancels_directly:
+            assert "note_user_stop(" in source or ".stop_turn(" in source, path
+            checked.append(path.parent.name)
+        elif records:
+            checked.append(path.parent.name)
+    # Non-vacuity: the channels known to cancel directly are all covered.
+    assert {"webex", "wecom", "weixin", "teams", "whatsapp"} <= set(checked), checked
 
 
 def test_the_driver_reaches_its_renderer_only_through_the_guarded_surface() -> None:
@@ -673,7 +931,9 @@ def test_the_driver_reaches_its_renderer_only_through_the_guarded_surface() -> N
     every declared handler, but the two methods the driver itself calls are the
     ones that carry the hold logic. A driver that starts calling something else
     must widen the guard on purpose, not silently bypass it."""
-    source = (Path(__file__).resolve().parents[1] / "src/kiro_crew/messaging/driver.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "src/kiro_crew/messaging/driver.py").read_text(
+        encoding="utf-8"
+    )
     used = set(re.findall(r"self\.renderer\.([a-z_]+)", source))
     assert used == {"dispatch", "on_turn_start"}, used
     for name in used:

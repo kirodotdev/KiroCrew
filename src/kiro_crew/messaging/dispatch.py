@@ -56,12 +56,15 @@ from kiro_crew.messaging.link import (
     DM_SCOPE_UNIFIED,
     ChannelLink,
     bind_origin_mirror,
+    canonical_key,
     channel_namespace_of,
     is_channel_session_key,
+    split_dm_session_key,
 )
 from kiro_crew.messaging.renderer import (
     DONE,
     PROMPT_CHOICE,
+    STEER_CONSUMED,
     TEXT_CHUNK,
     TOOL_CALL,
     OutputEvent,
@@ -721,6 +724,13 @@ def hook_auto_reply(ctx_builder: Any, text: str) -> str | None:
 _COMPACTION_FAILED_RETRIES = 2
 
 
+#: Event kinds after which a verbatim replay is unsafe: text or a tool
+#: call has landed (replay could repeat a side effect), a permission prompt was
+#: shown, or a mid-turn steer was folded into the turn (replaying
+#: ``user_text`` would drop the accepted correction).
+_EMITTED_KINDS = frozenset({TEXT_CHUNK, TOOL_CALL, PROMPT_CHOICE, STEER_CONSUMED})
+
+
 class _TransientCompactionRetryGuard(Renderer):
     """The renderer the driver sees while :func:`drive_turn` may still retry.
 
@@ -735,7 +745,10 @@ class _TransientCompactionRetryGuard(Renderer):
     * the completion must be ``STOP_REASON_COMPACTION_FAILED``;
     * nothing may have been emitted through the guard this turn -- verbatim
       replay is only safe before any text, tool call or permission prompt has
-      landed, exactly the guard the dashboard's transient siblings use;
+      landed, exactly the guard the dashboard's transient siblings use. A
+      consumed mid-turn steer counts too: the backend folded a correction the
+      replayed ``user_text`` does not carry, so re-running the original prompt
+      would silently discard what the user was told was accepted;
     * the provider must report ``last_compaction_transient`` as ``True`` --
       compared against ``True``, not read for truthiness, so a provider that
       never set the attribute (or exposes an auto-created stand-in for it)
@@ -809,12 +822,16 @@ class _TransientCompactionRetryGuard(Renderer):
     async def on_done(self, stop_reason: str = "") -> None:
         await self.inner.on_done(stop_reason)
 
+    async def on_steer_consumed(self, summary: str = "") -> None:
+        self.emitted = True
+        await self.inner.on_steer_consumed(summary)
+
     async def dispatch(self, event: OutputEvent) -> None:
         if event.kind == DONE and self._should_hold(event):
             self._held_done = event
             self.retries_used += 1
             return
-        if event.kind in (TEXT_CHUNK, TOOL_CALL, PROMPT_CHOICE):
+        if event.kind in _EMITTED_KINDS:
             self.emitted = True
         await self.inner.dispatch(event)
 
@@ -835,6 +852,95 @@ class _TransientCompactionRetryGuard(Renderer):
     def drop_held(self) -> None:
         """Forget the withheld completion: the replay's own DONE supersedes it."""
         self._held_done = None
+
+
+def session_stop_generation(sessions: Any, session_key: str) -> int:
+    """The session manager's user-Stop count for *session_key*, read defensively.
+
+    ``SessionManager.stop_turn`` and ``note_stop`` bump it before anything is
+    awaited, on every surface that can stop the session. A turn snapshots it
+    when it acquires its session and treats any later change as a user Stop --
+    the same reading the dashboard runner takes. Doubles for ``sessions`` may
+    lack the method or answer with a non-int; both read as 0, so a stand-in
+    predating the counter never turns a missing attribute into a stopped turn.
+    """
+    reader = getattr(sessions, "stop_generation", None)
+    if not callable(reader):
+        return 0
+    try:
+        value = reader(session_key)
+    except Exception:
+        return 0
+    return value if isinstance(value, int) else 0
+
+
+def session_conversation_generation(sessions: Any, session_key: str) -> int:
+    """The highest generation persisted for *session_key*'s conversation bucket.
+
+    ``/new`` on every channel of this pipeline advances the conversation's
+    generation and persists it (``reserve_new_generation`` ->
+    ``SessionManager.reserve_generation``) BEFORE acknowledging, so a key whose
+    bucket has since grown a higher generation is a retired conversation. A turn
+    snapshots this when it acquires its session and treats any later increase
+    as supersession -- the same reading it takes of the Stop counter. Keys
+    without a generation grammar (a Slack thread) and doubles lacking the reader
+    both read as 0, so neither can turn into a false supersession.
+    """
+    parsed = split_dm_session_key(canonical_key(session_key))
+    reader = getattr(sessions, "max_generation", None)
+    if parsed is None or not callable(reader):
+        return 0
+    try:
+        value = reader(parsed[0])
+    except Exception:
+        return 0
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+async def await_replay_gap(sessions: Any, session_key: str) -> None:
+    """Wait out an open replay gap on *session_key* before writing its transcript.
+
+    ``get_or_create`` waits on the gap for every turn that acquires a session,
+    but a hook auto-reply never acquires one: it answers from the context
+    builder's hooks and persists the exchange straight away. Arriving while an
+    older message on the same key sits between its reset and its replay, that
+    persist would land in the transcript AHEAD of the replayed turn -- the
+    reader saw the older message first, the record would say otherwise. So the
+    hook paths wait here, right before their persist, the same way the
+    allocation path waits before its claim. The gap owner's own task passes
+    straight through, and a session stand-in without the method (the focused
+    doubles across the suite) waits for nothing.
+    """
+    waiter = getattr(sessions, "await_replay_gap", None)
+    if callable(waiter):
+        await waiter(session_key)
+
+
+def _set_replay_gap(sessions: Any, session_key: str, *, opened: bool) -> None:
+    """Open or close the manager's replay gap for *session_key*, if it has one.
+
+    While the gap is open a Stop that finds no live session is still recorded,
+    and any OTHER task's ``get_or_create`` for the key waits -- so a newer
+    message arriving between the reset and the replay's reacquire claims the
+    successor after the replay, not ahead of it (``SessionManager.open_replay_gap``).
+    The pipeline opens it before the first reset that precedes a replay and
+    closes it only when the whole turn has settled and its permit is released:
+    a waiter admitted earlier would park on the successor's semaphore, and a
+    further retry's reset would pop that session from under it, stranding the
+    message for good. Probed with ``getattr`` for the same reason as the reader
+    above.
+    """
+    method = getattr(sessions, "open_replay_gap" if opened else "close_replay_gap", None)
+    if callable(method):
+        try:
+            method(session_key)
+        except Exception:
+            logger.debug(
+                "replay gap %s failed for %s",
+                "open" if opened else "close",
+                session_key,
+                exc_info=True,
+            )
 
 
 async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> None:
@@ -894,6 +1000,11 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             # blank answer the same way it does one from the model.
             await renderer.on_done()
             if turn.persist is not None:
+                # After the reply is out (a canned answer should not wait on a
+                # model turn) but BEFORE the record is written: an older message
+                # on this key may be between its reset and its replay, and the
+                # transcript must show that turn first, as the reader did.
+                await await_replay_gap(sessions, session_key)
                 # ``is_new`` is False: no session was created, so there is no
                 # new-session bookkeeping (title, dashboard surfacing) owed. What
                 # is recorded is the redacted text the user actually saw, so the
@@ -916,6 +1027,26 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # ``renderer`` use in this function -- the mute substitution above, the
         # ``on_done``/``close`` below -- keeps the real object.
         retry_guard = _TransientCompactionRetryGuard(renderer)
+        # The user's Stop count for this key when the turn acquired its session.
+        # Any later change means the user stopped this turn on SOME surface, and a
+        # replay must then stay abandoned: the Stop may have landed while the key
+        # had no live session at all (between the reset and the reacquire), where
+        # nothing else could have cancelled it. ``None`` until the first acquire.
+        stop_gen_at_entry: int | None = None
+        # The conversation's persisted generation at the same moment: a ``/new``
+        # issued since -- again including inside the reset gap -- retires this
+        # key, and a replay would run the retired prompt and post its reply after
+        # the fresh-conversation acknowledgement.
+        conv_gen_at_entry: int | None = None
+        # Whether THIS MESSAGE opened the conversation, from the first acquire.
+        # A replay reacquires after a reset and may read ``is_new=True`` for a
+        # conversation that has existed for hours; that attempt-local value is
+        # right for building the replay's context (the fresh runtime needs the
+        # session-start injection again) and wrong for the post-turn
+        # bookkeeping, which would then re-run the new-conversation work --
+        # title, dashboard surfacing -- over an existing conversation.
+        turn_is_new: bool | None = None
+        replaying = False
         while True:
             # A linked member session must validate its own memory before a cold
             # provider start. The same identity is then used for this turn's prompt.
@@ -924,6 +1055,12 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 session_key, agent=turn.agent, channel_id=turn.conversation_id, **extra
             )
             _acquired = True
+            if stop_gen_at_entry is None:
+                stop_gen_at_entry = session_stop_generation(sessions, session_key)
+            if conv_gen_at_entry is None:
+                conv_gen_at_entry = session_conversation_generation(sessions, session_key)
+            if turn_is_new is None:
+                turn_is_new = is_new
             retry_guard.provider = provider
             if is_new:
                 await sessions.set_channel(session_key, turn.conversation_id)
@@ -1045,6 +1182,35 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 audit_agent=turn.agent or "kirocrew",
                 closing_gate=lambda: sessions.begin_turn(session_key),
             )
+            if replaying:
+                # Last look before the replay opens a prompt: a Stop issued at any
+                # point since the turn began -- including inside the reset gap --
+                # means the user does not want this message run, and a ``/new``
+                # means the conversation it belonged to is over. Either way the
+                # completion the guard held is delivered instead, so the channel
+                # finalizes the abandoned reply exactly as a permanent failure
+                # would.
+                stopped = session_stop_generation(sessions, session_key) != stop_gen_at_entry
+                superseded = (
+                    session_conversation_generation(sessions, session_key) != conv_gen_at_entry
+                )
+                if stopped or superseded:
+                    logger.info(
+                        "%s: session=%s %s before the replay -- dropping it",
+                        turn.channel_type,
+                        session_key,
+                        "was stopped by the user" if stopped else "was superseded by /new",
+                    )
+                    await retry_guard.release_held()
+                    # Leave the turn here, not through the post-turn bookkeeping
+                    # below: nothing ran, so there is no success to record and
+                    # no exchange to persist -- writing the prompt with an empty
+                    # reply would file a turn the user cancelled as a completed
+                    # one. The ``finally`` still closes the renderer, releases
+                    # the permit and closes the gap.
+                    return
+                # The replay's own completion supersedes the one the guard held.
+                retry_guard.drop_held()
             accumulated = await driver.run(full_message)
 
             # Defensive lookup, like every other attribute read on this seam: the
@@ -1064,6 +1230,17 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             # window fails again identically, so replaying it only burns the
             # budget, while a throttled or 5xx'd summarization call has nothing
             # wrong with it and the very next attempt would clear it.
+            if retry_guard.held:
+                # Opened BEFORE the reset pops the session: from that pop until
+                # the reacquire above, a Stop finds no session and would go
+                # unrecorded -- the window the pre-replay check exists for --
+                # and a newer message for this key would claim the successor
+                # first and run ahead of the replay; the open gap makes it wait.
+                # Held until the ``finally`` below, past the whole retry
+                # sequence: a waiter admitted after the reacquire would park on
+                # the successor's semaphore, which the next retry's reset would
+                # pop from under it.
+                _set_replay_gap(sessions, session_key, opened=True)
             reset_ok = True
             try:
                 await sessions.reset(session_key)
@@ -1081,10 +1258,10 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 # The runtime this turn ran on is still counted as busy, so a
                 # replay would collide with "prompt already in progress".
                 # Finalize the renderer with the completion the guard held and
-                # keep the give-up behaviour.
+                # keep the give-up behaviour; the ``finally`` closes the gap.
                 await retry_guard.release_held()
                 break
-            retry_guard.drop_held()
+            replaying = True
             logger.info(
                 "%s: transient compaction failure session=%s (attempt %d/%d) -- "
                 "replaying the abandoned message",
@@ -1115,7 +1292,9 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         _turn_landed = driver_turn_landed(driver)
         if turn.persist is not None:
             try:
-                await asyncio.to_thread(turn.persist, turn.user_text, accumulated, is_new)
+                await asyncio.to_thread(
+                    turn.persist, turn.user_text, accumulated, bool(turn_is_new)
+                )
             except Exception:
                 logger.warning(
                     "%s: persist_turn failed session=%s",
@@ -1123,7 +1302,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                     session_key,
                     exc_info=True,
                 )
-        if is_new and turn.after_persist is not None:
+        if turn_is_new and turn.after_persist is not None:
             try:
                 await turn.after_persist()
             except Exception:
@@ -1228,3 +1407,8 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             )
         if _acquired:
             sessions.release(session_key)
+        # Closed LAST, after the permit is back: a message that waited behind the
+        # gap then finds an idle successor instead of a semaphore a later reset
+        # could pop from under it. Idempotent, so a turn that never opened one
+        # (or whose reset raised) costs a dictionary lookup.
+        _set_replay_gap(sessions, session_key, opened=False)

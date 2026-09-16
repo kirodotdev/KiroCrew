@@ -53,6 +53,7 @@ from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SEC
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers
+from kiro_crew.messaging.commands import note_user_stop
 from kiro_crew.messaging.dispatch import admit_inbound_callback
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.platform import current_context, safe_context_call
@@ -2556,6 +2557,14 @@ async def _route_message(
                 await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
             return
         session_key = thread_ts or msg_ts
+        # Recorded BEFORE the liveness checks: a turn between its abandoned
+        # attempt and its compaction replay has no session at this moment, and
+        # an interaction-originated turn has no registered task either; the
+        # replay reads this record to stay dropped (``note_user_stop``).
+        # Against the thread's OWNING session, not the bare thread key: a
+        # linked thread's turns -- and their replay -- run under the dashboard
+        # session that owns it, and that is the key the replay reads.
+        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
         has_session = orch.sessions.has_session(session_key)
         active_task = orch._session_tasks.pop(session_key, None)
         if has_session or active_task:

@@ -38,6 +38,7 @@ from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
+    note_user_stop,
 )
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
@@ -681,6 +682,10 @@ class WeComDispatcher:
         """
         assert self.client is not None
         session_key = self._session_key(inbound.userid)
+        # Recorded before the busy check, so a Stop landing while the session is
+        # between an abandoned attempt and its replay still counts (see
+        # ``note_user_stop``).
+        note_user_stop(self.sessions, session_key)
         if not self.sessions.is_busy(session_key):
             await self.client.say(inbound, "ℹ️ 当前没有正在生成的回复。")
             return

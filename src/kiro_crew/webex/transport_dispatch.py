@@ -59,7 +59,11 @@ from kiro_crew.history import mint_row_mid, transcript_stem
 from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecider
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
-from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
+from kiro_crew.messaging.commands import (
+    compact_unsupported_backend,
+    compact_unsupported_reply,
+    note_user_stop,
+)
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
@@ -1269,6 +1273,10 @@ class WebexDispatcher:
         so it stays snappy.
         """
         session_key = self._session_key(_route_of(inbound))
+        # Recorded before the busy check, so a Stop landing while the session is
+        # between an abandoned attempt and its replay still counts (see
+        # ``note_user_stop``).
+        note_user_stop(self.sessions, session_key)
         cancelled_turn = False
         if self.sessions.is_busy(session_key):
             provider = self.sessions.get_provider(session_key)

@@ -190,6 +190,12 @@ class _AllocationOwner(Protocol):
 
     def _fold_key(self, key: str) -> str: ...
 
+    async def await_replay_gap(self, key: str) -> None: ...
+
+    def absorb_orphaned_release(self, key: str) -> bool: ...
+
+    def adopt_turn(self, key: str) -> None: ...
+
     def get_provider(self, key: str) -> LLMProvider | None: ...
 
     async def get_subagent_runtime(
@@ -448,6 +454,7 @@ class SessionAllocationService:
         # Idle Semaphore(1).acquire completes without suspending, keeping the
         # locked check and decrement atomic on the event loop.
         await session.semaphore.acquire()
+        session.turn_owner = asyncio.current_task()
         return True
 
     def capability_runtime_view(self, member: str, saved_revision: str) -> dict[str, Any]:
@@ -624,6 +631,8 @@ class SessionAllocationService:
             raise
         if not still_valid:
             session.semaphore.release()
+        else:
+            session.turn_owner = asyncio.current_task()
         return still_valid
 
     async def _evict_stale_session(self, key: str, session: Any) -> None:
@@ -783,6 +792,7 @@ class SessionAllocationService:
             )
         assert won_race_session is session
         await session.semaphore.acquire()
+        session.turn_owner = asyncio.current_task()
         return session.provider, True, False
 
     def _get_session_agent(self, session_key: str) -> str:
@@ -982,6 +992,15 @@ class SessionAllocationService:
         occupies the same key.
         """
         key = self._owner._fold_key(key)
+        if self._owner.absorb_orphaned_release(key):
+            # The permit this task held died with a session ``reset`` popped;
+            # the occupant under the key now (if any) is a successor whose
+            # permit belongs to someone else.
+            self._deps.logger.debug(
+                "release(%s): permit already died with a reset session; not unlocking the successor",
+                key,
+            )
+            return
         session = self._sessions.get(key)
         if session:
             if (
@@ -1269,6 +1288,11 @@ class SessionAllocationService:
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
         """Reserve logical ownership for the complete claim/allocation call."""
+        # An older message between its reset and its replay holds the key: a
+        # claim made now would run -- and persist -- ahead of it. Waited out
+        # BEFORE the reservation so the ownership generation does not move for a
+        # claimant that has not been admitted yet; the replay's own task passes.
+        await self._owner.await_replay_gap(key)
         token = object()
         async with self._lock:
             if self._closing:
@@ -1298,6 +1322,10 @@ class SessionAllocationService:
             await self._remove_reservation_cancellation_drained(reserved_key, token)
             raise
         self._remove_reservation_now(reserved_key, token)
+        # This task now holds the key's live permit. If it reset its previous
+        # session on this key (a replay), the release it will make is for THIS
+        # permit and must not be swallowed as the old one's.
+        self._owner.adopt_turn(reserved_key)
         return result
 
     def _remember_capability_failure(self, key: str, preparation: Any) -> None:
@@ -1434,9 +1462,33 @@ class SessionAllocationService:
                     session.first_turn = self._deps.first_turn_nothing_armed
                 return session.provider, first_turn.is_new, first_turn.resumed
             await owner._evict_stale_session(key, session)
-            if not owner._provider_factory:
-                raise RuntimeError("No provider factory configured")
-            factory = owner._provider_factory
+            # Re-enter the claim rather than cold-start in place. The session
+            # this claimant waited on was replaced or retired under it -- a reset
+            # wakes its waiters exactly so they get here -- and the key may now
+            # hold a successor, or sit inside a replay gap that must be waited
+            # out; only the front door sees either. Bounded like the won-race
+            # retry it mirrors. A key that simply has no session any more takes
+            # the same cold start it would have taken here, one hop later.
+            maximum = constants.won_race_max_retries
+            if _won_race_retries >= maximum:
+                raise RuntimeError(
+                    f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
+                    "session kept going stale between acquire and re-validate"
+                )
+            return await owner.get_or_create(
+                key,
+                agent=agent,
+                channel_id=channel_id,
+                approval_policy=approval_policy,
+                model=model,
+                cwd=cwd,
+                extra_env=extra_env,
+                speculative=speculative,
+                speculative_resume=speculative_resume,
+                wait_if_busy=wait_if_busy,
+                _won_race_retries=_won_race_retries + 1,
+                **extra_factory_kwargs,
+            )
 
         resume_sid: str | None = None
         is_stateless = (
@@ -1867,6 +1919,7 @@ class SessionAllocationService:
                     # Fresh semaphore acquisition is synchronous and cannot
                     # wait, so doing it under _lock does not invert lock order.
                     await session.semaphore.acquire()
+                    session.turn_owner = asyncio.current_task()
                     self._deps.inc_session_created()
                     result = (provider, True, resumed)
         except BaseException:

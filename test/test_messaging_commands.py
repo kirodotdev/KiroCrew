@@ -172,6 +172,30 @@ class TestStopRunningTurn:
         assert provider.calls == [{"wait_ack_timeout": 0}]
         assert sessions.cleared == ["s"], "the queue must be cleared either way"
 
+    def test_the_stop_is_recorded_on_the_manager_before_the_busy_check(self) -> None:
+        """A turn between its abandoned attempt and its replay has no live
+        session and reads as idle here; recording the Stop FIRST is what lets
+        the replay see it and stay dropped. ``note_stop`` is probed, so the
+        narrow doubles above (which lack it) keep working."""
+
+        class _Recording(_Sessions):
+            def __init__(self) -> None:
+                super().__init__(busy=False)
+                self.noted: list[str] = []
+
+            def is_busy(self, key: str) -> bool:
+                assert self.noted == ["s"], "recorded before the busy check"
+                return False
+
+            def note_stop(self, key: str) -> bool:
+                self.noted.append(key)
+                return True
+
+        queue, surface = ReceiptQueue(), _Surface()
+        sessions = _Recording()
+        assert _stop(sessions, queue, surface) == STOP_REPLY_IDLE
+        assert sessions.noted == ["s"]
+
 
 def _reset_grant() -> Any:
     from kiro_crew.safety_override import safety_override

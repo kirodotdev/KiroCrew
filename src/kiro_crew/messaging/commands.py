@@ -84,6 +84,25 @@ STOP_REPLY_CANCELLED = "🛑 Stopped."
 STOP_REPLY_IDLE = "🛑 Nothing was running — queue cleared."
 
 
+def note_user_stop(sessions: Any, session_key: str) -> None:
+    """Record a user Stop for *session_key* on the session manager.
+
+    Every channel Stop path that cancels the provider directly (rather than
+    through ``SessionManager.stop_turn``, which records on its own) calls this
+    FIRST, before checking whether anything is running: a turn that is between
+    its abandoned attempt and its replay (``drive_turn``'s transient-compaction
+    retry) has no live session at that moment, reads as idle, and would
+    otherwise replay the very prompt this Stop was aimed at. The manager keeps
+    the record only for keys that have a session or sit in such a replay gap.
+
+    Probed with ``getattr`` like the rest of this seam: ``sessions`` is typed
+    ``Any`` and the focused doubles in the channel suites predate the method.
+    """
+    note = getattr(sessions, "note_stop", None)
+    if callable(note):
+        note(session_key)
+
+
 async def stop_running_turn(
     sessions: Any,
     session_key: str,
@@ -114,6 +133,7 @@ async def stop_running_turn(
     queue is still cleared, so claiming a stop that did not happen would be the
     worse lie.
     """
+    note_user_stop(sessions, session_key)
     cancelled_turn = False
     if sessions.is_busy(session_key):
         provider = sessions.get_provider(session_key)
