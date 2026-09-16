@@ -623,6 +623,36 @@ class Resolution:
         return self.status == STATUS_OK
 
 
+def _as_ref(ref: Ref | dict[str, Any]) -> Ref:
+    """*ref* as a :class:`Ref`, accepting either spelling a caller may hand in.
+
+    Every entry point that takes a ref accepts both a built ``Ref`` and its wire
+    form, and coerces here, so the two spellings cannot disagree about what a
+    valid ref is: ``Ref.from_dict`` runs the same ``__post_init__`` checks a
+    direct constructor call goes through.
+    """
+    return ref if isinstance(ref, Ref) else Ref.from_dict(ref)
+
+
+def _covers_span(found: tuple[Entry, ...], from_seq: int, last_seq: int) -> bool:
+    """Whether *found* covers ``from_seq..last_seq`` whole, each seq exactly once.
+
+    *found* MUST already be drawn from that span -- the caller's walk bounds it --
+    so seq being contiguous inside a file makes the two counts settle it, and this
+    does not re-check membership.
+
+    The test is COVERAGE of the span, and a duplicate is damage in its own right.
+    Seq is unique under the append lock, so two lines claiming one seq cannot both
+    be the writer's -- and a tally of LINES would let that duplicate fill the place
+    of a line that is gone, reading a span with a hole in it as intact. Counting
+    distinct seqs catches that substitution; requiring the two counts to agree
+    catches the duplicate even when nothing is missing, which is a file a reader
+    must not be told is intact.
+    """
+    covered = {entry.seq for entry in found}
+    return len(covered) >= max(0, last_seq - from_seq + 1) and len(covered) == len(found)
+
+
 # --------------------------------------------------------------------------- #
 # The ledger
 # --------------------------------------------------------------------------- #
@@ -935,7 +965,7 @@ class Ledger:
         """
         require_data(data)
         check_ownership(self._kind, type, src)
-        pointer = None if ref is None else (ref if isinstance(ref, Ref) else Ref.from_dict(ref))
+        pointer = None if ref is None else _as_ref(ref)
         if thread is not None and (
             not isinstance(thread, int) or isinstance(thread, bool) or thread < 1
         ):
@@ -1078,11 +1108,7 @@ class Ledger:
                         src=src,
                         data=item["data"],
                         thread=None,
-                        ref=(
-                            None
-                            if pointer is None
-                            else (pointer if isinstance(pointer, Ref) else Ref.from_dict(pointer))
-                        ),
+                        ref=None if pointer is None else _as_ref(pointer),
                         ignorable=bool(item.get("ignorable")),
                     )
                 )
@@ -1289,7 +1315,7 @@ class Ledger:
         routes that mount this -- and it belongs there, where the caller identity
         it must be derived from actually exists.
         """
-        pointer = ref if isinstance(ref, Ref) else Ref.from_dict(ref)
+        pointer = _as_ref(ref)
         if pointer.unit == self._kind and pointer.id == self._id:
             target: Ledger | None = self
         else:
@@ -1326,39 +1352,30 @@ class Ledger:
         firsts = segment_first_seqs(target.kind, target.id)
         oldest = firsts[0] if firsts else 1
         if pointer.from_seq < oldest:
-            surviving_from = max(pointer.from_seq, oldest)
-            surviving_expected = max(0, last - surviving_from + 1)
-            surviving = {entry.seq for entry in found}
-            if len(surviving) < surviving_expected or len(surviving) != len(found):
+            # Only the surviving part of the span is expected, so coverage is
+            # measured from the oldest survivor rather than from the citation's
+            # own start. A hole INSIDE that surviving range is damage, not
+            # retention, and gets `corrupt` on a span that also reaches below it.
+            if not _covers_span(found, oldest, last):
                 return Resolution(status=STATUS_CORRUPT, entries=found)
             return Resolution(status=STATUS_PRUNED, entries=found)
-        # Seq is contiguous inside a file, so the count is the test -- and the count
-        # comes from what the CITATION claims existed, never from what is on disk
-        # now. `ok` means every cited seq was read back; anything short of that is
-        # the citation failing, whatever shortened the file.
+        # Seq is contiguous inside a file, so coverage is the test -- and the span
+        # it is measured against comes from what the CITATION claims existed, never
+        # from what is on disk now. `ok` means every cited seq was read back;
+        # anything short of that is the citation failing, whatever shortened the
+        # file.
         #
-        # Clamping to the file's own tail is what made this wrong. A clean
-        # end-truncation -- whole lines removed, no torn bytes, nothing for the read
-        # to raise on -- lowers both the walked entries and a reopened handle's
-        # `last_seq` together, so the expected count shrinks to exactly what
-        # survived and the verdict came back `ok` with the cited lines missing. That
-        # is the worst available answer: a caller resolving a citation is asking
-        # whether it can still be read, and `ok` with fewer entries tells it yes
-        # while handing it a hole.
-        #
-        # A file that GREW is why the clamp existed, and dropping it is safe: this
-        # walk stops at `last`, so extra entries past the citation are never in
-        # `found` and cannot inflate the count.
-        # The test is COVERAGE of the cited seqs, and a duplicate is damage in its
-        # own right. Seq is unique under the append lock, so two lines claiming one
-        # seq cannot both be the writer's -- and a tally of LINES would let that
-        # duplicate fill the place of a line that is gone, answering `ok` for a span
-        # with a hole in it. Counting distinct seqs catches that substitution;
-        # comparing the two counts catches the duplicate even when nothing is
-        # missing, which is a file a reader must not be told is intact.
-        covered = {entry.seq for entry in found}
-        expected = max(0, last - pointer.from_seq + 1)
-        if len(covered) < expected or len(covered) != len(found):
+        # Measuring against the file's own tail instead is wrong in the one
+        # direction that matters. A clean end-truncation -- whole lines removed, no
+        # torn bytes, nothing for the read to raise on -- lowers the walked entries
+        # and a reopened handle's `last_seq` together, so a tail-derived span
+        # shrinks to exactly what survived and the verdict reads `ok` with the
+        # cited lines missing. That is the worst available answer: a caller
+        # resolving a citation is asking whether it can still be read, and `ok`
+        # with fewer entries tells it yes while handing it a hole. A file that GREW
+        # needs no tail-derived span either, because this walk stops at `last`, so
+        # entries past the citation are never in `found` and cannot inflate the count.
+        if not _covers_span(found, pointer.from_seq, last):
             # `corrupt` rather than a new status. The distinction a caller acts on is
             # "resolvable or not", and retention -- the one shortening that is normal
             # -- already has its own answer in the `pruned` branch above.
