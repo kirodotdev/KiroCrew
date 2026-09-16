@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Zap } from 'lucide-react'
 import { api } from '../api/client'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 export default function RestartButton() {
@@ -33,7 +34,13 @@ export default function RestartButton() {
 
   return (
     <div className="flex items-center gap-2">
-      {msg && <span className={`text-[13px] animate-rise ${isError ? 'text-danger' : 'text-ok'}`}>{msg}</span>}
+      {isError ? (
+        /* No hand-off: the Warm Pool card holds unsaved edits (pool size/agent/TTL);
+           handing off would navigate to chat, unmounting the tab and destroying them. */
+        <ErrorNotice variant="inline" message={msg} onDismiss={() => setMsg('')} />
+      ) : (
+        msg && <span className="text-[13px] animate-rise text-ok">{msg}</span>
+      )}
       <button
         onClick={restart}
         disabled={restarting}

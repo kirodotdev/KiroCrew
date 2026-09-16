@@ -37,7 +37,7 @@ describe('RestartButton', () => {
 
     fireEvent.click(screen.getByRole('button'))
     const err = await screen.findByText('zzq-restart-broke')
-    expect(err.className).toContain('text-danger')
+    expect(err.closest('[role="alert"]')?.className).toContain('text-danger')
   })
 
   it('falls back to the generic failure text for a non-Error rejection', async () => {
@@ -46,7 +46,7 @@ describe('RestartButton', () => {
 
     fireEvent.click(screen.getByRole('button'))
     const err = await screen.findByText(/restart failed/i)
-    expect(err.className).toContain('text-danger')
+    expect(err.closest('[role="alert"]')?.className).toContain('text-danger')
   })
 
   it('disables itself while the restart is in flight', async () => {
@@ -80,7 +80,7 @@ describe('RestartButton', () => {
 
     fireEvent.click(screen.getByRole('button'))
     const msg = await screen.findByText(/mcp sync failed/i)
-    expect(msg.className).toContain('text-danger')
+    expect(msg.closest('[role="alert"]')?.className).toContain('text-danger')
     expect(screen.queryByText(/config applied/i)).not.toBeInTheDocument()
   })
 
