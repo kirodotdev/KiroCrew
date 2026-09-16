@@ -98,6 +98,12 @@ export interface LegacyGoalLoop {
   nextDueAt?: number
   maxRuntimeSecs?: number
   stoppedReason: string
+  /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
+   *  time; '' when the loop was armed with none. Carried by the REST reads
+   *  (`asdict(loop)`), not by the websocket frame, which withholds paths -- so
+   *  `undefined` means "not known here", while '' is a real "no sentinel".
+   *  Kept only so the goal editor can say which of the two it is (#10458). */
+  stopSentinelPath?: string
 }
 
 export interface StructuredMonitor {
@@ -307,6 +313,9 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       nextDueAt: finite(loop.next_due_ts),
       maxRuntimeSecs: count(loop.max_runtime_secs),
       stoppedReason: text(loop.stopped_reason),
+      ...(typeof loop.stop_sentinel_path === 'string'
+        ? { stopSentinelPath: loop.stop_sentinel_path }
+        : {}),
     }
   }
 

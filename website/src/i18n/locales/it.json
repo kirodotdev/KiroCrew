@@ -5910,7 +5910,9 @@
       "stopped_help": "Avvia ciclo riprende questo obiettivo. Elimina obiettivo interrotto lo rimuove definitivamente.",
       "clear_goal_for_good": "Elimina definitivamente l’obiettivo",
       "cancel": "Annulla",
-      "clear_goal_question": "Eliminare definitivamente questo obiettivo?"
+      "clear_goal_question": "Eliminare definitivamente questo obiettivo?",
+      "stop_file_help": "{{token}} viene compilato all’invio di ogni sollecito: diventa il percorso del file di arresto di questa sessione. Crea quel file per fermare il ciclo, o premi «Arresta il ciclo», che sostituisce «Avvia il ciclo» mentre il ciclo è in esecuzione.",
+      "stop_file_help_none": "Questo ciclo è stato avviato senza file di arresto, quindi {{token}} viene inviato vuoto. Premi «Arresta il ciclo» qui sotto per fermarlo."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Chiudi il terminale",

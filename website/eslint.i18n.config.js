@@ -728,6 +728,16 @@ export default [
               // The autolink href template's substitution placeholder, consumed by
               // `expand()`; a translated token would stop every match expanding.
               String.raw`^\{match\}$`,
+              // The goal loop's kill-switch placeholder, `{{STOP_FILE}}`. The
+              // server replaces it with the loop's stop-sentinel path when each
+              // nudge is sent (`render_nudge_message`), so the spelling is a wire
+              // contract with the backend, not copy: a translated token would
+              // reach the server unrecognised and the loop would ship an
+              // instruction with no off switch. EXACT, not a `{{ALL_CAPS}}` shape,
+              // for the reason stated on `{match}` above -- a shape would start
+              // releasing any interpolation placeholder the moment one was held
+              // in an ALL-CAPS constant.
+              String.raw`^\{\{STOP_FILE\}\}$`,
               // A FILE-PICKER `accept` EXTENSION LIST, e.g.
               // `,.txt,.md,.json,.har,.yaml` — the comma-joined dot-extension
               // string handed to `<input type="file" accept=…>`. These live at

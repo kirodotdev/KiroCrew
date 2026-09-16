@@ -5722,7 +5722,9 @@
       "stopped_help": "启动循环可继续这个目标；清除已停止的目标会永久删除它。",
       "clear_goal_for_good": "永久清除目标",
       "cancel": "取消",
-      "clear_goal_question": "要永久删除这个目标吗？"
+      "clear_goal_question": "要永久删除这个目标吗？",
+      "stop_file_help": "每次发送推动消息时会填入 {{token}}：它会变成本会话停止文件的路径。创建该文件即可终止循环，或点击“停止循环”——循环运行期间它会取代“启动循环”。",
+      "stop_file_help_none": "此循环启动时没有设置停止文件，因此 {{token}} 会以空白发送。点击下方的“停止循环”来终止它。"
     },
     "bottomTerminalPanel": {
       "close_terminal": "关闭终端",

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useState } from 'react'
 import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import AutoNudgePopover, { type AutoNudgeLoop } from '../components/AutoNudgePopover'
+import AutoNudgePopover, { STOP_FILE_TOKEN, type AutoNudgeLoop } from '../components/AutoNudgePopover'
 import { __resetForTests, loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
@@ -858,5 +858,74 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     const trigger = triggerButton()!
     expect(trigger.parentElement).not.toBe(row)
     expect(trigger.parentElement!.textContent).toMatch(/Last fire:/)
+  })
+})
+
+describe('AutoNudgePopover {{STOP_FILE}} help line (#10458)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetForTests()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })) as unknown as typeof fetch)
+  })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  const goalBox = () => screen.getByPlaceholderText(/Describe what you want the agent to accomplish/i) as HTMLTextAreaElement
+  const helpLine = () => screen.queryByText(/is filled in when each nudge is sent/i)
+  const noneLine = () => screen.queryByText(/armed without a stop file/i)
+
+  it('explains the raw token under the default template and names it verbatim', () => {
+    renderPopover(null)
+    // The stored template is untouched: the server substitutes the token at
+    // fire time, so the textarea must still carry it.
+    expect(goalBox().value).toContain(STOP_FILE_TOKEN)
+    const help = helpLine()
+    expect(help, 'no help line rendered under the goal textarea').toBeTruthy()
+    // The token is interpolated as text, not left as an i18next placeholder
+    // that would have been dropped or rendered as `{{token}}`.
+    expect(help!.textContent).toContain(STOP_FILE_TOKEN)
+    expect(help!.textContent).not.toContain('{{token}}')
+    // Screen readers get the same explanation as sighted readers.
+    expect(goalBox().getAttribute('aria-describedby')).toBe(help!.id)
+  })
+
+  it('does not render the help line for a goal that carries no token', () => {
+    renderPopover(null)
+    fireEvent.change(goalBox(), { target: { value: 'Ship the BYOA gate harness' } })
+    expect(helpLine()).toBeNull()
+    expect(noneLine()).toBeNull()
+    expect(goalBox().hasAttribute('aria-describedby')).toBe(false)
+    // Typing the token back brings the line back: it tracks the live text, not the template.
+    fireEvent.change(goalBox(), { target: { value: `Do the thing. Halt via ${STOP_FILE_TOKEN}` } })
+    expect(helpLine()).toBeTruthy()
+  })
+
+  it('Start loop posts the message with the token intact (display never rewrites what is stored)', async () => {
+    renderPopover(null)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+    const calls = (fetch as unknown as { mock: { calls: [string, { body?: string }?][] } }).mock.calls
+    const save = calls.find(c => String(c[0]).startsWith('/api/autonudge') && c[1]?.body)
+    expect(save, 'no /api/autonudge write was issued').toBeTruthy()
+    const body = JSON.parse(save![1]!.body!)
+    expect(body.message).toContain(STOP_FILE_TOKEN)
+  })
+
+  it('an armed loop with an explicitly empty sentinel says the token goes out blank', () => {
+    renderPopover(makeLoop({ message: `Keep going. To halt, create ${STOP_FILE_TOKEN}`, stop_sentinel_path: '' }))
+    expect(noneLine()).toBeTruthy()
+    expect(noneLine()!.textContent).toContain(STOP_FILE_TOKEN)
+    expect(helpLine()).toBeNull()
+  })
+
+  it('an armed loop with a sentinel keeps the generic line and never renders the path', () => {
+    renderPopover(makeLoop({ message: `Keep going. To halt, create ${STOP_FILE_TOKEN}`, stop_sentinel_path: '/home/someone/.stop-chat-1-100' }))
+    expect(helpLine()).toBeTruthy()
+    expect(noneLine()).toBeNull()
+    expect(screen.queryByText(/\.stop-chat-1-100/)).toBeNull()
+  })
+
+  it('a loop record that does not carry the sentinel field (websocket frame) gets the generic line', () => {
+    renderPopover(makeLoop({ message: `Keep going. To halt, create ${STOP_FILE_TOKEN}` }))
+    expect(helpLine()).toBeTruthy()
+    expect(noneLine()).toBeNull()
   })
 })

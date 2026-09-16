@@ -5910,7 +5910,9 @@
       "stopped_help": "Iniciar bucle reanuda este objetivo. Borrar objetivo detenido lo elimina definitivamente.",
       "clear_goal_for_good": "Borrar el objetivo definitivamente",
       "cancel": "Cancelar",
-      "clear_goal_question": "¿Eliminar este objetivo definitivamente?"
+      "clear_goal_question": "¿Eliminar este objetivo definitivamente?",
+      "stop_file_help": "{{token}} se rellena al enviar cada empujón: pasa a ser la ruta del archivo de parada de esta sesión. Crea ese archivo para detener el bucle, o pulsa “Detener el bucle”, que sustituye a “Iniciar el bucle” mientras el bucle está en marcha.",
+      "stop_file_help_none": "Este bucle se activó sin archivo de parada, así que {{token}} se envía vacío. Pulsa “Detener el bucle” abajo para detenerlo."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Cerrar la terminal",

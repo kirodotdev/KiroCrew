@@ -5910,7 +5910,9 @@
       "stopped_help": "Iniciar ciclo retoma este objetivo. Excluir objetivo parado o remove definitivamente.",
       "clear_goal_for_good": "Excluir o objetivo definitivamente",
       "cancel": "Cancelar",
-      "clear_goal_question": "Excluir este objetivo definitivamente?"
+      "clear_goal_question": "Excluir este objetivo definitivamente?",
+      "stop_file_help": "{{token}} é preenchido ao enviar cada empurrão: passa a ser o caminho do arquivo de parada desta sessão. Crie esse arquivo para interromper o loop, ou pressione “Parar o loop”, que substitui “Iniciar loop” enquanto o loop roda.",
+      "stop_file_help_none": "Este loop foi armado sem arquivo de parada, então {{token}} é enviado em branco. Pressione “Parar o loop” abaixo para interrompê-lo."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Fechar terminal",

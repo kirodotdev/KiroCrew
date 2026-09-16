@@ -5910,7 +5910,9 @@
       "stopped_help": "Démarrer la boucle reprend cet objectif. Supprimer l’objectif arrêté l’efface définitivement.",
       "clear_goal_for_good": "Supprimer définitivement l’objectif",
       "cancel": "Annuler",
-      "clear_goal_question": "Supprimer définitivement cet objectif ?"
+      "clear_goal_question": "Supprimer définitivement cet objectif ?",
+      "stop_file_help": "{{token}} est rempli à l’envoi de chaque relance : il devient le chemin du fichier d’arrêt de cette session. Créez ce fichier pour arrêter la boucle, ou appuyez sur « Arrêter la boucle », qui remplace « Démarrer la boucle » pendant que la boucle tourne.",
+      "stop_file_help_none": "Cette boucle a été armée sans fichier d’arrêt, donc {{token}} est envoyé vide. Appuyez sur « Arrêter la boucle » ci-dessous pour l’arrêter."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Fermer le terminal",

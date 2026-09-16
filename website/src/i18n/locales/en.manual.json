@@ -1727,7 +1727,9 @@
       "stopped_help": "Start loop resumes this goal. Clear stopped goal removes it for good.",
       "clear_goal_for_good": "Clear goal for good",
       "cancel": "Cancel",
-      "clear_goal_question": "Remove this goal for good?"
+      "clear_goal_question": "Remove this goal for good?",
+      "stop_file_help": "{{token}} is filled in when each nudge is sent: it becomes the path of this session's stop file. Create that file to halt the loop, or press Stop loop, which replaces Start loop while the loop runs.",
+      "stop_file_help_none": "This loop was armed without a stop file, so {{token}} is sent blank. Press Stop loop below to halt it."
     },
     "bottomTerminalPanel": {
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",

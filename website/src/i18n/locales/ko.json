@@ -5722,7 +5722,9 @@
       "stopped_help": "루프 시작으로 이 목표를 다시 실행합니다. 중지된 목표 삭제는 영구히 지웁니다.",
       "clear_goal_for_good": "목표를 영구히 삭제",
       "cancel": "취소",
-      "clear_goal_question": "이 목표를 영구히 삭제하시겠습니까?"
+      "clear_goal_question": "이 목표를 영구히 삭제하시겠습니까?",
+      "stop_file_help": "{{token}}은(는) 넛지를 보낼 때마다 채워져 이 세션의 중지 파일 경로가 됩니다. 그 파일을 만들거나 ‘루프 중지’를 누르면 루프가 멈춥니다. ‘루프 중지’는 루프가 실행되는 동안 ‘루프 시작’ 자리에 표시됩니다.",
+      "stop_file_help_none": "이 루프는 중지 파일 없이 시작되어 {{token}}이(가) 빈 값으로 전송됩니다. 멈추려면 아래의 ‘루프 중지’를 누르세요."
     },
     "bottomTerminalPanel": {
       "close_terminal": "터미널 닫기",

@@ -5816,7 +5816,9 @@
       "stopped_help": "Schleife starten setzt dieses Ziel fort. Gestopptes Ziel löschen entfernt es endgültig.",
       "clear_goal_for_good": "Ziel endgültig löschen",
       "cancel": "Abbrechen",
-      "clear_goal_question": "Dieses Ziel endgültig löschen?"
+      "clear_goal_question": "Dieses Ziel endgültig löschen?",
+      "stop_file_help": "{{token}} wird beim Senden jedes Anstoßes ausgefüllt: Es wird zum Pfad der Stoppdatei dieser Sitzung. Lege diese Datei an, um die Schleife anzuhalten, oder drücke „Schleife stoppen“ – das ersetzt „Schleife starten“, solange die Schleife läuft.",
+      "stop_file_help_none": "Diese Schleife wurde ohne Stoppdatei gestartet, daher wird {{token}} leer gesendet. Drücke unten „Schleife stoppen“, um sie anzuhalten."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Terminal schließen",

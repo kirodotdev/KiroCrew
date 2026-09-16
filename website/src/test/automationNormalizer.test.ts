@@ -49,6 +49,22 @@ describe('automation transport normalizer', () => {
     })
   })
 
+  it('carries the REST sentinel path through, and leaves it absent when the frame withholds it (#10458)', () => {
+    const base = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+    }
+    // REST shape: an explicitly empty sentinel is a real "no stop file".
+    expect(normalizeAutomationRecord({ ...base, stop_sentinel_path: '' }))
+      .toMatchObject({ kind: 'legacy_goal_loop', stopSentinelPath: '' })
+    expect(normalizeAutomationRecord({ ...base, stop_sentinel_path: '/w/.stop-chat-1' }))
+      .toMatchObject({ stopSentinelPath: '/w/.stop-chat-1' })
+    // Websocket shape: the field is withheld, so the record must not invent one.
+    expect(normalizeAutomationRecord(base)).not.toHaveProperty('stopSentinelPath')
+    // A malformed store value is dropped rather than stringified.
+    expect(normalizeAutomationRecord({ ...base, stop_sentinel_path: null })).not.toHaveProperty('stopSentinelPath')
+  })
+
   it('folds channel session keys into dashboard slot keys', () => {
     const record = normalizeAutomationRecord({
       id: 'legacy-1', slot_key: 'slack:1785370133.085469', message: 'Keep going',

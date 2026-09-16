@@ -30,6 +30,12 @@ export interface AutoNudgeLoop {
   stopped_reason?: string
   /** Short stand-in for `message` in the visible transcript row; '' = none. */
   banner?: string
+  /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
+   *  time; '' when the loop was armed with none. Carried by the REST list and
+   *  the arm/update responses (`asdict(loop)`), NOT by the websocket frame,
+   *  which is broadcast without an owner gate and withholds filesystem paths.
+   *  So `undefined` means "not known here", while '' is a real "no sentinel". */
+  stop_sentinel_path?: string
 }
 
 /** `GET /api/autonudge`: every loop record the service holds, active or stopped.
