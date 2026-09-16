@@ -7261,8 +7261,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       setInput((prev) => (prev.trim() ? `${prev}\n${text}` : text))
                     }}
                     onDirectSend={(text) => {
-                      // No-ask_id card: the card IS the interaction, so answer
-                      // and send in one click.
+                      // A no-ask_id card has two producers with opposite turn
+                      // states. The Kiro Crew ask_question directive ends its turn,
+                      // so its answer starts the next one. Native AskUserQuestion
+                      // raises the same card shape WHILE its ACP turn waits for
+                      // input; a plain send there queues behind the waiting turn
+                      // and deadlocks until the tool times out. Carry the live
+                      // state as steer intent so the Gateway injects the answer
+                      // into that turn instead. Read the ref because a socket
+                      // frame can flip the state between render and click.
                       //
                       // Offline, send() bails at its own !connected guard and
                       // the card clears regardless — which would DROP the
@@ -7272,7 +7279,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                         setInput((prev) => (prev.trim() ? `${prev}\n${text}` : text))
                         return
                       }
-                      void send(text, activeSlot || undefined)
+                      void send(text, activeSlot || undefined, slotRunningRef.current)
                     }}
                   />
                 </div>

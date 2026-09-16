@@ -1401,7 +1401,15 @@ export default function ChatPane({
              question already gone. */
           onFallbackSend={(text) => {
             const fail = (reason?: string, status?: SendReceiptStatus) => { reportSendFailure(reason, status); restoreIntoComposer(text, [], slotKey) }
-            void sendTurn({ message: text, slot: slotKey }).then((receipt) => {
+            // Native AskUserQuestion posts this no-ask_id card before its ACP
+            // turn ends. Without steer the Gateway queues the answer behind the
+            // turn waiting for it. The MCP ask_question producer has already
+            // ended, so its idle answer keeps the ordinary next-turn path.
+            void sendTurn({
+              message: text,
+              slot: slotKey,
+              ...(running || paneSlot?.running ? { steer: true } : {}),
+            }).then((receipt) => {
               if (receipt.status === 'refused' || receipt.status === 'transport-error' || receipt.status === 'response-late') {
                 fail(receipt.reason, receipt.status)
               }

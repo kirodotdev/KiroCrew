@@ -24,7 +24,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { sseChatMessage } from '../store/chatSlice'
+import chatReducer, { setQuestionCard, sseChatMessage } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -240,6 +240,26 @@ describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
     expect((sendChat.mock.calls[0][4] as { sendId?: string }).sendId).toBeTruthy()
   })
 
+  it('steers a live native question answer into the waiting turn', async () => {
+    const { store } = await renderChat({ subagentsRunning: false, turnRunning: true })
+    act(() => {
+      // Native AskUserQuestion emits this no-card_id shape before its ACP turn
+      // ends. A plain send would queue behind the turn that is waiting for it.
+      store.dispatch(setQuestionCard({
+        slot: 'slot-a',
+        questions: [{
+          question: 'Pick a trust model',
+          options: [{ label: 'Public only' }],
+        }],
+      }))
+    })
+
+    fireEvent.click(await screen.findByText('Public only'))
+    fireEvent.click(screen.getByText('Submit'))
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    expect(steerArgOf(sendChat.mock.calls[0])).toBe(true)
+  })
   it('leaves an ordinary idle send unflagged', async () => {
     const { input } = await renderChat({ subagentsRunning: false, turnRunning: false })
     await typeAndSubmit(input, 'plain message')
