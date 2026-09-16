@@ -1674,7 +1674,7 @@ class TestWaveDigest:
         slot._subagent_deliveries_inflight = 0
         # Real attribute, not a MagicMock truthy stub: the stub below flips it
         # exactly as _run_chat does on a signed-out CLI.
-        slot._last_turn_auth_required = False
+        slot._queue_held = False
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         ledger, settled = _wire_hold_settlement(orch, slot, mgr)
@@ -1685,7 +1685,7 @@ class TestWaveDigest:
             # Exactly what _run_chat does on a signed-out CLI: record it and
             # return. No raise, no cancellation — and no consumption report,
             # because the model never saw the prompt.
-            _slot._last_turn_auth_required = True
+            _slot._queue_held = True
 
         marked: list[str] = []
         with (
@@ -1699,7 +1699,7 @@ class TestWaveDigest:
             await _settle(lambda: slot.task is None)
 
         assert (
-            slot._last_turn_auth_required is True
+            slot._queue_held is True
         ), "precondition: the turn must have ended in the auth-required state"
         assert settled == [] and marked == [], (
             "a signed-out CLI never received the digest — the held siblings' "
