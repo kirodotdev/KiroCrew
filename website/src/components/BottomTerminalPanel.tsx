@@ -13,7 +13,7 @@ import { useAppSelector } from '../store'
 import { selectActiveSlotProject } from '../store/chatSlice'
 import { openPopout as openTerminalPopout, isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout, bringBack as bringBackTerminalPopout, returnSelfToMain } from '../utils/terminalPopout'
 import {
-  useBottomTerminal, addTab, removeTab, setActiveTab, setTabsOrder,
+  useBottomTerminal, useTerminalHydratePending, addTab, removeTab, setActiveTab, setTabsOrder,
   closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
   toggleTerminalPosition, MAX_TERMINALS, MIN_WIDTH, MAX_VH, MAX_VW,
   setTerminalCloseFailed, useTerminalCloseFailed,
@@ -125,6 +125,12 @@ function TerminalCloseErrorNotice() {
 
 export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   const { tabs, activeId, position } = useBottomTerminal()
+  // Tabs restored from storage are unverified until the backend has said which
+  // shells still exist. Nothing is drawn for them before that ruling — a
+  // mounted CliPanel would reconnect and spawn a shell for a tab the probe is
+  // about to drop, and a strip chip would offer to close a tab that may be
+  // gone already. One probe round-trip, then the kept tabs mount as usual.
+  const hydratePending = useTerminalHydratePending()
   // A rejected PTY delete lands in the close-failed flag (set by the hook), which
   // the always-mounted panel root renders (see BottomTerminalPanel below) —
   // closing the LAST tab unmounts this strip before a delayed rejection arrives.
@@ -177,6 +183,8 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   }, [tabs])
 
   const atCap = tabs.length >= MAX_TERMINALS
+
+  if (hydratePending) return null
 
   return (
     <div className="flex flex-col h-full min-h-0">

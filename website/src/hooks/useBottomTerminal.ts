@@ -12,8 +12,10 @@ import { secureRandomId } from '../utils/secureId'
  * State is MODULE-LEVEL + localStorage-persisted (mirroring usePanelTabs and
  * terminalRegistry) rather than redux, so the panel survives route changes and
  * full reloads; on reload each persisted tab reconnects to its still-live PTY
- * (backend orphan-reaper window), the same way activity-bar terminal tabs do.
- * Tab session ids are persisted; the running shell is not. */
+ * (backend orphan-reaper window), the same way activity-bar terminal tabs do —
+ * once the backend has confirmed which of those PTYs still exist (see the
+ * hydrate-time reconciliation below). Tab session ids are persisted; the
+ * running shell is not. */
 
 export interface TermTab {
   /** PTY session id — one live shell per tab. */
@@ -104,6 +106,111 @@ let state: BottomTerminalState = loadPersisted()
 const listeners = new Set<() => void>()
 
 function emit() { for (const cb of listeners) cb() }
+
+/* ── Hydrate-time reconciliation ──
+ * `loadPersisted` restores the tab LIST, not the shells: a tab is only a session
+ * id, and the backend is the one that knows whether a PTY still answers to it.
+ * A tab leaked by a dispatch that never reached its deadline (#10822), or one
+ * whose shell the orphan reaper has since killed, therefore comes back on every
+ * reload — occupying the tab cap, and re-spawning a fresh shell the moment its
+ * view reconnects (the WS route mints a PTY for an unknown id).
+ *
+ * So the restored set is UNVERIFIED until `GET /api/terminal/sessions` has
+ * ruled on it. While that is pending the hosts render no terminal views
+ * (`useTerminalHydratePending`): a view that connected first would spawn the
+ * very shell the probe is asking about, and the answer would then read "alive"
+ * for a tab nobody wanted back. Only tabs restored at module init are
+ * candidates — one minted after boot has a shell of its own and is never the
+ * probe's business.
+ *
+ * The ruling takes two looks, not one, for the same reason the dispatch-deadline
+ * probe does (ChatPage's run-in-terminal handler): the route skips the null
+ * placeholder a session holds from `ws.prepare()` until its shell is spawned, so
+ * a session another window is opening RIGHT NOW reads exactly like one that never
+ * existed — and this store is shared across windows, so dropping it here would
+ * remove the tab from under that shell as it comes up. `reconcileRestoredTabs`
+ * therefore only names suspects; `confirmRestoredTabs`, fed an uncached second
+ * answer after an opening grace, drops the ones still missing. Absent twice,
+ * that far apart, is gone. */
+let restoredIds: ReadonlySet<string> = new Set(state.tabs.map(t => t.id))
+/** Restored tabs the first answer omitted or reported dead, awaiting the
+ *  confirm probe. Empty outside the confirming phase. */
+let hydrateSuspects: ReadonlySet<string> = new Set()
+type HydratePhase = 'pending' | 'confirming' | 'settled'
+let hydratePhase: HydratePhase = restoredIds.size > 0 ? 'pending' : 'settled'
+
+/** Session ids the backend reports as live, or null when the payload does not
+ *  rule on liveness: a transport failure, a shape this client does not
+ *  recognize, or the feature-disabled answer (which returns an empty list
+ *  without consulting the registry, so its absence means nothing). */
+function liveSessionIds(payload: unknown): Set<string> | null {
+  if (!payload || typeof payload !== 'object') return null
+  const p = payload as { enabled?: unknown; sessions?: unknown }
+  if (p.enabled === false || !Array.isArray(p.sessions)) return null
+  const live = new Set<string>()
+  for (const entry of p.sessions) {
+    if (!entry || typeof entry !== 'object') return null
+    const { session_id, alive } = entry as { session_id?: unknown; alive?: unknown }
+    // One malformed entry voids the whole answer: dropping a tab is
+    // irreversible, so it only happens on a payload read in full.
+    if (typeof session_id !== 'string' || typeof alive !== 'boolean') return null
+    if (alive) live.add(session_id)
+  }
+  return live
+}
+
+/** Leave the hydrate protocol with every remaining tab verified. */
+function settleHydrate(): void {
+  hydratePhase = 'settled'
+  hydrateSuspects = new Set()
+  emit()
+}
+
+/** Drop `ids` from the store, refocusing and hiding the panel as `removeTab`
+ *  would. Persisting the trimmed list is what keeps the other window — and
+ *  the next reload — from restoring the same tabs again. */
+function dropTabs(ids: ReadonlySet<string>): void {
+  const tabs = state.tabs.filter(t => !ids.has(t.id))
+  const activeId = tabs.some(t => t.id === state.activeId) ? state.activeId : (tabs[0]?.id ?? null)
+  set({ ...state, tabs, activeId, open: tabs.length > 0 ? state.open : false })
+}
+
+/** First look: weigh the restored tab set against the backend's session list
+ *  (the JSON body of `GET /api/terminal/sessions`, or null when the probe
+ *  failed). Restored tabs whose session is absent or `alive: false` become
+ *  SUSPECTS and are returned; nothing is dropped yet, and the hosts stay gated
+ *  until `confirmRestoredTabs` rules on them. With no suspects — or on a payload
+ *  that does not rule (see `liveSessionIds`) — every tab is kept and the store
+ *  settles at once: removing a possibly-live shell and its scrollback cannot be
+ *  undone, while a kept dead tab is user-closable and its PTY entry is the
+ *  reaper's to clear. Runs once per document: later calls return []. */
+export function reconcileRestoredTabs(payload: unknown): string[] {
+  if (hydratePhase !== 'pending') return []
+  const live = liveSessionIds(payload)
+  const suspects = live === null
+    ? []
+    : state.tabs.filter(t => restoredIds.has(t.id) && !live.has(t.id)).map(t => t.id)
+  if (suspects.length === 0) { settleHydrate(); return [] }
+  hydratePhase = 'confirming'
+  hydrateSuspects = new Set(suspects)
+  return suspects
+}
+
+/** Second look, from an UNCACHED probe taken after the opening grace: drop the
+ *  suspects this answer still omits or reports dead, keep the ones it now lists
+ *  live (a shell that was opening in another window), and settle. A payload
+ *  that does not rule keeps every suspect. Returns the dropped ids. */
+export function confirmRestoredTabs(payload: unknown): string[] {
+  if (hydratePhase !== 'confirming') return []
+  const live = liveSessionIds(payload)
+  const dropped = live === null
+    ? []
+    : state.tabs.filter(t => hydrateSuspects.has(t.id) && !live.has(t.id)).map(t => t.id)
+  // Drop while still gated, then settle: the hosts first see the kept set.
+  if (dropped.length > 0) dropTabs(new Set(dropped))
+  settleHydrate()
+  return dropped
+}
 
 /* Cross-window sync: the terminal-popout window and the main dashboard share
  * this persisted store (one tab list, whichever window currently hosts the
@@ -286,9 +393,20 @@ export function useTerminalPosition(): TerminalPosition {
   return useSyncExternalStore(subscribe, getPositionSnapshot, getPositionSnapshot)
 }
 
+/** Whether the restored tab set still awaits its ruling (either look). Hosts
+ *  mount no terminal view while true — see the reconciliation note above. */
+function getHydratePendingSnapshot(): boolean { return hydratePhase !== 'settled' }
+export function isTerminalHydratePending(): boolean { return hydratePhase !== 'settled' }
+export function useTerminalHydratePending(): boolean {
+  return useSyncExternalStore(subscribe, getHydratePendingSnapshot, getHydratePendingSnapshot)
+}
+
 /** Test-only: reset the module store and its persisted copy. */
 export function __resetBottomTerminal(): void {
   state = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
+  restoredIds = new Set()
+  hydrateSuspects = new Set()
+  hydratePhase = 'settled'
   emit()
   setTerminalCloseFailed(false)
   if (typeof localStorage !== 'undefined') {
