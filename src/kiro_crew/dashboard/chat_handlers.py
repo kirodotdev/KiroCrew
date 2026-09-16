@@ -6697,12 +6697,80 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # metadata and internal callers are not private-memory authority.
         from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
-        if (
+        owner_pick = (
             slot.agent is committed_agent
             and assignment_resolved
             and is_owner_dashboard_request(request)
-        ):
+        )
+        if owner_pick:
             slot._memory_assignment_from_history = False
+
+        # Menu grants are for an EMPTY plain dashboard chat only. Channel,
+        # cron and workflow alias tabs are excluded: an injector can set their
+        # linked_session_key without the slot lock, and they carry native
+        # context the pin helper refuses. With this gate, pin_key is the slot's
+        # own transcript key, which nothing rebinds. The helper verifies the
+        # transcript is empty before issuing a private grant; V1 picks pass
+        # through without a grant.
+        if (
+            owner_pick
+            and agent_name
+            and not slot.messages
+            and not slot.linked_session_key
+            and not slot.channel_origin
+        ):
+            pin_key = session_key
+
+            async def _unwind_pin_failure() -> None:
+                # The error tells the caller nothing changed, so slot state and
+                # transcript metadata must agree. Restore slot.agent rather than
+                # prior_agent to preserve a concurrent writer's binding.
+                _rollback_switch()
+                if state.conversation_log:
+                    try:
+                        await asyncio.to_thread(
+                            state.conversation_log.update_metadata,
+                            _history_key_for(name),
+                            {"agent": str(slot.agent)},
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to restore agent metadata for slot %s", name, exc_info=True
+                        )
+                state.push_slots_update()
+
+            if (
+                state._slots.get(slot.key) is slot
+                and slot.agent is committed_agent
+                and effective_session_key(slot) == pin_key
+                and not slot.messages
+            ):
+                try:
+                    # Off the loop: the create path loads it the same way, and
+                    # the in-handler load above is not guaranteed to have run.
+                    pin_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                    assigned_store = await pin_private_agent_store(
+                        state, pin_key, agent_name, pin_cfg
+                    )
+                except Exception as exc:
+                    from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+                    await _unwind_pin_failure()
+                    return _store_unavailable_response(slot.memory_store, exc)
+                # Agent committed: a raced message uses the new agent and confirms its grant.
+                if assigned_store and (
+                    state._slots.get(slot.key) is not slot or slot.agent is not committed_agent
+                ):
+                    # No unwind: the owner's grant on this slot's own key is valid and immutable.
+                    return web.json_response(
+                        {
+                            "error": "slot changed during member assignment",
+                            "code": "session_rebound",
+                        },
+                        status=409,
+                    )
+                if assigned_store and slot.memory_store != assigned_store:
+                    slot.memory_store = assigned_store
 
         # Snapshot the response's workspace LAST, immediately before leaving
         # the lock: the metadata await above yields the event loop, so a

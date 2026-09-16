@@ -827,14 +827,25 @@ def _pin_private_agent_assignment(
 
     store = require_member_memory_store(config, selected)
     log = conversation_log if conversation_log is not None else ConversationLog()
-    if read_private_session_store(session_key) is None and (
-        native_context or log.has_log(session_key)
-    ):
+    # ``has_messages``, not ``has_log``: the transcript file already exists once
+    # the slot's metadata (title, agent, model) was flushed, and an agent pick
+    # on an empty chat must not read as "this chat has V1 history". It fails
+    # closed: a transcript that exists but cannot be read is not provably
+    # empty, so no grant.
+    if read_private_session_store(session_key) is None:
         from kiro_crew.memory_stores import UnknownMemoryStore
 
-        raise UnknownMemoryStore(
-            "This conversation retains its V1 history. Open a new conversation for private memory."
-        )
+        try:
+            has_history = native_context or log.has_messages(session_key)
+        except OSError as exc:
+            raise UnknownMemoryStore(
+                "This conversation's transcript is unreadable, so its history cannot be "
+                "verified; no private memory was granted."
+            ) from exc
+        if has_history:
+            raise UnknownMemoryStore(
+                "This conversation retains its V1 history. Open a new conversation for private memory."
+            )
     bind_private_session_store(session_key, store)
     return store
 

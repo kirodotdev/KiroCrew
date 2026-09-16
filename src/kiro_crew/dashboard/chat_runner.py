@@ -369,26 +369,15 @@ def _require_session_memory_assignment(session_key: str, memory_store: str | Non
         )
 
 
-def _bind_private_slot_memory(
-    session_key: str,
-    memory_store: str,
-    *,
-    restored: bool,
-    conversation_log=None,
-    native_context: bool = False,
-) -> None:
-    """Transcript restoration cannot grant a new private assignment."""
+def _bind_private_slot_memory(session_key: str, memory_store: str) -> None:
+    """Confirm an existing private assignment; never grant one from a turn."""
     from kiro_crew.member_memory_auth import (
         bind_private_session_store,
         read_private_session_store,
     )
     from kiro_crew.memory_stores import UnknownMemoryStore
 
-    protected = read_private_session_store(session_key)
-    prior_history = (
-        protected is None and conversation_log is not None and conversation_log.has_log(session_key)
-    )
-    if protected != memory_store and (restored or prior_history or native_context):
+    if read_private_session_store(session_key) is None:
         raise UnknownMemoryStore(
             "This conversation has no verified assignment to private memory and retains its V1 context. "
             "Open the member from Members or create a new conversation for private memory."
@@ -7799,21 +7788,7 @@ async def _run_chat(
             record = loaded_cfg.memory_stores[memory_store]
             if record.memory_version == 2:
                 private_member = record.owner_member
-                await asyncio.to_thread(
-                    _bind_private_slot_memory,
-                    session_key,
-                    memory_store,
-                    restored=slot._memory_assignment_from_history,
-                    conversation_log=state.conversation_log,
-                    native_context=(
-                        state.sessions.get_provider(session_key) is not None
-                        or bool(state.sessions.resumable_sid(session_key))
-                        or any(
-                            row.get("role") in ("assistant", "tool", "chunk")
-                            for row in slot.messages
-                        )
-                    ),
-                )
+                await asyncio.to_thread(_bind_private_slot_memory, session_key, memory_store)
                 _require_current_binding()
             # Bind writes before allocating a provider as well as reads. This
             # also initializes a legacy member chat after explicit V2 setup.
