@@ -128,6 +128,19 @@ export default [
       'src/utils/shellCommandParse.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
+      // The model display-name table: kiro-cli ids mapped to the vendor's own
+      // spelling of the product (`Claude Opus 4.8`, `GPT-5.6 Sol`, `DeepSeek-V3.2`).
+      // Every value is a proper noun that is the same in every locale — the DNT
+      // class, not copy — so a catalog key per model would be twelve identical
+      // strings guarding nothing. Declared by WHERE the string lives, like the
+      // prompt and parser modules above: the module may contain ONLY the id →
+      // name table and its two lookups; every label that surrounds a model name
+      // (the picker footer, the settings rows, the turn stats) is rendered by its
+      // consumer through `i18nT`, which stays fully gated.
+      //
+      // Stated as a false-negative class, per this file's convention: copy added
+      // to this module will not be reported. Keep it names-only.
+      'src/lib/modelDisplayName.ts',
       // Generated sources: the copy's real home is the panel that declares the
       // setting, which is scanned and baselined on its own. Editing a `.gen.ts`
       // is overwritten by `npm run gen:settings`, so a finding here is

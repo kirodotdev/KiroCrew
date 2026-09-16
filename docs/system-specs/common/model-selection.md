@@ -76,8 +76,20 @@ the cheaper model's output as the one they asked for.
   `dashboard.model_picker_configured`, migrating an existing non-empty hidden list
   as already configured. Select-all and deselect-all update the current advertised
   set with one write, keep `auto` selected, and preserve hidden IDs absent from the
-  current catalog. Enabling the configured effort default moves the slider thumb to
-  that level before the setting write completes.
+  current catalog. The reasoning-effort slider shows one level: the session's own
+  override when it has one, else the level the crew pin → role → Settings ▸ Chat
+  chain resolves to, each clamped to what the shown model accepts. There is no
+  default marker, no "use default" toggle, and no reset link. Every landing on the
+  axis (a move, a click on the notch already shown, or Enter) writes that level as
+  the session's own, so a later change to the crew or global default no longer
+  moves this session while new sessions follow it. When the chain resolves to
+  nothing the axis renders without a thumb and the header reads "Model decides"
+  until the first pick. A level the model does not offer is shown, and sent to
+  kiro-cli, at the nearest lower level it accepts (`xhigh` runs `high` on Sonnet
+  4.6); the stored level is not rewritten, so it is `xhigh` again after a switch
+  back to a model that offers it, and a one-line note names the substitution. A
+  `/effort` push kiro-cli answers with `success: false` is a failed switch
+  (rolled back, then the session is reset), not a silently applied one.
 - **Pin a cheaper model** only through `agent.role_models.<role>` (`background`,
   `subagent`), read by `AgentConfig.resolve_model(role)` in `config/sections.py`. Roles
   default to `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat

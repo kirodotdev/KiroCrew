@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useAvailableModels } from '../hooks/useAvailableModels'
+import { modelDisplayName } from '../lib/modelDisplayName'
 import { Zap } from 'lucide-react'
 import { api } from '../api/client'
 import { Input, SendBtn } from './ui'
@@ -166,12 +167,6 @@ function buildBody(
   return body
 }
 
-/** One row of `GET /api/models`. The payload is kiro-cli's own `--list-models`
- *  output after the backend's filtering, so nothing here is guaranteed: the
- *  current spelling is `model_name`, `name` is the legacy one, and a row that
- *  carries neither is unusable. */
-type ModelRow = { model_name?: string; name?: string; display_name?: string }
-
 interface Props {
   job?: CronJob // if provided, edit mode
   /** Seed values for a NEW job (create mode). Ignored when `job` is set. */
@@ -232,21 +227,10 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [msg, setMsg] = useState(init.message)
   const [agent, setAgent] = useState(defaults.agent)
   const [model, setModel] = useState(defaults.model)
-  const { data: modelList = [] } = useQuery<{ name: string; description?: string }[]>({
-    queryKey: ['models'],
-    queryFn: async () => {
-      const m = await api.models()
-      // A row carrying neither spelling is dropped, not mapped to '': '' is
-      // this form's own value for "inherit" (the `clearLabel` row, see
-      // `modelOptions` below), so aliasing an unusable row onto it would render
-      // a second, duplicate inherit option that silently clears the override.
-      if (!Array.isArray(m)) return []
-      return m.flatMap((x: ModelRow) => {
-        const name = x.model_name || x.name
-        return name ? [{ name, description: x.display_name || '' }] : []
-      })
-    },
-  })
+  // The shared advertised-model list (GET /api/models, fetched once for every
+  // picker) instead of a private query: the scheduled-job picker then shows the
+  // same catalog, in the same order, as the chat composer.
+  const modelList = useAvailableModels()
   const [channel, setChannel] = useState(defaults.channel)
   const [approvalMode, setApprovalMode] = useState(defaults.approvalMode)
   const [silent, setSilent] = useState(init.silent)
@@ -319,8 +303,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
    *  the picker. Both layouts render this list, so it is built once. */
   const modelOptions = useMemo(() => {
     const values = modelList.map(m => m.name)
-    const labels = modelList.map(m => m.description || m.name)
-    if (model && !values.includes(model)) { values.unshift(model); labels.unshift(model) }
+    const labels = modelList.map(m => modelDisplayName(m.name))
+    if (model && !values.includes(model)) { values.unshift(model); labels.unshift(modelDisplayName(model)) }
     return { values, labels }
   }, [modelList, model])
 

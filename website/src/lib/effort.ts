@@ -22,6 +22,7 @@ import { i18nT } from '../i18n/t'
 export const EFFORT_LABEL_KEY: Record<string, string> = {
   '': 'lib.effort.default',
   default: 'lib.effort.default',
+  none: 'lib.effort.none',
   low: 'lib.effort.low',
   medium: 'lib.effort.medium',
   high: 'lib.effort.high',
@@ -61,18 +62,91 @@ export const EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as co
 export const REASONING_EFFORT_PROVIDERS = new Set(['acp'])
 
 /**
- * Per-model effort capability — mirrors the backend `model_supports_effort`
- * (kiro_crew/effort.py): effort is available on Fable/Opus/Sonnet and GPT-5.x
- * models; Haiku/auto/empty and the other third-party models (deepseek, minimax,
- * glm, qwen) cannot use it. Gates the dropdown so a non-capable model never
- * shows a control that would silently no-op on the backend.
+ * Every effort level any backend reports, ordered low→high. `none` exists only
+ * on the GPT models (kiro-cli 2.21). This is the ORDER used for nearest-lower
+ * fallback; which subset a given model accepts is `effortLevelsForModel`.
+ */
+export const EFFORT_ORDER = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+
+const LEVELS_CLAUDE: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const LEVELS_GPT: readonly string[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+const LEVELS_SONNET_46: readonly string[] = ['low', 'medium', 'high', 'max']
+
+/**
+ * The effort levels a model accepts, as kiro-cli reports them over ACP
+ * `/effort` (probed per model against kiro-cli 2.21.4):
  *
- * Keep this in sync with the backend allowlist — it is a conservative list of
- * known-capable families, not a "non-Claude means unsupported" denylist.
+ *  - Opus 5 / 4.8 / 4.7, Sonnet 5, Fable 5 / 5.1: low, medium, high, xhigh, max
+ *  - Sonnet 4.6: low, medium, high, max (no xhigh)
+ *  - GPT-5.6 sol / terra / luna: none, low, medium, high, xhigh, max
+ *  - Opus 4.5, Sonnet 4.5, Sonnet 4, Haiku, auto, deepseek, minimax, glm, qwen,
+ *    nova: effort is rejected outright
+ *
+ * Returns `null` for a model that rejects effort and `undefined` for a family
+ * this table does not know, so the caller can fall back to a live answer.
+ * kiro-cli does not expose these over the protocol (`session/new` carries no
+ * `configOptions`), so the table is the only cold-start source; a live list
+ * from `/api/effort-levels` still wins where the backend has one.
+ */
+export function effortLevelsForModel(model: string | undefined): readonly string[] | null | undefined {
+  if (!model) return null
+  const m = model.toLowerCase()
+  if (m === 'auto' || m.includes('haiku')) return null
+  if (/deepseek|minimax|glm|qwen|nova/.test(m)) return null
+  if (m.includes('gpt')) return LEVELS_GPT
+  if (m.includes('fable')) return LEVELS_CLAUDE
+  const claude = /(sonnet|opus)-(\d+)(?:[.-](\d+))?/.exec(m)
+  if (claude) {
+    const family = claude[1]
+    const major = Number(claude[2])
+    const minor = claude[3] === undefined ? 0 : Number(claude[3])
+    if (family === 'sonnet') {
+      if (major === 4 && minor === 6) return LEVELS_SONNET_46
+      if (major === 4) return null // 4 and 4.5 reject effort
+      return LEVELS_CLAUDE
+    }
+    if (major === 4 && minor === 5) return null
+    return LEVELS_CLAUDE
+  }
+  if (m.includes('sonnet') || m.includes('opus')) return LEVELS_CLAUDE
+  return undefined
+}
+
+/**
+ * Per-model effort capability — mirrors the backend `model_supports_effort`
+ * (kiro_crew/effort.py). Answers from the per-model table first, so the
+ * versions kiro rejects (Sonnet 4 / 4.5, Opus 4.5) hide the control instead of
+ * offering a level the backend would refuse; an unknown family falls back to
+ * the conservative family allowlist.
  */
 export function modelSupportsEffort(model: string | undefined): boolean {
+  const known = effortLevelsForModel(model)
+  if (known !== undefined) return known !== null
   if (!model) return false
   const m = model.toLowerCase()
-  if (m === 'auto' || m.includes('haiku')) return false
   return m.includes('opus') || m.includes('sonnet') || m.includes('fable') || m.includes('gpt')
+}
+
+/**
+ * The level a model will actually run at when asked for `requested`.
+ *
+ * Same level when the model accepts it; otherwise the nearest LOWER level it
+ * does accept (Sonnet 4.6 asked for `xhigh` runs `high`), never a higher one.
+ * Only when nothing lower exists (`none` on a Claude model) does it step up to
+ * the lowest accepted level. '' (no request) stays ''.
+ */
+export function nearestSupportedEffort(requested: string, levels: readonly string[]): string {
+  if (!requested) return ''
+  if (levels.includes(requested)) return requested
+  const at = EFFORT_ORDER.indexOf(requested as (typeof EFFORT_ORDER)[number])
+  // A level this vocabulary cannot rank has no "nearest lower": say nothing
+  // rather than pin it to an arbitrary notch.
+  if (at < 0) return ''
+  for (let i = at - 1; i >= 0; i--) {
+    if (levels.includes(EFFORT_ORDER[i])) return EFFORT_ORDER[i]
+  }
+  for (let i = at + 1; i < EFFORT_ORDER.length; i++) {
+    if (levels.includes(EFFORT_ORDER[i])) return EFFORT_ORDER[i]
+  }
+  return ''
 }

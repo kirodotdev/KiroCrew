@@ -377,6 +377,25 @@ describe('Slider pointer interaction', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('onPick hears a landing on the shown notch, and Enter picks it from the keyboard', () => {
+    const onPick = vi.fn()
+    render(<Slider value={50} onPick={onPick} min={0} max={100} step={10} />)
+    const track = screen.getByRole('slider')
+    fireEvent.pointerDown(track, { clientX: atFrac(0.5), pointerId: 1 })
+    expect(onPick).toHaveBeenLastCalledWith(50)
+    fireEvent.keyDown(track, { key: 'Enter' })
+    expect(onPick).toHaveBeenCalledTimes(2)
+    fireEvent.keyDown(track, { key: 'ArrowRight' })
+    expect(onPick).toHaveBeenLastCalledWith(60)
+  })
+
+  it('Enter is inert for a plain onChange slider', () => {
+    const onChange = vi.fn()
+    render(<Slider value={50} onChange={onChange} min={0} max={100} step={10} />)
+    fireEvent.keyDown(screen.getByRole('slider'), { key: 'Enter' })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('shows the hover tooltip for the step under the cursor and hides it on leave', () => {
     render(
       <Slider value={0} onChange={() => {}} min={0} max={100} step={25}

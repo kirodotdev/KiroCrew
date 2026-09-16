@@ -4,8 +4,10 @@ import { Btn, Input } from './ui'
 import ErrorNotice from './ErrorNotice'
 import ModelDropdownList, { type ModelItem } from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
+import { Popover, PopoverAnchor, PopoverContent } from './ui/popover'
 
 import { useImeGuard } from '../hooks/useImeGuard'
+import { hasModelDisplayName, modelDisplayName } from '../lib/modelDisplayName'
 import { i18nT } from '../i18n/t'
 
 interface Props {
@@ -38,9 +40,15 @@ interface Props {
   hasEffort: boolean
   slot: string | null
   currentEffort: string
-  /** Configured default effort for new sessions. Shown in the footer when the
-   *  slot carries no override, so the row reflects what a turn would run at. */
+  /** Configured global effort default from Settings → Chat. This is neither
+   *  the model's built-in default nor the selected agent's model pin. Shown in
+   *  the footer when the slot carries no override, so the row reflects what a
+   *  turn would run at. */
   defaultEffort?: string
+  /** The model the effort control describes — the one the composer currently
+   *  shows ('' for auto/none). The slider offers only the levels this model
+   *  accepts and clamps the inherited default to them. */
+  effortModel?: string
   /** Effort levels to offer instead of this machine's — set for a session whose
    *  turns run on a peer crew. Forwarded verbatim to the slider; see
    *  `ReasoningEffortDropdown`'s `levelsOverride`. */
@@ -82,26 +90,49 @@ export default function ModelEffortDropdown({
   anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
   filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown, onSetDefault, onManageModels,
   modelVisibilityError = false, onRetryModelVisibility,
-  defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
+  defaultEffort = '', effortModel = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false, modelsLoading = false,
   modelsFailed = false, onRetryModels, retryingModels = false,
 }: Props) {
   const ime = useImeGuard()
-  // Right-align the dropdown to the button's right edge (clamped to viewport).
   const width = Math.min(WIDTH, window.innerWidth - 16)
-  const left = Math.max(8, Math.min(anchorRect.right - width, window.innerWidth - width - 8))
   const maxHeight = Math.max(0, anchorRect.top - 12)
 
   return (
-    // The dialog delegates list navigation from its filter and option rows, but
-    // leaves the nested slider/switch to their native keyboard handlers.
-    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-    <div
-      ref={dropdownRef}
-      role="dialog"
-      aria-label={i18nT('components.modelEffortDropdown.model_list')}
-      tabIndex={-1}
-      onKeyDown={event => {
+    <Popover open onOpenChange={open => { if (!open) onClose() }}>
+      {/* The model button lives inside ChatInput, so expose its measured box as
+          a Radix anchor. PopoverContent owns the portal, collision handling,
+          outside dismissal, and focus layer instead of reimplementing them. */}
+      <PopoverAnchor asChild>
+        <span
+          aria-hidden
+          className="fixed pointer-events-none"
+          style={{
+            left: anchorRect.left,
+            top: anchorRect.top,
+            width: anchorRect.width,
+            height: anchorRect.height,
+          }}
+        />
+      </PopoverAnchor>
+      {/* The dialog delegates list navigation from its filter and option rows,
+          but leaves the nested slider/switch to their native keyboard handlers. */}
+      <PopoverContent
+        ref={dropdownRef}
+        role="dialog"
+        aria-label={i18nT('components.modelEffortDropdown.model_list')}
+        tabIndex={-1}
+        side="top"
+        align="end"
+        sideOffset={4}
+        collisionPadding={8}
+        onOpenAutoFocus={event => {
+          // useFilteredDropdown focuses the search field on pointer-precise
+          // devices and deliberately skips it on touch to avoid opening the
+          // software keyboard. Do not let Radix override that policy.
+          event.preventDefault()
+        }}
+        onKeyDown={event => {
         const target = event.target as HTMLElement
         // This picker embeds native controls below the list. Tab must advance
         // into those controls instead of using the listbox hook's compact-menu
@@ -165,9 +196,9 @@ export default function ModelEffortDropdown({
         }
         onListKeyDown(event)
       }}
-      className="fixed z-[9999] flex flex-col bg-bg-elevated border border-border rounded-xl shadow-xl overflow-hidden animate-slide-up"
-      style={{ width, maxHeight, bottom: window.innerHeight - anchorRect.top + 4, left }}
-    >
+        className="flex flex-col bg-bg-elevated rounded-xl shadow-xl overflow-hidden p-0"
+        style={{ width, maxHeight }}
+      >
           <div className="flex min-h-0 flex-1 flex-col p-1">
             <div className="shrink-0 px-1.5 pt-1.5 pb-1">
               <Input
@@ -220,7 +251,7 @@ export default function ModelEffortDropdown({
             {onManageModels && <ManageModelsFooter onManage={onManageModels} />}
             {hasEffort && slot && (
               <div className="mt-0.5 shrink-0 border-t border-border">
-                <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded levelsOverride={effortLevelsOverride} />
+                <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} model={effortModel} onClose={onClose} embedded levelsOverride={effortLevelsOverride} />
               </div>
             )}
             {onPinToAgent && agentName && (
@@ -245,7 +276,7 @@ export default function ModelEffortDropdown({
                   {pinModelUnavailable
                     ? <Trans
                         i18nKey="components.modelEffortDropdown.pin_model_unavailable"
-                        components={{ model: <span className="font-mono">{pinModelName}</span> }}
+                        components={{ model: <span className={hasModelDisplayName(pinModelName) ? 'font-medium' : 'font-mono'} title={pinModelName}>{modelDisplayName(pinModelName)}</span> }}
                       />
                     : pinnedToAgent
                     ? <Trans
@@ -255,7 +286,7 @@ export default function ModelEffortDropdown({
                     : <Trans
                         i18nKey="components.modelEffortDropdown.set_default_for_agent"
                         components={{
-                          model: <span className="font-mono">{pinModelName}</span>,
+                          model: <span className={hasModelDisplayName(pinModelName) ? 'font-medium' : 'font-mono'} title={pinModelName}>{modelDisplayName(pinModelName)}</span>,
                           agent: <span className="font-mono">{agentName}</span>,
                         }}
                       />}
@@ -274,7 +305,8 @@ export default function ModelEffortDropdown({
               </Btn>
             )}
           </div>
-    </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 

@@ -54,6 +54,7 @@ import SimpleSelect from '../../../components/SimpleSelect'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { useAgents } from '../../../hooks/useAgents'
 import { useAvailableModels } from '../../../hooks/useAvailableModels'
+import { modelDisplayName } from '../../../lib/modelDisplayName'
 import CrewGhost, { djb2, ghostVariantCount } from './CrewGhost'
 import { issueRadarApi, type Crew, type CrewPatch, type CrewSpec } from '../api'
 import { repoScopeKey } from '../lib/links'
@@ -782,6 +783,7 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
               <SimpleSelect
                 aria-label={t('apps.issueRadar.views.crews.editor.model_label')}
                 options={modelOptions}
+                optionLabels={modelOptions.map(modelDisplayName)}
                 value={draft.model}
                 // The inherit-the-agent's-default row. `clearLabel` is the one
                 // affordance that can SET `''` back, so without it a user who

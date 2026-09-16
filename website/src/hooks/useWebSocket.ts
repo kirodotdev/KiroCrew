@@ -114,6 +114,10 @@ function invalidateRefreshQueries(qc: QueryClient): void {
   // auth-expired window 403s every endpoint) and renders `?? []` the same
   // way — heal both or the library recovers half-empty (#10867).
   qc.invalidateQueries({ queryKey: ['artifact-folders'] })
+  // Derived from the config by the backend resolver (crew pin → role → global),
+  // so they go stale with it.
+  qc.invalidateQueries({ queryKey: ['resolved-model'] })
+  qc.invalidateQueries({ queryKey: ['default-effort'] })
 }
 
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */

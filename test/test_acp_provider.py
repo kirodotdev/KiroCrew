@@ -496,6 +496,10 @@ class TestEffortControl:
         provider._client._model = model
         provider._client._work_dir = MagicMock()
         provider._client.send_command = AsyncMock()
+        # kiro's /effort answers with a structured result; success is the contract.
+        provider._client.command_result = AsyncMock(
+            return_value={"success": True, "message": "Effort set"}
+        )
         provider._client.set_config_option = AsyncMock()
         # Default: the session advertises an 'effort' option (modern adapter).
         provider._client.supports_config_option = MagicMock(return_value=True)
@@ -507,11 +511,46 @@ class TestEffortControl:
         with patch("kiro_crew.providers.acp._write_cli_overlay") as wco:
             ok = await provider.change_effort("xhigh")
         assert ok is True
-        provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "xhigh"})
+        provider._client.command_result.assert_awaited_once_with("/effort", args={"level": "xhigh"})
         # kiro uses the overlay, never set_config_option
         provider._client.set_config_option.assert_not_awaited()
         wco.assert_called_once()
         assert provider._effort_per_model["claude-opus-4.7"] == "xhigh"
+
+    @pytest.mark.asyncio
+    async def test_kiro_change_effort_clamps_wire_level_to_model_but_keeps_pick(self):
+        # Sonnet 4.6 has no xhigh (kiro-cli 2.21.4 probe). The pick is stored as
+        # made — it is xhigh again after a switch back to Opus — while the wire
+        # and the spawn overlay carry the nearest level this model accepts.
+        provider = self._effort_provider(backend="", model="claude-sonnet-4.6")
+        with patch("kiro_crew.providers.acp._write_cli_overlay") as wco:
+            ok = await provider.change_effort("xhigh")
+        assert ok is True
+        provider._client.command_result.assert_awaited_once_with("/effort", args={"level": "high"})
+        assert wco.call_args.args[2] == "high"
+        assert provider._effort_per_model["claude-sonnet-4.6"] == "xhigh"
+
+    @pytest.mark.asyncio
+    async def test_kiro_change_effort_rejected_result_rolls_back_and_raises(self):
+        # kiro-cli reports a refused level as a NORMAL result with success:false
+        # (not a JSON-RPC error). That must be a failure — rolled back and
+        # raised so the handler resets — not a silently "applied" level.
+        from kiro_crew.acp.client import AcpError
+
+        provider = self._effort_provider(backend="", model="claude-opus-4.7")
+        provider._client.command_result = AsyncMock(
+            return_value={
+                "success": False,
+                "message": "invalid value 'max' for 'output_config.effort'",
+            }
+        )
+        with (
+            patch("kiro_crew.providers.acp._write_cli_overlay"),
+            patch("kiro_crew.providers.acp._clear_cli_overlay_effort"),
+            pytest.raises(AcpError),
+        ):
+            await provider.change_effort("max")
+        assert "claude-opus-4.7" not in provider._effort_per_model
 
     @pytest.mark.asyncio
     async def test_claude_change_effort_uses_set_config_option(self):
@@ -684,7 +723,7 @@ class TestEffortControl:
         with patch("kiro_crew.providers.acp._write_cli_overlay") as wco:
             ok = await provider.change_effort("max")
         assert ok is True
-        provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "max"})
+        provider._client.command_result.assert_awaited_once_with("/effort", args={"level": "max"})
         wco.assert_called_once()
         assert provider._effort_per_model["gpt-5.6-luna"] == "max"
 

@@ -66,12 +66,10 @@ describe('ReasoningEffortDropdown — level label localisation', () => {
     expect(screen.queryByText('High')).toBeNull()
   })
 
-  it('localises the inherited-default label too', async () => {
+  it('localises the configured default as the effective level', async () => {
     await i18next.changeLanguage('zh-CN')
     wrap(<ReasoningEffortDropdown {...baseProps} currentEffort="" defaultEffort="high" />)
-    const expected = i18next.t('components.reasoningEffortDropdown.default_with_level', {
-      level: i18next.t('lib.effort.high'),
-    }) as string
+    const expected = i18next.t('lib.effort.high') as string
     await waitFor(() => expect(screen.getAllByText(expected).length).toBeGreaterThan(0))
     expect(screen.queryByText(/^Default/)).toBeNull()
   })

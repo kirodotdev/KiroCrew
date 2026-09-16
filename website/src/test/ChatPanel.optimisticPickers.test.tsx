@@ -118,9 +118,14 @@ async function openSelect(label: string) {
   return trigger
 }
 
+import { modelDisplayName } from '../lib/modelDisplayName'
+
+/** Open `label`'s select and click the option for model id `optionName`. Rows
+ *  are labelled by display name, so the lookup goes through the same table
+ *  the panel renders with; callers keep speaking in the ids they assert on. */
 async function pick(label: string, optionName: string) {
   const trigger = await openSelect(label)
-  fireEvent.click(screen.getByRole('option', { name: optionName }))
+  fireEvent.click(screen.getByRole('option', { name: modelDisplayName(optionName) }))
   return trigger
 }
 
@@ -142,7 +147,7 @@ describe('ChatPanel — optimistic default model', () => {
     // Pre-settle: the trigger already shows the pick while the PATCH promise
     // is still open, and the config has NOT been refetched — the only way to
     // display it this early is the optimistic pending value.
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
     expect(patchConfigMock).toHaveBeenCalledWith('agent.model', 'claude-opus-4.8')
     expect(kirocrewConfigMock).toHaveBeenCalledTimes(1)
 
@@ -150,7 +155,7 @@ describe('ChatPanel — optimistic default model', () => {
     serverAgent = { model: 'claude-opus-4.8', reasoning_effort: '' }
     resolve({})
     await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
-    expect(trigger).toHaveTextContent('claude-opus-4.8')
+    expect(trigger).toHaveTextContent('Claude Opus 4.8')
   })
 
   it('reconciles to the server value when the refetch reports a different one', async () => {
@@ -158,13 +163,13 @@ describe('ChatPanel — optimistic default model', () => {
     wrap(<ChatPanel />)
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
 
     // The backend normalises the pick to something else; once the mutation
     // settles the picker must show the SERVER's answer, not the local one.
     serverAgent = { model: 'claude-haiku-4.5', reasoning_effort: '' }
     resolve({})
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-haiku-4.5'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Haiku 4.5'))
   })
 
   it('rolls back to the persisted model when the PATCH rejects', async () => {
@@ -172,7 +177,7 @@ describe('ChatPanel — optimistic default model', () => {
     wrap(<ChatPanel />)
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
 
     reject(new Error('boom'))
     expect(await screen.findByText(/Failed to save default model/)).toBeInTheDocument()
@@ -237,14 +242,14 @@ describe('ChatPanel — optimistic fallback model', () => {
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Fallback model', 'claude-opus-4.8')
 
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
     expect(patchConfigMock).toHaveBeenCalledWith('agent.fallback_model', 'claude-opus-4.8')
     expect(kirocrewConfigMock).toHaveBeenCalledTimes(1)
 
     serverAgent = { fallback_model: 'claude-opus-4.8' }
     resolve({})
     await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
-    expect(trigger).toHaveTextContent('claude-opus-4.8')
+    expect(trigger).toHaveTextContent('Claude Opus 4.8')
   })
 
   it('shows "Disabled" ("") optimistically and rolls it back when the PATCH rejects', async () => {
@@ -277,22 +282,22 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const fallbackTrigger = await pick('Fallback model', 'claude-haiku-4.5')
     const modelTrigger = await pick('Default Model', 'claude-opus-4.8')
-    await waitFor(() => expect(fallbackTrigger).toHaveTextContent('claude-haiku-4.5'))
-    await waitFor(() => expect(modelTrigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(fallbackTrigger).toHaveTextContent('Claude Haiku 4.5'))
+    await waitFor(() => expect(modelTrigger).toHaveTextContent('Claude Opus 4.8'))
 
     // Y (fallback) FAILS while X (default model) is still in flight: only the
     // fallback display may roll back — the model pick must survive.
     ds[0].reject(new Error('boom'))
     expect(await screen.findByText(/Failed to save fallback model/)).toBeInTheDocument()
     await waitFor(() => expect(fallbackTrigger).toHaveTextContent('Auto (recommended)'))
-    expect(modelTrigger).toHaveTextContent('claude-opus-4.8')
+    expect(modelTrigger).toHaveTextContent('Claude Opus 4.8')
 
     // X SUCCEEDS: its settle-time refetch reports the model as persisted. The
     // display keeps it, and nothing else on the panel moved.
     serverAgent = { model: 'claude-opus-4.8', reasoning_effort: '', fallback_model: 'auto' }
     ds[1].resolve({})
     await waitFor(() => expect(kirocrewConfigMock.mock.calls.length).toBeGreaterThan(1))
-    expect(modelTrigger).toHaveTextContent('claude-opus-4.8')
+    expect(modelTrigger).toHaveTextContent('Claude Opus 4.8')
     expect(fallbackTrigger).toHaveTextContent('Auto (recommended)')
   })
 
@@ -307,14 +312,14 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await pick('Default Model', 'claude-haiku-4.5')
     await pick('Default Model', 'claude-opus-4.8')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
     expect(patchConfigMock).toHaveBeenCalledTimes(3)
 
     // First A settles (serverAgent still 'auto'); B and the second A are in
     // flight, so the trigger must keep showing the latest pick.
     ds[0].resolve({})
     await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
-    expect(trigger).toHaveTextContent('claude-opus-4.8')
+    expect(trigger).toHaveTextContent('Claude Opus 4.8')
 
     // The remaining mutations settle. The server reports a normalised value,
     // so the trigger moving to it proves BOTH later mutations settled, the
@@ -322,7 +327,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     serverAgent = { model: 'claude-haiku-4.5', reasoning_effort: '' }
     ds[1].resolve({})
     ds[2].resolve({})
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-haiku-4.5'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Haiku 4.5'))
   })
 
   it('clears a stale failure banner when a new pick starts', async () => {
@@ -339,7 +344,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     await waitFor(() =>
       expect(screen.queryByText(/Failed to save default model/)).not.toBeInTheDocument()
     )
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-haiku-4.5'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Haiku 4.5'))
   })
 
   it('does NOT clear a failure banner that came from a non-picker save', async () => {
@@ -361,7 +366,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // would race the microtask cascade.
     serverAgent = { model: 'claude-opus-4.8', reasoning_effort: '' }
     const trigger = await pick('Default Model', 'claude-opus-4.8')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
     expect(screen.getByText(/Failed to save auto-compact threshold/)).toBeInTheDocument()
   })
 
@@ -380,7 +385,7 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     // assertion holds past settle (same reasoning as the test above).
     serverAgent = { model: 'claude-opus-4.8', reasoning_effort: '', fallback_model: 'auto' }
     const trigger = await pick('Default Model', 'claude-opus-4.8')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
     expect(screen.getByText(/Failed to save fallback model/)).toBeInTheDocument()
 
     // Re-picking the FALLBACK itself does clear its own stale failure.
@@ -399,12 +404,12 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await pick('Default Model', 'claude-haiku-4.5')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-haiku-4.5'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Haiku 4.5'))
 
     ds[0].reject(new Error('boom'))
     serverAgent = { model: 'claude-haiku-4.5', reasoning_effort: '' }
     ds[1].resolve({})
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-haiku-4.5'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Haiku 4.5'))
     expect(screen.queryByText(/Failed to save default model/)).not.toBeInTheDocument()
   })
 
@@ -416,13 +421,13 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     wrap(<ChatPanel />)
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
 
     kirocrewConfigMock.mockImplementationOnce(() => Promise.reject(new Error('offline')) as never)
     resolve({})
     await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
     // Overlay cleared, refetch failed — the cache write keeps the pick shown.
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
   })
 
   it("a superseded pick's own settle never writes its value over a newer settled pick", async () => {
@@ -435,20 +440,20 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
     await pick('Default Model', 'claude-haiku-4.5')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-haiku-4.5'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Haiku 4.5'))
 
     // B (the newer pick) settles first; the server reports B.
     serverAgent = { model: 'claude-haiku-4.5', reasoning_effort: '' }
     ds[1].resolve({})
     await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-haiku-4.5'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Haiku 4.5'))
 
     // A settles late and its refetch fails: only a wrongful cache write
     // could change the display now.
     kirocrewConfigMock.mockImplementationOnce(() => Promise.reject(new Error('offline')) as never)
     ds[0].resolve({})
     await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(3))
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-haiku-4.5'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Haiku 4.5'))
   })
 
   it('refetches after a failed PATCH so a server-side apply is not rolled back blind', async () => {
@@ -458,14 +463,14 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     wrap(<ChatPanel />)
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
 
     // The server actually applied the write before answering 5xx.
     serverAgent = { model: 'claude-opus-4.8', reasoning_effort: '' }
     reject(new Error('boom'))
     expect(await screen.findByText(/Failed to save default model/)).toBeInTheDocument()
     await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
   })
 
   it('keeps the server\'s unadvertised model listed while a pick is in flight', async () => {
@@ -477,12 +482,12 @@ describe('ChatPanel — pending ownership and reconciliation edges', () => {
     wrap(<ChatPanel />)
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     const trigger = await pick('Default Model', 'claude-opus-4.8')
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
 
     fireEvent.click(trigger)
     const labels = screen.getAllByRole('option').map(o => o.textContent)
     expect(labels).toContain('claude-opus-4.7-retired')
-    expect(labels).toContain('claude-opus-4.8')
+    expect(labels).toContain('Claude Opus 4.8')
     resolve({})
   })
 })

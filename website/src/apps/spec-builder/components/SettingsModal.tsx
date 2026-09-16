@@ -20,6 +20,7 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import Modal from '../../../components/Modal'
 import SimpleSelect from '../../../components/SimpleSelect'
 import { useAvailableModels } from '../../../hooks/useAvailableModels'
+import { modelDisplayName } from '../../../lib/modelDisplayName'
 
 import { i18nT } from '../../../i18n/t'
 export interface SettingsModalProps {
@@ -128,6 +129,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       <SimpleSelect
         aria-label={i18nT('apps.specBuilder.components.settingsModal.spec_generation_model')}
         options={availableModels.map((m) => m.name).filter((n) => n !== 'auto')}
+        optionLabels={availableModels.filter((m) => m.name !== 'auto').map((m) => modelDisplayName(m.name))}
         clearLabel={i18nT('apps.specBuilder.components.settingsModal.model_default_inherit')}
         triggerFallback={model || undefined}
         value={model}

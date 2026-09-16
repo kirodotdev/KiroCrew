@@ -20,6 +20,7 @@ import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
+import { hasModelDisplayName, modelDisplayName } from '../../lib/modelDisplayName'
 import { isMac } from '../../utils/platform'
 import { readBusySendDefault, setBusySendDefault, type BusySendMode } from '../../components/BusySendButton'
 import { platformShortcut } from '../../utils/platform'
@@ -738,7 +739,7 @@ export function ChatPanel() {
         ? i18nT('pages.settings.chatPanel.fallback_disabled')
         : m === 'auto'
           ? i18nT('pages.settings.chatPanel.fallback_auto')
-          : m,
+          : modelDisplayName(m),
     )
 
   const [localKeepChars, setLocalKeepChars] = useState('')
@@ -873,8 +874,22 @@ export function ChatPanel() {
   // enabled state tracks the trigger the user is looking at, not a value the
   // refetch has yet to replace.
   const effortSupported = modelSupportsEffort(shownDefaultModel)
+  // The composer's effort picker caches the value a session inherits under its
+  // own key (`['default-effort', crew]`, ChatPage), fed by the backend resolver
+  // rather than by the config object — so a saved effort tier must retire that
+  // cache too, or an open tab keeps marking the previous default until reload.
+  const effortConfigOpts = (path: string, errMsg: (err: unknown) => string) => {
+    const base = optimisticConfigOpts(path, errMsg)
+    return {
+      ...base,
+      onSuccess: async (...args: Parameters<typeof base.onSuccess>) => {
+        await base.onSuccess(...args)
+        await qc.invalidateQueries({ queryKey: ['default-effort'] })
+      },
+    }
+  }
   const defaultEffortMut = useMutation(
-    optimisticConfigOpts('agent.reasoning_effort', () =>
+    effortConfigOpts('agent.reasoning_effort', () =>
       i18nT('pages.settings.chatPanel.failed_to_save_default_reasoning_effort')
     )
   )
@@ -902,7 +917,7 @@ export function ChatPanel() {
     return opts
   }
   const roleModelLabels = (opts: string[]): string[] =>
-    opts.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.role_model_auto') : m))
+    opts.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.role_model_auto') : modelDisplayName(m)))
   // One array per row, shared by `options` and `optionLabels`: SettingsSelect
   // pairs a label to a value by INDEX, so both props must read the same list.
   const backgroundModelOpts = roleModelOptions(shownBackgroundModel, backgroundModel)
@@ -933,10 +948,10 @@ export function ChatPanel() {
   const subEffortSupported = modelSupportsEffort(shownSubagentModel !== 'auto' ? shownSubagentModel : shownDefaultModel)
   const effortLabels = EFFORT_LEVELS.map(l => (l === '' ? i18nT('pages.settings.chatPanel.model_default') : effortLabel(l)))
   const backgroundEffortMut = useMutation(
-    optimisticConfigOpts('agent.role_efforts.background', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
+    effortConfigOpts('agent.role_efforts.background', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
   )
   const subagentEffortMut = useMutation(
-    optimisticConfigOpts('agent.role_efforts.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
+    effortConfigOpts('agent.role_efforts.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
   )
 
   // ── Plain diffs (localStorage, browser-local) ──
@@ -1018,7 +1033,7 @@ export function ChatPanel() {
             hint={i18nT('pages.settings.chatPanel.default_defers_to_your_agent_config_and_then_to')}
             value={shownDefaultModel}
             options={modelOptions}
-            optionLabels={modelOptions.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.default_auto') : m))}
+            optionLabels={modelOptions.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.default_auto') : modelDisplayName(m)))}
             onChange={v => defaultModelMut.mutate(v)}
             disabled={!mcQ.isSuccess}
           />
@@ -1027,7 +1042,8 @@ export function ChatPanel() {
             description={i18nT('pages.settings.chatPanel.selectable_models_description')}
             options={availableModels.map(model => ({
               value: model.name,
-              label: model.name,
+              label: modelDisplayName(model.name),
+              opaqueLabel: !hasModelDisplayName(model.name),
               description: model.name === 'auto'
                 ? i18nT('pages.settings.chatPanel.auto_always_visible')
                 : model.description,
@@ -1048,6 +1064,9 @@ export function ChatPanel() {
             summary={modelPickerSummary}
             searchPlaceholder={i18nT('pages.settings.chatPanel.search_models')}
             disabled={!dashQ.isSuccess || !availableModelsQ.isSuccess || availableModelsQ.isDegraded}
+            // The list stands in the page: this is where the user manages which
+            // models the picker offers, and a dropdown hid the state it edits.
+            inline
             configKey="dashboard.model_picker_hidden_models"
             settingId="chat.selectable-models"
           />

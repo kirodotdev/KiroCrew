@@ -9,6 +9,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
+import { modelDisplayName } from '../../lib/modelDisplayName'
 import GrillTree from './GrillTree'
 import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles, GrillNode } from './grillTreeModel'
 
@@ -312,7 +313,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
             sit next to the clearLabel row as a second "default" with different
             mechanics ('' inherits the research agent's pin; 'auto' overrides it
             with an explicit pin subject to the availability withhold). */}
-        {executionMode === 'agent' && <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.model')}</span><SimpleSelect aria-label={i18nT('apps.autoResearch.researchLabPage.model')} options={availableModels.map(m => m.name).filter(n => n !== 'auto')} clearLabel={i18nT('apps.autoResearch.researchLabPage.model_default_inherit')} value={model} onChange={setModel} /></div>}
+        {executionMode === 'agent' && <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.model')}</span><SimpleSelect aria-label={i18nT('apps.autoResearch.researchLabPage.model')} options={availableModels.map(m => m.name).filter(n => n !== 'auto')} optionLabels={availableModels.filter(m => m.name !== 'auto').map(m => modelDisplayName(m.name))} clearLabel={i18nT('apps.autoResearch.researchLabPage.model_default_inherit')} value={model} onChange={setModel} /></div>}
       </div>}
 
       {step === 2 && <div className="space-y-3">

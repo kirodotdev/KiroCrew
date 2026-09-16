@@ -7114,7 +7114,6 @@
       "close": "Cerrar"
     },
     "modelDropdownList": {
-      "auto_default": "Predeterminado",
       "credit_multiplier": "{{value}} el coste en créditos de Auto",
       "credit_multiplier_baseline": "{{value}}, el coste en créditos de referencia",
       "loading_models": "Cargando modelos…",
@@ -7442,15 +7441,13 @@
       "title_md": "Ancho medio"
     },
     "reasoningEffortDropdown": {
-      "default_with_level": "Predeterminado · {{level}}",
-      "effort": "Esfuerzo",
-      "effort_help": "El esfuerzo de razonamiento define cuánto tiempo piensa el modelo antes de responder. Más esfuerzo significa más tiempo razonando problemas difíciles (respuestas más lentas y mejores); menos esfuerzo es más rápido. Al desactivar la anulación por sesión, se vuelve al valor predeterminado de Ajustes → Chat o, si no hay ninguno definido, a la elección del propio modelo (solo Fable/Opus/Sonnet).",
+      "effort": "Intensidad de razonamiento",
+      "effort_help": "El esfuerzo de razonamiento define cuánto piensa el modelo antes de responder. Más alto significa más tiempo para problemas difíciles (más lento, mejores respuestas); más bajo es más rápido. Un nivel elegido aquí queda fijado para esta sesión. Solo se ofrecen los niveles que acepta el modelo seleccionado.",
       "faster": "Más rápido",
-      "configured_default_marker": "Valor predeterminado configurado",
       "reasoning_effort": "Esfuerzo de razonamiento",
       "smarter": "Más inteligente",
-      "use_configured_default": "Usar el valor predeterminado configurado",
-      "use_model_default": "Usar el predeterminado del modelo"
+      "model_default": "El modelo decide",
+      "effort_clamped": "{{model}} no admite «{{requested}}»; se cambió a «{{effective}}»."
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Añade un registro de la organización para descubrir apps específicas del equipo",
@@ -8803,7 +8800,8 @@
       "low": "Bajo",
       "max": "Máximo",
       "medium": "Medio",
-      "xhigh": "Muy alto"
+      "xhigh": "Muy alto",
+      "none": "Desactivado"
     },
     "sttProviders": {
       "downloading_decoder": "Descargando el decodificador de audio: {{pct}} ({{done}} de {{total}})",

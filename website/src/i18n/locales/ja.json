@@ -6908,7 +6908,6 @@
       "close": "閉じる"
     },
     "modelDropdownList": {
-      "auto_default": "デフォルト",
       "credit_multiplier": "Auto のクレジット消費量の {{value}}",
       "credit_multiplier_baseline": "{{value}}、クレジット消費量の基準",
       "loading_models": "モデルを読み込み中…",
@@ -7220,15 +7219,13 @@
       "title_md": "中幅"
     },
     "reasoningEffortDropdown": {
-      "default_with_level": "デフォルト · {{level}}",
-      "effort": "エフォート",
-      "effort_help": "推論エフォートは、モデルが回答前に考える時間を設定します。高いほど難しい問題を長く推論するため遅くなりますが、回答品質が向上します。低いほど高速です。セッションごとの上書きをオフにすると、設定 → チャットのデフォルトへフォールバックします。デフォルトがなければモデル自身の選択を使用します（Fable/Opus/Sonnet のみ）。",
+      "effort": "思考強度",
+      "effort_help": "推論強度は、モデルが回答前にどれだけ考えるかを決めます。高いほど難しい問題に時間をかけ（遅いが良い回答）、低いほど速くなります。ここでレベルを選ぶと、このセッションに固定されます。選択中のモデルが受け付けるレベルのみ表示されます。",
       "faster": "高速",
-      "configured_default_marker": "設定済みのデフォルト",
       "reasoning_effort": "推論エフォート",
       "smarter": "スマート",
-      "use_configured_default": "設定されたデフォルトを使用",
-      "use_model_default": "モデルのデフォルトを使用"
+      "model_default": "モデルが決定",
+      "effort_clamped": "{{model}} は「{{requested}}」に対応していないため「{{effective}}」に切り替えました。"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "チームに固有のアプリを検出するために組織レジストリを追加",
@@ -8571,7 +8568,8 @@
       "low": "低",
       "max": "最大",
       "medium": "中",
-      "xhigh": "特に高い"
+      "xhigh": "特に高い",
+      "none": "オフ"
     },
     "sttProviders": {
       "downloading_decoder": "オーディオデコーダーをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",

@@ -21,6 +21,7 @@ import type { PlanStepInput } from '../../api/client'
 import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
 import { i18nT } from '../../i18n/t'
 import { ROUTING_PREFIX_RE } from '../../providers/modelRegistry'
+import { hasModelDisplayName, modelDisplayName } from '../../lib/modelDisplayName'
 import { fmtCurrency, fmtDuration, fmtNumber, fmtUnit } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -31,13 +32,21 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  *  API cost (claude_code). Zero fields are omitted by the backend. */
 export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number; model?: string }
 
-/** Trim a served model id to a compact footer label: drop region/vendor
- *  routing prefixes ("global.anthropic.claude-opus-4-8[1m]" → "claude-opus-4-8[1m]").
- *  The full untrimmed id stays available in the footer tooltip, so this only
- *  affects the inline label. Unknown shapes pass through unchanged. Shares the
- *  one routing-prefix pattern with the registry fold (providers/modelRegistry.ts). */
+/** The footer label for a served model id: drop region/vendor routing prefixes
+ *  ("global.anthropic.claude-opus-4-8[1m]" → "claude-opus-4-8[1m]"), then use
+ *  the same display name the picker shows ("gpt-5.5" → "GPT-5.5") when the
+ *  table knows the id. The full untrimmed id stays available in the footer
+ *  tooltip, so this only affects the inline label. Unknown ids pass through
+ *  unchanged. Shares the one routing-prefix pattern with the registry fold
+ *  (providers/modelRegistry.ts). */
 export function fmtTurnModel(id: string): string {
-  return id.replace(ROUTING_PREFIX_RE, '')
+  return modelDisplayName(id.replace(ROUTING_PREFIX_RE, ''))
+}
+
+/** True when the footer label is a display name rather than a raw id, so the
+ *  row can drop the monospace it reserves for identifiers. */
+export function turnModelIsDisplayName(id: string): boolean {
+  return hasModelDisplayName(id.replace(ROUTING_PREFIX_RE, ''))
 }
 
 /** "8.4s" under 10s, "42s" under a minute, "2m 34s" beyond. */
@@ -329,10 +338,11 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       : hasCredits ? i18nT('pages.chat.assistantMessage.turn_took_credits', { elapsed, credits })
       : hasCost ? i18nT('pages.chat.assistantMessage.turn_took_cost', { elapsed, cost })
       : i18nT('pages.chat.assistantMessage.turn_took', { elapsed })
-    // The tooltip carries the FULL untrimmed model id (the inline label is
-    // shortened by fmtTurnModel), so the profile/region routing detail stays
-    // one hover away instead of widening the footer line.
-    return turnStats.model ? `${base} · ${i18nT('pages.chat.assistantMessage.turn_model', { model: turnStats.model })}` : base
+    // The tooltip names the model the way the picker and the inline label do.
+    // The raw id is not repeated here: the picker row's title, the config and
+    // the backend logs already carry it for anyone debugging.
+    if (!turnStats.model) return base
+    return `${base} · ${i18nT('pages.chat.assistantMessage.turn_model', { model: fmtTurnModel(turnStats.model) })}`
   })()
 
   // The overflow menu lives IN the footer action row, in EVERY state. Upstream
@@ -553,13 +563,16 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         {(() => {
           const credits = turnStats.credits ?? 0
           const cost = turnStats.cost_usd ?? 0
+          // Same unit word and currency formatting as the tooltip and the
+          // account pill, so a zh-CN reader sees "额度", not an English unit
+          // wedged between a localized model name and a localized duration.
           const billed = credits > 0
-            ? `${fmtCredits(credits)} credits`
-            : cost > 0 ? `$${cost.toFixed(cost < 0.01 ? 4 : 2)}` : ''
+            ? `${fmtCredits(credits)} ${i18nT('app.credits')}`
+            : cost > 0 ? fmtCurrency(cost, 'USD', { maximumFractionDigits: cost < 0.01 ? 4 : 2, minimumFractionDigits: 2 }) : ''
           return <>
             {/* Model leads (what served), then cost (what it took), then time.
                 Trimmed for width; the untrimmed id is in the footer tooltip. */}
-            {turnStats.model && <span className="font-mono" data-testid="turn-model">{fmtTurnModel(turnStats.model)} ·</span>}
+            {turnStats.model && <span className={turnModelIsDisplayName(turnStats.model) ? '' : 'font-mono'} data-testid="turn-model">{fmtTurnModel(turnStats.model)} ·</span>}
             {billed && <span>{billed} ·</span>}
             <Clock size={11} aria-hidden="true" />
             <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>

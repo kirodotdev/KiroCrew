@@ -6908,7 +6908,6 @@
       "close": "关闭"
     },
     "modelDropdownList": {
-      "auto_default": "默认",
       "credit_multiplier": "积分消耗为 Auto 的 {{value}}",
       "credit_multiplier_baseline": "{{value}}，积分消耗基准",
       "loading_models": "正在加载模型…",
@@ -7220,15 +7219,13 @@
       "title_md": "中等宽度"
     },
     "reasoningEffortDropdown": {
-      "default_with_level": "默认 · {{level}}",
-      "effort": "强度",
-      "effort_help": "推理强度决定模型在回答前思考多久。强度越高，用于思考难题的时间越长（更慢，但答案更好）；越低则越快。关闭会话级覆盖后，会回退到“设置 → 聊天”中的默认值，或在未设置默认值时交由模型自行决定（仅 Fable/Opus/Sonnet）。",
+      "effort": "思考强度",
+      "effort_help": "推理强度决定模型在回答前思考多久。强度越高，用于思考难题的时间越长（更慢，但答案更好）；越低则越快。在此选择档位后即固定为本会话的档位。只提供当前所选模型支持的档位。",
       "faster": "更快",
-      "configured_default_marker": "已配置默认值",
       "reasoning_effort": "推理强度",
       "smarter": "更聪明",
-      "use_configured_default": "使用已配置的默认值",
-      "use_model_default": "使用模型默认值"
+      "model_default": "由模型决定",
+      "effort_clamped": "{{model}} 不支持“{{requested}}”，已切换到“{{effective}}”。"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "添加组织注册表以发现团队专属应用",
@@ -8571,7 +8568,8 @@
       "low": "低",
       "max": "最高",
       "medium": "中",
-      "xhigh": "超高"
+      "xhigh": "超高",
+      "none": "关"
     },
     "sttProviders": {
       "downloading_decoder": "正在下载音频解码器：{{pct}}（{{done}} / {{total}}）",

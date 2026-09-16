@@ -13,9 +13,12 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.effort import (
     EFFORT_LEVELS,
     EFFORT_VALUES,
+    effort_for_model,
+    effort_levels_for_model,
     effort_settings_key,
     is_valid_effort,
     model_supports_effort,
+    nearest_supported_effort,
     resolve_effort_for_model,
 )
 from kiro_crew.providers.acp import (
@@ -26,19 +29,89 @@ from kiro_crew.providers.acp import (
 
 
 class TestEffortVocabulary:
-    def test_levels_include_xhigh_ordered(self):
-        assert EFFORT_LEVELS == ("low", "medium", "high", "xhigh", "max")
+    def test_levels_include_none_and_xhigh_ordered(self):
+        assert EFFORT_LEVELS == ("none", "low", "medium", "high", "xhigh", "max")
 
     def test_values_add_empty_sentinel(self):
-        assert EFFORT_VALUES == frozenset({"", "low", "medium", "high", "xhigh", "max"})
+        assert EFFORT_VALUES == frozenset({"", "none", "low", "medium", "high", "xhigh", "max"})
 
-    @pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
+    @pytest.mark.parametrize("level", ["none", "low", "medium", "high", "xhigh", "max"])
     def test_is_valid_effort_true(self, level: str):
         assert is_valid_effort(level)
 
     @pytest.mark.parametrize("bad", ["", "LOW", "ultra", " low", 5, None, ["max"]])
     def test_is_valid_effort_false(self, bad: object):
         assert not is_valid_effort(bad)
+
+
+class TestEffortLevelsForModel:
+    """The kiro-cli 2.21.4 probe table; mirrors website/src/lib/effort.ts."""
+
+    @pytest.mark.parametrize(
+        "model",
+        ["claude-opus-5", "claude-opus-4.8", "claude-opus-4.7", "claude-sonnet-5",
+         "claude-fable-5", "claude-fable-5.1"],
+    )
+    def test_claude_full_ladder(self, model: str):
+        assert effort_levels_for_model(model) == ("low", "medium", "high", "xhigh", "max")
+
+    def test_sonnet_46_has_no_xhigh(self):
+        assert effort_levels_for_model("claude-sonnet-4.6") == ("low", "medium", "high", "max")
+
+    @pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])
+    def test_gpt_adds_none(self, model: str):
+        assert effort_levels_for_model(model) == ("none", "low", "medium", "high", "xhigh", "max")
+
+    @pytest.mark.parametrize(
+        "model",
+        ["auto", "claude-haiku-4.5", "claude-opus-4.5", "claude-sonnet-4", "claude-sonnet-4.5",
+         "deepseek-3.2", "minimax-m2.5", "glm-5", "qwen3-coder-next", "nova-pro"],
+    )
+    def test_rejecting_models_are_an_empty_tuple(self, model: str):
+        assert effort_levels_for_model(model) == ()
+
+    @pytest.mark.parametrize(
+        "model",
+        [None, "", "global.anthropic.claude-opus-4-8[1m]",
+         "anthropic.claude-sonnet-4-20250514-v1:0", "openai.gpt-6-astra[max]", "mystery-9"],
+    )
+    def test_unknown_or_provider_prefixed_ids_are_none(self, model: str | None):
+        assert effort_levels_for_model(model) is None
+
+
+class TestNearestSupportedEffort:
+    SONNET_46 = ("low", "medium", "high", "max")
+    CLAUDE = ("low", "medium", "high", "xhigh", "max")
+
+    def test_accepted_level_is_unchanged(self):
+        assert nearest_supported_effort("high", self.SONNET_46) == "high"
+
+    def test_steps_down_to_nearest_lower(self):
+        assert nearest_supported_effort("xhigh", self.SONNET_46) == "high"
+
+    def test_steps_up_only_when_nothing_lower_exists(self):
+        assert nearest_supported_effort("none", self.CLAUDE) == "low"
+
+    def test_empty_request_stays_empty(self):
+        assert nearest_supported_effort("", self.CLAUDE) == ""
+
+    def test_unrankable_level_yields_empty(self):
+        assert nearest_supported_effort("ultra", self.CLAUDE) == ""
+
+
+class TestEffortForModel:
+    def test_clamps_for_known_model(self):
+        assert effort_for_model("claude-sonnet-4.6", "xhigh") == "high"
+
+    def test_passes_through_for_unknown_model(self):
+        assert effort_for_model("global.anthropic.claude-opus-4-8[1m]", "xhigh") == "xhigh"
+
+    def test_passes_through_for_rejecting_model(self):
+        # Nothing to clamp toward; the caller's capability gate decides.
+        assert effort_for_model("claude-opus-4.5", "high") == "high"
+
+    def test_empty_sentinel_untouched(self):
+        assert effort_for_model("claude-sonnet-4.6", "") == ""
 
 
 class TestModelSupportsEffort:
@@ -71,6 +144,11 @@ class TestModelSupportsEffort:
             "minimax-m2.5",
             "glm-5",
             "qwen3-coder-next",
+            # kiro-cli rejects /effort on these Claude versions (2.21.4 probe);
+            # the family heuristic alone would have called them capable.
+            "claude-opus-4.5",
+            "claude-sonnet-4",
+            "claude-sonnet-4.5",
         ],
     )
     def test_unsupported(self, model: str | None):

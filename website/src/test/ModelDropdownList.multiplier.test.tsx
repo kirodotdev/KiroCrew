@@ -8,7 +8,7 @@
  * no badge rather than fall back to 1x.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 
 // `/all` for the bn/de catalogs: `../i18n` registers English only, and an
 // unregistered language resolves to `en`, which renders Latin digits.
@@ -18,7 +18,8 @@ import { withAutoFirst } from '../providers/modelList'
 
 /** The badge for `name`, or null when that row rendered none. */
 function badgeFor(name: string): HTMLElement | null {
-  const row = screen.getByText(name).closest('[role="option"]')!
+  // Rows render the display name; the id lives in data-model-name.
+  const row = document.querySelector(`[data-model-name="${name}"]`)!.closest('[role="option"]')!
   // The visible glyph is aria-hidden; find it by the mono badge class it carries.
   return row.querySelector('span.rounded-full')
 }
@@ -172,25 +173,24 @@ describe('ModelDropdownList — badge rendering', () => {
     expect(row.querySelector('[aria-hidden="true"]')).toHaveTextContent('2.2x')
   })
 
-  it('renders Auto’s short label from the catalog, not the row', () => {
+  it('does not add a misleading Default subtitle to Auto', () => {
     render(<ModelDropdownList
       models={[{ name: 'auto', description: '', rateMultiplier: 1 }]}
       activeModel="" onSelect={vi.fn()} />)
-    // The row carries no description; the label comes from
-    // components.modelDropdownList.auto_default at render time.
-    expect(screen.getByText('Default')).toBeInTheDocument()
+    expect(screen.queryByText('Default')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'More information' })).toBeNull()
   })
 
-  it('prefers the catalog label over whatever description the row carries', () => {
-    // kiro's own Auto description is long enough to unbalance the list, so the
-    // picker must not fall back to it.
+  it('shows Auto’s live description from the same info tip as other models', () => {
+    const detail = 'Models chosen by task for optimal usage and consistent quality'
     render(<ModelDropdownList models={[{
       name: 'auto',
-      description: 'Models chosen by task for optimal usage and consistent quality',
+      description: detail,
       rateMultiplier: 1,
     }]} activeModel="" onSelect={vi.fn()} />)
-    expect(screen.getByText('Default')).toBeInTheDocument()
-    expect(screen.queryByText(/Models chosen by task/)).toBeNull()
+    expect(screen.queryByText(detail)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'More information' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(detail)
   })
 
   it('does not tell a screen reader that Auto costs 1x of Auto', () => {
@@ -215,17 +215,52 @@ describe('ModelDropdownList — badge rendering', () => {
   })
 })
 
+describe('ModelDropdownList — descriptions', () => {
+  it('keeps the Internal marker inline and preserves the original text in the info tip', () => {
+    const onSelect = vi.fn()
+    const detail = 'Experimental preview with 1M context window'
+    render(<ModelDropdownList models={[{
+      name: 'gpt-5.6-sol',
+      description: `[Internal] ${detail}`,
+      rateMultiplier: 2.4,
+    }]} activeModel="" onSelect={onSelect} />)
+
+    const row = screen.getByRole('option')
+    expect(screen.getByText('[Internal]')).toBeInTheDocument()
+    expect(screen.queryByText(detail)).toBeNull()
+
+    const info = screen.getByRole('button', { name: 'More information' })
+    expect(info.className).not.toContain('rounded-full')
+    fireEvent.click(info)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(`[Internal] ${detail}`)
+    expect(onSelect).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(onSelect).toHaveBeenCalledWith('gpt-5.6-sol')
+  })
+
+  it('moves a non-Internal description into the same info tip without adding a marker', () => {
+    const detail = 'General availability model'
+    render(<ModelDropdownList models={[{
+      name: 'stable-model',
+      description: detail,
+    }]} activeModel="" onSelect={vi.fn()} />)
+
+    expect(screen.queryByText('[Internal]')).toBeNull()
+    expect(screen.queryByText(detail)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'More information' }))
+    expect(screen.getByRole('tooltip')).toHaveTextContent(detail)
+  })
+})
+
 describe('withAutoFirst — Auto keeps the multiplier it was served', () => {
-  it('folds the live auto row’s data onto the short-labelled entry', () => {
+  it('folds the live auto row’s data onto the first entry', () => {
     const [auto] = withAutoFirst([
       { name: 'auto', description: 'Models chosen by task…', contextWindow: 1_000_000, rateMultiplier: 1 },
       { name: 'claude-opus-5', description: '…', rateMultiplier: 2.2 },
     ])
     expect(auto.name).toBe('auto')
-    // No English literal on the row: the short label is a catalog key resolved
-    // where it renders. Carrying 'Default' here put untranslated user-visible
-    // copy in a data module, which the i18n gate measures per-file vs the base.
-    expect(auto.description).toBe('')
+    expect(auto.description).toBe('Models chosen by task…')
     expect(auto.rateMultiplier).toBe(1)      // live data preserved
     expect(auto.contextWindow).toBe(1_000_000)
   })

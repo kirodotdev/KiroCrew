@@ -12,7 +12,7 @@ function StatefulSlider(props: React.ComponentProps<typeof Slider>) {
         value={value}
         onChange={(v) => {
           setValue(v)
-          props.onChange(v)
+          props.onChange?.(v)
         }}
       />
     </div>

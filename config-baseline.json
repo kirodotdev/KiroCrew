@@ -208,6 +208,7 @@
       "hasChildren": false,
       "enumValues": [
         "",
+        "none",
         "low",
         "medium",
         "high",

@@ -253,6 +253,7 @@
     "components.voiceDictationPanel.listening": "Status label on the voice dictation panel while the microphone is capturing. Present participle describing the app's current state, not a command to the user.",
     "hooks.usePanelTabs.git": "Tab label for the Git side-panel view in the chat right panel. \"Git\" is the version-control tool's proper name - do not translate.",
     "lib.effort.low": "Reasoning-effort level in the chat model picker: the least thinking time, fastest answers. An adjective naming an amount of effort, not a volume or a priority.",
+    "lib.effort.none": "Reasoning-effort level in the chat model picker, offered only by the GPT models: the model does no extended reasoning before answering. The off position of a switch — \"Off\" as in switched off — not \"none\" as a quantity and not a cancellation.",
     "lib.effort.max": "Reasoning-effort level in the chat model picker: the highest setting the model offers. Short for \"maximum\" — the top of a scale, not a verb.",
     "lib.sttProviders.downloading_decoder": "Progress line on the Voice settings page while the audio decoder (ffmpeg) is being fetched. Deliberately a separate key from the speech-model bar beside it, because both transfers can run at once and each has to name what it is downloading.",
     "pages.appDetailPage.github_stars": "aria-label on the star icon beside the abbreviated GitHub stargazer count in the app detail page's hero subtitle. GitHub repository stars, not a rating.",

@@ -325,109 +325,99 @@ describe('ReasoningEffortDropdown', () => {
     await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('4'))
   })
 
-  it('disables the slider while the default mode is active', async () => {
+  it('lets a slider pick replace the model default with a session override', async () => {
     renderDropdown({ currentEffort: '' })
-    const toggle = await screen.findByRole('switch', { name: 'Use model default' })
-    expect(toggle.getAttribute('aria-checked')).toBe('true')
-    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
-    expect(slider.getAttribute('aria-disabled')).toBe('true')
+    // Nothing configured anywhere: the model decides, so there is no notch to
+    // show until the user asks to customize.
+    expect(screen.getByText('Model decides')).toBeInTheDocument()
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    expect(screen.queryByRole('button', { name: 'Customize' })).toBeNull()
+    expect(screen.queryByRole('img', { name: 'Default' })).toBeNull()
+    expect(screen.queryByRole('switch')).toBeNull()
     fireEvent.keyDown(slider, { key: 'ArrowRight' })
-    expect(toggle.getAttribute('aria-checked')).toBe('true')
-    expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalled()
+    expect(screen.getByText('Extra High')).toBeInTheDocument()
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'xhigh'))
   })
 
-  it('toggling default on persists the empty sentinel; off persists a concrete level', async () => {
-    // Start explicit ('high') -> toggle on -> persists ''.
-    renderDropdown({ currentEffort: 'high' })
-    const toggle = await screen.findByRole('switch', { name: 'Use model default' })
-    expect(toggle.getAttribute('aria-checked')).toBe('false')
-    fireEvent.click(toggle)
-    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', ''))
-  })
-
-  it('toggling default off persists the slider level (not empty)', async () => {
-    renderDropdown({ currentEffort: '' })
-    const toggle = await screen.findByRole('switch', { name: 'Use model default' })
-    expect(toggle.getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(toggle)
-    // default idx for an unset slot is 'high' (index 2 of low..max).
+  it('landing on the inherited level\'s own notch is still this session\'s pick', async () => {
+    renderDropdown({ currentEffort: 'low', defaultEffort: 'high', levelsOverride: ['low', 'medium', 'high'] })
+    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    expect(slider).toHaveAttribute('aria-valuetext', 'High')
+    expect(screen.queryByRole('switch')).toBeNull()
+    // No "return to inherited" gesture exists: high is written as this
+    // session's own level, and nothing offers to clear it.
     await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'high'))
+    expect(screen.queryByRole('button', { name: /default/i })).toBeNull()
   })
 
-  // With a Settings default configured, the no-override state names the
-  // configured value ("Default · High") rather than a bare "Default", which
-  // would read as "the model decides" and hide the value the turn runs at.
-  it('names the inherited value when the slot has no override', async () => {
+  it('shows the inherited level as the level in force, not a separate UI state', async () => {
     renderDropdown({ currentEffort: '', defaultEffort: 'high' })
     await screen.findByRole('slider', { name: 'Reasoning effort' })
-    expect(screen.getByText('Default · High')).toBeInTheDocument()
+    expect(screen.getByText('High')).toBeInTheDocument()
+    expect(screen.queryByText('Default · High')).toBeNull()
+    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByRole('img', { name: 'Default' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /default/i })).toBeNull()
   })
 
-  it('labels the toggle for the configured default, not the model default', async () => {
-    renderDropdown({ currentEffort: '', defaultEffort: 'high' })
-    const toggle = await screen.findByRole('switch', { name: 'Use configured default' })
-    expect(toggle.getAttribute('aria-checked')).toBe('true')
-    expect(screen.queryByRole('switch', { name: 'Use model default' })).not.toBeInTheDocument()
-  })
-
-  it('syncs the default thumb when live levels arrive asynchronously', async () => {
+  it('syncs the inherited thumb when live levels arrive asynchronously', async () => {
     mockApi.effortLevels.mockResolvedValueOnce(['low', 'max'])
     renderDropdown({ currentEffort: '', defaultEffort: 'max' })
     const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
     await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('1'))
-    const toggle = screen.getByRole('switch', { name: 'Use configured default' })
-    fireEvent.click(toggle)
-    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'max'))
+    expect(slider).toHaveAttribute('aria-valuetext', 'Max')
+    expect(screen.queryByRole('switch')).toBeNull()
   })
 
-  it('keeps the remembered concrete pick while persisting default inheritance', async () => {
+  it('picking the notch the inherited level already shows makes it this session\'s own level', async () => {
+    renderDropdown({ currentEffort: '', defaultEffort: 'high', levelsOverride: ['low', 'medium', 'high'] })
+    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+    expect(slider).toHaveAttribute('aria-valuetext', 'High')
+    // Enter is the keyboard form of clicking the shown notch; the thumb does
+    // not move, but the session now holds high explicitly.
+    fireEvent.keyDown(slider, { key: 'Enter' })
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'high'))
+    expect(slider).toHaveAttribute('aria-valuetext', 'High')
+  })
+
+  it('picking the level the session already holds explicitly writes nothing', async () => {
+    renderDropdown({ currentEffort: 'high', defaultEffort: 'low', levelsOverride: ['low', 'medium', 'high'] })
+    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+    fireEvent.keyDown(slider, { key: 'Enter' })
+    await act(async () => { await new Promise(r => setTimeout(r, 200)) })
+    expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalled()
+  })
+
+  it('moves the thumb before persistence and rolls a rejected pick back to the level in force', async () => {
     vi.useFakeTimers()
     let rejectWrite!: (error: Error) => void
     mockApi.chatSlotReasoningEffort.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectWrite = reject }))
     try {
-      renderDropdown({ currentEffort: 'low', defaultEffort: 'high', levelsOverride: ['low', 'medium', 'high'] })
+      renderDropdown({ currentEffort: '', defaultEffort: 'high', levelsOverride: ['low', 'medium', 'high'] })
       const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
-      const toggle = screen.getByRole('switch', { name: 'Use configured default' })
-      expect(toggle).toHaveAttribute('aria-checked', 'false')
-      expect(slider).toHaveAttribute('aria-valuetext', 'Low')
-      fireEvent.click(toggle)
-      expect(toggle).toHaveAttribute('aria-checked', 'true')
-      expect(slider).toHaveAttribute('aria-disabled', 'true')
-      expect(slider).toHaveAttribute('aria-valuenow', '0')
-      expect(slider).toHaveAttribute('aria-valuetext', 'Low')
+      expect(slider).toHaveAttribute('aria-valuetext', 'High')
+      fireEvent.keyDown(slider, { key: 'ArrowLeft' })
+      expect(slider).toHaveAttribute('aria-valuenow', '1')
+      expect(slider).toHaveAttribute('aria-valuetext', 'Medium')
       expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalled()
       await act(async () => { await vi.advanceTimersByTimeAsync(150) })
-      expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', '')
-      expect(slider).toHaveAttribute('aria-valuetext', 'Low')
+      expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'medium')
       await act(async () => { rejectWrite(new Error('save failed')); await vi.advanceTimersByTimeAsync(0) })
-      expect(toggle).toHaveAttribute('aria-checked', 'false')
-      expect(slider).toHaveAttribute('aria-valuetext', 'Low')
+      expect(slider).toHaveAttribute('aria-valuetext', 'High')
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('marks the configured default independently from the current thumb', async () => {
+  it('shows only the override when one is set: no default marker, no reset', async () => {
     renderDropdown({ currentEffort: 'low', defaultEffort: 'high' })
     const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
     await vi.waitFor(() => expect(slider.getAttribute('aria-valuetext')).toBe('Low'))
-    const marker = screen.getByRole('img', { name: 'Configured default' })
-    expect(marker).toHaveAttribute('data-slider-marker')
+    expect(screen.queryByRole('img', { name: 'Default' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /default/i })).toBeNull()
     expect(slider.getAttribute('aria-valuenow')).toBe('0')
-  })
-
-  it('does not render a default marker without a configured level or when it is absent', async () => {
-    const view = renderDropdown({ defaultEffort: '' })
-    await screen.findByRole('slider', { name: 'Reasoning effort' })
-    expect(screen.queryByRole('img', { name: 'Configured default' })).toBeNull()
-    view.rerender(
-      <QueryClientProvider client={new QueryClient()}>
-        <Provider store={view.store}>
-          <ReasoningEffortDropdown slot="s1" currentEffort="low" defaultEffort="ultra" onClose={vi.fn()} levelsOverride={['low', 'medium', 'high']} />
-        </Provider>
-      </QueryClientProvider>,
-    )
-    expect(screen.queryByRole('img', { name: 'Configured default' })).toBeNull()
   })
 
   it('retains the help and Faster / Smarter labels in the inline control', async () => {
@@ -438,17 +428,37 @@ describe('ReasoningEffortDropdown', () => {
     expect(screen.getByRole('button', { name: 'More information' })).toBeInTheDocument()
   })
 
-  it('keeps the bare "Default" wording when no default is configured', async () => {
+  it('keeps the axis directly interactive when the chain ends at the model default', async () => {
     renderDropdown({ currentEffort: '', defaultEffort: '' })
-    await screen.findByRole('slider', { name: 'Reasoning effort' })
-    expect(screen.getByText('Default')).toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: 'Use model default' })).toBeInTheDocument()
+    expect(screen.getByText('Model decides')).toBeInTheDocument()
+    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+    expect(slider).toHaveAttribute('aria-valuetext', 'Model decides')
+    expect(screen.queryByRole('img', { name: 'Default' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Customize' })).toBeNull()
   })
 
-  it('an explicit per-slot override still outranks the configured default', async () => {
+  it('clamps an inherited level the model rejects to the nearest lower level it accepts', async () => {
+    renderDropdown({ currentEffort: '', defaultEffort: 'xhigh', model: 'claude-sonnet-4.6' })
+    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+    // Sonnet 4.6: low, medium, high, max — the table answers, not the live query.
+    expect(mockApi.effortLevels).not.toHaveBeenCalled()
+    expect(slider).toHaveAttribute('aria-valuemax', '3')
+    expect(slider).toHaveAttribute('aria-valuetext', 'High')
+    // The substitution note is a ChatPage toast, not part of this component.
+  })
+
+  it('shows a carried-over override at the level the current model actually runs it at', async () => {
+    renderDropdown({ currentEffort: 'xhigh', defaultEffort: 'medium', model: 'claude-sonnet-4.6' })
+    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+    expect(slider).toHaveAttribute('aria-valuetext', 'High')
+    expect(screen.getByText('High')).toBeInTheDocument()
+  })
+
+  it('an explicit per-slot override still outranks the inherited level', async () => {
     renderDropdown({ currentEffort: 'low', defaultEffort: 'max' })
     const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
     await vi.waitFor(() => expect(slider.getAttribute('aria-valuetext')).toBe('Low'))
-    expect(screen.queryByText(/Default/)).not.toBeInTheDocument()
+    expect(screen.getByText('Low')).toBeInTheDocument()
+    expect(screen.queryByText('Max')).toBeNull()
   })
 })

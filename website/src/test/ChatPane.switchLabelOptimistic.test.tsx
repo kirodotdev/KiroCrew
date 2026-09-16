@@ -99,7 +99,7 @@ describe('ChatPane — model switch updates the pane label without a slot-list r
     const slotsFetchesBeforePick = vi.mocked(api.chatSlots).mock.calls.length
 
     await act(async () => { fireEvent.click(chip) })
-    const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    const option = await waitFor(() => screen.getByRole('option', { name: /claude sonnet 5/i }))
     await act(async () => { fireEvent.click(option) })
 
     await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalledWith('pane-1', 'claude-sonnet-5'))
@@ -115,7 +115,7 @@ describe('ChatPane — model switch updates the pane label without a slot-list r
     const { store } = renderPane('pane-2')
     const chip = await waitFor(() => screen.getByTitle('Model: claude-opus-5'))
     await act(async () => { fireEvent.click(chip) })
-    const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    const option = await waitFor(() => screen.getByRole('option', { name: /claude sonnet 5/i }))
     await act(async () => { fireEvent.click(option) })
 
     await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalled())

@@ -122,7 +122,7 @@ describe('KnowledgeSettingsTab', () => {
     const modelTrigger = await screen.findByText('auto (use chat model)')
     fireEvent.click(modelTrigger)
     // Select a specific model
-    const haiku = await screen.findByText('claude-haiku-4.5')
+    const haiku = await screen.findByText('Claude Haiku 4.5')
     fireEvent.click(haiku)
     await waitFor(() =>
       expect(patchConfigMock).toHaveBeenCalledWith('knowledge.extraction_model', 'claude-haiku-4.5'),

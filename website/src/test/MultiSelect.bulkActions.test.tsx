@@ -118,3 +118,58 @@ describe('MultiSelect bulk actions', () => {
     expect(onToggle).not.toHaveBeenCalled()
   })
 })
+
+describe('MultiSelect inline', () => {
+  const options = [
+    { value: 'auto', label: 'Auto', locked: true },
+    { value: 'model-a', label: 'Model A' },
+    { value: 'model-b', label: 'Model B' },
+  ]
+
+  it('renders the list in the page with the summary as a caption and no trigger', async () => {
+    const user = userEvent.setup()
+    const onToggle = vi.fn()
+    render(
+      <MultiSelect
+        inline
+        label="Selectable Models"
+        options={options}
+        selected={new Set(['auto', 'model-a', 'model-b'])}
+        onToggle={onToggle}
+        bulkActions={[{ label: 'Deselect all', onSelect: vi.fn() }]}
+        summary="All models (3)"
+        searchPlaceholder="Search models…"
+      />,
+    )
+    expect(screen.queryByRole('button', { name: 'Selectable Models' })).toBeNull()
+    expect(screen.getByTestId('multi-select-summary')).toHaveTextContent('All models (3)')
+    // Every row is visible without opening anything; the locked row stays locked.
+    expect(screen.getByRole('checkbox', { name: 'Model A' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Auto' })).toBeDisabled()
+    // Search still narrows the list.
+    await user.type(screen.getByRole('textbox', { name: 'Search models…' }), 'B')
+    expect(screen.queryByRole('checkbox', { name: 'Model A' })).toBeNull()
+    expect(screen.getByRole('checkbox', { name: 'Model B' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Model B' }))
+    expect(onToggle).toHaveBeenCalledWith('model-b', false)
+  })
+
+  it('disabled locks the search, the bulk actions and every row rather than a closed shell', () => {
+    render(
+      <MultiSelect
+        inline
+        disabled
+        label="Selectable Models"
+        options={options}
+        selected={new Set(['auto', 'model-a'])}
+        onToggle={vi.fn()}
+        bulkActions={[{ label: 'Select all', onSelect: vi.fn() }]}
+        summary="Selected 2 / 3"
+        searchPlaceholder="Search models…"
+      />,
+    )
+    expect(screen.getByRole('textbox', { name: 'Search models…' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Select all' })).toBeDisabled()
+    expect(screen.getByRole('checkbox', { name: 'Model B' })).toBeDisabled()
+  })
+})

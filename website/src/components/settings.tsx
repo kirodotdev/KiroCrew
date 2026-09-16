@@ -184,9 +184,11 @@ interface SettingsMultiSelectProps {
   disabled?: boolean
   configKey?: string
   settingId?: string
+  /** Show the list in the page rather than behind a summary trigger. */
+  inline?: boolean
 }
 
-export function SettingsMultiSelect({ label, description, hint, options, selected, onToggle, bulkActions, summary, searchPlaceholder, disabled, configKey, settingId }: SettingsMultiSelectProps) {
+export function SettingsMultiSelect({ label, description, hint, options, selected, onToggle, bulkActions, summary, searchPlaceholder, disabled, configKey, settingId, inline }: SettingsMultiSelectProps) {
   const controlId = React.useId()
   return (
     <SettingsField label={label} description={description} hint={hint} configKey={configKey} settingId={settingId} controlId={controlId}>
@@ -200,6 +202,7 @@ export function SettingsMultiSelect({ label, description, hint, options, selecte
         summary={summary}
         searchPlaceholder={searchPlaceholder}
         disabled={disabled}
+        inline={inline}
       />
     </SettingsField>
   )

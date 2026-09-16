@@ -1,4 +1,5 @@
 import { Component, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo, lazy, Suspense } from 'react'
+import { hasModelDisplayName, modelDisplayName } from '../lib/modelDisplayName'
 import { markComposerResize } from '../utils/composerResize'
 import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
@@ -4946,7 +4947,7 @@ function ChatInput({
                           </div>
                           {modelName && (
                             <div className="mt-2 pt-2 border-t border-border flex justify-between text-[11px] font-mono">
-                              <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>
+                              <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className={`text-text truncate max-w-[120px] ${hasModelDisplayName(modelName) ? '' : 'font-mono'}`} title={modelName}>{modelDisplayName(modelName)}</span>
                             </div>
                           )}
                           {autoCompactQuery.isLoading && (
@@ -5031,8 +5032,8 @@ function ChatInput({
                   ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
                   : i18nT('components.chatInput.model_2', { name: modelName })}
             >
-              <span className="truncate max-w-[180px]">
-                {modelName}
+              <span className={`truncate max-w-[180px] ${hasModelDisplayName(modelName) ? '' : 'font-mono'}`} title={modelName}>
+                {modelDisplayName(modelName)}
               </span>
               {modelIsInheritedDefault && (
                 // Outside the truncating span: a long provider-prefixed id must

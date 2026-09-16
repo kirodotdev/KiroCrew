@@ -2874,9 +2874,9 @@
       "comment_unread_other": "{{count}} comments · unread"
     },
     "reasoningEffortDropdown": {
-      "configured_default_marker": "Configured default",
-      "default_with_level": "Default · {{level}}",
-      "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Turning off the per-session override falls back to the default in Settings → Chat, or to the model's own choice when no default is set (Fable/Opus/Sonnet only)."
+      "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Picking a level here fixes it for this session. Only the levels the selected model accepts are offered.",
+      "model_default": "Model decides",
+      "effort_clamped": "{{model}} does not support {{requested}}; switched to {{effective}}."
     },
     "readingWidthToggle": {
       "label_full": "F",
@@ -6664,7 +6664,8 @@
       "low": "Low",
       "max": "Max",
       "medium": "Medium",
-      "xhigh": "Extra High"
+      "xhigh": "Extra High",
+      "none": "Off"
     },
     "sttProviders": {
       "downloading_decoder": "Downloading the audio decoder: {{pct}} ({{done}} of {{total}})",

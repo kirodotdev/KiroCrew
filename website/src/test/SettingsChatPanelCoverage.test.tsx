@@ -99,6 +99,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { ChatPanel } from '../pages/settings/ChatPanel'
+import { modelDisplayName } from '../lib/modelDisplayName'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 
 import { Provider } from 'react-redux'
@@ -628,7 +629,7 @@ describe('ChatPanel — per-role models', () => {
     wrap()
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     await openSelect(label)
-    fireEvent.click(screen.getByRole('option', { name: 'claude-opus-4.8' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Claude Opus 4.8' }))
     await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(path, 'claude-opus-4.8'))
   })
 
@@ -639,7 +640,7 @@ describe('ChatPanel — per-role models', () => {
       wrap()
       await waitFor(() => expect(modelsMock).toHaveBeenCalled())
       await openSelect(label)
-      fireEvent.click(screen.getByRole('option', { name: 'claude-haiku-4.5' }))
+      fireEvent.click(screen.getByRole('option', { name: 'Claude Haiku 4.5' }))
       expect(await screen.findByText(/Failed to save role model/)).toBeInTheDocument()
     }
   )
@@ -652,8 +653,8 @@ describe('ChatPanel — per-role models', () => {
     const opts = await openSelect('Background Model')
     expect(opts.map(o => o.textContent)).toEqual([
       'Auto (provider picks)',
-      'claude-opus-4.8',
-      'claude-haiku-4.5',
+      'Claude Opus 4.8',
+      'Claude Haiku 4.5',
     ])
   })
 
@@ -795,10 +796,11 @@ describe('ChatPanel — optimistic model selection (#6848)', () => {
     wrap()
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     await openSelect(label)
-    fireEvent.click(screen.getByRole('option', { name: model }))
+    // Rows are labelled by display name; the id is what the PATCH carries.
+    fireEvent.click(screen.getByRole('option', { name: modelDisplayName(model) }))
     // The PATCH is still in flight — the trigger must already show the choice.
     const trigger = screen.getByRole('combobox', { name: label })
-    await waitFor(() => expect(trigger).toHaveTextContent(model))
+    await waitFor(() => expect(trigger).toHaveTextContent(modelDisplayName(model)))
     expect(patchConfigMock).toHaveBeenCalledTimes(1)
     release()
   })
@@ -821,11 +823,11 @@ describe('ChatPanel — optimistic model selection (#6848)', () => {
     wrap()
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     await openSelect('Default Model')
-    fireEvent.click(screen.getByRole('option', { name: 'claude-haiku-4.5' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Claude Haiku 4.5' }))
     expect(await screen.findByText(/Failed to save default model/)).toBeInTheDocument()
     const trigger = screen.getByRole('combobox', { name: 'Default Model' })
     await waitFor(() => expect(trigger).toHaveTextContent('Default (auto)'))
-    expect(trigger).not.toHaveTextContent('claude-haiku-4.5')
+    expect(trigger).not.toHaveTextContent('Claude Haiku 4.5')
   })
 
   it('rolls a role model back when the PATCH fails', async () => {
@@ -834,9 +836,9 @@ describe('ChatPanel — optimistic model selection (#6848)', () => {
     wrap()
     await waitFor(() => expect(modelsMock).toHaveBeenCalled())
     await openSelect('Background Model')
-    fireEvent.click(screen.getByRole('option', { name: 'claude-haiku-4.5' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Claude Haiku 4.5' }))
     expect(await screen.findByText(/Failed to save role model/)).toBeInTheDocument()
     const trigger = screen.getByRole('combobox', { name: 'Background Model' })
-    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Claude Opus 4.8'))
   })
 })
