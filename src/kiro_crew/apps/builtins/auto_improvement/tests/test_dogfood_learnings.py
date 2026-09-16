@@ -2846,6 +2846,62 @@ class TestTheLoopRunnerRefusesWithoutCredentialConfinement:
             "the provider-backed agent"
         )
 
+    def test_a_credential_hiding_agent_sandbox_passes_the_gate(self, monkeypatch) -> None:
+        """A credential-hiding ``agent.sandbox`` (``strict``/``cc``) passes the gate."""
+        from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
+        import kiro_crew.config as cfgmod
+
+        monkeypatch.setattr(R, "_unsandboxed_agent_accepted", lambda: False)
+
+        class _Agent:
+            sandbox = "strict"
+
+        class _Cfg:
+            agent = _Agent()
+
+            @staticmethod
+            def load():
+                return _Cfg()
+
+        monkeypatch.setattr(cfgmod, "KiroCrewConfig", _Cfg)
+        assert R._credentials_are_unconfined() == "", (
+            "agent.sandbox='strict' hides credential stores, so the gate must allow the run"
+        )
+
+        class _AgentCC:
+            sandbox = "cc"
+
+        class _CfgCC:
+            agent = _AgentCC()
+
+            @staticmethod
+            def load():
+                return _CfgCC()
+
+        monkeypatch.setattr(cfgmod, "KiroCrewConfig", _CfgCC)
+        assert R._credentials_are_unconfined() == "", "agent.sandbox='cc' must also pass"
+
+    def test_a_non_hiding_agent_sandbox_still_refuses(self, monkeypatch) -> None:
+        """``agent.sandbox='auto'`` still refuses and names the value, not ``'unset'``."""
+        from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
+        import kiro_crew.config as cfgmod
+
+        monkeypatch.setattr(R, "_unsandboxed_agent_accepted", lambda: False)
+
+        class _Agent:
+            sandbox = "auto"
+
+        class _Cfg:
+            agent = _Agent()
+
+            @staticmethod
+            def load():
+                return _Cfg()
+
+        monkeypatch.setattr(cfgmod, "KiroCrewConfig", _Cfg)
+        reason = R._credentials_are_unconfined()
+        assert reason and "auto" in reason, "a non-hiding sandbox must refuse and name the value"
+
 
 class TestAgentRegistrationFailsClosed:
     """A failed agent registration must NOT fall through to the default agent.
