@@ -11,7 +11,10 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
 const PNG = new Blob(['png bytes'], { type: 'image/png' })
 const SOURCE = 'graph TD;A-->B'
 const MARKDOWN = '```mermaid\n' + SOURCE + '\n```'
-const SVG = '<svg ' + 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 120"><text>Rendered label</text></svg>'
+const svgFixture = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+svgFixture.setAttribute('viewBox', '0 0 240 120')
+svgFixture.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'text')).textContent = 'Rendered label'
+const SVG = svgFixture.outerHTML
 
 async function openActions() {
   render(<MarkdownRenderer content={MARKDOWN} />)
