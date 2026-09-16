@@ -505,6 +505,33 @@ the tracking hook for that agreement: the round that makes this decision
 updates this exact paragraph, in the same commit as the code that
 implements it, per this document's own owning-spec rule.
 
+**Second open decision, same reason for being named rather than answered
+here: where `source.snapshot_ref` resolves for a reader who has only this
+repo checked out.** This spec's field-level contract for `source`
+(`{source_kind, source_id, observed_at, snapshot_ref}`) says what
+`snapshot_ref` MEANS (a pointer at the evidence that grounds a
+`source_kind` claim) but not where it physically resolves — today, that
+evidence lives in the campaign's own evidence-catalog artifacts
+(`catalog-evidence.json`, `contract-and-dag.md`), which are prepared
+outside this public repository. A manifest entry populated with a real
+`snapshot_ref` pointing into that private catalog is therefore not
+auditable by a reader who only has this repo, which is in tension with this
+document's own stated goal of being understandable and implementable from
+this repo alone. Naming a public, in-repo home for that catalog now — ahead
+of the entry-population round that will actually populate real
+`snapshot_ref` values and therefore actually needs one — would be the same
+premature "spec amended reactively" mistake the paragraph above already
+declines to make for the artifact-storage decision. The class of
+`snapshot_ref` that has no publicly resolvable path today is precisely the
+real (non-placeholder) citation pointing into the private evidence catalog,
+and its owner is the entry-population round: that round MUST name a
+public/in-repo resolution story for `source.snapshot_ref` before it ships a
+single real (non-placeholder) entry, updating this paragraph in the same
+commit, per the same owning-spec rule. (Placeholder `snapshot_ref` values
+on `not_yet_sourced` entries, and the `user_stated` kind that points at an
+in-repo statement, are already publicly resolvable and are not part of this
+open class.)
+
 ## The work-stream DAG
 
 The connector campaign's work is sequenced into numbered streams, `W00`
