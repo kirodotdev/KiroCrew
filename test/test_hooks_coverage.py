@@ -13,6 +13,7 @@ filesystem write lands under ``tmp_path``.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import platform
 import stat as _stat
@@ -488,7 +489,7 @@ class TestValidateFilePath:
         monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: None)
         assert validate_file_path(raw) is None
 
-    def _windows(self, monkeypatch, realpath=os.path.realpath):
+    def _windows(self, monkeypatch, realpath=os.path.realpath, path_module=os.path):
         """Simulate the Windows gates without patching the global os.name
         (which would make pathlib dispatch WindowsPath on a POSIX host).
         NOTE: candidate strings stay host-native under this simulation; the
@@ -505,40 +506,89 @@ class TestValidateFilePath:
             "os",
             types.SimpleNamespace(
                 name="nt",
-                sep=os.sep,
+                sep=path_module.sep,
                 # unc_probe_allowed and main's _unc_agents_root memo key read
                 # the environment through this namespace; carry the real
                 # mapping so a stub miss cannot masquerade as a product bug.
                 environ=os.environ,
+                readlink=os.readlink,
                 path=types.SimpleNamespace(
-                    expanduser=os.path.expanduser,
-                    abspath=os.path.abspath,
+                    expanduser=path_module.expanduser,
+                    abspath=path_module.abspath,
                     realpath=realpath,
-                    normcase=os.path.normcase,
-                    normpath=os.path.normpath,
-                    isabs=os.path.isabs,
-                    join=os.path.join,
-                    dirname=os.path.dirname,
+                    normcase=path_module.normcase,
+                    normpath=path_module.normpath,
+                    isabs=path_module.isabs,
+                    join=path_module.join,
+                    dirname=path_module.dirname,
+                    relpath=path_module.relpath,
                 ),
             ),
         )
 
-    def test_linked_ancestor_is_refused_before_realpath(self, tmp_path, monkeypatch):
-        """realpath resolves the whole ancestor chain, so it IS the outbound
-        SMB probe when an ancestor junction targets a UNC share.
-        Wiring realpath to explode proves the walk returned first."""
+    def test_local_junction_ancestor_is_rewritten_before_realpath(self, monkeypatch):
+        """The exact reported path stays clickable when ``Tasks`` is a local
+        junction. The screen replaces the linked prefix before ``realpath``
+        while preserving the descendant path."""
+        from kiro_crew import hooks as hooks_mod
         from kiro_crew import platform_compat
 
+        raw = (
+            r"C:\wbr\workflow-takeover\Tasks"
+            r"\TASK-2028 - Series Episode Table Revamp\cr-comments.md"
+        )
+        linked = r"C:\wbr\workflow-takeover\Tasks"
+        destination = r"\\?\C:\wbr\workflow-takeover-tasks"
+        expected = (
+            r"C:\wbr\workflow-takeover-tasks"
+            r"\TASK-2028 - Series Episode Table Revamp\cr-comments.md"
+        )
+        seen: list[str] = []
+
+        def _realpath(path):
+            seen.append(path)
+            return path
+
+        self._windows(monkeypatch, realpath=_realpath, path_module=ntpath)
+        monkeypatch.setattr(
+            platform_compat,
+            "first_linked_ancestor",
+            lambda path: linked if ntpath.normcase(path) == ntpath.normcase(raw) else None,
+        )
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda _p: False)
+        monkeypatch.setattr(hooks_mod.os, "readlink", lambda _p: destination)
+        monkeypatch.setattr(hooks_mod, "is_sensitive_path", lambda _p: False)
+
+        assert validate_file_path(raw) == expected
+        assert seen == [expected]
+
+    def test_junction_ancestor_aimed_at_unc_is_refused_before_realpath(self, monkeypatch):
+        """A local-looking junction aimed at an SMB share still refuses before
+        ``realpath`` can start an outbound connection."""
+        from kiro_crew import hooks as hooks_mod
+        from kiro_crew import platform_compat
+
+        raw = r"C:\wbr\workflow-takeover\Tasks\TASK-2028\cr-comments.md"
+        linked = r"C:\wbr\workflow-takeover\Tasks"
+
         def _boom(_p):  # pragma: no cover
-            raise AssertionError("realpath ran before the ancestor walk")
+            raise AssertionError("realpath ran before the ancestor target screen")
 
-        self._windows(monkeypatch, realpath=_boom)
-        monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: str(tmp_path))
-        assert validate_file_path(str(tmp_path / "doc.txt")) is None
+        self._windows(monkeypatch, realpath=_boom, path_module=ntpath)
+        monkeypatch.setattr(
+            platform_compat,
+            "first_linked_ancestor",
+            lambda path: linked if ntpath.normcase(path) == ntpath.normcase(raw) else None,
+        )
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda _p: False)
+        monkeypatch.setattr(
+            hooks_mod.os, "readlink", lambda _p: r"\\evil-host\share", raising=False
+        )
 
-    def test_bypassing_the_ancestor_guard_restores_validation(self, tmp_path, monkeypatch):
-        """Mutation check: with the walk reporting no link, the same path
-        validates again -- the refusal above is attributable to the guard."""
+        assert validate_file_path(raw) is None
+
+    def test_plain_path_still_validates_without_links(self, tmp_path, monkeypatch):
+        """A normal local path still validates when the screen finds no links."""
         from kiro_crew import platform_compat
 
         f = _write(tmp_path / "ok.txt", "x")
