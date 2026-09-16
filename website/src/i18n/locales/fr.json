@@ -5754,7 +5754,9 @@
         "app_other": "{{count}} applications",
         "categories": "CATÉGORIES",
         "first_party": "Officiel",
-        "sources": "SOURCES"
+        "sources": "SOURCES",
+        "curated_reviewed_by_the_kiro_crew_team": "Vérifié par l'équipe {{productName}}",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Publié par la communauté, non validé par l'équipe {{productName}}"
       },
       "featuredSpotlight": {
         "collection": "COLLECTION",
@@ -5814,6 +5816,10 @@
         "working": "Confiance accordée et activation...",
         "failed": "« {{app}} » n'a pas pu être activée, mais la confiance est peut-être déjà enregistrée. Choisis Réessayer, ou ouvre Paramètres → Sécurité → Applications tierces de confiance pour vérifier et la retirer.",
         "failed_generic": "« {{app}} » n'a pas pu être activée, et rien n'a été modifié. Choisis Réessayer, ou consulte les journaux de {{productName}}."
+      },
+      "registryTier": {
+        "curated": "Vérifié par l'équipe",
+        "community": "Non validé"
       }
     },
     "artifactBody": {
@@ -7459,7 +7465,12 @@
       "name_is_taken_by_a_build_pinned_registry": "« {{name}} » est le nom d'un registre fourni par cette version — choisissez-en un autre",
       "included_with_this_installation": "Inclus avec cette installation",
       "trusted_source": "Source de confiance",
-      "trusted_source_clones_with_your_git_credentials": "Source de confiance — les apps de ce registre sont clonées avec vos identifiants Git."
+      "trusted_source_clones_with_your_git_credentials": "Source de confiance — les apps de ce registre sont clonées avec vos identifiants Git.",
+      "curated_tip_credentialed": "Vérifié par l'équipe {{productName}} avant publication. Les apps sont clonées avec vos identifiants Git.",
+      "curated_tip_credential_free": "Vérifié par l'équipe {{productName}} avant publication. Les apps sont clonées sans vos identifiants Git.",
+      "community_tip_credentialed": "Publié par des contributeurs après une vérification allégée. Non validé par l'équipe {{productName}}. Les apps sont tout de même clonées avec vos identifiants Git : n'installez que des apps que vous reconnaissez.",
+      "community_tip_credential_free": "Publié par des contributeurs après une vérification allégée. Non validé par l'équipe {{productName}}. N'installez que des apps que vous reconnaissez.",
+      "registry_id": "ID : {{id}}"
     },
     "rejectDropdown": {
       "reject_all": "Tout refuser — refuser les autres sans demander",

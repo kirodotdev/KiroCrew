@@ -1108,9 +1108,24 @@ class AppsLoader(Protocol):
         never be shadowed by a stale copy that a past save persisted.
 
         Each row is the field shape of ``config.loader.ExternalRegistryConfig``
-        (``{"name", "repo", "branch", "trust"}``); dicts, not dataclass instances,
-        so a companion need not import the config module. Missing keys take the
-        dataclass default.
+        (``{"name", "repo", "branch", "label", "review", "trust"}``); dicts, not
+        dataclass instances, so a companion need not import the config module.
+        Missing keys take the dataclass default.
+
+        ``label`` and ``review`` are DISPLAY metadata the dashboard reads, and
+        neither changes any security posture — ``trust`` alone selects the
+        credential posture for cloning. ``label`` is a human name shown instead of
+        the ``name`` id (empty shows the id); it never replaces the id, because
+        cache paths and every installed app's ``_registry`` tag are keyed by it, so
+        renaming would orphan installed apps. ``review`` is one of ``""`` /
+        ``"curated"`` / ``"community"`` and says how thoroughly the registry's
+        listings were reviewed before publication: ``"curated"`` renders a
+        "Team reviewed" badge, ``"community"`` a "Not vetted" badge, and ``""``
+        renders exactly as it did before the field existed. An unrecognised value
+        DEGRADES to ``""`` (no claim) and is logged at error level; it never drops
+        the row, because this list also feeds index fetch, the trusted-host
+        allowlist and install, so a typo in a display field must not be able to
+        take a registry offline.
 
         An edition default WINS on a ``name`` collision with an operator entry.
         That direction is the fail-closed one: a registry the edition pins carries

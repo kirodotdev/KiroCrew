@@ -5554,7 +5554,9 @@
         "app_other": "{{count}} アプリ",
         "categories": "カテゴリ",
         "first_party": "ファーストパーティ",
-        "sources": "ソース"
+        "sources": "ソース",
+        "curated_reviewed_by_the_kiro_crew_team": "{{productName}} チームが確認済み",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "コミュニティ掲載、{{productName}} チームの検証なし"
       },
       "featuredSpotlight": {
         "collection": "コレクション",
@@ -5614,6 +5616,10 @@
         "working": "信頼して有効化しています…",
         "failed": "「{{app}}」をオンにできませんでしたが、信頼はすでに保存されている可能性があります。「再試行」を選ぶか、設定 → セキュリティ → 信頼済みサードパーティーアプリを開いて確認し、削除してください。",
         "failed_generic": "「{{app}}」をオンにできず、何も変更されませんでした。「再試行」を選ぶか、{{productName}} のログを確認してください。"
+      },
+      "registryTier": {
+        "curated": "チーム確認済み",
+        "community": "未検証"
       }
     },
     "artifactBody": {
@@ -7237,7 +7243,12 @@
       "name_is_taken_by_a_build_pinned_registry": "「{{name}}」はこのビルドで提供されるレジストリの名前です。別の名前を選んでください",
       "included_with_this_installation": "このインストールに含まれています",
       "trusted_source": "信頼されたソース",
-      "trusted_source_clones_with_your_git_credentials": "信頼されたソース — このレジストリのアプリは、あなたの Git 認証情報を使ってクローンされます。"
+      "trusted_source_clones_with_your_git_credentials": "信頼されたソース — このレジストリのアプリは、あなたの Git 認証情報を使ってクローンされます。",
+      "curated_tip_credentialed": "掲載前に {{productName}} チームが確認済みです。アプリはあなたの Git 認証情報でクローンされます。",
+      "curated_tip_credential_free": "掲載前に {{productName}} チームが確認済みです。アプリはあなたの Git 認証情報を使わずにクローンされます。",
+      "community_tip_credentialed": "軽度の確認のうえコントリビューターが掲載したものです。{{productName}} チームによる検証は行われていません。アプリは引き続きあなたの Git 認証情報でクローンされるため、見覚えのあるアプリのみインストールしてください。",
+      "community_tip_credential_free": "軽度の確認のうえコントリビューターが掲載したものです。{{productName}} チームによる検証は行われていません。見覚えのあるアプリのみインストールしてください。",
+      "registry_id": "ID: {{id}}"
     },
     "rejectDropdown": {
       "reject_all": "すべて拒否 — 残りは確認せずに拒否する",

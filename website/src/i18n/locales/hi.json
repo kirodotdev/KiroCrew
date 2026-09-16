@@ -5663,7 +5663,9 @@
         "app_other": "{{count}} ऐप",
         "categories": "श्रेणियाँ",
         "first_party": "फ़र्स्ट-पार्टी",
-        "sources": "स्रोत"
+        "sources": "स्रोत",
+        "curated_reviewed_by_the_kiro_crew_team": "{{productName}} टीम द्वारा समीक्षित",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "कम्युनिटी द्वारा सूचीबद्ध, {{productName}} टीम द्वारा जाँचा नहीं गया"
       },
       "featuredSpotlight": {
         "collection": "संग्रह",
@@ -5723,6 +5725,10 @@
         "working": "भरोसा देकर चालू किया जा रहा है...",
         "failed": "“{{app}}” चालू नहीं हो सका, पर भरोसा पहले ही सहेजा जा चुका हो सकता है। फिर कोशिश करें चुनें, या सेटिंग्स → सुरक्षा → भरोसेमंद तीसरे पक्ष के ऐप खोलकर जाँचें और हटाएँ।",
         "failed_generic": "“{{app}}” चालू नहीं हो सका, और कुछ भी नहीं बदला। फिर कोशिश करें चुनें, या {{productName}} के लॉग देखें।"
+      },
+      "registryTier": {
+        "curated": "टीम ने समीक्षित",
+        "community": "जाँचा नहीं गया"
       }
     },
     "artifactBody": {
@@ -7348,7 +7354,12 @@
       "name_is_taken_by_a_build_pinned_registry": "“{{name}}” इस बिल्ड द्वारा प्रदान की गई रजिस्ट्री का नाम है — कोई दूसरा चुनें",
       "included_with_this_installation": "इस इंस्टॉलेशन के साथ शामिल",
       "trusted_source": "विश्वसनीय स्रोत",
-      "trusted_source_clones_with_your_git_credentials": "विश्वसनीय स्रोत — इस रजिस्ट्री के ऐप्स इस मशीन के Git क्रेडेंशियल से क्लोन होते हैं।"
+      "trusted_source_clones_with_your_git_credentials": "विश्वसनीय स्रोत — इस रजिस्ट्री के ऐप्स इस मशीन के Git क्रेडेंशियल से क्लोन होते हैं।",
+      "curated_tip_credentialed": "सूचीबद्ध करने से पहले {{productName}} टीम ने समीक्षा की। ऐप्स तुम्हारे Git क्रेडेंशियल के साथ क्लोन होते हैं।",
+      "curated_tip_credential_free": "सूचीबद्ध करने से पहले {{productName}} टीम ने समीक्षा की। ऐप्स तुम्हारे Git क्रेडेंशियल के बिना क्लोन होते हैं।",
+      "community_tip_credentialed": "योगदानकर्ताओं ने हल्की समीक्षा के बाद सूचीबद्ध किया। {{productName}} टीम ने इसकी जाँच नहीं की। ऐप्स फिर भी तुम्हारे Git क्रेडेंशियल के साथ क्लोन होते हैं, इसलिए केवल वही ऐप्स इंस्टॉल करो जिन्हें तुम पहचानते हो।",
+      "community_tip_credential_free": "योगदानकर्ताओं ने हल्की समीक्षा के बाद सूचीबद्ध किया। {{productName}} टीम ने इसकी जाँच नहीं की। केवल वही ऐप्स इंस्टॉल करो जिन्हें तुम पहचानते हो।",
+      "registry_id": "ID: {{id}}"
     },
     "rejectDropdown": {
       "reject_all": "सभी अस्वीकार करें — बाकी को बिना पूछे अस्वीकार करें",

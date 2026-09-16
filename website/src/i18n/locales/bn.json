@@ -5663,7 +5663,9 @@
         "app_other": "{{count}}টি অ্যাপ",
         "categories": "বিভাগ",
         "first_party": "ফার্স্ট-পার্টি",
-        "sources": "সোর্স"
+        "sources": "সোর্স",
+        "curated_reviewed_by_the_kiro_crew_team": "{{productName}} টিম পর্যালোচনা করেছে",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "কমিউনিটি তালিকাভুক্ত, {{productName}} টিম যাচাই করেনি"
       },
       "featuredSpotlight": {
         "collection": "সংকলন",
@@ -5723,6 +5725,10 @@
         "working": "বিশ্বাস দিয়ে চালু করা হচ্ছে...",
         "failed": "“{{app}}” চালু করা যায়নি, তবে বিশ্বাস হয়তো ইতিমধ্যেই সংরক্ষিত হয়ে গেছে। আবার চেষ্টা করুন বেছে নিন, বা সেটিংস → নিরাপত্তা → বিশ্বাসযোগ্য তৃতীয় পক্ষের অ্যাপ খুলে দেখে নিয়ে সরিয়ে দিন।",
         "failed_generic": "“{{app}}” চালু করা যায়নি, এবং কিছুই বদলায়নি। আবার চেষ্টা করুন বেছে নিন, বা {{productName}}-এর লগ দেখুন।"
+      },
+      "registryTier": {
+        "curated": "টিম পর্যালোচিত",
+        "community": "যাচাই করা হয়নি"
       }
     },
     "artifactBody": {
@@ -7348,7 +7354,12 @@
       "name_is_taken_by_a_build_pinned_registry": "“{{name}}” এই বিল্ড দ্বারা প্রদত্ত একটি রেজিস্ট্রির নাম — অন্য একটি বেছে নিন",
       "included_with_this_installation": "এই ইনস্টলেশনের সাথে অন্তর্ভুক্ত",
       "trusted_source": "বিশ্বস্ত উৎস",
-      "trusted_source_clones_with_your_git_credentials": "বিশ্বস্ত উৎস — এই রেজিস্ট্রির অ্যাপগুলি আপনার Git ক্রেডেনশিয়াল দিয়ে ক্লোন হয়।"
+      "trusted_source_clones_with_your_git_credentials": "বিশ্বস্ত উৎস — এই রেজিস্ট্রির অ্যাপগুলি আপনার Git ক্রেডেনশিয়াল দিয়ে ক্লোন হয়।",
+      "curated_tip_credentialed": "তালিকাভুক্ত করার আগে {{productName}} টিম পর্যালোচনা করেছে। অ্যাপগুলি আপনার Git ক্রেডেনশিয়াল দিয়ে ক্লোন হয়।",
+      "curated_tip_credential_free": "তালিকাভুক্ত করার আগে {{productName}} টিম পর্যালোচনা করেছে। অ্যাপগুলি আপনার Git ক্রেডেনশিয়াল ছাড়াই ক্লোন হয়।",
+      "community_tip_credentialed": "অবদানকারীরা হালকা পর্যালোচনার পর তালিকাভুক্ত করেছেন। {{productName}} টিম এটি যাচাই করেনি। অ্যাপগুলি তবুও আপনার Git ক্রেডেনশিয়াল দিয়ে ক্লোন হয়, তাই কেবল পরিচিত অ্যাপ ইনস্টল করুন।",
+      "community_tip_credential_free": "অবদানকারীরা হালকা পর্যালোচনার পর তালিকাভুক্ত করেছেন। {{productName}} টিম এটি যাচাই করেনি। কেবল পরিচিত অ্যাপ ইনস্টল করুন।",
+      "registry_id": "ID: {{id}}"
     },
     "rejectDropdown": {
       "reject_all": "সব প্রত্যাখ্যান — বাকিগুলো না জিজ্ঞাসা করেই প্রত্যাখ্যান",

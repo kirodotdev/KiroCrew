@@ -1299,6 +1299,27 @@ already be satisfied by the one write that started it. `default_registries()`
 ships in the wheel, so an `owner` tier is a claim the build makes and the agent
 cannot forge.
 
+**Two axes, kept separate: `trust` and `review`.** `trust` answers "may this
+registry's apps clone with this machine's git credentials?"; `review` answers
+"how thoroughly were these listings reviewed before publication?" and is
+display-only. A `curated` registry at the `index` tier still clones
+credential-free, and a `community` one at the `owner` tier still clones with
+credentials — collapsing the two would make "we read the listings" hand out a
+credential. `review` is one of `""` / `"curated"` / `"community"`, and `label` is a
+display name shown instead of the `name` id. Both are build-only for the same
+reason `owner` is: `GET /api/apps/registries` reports them empty on operator rows
+and the PUT drops them, so a write into agent-writable `config.json` cannot stamp
+a source "Reviewed by the Kiro Crew team". An unrecognised `review` DEGRADES to `""` (no
+claim) and is logged at error level; it never drops the pinned row. This list
+also feeds index fetch, the trusted-host allowlist and install, so dropping would
+let a typo in a display field take a whole registry offline — its apps gone from
+the store, its installs failing, its host out of the clone-trust set. Degrading
+is not the falsely-reassuring outcome it looks like: `""` is what a build that
+never set the field renders, so a mistyped `community` shows an unbadged row
+rather than a trusted-looking one. `label` never
+replaces `name`: the id keys the index cache path and every installed app's
+`_registry` tag, so renaming would orphan installed apps.
+
 Consequences worth stating, because they close off designs that look reasonable:
 
 - The tier is only honoured for a registry that is BOTH build-pinned and in force.

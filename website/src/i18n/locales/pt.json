@@ -5754,7 +5754,9 @@
         "app_other": "{{count}} apps",
         "categories": "CATEGORIAS",
         "first_party": "Oficial",
-        "sources": "FONTES"
+        "sources": "FONTES",
+        "curated_reviewed_by_the_kiro_crew_team": "Revisado pela equipe do {{productName}}",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Publicado pela comunidade, não validado pela equipe do {{productName}}"
       },
       "featuredSpotlight": {
         "collection": "COLEÇÃO",
@@ -5814,6 +5816,10 @@
         "working": "Concedendo confiança e ativando...",
         "failed": "Não foi possível ligar o “{{app}}”, mas a confiança pode já estar salva. Escolha Tentar de novo, ou abra Configurações → Segurança → Apps de terceiros confiáveis para conferir e remover.",
         "failed_generic": "Não foi possível ligar o “{{app}}” e nada foi alterado. Escolha Tentar de novo, ou confira os logs do {{productName}}."
+      },
+      "registryTier": {
+        "curated": "Revisado pela equipe",
+        "community": "Não validado"
       }
     },
     "artifactBody": {
@@ -7459,7 +7465,12 @@
       "name_is_taken_by_a_build_pinned_registry": "“{{name}}” é o nome de um registro fornecido por esta compilação — escolha outro",
       "included_with_this_installation": "Incluído nesta instalação",
       "trusted_source": "Fonte confiável",
-      "trusted_source_clones_with_your_git_credentials": "Fonte confiável — os apps deste registro são clonados com suas credenciais do Git."
+      "trusted_source_clones_with_your_git_credentials": "Fonte confiável — os apps deste registro são clonados com suas credenciais do Git.",
+      "curated_tip_credentialed": "Revisado pela equipe do {{productName}} antes da publicação. Os apps são clonados com suas credenciais do Git.",
+      "curated_tip_credential_free": "Revisado pela equipe do {{productName}} antes da publicação. Os apps são clonados sem suas credenciais do Git.",
+      "community_tip_credentialed": "Publicado por colaboradores após uma revisão mais leve. Não validado pela equipe do {{productName}}. Os apps continuam sendo clonados com suas credenciais do Git, então instale apenas apps que você reconheça.",
+      "community_tip_credential_free": "Publicado por colaboradores após uma revisão mais leve. Não validado pela equipe do {{productName}}. Instale apenas apps que você reconheça.",
+      "registry_id": "ID: {{id}}"
     },
     "rejectDropdown": {
       "reject_all": "Rejeitar tudo — rejeitar as demais sem perguntar",

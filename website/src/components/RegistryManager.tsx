@@ -8,9 +8,9 @@ import type React from 'react'
 import { useState } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import {
-  Plus, Trash2, GitBranch, Database, ExternalLink, RefreshCw, X, ShieldCheck, Pin,
+  Plus, Trash2, GitBranch, Database, ExternalLink, RefreshCw, X, ShieldCheck, Pin, Users,
 } from 'lucide-react'
-import { api } from '../api/client'
+import { api, type ExternalRegistryRow } from '../api/client'
 import { Card, CardTitle, Btn, Input, EmptyState, Badge } from './ui'
 import InfoTip from './InfoTip'
 import Clickable from './Clickable'
@@ -20,12 +20,23 @@ import { recordEvent } from '../rum'
 import { i18nT } from '../i18n/t'
 import { fmtTimeNumeric } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
+import { orderByReview } from './appstore/registryOrder'
 // ``trust`` selects the credential posture for cloning a registry's apps, and it
 // is meaningful only on a BUILD-PINNED row: the backend resolves the trusted tier
 // solely from what the build supplies, because ``config.json`` is agent-writable.
 // An operator row therefore always reads ``index``, and the API refuses to store
 // anything else — so nothing here needs to preserve it across a save.
-type Registry = { name: string; repo: string; branch: string; trust?: string }
+//
+// ``label`` and ``review`` are build-only for the same reason, and are DISPLAY
+// metadata: ``label`` is a human name shown instead of the ``name`` id (never in
+// place of it — the id keys the index cache and installed apps' ``_registry``
+// tag), and ``review`` says how thoroughly the listings were reviewed. Neither
+// changes the credential posture.
+//
+// The shape is the API client's own row type rather than a second copy: a local
+// duplicate is what lets the two drift, and the drift would be silent because the
+// fields are structurally identical until one side gains a field.
+type Registry = ExternalRegistryRow
 
 // Shell metacharacters / whitespace that must never appear in a repo value.
 const SHELL_META = /[\s;&|`$(){}<>'"\\]/
@@ -64,6 +75,35 @@ function repoWebUrl(repo: string): string {
 }
 
 /**
+ * The review badge's hover/label text for one pinned row.
+ *
+ * Two tiers × two credential postures = four whole sentences, deliberately not
+ * assembled from fragments. The credential clause is a SECURITY fact, so it is
+ * chosen by `trust` rather than assumed: a community registry pinned at the
+ * credential-free `index` tier — the posture a community tier most likely wants —
+ * must not be described as cloning with the user's credentials. Whole strings,
+ * because gluing a review sentence to a credential sentence per language is the
+ * concatenation the i18n gates exist to catch.
+ *
+ * Returns `''` for a row with no review tier; that row shows the pre-existing
+ * trust badge instead and never reads this.
+ */
+function reviewTip(reg: Registry): string {
+  const credentialed = reg.trust === 'owner'
+  if (reg.review === 'curated') {
+    return credentialed
+      ? i18nT('components.registryManager.curated_tip_credentialed')
+      : i18nT('components.registryManager.curated_tip_credential_free')
+  }
+  if (reg.review === 'community') {
+    return credentialed
+      ? i18nT('components.registryManager.community_tip_credentialed')
+      : i18nT('components.registryManager.community_tip_credential_free')
+  }
+  return ''
+}
+
+/**
  * When ``bare`` is set the Card chrome is neutralized so the manager embeds
  * flat inside another surface (the Apps page Sources popover) — same
  * behavior, no double border/padding.
@@ -94,6 +134,23 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
   // could then no longer be moved by a build update. Empty on the public
   // default, so this renders nothing unless a deployment pins one.
   const pinned: Registry[] = data?.pinned || []
+
+  // ONE display list, ordered by review tier, so this card and the App Store
+  // SOURCES rail cannot disagree about where a community source sits — the whole
+  // point of the shared helper. Rendering the two arrays as two blocks put a
+  // community row ABOVE an operator row here and below it on the rail, so a user
+  // comparing the surfaces saw the sources swapped.
+  //
+  // The origin travels with each row rather than being inferred, because it
+  // decides which controls the row gets: a pinned row must never offer remove,
+  // and the mutating handlers keep reading `registries` alone. Ordering is
+  // display only; nothing here reaches the PUT. Stable, so rows claiming no tier
+  // keep the order the backend sent, with pinned rows still ahead of operator
+  // rows inside that middle rank.
+  const displayRows = orderByReview([
+    ...pinned.map(reg => ({ ...reg, isPinned: true })),
+    ...registries.map(reg => ({ ...reg, isPinned: false })),
+  ])
 
   const mutation = useMutation({
     mutationFn: (regs: Registry[]) => api.updateRegistries(regs),
@@ -215,43 +272,126 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         />
       ) : (
         <div className="space-y-2 mt-3">
-          {/* Pinned rows carry no remove/edit control: they come from the build,
-              not from config.json, so a delete button here would appear to work
-              and then be undone by the next read. */}
-          {pinned.map(reg => (
+          {/* ONE list, ordered by review tier, so this card and the App Store
+              SOURCES rail agree. A row's origin decides its chrome and its
+              controls: a pinned row comes from the build, not from config.json,
+              so a delete button on it would appear to work and then be undone by
+              the next read. */}
+          {displayRows.map(reg => (
             <div
-              key={`pinned:${reg.repo}`}
-              className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5 border border-border rounded-lg bg-accent/5 group"
+              key={reg.isPinned ? `pinned:${reg.repo}` : reg.repo}
+              className={`flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5 border border-border rounded-lg group ${
+                reg.isPinned ? 'bg-accent/5' : 'hover:border-accent/30 transition-colors'
+              }`}
             >
-              {/* The shield is reserved for the `owner` tier, which is the only
-                  one that clones with this machine's credentials. A pinned row
-                  defaults to the untrusted `index` tier, so a shield on every
-                  pinned row would read as "verified" and over-claim. */}
-              {reg.trust === 'owner'
-                ? <ShieldCheck size={16} className="text-accent shrink-0" aria-hidden="true" />
-                : <Pin size={16} className="text-accent shrink-0" aria-hidden="true" />}
+              {/* ONE icon per tier, the same glyph the SOURCES rail uses, so a
+                  reader comparing the surfaces is not left wondering why the same
+                  source is drawn two ways.
+
+                  The shield is reserved for a source someone is accountable for.
+                  A pinned row defaults to the untrusted `index` tier, so a shield
+                  on every pinned row would read as "verified" and over-claim.
+
+                  A `community` row never gets it, whatever its trust tier: the
+                  shield is the strongest reassurance on this card, and a source
+                  whose listings nobody vetted must not carry it beside the badge
+                  that says exactly that. It gets `Users`, which names who listed
+                  it. `curated` earns the shield because a team read the listings.
+                  `Pin` stays the untiered pinned row's mark, and an operator row
+                  keeps its own Database icon. */}
+              {!reg.isPinned
+                ? <Database size={16} className="text-accent shrink-0" />
+                : reg.review === 'community'
+                  ? <Users size={16} className="text-muted shrink-0" aria-hidden="true" />
+                  : reg.review === 'curated' || reg.trust === 'owner'
+                    ? <ShieldCheck size={16} className="text-accent shrink-0" aria-hidden="true" />
+                    : <Pin size={16} className="text-accent shrink-0" aria-hidden="true" />}
               {/* `basis-full` below `sm` gives the text its own line so the
                   always-visible controls wrap beneath it instead of landing on
                   top of the wrapped badges. */}
               <div className="basis-full sm:basis-0 sm:flex-1 min-w-0 order-last sm:order-none">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-text text-[14px] truncate">{reg.name || reg.repo}</span>
+                  {/* The label is a display name; the id stays visible beneath it
+                      as a labelled subtitle rather than being replaced. Two rows
+                      can share a label, and the id is what a support
+                      conversation, an index cache path and an installed app's
+                      `_registry` tag all name, so hiding it would leave nothing on
+                      screen to match them against. With no label the id is the
+                      title, as before. */}
+                  <span className="font-medium text-text text-[14px] truncate">{reg.label || reg.name || reg.repo}</span>
                   <Badge variant="ok">{reg.branch}</Badge>
-                  <Badge variant="muted">{i18nT('components.registryManager.included_with_this_installation')}</Badge>
-                  {/* The owner tier is the state that clones with this machine's
-                      git credentials, so it must not be carried by an icon alone:
-                      a 16px swap is undecodable and silent to a screen reader, and
-                      a shield reads "verified" rather than what it means. The text
-                      badge is the state's counterpart and the tip says what it
-                      asserts. The icons are decorative (aria-hidden) — the badges
-                      beside them already carry both meanings. */}
-                  {reg.trust === 'owner' && (
+                  {reg.isPinned && (
+                    <Badge variant="muted">{i18nT('components.registryManager.included_with_this_installation')}</Badge>
+                  )}
+                  {/* ONE badge carries the source's standing, and `review` wins
+                      when the build set it.
+
+                      Both axes must reach the user, but not as two badges: a row
+                      reading "Trusted source" beside "Community" says opposite
+                      things and the reader has to guess which governs. So the
+                      review badge names the review, and its tip states the
+                      credential posture in the same breath — which is why there
+                      are two tips per tier rather than one. The credential
+                      sentence is a security fact; picking it by `trust` keeps it
+                      true for a community registry pinned at the credential-free
+                      `index` tier, which is the posture a community tier most
+                      likely wants.
+
+                      The badge word carries the PAYLOAD, not the tier's name: a
+                      community registry is usually already called something like
+                      "Community apps", so a badge reading "Community" echoed the
+                      title and left "not vetted" reachable only in the tip. "Not
+                      vetted" is the fact, and it pairs with "Team reviewed".
+
+                      The curated badge says "Team reviewed", not "Trusted": a
+                      one-word-apart sibling of the "Trusted source" badge that
+                      still ships for an untiered owner row is undecodable, and
+                      the two mean different things — one that listings were read,
+                      one that apps clone with the user's credentials.
+
+                      Both words come from `components.appstore.registryTier`,
+                      which the SOURCES rail reads too, so one tier can never be
+                      named two things across the two surfaces.
+
+                      With no review tier this is byte-for-byte the previous
+                      behaviour: the owner tier's own badge and tip, nothing else.
+
+                      The icons are decorative (aria-hidden) — the badge beside
+                      them carries the meaning, labelled for a screen reader,
+                      because a 16px glyph swap is undecodable and silent. */}
+                  {!reg.review && reg.trust === 'owner' && (
                     <span className="inline-flex items-center gap-1">
                       <Badge variant="aim">{i18nT('components.registryManager.trusted_source')}</Badge>
                       <InfoTip text={i18nT('components.registryManager.trusted_source_clones_with_your_git_credentials')} />
                     </span>
                   )}
+                  {reg.review === 'curated' && (
+                    <span className="inline-flex items-center gap-1" title={reviewTip(reg)}>
+                      <Badge variant="aim" aria-label={reviewTip(reg)}>
+                        {i18nT('components.appstore.registryTier.curated')}
+                      </Badge>
+                      <InfoTip text={reviewTip(reg)} />
+                    </span>
+                  )}
+                  {reg.review === 'community' && (
+                    <span className="inline-flex items-center gap-1" title={reviewTip(reg)}>
+                      <Badge variant="warn" aria-label={reviewTip(reg)}>
+                        {i18nT('components.appstore.registryTier.community')}
+                      </Badge>
+                      <InfoTip text={reviewTip(reg)} />
+                    </span>
+                  )}
                 </div>
+                {/* The id subtitle is PREFIXED. Unprefixed, three near-identical
+                    strings stack up on a community row — "Community apps" as the
+                    title, "Community" on the badge, "community" underneath — and
+                    a first-time reader cannot tell the small grey word is an
+                    identifier rather than more label. */}
+                {reg.label && reg.name && (
+                  <div className="text-[11px] text-muted truncate mt-0.5">
+                    {i18nT('components.registryManager.registry_id', { id: reg.name })}
+                  </div>
+                )}
                 <div className="text-[12px] text-muted truncate flex items-center gap-1.5 mt-0.5">
                   <GitBranch size={10} className="shrink-0" />
                   {reg.repo}
@@ -272,52 +412,19 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               <Clickable
                 className={`text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 ${refreshMutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
                 onClick={() => refreshMutation.mutate(reg.repo)}
-                aria-label={i18nT('components.registryManager.refresh_registry', { name: reg.name || reg.repo })}
+                aria-label={i18nT('components.registryManager.refresh_registry', { name: reg.label || reg.name || reg.repo })}
               >
                 <RefreshCw size={14} className={refreshMutation.isPending && refreshMutation.variables === reg.repo ? 'animate-spin' : ''} />
               </Clickable>
-            </div>
-          ))}
-          {registries.map(reg => (
-            <div
-              key={reg.repo}
-              className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5 border border-border rounded-lg hover:border-accent/30 transition-colors group"
-            >
-              <Database size={16} className="text-accent shrink-0" />
-              {/* Same stacking as a pinned row: these controls are now visible
-                  without hover below `sm` (a touch viewport has no hover), so the
-                  text needs its own line or they would sit on top of it. */}
-              <div className="basis-full sm:basis-0 sm:flex-1 min-w-0 order-last sm:order-none">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-text text-[14px] truncate">{reg.name}</span>
-                  <Badge variant="ok">{reg.branch}</Badge>
-                </div>
-                <div className="text-[12px] text-muted truncate flex items-center gap-1.5 mt-0.5">
-                  <GitBranch size={10} className="shrink-0" />
-                  {reg.repo}
-                </div>
-              </div>
-              <Clickable
-                className="text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                onClick={() => window.open(repoWebUrl(reg.repo), '_blank')}
-                aria-label={i18nT('components.registryManager.open_repository', { repo: reg.repo })}
-              >
-                <ExternalLink size={14} />
-              </Clickable>
-              <Clickable
-                className={`text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 ${refreshMutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
-                onClick={() => refreshMutation.mutate(reg.repo)}
-                aria-label={i18nT('components.registryManager.refresh_registry', { name: reg.name })}
-              >
-                <RefreshCw size={14} className={refreshMutation.isPending && refreshMutation.variables === reg.repo ? 'animate-spin' : ''} />
-              </Clickable>
-              <Clickable
-                className={`text-muted hover:text-danger transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 ${mutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
-                onClick={() => handleRemove(reg.repo)}
-                aria-label={i18nT('components.registryManager.remove_registry', { name: reg.name })}
-              >
-                <Trash2 size={14} />
-              </Clickable>
+              {!reg.isPinned && (
+                <Clickable
+                  className={`text-muted hover:text-danger transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 ${mutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
+                  onClick={() => handleRemove(reg.repo)}
+                  aria-label={i18nT('components.registryManager.remove_registry', { name: reg.name })}
+                >
+                  <Trash2 size={14} />
+                </Clickable>
+              )}
             </div>
           ))}
         </div>

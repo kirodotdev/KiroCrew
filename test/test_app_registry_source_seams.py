@@ -834,3 +834,116 @@ class TestTrustTierDoesNotWidenHostTrust:
         as_index = _configured_registry_hosts()
         _with_loader(monkeypatch, [{"name": "official", "repo": FORGE, "trust": _TRUST_OWNER}])
         assert _configured_registry_hosts() == as_index
+
+
+class TestReviewTierAndLabel:
+    """``label`` and ``review`` are display metadata on a build-pinned row.
+
+    They exist because two pinned registries rendered identically in the
+    dashboard, so a community-listed source read as team-curated. They are
+    carried through ``_pinned_registries`` and reported by the API; they change
+    NO security posture, which is the property most of this class pins.
+    """
+
+    def test_both_default_to_empty(self):
+        row = ExternalRegistryConfig(repo=FORGE)
+        assert (row.label, row.review) == ("", "")
+
+    def test_a_pinned_row_carries_both(self, monkeypatch):
+        _with_config(monkeypatch, [])
+        _with_loader(
+            monkeypatch,
+            [{"name": "internal", "repo": FORGE, "label": "Internal apps", "review": "curated"}],
+        )
+        (row,) = _pinned_registries()
+        assert (row.name, row.label, row.review) == ("internal", "Internal apps", "curated")
+
+    def test_community_tier_is_carried(self, monkeypatch):
+        _with_config(monkeypatch, [])
+        _with_loader(monkeypatch, [{"name": "community", "repo": FORGE, "review": "community"}])
+        assert [r.review for r in _pinned_registries()] == ["community"]
+
+    def test_absent_keys_leave_a_row_claiming_nothing(self, monkeypatch):
+        """A build that never sets either field behaves exactly as before."""
+        _with_config(monkeypatch, [])
+        _with_loader(monkeypatch, [{"name": "official", "repo": FORGE}])
+        (row,) = _pinned_registries()
+        assert (row.label, row.review) == ("", "")
+
+    def test_label_and_review_are_stripped_of_whitespace(self, monkeypatch):
+        _with_config(monkeypatch, [])
+        _with_loader(
+            monkeypatch,
+            [{"name": "internal", "repo": FORGE, "label": "  Internal  ", "review": " curated "}],
+        )
+        (row,) = _pinned_registries()
+        assert (row.label, row.review) == ("Internal", "curated")
+
+    def test_a_non_string_label_is_dropped_not_stringified(self, monkeypatch):
+        _with_config(monkeypatch, [])
+        _with_loader(monkeypatch, [{"name": "internal", "repo": FORGE, "label": 7}])
+        assert [r.label for r in _pinned_registries()] == [""]
+
+    @pytest.mark.parametrize("bad", ["curat3d", "CURATED", "trusted", "official", 7, None])
+    def test_an_unknown_review_tier_degrades_rather_than_dropping(self, monkeypatch, bad, caplog):
+        """DEGRADES to no claim, and the row survives.
+
+        Dropping the row would let a typo in a DISPLAY field take a whole registry
+        offline: this list feeds index fetch, the trusted-host allowlist and
+        install, so its apps would vanish from the store, its installs would fail,
+        and its host would leave the clone-trust set.
+
+        Degrading is not the falsely-reassuring outcome it first looks like: ``""``
+        is what a build that never set the field renders, so a mistyped
+        ``community`` shows an UNBADGED row rather than a trusted-looking one. A
+        non-string (including ``None``) is the same case as an absent key.
+        """
+        _with_config(monkeypatch, [])
+        _with_loader(monkeypatch, [{"name": "bad", "repo": FORGE, "review": bad}])
+        with caplog.at_level("ERROR"):
+            rows = _pinned_registries()
+        assert [r.name for r in rows] == ["bad"]
+        assert [r.review for r in rows] == [""]
+        if isinstance(bad, str):
+            # Only a STRING naming an unknown tier is a build bug worth logging.
+            assert "unknown review tier" in caplog.text
+        else:
+            assert "unknown review tier" not in caplog.text
+
+    def test_a_bad_review_row_keeps_its_apps_installable(self, monkeypatch):
+        """The whole point of degrading: the registry still reaches the gates."""
+        _with_config(monkeypatch, [])
+        _with_loader(
+            monkeypatch,
+            [
+                {"name": "bad", "repo": SIBLING, "review": "platinum"},
+                {"name": "good", "repo": FORGE, "review": "curated"},
+            ],
+        )
+        assert [r.name for r in _pinned_registries()] == ["bad", "good"]
+        assert is_clone_host_trusted(SIBLING) is True
+
+    def test_review_does_not_change_the_trust_tier(self, monkeypatch):
+        """The two axes are independent: reading listings grants no credential."""
+        _with_config(monkeypatch, [])
+        _with_loader(monkeypatch, [{"name": "internal", "repo": FORGE, "review": "curated"}])
+        assert _registry_trust_tier(FORGE) == _TRUST_INDEX
+
+    def test_review_does_not_widen_the_trusted_host_set(self, monkeypatch):
+        _with_config(monkeypatch, [])
+        _with_loader(monkeypatch, [{"name": "internal", "repo": FORGE, "review": "curated"}])
+        assert is_clone_host_trusted("https://attacker.example.net/x.git") is False
+
+    def test_a_label_never_becomes_the_identity(self, monkeypatch):
+        """The id keys the index cache path and installed apps' ``_registry`` tag.
+
+        Substituting the label into ``name`` would fetch into a different cache
+        file and orphan every already-installed app from that registry.
+        """
+        _with_config(monkeypatch, [])
+        _with_loader(
+            monkeypatch,
+            [{"name": "internal", "repo": FORGE, "label": "Something Else Entirely"}],
+        )
+        (row,) = _pinned_registries()
+        assert row.name == "internal"

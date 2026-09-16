@@ -5754,7 +5754,9 @@
         "app_other": "{{count}} app",
         "categories": "CATEGORIE",
         "first_party": "Di prima parte",
-        "sources": "ORIGINI"
+        "sources": "ORIGINI",
+        "curated_reviewed_by_the_kiro_crew_team": "Verificato dal team {{productName}}",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Pubblicato dalla community, non validato dal team {{productName}}"
       },
       "featuredSpotlight": {
         "collection": "RACCOLTA",
@@ -5814,6 +5816,10 @@
         "working": "Autorizzazione e attivazione in corso...",
         "failed": "Non è stato possibile attivare «{{app}}», ma l'autorizzazione potrebbe essere già salvata. Scegli Riprova, oppure apri Impostazioni → Sicurezza → App di terze parti attendibili per verificarla e rimuoverla.",
         "failed_generic": "Non è stato possibile attivare «{{app}}» e nulla è stato modificato. Scegli Riprova, oppure controlla i log di {{productName}}."
+      },
+      "registryTier": {
+        "curated": "Verificato dal team",
+        "community": "Non validato"
       }
     },
     "artifactBody": {
@@ -7459,7 +7465,12 @@
       "name_is_taken_by_a_build_pinned_registry": "«{{name}}» è il nome di un registry fornito da questa build: scegline un altro",
       "included_with_this_installation": "Incluso in questa installazione",
       "trusted_source": "Origine attendibile",
-      "trusted_source_clones_with_your_git_credentials": "Origine attendibile: le app di questo registry vengono clonate con le tue credenziali Git."
+      "trusted_source_clones_with_your_git_credentials": "Origine attendibile: le app di questo registry vengono clonate con le tue credenziali Git.",
+      "curated_tip_credentialed": "Verificato dal team {{productName}} prima della pubblicazione. Le app vengono clonate con le tue credenziali Git.",
+      "curated_tip_credential_free": "Verificato dal team {{productName}} prima della pubblicazione. Le app vengono clonate senza le tue credenziali Git.",
+      "community_tip_credentialed": "Pubblicato dai contributori dopo una verifica più leggera. Non validato dal team {{productName}}. Le app vengono comunque clonate con le tue credenziali Git, quindi installa solo app che riconosci.",
+      "community_tip_credential_free": "Pubblicato dai contributori dopo una verifica più leggera. Non validato dal team {{productName}}. Installa solo app che riconosci.",
+      "registry_id": "ID: {{id}}"
     },
     "rejectDropdown": {
       "reject_all": "Rifiuta tutto — rifiuta le altre senza chiedere",
