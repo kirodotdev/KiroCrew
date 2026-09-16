@@ -12647,6 +12647,7 @@
       },
       "compactionCard": {
         "after_turn": "コンテキスト {{pct}}（自動圧縮のしきい値 {{limit}} を超過）— このターンの終了後にチャットを要約します",
+        "after_turn_rotation": "コンテキスト {{pct}}（自動圧縮のしきい値 {{limit}} を超過）— このターンの終了後にチャットを圧縮します",
         "no_summary": "完了 — 表示する要約はありません",
         "summary_hint": "要約は折りたたまれています — 展開して表示",
         "title": "コンテキストを圧縮しました"
@@ -18874,6 +18875,11 @@
         "turn_time_limit_description": "1 回のチャットターンが停止されるまでに実行できる最長時間。300〜86,400 秒（24 時間）。既定は 14,400 秒（4 時間）。",
         "turn_time_limit_hint": "この制限に達したターンは停止しますが、ディスクに書き込まれた作業は残ります。再開すると続きから進みます。テストスイート全体の実行など、長時間の無人ターンでは値を上げてください。次のターンから適用されます。",
         "failed_to_save_compaction_wait_budget": "圧縮の待機時間を保存できませんでした",
+        "compaction_method": "圧縮方式",
+        "compaction_method_desc": "自動圧縮のしきい値で実行される処理。Soft はモデルを呼び出さず、ダッシュボードのチャットでのみ実行されます。実行できない場所では Native が実行されます。",
+        "compaction_method_native": "Native（デフォルト）— その場で要約",
+        "compaction_method_soft": "Soft — セッションをローテート、直近のターンを保持",
+        "failed_to_save_compaction_method": "圧縮方式を保存できませんでした",
         "failed_to_save_turn_time_limit": "ターンの制限時間を保存できませんでした",
         "kiro_harness_fallback_body": "Kiro ハーネスを使用している場合、app.kiro.dev で管理しているフォールバックがまずハーネス内で実行されます。以下のフォールバックは {{productName}} 独自のもので、その後もターンが失敗した場合にのみ実行されます。",
         "kiro_harness_fallback_link": "Kiro のフォールバックを管理",

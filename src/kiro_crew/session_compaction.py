@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import session_compaction_rotation as _rotation
 from kiro_crew.agent_sdk import stale_compaction
 from kiro_crew.agent_sdk.capabilities import UNKNOWN_BACKEND_CAPABILITIES, capabilities_of
 from kiro_crew.messaging.commands import compact_unsupported_backend as _compact_unsupported_backend
@@ -37,6 +38,7 @@ from kiro_crew.metrics.sessions import (
     started_trigger_of,
 )
 from kiro_crew.runtime_ownership import chat_turn_gate_hold
+from kiro_crew.session_compaction_methods import COMPACTION_METHOD_NATIVE
 from kiro_crew.session_idle_compaction import (
     COMPACT_TRIGGER_IDLE,
     IdleCompaction,
@@ -93,6 +95,16 @@ CompactingCallback = Callable[[str, bool], None]
 
 
 class CompactCallback(Protocol):
+    """Surface hook fired once per compaction verdict.
+
+    *outcome* says WHICH arm ran (compacted in place, recycled, or recycled
+    because the backend cannot compact at all); *method* names what ran: the
+    rotation method (``soft``) or ``native``. The surface needs both because a
+    rotation, an in-place summary and a plain recycle reach it through the
+    same call with ``success=True``, and the notice it posts has to say which
+    one the user now lives with.
+    """
+
     async def __call__(  # noqa: E704
         self,
         key: str,
@@ -100,7 +112,23 @@ class CompactCallback(Protocol):
         *,
         success: bool,
         outcome: str = COMPACT_OUTCOME_COMPACTED,
+        method: str,
     ) -> None: ...
+
+
+class SeedWriter(Protocol):
+    """Surface hook the rotation method depends on.
+
+    The coordinator owns no transcript; the surface that does (the dashboard
+    slot and its conversation log) is what re-seeds a rotated session through
+    its replay. ``supports`` is asked BEFORE the rotation is projected and must
+    be cheap and synchronous (no transcript read): it answers whether this
+    surface holds a transcript for *key* at all. A ``False`` makes ``soft``
+    ``unavailable``, so ``native`` runs: without that transcript nothing would
+    re-seed the successor.
+    """
+
+    def supports(self, key: str) -> bool: ...  # noqa: E704
 
 
 @dataclass(slots=True)
@@ -137,6 +165,14 @@ class CompactionState:
     #: it runs rather than only announce its verdict. Synchronous and fail-soft: it
     #: is called from the same tick that commits the membership change.
     on_compacting_changed: CompactingCallback | None = None
+    #: Sessions being rotated ON PURPOSE (folded key -> method name), held for
+    #: the span of the rotation: from the held permit through the sub-agent wait,
+    #: the restart and its ``_recycle_held``. The same recycle primitive serves the native
+    #: failure path, so this is what tells the success counter a rotation apart
+    #: from a replaced provider, and what makes every notice posted inside the
+    #: rotation (a Stop's, a failed start's, its own) name the method.
+    rotating: dict[str, str] = field(default_factory=dict)
+    seed_writer: SeedWriter | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,9 +494,10 @@ class CompactionCoordinator:
 
         The holder is read from ``turn_owner``. Each compaction path names itself
         there in the step its acquire returns (the Claude arm of
-        ``_compact_session``, ``_recycle_unmanaged``, ``_compact_in_place``), and
-        every release clears it in the same step (``SessionManager.release``, those
-        three paths, ``recycle_background``), so the record never names a task that
+        ``_compact_session``, ``_recycle_unmanaged``, ``_compact_in_place``,
+        ``_rotate``), and every release clears it in the same step
+        (``SessionManager.release``, those four paths, ``recycle_background``), so
+        the record never names a task that
         let the permit go. In the hand-off from a turn to the parked compaction the
         record names nobody, and a Stop there is declined: the permit is already the
         compaction's.
@@ -645,6 +682,12 @@ class CompactionCoordinator:
             key, pct, success=False, outcome=COMPACT_OUTCOME_CANCELLED
         )
         return "cancelled"
+
+    def set_seed_writer(self, writer: SeedWriter | None) -> None:
+        """Register the surface hook the rotation method asks ``supports`` of."""
+        if self.state.seed_writer is not None and writer is not None:
+            self._deps.logger.warning("Compaction seed writer already registered; replacing it")
+        self.state.seed_writer = writer
 
     def mark_needs_reinjection(self, key: str) -> None:
         """Flag the live session to restore skill context on its next turn."""
@@ -971,14 +1014,14 @@ class CompactionCoordinator:
             )
 
     async def _compact_session(self, key: str, pct: float) -> str:
-        """Run the backend-specific in-place compaction policy.
+        """Run the backend-specific compaction: Claude in place, everything else through the configured method.
 
         The trigger is the one recorded in ``compaction_triggers`` before this
         call. An idle compaction takes only the non-destructive branch of each
-        arm: it never waits for a held turn permit, never recycles a backend that
-        cannot compact, and never answers a reported failure or a still-critical
-        reading with a restart or a reset. A ``/compact`` that reports no status
-        is settled by ``_settle_idle_unconfirmed``, which keeps the session.
+        arm: it never waits for a held turn permit, never rotates or recycles,
+        and never answers a reported failure or a still-critical reading with a
+        restart or a reset. A ``/compact`` that reports no status is settled by
+        ``_settle_idle_unconfirmed``, which keeps the session.
         """
         owner = self._owner
         idle = self._is_idle_trigger(key)
@@ -1067,17 +1110,7 @@ class CompactionCoordinator:
                 return "absent"
             if idle and _compaction_unmanaged_backend(session.provider) is not None:
                 return "unmanaged"
-            if _compaction_unmanaged_backend(session.provider) is not None:
-                # No ``/compact`` to send and no harness-side summarization to
-                # wait for, so there is nothing for ``_compact_in_place`` to do
-                # except spend its whole timeout proving it: the prompt would
-                # land as ordinary text, no compaction status would follow, and
-                # ``wait_for_compaction`` would strand until the deadline before
-                # recycling anyway. Recycle straight away instead -- same
-                # destination, none of the wait, and the reason is stated rather
-                # than inferred from a timeout.
-                return await owner._recycle_unmanaged(key, session, pct)
-            outcome = await owner._compact_in_place(key, session, pct)
+            outcome = await self._run_method_ladder(key, session, pct, idle=idle)
             if (
                 outcome == "busy"
                 and not idle
@@ -1096,6 +1129,43 @@ class CompactionCoordinator:
             return "failed"
         finally:
             self._set_compacting(key, False)
+
+    async def _run_method_ladder(
+        self, key: str, session: Any, pct: float, *, idle: bool = False
+    ) -> str:
+        """Run ``session.compaction_method``, handing to ``native`` when it cannot run.
+
+        A rotation method (``soft``, which carries the transcript tail) runs first
+        when one is configured (``session_compaction_rotation.try_rotation``);
+        ``native`` summarizes in place. ``native`` is the in-place ``/compact`` (or,
+        on a backend with no ``/compact`` to send, the unmanaged recycle) and ends
+        the walk whatever it returns, because its own failure path already
+        recycles. The default, ``native``, is this branch's dispatch without a
+        rotation, exactly. Every attempted method logs one INFO line.
+        """
+        owner = self._owner
+        rotated = await _rotation.try_rotation(self, key, session, pct, idle=idle)
+        if rotated is not None:
+            return rotated
+        if _compaction_unmanaged_backend(session.provider) is not None:
+            # No ``/compact`` to send and no harness-side summarization to
+            # wait for, so there is nothing for ``_compact_in_place`` to do
+            # except spend its whole timeout proving it: the prompt would
+            # land as ordinary text, no compaction status would follow, and
+            # ``wait_for_compaction`` would strand until the deadline before
+            # recycling anyway. Recycle straight away instead -- same
+            # destination, none of the wait, and the reason is stated rather
+            # than inferred from a timeout.
+            return await owner._recycle_unmanaged(key, session, pct)
+        outcome = await owner._compact_in_place(key, session, pct)
+        self._deps.logger.info(
+            "Session %s compaction method %s: %s", key, COMPACTION_METHOD_NATIVE, outcome
+        )
+        return outcome
+
+    async def _rotate(self, method: str, key: str, session: Any, pct: float) -> str:
+        """Run the rotation method (``session_compaction_rotation.rotate``)."""
+        return await _rotation.rotate(self, method, key, session, pct)
 
     async def _recycle_held(
         self, key: str, session: Any, pct: float, *, uncompactable: bool = False
@@ -1167,7 +1237,12 @@ class CompactionCoordinator:
         return [info.id for info in lifecycle._select_shared_children(key)]
 
     async def _await_cotenants(
-        self, key: str, pct: float, *, stopped: Callable[[], bool] | None = None
+        self,
+        key: str,
+        pct: float,
+        *,
+        stopped: Callable[[], bool] | None = None,
+        method: str = COMPACTION_METHOD_NATIVE,
     ) -> bool:
         """Hold a context restart while sub-agents share the process.
 
@@ -1183,6 +1258,11 @@ class CompactionCoordinator:
         already reset the parent, and this task's restart is then stale -- cancelling
         the live sub-agents and recycling again would end work the Stop did not ask
         to end. Returns False when the wait ended for that reason, True otherwise.
+
+        *method* names what restarts the session: ``native`` for the restart after a
+        failed or impossible compaction, or the rotation method for a planned
+        rotation, so the waiting notice and the stopped sub-agents' reason do not
+        call a rotation a failure.
         """
         lifecycle = self._owner._lifecycle_boundary()
         # The ``SubagentManager`` registered as the parent-end teardown handler.
@@ -1194,10 +1274,19 @@ class CompactionCoordinator:
         if callback is not None:
             try:
                 await callback(
-                    key, pct, success=False, outcome=COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS
+                    key,
+                    pct,
+                    success=False,
+                    outcome=COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS,
+                    method=method,
                 )
             except Exception:
                 self._deps.logger.exception("Compact callback failed for %s", key)
+        stop_origin = (
+            "stopped at a context restart"
+            if method == COMPACTION_METHOD_NATIVE
+            else f"stopped when an auto-compaction rotated the session ({method})"
+        )
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._deps.cotenant_wait_secs
         while self._live_cotenants(lifecycle, key):
@@ -1208,7 +1297,7 @@ class CompactionCoordinator:
                 await lifecycle._stop_shared_children(
                     key,
                     lifecycle._select_shared_children(key),
-                    origin="stopped at a context restart",
+                    origin=stop_origin,
                 )
                 return True
             await asyncio.sleep(min(remaining, self._deps.cotenant_poll_secs))
@@ -1686,17 +1775,28 @@ class CompactionCoordinator:
         # success=True (the session has headroom) exactly when an in-place /compact
         # FAILED. The recycling marker, popped only after this call, separates the
         # two; ``test_a_failed_compact_that_recycles_is_not_counted_successful``
-        # pins that ordering.
+        # pins that ordering. A rotation method (``soft``) reaches this funnel
+        # through the SAME recycle primitive, on purpose: for it the recycle IS the
+        # compaction, so ``rotating`` (set for the whole rotation, which contains
+        # the marker's span) restores the success the marker would otherwise
+        # demote. It is never set for ``native``, whose series is unchanged.
         recycled = key in self._owner._recycling
+        intentional = key in self.state.rotating
         emit_counter(
             CONTEXT_COMPACTIONS,
-            {"success": bool(success) and not recycled, "trigger": trigger},
+            {"success": bool(success) and (not recycled or intentional), "trigger": trigger},
         )
+        # The callback gets the method's name: the notice it posts is the only
+        # place the user learns that the pre-tail history was dropped rather than
+        # summarized in place.
+        method = self.state.rotating.get(key, COMPACTION_METHOD_NATIVE)
         # The same marker that keeps a recycle out of the success counter also tells
         # the callback WHICH outcome it is reporting. Without it a recycle arrives
         # indistinguishable from a compaction, and the dashboard announced one as the
         # other -- "Auto-compacted at N%." on a session whose history had just been
-        # discarded, which is the untruth this whole change set out to remove.
+        # discarded, which is the untruth this whole change set out to remove. A
+        # rotation is a recycle here too; ``method`` is what tells the surface it
+        # was the intended kind.
         if outcome is not None:
             pass
         elif not recycled:
@@ -1723,6 +1823,6 @@ class CompactionCoordinator:
         if callback is None:
             return
         try:
-            await callback(key, pct, success=success, outcome=outcome)
+            await callback(key, pct, success=success, outcome=outcome, method=method)
         except Exception:
             self._deps.logger.exception("Compact callback failed for %s", key)

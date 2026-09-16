@@ -336,6 +336,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_child_teardown_handler": ("function", False, "9bf58b419a0c", "teardown"),
     "set_compact_callback": ("function", False, "6f1bae527bd9", "turn_context"),
     "set_compacting_callback": ("function", False, "2aed1f018edf", "turn_context"),
+    "set_compaction_seed_writer": ("function", False, "8e917d52678d", "turn_context"),
     "set_continuable_fallback": ("function", False, "9129b57ccbd2", "claims"),
     "set_idle_compaction_probe": ("function", False, "29fcd4f6cb4d", "sweeps"),
     "set_injection_probe": ("function", False, "f6fd6f250ecd", "sweeps"),

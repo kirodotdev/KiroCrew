@@ -279,11 +279,13 @@ _POST_COMPACT_RESET_PCT = 95.0
 
 
 class _CompactCallback(Protocol):
-    # Mirrors ``session_compaction.CompactCallback`` exactly, including ``outcome``:
-    # this facade re-declares the shape so callers need not import the coordinator,
-    # and a narrower copy here makes the two disagree about what a registration must
-    # accept. ``outcome`` says WHICH arm ran (compacted or recycled): both count as
-    # ``success``, and a surface must not announce a summary after a recycle.
+    # Mirrors ``session_compaction.CompactCallback`` exactly, including ``outcome``
+    # and ``method``: this facade re-declares the shape so callers need not import
+    # the coordinator, and a narrower copy here makes the two disagree about what a
+    # registration must accept. ``outcome`` says WHICH arm ran (compacted or
+    # recycled): both count as ``success``, and a surface must not announce a
+    # summary after a recycle. ``method`` names the compaction method that ran (a
+    # rotation or ``native``), which the notice needs for the same reason.
     async def __call__(  # noqa: E704
         self,
         key: str,
@@ -291,6 +293,7 @@ class _CompactCallback(Protocol):
         *,
         success: bool,
         outcome: str = COMPACT_OUTCOME_COMPACTED,
+        method: str,
     ) -> None: ...
 
 

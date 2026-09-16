@@ -313,6 +313,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "power.on_battery",
         "session.autocompact_pct",
         "session.compact_wait_secs",
+        "session.compaction_method",
         "session.pool_size",
         "session.pool_ttl_secs",
         "session.timeout_secs",

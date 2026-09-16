@@ -201,7 +201,7 @@ class TestSpawnCounterPlacement:
 
 class TestCompactions:
     @staticmethod
-    def _fire(success, *, recycling=False):
+    def _fire(success, *, recycling=False, rotating=False):
         """Drive the production funnel with the minimum state it reads."""
         import asyncio
         from types import SimpleNamespace
@@ -222,7 +222,10 @@ class TestCompactions:
         # always has it and a double without it would pass by accident.
         # ``compaction_triggers`` likewise: empty means the threshold trigger.
         stub.state = SimpleNamespace(
-            on_compacted=None, uncompactable_recycles=set(), compaction_triggers={}
+            on_compacted=None,
+            uncompactable_recycles=set(),
+            compaction_triggers={},
+            rotating={"k": "soft"} if rotating else {},
         )
         asyncio.run(
             CompactionCoordinator._fire_compact_callback(coordinator, "k", 0.9, success=success)
@@ -257,6 +260,18 @@ class TestCompactions:
         self._fire(True, recycling=True)
         assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
             "success": False,
+            "trigger": "threshold",
+        }
+
+    def test_an_intentional_rotation_is_counted_successful(self, rec):
+        """A rotation method recycles ON PURPOSE through the same primitive.
+
+        The marker alone cannot tell it from a replaced provider; ``rotating``
+        is set for the same span and is what restores the success.
+        """
+        self._fire(True, recycling=True, rotating=True)
+        assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {
+            "success": True,
             "trigger": "threshold",
         }
 

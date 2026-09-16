@@ -172,6 +172,18 @@ DEFAULT_WATCHDOG_RSS_MAX_MB = 4096
 # process holds. Measured on such a host: 250-504 unowned pids per pass against 4
 # genuine strays in 6.5 hours. Setting 0 takes the reading without the signal.
 DEFAULT_RECONCILE_MAX_KILLS = 5
+# session.compaction_method: which compaction the coordinator runs when the
+# auto-compact threshold fires. ``native`` is the agent runtime's own in-place
+# summarization (one model call over the whole window); ``soft`` recycles the
+# session on purpose and seeds the successor from the transcript tail, no model
+# call. The rotation needs a dashboard tab holding the transcript; when it cannot
+# run, or would not free enough context, ``native`` runs. A name outside this
+# tuple falls back to the default at load. Default is ``native``, so nothing
+# changes for a config that never set the key.
+COMPACTION_METHOD_NATIVE = "native"
+COMPACTION_METHOD_SOFT = "soft"
+COMPACTION_METHODS: tuple[str, ...] = (COMPACTION_METHOD_NATIVE, COMPACTION_METHOD_SOFT)
+DEFAULT_COMPACTION_METHOD = COMPACTION_METHOD_NATIVE
 # session.search_scan_window -- how many of the most recently changed transcripts
 # a session search reads. The fold and snippet memos are
 # capped in bytes, so the count bounds per-search I/O, not memory; this default

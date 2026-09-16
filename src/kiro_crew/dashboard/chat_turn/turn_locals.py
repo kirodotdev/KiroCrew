@@ -152,6 +152,8 @@ class _ChatTurn:
     _crew_log_turn_no: "int"
     _crew_log_turn_open: "bool"
     _current_replay_message: "dict[Any, Any] | None"
+    #: ``session.compaction_method`` when it names a rotation, else ``""`` (set at admission).
+    _rotation_method: "str"
     _declined_grant_notices: "dict[str, str]"
     _deferred_cut_text: "str"
     died_notice: "_TurnDiedNote | None"

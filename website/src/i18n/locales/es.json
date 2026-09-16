@@ -13207,6 +13207,7 @@
       },
       "compactionCard": {
         "after_turn": "Contexto al {{pct}}, por encima del umbral de compactación automática del {{limit}}: el chat se resumirá al terminar este turno",
+        "after_turn_rotation": "Contexto al {{pct}}, por encima del umbral de compactación automática del {{limit}}: el chat se compactará al terminar este turno",
         "no_summary": "Listo: no hay resumen que mostrar",
         "summary_hint": "Resumen plegado: despliégalo para leerlo",
         "title": "Contexto compactado"
@@ -19876,6 +19877,11 @@
         "turn_time_limit_description": "Tiempo máximo que puede durar un turno de chat antes de detenerse. De 300 a 86 400 s (24 h). Predeterminado: 14 400 s (4 h).",
         "turn_time_limit_hint": "Un turno que llega a este límite se detiene y conserva el trabajo ya escrito en disco; reanúdalo para continuar. Súbelo para turnos largos sin supervisión, como suites de pruebas completas. Se aplica desde el siguiente turno.",
         "failed_to_save_compaction_wait_budget": "No se pudo guardar el tiempo de espera de compactación",
+        "compaction_method": "Método de compactación",
+        "compaction_method_desc": "Lo que se ejecuta al alcanzar el umbral de compactación automática. Soft no llama al modelo y solo se ejecuta en chats del Panel; donde no puede ejecutarse, se ejecuta Native.",
+        "compaction_method_native": "Native (predeterminado): resumir en el mismo lugar",
+        "compaction_method_soft": "Soft: rotar la sesión, conservar turnos recientes",
+        "failed_to_save_compaction_method": "No se pudo guardar el método de compactación",
         "failed_to_save_turn_time_limit": "No se pudo guardar el límite de tiempo por turno",
         "kiro_harness_fallback_body": "Al usar un harness de Kiro, los respaldos que gestionas en app.kiro.dev se ejecutan primero, dentro del harness. Los respaldos de abajo son propios de {{productName}} y solo se ejecutan si el turno sigue fallando después.",
         "kiro_harness_fallback_link": "Gestionar respaldos de Kiro",

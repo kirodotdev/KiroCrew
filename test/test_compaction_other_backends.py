@@ -659,7 +659,7 @@ class TestABackendNothingCompactsIsRecycled:
         """
         seen: list[dict] = []
 
-        async def record(key, pct, *, success, outcome="compacted"):
+        async def record(key, pct, *, success, outcome="compacted", method="native"):
             seen.append({"key": key, "success": success, "outcome": outcome})
 
         async with _managed(cfg, _provider_factory(backend=ACP_BACKEND_DEEPSEEK)) as mgr:
@@ -679,7 +679,7 @@ class TestABackendNothingCompactsIsRecycled:
         start telling users their history was thrown away."""
         seen: list[str] = []
 
-        async def record(key, pct, *, success, outcome="compacted"):
+        async def record(key, pct, *, success, outcome="compacted", method="native"):
             seen.append(outcome)
 
         async with _managed(cfg, _provider_factory(backend=ACP_BACKEND_OPENCODE)) as mgr:
@@ -710,7 +710,7 @@ class TestABackendNothingCompactsIsRecycled:
 
         seen: list[str] = []
 
-        async def record(key, pct, *, success, outcome="compacted"):
+        async def record(key, pct, *, success, outcome="compacted", method="native"):
             seen.append(outcome)
 
         async with _managed(cfg, raising_factory) as mgr:

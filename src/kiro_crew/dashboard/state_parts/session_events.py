@@ -42,6 +42,11 @@ from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
     COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS,
 )
+from kiro_crew.session_compaction_methods import (
+    COMPACTION_METHOD_NATIVE,
+    ROTATION_HISTORY_FATE,
+    ROTATION_NOTICE_META_KEY,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
@@ -181,9 +186,42 @@ _AUTO_COMPACT_CANCELLED_NOTICE = (
 )
 
 
+#: The same forced Stop, landing while a rotation waited for its sub-agents. A
+#: rotation condenses nothing, so the notice names the rotation it ended instead of
+#: the native summary; it carries ``meta.rotation_method`` like every notice a
+#: rotation posts.
+_AUTO_ROTATION_CANCELLED_NOTICE = (
+    "⏹ Your forced Stop ended the compaction at {pct:.0f}% before it rotated the "
+    "session ({method}), so the session was restarted. " + _RESTART_MEMORY_TAIL
+)
+
+
 _AUTO_COMPACT_WAITING_NOTICE = (
     "⏸ Context reached {pct:.0f}%. The session is waiting for its sub-agents "
     "to finish before it restarts. Your messages are kept."
+)
+
+
+#: A rotation restarts the session on purpose and waits for the same sub-agents
+#: first, so it names the method it is about to run.
+_AUTO_ROTATION_WAITING_NOTICE = (
+    "⏸ Auto-compacting at {pct:.0f}%. The session is waiting for its sub-agents "
+    "to finish before it rotates ({method}). Your messages are kept."
+)
+
+
+#: A rotation reaches the same callback with success=True, but the user now has a
+#: different memory: the recent tail carried over, everything older gone from the
+#: agent's memory. The native line would call that a summary, and the restart lines
+#: would call it a failure. The transcript on screen is untouched, so the notice says
+#: so first and then speaks of memory: "older history dropped" beside an intact
+#: transcript reads as a deletion. Same 🔄 lead, so the frontend still draws it as a
+#: notice card (CompactionCard's STATUS_LEAD_RE), and no "failed" wording, which its
+#: FAILED_LEAD_RE would read as an error.
+_AUTO_COMPACT_ROTATED_NOTICE = (
+    "🔄 Auto-compacted at {pct:.0f}%. Session rotated ({method}). The conversation "
+    "above is still here; the agent remembers only the recent turns, earlier ones "
+    "are {fate}."
 )
 
 
@@ -335,6 +373,7 @@ def wire_session_compact_callback(self: DashboardState) -> None:
         *,
         success: bool,
         outcome: str = COMPACT_OUTCOME_COMPACTED,
+        method: str = COMPACTION_METHOD_NATIVE,
     ) -> None:
         from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 
@@ -355,14 +394,28 @@ def wire_session_compact_callback(self: DashboardState) -> None:
         slot = self.get_slot(slot_key)
         if slot is None:
             return
+        # A rotation is a recycle too, so ``method`` is read before ``outcome``:
+        # the restart templates would otherwise announce a failure the user
+        # never had.
+        fate = ROTATION_HISTORY_FATE.get(method)
         if outcome == COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS:
-            template = _AUTO_COMPACT_WAITING_NOTICE
+            # A rotation waits for the same sub-agents a failed compaction's
+            # restart does, but nothing has failed: it is planned.
+            template = (
+                _AUTO_ROTATION_WAITING_NOTICE if fate is not None else _AUTO_COMPACT_WAITING_NOTICE
+            )
         elif outcome == COMPACT_OUTCOME_CANCELLED:
-            template = _AUTO_COMPACT_CANCELLED_NOTICE
+            template = (
+                _AUTO_ROTATION_CANCELLED_NOTICE
+                if fate is not None
+                else _AUTO_COMPACT_CANCELLED_NOTICE
+            )
         elif not success and outcome == COMPACT_OUTCOME_COMPACTED_IDLE:
             template = _AUTO_COMPACT_IDLE_FAILED_NOTICE
         elif not success:
             template = _AUTO_COMPACT_FAILED_NOTICE
+        elif fate is not None:
+            template = _AUTO_COMPACT_ROTATED_NOTICE
         elif outcome == COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE:
             template = _AUTO_RESTART_UNCOMPACTABLE_NOTICE
         elif outcome == COMPACT_OUTCOME_RECYCLED:
@@ -371,8 +424,14 @@ def wire_session_compact_callback(self: DashboardState) -> None:
             template = _AUTO_COMPACT_IDLE_NOTICE
         else:
             template = _AUTO_COMPACT_NOTICE
-        message = template.format(pct=pct)
+        # ``str.format`` ignores names a template does not use.
+        message = template.format(pct=pct, method=method, fate=fate)
         meta: dict[str, Any] = {"kind": "compaction"}
+        if fate is not None:
+            # Every notice a rotation posts is status for the person: the
+            # successor's replay leaves it out, so it cannot spend the tail
+            # budget the rotation's projection charged.
+            meta[ROTATION_NOTICE_META_KEY] = method
         record = _compaction_keep_record(key)
         if record is not None:
             # The SAME field the two other decision receipts ride
@@ -432,6 +491,12 @@ def wire_session_compact_callback(self: DashboardState) -> None:
     setter = getattr(self.sessions, "set_compacting_callback", None)
     if callable(setter):
         setter(_on_compacting_changed)
+
+    # circular import: compaction_seed imports chat_utils, which imports the
+    # dashboard state at scope.
+    from kiro_crew.dashboard.compaction_seed import DashboardSeedWriter
+
+    self.sessions.set_compaction_seed_writer(DashboardSeedWriter(self))
 
 
 async def _notify_channel_compaction(

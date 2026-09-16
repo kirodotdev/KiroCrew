@@ -122,6 +122,19 @@ describe('the stop-caused notice', () => {
   })
 })
 
+describe('the waiting-for-sub-agents notice', () => {
+  it('renders the rotation waiting notice with no raw pause glyph beside the card icon', () => {
+    const content =
+      '\u23F8 Auto-compacting at 82%. The session is waiting for its sub-agents to finish before it rotates (soft). Your messages are kept.'
+    expect(parseCompactionNotice(content).text.startsWith('Auto-compacting at 82%.')).toBe(true)
+    const { container } = render(<CompactionCard content={content} />)
+    const card = container.querySelector('[data-testid="notice-card"]')!
+    expect(card.textContent).toContain('Auto-compacting at 82%.')
+    expect(card.textContent).not.toContain('\u23F8')
+    expect(card.getAttribute('data-tone')).toBe('info')
+  })
+})
+
 describe('isSystemNoticeRow', () => {
   it('covers the whole SYSTEM_NOTICE_KINDS set, on either tag carrier', () => {
     expect(isSystemNoticeRow(msg('assistant', { kind: 'compaction' }))).toBe(true)
@@ -241,6 +254,29 @@ describe('CompactionCard', () => {
       expect(screen.getByText('上下文已达 47%，超过 40% 自动压缩阈值，本轮次结束后将汇总对话')).toBeInTheDocument()
     } finally {
       await i18next.changeLanguage('en')
+    }
+  })
+
+  it('says "compacted", not "summarized", when the row names a rotation method', () => {
+    // A rotation (soft) keeps recent turns and writes no summary, and when it
+    // cannot run, native runs: "compacted" is true for both. The method rides on the
+    // row (`meta.compaction_method`), read through SystemNoticeRow as the registries do.
+    const content = '\u{1F504} Context at 47% (limit 40%) \u2014 will compact after this turn.'
+    const compacted = 'Context at 47%, past the 40% auto-compact threshold — the chat will be compacted when this turn ends'
+    const summarized = 'Context at 47%, past the 40% auto-compact threshold — the chat will be summarized when this turn ends'
+    const row = (meta: Record<string, unknown>) =>
+      msg('assistant', { content, meta: { kind: 'compaction', notice: 'compact_after_turn', ...meta } })
+    for (const method of ['soft']) {
+      const { unmount } = render(<SystemNoticeRow message={row({ compaction_method: method })} />)
+      expect(screen.getByText(compacted), method).toBeInTheDocument()
+      expect(screen.queryByText(summarized), method).toBeNull()
+      unmount()
+    }
+    // Native, and a row written before the key existed, keep main's wording.
+    for (const meta of [{ compaction_method: 'native' }, {}]) {
+      const { unmount } = render(<SystemNoticeRow message={row(meta)} />)
+      expect(screen.getByText(summarized), JSON.stringify(meta)).toBeInTheDocument()
+      unmount()
     }
   })
 

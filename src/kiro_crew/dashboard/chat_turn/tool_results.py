@@ -956,6 +956,10 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         # working. Compaction waits for the turn to end, so say so to
         # the person, once per turn.
         _compact_after_turn_noticed = await _notice_compaction_after_turn(
-            state, slot, client, session_key
+            state,
+            slot,
+            client,
+            session_key,
+            rotation_method=turn._rotation_method,
         )
         turn._compact_after_turn_noticed = _compact_after_turn_noticed

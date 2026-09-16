@@ -46,6 +46,7 @@ from kiro_crew.config.sections import (
     BROWSER_LOCAL_ORIGINS_MAX,
     COMPACT_WAIT_SECS_MAX,
     COMPACT_WAIT_SECS_MIN,
+    COMPACTION_METHODS,
     CREDENTIAL_DOMAIN_PATTERN,
     CREDENTIAL_DOMAINS_CAP,
     DECISION_BUCKET_MAX,
@@ -262,6 +263,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "max": COMPACT_WAIT_SECS_MAX,
         "clamp_fn": lambda v: _clamp_compact_wait_secs(v, 0.0),
     },
+    # The Settings > Chat > Advanced control beside the threshold. The value set
+    # is the load path's own tuple, so a method added there is writable here
+    # without a second list to keep in step.
+    "session.compaction_method": {"type": "enum", "values": list(COMPACTION_METHODS)},
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
     # How many live sessions one creator may hold (Settings → Chat → Sessions).
     # Same bounds as the load-time clamp. Read at each session create, so a save

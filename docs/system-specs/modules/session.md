@@ -1931,7 +1931,7 @@ against sweep completeness, and are torn down at `close_all`.
   - **Arm**: `check_context_usage` calls `IdleCompaction.arm_after_turn`, which arms one per-session timer at turn end, after ending the previous one, when the setting is on, the key is `dashboard:`, the threshold check declined with `below_threshold` or `cooldown` (so a threshold compaction started on this reading is never followed by an idle one), the reading is confirmed and at least `session.idle_compaction_min_context_pct` (default 50, clamped at load to 40 through 90), and the backend's lifetime is known. The timer uses an injectable monotonic clock and scheduler (`CompactionDeps.idle_clock` / `idle_schedule`; default the loop's `call_later`).
   - **Cancel**: every `get_or_create` and `try_acquire` on the key (a claim), every `_advance_session_generation` (reset, recycle, removal), and a config change that leaves the setting off (`config_apply._on_config_change` calls `IdleCompaction.cancel_all`). Each arm takes the next number from one counter shared by every key and records it as the key's generation; a cancel drops the key's entry, so the table holds only keys in an idle stretch. A fire names the generation it was armed with, so a stale fire returns `stale`. A fired timer is consumed before its check runs, and the idle compaction's own `/compact` never reaches `check_context_usage`, so an idle stretch is compacted at most once.
   - **Fire** (`compact_if_idle`): the asynchronous sub-agent probe runs first (an error reads as attached). Then, with no await before the commit: the setting and generation; the coordinator's own gate ladder called as `_gate_rung(..., skip_threshold=True)`, which drops only `below_threshold` and still answers `cc_managed`, `compact_unsupported`, `unconfirmed`, `in_progress` and `cooldown`; then `pending_verdict` and `unmanaged`, so the idle trigger never reaches the recycle arm; the minimum context; and the live signals: a held turn permit, a live `turn_owner`, `lifecycle_turn_active`, a non-empty session queue, a recycling marker, `provider.has_active_turn()`, the completion-injection probe, and the dashboard's idle probe (`set_idle_compaction_probe`, installed with the sub-agent probe by `wire_session_subagent_probe`; `dashboard.chat_utils_completion.idle_compaction_blocker` refuses a session with no open tab, a running or reserved slot turn, a starting wake, a slot queue, an open question card, a slot compaction, synthesis or sub-agent delivery in flight, a pending approval naming the slot, an unfinished workflow run for the session (`workflow_service.registry.has_pending_work_for`), or an active auto-nudge or monitor loop). A missing or raising probe answers busy. Last, the cache anchor is rechecked (`_cache_expired_ago`): when `provider_request_floor + prompt_cache_lifetime_secs` is no longer in the future on the timers' clock, a callback the event loop delivered late declines as `expired` (the age adds the time the host spent suspended since the arm, `IdleCompactionTimers.suspended_since_arm`, read from `platform_compat.boottime_now` beside the monotonic clock), logged once at INFO, because a compaction after the cache expired saves nothing and its notice would be false; an unreadable floor or lifetime is not read as expiry. Any decline ends the stretch; the next turn re-arms. On success it commits `_set_compacting` with `compaction_triggers[key] = "idle"` and awaits the owner's `_compact_session(key, pct)`, whose arms read the trigger from `compaction_triggers`.
-  - **Idle arm of `_compact_session`**: never waits for a held permit (`busy`), never recycles an unmanaged backend, and never takes `_await_cotenants` or the history-dropping `_restart_held` on a failed in-place `/compact`. It also skips `_reset_still_critical` on a still-critical reading. A reported `failed` status arms the ordinary cooldown and fires the callback with `success=False` and the `compacted_idle` outcome through `_settle_idle_failure`. The dashboard notice says that the idle compaction changed nothing. A user Stop settles through `_settle_cancelled`.
+  - **Idle arm of `_compact_session`**: never waits for a held permit (`busy`), never rotates (it runs `native` whatever `session.compaction_method` names), never recycles an unmanaged backend, and never takes `_await_cotenants` or the history-dropping `_restart_held` on a failed in-place `/compact`. It also skips `_reset_still_critical` on a still-critical reading. A reported `failed` status arms the ordinary cooldown and fires the callback with `success=False` and the `compacted_idle` outcome through `_settle_idle_failure`. The dashboard notice says that the idle compaction changed nothing. A user Stop settles through `_settle_cancelled`.
 
     A `/compact` that reports no terminal status enters `_settle_idle_unconfirmed` with the permit held. `IdleCompaction.quiesce` cancels it through `provider.cancel` and drains a late status through `provider.wait_for_compaction`. `IDLE_COMPACT_CANCEL_ACK_SECS` bounds the cancel acknowledgement at 5 seconds. The drain uses the lower value of `IDLE_COMPACT_DRAIN_SECS` and `compact_wait_timeout_secs()`. This is 10 seconds unless the configured compaction budget is lower. A late `completed` status is success. A late `failed` status is failure. If no terminal arrives, Crew keeps the session, arms the cooldown, reports `unconfirmed`, fires the `compacted_idle` failure callback, and releases the permit. Crew does not tear down or restart the session because those actions can lose conversation history.
 
@@ -1953,7 +1953,7 @@ against sweep completeness, and are torn down at `close_all`.
   - **Metric**: `kirocrew.context.compactions` carries `trigger` (`threshold` or `idle`), read from `compaction_triggers` by `_fire_compact_callback`.
   - **Notice**: a successful in-place idle compaction reaches the compact callback with outcome `compacted_idle` (`COMPACT_OUTCOME_COMPACTED_IDLE`), which `_fire_compact_callback` picks when the recorded trigger is `idle`. The dashboard row then reads "Compacted at N% while this chat was idle, before its prompt cache expired." A threshold compaction keeps `compacted` and "Auto-compacted at N%."
   - **Restart**: nothing is persisted. A restored session has no timer until its first turn ends, so its idle clock runs from after the restore.
-- **Crossing the threshold mid-turn** (`SessionManager.compaction_due_after_turn`, `chat_turn.recovery._notice_compaction_after_turn`): compaction still runs only after a turn ends. A dashboard turn whose reading crosses the effective threshold while it is still working gets, ONCE per turn, at the first tool-result boundary where every tool row above is done and no text segment is pending, one `kind="compaction"` row marked `meta.notice="compact_after_turn"` ("Context at N% (limit M%) — will compact after this turn", rendered by `CompactionCard` from the catalog as a calm info row with a clock glyph). It is a display row only: the model is not told anything and the turn runs on unchanged. `compaction_due_after_turn` reads the gate's own side-effect-free rungs (`CompactionCoordinator._gate_rung`, which `_compaction_gate_decision` delegates to after settling a pending verdict) and changes nothing; it is False while a pending verdict waits (its settlement can arm a cooldown) and on the recycle arm (a restart, not a compaction), so Claude-Code backends, harness-managed backends at the global threshold, uncompactable backends, an unconfirmed reading, a compaction in flight and an active cooldown get no row. Slash-command turns are skipped. The threshold and the end-of-turn trigger are unchanged.
+- **Crossing the threshold mid-turn** (`SessionManager.compaction_due_after_turn`, `chat_turn.recovery._notice_compaction_after_turn`): compaction still runs only after a turn ends. A dashboard turn whose reading crosses the effective threshold while it is still working gets, ONCE per turn, at the first tool-result boundary where every tool row above is done and no text segment is pending, one `kind="compaction"` row marked `meta.notice="compact_after_turn"` ("Context at N% (limit M%) — will compact after this turn", rendered by `CompactionCard` from the catalog as a calm info row with a clock glyph). With a rotation method configured (`session.compaction_method` `soft`, read once per turn at admission into `_ChatTurn._rotation_method` and narrowed after the session claim to `""` unless the coordinator would rotate this session: not a Claude backend and a key the dashboard seed writer supports, `_rotation_method_for_session`), the row also carries `meta.compaction_method` (`COMPACT_AFTER_TURN_METHOD_KEY`) naming it, and the card says the chat "will be compacted" (`after_turn_rotation`) instead of "summarized": a rotation writes no summary, and "compacted" stays true when `native` runs in its place. With `native`, a method that cannot be read, or a session that always runs `native` (a Claude backend, a cron-linked or other linked tab), the row has no such key. It is a display row only: the model is not told anything and the turn runs on unchanged. `compaction_due_after_turn` reads the gate's own side-effect-free rungs (`CompactionCoordinator._gate_rung`, which `_compaction_gate_decision` delegates to after settling a pending verdict) and changes nothing; it is False while a pending verdict waits (its settlement can arm a cooldown) and on the recycle arm (a restart, not a compaction), so Claude-Code backends, harness-managed backends at the global threshold, uncompactable backends, an unconfirmed reading, a compaction in flight and an active cooldown get no row. Slash-command turns are skipped. The threshold and the end-of-turn trigger are unchanged.
 - **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on a member of
   `ACP_BACKENDS_COMPACT` — kiro-cli, claude, codex, opencode, mimocode, goose, pi and copilot, plus KAS,
   whose harness-managed case is the first bullet below. They divide by WHERE
@@ -2032,7 +2032,10 @@ against sweep completeness, and are torn down at `close_all`.
     it a failed compaction, since this arm attempts none. The arm falls THROUGH
     the gate rung rather than returning from it, so `unconfirmed`, `in_progress`
     and `cooldown` still run first — an ambiguous reading must not spend a
-    recycle.
+    recycle. It is the `native` step of the compaction method on such a backend
+    (`_run_method_ladder` below): a configured rotation method still runs first,
+    since a rotation needs no `/compact`, and the default `native` reaches the
+    unmanaged recycle where it always did.
   - A backend in none of the three is **declined and logged at WARNING**, naming
     the missing membership. Declining is the safe action, since the alternative
     ends a conversation and no harness earns that by never having been
@@ -2082,6 +2085,166 @@ against sweep completeness, and are torn down at `close_all`.
   the cooldown, with the mid-stream overflow guard covering the interim).
   There is no prompt-count fallback on this path — the 40-prompt blind backstop
   belongs to `recycle_background()` alone (see "Context Overflow Protection").
+- **Compaction method** (`session.compaction_method`, default `native`): the
+  key names what runs. The methods are `COMPACTION_METHODS`: `native` and
+  `soft`. The non-Claude branch of `_compact_session` reads the one configured
+  value (`CompactionCoordinator._run_method_ladder`): `soft` runs first when it
+  is configured, then `native` when `soft` cannot run or would not free enough
+  context, so a session at the threshold is compacted by something unless a
+  turn still holds the semaphore (the `busy` deferral below, re-attempted at
+  the next check). With `native` the dispatch is the one without a rotation,
+  exactly.
+  The key is set from Settings > Chat > Advanced (Context group), a
+  `SettingsSelect` beside the Auto-Compact Threshold (`ChatPanel.tsx`,
+  `configKey="session.compaction_method"`, saved through the panel's
+  `optimisticConfigOpts` so the pick shows at once, option labels
+  `pages.settings.chatPanel.compaction_method_*` in `en.manual.json`), through
+  the dashboard PATCH allowlist (`handlers/core_config_schema._EDITABLE_CONFIG`, an `enum`
+  over `COMPACTION_METHODS`, so a method added to the tuple is writable without
+  a second list); the pins are
+  `test_compaction_method_config.TestTheSettingIsWritableFromTheDashboard` and
+  the `ChatPanel — Context` cases in `SettingsChatPanelCoverage.test.tsx`.
+  `native` is the in-place `/compact` above, with its own failure recycle,
+  and ends the walk whatever it returns. `soft` is a **rotation** method: it
+  takes the turn semaphore under the same `COMPACT_WAIT_TIMEOUT_SECS` budget (a
+  held turn returns `"busy"` for the whole walk, since `native` needs the
+  semaphore too) and restarts the session ON PURPOSE the way every other
+  compaction restart does: with the permit held it reads the Stop counter and
+  names itself `turn_owner`, waits in `_await_cotenants` for the sub-agents
+  that share the process (stopping them only past `cotenant_wait_secs`), then
+  `_restart_held` starts the successor, hands it the turns queued behind the
+  hold and recycles the old session. A Stop during the cotenant wait settles
+  `cancelled` with no restart and posts its own notice ("ended the compaction
+  at N% before it rotated the session", `_AUTO_ROTATION_CANCELLED_NOTICE`,
+  which does not say "condensing"), and the permit is released only when
+  `absorb_orphaned_release` says this task still owns it; that release clears
+  `turn_owner` in the same step, as every other holding's release does. After
+  acquiring the hold, the coordinator revalidates the session under the
+  registry lock and answers `absent` before recycling when the key changed
+  owners, and checks again right before the restart, after the cotenant wait:
+  a reset that is not a Stop (a rewind, a model switch) can replace the session
+  during it, and restarting then would recycle the stale session, post a
+  rotation notice and arm the verdict on a successor the rotation never
+  measured. A successor that fails to start leaves the old session on its key
+  with the cooldown armed, and no verdict is armed for it. The successor is
+  registered unclaimed, so its first real turn is still a fresh turn:
+  `build_session_replay` re-seeds it from the transcript tail, and no model
+  call is spent. The one-shot re-injection flag is not set for a rotation (the
+  successor gets full startup context), and `CompactionState.rotating` marks
+  the key from the held permit through the cotenant wait and the restart, so the
+  `context_compactions` counter counts an intentional rotation as the success
+  it is while a failed `/compact` that had to recycle still counts as a
+  failure. The counter keeps its `success` and `trigger` labels and adds none,
+  so a default config's series is unchanged by the key. The compact
+  callback (`CompactCallback`) carries `method` beside `outcome`: a rotation, a
+  native summary and a plain recycle reach the dashboard notice writer through
+  the same `success=True` call, so the notice names a rotation and what became
+  of the history older than the carried tail
+  (`session_compaction_methods.ROTATION_HISTORY_FATE`: "gone from its memory"
+  for `soft`) where the native line says the history is a summary and the
+  restart lines say a compaction failed. The rotation notice speaks of the
+  agent's MEMORY, not of the transcript: it opens with the restart lines' "The
+  conversation above is still here", since a bare "older history dropped"
+  beside an intact transcript reads as a deletion. A rotation IS a recycle to
+  the `outcome` arm (`recycled`), so the dashboard notice reads `method` first
+  and the `outcome` arms only for `native`; the other order would announce a
+  failure the user never had. Every notice a rotation posts (its own, its wait
+  for sub-agents, a Stop during that wait, a failed start inside it: the
+  callback names the rotation method because `rotating` spans the hold, and the
+  sub-agent wait passes it explicitly) carries `meta.rotation_method` (`ROTATION_NOTICE_META_KEY`).
+  Those rows are status for the person: counted by the successor's replay they
+  would spend the tail budget the projection charged. The session replay leaves
+  marked rows out (`_quota_tail` with `skip_rotation_notices`) only while a
+  rotation method is configured (`build_session_replay`'s
+  `rotation_configured`), and `is_rotation_notice` requires the whole shape the
+  dashboard writes (an `assistant` row, `meta.kind="compaction"` and the key),
+  so a client cannot hide its own message by setting the key alone. A native
+  notice carries no marker and is always replayed. A rotation that waits for
+  sub-agents posts its own waiting line (`_AUTO_ROTATION_WAITING_NOTICE`,
+  "waiting for its sub-agents to finish before it rotates"), not the
+  restart one, and a sub-agent it stops past the wait reports "stopped
+  when an auto-compaction rotated the session" where a `native` restart's
+  reports "stopped at a context restart". The channel notice writer has
+  no rotation line: a channel session never rotates (the rotation needs the
+  seed writer's `supports`, which refuses every channel key), so it only ever
+  reports `native`.
+  Before running, the rotation is judged like the in-place verdict:
+  `project_pct_after(window, carried, overhead)` with `carried` = the
+  successor's own replay tail, `context_assembly.replay.replay_budget_chars(window)`
+  estimated at 4 chars/token (80K chars at the 1M reference, 16K on a 200K
+  model, the window over the reference clamped to [0.2, 1.0] by
+  `replay.replay_scale`, the same factor the replay's per-row inject ceiling
+  shrinks by) and `overhead` = `context_assembly.budget.startup_context_chars()`,
+  the three allowances a fresh session's context is admitted up to: the
+  Crew-owned discretionary pool (`_CONTEXT_BUDGET_BASE`, the one shared
+  admission budget `_ResolvedCaps.max_context` enforces, which section limits
+  do not enlarge) plus the standing-rule startup allowance admitted beside it
+  (`_LESSONS_STARTUP_CAP`) plus the `pref.*` startup allowance admitted beside
+  it (`_PREFS_STARTUP_CAP`). All are window-independent, so the figure is too.
+  Both figures are read from the owners `replay_text` and the context builder
+  read, so the ceiling charged and the ceiling applied cannot drift. A thread's
+  own history allowance and provider-side overhead sit outside the projection;
+  the successor's first confirmed reading settles what it could not see
+  (below). A projection that does not land at least
+  `_COMPACT_MIN_EFFECT_PCT_POINTS` under the session's threshold is
+  `insufficient`; an unknown window (a provider reporting 0) or a session the
+  dashboard holds no transcript for is `unavailable`. Availability is answered
+  before the projection, through `SeedWriter.supports(key)`: the dashboard
+  replay is the only thing that re-seeds a rotated successor, so a `soft`
+  recycle of a cron, hook, subagent or channel session would come back with no
+  turns at all (and a Slack thread's own fresh-session bootstrap is a model
+  call, which `soft` exists to avoid). The dashboard registers the one writer
+  (`DashboardSeedWriter` in `dashboard/compaction_seed.py`, from
+  `wire_session_compact_callback`); it routes the key to its open tab, then
+  answers `supports` True only when `slot_ownership.own_session_key(slot)` is
+  that exact key. This positive test admits an ordinary `dashboard:<slot>` key
+  and the `taskrunner:<task_id>:chat:<token>` key minted for a task-review tab.
+  It refuses channel keys before lookup, and refuses cron, hook, subagent,
+  workflow and other externally linked keys even when `dashboard_slot_key`
+  maps them to an open tab. A key with no tab is also refused. Either refusal
+  hands the turn to `native`. A rotation that RAISES while the key still maps
+  to the session the walk started with is logged at WARNING and counts as
+  `unavailable`, so the promise that `native` runs last holds whatever a
+  rotation does before the restart. Once the key maps to another session (the
+  successor started, then `_recycle_held` raised), the exception propagates
+  and `_compact_session` reports `failed`, as it does when the native restart
+  raises: `native` never runs on the replaced session.
+  There is deliberately no config key sizing the carried tail: the tail the
+  successor replays and the tail the projection charges are one number read
+  from one function. The replay keeps its newest row whatever its size; while
+  a rotation method is configured it clips that one line to the budget with the
+  truncation mark (`replay_text`'s `clip_newest`, from `rotation_configured`,
+  which `chat_turn.prompt_assembly` passes at both replay sites from
+  `_ChatTurn._rotation_method`, set at admission when
+  `session.compaction_method` is a known method other than `native` and
+  narrowed after the session claim to `""` for a session the coordinator would
+  not rotate: a Claude backend (the `_is_claude_backend` predicate
+  `_compact_session` reads) or a key the dashboard seed writer does not support
+  (`compaction_seed.supports_seed`, which refuses a cron-linked or other linked
+  tab)), so the carried tail never exceeds the figure the projection charges.
+  With the default `native`, and on every session that always runs `native`,
+  the newest row is carried whole and every row is admitted, so such a session
+  replays exactly what it would with no method key. A rotation is judged BEFORE it runs, by that
+  projection, and the projection omits provider-side overhead the real usage
+  figure includes; so a rotation also arms the same deferred verdict the
+  native path uses (`pending_verdict[key]` = the pre-rotation reading), and
+  the successor's first confirmed reading settles it in
+  `_compaction_gate_decision`: the ledger entry is emitted and
+  `_judge_compact_effect` arms the failure cooldown when the rotation freed
+  less than `_COMPACT_MIN_EFFECT_PCT_POINTS`, exactly as for `native`. That
+  reading includes the successor's first turn, which is why it only damps: the
+  next walk after the cooldown may rotate again. The Claude and `cc_managed`
+  branches are untouched: the method is a kiro path, selected positively. An
+  idle compaction (`session.idle_compaction`) never rotates: a rotation is a
+  restart, and the idle trigger takes only the non-destructive branch, so
+  `_run_method_ladder` runs `native` for it whatever the configured method.
+  Every attempted method logs one INFO line with its outcome. The arithmetic
+  lives in `session_compaction_methods.py` (pure functions, no I/O), the
+  rotation itself (`try_rotation`, `rotate`) in `session_compaction_rotation.py`,
+  which the coordinator binds as `_rotate`; the method
+  names are owned by `config/sections_defaults.py` (`COMPACTION_METHODS`,
+  served by the `config.sections` facade) and a config
+  naming an unknown method is normalized to the default at load.
 - **Circuit breaker**: force-resets session after 5 consecutive failures.
 - **Dead provider detection**: `get_or_create()` checks `provider.is_alive()`
   on the fast path. If the backing process died (crash, SIGKILL, orphan
@@ -6766,9 +6929,10 @@ In-place compaction (both backends) keeps the `_sessions` entry healthy:
 a concurrent `get_or_create()` reuses it, queueing on the session
 semaphore behind the compact, then continues on the compacted session.
 
-Only the kiro-cli failure recycle tears the entry down, and it runs inside
-`_compact_in_place` under the turn semaphore that the compact attempt
-already holds — never after releasing it. That is load-bearing: releasing
+Only a recycle tears the entry down — the kiro-cli failure recycle inside
+`_compact_in_place`, or the rotation method (`soft`) when it is configured —
+and each runs under the turn semaphore that the attempt
+already holds, never after releasing it. That is load-bearing: releasing
 first and re-acquiring for the recycle leaves a gap a queued turn wins, and
 that turn is then dispatched into a kiro-cli still finishing its compaction,
 receives the late `completed` status instead of an `end_turn`, and hangs
