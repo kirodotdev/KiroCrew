@@ -220,7 +220,11 @@ if (-not (Test-Path -LiteralPath $blockmap -PathType Leaf)) {
 # uninstaller removes its install root recursively. Kept on the local temp volume
 # deliberately -- a synced directory (OneDrive) can recreate files while NSIS
 # removes them, which tests the sync client rather than the installer.
-$requestedRoot = Join-Path ([IO.Path]::GetFullPath($env:TEMP)) "kirocrew-smoke-$PID"
+# GitHub Actions uploads from runner.temp (RUNNER_TEMP), which is distinct from
+# the Windows user's TEMP on hosted runners. Use the same root so the upload
+# step can find these logs; retain TEMP for standalone runs outside Actions.
+$tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+$requestedRoot = Join-Path ([IO.Path]::GetFullPath($tempRoot)) "kirocrew-smoke-$PID"
 $sentinel = Join-Path $requestedRoot "pre-existing-user-file.txt"
 New-Item -ItemType Directory -Path $requestedRoot -Force | Out-Null
 Set-Content -LiteralPath $sentinel -Value "must survive install and uninstall" -Encoding utf8NoBOM
