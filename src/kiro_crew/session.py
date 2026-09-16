@@ -113,6 +113,7 @@ from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec, spec_model
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
+from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import (
@@ -2150,7 +2151,7 @@ class SessionManager:
             # native-order, first-match scan.  This runs on the event-loop
             # thread, so a match must stop all later spec reads rather than
             # building a full map on every cache miss / TTL expiry.
-            for agent_file in agents_dir.glob("*.json"):
+            for agent_file in iter_agent_spec_files(agents_dir, ordered=False):
                 data = _read_agent_spec(
                     agent_file,
                     operation="resolve_agent_model",

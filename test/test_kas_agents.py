@@ -889,17 +889,18 @@ class TestSpecLookup:
     def test_an_unsearchable_dir_is_a_translation_error_at_the_direct_read(
         self, tmp_path, monkeypatch
     ):
-        """``Path.read_text`` propagates a permission error on every supported
-        version, so an agents dir the process cannot search reaches the
-        fallback read as an ``OSError``. Callers of this module handle
-        ``KasAgentTranslationError``, so an ``OSError`` escaping here aborts
-        session startup instead of failing the projection.
+        """The strict reader resolves the file before opening it, and on every
+        supported version that propagates a permission error, so an agents dir
+        the process cannot search reaches the fallback read as an ``OSError``.
+        Callers of this module handle ``KasAgentTranslationError``, so an
+        ``OSError`` escaping here aborts session startup instead of failing the
+        projection.
         """
 
         def _denied(_self, *_a, **_k):
             raise PermissionError(13, "Permission denied")
 
-        monkeypatch.setattr(Path, "read_text", _denied)
+        monkeypatch.setattr(Path, "resolve", _denied)
 
         with pytest.raises(KasAgentTranslationError) as exc:
             load_agent_spec(tmp_path, "kirocrew")

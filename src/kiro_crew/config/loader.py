@@ -37,6 +37,7 @@ from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility fac
 import kiro_crew.config.resolution as _resolution
 from kiro_crew import __version__, model_registry, pinned_fs, platform_compat, windows_acl
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
+from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
 
 # Leaf module (stdlib + platform_compat only) — no import cycle with config.
 from kiro_crew.atomic_write import atomic_write, on_event_loop
@@ -5033,7 +5034,7 @@ class KiroCrewConfig:
         if not agent:
             return ""
         base = agents_dir if agents_dir is not None else kiro_agents_dir()
-        for af in base.glob("*.json"):
+        for af in iter_agent_spec_files(base, ordered=False):
             ad = _read_hardened_agent_spec(af)
             if ad is None:
                 continue
@@ -5374,7 +5375,7 @@ def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
     from kiro_crew.hooks import safe_read_file
 
     try:
-        candidates = sorted(agents_dir.glob("*.json"))
+        candidates = iter_agent_spec_files(agents_dir)
     except OSError:
         return frozenset()
     for af in candidates:
@@ -5385,7 +5386,7 @@ def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
             # refresh. safe_read_file re-checks the RESOLVED target and raises
             # PermissionError for a refused path — an OSError subclass, so a
             # refused entry is skipped by the same handler as an unreadable one.
-            data = json.loads(safe_read_file(str(af)))
+            data = parse_agent_spec_text(safe_read_file(str(af)), af)
         except (ValueError, OSError):
             continue
         # Skip stray non-object JSON a user may have dropped in the dir. The

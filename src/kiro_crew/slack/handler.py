@@ -41,7 +41,16 @@ from kiro_crew.acp.types import (
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
 )
-from kiro_crew.agent_discovery import project_agent_files, project_agent_name
+from kiro_crew.agent_discovery import (
+    agent_spec_stems,
+    project_agent_files,
+    project_agent_name,
+)
+from kiro_crew.agent_spec_format import (
+    is_markdown_spec,
+    iter_agent_spec_files,
+    parse_agent_spec_text,
+)
 from kiro_crew.config.loader import (
     ACTIVATION_REVIEW,
     ConfigReadError,
@@ -1025,10 +1034,10 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
     """
     # Project-local agents take priority — kiro-cli resolves --agent against its
     # cwd before the user-level dir, so a project agent is the one that would run.
-    # Prefilter on the FILENAME first: this runs on the event loop, and reading
-    # every spec to compare its declared name stalls Slack and the gateway on a
-    # checkout with many agents or slow storage. At most the one matching file is
-    # read, to return the name it declares.
+    # Prefilter on the FILENAME first: the async callers hand this to a thread,
+    # but reading every spec to compare its declared name would still make a
+    # checkout with many agents or slow storage slow to answer. At most the one
+    # matching file is read, to return the name it declares.
     for spec in _discover_project_agents(project_dir):
         stem = spec.stem.removesuffix(".agent-spec")
         if stem != name and spec.stem != name:
@@ -1036,13 +1045,13 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
         return project_agent_name(spec)
 
     agents_dir = kiro_agents_dir()
-    jsons = (
-        sorted(agents_dir.glob("*.json"), key=lambda f: (len(f.stem), f.stem))
+    specs = (
+        sorted(iter_agent_spec_files(agents_dir), key=lambda f: (len(f.stem), f.stem))
         if agents_dir.is_dir()
         else []
     )
     match = next(
-        (f for f in jsons if f.stem == name or f.stem.endswith(f"-{name}")),
+        (f for f in specs if f.stem == name or f.stem.endswith(f"-{name}")),
         None,
     )
     if not match:
@@ -1053,9 +1062,17 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
     if not safe:
         return None
     try:
-        return json.loads(Path(safe).read_text(encoding="utf-8")).get("name", match.stem)
-    except (json.JSONDecodeError, OSError):
-        return match.stem
+        data = parse_agent_spec_text(Path(safe).read_text(encoding="utf-8"), match)
+    except (ValueError, OSError):
+        # ValueError covers bad JSON, bad frontmatter and a non-UTF-8 read. A
+        # broken JSON spec still occupies its name, as it always has; a markdown
+        # file that does not parse is not a spec at all (a README, notes), the
+        # same rule the listing applies, so it does not resolve.
+        return None if is_markdown_spec(match) else match.stem
+    if not isinstance(data, dict):
+        return None if is_markdown_spec(match) else match.stem
+    declared = data.get("name")
+    return declared if isinstance(declared, str) and declared else match.stem
 
 
 # Frontmatter ``name:`` matcher for cc-plugins agent specs. Pre-compiled at
@@ -1105,9 +1122,12 @@ def _resolve_cc_agent_name(name: str, cc_plugins_dir: Path | None = None) -> str
 def _list_all_agent_names(cc_plugins_dir: Path | None = None) -> str:
     """Return a comma-separated list of all available agent names.
 
-    Merges ``~/.kiro/agents/*.json`` (by stem) with the cc-plugins agents from
-    :func:`_iter_cc_agent_names`. The internal ``kirocrew-lite`` variant is
-    hidden. Returns ``"(none found)"`` when empty.
+    Merges the ``~/.kiro/agents`` spec stems (see
+    :func:`kiro_crew.agent_discovery.agent_spec_stems`) with the cc-plugins
+    agents from :func:`_iter_cc_agent_names`. The internal ``kirocrew-lite``
+    variant is hidden. Returns ``"(none found)"`` when empty. Reads every
+    markdown candidate to decide whether it is a spec, so the async callers
+    run it in a thread rather than on the event loop.
 
     Note: this listing is unioned across both agent sources, but *activation*
     is not. cc-plugins (companion-backend) agents only actually load when
@@ -1121,7 +1141,11 @@ def _list_all_agent_names(cc_plugins_dir: Path | None = None) -> str:
     if agents_dir.is_dir():
         # Hide the internal kirocrew-lite variant from BOTH sources — a
         # ~/.kiro/agents/kirocrew-lite.json would otherwise leak into the list.
-        names.extend(f.stem for f in sorted(agents_dir.glob("*.json")) if f.stem != "kirocrew-lite")
+        names.extend(
+            stem
+            for stem in agent_spec_stems(agents_dir, operation="slack_list_agents", source="slack")
+            if stem != "kirocrew-lite"
+        )
     seen = set(names)
     for agent_name in _iter_cc_agent_names(cc_plugins_dir):
         if agent_name not in seen and agent_name != "kirocrew-lite":
@@ -1913,9 +1937,11 @@ async def _handle_slash_command(
             await slack.post_message(channel, "🔄 Reset to default agent.", reply_ts)
             await _add_phase_reaction(slack, channel, msg_ts, "done")
             return ""
-        resolved = _resolve_agent_name(agent_name, _thread_projects.get(session_key))
+        resolved = await asyncio.to_thread(
+            _resolve_agent_name, agent_name, _thread_projects.get(session_key)
+        )
         if not resolved:
-            names = _list_all_agent_names()
+            names = await asyncio.to_thread(_list_all_agent_names)
             await slack.post_message(
                 channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
             )
@@ -2080,9 +2106,11 @@ async def _handle_slash_command(
             await slack.post_message(channel, "🔄 Thread agent reset.", reply_ts)
             await _add_phase_reaction(slack, channel, msg_ts, "done")
             return ""
-        resolved = _resolve_agent_name(agent_name, _thread_projects.get(session_key))
+        resolved = await asyncio.to_thread(
+            _resolve_agent_name, agent_name, _thread_projects.get(session_key)
+        )
         if not resolved:
-            names = _list_all_agent_names()
+            names = await asyncio.to_thread(_list_all_agent_names)
             await slack.post_message(
                 channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
             )
@@ -2255,9 +2283,11 @@ async def _handle_slash_command(
             if agent_name.lower() == "off":
                 agent_name = ""
             else:
-                resolved = _resolve_agent_name(agent_name, _thread_projects.get(session_key))
+                resolved = await asyncio.to_thread(
+                    _resolve_agent_name, agent_name, _thread_projects.get(session_key)
+                )
                 if not resolved:
-                    names = _list_all_agent_names()
+                    names = await asyncio.to_thread(_list_all_agent_names)
                     await slack.post_message(
                         channel,
                         f"Unknown agent `{agent_name}`. Available: {names}",

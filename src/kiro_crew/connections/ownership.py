@@ -24,7 +24,6 @@ helpers directly, the judge and transaction through the disconnect endpoint.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
@@ -32,6 +31,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from kiro_crew.agent_spec_format import (
+    is_agent_spec_name,
+    is_markdown_spec,
+    parse_agent_spec_text,
+    split_markdown_spec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +90,11 @@ class DisconnectScope:
 
 
 def _json_spec_names(spec_dir: Path) -> list[str] | None:
-    """The ``*.json`` spec names in ``spec_dir``; ``None`` when it is unreadable.
+    """The spec names (``*.json`` and ``*.md``) in ``spec_dir``; ``None`` when unreadable.
+
+    Both forms: a markdown spec's ``mcpServers`` holds a grant exactly like a
+    JSON spec's, and reading only ``*.json`` would count that sharer as absent
+    and let a Disconnect revoke a grant it is still using.
 
     ``os.listdir``, not ``Path.glob``: glob SUPPRESSES scan errors (an
     executable-but-unlistable directory yields zero entries with no raise), which
@@ -94,7 +104,7 @@ def _json_spec_names(spec_dir: Path) -> list[str] | None:
     or no one could ever disconnect anything.
     """
     try:
-        return sorted(n for n in os.listdir(spec_dir) if n.endswith(".json"))
+        return sorted(n for n in os.listdir(spec_dir) if is_agent_spec_name(n))
     except FileNotFoundError:
         return []
     except OSError:
@@ -227,7 +237,13 @@ def spec_census(
                 continue
             if not path.is_file():
                 continue  # genuinely absent: no entries here, nothing hidden
-            data = json.loads(safe_read_file(str(path)))
+            text = safe_read_file(str(path))
+            if is_markdown_spec(path) and split_markdown_spec(text) is None:
+                # A markdown file with no frontmatter fence (a README, notes) is
+                # not a spec: it declares nothing and hides nothing. Only a
+                # FENCED document that fails to parse is unknown, below.
+                continue
+            data = parse_agent_spec_text(text, path)
         except (OSError, ValueError):
             # PermissionError (an OSError) is what safe_read_file raises for a
             # sensitive path or a symlink race; a stalled mount and malformed

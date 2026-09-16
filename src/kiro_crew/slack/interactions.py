@@ -1059,7 +1059,8 @@ async def _refresh_channels_modal(view_id: str) -> None:
     ]
     from kiro_crew.slack.events import _get_agent_names
 
-    modal = channels_modal(channels, agent_names=_get_agent_names())
+    agent_names = await asyncio.to_thread(_get_agent_names)
+    modal = channels_modal(channels, agent_names=agent_names)
     try:
         await _orch.slack.views_update(view_id=view_id, view=modal)
     except Exception:

@@ -53,6 +53,11 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_spec_format import (
+    agent_spec_candidates,
+    is_markdown_spec,
+    iter_agent_spec_files,
+)
 from kiro_crew.apps.bridges import _mcp_lock as _agent_file_lock
 from kiro_crew.apps.bridges import _registration_source
 from kiro_crew.apps.manager import (
@@ -143,6 +148,16 @@ from kiro_crew.validation import _AGENT_NAME_RE
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
 logger = logging.getLogger(__name__)
+
+
+def _spec_stem_on_disk(agents_dir: Path, name: str) -> bool:
+    """True when ``<name>.json`` OR ``<name>.md`` exists in *agents_dir*.
+
+    Every writer that mints a new ``<name>.json`` asks this rather than testing
+    the JSON path alone: a markdown spec with the same stem is the same agent,
+    and writing a JSON twin beside it would list one name twice.
+    """
+    return any(p.exists() for p in agent_spec_candidates(agents_dir, name))
 
 
 def _namespaced_agent_file_exists(agent_name: str) -> bool:
@@ -2512,7 +2527,7 @@ def _load_template_specs(
     source_path: Path | None = None
     taken: set[str] = set()
     matches: list[Path] = []
-    for f in sorted(agents_dir.glob("*.json")):
+    for f in iter_agent_spec_files(agents_dir):
         # An unreadable spec still occupies its filename.
         taken.add(f.stem.lower())
         spec = _read_agent_spec(f, operation=operation, source="dashboard")
@@ -2868,7 +2883,7 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                         or copy_name.lower() in bound
                         or copy_name.lower() in managed_stems
                         or _is_reserved_basename(copy_name)
-                        or (agents_dir / f"{copy_name}.json").exists()
+                        or _spec_stem_on_disk(agents_dir, copy_name)
                     ):
                         copy_name = f"{base}-{suffix}"
                         suffix += 1
@@ -3097,7 +3112,7 @@ async def api_agent_publish(request: web.Request) -> web.Response:
                     data = dict(fresh_source)
                     data["name"] = new_name
                     dest = agents_dir / f"{new_name}.json"
-                    if dest.exists():
+                    if _spec_stem_on_disk(agents_dir, new_name):
                         raise FileExistsError(dest)
                     # Lineage BEFORE the file exists: from its first byte on
                     # disk the destination is this crew's private copy, so no
@@ -3321,7 +3336,7 @@ async def api_agent_detail(request: web.Request) -> web.Response:
             return web.json_response({"error": "body must be a JSON object"}, status=400)
 
     state: DashboardState = request.app["state"]
-    for f in kiro_agents_dir_path().glob("*.json"):
+    for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
         spec = _read_agent_spec(
             f,
             operation="api_agent_detail",
@@ -3338,6 +3353,20 @@ async def api_agent_detail(request: web.Request) -> web.Response:
         # skip-to-next-file.
         try:
             if data.get("name") == name or f.stem == name:
+                if request.method != "GET" and is_markdown_spec(f):
+                    # A markdown spec is one hand-authored document. Serializing
+                    # a JSON object over it would drop the prompt body and every
+                    # field this handler does not model, so it is read-only here.
+                    return web.json_response(
+                        {
+                            "error": (
+                                f"agent '{name}' is defined in markdown ({f.name}); "
+                                "edit the file directly"
+                            ),
+                            "code": "markdown_spec_readonly",
+                        },
+                        status=409,
+                    )
                 if request.method == "PATCH" and patch_body is not None:
                     try:
                         # Either lookup spelling can resolve this same file; a
@@ -4045,7 +4074,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     continue
                 await _drained_to_thread(require_member_memory_creation, disc.name)
                 _has_on_disk = await asyncio.to_thread(
-                    lambda: (kiro_agents_dir_path() / f"{_dn}.json").exists()
+                    lambda: _spec_stem_on_disk(kiro_agents_dir_path(), _dn)
                     or _namespaced_agent_file_exists(_dn)
                 )
                 if not _has_on_disk:
