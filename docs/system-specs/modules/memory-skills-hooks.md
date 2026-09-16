@@ -2431,8 +2431,8 @@ its validated private marker selects V2.
 | PUT | `/api/memory/preferences` | Overwrite it (gated — see below) |
 | GET | `/api/memory/projects` | Read the markdown projects document |
 | PUT | `/api/memory/projects` | Overwrite it (gated) |
-| GET | `/api/memory/history` | Read today's editable V2 document or V1 recent daily summaries |
-| PUT | `/api/memory/history` | Overwrite today's summary file (gated) |
+| GET | `/api/memory/history` | Read today's editable V2 document or V1 recent daily summaries. `?date=YYYY-MM-DD` (canonical form only, else 400 `invalid_history_date`) returns that ONE day's file in both versions, empty when the day has no file; the Overview Today card reads it with the browser-local date. File names come from the **server-local** clock (`memory/history/*.md`), so when the two clocks straddle midnight the card shows the server's file of that name, one day off from the browser's own |
+| PUT | `/api/memory/history` | Overwrite today's summary file (gated); `?date=` is not honoured on writes |
 | GET | `/api/memory/semantic` | List all semantic entries |
 | PUT | `/api/memory/semantic` | Create/update (validates key, allowlist, injection; gated) |
 | DELETE | `/api/memory/semantic/{key}` | Tombstone + log event (gated) |

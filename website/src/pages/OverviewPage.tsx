@@ -1,7 +1,7 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
+import { ArrowLeft, ArrowRight, BarChart3, Brain, CalendarDays, Clock } from 'lucide-react'
 import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
 import { api } from '../api/client'
@@ -16,12 +16,14 @@ import { getOverviewStatCards } from './overviewStatCards'
 import { getOverviewPanel } from './overviewPanel'
 import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
 import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
-import { UsageTab, WakaTimeTab } from './overview'
+import { TodayTab, UsageTab, WakaTimeTab } from './overview'
+import { useTodayActivity } from './overview/useTodayActivity'
+import { fmtRelativeTime } from './chat/sessionOrder'
 import { useProvider } from '../providers'
 import { providerUsageQuery } from '../api/providerUsageQuery'
 
 import { i18nT } from '../i18n/t'
-import { fmtDuration } from '../i18n/format'
+import { fmtDuration, fmtNumber } from '../i18n/format'
 
 // The record editor and recovery tools are needed only inside this drill-in.
 // Keep them out of the dashboard shell's initial bundle.
@@ -30,14 +32,14 @@ const MemoryTab = lazy(() => import('./overview/MemoryTab'))
  * Settings > Overview — mission control.
  *
  * One scrollable dashboard, no nested tab bar: a health hero, the stat-tile
- * grid, and summary cards that drill into the two deep surfaces (memory
- * browser, usage report) via a URL-backed `?view=` param — the same
- * list-detail pattern as the Channels tab. KiroCrew/agent config viewers and
- * the memory graph live on the Developer page; configuration import/export is
- * on the Import tab.
+ * grid, and summary cards that drill into the deep surfaces (memory browser,
+ * usage report, WakaTime, today's activity) via a URL-backed `?view=` param —
+ * the same list-detail pattern as the Channels tab. KiroCrew/agent config
+ * viewers and the memory graph live on the Developer page; configuration
+ * import/export is on the Import tab.
  */
 
-const DRILL_VIEWS = ['memory', 'usage', 'wakatime'] as const
+const DRILL_VIEWS = ['memory', 'usage', 'wakatime', 'today'] as const
 type DrillView = (typeof DRILL_VIEWS)[number]
 
 function fmtNum(n: number | undefined | null): string {
@@ -184,6 +186,55 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
   )
 }
 
+/**
+ * Today summary card — what was worked on today, from data the dashboard
+ * already holds (live slots, the archived-session list, today's history file);
+ * no model call. Counts sessions ACTIVE today (last activity in the browser's
+ * local day), which is a different set from the Usage card's sessions STARTED
+ * today. Shares its queries with the Today drill-in.
+ */
+function TodaySummaryCard({ onOpen }: { onOpen: () => void }) {
+  const today = useTodayActivity()
+  return (
+    <Card data-testid="overview-today-card">
+      <CardTitle>
+        <CalendarDays className="lucide-inline" /> {i18nT('pages.overview.todayCard.title')}
+        <Btn onClick={onOpen} className="ml-auto border-none bg-transparent px-0 py-0 text-[12px] font-medium text-accent hover:bg-transparent hover:underline" data-testid="overview-today-open">
+          {i18nT('pages.overviewPage.view_details')} <ArrowRight size={12} />
+        </Btn>
+      </CardTitle>
+      {today.sessionsError ? (
+        // askAgent on: a read of the archived-session list; the card holds no input.
+        <ErrorNotice message={today.sessionsError.message} askAgent testId="overview-today-error" />
+      ) : today.loading ? (
+        <div className="skeleton h-14 rounded" />
+      ) : (
+        <div className="flex flex-col gap-2">
+          <div className="text-[13px] text-muted">
+            {/* The Usage card beside this one counts sessions STARTED today;
+                this count is sessions with activity today. The title names
+                the basis so two different "today" numbers read as two sets. */}
+            <span className="text-text font-semibold" title={i18nT('pages.overview.todayCard.sessions_active_basis')}>{i18nT('pages.overview.todayCard.sessions_active', { count: today.sessions.length })}</span>
+            {today.running > 0 && <> · {i18nT('pages.overview.todayCard.running', { n: fmtNumber(today.running) })}</>}
+            {today.entries.length > 0 && <> · {i18nT('pages.overview.todayCard.memory_entries', { count: today.entries.length })}</>}
+            {today.lastActivity > 0 && <> · {i18nT('pages.overview.todayCard.last_active', { time: fmtRelativeTime(today.lastActivity) })}</>}
+          </div>
+          {today.groups.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 text-[12px] text-muted">
+              {today.groups.map(g => (
+                <span key={g.folder_id || 'unfiled'} className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5">
+                  <span className="text-text font-semibold tabular-nums">{fmtNumber(g.sessions.length)}</span>
+                  {g.name ?? i18nT('pages.overview.todayCard.unfiled')}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 type StatId = 'uptime' | 'sessions' | 'messages' | 'cronJobs' | 'subagents' | 'lessons'
 /**
  * Catalog key per status tile. A flat `Record` of full literal keys, indexed
@@ -263,6 +314,9 @@ export default function OverviewPage() {
   if (view === 'wakatime') {
     return <DrillIn title={i18nT('pages.overviewPage.wakatime')} onBack={() => setView(null)}><WakaTimeTab /></DrillIn>
   }
+  if (view === 'today') {
+    return <DrillIn title={i18nT('pages.overview.todayCard.title')} onBack={() => setView(null)}><TodayTab onOpenMemory={() => setView('memory')} /></DrillIn>
+  }
 
   // Resolved once per render, and bound to a capitalized local so JSX treats it
   // as a component rather than an intrinsic element.
@@ -341,6 +395,7 @@ export default function OverviewPage() {
         <UsageSummaryCard onOpen={() => setView('usage')} />
         <WakaTimeSummaryCard onOpen={() => setView('wakatime')} />
         <MemorySummaryCard onOpen={() => setView('memory')} />
+        <TodaySummaryCard onOpen={() => setView('today')} />
       </div>
 
       {/* Extension slot: the single downstream-owned panel for the region below

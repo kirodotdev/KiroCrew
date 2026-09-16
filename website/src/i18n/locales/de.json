@@ -12206,6 +12206,29 @@
         "count_by": "Zählen nach",
         "memory": "Erinnerung",
         "not_recorded": "nicht erfasst"
+      },
+      "todayCard": {
+        "go_to_chat": "Zum Chat",
+        "in_memory": "In der Erinnerung gespeichert",
+        "last_active": "zuletzt aktiv {{time}}",
+        "memory_empty_title": "Heute noch nichts in der Erinnerung gespeichert",
+        "memory_entries_one": "{{count}} Eintrag in der Erinnerung gespeichert",
+        "memory_entries_other": "{{count}} Einträge in der Erinnerung gespeichert",
+        "memory_footnote_one": "Sitzungen werden nach {{count}} Stunde Inaktivität in die Erinnerung zusammengefasst.",
+        "memory_footnote_other": "Sitzungen werden nach {{count}} Stunden Inaktivität in die Erinnerung zusammengefasst.",
+        "messages_one": "{{count}} Nachricht",
+        "messages_other": "{{count}} Nachrichten",
+        "no_sessions_body": "Sitzungen, in denen du heute arbeitest, erscheinen hier nach Ordner gruppiert.",
+        "no_sessions_yet": "Heute noch keine Sitzungen",
+        "open_memory": "Erinnerung öffnen",
+        "running": "{{n}} laufend",
+        "running_label": "Läuft",
+        "sessions_active_basis": "Sitzungen mit Aktivität heute, einschließlich früher gestarteter. Die Nutzungskarte zählt heute gestartete Sitzungen.",
+        "sessions_active_one": "{{count}} Sitzung heute aktiv",
+        "sessions_active_other": "{{count}} Sitzungen heute aktiv",
+        "sessions_today": "Sitzungen heute",
+        "title": "Heute",
+        "unfiled": "Nicht abgelegt"
       }
     },
     "overviewPage": {
@@ -12222,7 +12245,7 @@
       "overview": "Übersicht",
       "reconnecting": "Neu verbinden…",
       "semantic_memory_active": "· semantische Erinnerung aktiv",
-      "sessions": "Sitzungen ·",
+      "sessions": "Sitzungen gestartet ·",
       "stat_cron_jobs": "Cron-Jobs",
       "stat_lessons": "Lektionen",
       "stat_messages": "Nachrichten",

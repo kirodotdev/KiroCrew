@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -519,7 +520,8 @@ async def api_memory_projects(request: web.Request) -> web.Response:
 
 async def api_memory_history(request: web.Request) -> web.Response:
     """GET/PUT /api/memory/history — today's V2 document or V1 recent summaries,
-    for the store named by ``?store=`` or the GLOBAL store."""
+    for the store named by ``?store=`` or the GLOBAL store. GET with
+    ``?date=YYYY-MM-DD`` returns that one day's file instead (both versions)."""
     state: DashboardState = request.app["state"]
     # Resolved ahead of the method branch for the same reason as the preferences
     # route above. The dated file the PUT writes is the RESOLVED store's, so a
@@ -573,6 +575,27 @@ async def api_memory_history(request: web.Request) -> web.Response:
             except (UnknownMemoryStore, OSError, UnicodeError, FileTooLargeError) as exc:
                 return _store_unavailable_response(store, exc)
         return web.json_response({"ok": True})
+    # ``?date=YYYY-MM-DD`` narrows the read to ONE day's file (the Overview
+    # Today card). The date names a SERVER-local day, the same clock that
+    # names the files. Parsed strictly (strptime accepts unpadded fields, so
+    # the round-trip must reproduce the input) and rebuilt from the parsed
+    # value, so the query text never becomes a path component.
+    date_arg = request.query.get("date")
+    if date_arg is not None:
+        try:
+            day = datetime.strptime(date_arg, "%Y-%m-%d").date()
+        except ValueError:
+            day = None
+        if day is None or day.strftime("%Y-%m-%d") != date_arg:
+            return web.json_response(
+                {"error": "date must be YYYY-MM-DD", "code": "invalid_history_date"},
+                status=400,
+            )
+        try:
+            content = await asyncio.to_thread(mem.read_history_for_date, day)
+        except (UnknownMemoryStore, OSError) as exc:
+            return _store_unavailable_response(store, exc)
+        return _memory_document_response(content)
     try:
         content = await asyncio.to_thread(mem.read_editable_history)
     except (UnknownMemoryStore, OSError) as exc:

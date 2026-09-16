@@ -1,14 +1,15 @@
 import { describe, it, expect, vi } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import OverviewPage from '../pages/OverviewPage'
 import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 import type { RootState } from '../store'
 
-// Mock the two drill-in surfaces to isolate the mission-control shell.
+// Mock the drill-in surfaces to isolate the mission-control shell.
 vi.mock('../pages/overview', () => ({
   UsageTab: () => <div data-testid="usage-tab">UsageTab</div>,
   WakaTimeTab: () => <div data-testid="wakatime-tab">WakaTimeTab</div>,
+  TodayTab: () => <div data-testid="today-tab">TodayTab</div>,
 }))
 vi.mock('../pages/overview/MemoryTab', () => ({
   default: () => <div data-testid="memory-tab">MemoryTab</div>,
@@ -26,6 +27,11 @@ vi.mock('../api/client', () => ({
     kasLoginStatus: vi.fn().mockResolvedValue({ authenticated: false }),
     // The selected backend decides whether the sign-in signpost renders.
     kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: '' } }),
+    // The Today summary card reads the archived-session list, the folders and
+    // today's history file; nothing from today here, so it renders its zero.
+    sessions: vi.fn().mockResolvedValue({ sessions: [] }),
+    chatFolders: vi.fn().mockResolvedValue([]),
+    memoryHistory: vi.fn().mockResolvedValue({ content: '' }),
   },
 }))
 
@@ -129,6 +135,38 @@ describe('OverviewPage — mission control', () => {
     expect(screen.getByTestId('wakatime-tab')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Overview/ }))
     expect(screen.queryByTestId('wakatime-tab')).not.toBeInTheDocument()
+  })
+
+  it('renders the Today summary card and drills into Today and back', async () => {
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(screen.getByTestId('overview-today-card')).toBeInTheDocument()
+    // Nothing active today in this store: the card states the zero rather
+    // than hiding, so the surface is discoverable on a quiet day.
+    expect(await screen.findByText('0 sessions active today')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('overview-today-open'))
+    expect(screen.getByTestId('today-tab')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Overview/ }))
+    expect(screen.queryByTestId('today-tab')).not.toBeInTheDocument()
+  })
+
+  it('opens the Today drill-in from the URL', () => {
+    renderWithProviders(<OverviewPage />, { store: statusStore(), route: '/settings/overview?view=today' })
+    expect(screen.getByTestId('today-tab')).toBeInTheDocument()
+  })
+
+  it('states the running count and last activity on the Today card', async () => {
+    const store = createTestStore({
+      dashboard: {
+        status: { uptime: '2h', sessions: 1, messages: 4, cron_jobs: 0, subagents: 0, lessons: 0, version: '0.1.0' },
+        connected: true,
+        slots: [{ key: 'live-1', title: 'Live now', messages: 4, running: true, last_turn_ts: new Date().toISOString() }],
+        refreshTrigger: 0,
+      } as unknown as RootState['dashboard'],
+    })
+    renderWithProviders(<OverviewPage />, { store })
+    const card = screen.getByTestId('overview-today-card')
+    await waitFor(() => expect(card).toHaveTextContent(/1 session active today · 1 running · last active \d/))
+    expect(card).not.toHaveTextContent('{{')
   })
 
   // Overview reads state and edits nothing, so it offers no apply/restart

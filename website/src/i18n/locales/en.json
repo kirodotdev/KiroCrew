@@ -7587,6 +7587,29 @@
         "this_store_has_no_database_file_that_can_be_read": "No database yet. It appears after the first saved memory. Backups remain available.",
         "this_store_is_declared_but_its_database_could_no": "This database could not be opened. Nothing is shown from another store.",
         "unknown": "unknown"
+      },
+      "todayCard": {
+        "go_to_chat": "Go to Chat",
+        "in_memory": "Saved to memory",
+        "last_active": "last active {{time}}",
+        "memory_empty_title": "Nothing saved to memory yet today",
+        "memory_entries_one": "{{count}} entry saved to memory",
+        "memory_entries_other": "{{count}} entries saved to memory",
+        "memory_footnote_one": "Sessions are summarized into memory after {{count}} hour of inactivity.",
+        "memory_footnote_other": "Sessions are summarized into memory after {{count}} hours of inactivity.",
+        "messages_one": "{{count}} message",
+        "messages_other": "{{count}} messages",
+        "no_sessions_body": "Sessions you work in today appear here, grouped by folder.",
+        "no_sessions_yet": "No sessions yet today",
+        "open_memory": "Open Memory",
+        "running": "{{n}} running",
+        "running_label": "Running",
+        "sessions_active_basis": "Sessions with any activity today, including ones started earlier. The Usage card counts sessions started today.",
+        "sessions_active_one": "{{count}} session active today",
+        "sessions_active_other": "{{count}} sessions active today",
+        "sessions_today": "Sessions today",
+        "title": "Today",
+        "unfiled": "Unfiled"
       }
     },
     "overviewPage": {
@@ -7599,7 +7622,7 @@
       "messages": "messages",
       "overview": "Overview",
       "semantic_memory_active": "· semantic memory active",
-      "sessions": "sessions ·",
+      "sessions": "sessions started ·",
       "summarizes_chats_into_memory_after": "Summarizes chats into memory after",
       "today": "Today:",
       "tokens": "tokens",
