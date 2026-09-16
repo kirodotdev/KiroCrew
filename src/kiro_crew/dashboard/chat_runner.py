@@ -11140,6 +11140,19 @@ async def _run_chat(
                     state.sessions.consume_provider_switch_replay(session_key)
                     _replay_pending = False
                 _replay_accepted_this_turn = False
+                # Advance the durable POSITION base by the rows this clear
+                # evicts, exactly as the trim path does (`_ChatSlot.append`)
+                # and as every restore path recomputes it. The base plus the
+                # window's durable rows is the ledger turn ordinal and the
+                # session_control `since` cursor space; emptying the window
+                # without crediting the base made the next turn draw an
+                # ordinal an earlier turn already wrote (two unrelated turns
+                # then read as one turn with contradictory entries) and shifted
+                # every cursor down. `durable_row_count` is the ONE shared
+                # counting rule, so the base cannot disagree with the ordinal
+                # about which rows are durable. Counted BEFORE the clear --
+                # afterwards the rows are gone.
+                slot._disk_older_durable_count += durable_row_count(slot.messages)
                 slot.messages.clear()
                 # The boundary was captured against the pre-clear message
                 # count; the list is now empty, so reset it to 0 or the

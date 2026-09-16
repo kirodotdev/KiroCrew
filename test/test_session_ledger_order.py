@@ -19,6 +19,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew import session_ledger_emit as emit
 from kiro_crew.acp.types import (
+    EVENT_CLEAR_STATUS,
     EVENT_COMPLETE,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
@@ -549,6 +550,60 @@ async def test_a_rerun_after_the_window_is_truncated_keeps_the_same_ordinal(tmp_
     assert second.get("attempt", 1) == first.get("attempt", 1) + 1, (
         f"the re-run was not recorded as a further attempt: {second.get('attempt')} "
         f"after {first.get('attempt')}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_turn_ordinal_keeps_rising_across_a_native_clear(tmp_path):
+    """The first turn after a native clear must not reuse an ordinal.
+
+    A confirmed `/clear` empties `slot.messages`. The ordinal is `base + durable rows
+    in the window`, so unless the clear advances the durable base by the rows it
+    evicts -- the way the trim path and every restore path do -- the next turn reads
+    an almost-empty window and draws an ordinal an earlier turn already wrote. The
+    emitter then files two unrelated turns as one turn with contradictory entries,
+    which no reader can tell from a genuine retry.
+
+    Three turns: an ordinary one, the clear itself, and the first turn afterwards.
+    The last must number strictly above the clear turn and must not be a retry.
+
+    Mutation guard: dropping the base advance at the clear site makes the third
+    ordinal fall back to the low single digits and reddens both assertions.
+    """
+    events: list[AcpEvent] = [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]
+    state, slot = _state_and_slot(tmp_path, events)
+    # Several prior rows, so a window rebuilt from scratch is visibly shorter.
+    for n in range(6):
+        slot.append("assistant", f"earlier reply {n}", "msg msg-a")
+
+    await _run_chat(state, slot, "before the clear")
+    assert emit.flush(timeout=20.0)
+    before = [e for e in _entries() if e["type"] == "turn/started"][-1]["data"]["turn"]
+
+    # The clear turn: the backend confirms the native clear, the runner empties
+    # the window and appends only its confirmation row.
+    events[:] = [AcpEvent(kind=EVENT_CLEAR_STATUS)]
+    await _run_chat(state, slot, "/clear")
+    assert emit.flush(timeout=20.0)
+    cleared = [e for e in _entries() if e["type"] == "turn/started"][-1]["data"]["turn"]
+    assert cleared > before, "the clear turn itself is numbered before the window empties"
+    assert len(slot.messages) <= 2, "the native clear did not empty the window"
+
+    events[:] = [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]
+    await _run_chat(state, slot, "after the clear")
+    assert emit.flush(timeout=20.0)
+
+    starts = [e for e in _entries() if e["type"] == "turn/started"]
+    assert len(starts) == 3, f"expected three turn/started entries, got {len(starts)}"
+    after = starts[-1]["data"]
+    assert after["turn"] > cleared, (
+        f"the first turn after the clear reused ordinal {after['turn']} (the clear turn "
+        f"was {cleared}, the one before it {before}); two unrelated turns now share one "
+        "ledger identity"
+    )
+    assert after.get("attempt", 1) == 1, (
+        "the first turn after the clear was recorded as a retry, which is what a "
+        "repeated ordinal makes the emitter do"
     )
 
 
