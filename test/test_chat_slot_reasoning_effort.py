@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -538,3 +538,137 @@ class TestValidateReasoningEffortPersistence:
         assert _validate_reasoning_effort(5) == ""
         assert _validate_reasoning_effort(None) == ""
         assert _validate_reasoning_effort(["max"]) == ""
+
+
+class TestRestoreReasoningEffortHonoursTheExecutor:
+    """A remote-bound slot's effort is owned by the PEER, whose vocabulary this
+    process cannot enumerate, so the restore path gates it on SHAPE. A local
+    slot's level is meaningful only here, so it keeps the membership check."""
+
+    @pytest.mark.parametrize("level", ["low", "high", "max"])
+    def test_a_local_slot_keeps_the_membership_check(self, level: str):
+        from kiro_crew.dashboard.chat_persistence import _restore_reasoning_effort
+        assert _restore_reasoning_effort(level, remote=False) == level
+
+    def test_a_local_slot_still_discards_a_level_this_process_does_not_know(self):
+        from kiro_crew.dashboard.chat_persistence import (
+            _restore_reasoning_effort,
+            get_reasoning_effort_values,
+        )
+
+        # Precondition: the level really is absent, so the assertion below
+        # cannot pass because the vocabulary happens to contain it.
+        assert "turbo" not in get_reasoning_effort_values()
+        assert _restore_reasoning_effort("turbo", remote=False) == ""
+
+    def test_a_remote_slot_keeps_a_peer_only_level(self):
+        """The regression this guards: membership would blank the box, and the
+        user's first pick then forwards and overwrites the peer's live setting."""
+        from kiro_crew.dashboard.chat_persistence import (
+            _restore_reasoning_effort,
+            get_reasoning_effort_values,
+        )
+        assert "turbo" not in get_reasoning_effort_values()
+        assert _restore_reasoning_effort("turbo", remote=True) == "turbo"
+
+    @pytest.mark.parametrize(
+        "malformed",
+        ["LOW", "; rm -rf /", "max --evil-flag", "../../../etc", " low", "high\n", "x" * 40],
+    )
+    def test_a_remote_slot_still_drops_a_malformed_value(self, malformed: str):
+        from kiro_crew.dashboard.chat_persistence import _restore_reasoning_effort
+        assert _restore_reasoning_effort(malformed, remote=True) == ""
+
+    def test_a_remote_slot_drops_a_non_string(self):
+        from kiro_crew.dashboard.chat_persistence import _restore_reasoning_effort
+        assert _restore_reasoning_effort(5, remote=True) == ""
+        assert _restore_reasoning_effort(None, remote=True) == ""
+        assert _restore_reasoning_effort(["max"], remote=True) == ""
+
+
+class TestTheEndpointLetsARemoteSlotReselectAPeerOnlyLevel:
+    """A level inherited from the peer is visible in the box, so refusing it on
+    re-selection makes the box lie: pick anything else, and the level the session
+    is actually running can never be chosen again. The local set has no standing
+    over it — the peer is the only authority on its own vocabulary, and it
+    re-validates on receipt. A LOCAL slot keeps the membership check."""
+
+    @staticmethod
+    def _remote(slot: _ChatSlot) -> _ChatSlot:
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        return slot
+
+    @pytest.mark.asyncio
+    async def test_a_peer_only_level_is_forwarded_instead_of_400(self):
+        from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_values
+
+        # Precondition: the level is genuinely outside the local set, so a pass
+        # cannot come from the vocabulary happening to contain it.
+        assert "turbo" not in get_reasoning_effort_values()
+
+        slot = self._remote(_ChatSlot("test"))
+        state = _mock_state(slot)
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._apply_remote_pick",
+            new=AsyncMock(return_value=web.json_response({"ok": True})),
+        ) as pick:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": "turbo"},
+                )
+                assert resp.status == 200
+        assert pick.await_count == 1
+        assert pick.await_args.args[4] == {"reasoning_effort": "turbo"}
+
+    @pytest.mark.asyncio
+    async def test_clearing_to_the_provider_default_still_works(self):
+        """`""` means "use the provider default" and matches no shape, so it has
+        to be admitted explicitly rather than falling through the shape gate."""
+        slot = self._remote(_ChatSlot("test"))
+        state = _mock_state(slot)
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._apply_remote_pick",
+            new=AsyncMock(return_value=web.json_response({"ok": True})),
+        ) as pick:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": ""},
+                )
+                assert resp.status == 200
+        assert pick.await_args.args[4] == {"reasoning_effort": ""}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["LOW", "; rm -rf /", "high\n", " low", "x" * 40, 5])
+    async def test_a_malformed_value_is_still_refused_and_never_forwarded(self, bad):
+        slot = self._remote(_ChatSlot("test"))
+        state = _mock_state(slot)
+        with patch(
+            "kiro_crew.dashboard.chat_handlers._apply_remote_pick",
+            new=AsyncMock(return_value=web.json_response({"ok": True})),
+        ) as pick:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/reasoning-effort",
+                    json={"reasoning_effort": bad},
+                )
+                assert resp.status == 400
+                assert (await resp.json())["code"] == "invalid_reasoning_effort_shape"
+        assert pick.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_local_slot_still_refuses_an_unknown_level(self):
+        """The relaxation is scoped to the remote branch: a local pick is applied
+        by this process, so its vocabulary does have standing."""
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "turbo"},
+            )
+            assert resp.status == 400
+        assert slot.reasoning_effort == ""

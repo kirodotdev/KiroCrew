@@ -20194,6 +20194,98 @@ class TestBulkModelSwitch:
         state.push_slots_update.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_a_peer_bound_slot_keeps_the_peers_model_and_is_reported(self, tmp_path):
+        """A bound slot's model lives on the machine that answers its turns, and
+        every step this endpoint takes is local: reset the local session, write
+        slot.model. Applying it left the header advertising a model the peer never
+        received — the divergence the single-slot handler forwards to avoid.
+
+        Forwarding from here is deliberately NOT the fix: "set the model for all
+        of MY chat slots" must not reach across the network and rewrite live
+        conversations on other machines.
+        """
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        peer = state.get_or_create_slot("peer", model="claude-opus-4.8")
+        peer.executor = "remote"
+        peer.instance_id = "nobita"
+        peer.remote_slot = "peer-chat-9"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": "claude-sonnet-4.5"})
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["skipped_remote"] == ["peer"]
+        assert data["switched"] == []
+        assert peer.model == "claude-opus-4.8"
+        assert state.sessions.reset.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_remote_binding_keeps_the_peers_model_and_is_reported(
+        self, tmp_path
+    ):
+        """Remote execution owns the model even when its routing fields are absent."""
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        peer = state.get_or_create_slot("peer", model="claude-opus-4.8")
+        peer.executor = "remote"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": "claude-sonnet-4.5"})
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["skipped_remote"] == ["peer"]
+        assert data["switched"] == []
+        assert peer.model == "claude-opus-4.8"
+        assert state.sessions.reset.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_peer_bound_slot_already_on_the_model_is_still_out_of_scope(self, tmp_path):
+        """Classified BEFORE the equality check: reporting it as "already on it"
+        would imply this endpoint has a say over the value, and it has none."""
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        peer = state.get_or_create_slot("peer", model="claude-sonnet-4.5")
+        peer.executor = "remote"
+        peer.instance_id = "nobita"
+        peer.remote_slot = "peer-chat-9"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": "claude-sonnet-4.5"})
+            data = await resp.json()
+
+        assert data["skipped_remote"] == ["peer"]
+        assert data["unchanged"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_local_slot_in_the_same_request_still_switches(self, tmp_path):
+        """The skip is scoped to bound slots: a fleet-wide switch that stopped
+        switching local slots would be a worse bug than the one being fixed."""
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        state.get_or_create_slot("local", model="claude-opus-4.8")
+        peer = state.get_or_create_slot("peer", model="claude-opus-4.8")
+        peer.executor = "remote"
+        peer.instance_id = "nobita"
+        peer.remote_slot = "peer-chat-9"
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": "claude-sonnet-4.5"})
+            data = await resp.json()
+
+        assert data["switched"] == ["local"]
+        assert data["skipped_remote"] == ["peer"]
+        assert state._slots["local"].model == "claude-sonnet-4.5"
+        assert peer.model == "claude-opus-4.8"
+        assert state.sessions.reset.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_skips_running_slot_by_default(self, tmp_path):
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()

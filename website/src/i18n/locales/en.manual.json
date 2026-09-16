@@ -4099,6 +4099,8 @@
       "connected_to": "Connected to {{label}}",
       "session_failed_to_switch_one": "{{count}} session failed to switch",
       "session_failed_to_switch_other": "{{count}} sessions failed to switch",
+      "remote_session_kept_model_one": "{{count}} session runs on another of your machines and kept its model — it is not counted below.",
+      "remote_session_kept_model_other": "{{count}} sessions run on your other machines and kept their models — they are not counted below.",
       "started_in_channel": "This conversation started in {{channel}}.",
       "started_in_direct_message": "This conversation started in a direct message.",
       "session_source": "Session",

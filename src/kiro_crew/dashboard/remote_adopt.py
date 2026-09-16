@@ -16,8 +16,9 @@ checked against :func:`~kiro_crew.dashboard.handlers_instances.read_peer_slots` 
 the same read the sidebar renders — which makes the check free of new policy: a
 key absent from that view is forged, closed, or a slot this hub already drives,
 and none of the three is adoptable. It is also where the metadata the local slot
-inherits comes from (``agent``, ``title``, ``memory_mode``), so nothing the
-caller sends decides what the adopted session claims to be.
+inherits comes from (``agent``, ``model``, ``reasoning_effort``, ``title``,
+``memory_mode``), so nothing the caller sends decides what the adopted session
+claims to be.
 
 **Backfill.** A minted peer session is empty, so the local transcript starts
 empty and stays honest. An adopted one is not: without a backfill the user opens
@@ -41,6 +42,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.dashboard.chat_persistence import admit_peer_effort, admit_peer_value
 from kiro_crew.dashboard.chat_utils import _redact_deep
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.handlers_instances import (
@@ -273,11 +275,32 @@ def peer_row_metadata(row: dict[str, Any]) -> dict[str, str]:
     """The fields an adopted local slot inherits from the validated peer row.
 
     Read off the PEER's row rather than the request body: the peer already chose
-    the agent, already named the session, and — the one that matters — already has
-    a ``memory_mode``. That mode is the user's privacy boundary, so an adopted
-    session must carry the peer's, not this machine's default; defaulting it would
-    let a session the user opened as ``incognito`` over there start writing memory
-    the moment it was opened here.
+    the agent, already pinned the model, already named the session, and — the one
+    that matters — already has a ``memory_mode``. That mode is the user's privacy
+    boundary, so an adopted session must carry the peer's, not this machine's
+    default; defaulting it would let a session the user opened as ``incognito``
+    over there start writing memory the moment it was opened here.
+
+    ``model`` gets the same treatment as ``agent``, and for a reason that is only
+    partly cosmetic. Execution is never in doubt — the relayed turn body carries
+    no model at all, so the peer's own slot decides what answers — but the LOCAL
+    slot's ``model`` is what the header renders, what the context window is
+    denominated against, and what the model picker starts from. Left empty for a
+    peer session that is actually pinned, the picker is seeded from the peer's
+    roster with no current value, so the user's first pick goes through
+    ``forward_peer_selection`` and OVERWRITES a live conversation's real pin.
+
+    There is deliberately no allowlist: a model id is an opaque string this
+    machine's roster has no standing to judge, and refusing one the local gateway
+    does not recognise would reject exactly the cross-version peer whose pin
+    matters most. Rewriting one is the same error in the other direction, which is
+    why the admission is shared with the persistence restore path rather than
+    restated: :func:`chat_persistence.admit_peer_value` is the one place that
+    decides, so a value accepted here cannot be canonicalized against the LOCAL
+    provider (or renamed by this build's deprecation map) on the way back off
+    disk. ``served_model`` is NOT a fallback either — it is the value the live
+    session resolved to for display, and persisting it here would fabricate a
+    user pin out of a runtime detail.
 
     Every value is bounded and pushed through the peer-text sink, because these
     land on a local slot (and its sidebar row) as strings the peer authored. An
@@ -286,9 +309,63 @@ def peer_row_metadata(row: dict[str, Any]) -> dict[str, str]:
     a value past that validation.
     """
     out: dict[str, str] = {}
+    # ``admit_peer_value`` is the SAME admission the persistence restore path
+    # applies (:func:`chat_persistence.restore_peer_owned`), so a value accepted
+    # here is accepted there unchanged and survives a restart. The sanitize below
+    # runs BEFORE the redaction pass, not inside it: a hidden character smuggled
+    # into a credential defeats the redactor, and the clamp has to be last so a
+    # redaction that lengthens the string still lands bounded. The admission's own
+    # sanitize is then idempotent.
     agent = row.get("agent")
     if isinstance(agent, str) and agent:
-        out["agent"] = redact_peer_text(sanitize_string(agent))[:128]
+        if admitted := admit_peer_value(redact_peer_text(sanitize_string(agent))):
+            out["agent"] = admitted
+    model = row.get("model")
+    if isinstance(model, str) and model:
+        if admitted := admit_peer_value(redact_peer_text(sanitize_string(model))):
+            out["model"] = admitted
+    # The reasoning effort is the third of the four forwardable controls. It is
+    # gated on SHAPE, not on membership of any vocabulary -- deliberately, and
+    # this is the third framing of the same question, so the reasoning is worth
+    # stating in full.
+    #
+    # A membership test needs a vocabulary, and neither candidate is the right
+    # authority. The static five in :data:`kiro_crew.effort.EFFORT_LEVELS` omit
+    # anything a provider added. The process-dynamic set is grown only by
+    # :func:`update_reasoning_effort_values` from LOCAL ACP session config, so a
+    # hub that mostly drives remote peers holds barely more than the fallback --
+    # and this value did not come from a local session. Either test discards a
+    # level the PEER legitimately runs, stores no override, and hands the picker
+    # back the overwrite this inherit exists to prevent.
+    #
+    # There is no local vocabulary with standing here, so the fix is to stop
+    # asking. What this value needs is to be safe to hold, and shape is exactly
+    # the check the code already trusts for a vocabulary it cannot know in
+    # advance: every ACP-reported level is admitted on shape alone. It anchors
+    # with ``\Z`` rather than ``$``, so the "low\n" near-miss cannot reach the
+    # persistence/subprocess boundary.
+    #
+    # Semantics stay enforced where they are owned. The peer validates against
+    # its own vocabulary when a selection is forwarded. Locally, the level
+    # cannot reach an ``--effort`` argument by two independent routes: the
+    # application site membership-checks it itself
+    # (:meth:`providers.acp.AcpProvider.change_effort` raises on a level outside
+    # :func:`get_reasoning_effort_values`), and a slot carrying the remote marker
+    # never dispatches a local turn at all -- an incomplete binding is refused
+    # with ``remote_binding_incomplete`` rather than run here. That is what makes
+    # shape sufficient, and it is why the persistence RESTORE path asks the same
+    # question: :func:`_restore_reasoning_effort` admits a remote-bound slot's
+    # level on shape and keeps the membership check for a local one, so an
+    # inherited level survives a restart instead of blanking the picker.
+    #
+    # ``admit_peer_effort`` is that question with one home: this inherit, the
+    # effort endpoint's remote branch and the ``_PEER_OWNED_RESTORE`` entry are
+    # three callers of it, the same way ``admit_peer_value`` is shared for the
+    # agent and model above. It returns the level unchanged when the shape holds
+    # and "" otherwise, so an absent or malformed level leaves the key unset and
+    # the peer's silence stays the peer's silence.
+    if admitted := admit_peer_effort(row.get("reasoning_effort")):
+        out["reasoning_effort"] = admitted
     title = row.get("title")
     if isinstance(title, str) and title:
         out["title"] = redact_peer_text(sanitize_string(title))[:200]

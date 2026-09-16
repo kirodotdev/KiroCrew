@@ -3836,6 +3836,24 @@ function ChatSidebar({
   const [bulkModel, setBulkModel] = useState('')        // pending pick ('auto' = provider default)
   const [bulkSkipRunning, setBulkSkipRunning] = useState(true)
   const [bulkModelError, setBulkModelError] = useState('')
+  // Informational outcome, kept apart from `bulkModelError`: peer-bound slots the
+  // endpoint deliberately left alone (`skipped_remote`) are not a failure, so
+  // they must not be dressed as one (AUTOSDE errors-use-error-notice scopes
+  // ErrorNotice to values that come from something that FAILED).
+  const [bulkModelNotice, setBulkModelNotice] = useState('')
+  // Slot keys the LAST response reported in `skipped_remote`. Whether a slot is
+  // peer-bound is decided on the server (the binding's third field is withheld
+  // from the Slot type on purpose), so the client cannot know it before a
+  // submit — but once the endpoint has said which keys it will not touch, the
+  // "Switch N" label must stop counting them or it promises a retry of slots
+  // the endpoint always skips. This is a memo of what the server SAID, not a
+  // second definition of "peer-bound": it is never derived from slot fields,
+  // and it is cleared with the notice whenever the selection changes so a
+  // stale subtraction can never be shown against a different pick.
+  const [bulkSkippedRemote, setBulkSkippedRemote] = useState<string[]>([])
+  const resetBulkOutcome = useCallback(() => { setBulkModelNotice(''); setBulkSkippedRemote([]) }, [])
+  const pickBulkModel = useCallback((model: string) => { setBulkModel(model); resetBulkOutcome() }, [resetBulkOutcome])
+  const pickBulkSkipRunning = useCallback((skip: boolean) => { setBulkSkipRunning(skip); resetBulkOutcome() }, [resetBulkOutcome])
   // Per-instance id: ChatPage mounts a mobile-drawer sidebar and a desktop one, so a
   // literal id would collide and point one panel's checkbox at the other's label.
   const bulkSkipRunningLabelId = useId()
@@ -3843,10 +3861,12 @@ function ChatSidebar({
   const bulkRunningCount = useMemo(() => localSlots.filter(s => s.running).length, [localSlots])
   // Count only slots that would actually change: model differs from the target
   // (the backend leaves already-on-target slots as `unchanged`), minus running
-  // slots when skipping. Keeps the "Switch N" label + disable guard honest.
+  // slots when skipping, minus the keys the last response reported as
+  // peer-bound. Keeps the "Switch N" label + disable guard honest.
   const bulkAffectedCount = useMemo(() => {
-    return localSlots.filter(s => (s.model ?? '') !== bulkModel && (!bulkSkipRunning || !s.running)).length
-  }, [localSlots, bulkModel, bulkSkipRunning])
+    const skipped = new Set(bulkSkippedRemote)
+    return localSlots.filter(s => (s.model ?? '') !== bulkModel && (!bulkSkipRunning || !s.running) && !skipped.has(s.key)).length
+  }, [localSlots, bulkModel, bulkSkipRunning, bulkSkippedRemote])
   const bulkModelMutation = useMutation({
     // 'auto' goes on the wire verbatim (not collapsed to ''): '' doubles as the
     // "never chosen" state that every reader re-resolves to the agent template's
@@ -3855,15 +3875,21 @@ function ChatSidebar({
       api.chatSlotsModel(model, skipRunning),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['chat-slots'] })
-      // Partial failure: the endpoint returns 200 with a non-empty `failed`
-      // list when some slots' resets raised. Surface it and keep the panel
-      // open instead of silently closing on a partial success.
-      if (res.failed?.length) {
-        setBulkModelError(i18nT('pages.chatSidebar.session_failed_to_switch', { count: res.failed.length }))
-      } else {
+      // Partial outcome: the endpoint returns 200 with a non-empty `failed`
+      // list when some slots' resets raised, and/or a non-empty
+      // `skipped_remote` list for peer-bound slots it deliberately did not
+      // touch (a forwarded switch would rewrite live conversations on another
+      // machine). Surface each in its own channel — neither masks the other —
+      // and keep the panel open instead of silently closing on a partial
+      // success. Only a clean, complete switch closes it.
+      const failed = res.failed?.length ?? 0
+      const skippedRemote = res.skipped_remote ?? []
+      setBulkModelError(failed ? i18nT('pages.chatSidebar.session_failed_to_switch', { count: failed }) : '')
+      setBulkModelNotice(skippedRemote.length ? i18nT('pages.chatSidebar.remote_session_kept_model', { count: skippedRemote.length }) : '')
+      setBulkSkippedRemote(skippedRemote)
+      if (!failed && !skippedRemote.length) {
         setBulkModelOpen(false)
         setBulkModel('')
-        setBulkModelError('')
       }
     },
     onError: (e) => setBulkModelError(e instanceof Error ? e.message : i18nT('pages.chatSidebar.switch_failed')),
@@ -3879,7 +3905,7 @@ function ChatSidebar({
     hasFilterInput: false,
     filteredCount: bulkModelOptions.length,
     onEnterSingleMatch: () => {},
-    closeToTrigger: () => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') },
+    closeToTrigger: () => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError(''); resetBulkOutcome() },
   })
 
   // Pinned membership is server-persisted; the order inside that section is a
@@ -7085,7 +7111,7 @@ function ChatSidebar({
                 <BrushCleaning size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.clean_up_sessions')}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => { setBulkModelOpen(true); setBulkModel(''); setBulkSkipRunning(true); setBulkModelError('') }}>
+              <DropdownMenuItem onClick={() => { setBulkModelOpen(true); setBulkModel(''); setBulkSkipRunning(true); setBulkModelError(''); resetBulkOutcome() }}>
                 <Cpu size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.switch_all_to_model')}
               </DropdownMenuItem>
@@ -7448,7 +7474,7 @@ function ChatSidebar({
           <div className="font-medium text-text-strong mb-2"><Cpu size={14} className="lucide-inline" /> {i18nT('pages.chatSidebar.switch_all_sessions')}</div>
           <div className="text-muted text-[12px] mb-2">{i18nT('pages.chatSidebar.pick_a_model_for_every_session_switching_a_sessi')} <span className="text-danger">{i18nT('pages.chatSidebar.resets_its_conversation')}</span>.</div>
           <div ref={bulkListRef} role="listbox" aria-label={i18nT('pages.chatSidebar.model_list')} tabIndex={-1} onKeyDown={bulkOnListKeyDown} className="max-h-[220px] overflow-y-auto rounded-md border border-border bg-bg-elevated p-1 mb-2 outline-none">
-            <ModelDropdownList models={bulkModelOptions} activeModel={bulkModel} onSelect={setBulkModel} />
+            <ModelDropdownList models={bulkModelOptions} activeModel={bulkModel} onSelect={pickBulkModel} />
           </div>
           {bulkRunningCount > 0 && (
             <label className="flex items-center gap-2 text-[12px] text-muted mb-2 cursor-pointer">
@@ -7456,9 +7482,15 @@ function ChatSidebar({
                   "Skip N running sessions" text, which is two catalog keys plus a
                   live count. Binding it by reference keeps the announced name and
                   the rendered name the same string, so the count cannot drift. */}
-              <input type="checkbox" aria-labelledby={bulkSkipRunningLabelId} checked={bulkSkipRunning} onChange={e => setBulkSkipRunning(e.target.checked)} />
+              <input type="checkbox" aria-labelledby={bulkSkipRunningLabelId} checked={bulkSkipRunning} onChange={e => pickBulkSkipRunning(e.target.checked)} />
               <span id={bulkSkipRunningLabelId}>{i18nT('pages.chatSidebar.skip')} {i18nT('pages.chatSidebar.running_session', { count: bulkRunningCount })}</span>
             </label>
+          )}
+          {/* Not an ErrorNotice: nothing failed. These are peer-owned sessions the
+              switch left alone on purpose; the row is status text, announced
+              politely so a screen reader hears why the panel stayed open. */}
+          {bulkModelNotice && (
+            <p role="status" data-testid="bulk-model-notice" className="text-muted text-[12px] mb-2">{bulkModelNotice}</p>
           )}
           {/* No hand-off: the chosen bulkModel/skipRunning selection is unsaved,
               and the navigation would discard it. Its own line, above the
@@ -7467,7 +7499,12 @@ function ChatSidebar({
               collapses to one character per line at sidebar width. */}
           <ErrorNotice message={bulkModelError} className="mb-2" testId="bulk-model-error" />
           <div className="flex items-center gap-2 justify-end">
-            <Btn className="text-[12px] px-3 py-1" onClick={() => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') }}>{i18nT('pages.chatSidebar.cancel')}</Btn>
+            <Btn className="text-[12px] px-3 py-1" onClick={() => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError(''); resetBulkOutcome() }}>{i18nT('pages.chatSidebar.cancel')}</Btn>
+            {/* Only the error is cleared on submit: the notice and the skipped
+                set it explains are the last response's word on which slots are
+                peer-bound, still true for this selection, and the next response
+                replaces both together — clearing one without the other would
+                leave a lowered count with nothing on screen accounting for it. */}
             <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={!bulkModel || bulkAffectedCount === 0 || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModel, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? i18nT('pages.chatSidebar.switching') : i18nT('pages.chatSidebar.switch_session', { count: bulkAffectedCount })}</Btn>
           </div>
         </div>

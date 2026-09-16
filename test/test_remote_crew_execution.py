@@ -652,6 +652,235 @@ class TestBindingPersistence:
         assert restored.remote_slot == "peer-chat-9"
         assert restored.is_remote is True
 
+    def test_a_peer_only_effort_survives_the_rehydrate(self, tmp_path):
+        """A level the peer runs and this process has never seen must survive.
+
+        Membership-checking it against the LOCAL vocabulary blanks it, the picker
+        then seeds empty, and the user's first pick forwards and overwrites the
+        peer's live setting — the corruption inheriting the level prevents.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+            get_reasoning_effort_values,
+        )
+
+        # Precondition: this level is genuinely unknown to this process, so the
+        # assertion cannot pass because the vocabulary happens to contain it.
+        assert "turbo" not in get_reasoning_effort_values()
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        slot.reasoning_effort = "turbo"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.reasoning_effort == "turbo"
+
+    def test_a_local_slot_still_loses_an_unknown_effort_on_rehydrate(self, tmp_path):
+        """The relaxation is scoped to the remote marker: a local slot's level is
+        meaningful only in this process's vocabulary, so an unrecognised one is
+        still corruption and is still dropped."""
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.reasoning_effort = "turbo"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.executor != "remote"
+        assert restored.reasoning_effort == ""
+
+    def test_a_peer_pinned_model_survives_the_rehydrate_unrewritten(self, tmp_path):
+        """``claude-opus-4.6-1m`` is in this build's deprecation map, so the local
+        restore path renames it. The peer named the model it is actually running:
+        renaming it here makes the header, the picker and the peer's real pin
+        disagree, and the next flush persists the rewrite.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+        from kiro_crew.dashboard.chat_utils import _normalize_model
+
+        # Precondition: this build really does rewrite the id, so the assertion
+        # below cannot pass because the rename happens to be a no-op.
+        assert _normalize_model("claude-opus-4.6-1m") != "claude-opus-4.6-1m"
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        slot.model = "claude-opus-4.6-1m"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.model == "claude-opus-4.6-1m"
+
+    def test_a_local_slot_still_takes_the_deprecation_rename_on_rehydrate(self, tmp_path):
+        """The split is scoped to the remote marker: a local slot's model IS a
+        value this machine chose, so the rename still applies to it."""
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.model = "claude-opus-4.6-1m"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.executor != "remote"
+        assert restored.model == "claude-opus-4.6"
+
+    def test_the_recent_sessions_path_keeps_the_peers_model_too(self, tmp_path):
+        """The twin restore path. Fixing only the one a reviewer cited would ship
+        half the fix: a session restored through the recent-sessions list would
+        still come back with the peer's pin rewritten."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.chat_persistence import _apply_recent_session
+
+        state = _make_state(tmp_path)
+        key = "dashboard:chat-9"
+        meta = {
+            "executor": "remote",
+            "instance_id": "nobita",
+            "remote_slot": "peer-chat-9",
+            "model": "claude-opus-4.6-1m",
+        }
+        state.conversation_log.append(key, "user", "hi")
+        state.conversation_log.update_metadata(key, meta)
+
+        _apply_recent_session(
+            state,
+            key,
+            "chat-9",
+            {},
+            meta,
+            [{"role": "user", "content": "hi"}],
+            conv_log=state.conversation_log,
+            kiro_model_map={},
+            restore_cfg=KiroCrewConfig.load(),
+        )
+
+        assert state._slots["chat-9"].model == "claude-opus-4.6-1m"
+
+    def test_an_unpinned_peer_model_is_not_synthesized_from_the_local_agent_map(self, tmp_path):
+        """The chokepoint guards the persisted model, but the branch that runs when
+        NO model was persisted is a LOCAL derivation: it keys this machine's
+        ``kiro_model_map`` by the agent name. The name on a remote-bound slot is
+        the PEER's agent, and both ends commonly run the same names, so the lookup
+        hands the slot a model the peer never pinned — rendered in the header and
+        persisted by the next flush. An unpinned peer must restore unpinned.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        slot.agent = "writer"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+        assert not state.conversation_log.get_metadata("dashboard:chat-1").get("model")
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(
+            state, "chat-1", kiro_model_map={"writer": "locally-resolved-model"}
+        )
+        assert restored is not None
+        assert restored.executor == "remote"
+        assert restored.agent == "writer"
+        assert restored.model == ""
+
+    def test_a_local_slot_still_derives_its_model_from_the_agent_map(self, tmp_path):
+        """The guard is scoped to the remote marker. This is also the reachability
+        witness for its twin above: the same map and the same agent name DO
+        resolve when the slot is local, so the remote case reading ``""`` is the
+        guard at work rather than a lookup that never fired."""
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.agent = "writer"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(
+            state, "chat-1", kiro_model_map={"writer": "locally-resolved-model"}
+        )
+        assert restored is not None
+        assert restored.executor != "remote"
+        assert restored.model == "locally-resolved-model"
+
+    def test_the_recent_sessions_path_leaves_an_unpinned_peer_unpinned_too(self, tmp_path):
+        """The twin restore path carries the same unguarded fallback."""
+        from kiro_crew.dashboard.chat_persistence import _apply_recent_session
+
+        state = _make_state(tmp_path)
+        model_map = {"writer": "locally-resolved-model"}
+        for slot_name, meta in (
+            (
+                "chat-9",
+                {
+                    "executor": "remote",
+                    "instance_id": "nobita",
+                    "remote_slot": "peer-chat-9",
+                    "agent": "writer",
+                },
+            ),
+            ("chat-8", {"agent": "writer"}),
+        ):
+            key = f"dashboard:{slot_name}"
+            state.conversation_log.append(key, "user", "hi")
+            state.conversation_log.update_metadata(key, meta)
+            _apply_recent_session(
+                state,
+                key,
+                slot_name,
+                {},
+                meta,
+                [{"role": "user", "content": "hi"}],
+                conv_log=state.conversation_log,
+                kiro_model_map=model_map,
+                restore_cfg=None,
+            )
+
+        # The local twin is the reachability witness for the remote assertion.
+        assert state._slots["chat-8"].executor != "remote"
+        assert state._slots["chat-8"].model == "locally-resolved-model"
+        assert state._slots["chat-9"].agent == "writer"
+        assert state._slots["chat-9"].model == ""
+
     def test_the_empty_window_merge_persists_a_complete_binding(self, tmp_path):
         """The window is empty for the whole gap before the first relayed row.
 
@@ -1885,6 +2114,42 @@ class TestPeerTurnRequest:
         assert kwargs["params"] == {"relay": "1"}
         # The PEER's slot key, and only the message — see the known gap in the PR.
         assert json.loads(kwargs["data"]) == {"message": "hi", "slot": "peer-chat-9"}
+
+    @pytest.mark.asyncio
+    async def test_a_locally_pinned_model_is_still_not_relayed(self, tmp_path):
+        """The adopt path copies the peer's ``model`` onto the local slot, and this
+        pins that doing so did NOT turn into a routing change.
+
+        The inherited value is display state -- the header's pin, the context
+        denominator, the picker's starting value. Execution stays where it always
+        was: the peer's own slot decides what answers, because the turn body names
+        only the message and the peer key. Were a model ever added here, an
+        inherited (or stale) local value would start dictating the peer's model
+        per turn, which is exactly the overwrite the inherit exists to prevent.
+        """
+        state = _make_state(tmp_path)
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, kiro_crew.__version__))
+
+        class _Streaming(_FakeUpstream):
+            def __init__(self):
+                super().__init__(200, b"")
+                self.content = SimpleNamespace(iter_any=self._iter)
+
+            async def _iter(self):
+                yield b"data: [DONE]\n\n"
+
+        mgr.proxy_request = MagicMock(return_value=_Streaming())
+        state.instances_manager = mgr
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        slot.model = "claude-opus-4.5"
+
+        await relay_remote_turn(state, slot, "hi")
+
+        body = json.loads(mgr.proxy_request.call_args.kwargs["data"])
+        assert body == {"message": "hi", "slot": "peer-chat-9"}
+        assert "model" not in body
 
     @pytest.mark.asyncio
     async def test_a_peer_that_refuses_the_turn_becomes_an_error_row(self, tmp_path):

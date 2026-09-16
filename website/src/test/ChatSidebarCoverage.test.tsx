@@ -71,6 +71,7 @@ const mocks = vi.hoisted(() => ({
   chatTags: vi.fn(),
   tagColumns: vi.fn(),
   kirocrewConfig: vi.fn(),
+  models: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
@@ -206,6 +207,7 @@ beforeEach(() => {
   mocks.chatTags.mockResolvedValue([])
   mocks.tagColumns.mockResolvedValue([])
   mocks.kirocrewConfig.mockResolvedValue({ dashboard: { recent_tint_count: 3 } })
+  mocks.models.mockResolvedValue([])
 })
 afterEach(() => {
   vi.clearAllMocks()
@@ -312,6 +314,127 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     fireEvent.click(screen.getByRole('option', { name: /auto/i }))
     fireEvent.click(screen.getByText(/^Switch 1 session$/))
     await waitFor(() => expect(screen.queryByText('Switch All Sessions')).toBeNull())
+  })
+
+  it('reports peer-bound sessions the switch left alone and keeps the panel open', async () => {
+    // `skipped_remote` is a deliberate non-switch (the slot runs on another
+    // machine), not a failure: it must read as status, never as an error, and
+    // the panel must not close as if every session had switched.
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], skipped_remote: ['peer:k-z'] })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByText(/^Switch 1 session$/))
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
+    const notice = await screen.findByTestId('bulk-model-notice')
+    expect(notice).toHaveTextContent('1 session runs on another of your machines and kept its model — it is not counted below.')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(screen.queryByTestId('bulk-model-error')).toBeNull()
+    expect(screen.getByText('Switch All Sessions')).toBeTruthy()
+  })
+
+  it('subtracts the sessions the response reported as peer-bound from the Switch count', async () => {
+    // Which slots are peer-bound is a SERVER fact (the Slot type withholds the
+    // binding's third field), so before the first submit the button counts every
+    // eligible slot. Once the response has named the skipped keys, the label must
+    // stop counting them: "2 kept their models" above a button still reading
+    // "Switch 3 sessions" promises a retry of slots the endpoint always skips.
+    const THREE: TestSlot[] = [
+      { key: 'k-a', title: 'Idle A', running: false, messages: 1 },
+      { key: 'k-b', title: 'Idle B', running: false, messages: 1 },
+      { key: 'k-c', title: 'Idle C', running: false, messages: 1 },
+    ]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], switched: ['k-a'], skipped_remote: ['k-b', 'k-c'] })
+    renderSidebar({ slots: THREE })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByText(/^Switch 3 sessions$/))
+    const notice = await screen.findByTestId('bulk-model-notice')
+    expect(notice).toHaveTextContent('2 sessions run on your other machines and kept their models — they are not counted below.')
+    // 3 eligible − 2 reported peer-bound = 1: the notice says "not counted
+    // below" and the button below it agrees.
+    expect(screen.getByText(/^Switch 1 session$/)).toBeTruthy()
+    expect(screen.queryByText(/^Switch 3 sessions$/)).toBeNull()
+  })
+
+  it('disables Switch when every eligible session was reported peer-bound', async () => {
+    // Nothing left that a retry could change: the guard goes honest to 0 rather
+    // than offering a button whose only outcome is the same notice again.
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], switched: [], skipped_remote: ['k-a'] })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByText(/^Switch 1 session$/))
+    await screen.findByTestId('bulk-model-notice')
+    expect(screen.getByText(/^Switch 0 sessions$/)).toBeDisabled()
+  })
+
+  it('resets the peer-bound subtraction and the notice when the model pick changes', async () => {
+    // The subtraction is only true for the selection it was answered for. A new
+    // pick is a new question to the server, so the count returns to every
+    // eligible slot and the notice — which explains the subtraction — goes with it.
+    const THREE: TestSlot[] = [
+      { key: 'k-a', title: 'Idle A', running: false, messages: 1 },
+      { key: 'k-b', title: 'Idle B', running: false, messages: 1 },
+      { key: 'k-c', title: 'Idle C', running: false, messages: 1 },
+    ]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], switched: ['k-a'], skipped_remote: ['k-b', 'k-c'] })
+    // A second model row so a DIFFERENT pick is possible (the default mock
+    // answers [], which the adapter renders as Auto only).
+    mocks.models.mockResolvedValue([{ model_name: 'sonnet', description: 'Sonnet' }])
+    renderSidebar({ slots: THREE })
+    await openHeaderPanel('Switch all to model…')
+    await screen.findByRole('option', { name: /sonnet/i })
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByText(/^Switch 3 sessions$/))
+    await screen.findByTestId('bulk-model-notice')
+    expect(screen.getByText(/^Switch 1 session$/)).toBeTruthy()
+    // Pick a DIFFERENT model than the one that was answered.
+    fireEvent.click(screen.getByRole('option', { name: /sonnet/i }))
+    expect(screen.getByText(/^Switch 3 sessions$/)).toBeTruthy()
+    expect(screen.queryByTestId('bulk-model-notice')).toBeNull()
+  })
+
+  it('resets the peer-bound subtraction when the skip-running toggle changes', async () => {
+    const MIXED: TestSlot[] = [
+      { key: 'k-a', title: 'Idle A', running: false, messages: 1 },
+      { key: 'k-b', title: 'Idle B', running: false, messages: 1 },
+      { key: 'k-c', title: 'Busy C', running: true, messages: 1 },
+    ]
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], switched: ['k-a'], skipped_remote: ['k-b'] })
+    renderSidebar({ slots: MIXED })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    // Skip-running on by default: 2 idle slots eligible.
+    fireEvent.click(screen.getByText(/^Switch 2 sessions$/))
+    await screen.findByTestId('bulk-model-notice')
+    expect(screen.getByText(/^Switch 1 session$/)).toBeTruthy()
+    // Untick skip-running: the input set changed, so the answered subtraction is
+    // dropped and all 3 count again until the server is asked anew.
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(screen.getByText(/^Switch 3 sessions$/)).toBeTruthy()
+    expect(screen.queryByTestId('bulk-model-notice')).toBeNull()
+  })
+
+  it('shows failed and skipped-remote side by side when both are non-empty', async () => {
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'], skipped_remote: ['peer:k-y', 'peer:k-z'] })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByText(/^Switch 1 session$/))
+    expect(await screen.findByText('1 session failed to switch')).toBeTruthy()
+    expect(screen.getByText('2 sessions run on your other machines and kept their models — they are not counted below.')).toBeTruthy()
+    expect(screen.getByText('Switch All Sessions')).toBeTruthy()
+  })
+
+  it('closes on a clean switch even when the response carries an empty skipped_remote', async () => {
+    mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: [], skipped_remote: [] })
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Switch all to model…')
+    fireEvent.click(screen.getByRole('option', { name: /auto/i }))
+    fireEvent.click(screen.getByText(/^Switch 1 session$/))
+    await waitFor(() => expect(screen.queryByText('Switch All Sessions')).toBeNull())
+    expect(screen.queryByTestId('bulk-model-notice')).toBeNull()
   })
 
   it('surfaces a hard failure as an error rather than closing', async () => {
