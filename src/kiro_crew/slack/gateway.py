@@ -343,6 +343,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_chunk_meta,
     wave_final_meta,
 )
+from kiro_crew.subagent_persistence import read_tombstone
 from kiro_crew.taskrunner import TaskRunner
 from kiro_crew.tunnel import set_publish_disabled
 from kiro_crew.validation import CHANNEL_ID_RE
@@ -6372,6 +6373,7 @@ class GatewayOrchestrator:
                     directive_consumer=build_directive_consumer(
                         session_key=key,
                         sessions=self.sessions,
+                        subagents=self.subagent_mgr,
                     ),
                     monitor_completion=(
                         (
@@ -8766,6 +8768,174 @@ class GatewayOrchestrator:
                         )
                         return
 
+                    # The manager report owns the completion only until this
+                    # callback accepts it. Dashboard delivery can continue after
+                    # that return (queued or an asynchronous _run_chat turn), so
+                    # transfer the stop fence to both the slot and the manager
+                    # before the handoff. The manager copy remains observable to
+                    # a slot-less channel turn even if the slot is removed while
+                    # durable discard settlement is still outstanding. Count by
+                    # id rather than a bool: an erroneous duplicate callback
+                    # cannot release the first delivery early.
+                    _pending = getattr(_injection_slot, "_subagent_completion_pending", None)
+                    if not isinstance(_pending, dict):
+                        _pending = {}
+                        _injection_slot._subagent_completion_pending = _pending
+                    _pending[info.id] = _pending.get(info.id, 0) + 1
+                    _ownership_manager = self.subagent_mgr
+                    _retain_ownership = getattr(
+                        _ownership_manager, "retain_completion_delivery", None
+                    )
+                    _release_ownership = getattr(
+                        _ownership_manager, "release_completion_delivery", None
+                    )
+                    _mark_recovery_required = getattr(
+                        _ownership_manager,
+                        "mark_completion_delivery_recovery_required",
+                        None,
+                    )
+                    _manager_owns_completion = [False]
+
+                    def _retain_manager_ownership() -> None:
+                        if _manager_owns_completion[0] or not callable(_retain_ownership):
+                            return
+                        _retain_ownership(parent_key or "", info.id)
+                        _manager_owns_completion[0] = True
+
+                    def _release_manager_ownership() -> None:
+                        if not _manager_owns_completion[0] or not callable(_release_ownership):
+                            return
+                        _release_ownership(parent_key or "", info.id)
+                        _manager_owns_completion[0] = False
+
+                    _retain_manager_ownership()
+
+                    def _note_completion_consumed(consumed: bool = True) -> None:
+                        count = _pending.get(info.id, 0)
+                        if consumed:
+                            if count <= 0:
+                                return
+                            if count <= 1:
+                                _pending.pop(info.id, None)
+                            else:
+                                _pending[info.id] = count - 1
+                            _release_manager_ownership()
+                        elif count <= 0:
+                            # The first empty response retracts consumption and
+                            # requeues the exact row with this callback attached.
+                            _pending[info.id] = 1
+                            _retain_manager_ownership()
+
+                    _discard_started = False
+
+                    def _note_completion_discarded() -> None:
+                        """Retire a completion only after its tombstone is durable."""
+                        nonlocal _discard_started
+                        if _discard_started:
+                            return
+                        _discard_started = True
+                        try:
+                            owed = _injection_slot.take_pending_subagent_deliveries([announce])
+                        except Exception:
+                            logger.debug(
+                                "Subagent %s: could not retire discarded delivery debt",
+                                info.id,
+                                exc_info=True,
+                            )
+                            return
+                        manager = self.subagent_mgr
+                        if not owed:
+                            # Nothing durable to settle, so releasing ownership
+                            # cannot lose a dismissed result.
+                            _note_completion_consumed()
+                            return
+
+                        def _note_retained_completion(reason: str) -> None:
+                            """Expose and audit a completion retained for restart recovery.
+
+                            This discard callback is one-shot: after any of the
+                            fail-closed branches below there is no in-process
+                            retry, and only restart orphan reconciliation
+                            releases the fence. The manager marker lets every
+                            refusal surface name that remedy; the SEL row keeps
+                            the reason available to an operator. Both are
+                            fail-closed, and audit remains best-effort.
+                            """
+                            if callable(_mark_recovery_required):
+                                _mark_recovery_required(parent_key or "", info.id)
+                            try:
+                                sel().log_tool_invocation(
+                                    session_key=parent_key or "",
+                                    source="subagent",
+                                    tool_name="subagent_completion_discard",
+                                    outcome="retained",
+                                    metadata={"subagent_id": info.id, "reason": reason},
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Subagent %s: SEL audit for retained completion failed",
+                                    info.id,
+                                    exc_info=True,
+                                )
+
+                        if manager is None:
+                            # Owed debt with no manager to settle it: releasing
+                            # would drop the completion with no durable tombstone.
+                            # Fail closed — retain ownership for restart recovery.
+                            logger.warning(
+                                "Subagent %s: owed discarded delivery but no subagent "
+                                "manager; retaining completion ownership",
+                                info.id,
+                            )
+                            _note_retained_completion("no_manager")
+                            return
+
+                        async def _settle_discarded_delivery() -> None:
+                            try:
+                                await manager.settle_queued_delivery(owed)
+
+                                def _tombstones_are_durable() -> bool:
+                                    return all(
+                                        (read_tombstone(agent_id) or {}).get("cause") == "delivered"
+                                        for agent_id in owed
+                                    )
+
+                                durable = await asyncio.to_thread(_tombstones_are_durable)
+                            except asyncio.CancelledError:
+                                logger.info(
+                                    "Subagent %s: discarded delivery settlement cancelled; "
+                                    "retaining completion ownership",
+                                    info.id,
+                                )
+                                _note_retained_completion("settlement_cancelled")
+                                raise
+                            except Exception:
+                                logger.warning(
+                                    "Subagent %s: discarded delivery settlement failed; "
+                                    "retaining completion ownership",
+                                    info.id,
+                                    exc_info=True,
+                                )
+                                _note_retained_completion("settlement_failed")
+                                return
+                            if not durable:
+                                logger.warning(
+                                    "Subagent %s: discarded delivery tombstone is not durable; "
+                                    "retaining completion ownership",
+                                    info.id,
+                                )
+                                _note_retained_completion("tombstone_not_durable")
+                                return
+                            # No await between durable evidence and release: a
+                            # cancellation cannot land in the ownership gap.
+                            _note_completion_consumed()
+
+                        writer = asyncio.create_task(_settle_discarded_delivery())
+                        background_tasks = getattr(self.dashboard_state, "_background_tasks", None)
+                        if isinstance(background_tasks, set):
+                            background_tasks.add(writer)
+                            writer.add_done_callback(background_tasks.discard)
+
                     # Fix 2 (B1) race guard: count this completion as an
                     # in-flight delivery from entry until it is handed off (turn
                     # launched or queued). The synthesis fire-gate in chat_runner
@@ -8793,6 +8963,21 @@ class GatewayOrchestrator:
                                 except Exception:
                                     pass  # Task failed — slot is now idle
 
+                            # The busy wait is the only suspension after this
+                            # completion acquired manager ownership and before it
+                            # queues or launches. A close may remove or replace the
+                            # slot in that window; retire the old slot's delivery
+                            # explicitly instead of handing work to a detached object.
+                            if self.dashboard_state.get_slot(_slot_name) is not _injection_slot:
+                                self._defer_queued_delivery(
+                                    _injection_slot,
+                                    announce,
+                                    info,
+                                    flush_only=_flush_only,
+                                )
+                                _note_completion_discarded()
+                                return
+
                             # Re-check: another injection may have claimed the slot
                             # during the await above.
                             if _injection_slot_busy(_injection_slot):
@@ -8807,6 +8992,7 @@ class GatewayOrchestrator:
                                         "Subagent %s: skipping queue " "(already collected inline)",
                                         info.id,
                                     )
+                                    _note_completion_consumed()
                                     return
                                 logger.info(
                                     "Subagent %s: slot %s claimed by another injection, queuing",
@@ -8820,10 +9006,13 @@ class GatewayOrchestrator:
                                 # Carry the structured completion facts so the
                                 # drained row is a card without re-parsing the
                                 # prose; _start_next_queued_turn reads them.
-                                _injection_slot.queue_append(
+                                _injection_slot.queue_insert(
+                                    len(_injection_slot._queue),
                                     announce,
                                     kind=SUBAGENT_COMPLETION_KIND,
                                     meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                                    on_consumed=_note_completion_consumed,
+                                    on_discarded=_note_completion_discarded,
                                 )
                                 # Queuing is not delivery. The announce promises
                                 # result paths the parent can read on demand, but
@@ -8853,6 +9042,7 @@ class GatewayOrchestrator:
                                 "(already collected inline by spawn_sub_agents)",
                                 info.id,
                             )
+                            _note_completion_consumed()
                             return
 
                         # Slot is idle — start _run_chat.
@@ -8896,32 +9086,60 @@ class GatewayOrchestrator:
                             _injection_slot, announce, info, flush_only=_flush_only
                         )
                         _consumed: list[bool] = [False]
+                        _lifecycle_recovery_retained = False
+                        _runner_entered = False
 
                         def _note_consumed(consumed: bool = True) -> None:
                             # False is a retraction: the first empty response
                             # re-queues this exact announce verbatim, so the
                             # delivery that counts has not happened yet.
                             _consumed[0] = consumed
+                            _note_completion_consumed(consumed)
 
-                        _run_kwargs: dict[str, Any] = {}
-                        if _owes_delivery:
-                            _run_kwargs["_on_consumed"] = _note_consumed
-                        _task = asyncio.create_task(
-                            bounded_chat_turn(
-                                _run_chat(
-                                    self.dashboard_state,
-                                    _injection_slot,
-                                    announce,
-                                    _directive_user_origin=False,
-                                    # Structural provenance for the session
-                                    # ledger: the queued twin above carries
-                                    # SUBAGENT_COMPLETION_KIND, and this branch
-                                    # is the same injector dispatching directly.
-                                    _turn_actor="subagent",
-                                    **_run_kwargs,
-                                )
+                        def _note_lifecycle_recovery_retained() -> None:
+                            """Accept the handoff only from a durable owned retry row."""
+                            nonlocal _lifecycle_recovery_retained
+                            from kiro_crew.dashboard.chat_utils import LIFECYCLE_RECOVERY_KIND
+
+                            _lifecycle_recovery_retained = any(
+                                isinstance(item, dict)
+                                and item.get("kind") == LIFECYCLE_RECOVERY_KIND
+                                and item.get("_on_discarded") is _note_completion_discarded
+                                for item in getattr(_injection_slot, "_queue", ())
                             )
+
+                        _run_kwargs: dict[str, Any] = {
+                            "_on_consumed": _note_consumed,
+                            "_on_discarded": _note_completion_discarded,
+                            "_on_lifecycle_recovery_retained": _note_lifecycle_recovery_retained,
+                        }
+
+                        # Construct the runner now, as the direct injection path did
+                        # before the ownership wrapper. Apart from preserving the
+                        # established scheduling contract, retaining the two coroutine
+                        # handles lets the pre-entry cancellation branch close both
+                        # without waiting for garbage collection.
+                        _run_chat_coro = _run_chat(
+                            self.dashboard_state,
+                            _injection_slot,
+                            announce,
+                            _directive_user_origin=False,
+                            # Structural provenance for the session ledger: the
+                            # queued twin above carries SUBAGENT_COMPLETION_KIND,
+                            # and this branch is the same injector dispatching
+                            # directly.
+                            _turn_actor="subagent",
+                            **_run_kwargs,
                         )
+
+                        async def _run_injected_completion() -> None:
+                            """Mark the exact point at which the runner owns discard."""
+                            nonlocal _runner_entered
+                            _runner_entered = True
+                            await _run_chat_coro
+
+                        _injected_completion_coro = _run_injected_completion()
+                        _task = asyncio.create_task(bounded_chat_turn(_injected_completion_coro))
                         _injection_slot.task = _task
                         self.dashboard_state._background_tasks.add(_task)
                         _task.add_done_callback(self.dashboard_state._background_tasks.discard)
@@ -8929,10 +9147,33 @@ class GatewayOrchestrator:
                         def _on_inject_done(t: asyncio.Task) -> None:  # type: ignore[type-arg]
                             if _injection_slot.task is t:
                                 _injection_slot.task = None
+                            if not _runner_entered:
+                                # bounded_chat_turn resolves its config before it
+                                # starts the supplied coroutine. A slot may close in
+                                # that window, so _run_chat's finally has not inherited
+                                # the callback yet. The two coroutine objects are still
+                                # unstarted and must be closed explicitly.
+                                _injected_completion_coro.close()
+                                _run_chat_coro.close()
+                                if t.cancelled():
+                                    logger.info(
+                                        "Subagent %s: injection cancelled before runner entry; "
+                                        "retiring completion ownership",
+                                        info.id,
+                                    )
+                                    _note_completion_discarded()
+                                    return
                             if not t.cancelled() and t.exception():
                                 logger.error(
                                     "Subagent injection _run_chat failed: %s", t.exception()
                                 )
+                                if _lifecycle_recovery_retained:
+                                    logger.info(
+                                        "Subagent %s: lifecycle recovery already owns the "
+                                        "timed-out completion; skipping failure fallback",
+                                        info.id,
+                                    )
+                                    return
                                 if self.subagent_mgr:
                                     _reason = str(t.exception())
                                     _reason, _ = redact_exfiltration_urls(_reason)
@@ -9481,6 +9722,26 @@ class GatewayOrchestrator:
                         failure_msg, _ = redact_exfiltration_urls(failure_msg)
                         failure_msg, _ = redact_credentials(failure_msg)
                         slot._pending_subagent_failures.append(failure_msg)
+                        # The original delivery may have failed before its
+                        # consumption callback fired. The failure copy is now
+                        # safely retained for the next turn, so transfer rather
+                        # than duplicate the fence; subagents_attached keeps
+                        # guarding on _pending_subagent_failures itself.
+                        pending = getattr(slot, "_subagent_completion_pending", None)
+                        if isinstance(pending, dict):
+                            count = pending.get(info.id, 0)
+                            if count <= 1:
+                                pending.pop(info.id, None)
+                            else:
+                                pending[info.id] = count - 1
+                            release = getattr(
+                                self.subagent_mgr, "release_completion_delivery", None
+                            )
+                            if count > 0 and callable(release):
+                                release(
+                                    info.parent_session_key or "",
+                                    info.id,
+                                )
                     self.dashboard_state.push_slots_update()
                     logger.warning(
                         "Injected timeout error for subagent %s into slot %s", info.id, slot_name

@@ -74,8 +74,21 @@ class _FakeSlot:
     def invalidate_source_links(self):
         self.source_links_invalidated += 1
 
-    def queue_insert(self, index, content, kind=""):
-        self._queue.insert(index, {"content": content, "kind": kind})
+    def queue_insert(self, index, content, kind="", **kwargs):
+        item = {"content": content, "kind": kind}
+        callback = kwargs.get("on_discarded")
+        if callable(callback):
+            item["_on_discarded"] = callback
+        self._queue.insert(index, item)
+
+    def queue_discard_all(self):
+        discarded = list(self._queue)
+        self._queue.clear()
+        for item in discarded:
+            callback = item.pop("_on_discarded", None)
+            if callable(callback):
+                callback()
+        return discarded
 
 
 class _FakeState:

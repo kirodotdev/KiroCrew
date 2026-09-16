@@ -54,6 +54,17 @@ def _key(content: str) -> str:
     return _delivery_key(content)
 
 
+def _consumption_hook(coro):
+    """Read the queue-drain hook from direct or ownership-wrapped dispatch."""
+    frame = coro.cr_frame
+    assert frame is not None
+    hook = frame.f_locals.get("_on_consumed")
+    if callable(hook):
+        return hook
+    kwargs = frame.f_locals.get("_run_kwargs")
+    return kwargs.get("_on_consumed") if isinstance(kwargs, dict) else None
+
+
 @pytest.fixture()
 def agent_root(tmp_path, monkeypatch):
     """Point the sub-agent registry at a temp directory."""
@@ -348,7 +359,7 @@ class TestConsumptionSignalIsPerTurn:
         spawned: list[dict] = []
 
         def _spawn(_state, _slot, coro):
-            hook = coro.cr_frame.f_locals.get("_on_consumed")
+            hook = _consumption_hook(coro)
             coro.close()
             fut = second_done if spawned else first_done
 
@@ -373,6 +384,96 @@ class TestConsumptionSignalIsPerTurn:
         await _settled(lambda: (agent_root / "a1" / "tombstone.json").exists())
         # The successor reported nothing, so only the first is settled.
         assert not (agent_root / "a2" / "tombstone.json").exists()
+
+
+class TestQueueDrainPreEntryOwnership:
+    """A popped completion always has exactly one lifecycle owner."""
+
+    @staticmethod
+    def _queue_owned_completion(state, slot, agent_id: str):
+        parent_key = f"dashboard:{slot.key}"
+        manager = state.subagents
+        manager.retain_completion_delivery(parent_key, agent_id)
+        slot._subagent_completion_pending[agent_id] = 1
+        consumed: list[bool] = []
+        discarded: list[str] = []
+
+        def _release() -> None:
+            slot._subagent_completion_pending.pop(agent_id, None)
+            manager.release_completion_delivery(parent_key, agent_id)
+
+        def _note_consumed(value: bool = True) -> None:
+            consumed.append(value)
+            if value:
+                _release()
+
+        def _note_discarded() -> None:
+            discarded.append(agent_id)
+            _release()
+
+        slot.queue_insert(
+            0,
+            COMPLETION,
+            kind=SUBAGENT_COMPLETION_KIND,
+            on_consumed=_note_consumed,
+            on_discarded=_note_discarded,
+        )
+        return parent_key, manager, consumed, discarded
+
+    @pytest.mark.asyncio
+    async def test_slot_removal_before_runner_entry_discards_popped_owner_once(
+        self, tmp_path
+    ) -> None:
+        """Removing a slot after pop cannot strand its manager-owned completion."""
+        from chat_test_helpers import _make_state
+
+        state = _make_state(tmp_path / "state")
+        state.subagents = _manager()
+        slot = state.get_or_create_slot("drain-pre-entry-remove")
+        parent_key, manager, consumed, discarded = self._queue_owned_completion(state, slot, "a1")
+
+        assert await _start_next_queued_turn(state, slot) is True
+        assert slot._queue == []
+        assert state._slots.pop(slot.key) is slot
+        # The row already transferred into the not-yet-entered runner, so the
+        # slot teardown has no queued callback left to discover.
+        assert slot.queue_discard_all() == []
+        slot.task.cancel()
+        await asyncio.gather(slot.task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+        assert consumed == []
+        assert discarded == ["a1"]
+        assert slot._subagent_completion_pending == {}
+        assert manager.terminal_delivery_inflight_for(parent_key) is False
+
+    @pytest.mark.asyncio
+    async def test_entered_runner_keeps_exclusive_consumption_ownership(self, tmp_path) -> None:
+        """The pre-entry guard cannot discard after the model runner takes ownership."""
+        from chat_test_helpers import _make_state
+
+        state = _make_state(tmp_path / "state")
+        state.subagents = _manager()
+        slot = state.get_or_create_slot("drain-runner-entered")
+        parent_key, manager, consumed, discarded = self._queue_owned_completion(state, slot, "a1")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _run_owned(_state, _slot, _message, **kwargs) -> None:
+            entered.set()
+            kwargs["_on_consumed"]()
+            await release.wait()
+
+        with patch("kiro_crew.dashboard.chat_runner._run_chat", new=_run_owned):
+            assert await _start_next_queued_turn(state, slot) is True
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            assert consumed == [True]
+            assert discarded == []
+            assert manager.terminal_delivery_inflight_for(parent_key) is False
+            release.set()
+            await slot.task
+
+        assert discarded == []
 
 
 class TestTeardownGateOnQueuedSettlement:
@@ -472,7 +573,7 @@ class TestDrainSettlesDelivery:
         """
 
         def _spawn(_state, _slot, coro):
-            hook = coro.cr_frame.f_locals.get("_on_consumed")
+            hook = _consumption_hook(coro)
             coro.close()  # the real runner would await it; we are not running a turn
             if consumed and hook is not None:
                 hook()
@@ -659,7 +760,7 @@ class TestDrainSettlesDelivery:
         hooks: list = []
 
         def _spawn(_state, _slot, coro):
-            hooks.append(coro.cr_frame.f_locals.get("_on_consumed"))
+            hooks.append(_consumption_hook(coro))
             coro.close()
 
             async def _turn():
@@ -694,7 +795,7 @@ class TestDrainSettlesDelivery:
         hooks: list = []
 
         def _spawn(_state, _slot, coro):
-            hooks.append(coro.cr_frame.f_locals.get("_on_consumed"))
+            hooks.append(_consumption_hook(coro))
             coro.close()
 
             async def _turn():

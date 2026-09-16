@@ -33,9 +33,13 @@ was reachable. `dashboard/handlers/messaging.py` wraps the text:
   entry, so the dashboard renders a compact clock chip instead of echoing the
   wrapper. The text wrapper stays in `content` because that is what the model
   reads.
-- If the slot is mid-turn the message is queued as `queued` and drained later; a
-  queue at capacity evicts its oldest entry rather than growing without bound. An
-  idle slot instead gets an immediate guarded turn.
+- If the slot is mid-turn the message is queued as `queued` and drained later. At
+  capacity, the queue evicts its oldest row without lifecycle callbacks; a queued
+  completion or retry remains owned and deliverable. If every row is owned, the
+  incoming notification takes the normal dashboard-notification fallback rather
+  than growing the queue or discarding unseen work. That fallback appends
+  `(session queue full)` to the notification instead of claiming the still-open
+  session closed. An idle slot instead gets an immediate guarded turn.
 - When the origin slot is not in memory it is rehydrated from history. A session
   that is genuinely gone (never persisted, deleted, or closed) resolves to nothing
   and delivery falls back to a dashboard notification (plus a Slack DM when the

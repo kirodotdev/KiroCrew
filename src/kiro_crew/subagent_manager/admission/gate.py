@@ -926,10 +926,7 @@ class _GateMixin(ManagerComponent):
                 metadata={"subagent_id": agent_id, "reason": "no approval mechanism"},
             )
             logger.warning("Subagent %s rejected: no approval callback", agent_id)
-            if self._manager._on_done:
-                self._manager._tasks[agent_id] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
-                )
+            self._manager._start_rejection_delivery(info)
 
         if info.done:
             # Rejected after the claim (no approval mechanism): terminal in the
@@ -958,6 +955,41 @@ class _GateMixin(ManagerComponent):
             await self._manager._on_done(info)
         except Exception:
             logger.exception("Subagent announce failed for %s", info.id)
+            retained = self._manager.notify_injection_failed(
+                info, reason="completion delivery failed before acceptance"
+            )
+            if retained is not None:
+                try:
+                    await asyncio.shield(retained)
+                except Exception:
+                    logger.debug(
+                        "Subagent %s rejection fallback could not be retained",
+                        info.id,
+                        exc_info=True,
+                    )
+
+    def _start_rejection_delivery_impl(self, info: SubagentInfo) -> "asyncio.Task | None":  # type: ignore[type-arg]
+        """Start one owned terminal delivery for a rejected spawn.
+
+        Rejections never enter ``_run``, so they must explicitly enter the same
+        report-owner registry as ordinary completions. That registry is the stop
+        fence and the shutdown drain: a free-floating ``_safe_announce`` task
+        lets an agent stop the parent goal while the rejection is still being
+        delivered, and cancellation can then lose the only terminal fact.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        if self._manager._on_done is None or not self._manager._claim_finalize(info):
+            return None
+        return self._manager._spawn_terminal_report(
+            info,
+            source="Spawn rejection",
+            injection_timeout_reason="rejected completion delivery timed out",
+            mark_delivered_on_success=False,
+            settle_digest=True,
+        )
 
     def _announce_rejection_impl(self, info: SubagentInfo) -> SubagentInfo:
         """Route a terminal spawn rejection through the done callback.
@@ -978,11 +1010,6 @@ class _GateMixin(ManagerComponent):
         those itself off the returned info, so announcing here as well would
         inject the completion twice.
         """
-        if info.batch_id and self._manager._on_done:
-            try:
-                self._manager._tasks[f"reject-{info.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
-                )
-            except RuntimeError:
-                pass  # no running loop (sync/test context)
+        if info.batch_id:
+            self._manager._start_rejection_delivery(info)
         return info

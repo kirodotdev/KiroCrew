@@ -782,14 +782,19 @@ def effective_session_key(slot: _ChatSlot) -> str:
 
 
 def subagents_attached(
-    state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
+    state: DashboardState,
+    slot: _ChatSlot | None,
+    session_key: str,
+    operation: str,
+    *,
+    _detail: list[str] | None = None,
 ) -> bool:
     """Whether sub-agent children are attached to *session_key*.
 
     True means an action that tears the session down, or dispatches into it,
-    would discard a child's work. Every such caller shares THIS predicate: a
-    second copy is how the probes diverge, and both callers must fail toward
-    keeping a child's work.
+    would discard a child's work. Every caller shares this predicate, including
+    the optional bounded diagnostic detail; a second probe implementation is
+    how a refusal and its explanation would diverge.
 
     *slot* may be ``None`` when no tab displays the session: the in-flight
     delivery probe then reads as 0 (``getattr`` on ``None`` returns its
@@ -822,12 +827,21 @@ def subagents_attached(
     probe counts rows that live only in the task store, so it takes the SQLite
     connection: a caller ON the gateway loop takes
     :func:`subagents_attached_async` instead.
+
+    ``_detail`` is private plumbing for a refusal surface. When supplied it is
+    replaced with one stable, non-sensitive phrase naming the first probe that
+    holds the fence. It never includes child identifiers, prompt content, paths,
+    or counts.
     """
     subs = getattr(state, "subagents", None)
     if subs is None:
+        if _detail is not None:
+            _detail[:] = []
         return False
+
     running = subs.running_agents_for(session_key)
     queued = 0
+    queued_probe_failed = False
     if running is not None:
         try:
             queued = subs._queued_depth(session_key)
@@ -835,40 +849,58 @@ def subagents_attached(
             # An unreadable queue is unknown children, not zero children.
             logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
             queued = 1
-    return _attached_verdict(running, queued, slot)
+            queued_probe_failed = True
+    detail = _attachment_detail(
+        subs,
+        running,
+        queued,
+        queued_probe_failed,
+        slot,
+        session_key,
+        operation,
+    )
+    if _detail is not None:
+        _detail[:] = [detail] if detail else []
+    return detail is not None
 
 
 async def subagents_attached_async(
     state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
 ) -> bool:
-    """:func:`subagents_attached` for a caller on the event loop.
+    """:func:`subagents_attached` for a caller on the event loop."""
+    return await subagent_attachment_detail_async(state, slot, session_key, operation) is not None
 
-    The same three probes with the same fail-closed rules; only WHERE the
-    queued half runs differs. ``_queued_depth`` counts this parent's rows that
-    live only in the store, so it takes the connection — and the store's writer
-    thread holds that connection's lock across ``BEGIN IMMEDIATE``'s busy wait,
-    so taking it here would stall every session's turn and the watchdog
-    heartbeat behind one teardown probe. ``queued_count_for_async`` is the same
-    count with the read on the writer thread.
 
-    A manager double without the async sibling is asked synchronously — it
-    models the pre-queue manager and has no store to block on — which is the
-    probe ``slack.gateway._subagent_queued_count`` and
-    ``handlers.messaging._spawn_on_loop`` already make.
+async def subagent_attachment_detail_async(
+    state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
+) -> str | None:
+    """Return the bounded holding probe without blocking the gateway loop.
+
+    The queued half reads the task store on its writer thread; every other probe
+    is the same one used by the synchronous attachment evaluation.
     """
     subs = getattr(state, "subagents", None)
     if subs is None:
-        return False
+        return None
     running = subs.running_agents_for(session_key)
     queued = 0
+    queued_probe_failed = False
     if running is not None:
         try:
             queued = await _queued_depth_off_loop(subs, session_key)
         except Exception:
-            # An unreadable queue is unknown children, not zero children.
             logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
             queued = 1
-    return _attached_verdict(running, queued, slot)
+            queued_probe_failed = True
+    return _attachment_detail(
+        subs,
+        running,
+        queued,
+        queued_probe_failed,
+        slot,
+        session_key,
+        operation,
+    )
 
 
 async def _queued_depth_off_loop(subs: Any, session_key: str) -> int:
@@ -881,14 +913,102 @@ async def _queued_depth_off_loop(subs: Any, session_key: str) -> int:
     return int(subs._queued_depth(session_key))
 
 
-def _attached_verdict(running: Any, queued: int, slot: _ChatSlot | None) -> bool:
-    """The verdict both entry points return, so the two cannot drift.
+def _attachment_detail(
+    subs: Any,
+    running: Any,
+    queued: int,
+    queued_probe_failed: bool,
+    slot: _ChatSlot | None,
+    session_key: str,
+    operation: str,
+) -> str | None:
+    """Return the first bounded reason child work still owns the session."""
+    terminal_delivery = False
+    terminal_delivery_probe_failed = False
+    delivery_probe = getattr(type(subs), "terminal_delivery_inflight_for", None)
+    if callable(delivery_probe):
+        try:
+            terminal_delivery = delivery_probe(subs, session_key) is not False
+        except Exception:
+            logger.debug("%s: terminal-delivery probe failed", operation, exc_info=True)
+            terminal_delivery = True
+            terminal_delivery_probe_failed = True
 
-    *slot* may be ``None``: ``getattr`` on ``None`` reads the in-flight
-    delivery probe as 0 and the two registry probes still decide.
-    """
-    inflight = getattr(slot, "_subagent_deliveries_inflight", 0)
-    return bool(running is None or running or queued or inflight)
+    recovery_required = False
+    recovery_probe_failed = False
+    recovery_probe = getattr(type(subs), "completion_delivery_recovery_required_for", None)
+    if terminal_delivery and callable(recovery_probe):
+        try:
+            recovery_required = recovery_probe(subs, session_key) is True
+        except Exception:
+            logger.debug(
+                "%s: retained-completion recovery probe failed",
+                operation,
+                exc_info=True,
+            )
+            recovery_required = True
+            recovery_probe_failed = True
+
+    slot_delivery = getattr(slot, "_subagent_deliveries_inflight", 0)
+    accepted_completion = getattr(slot, "_subagent_completion_pending", None)
+    retained_failure = getattr(slot, "_pending_subagent_failures", None)
+    attached = bool(
+        running is None
+        or running
+        or queued
+        or terminal_delivery
+        or slot_delivery
+        or accepted_completion
+        or retained_failure
+    )
+    if not attached:
+        return None
+    if running is None:
+        return "child-work status unavailable"
+    if running:
+        return "running child work"
+    if queued_probe_failed:
+        return "queued-child status unavailable"
+    if queued:
+        return "queued child work"
+    if terminal_delivery_probe_failed:
+        return "terminal-report status unavailable"
+    if terminal_delivery and recovery_probe_failed:
+        return "retained completion recovery status unavailable"
+    if terminal_delivery and recovery_required:
+        return "retained completion requires restart recovery"
+    if terminal_delivery:
+        return "terminal child report delivery"
+    if slot_delivery:
+        return "completion handoff in progress"
+    if accepted_completion:
+        return "completion awaiting parent consumption"
+    if retained_failure:
+        return "completion delivery retry"
+    return "child-work status unavailable"
+
+
+def subagent_attachment_detail(
+    state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
+) -> str | None:
+    """Return the bounded holding probe for a synchronous caller."""
+    detail: list[str] = []
+    if not subagents_attached(state, slot, session_key, operation, _detail=detail):
+        return None
+    return detail[0] if detail else "child-work status unavailable"
+
+
+def subagent_attachment_recovery_guidance(detail: str) -> str:
+    """Return the one recovery instruction shared by attachment refusals."""
+    if detail in {
+        "retained completion requires restart recovery",
+        "retained completion recovery status unavailable",
+    }:
+        return (
+            "restart Kiro Crew for orphan recovery, or close the session if abandoning "
+            "the goal is intentional"
+        )
+    return "wait for it to settle, or use the direct Stop control before retrying"
 
 
 async def chat_done_payload(
@@ -2857,6 +2977,13 @@ def is_system_injection(content: str) -> bool:
 #: Structural queue-entry kind for runner-injected recovery instructions.
 SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
 
+#: Structural queue-entry kind for a popped lifecycle-owned completion whose
+#: model turn failed before consumption. Unlike an ordinary synthetic recovery,
+#: this row is internal delivery state: containment changes cannot reinterpret it
+#: as replayed user speech and discard it. Explicit Stop/removal/rewind/teardown
+#: still retire its one-shot callback through the queue ownership contract.
+LIFECYCLE_RECOVERY_KIND = "lifecycle_recovery"
+
 #: Row-level kind for the `error` notice appended when a recovery has ALREADY
 #: been queued, so the frontend can tell a pending retry from a terminal failure.
 TRANSIENT_RETRY_KIND = "transient_retry"
@@ -2909,20 +3036,30 @@ CRON_NOTIFICATION_KIND = "cron_notification"
 
 #: All system-injection kinds (for set-membership checks).
 _SYSTEM_INJECTION_KINDS = frozenset(
-    (SUBAGENT_COMPLETION_KIND, CRON_NOTIFICATION_KIND, SYNTHETIC_RECOVERY_KIND)
+    (
+        SUBAGENT_COMPLETION_KIND,
+        CRON_NOTIFICATION_KIND,
+        SYNTHETIC_RECOVERY_KIND,
+        LIFECYCLE_RECOVERY_KIND,
+    )
 )
 
 
 def is_synthetic_recovery_item(item: dict) -> bool:
-    """True when a queue ENTRY is a runner-injected synthetic recovery
-    instruction (post-transient CONTINUE / empty-response nudge).
+    """True when a queue ENTRY is a runner-owned recovery turn.
+
+    Ordinary synthetic recoveries replay an admitted prompt or runner-authored
+    continuation. Lifecycle recoveries retain a popped completion's one-shot
+    callbacks after a pre-consumption failure. Both render and drain as recovery
+    orchestration, but only the latter is exempt from user-prompt containment
+    revalidation.
 
     Classification is structural — the ``kind`` tag set at ``queue_insert``
     time — never content equality: metadata survives any queue transformation
     (merge, prefixing, truncation) and cannot collide with a user pasting the
     transcript-visible recovery text verbatim (which must classify as a plain
     user message)."""
-    return item.get("kind") == SYNTHETIC_RECOVERY_KIND
+    return item.get("kind") in (SYNTHETIC_RECOVERY_KIND, LIFECYCLE_RECOVERY_KIND)
 
 
 class RecoveryPayload(str, Enum):
@@ -2974,12 +3111,12 @@ def is_system_injection_item(item: dict) -> bool:
     over content-prefix inspection. Content fallback is removed to fully close
     the spoofing gap — classification is exclusively by kind tag.
 
-    Synthetic recovery instructions are orchestration, not user speech: they
-    must BREAK a user-message merge (folding one into a "[N queued messages
-    merged]" turn would flip it back into user-authored, persisted,
-    channel-mirrored history), keep draining during sub-agent runs, and never
-    consume the session-reset notice — same treatment as sub-agent completion
-    and cron injections."""
+    Synthetic recovery instructions and lifecycle-owned completion retries are
+    orchestration, not user speech: they must BREAK a user-message merge (folding
+    one into a "[N queued messages merged]" turn would flip it back into
+    user-authored, persisted, channel-mirrored history), keep draining during
+    sub-agent runs, and never consume the session-reset notice — same treatment
+    as sub-agent completion and cron injections."""
     kind = item.get("kind", "")
     if kind in _SYSTEM_INJECTION_KINDS:
         return True

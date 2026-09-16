@@ -22,12 +22,15 @@ These tests lock the three halves of the fix:
   the session key would pass ``has_dashboard_surface``.
 * **Consumer wiring** — ``build_directive_consumer`` funnels into the shared
   applier with the dispatcher's live ``dashboard_state`` when present, and a
-  fail-closed ``sessions``-backed stand-in when not (the Slack shape).
+  fail-closed ``sessions``/``subagents``-backed stand-in when not (the Slack
+  shape).
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -646,14 +649,45 @@ class TestBuildDirectiveConsumer:
             "kiro_crew.dashboard.session_directive_apply.apply_session_directive", _spy
         )
         sessions = object()
-        consume = build_directive_consumer(session_key="slack:1755000000.1", sessions=sessions)
+        subagents = object()
+        consume = build_directive_consumer(
+            session_key="slack:1755000000.1",
+            sessions=sessions,
+            subagents=subagents,
+        )
         await consume("autonudge_stop", {})
         assert len(seen) == 1
         state, producer_is_channel = seen[0]
         assert isinstance(state, _ChannelDirectiveState)
         assert state.sessions is sessions
+        assert state.subagents is subagents
         assert state._slots == {} and state.channel_transports == {}
         assert producer_is_channel is True
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        (
+            "src/kiro_crew/slack/gateway.py",
+            "src/kiro_crew/slack/transport_dispatch.py",
+            "src/kiro_crew/discord/transport_dispatch.py",
+            "src/kiro_crew/webex/transport_dispatch.py",
+        ),
+        ids=("slack-monitor", "slack", "discord", "webex"),
+    )
+    def test_stop_capable_channel_consumers_pass_subagent_ownership(self, relative_path):
+        """Every slot-less stop consumer carries the manager ownership probe."""
+        root = Path(__file__).resolve().parents[1]
+        tree = ast.parse((root / relative_path).read_text(encoding="utf-8"))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "build_directive_consumer"
+        ]
+
+        assert calls
+        assert all(any(keyword.arg == "subagents" for keyword in call.keywords) for call in calls)
 
 
 class TestSilentDropIsDiagnosable:

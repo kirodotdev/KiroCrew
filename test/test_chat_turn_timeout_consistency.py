@@ -80,23 +80,75 @@ def test_cap_value_is_four_hours() -> None:
     assert AgentConfig().chat_turn_timeout_secs == CHAT_TURN_TIMEOUT
 
 
+def _enclosing_function(tree: ast.AST, line_no: int) -> ast.AST | None:
+    """Return the narrowest function containing *line_no*."""
+    candidates = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.lineno <= line_no <= (node.end_lineno or node.lineno)
+    ]
+    return min(
+        candidates,
+        key=lambda node: (node.end_lineno or node.lineno) - node.lineno,
+        default=None,
+    )
+
+
+def _follow_local_dispatch_refs(body: str, scope: ast.AST | None, source: str) -> str:
+    """Append local definitions reachable from names in a dispatch body."""
+    if scope is None:
+        return body
+    definitions: dict[str, ast.AST] = {}
+    for node in ast.walk(scope):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            definitions.setdefault(node.name, node)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    definitions.setdefault(target.id, node)
+
+    try:
+        parsed = ast.parse(f"_dispatch({body})")
+    except SyntaxError:
+        return body
+    pending = [node.id for node in ast.walk(parsed) if isinstance(node, ast.Name)]
+    seen: set[str] = set()
+    resolved = [body]
+    while pending:
+        name = pending.pop()
+        if name in seen or name not in definitions:
+            continue
+        seen.add(name)
+        definition = definitions[name]
+        segment = ast.get_source_segment(source, definition)
+        if segment:
+            resolved.append(segment)
+        pending.extend(node.id for node in ast.walk(definition) if isinstance(node, ast.Name))
+    return "\n".join(resolved)
+
+
 def _find_create_task_dispatches(path: Path) -> list[tuple[int, str]]:
     """Return ``[(line_no, body_text)]`` for every dispatch call body in *path*.
 
-    Two dispatch forms exist and both must be counted:
+    Two dispatch APIs exist and both must be counted:
 
     * ``spawn_guarded_turn(state, slot, _run_chat(...))`` — the preferred form.
       The helper owns the ceiling AND retrieves the resulting exception, so a
       turn that hits the ceiling renders a card instead of vanishing.
-    * ``asyncio.create_task(asyncio.wait_for(_run_chat(...), timeout=...))`` —
-      the older inline form, still used by the two gateway sites that attach
-      their own done-callback to consume the exception.
+    * ``asyncio.create_task(...)`` — the inline form used by gateway sites that
+      attach their own done-callback. The body may call ``_run_chat`` directly
+      through ``wait_for`` or reach it through local coroutine aliases under
+      ``bounded_chat_turn``.
 
     Why a hand-rolled balanced-paren scan instead of regex: nested call
     expressions go three levels deep with embedded commas, which regex does not
-    handle cleanly. We tokenize ``(`` / ``)`` until the depth returns to zero.
+    handle cleanly. We tokenize ``(`` / ``)`` until the depth returns to zero,
+    then follow only definitions referenced from that dispatch's local scope.
     """
     text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text)
     out: list[tuple[int, str]] = []
     for opener in ("asyncio.create_task(", "spawn_guarded_turn("):
         i = 0
@@ -118,6 +170,29 @@ def _find_create_task_dispatches(path: Path) -> list[tuple[int, str]]:
             # cursor now sits one past the matching close paren; -1 to exclude it
             body = text[body_start : cursor - 1]
             line_no = text[:idx].count("\n") + 1
+            if opener == "asyncio.create_task(":
+                body = _follow_local_dispatch_refs(body, _enclosing_function(tree, line_no), text)
+            else:
+                # A guarded local runner is helper-visible when the call invokes
+                # it directly (for example ``_run_owned_queued_turn()``). Do not
+                # chase hoisted coroutine aliases such as ``turn_coro``: those
+                # nested monitor paths have their own owning contract tests.
+                scope = _enclosing_function(tree, line_no)
+                if scope is not None:
+                    parsed = ast.parse(f"_dispatch({body})")
+                    called_names = {
+                        node.func.id
+                        for node in ast.walk(parsed)
+                        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    }
+                    for node in ast.walk(scope):
+                        if (
+                            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and node.name in called_names
+                        ):
+                            segment = ast.get_source_segment(text, node)
+                            if segment:
+                                body = f"{body}\n{segment}"
             out.append((line_no, body))
             i = cursor
     return out
@@ -181,10 +256,7 @@ def test_every_run_chat_dispatch_is_ceiling_bounded() -> None:
             # Two accepted bounds: the config-resolved ceiling (preferred —
             # follows agent.chat_turn_timeout_secs above the 2h default) or the
             # legacy shared constant.
-            if (
-                "chat_turn_timeout_secs(" not in body
-                and "CHAT_TURN_TIMEOUT" not in body
-            ):
+            if "chat_turn_timeout_secs(" not in body and "CHAT_TURN_TIMEOUT" not in body:
                 offenders.append(f"{rel_path}:{line_no}")
 
     assert not offenders, (
@@ -217,20 +289,20 @@ def test_dispatch_sites_consume_their_exception() -> None:
 
     offenders: list[str] = []
     for rel_path in _DISPATCH_FILES:
-        tree = ast.parse((src_root / rel_path).read_text(encoding="utf-8"))
+        source = (src_root / rel_path).read_text(encoding="utf-8")
+        tree = ast.parse(source)
         # Map each function to its enclosing-function chain so a nested
         # dispatch can see a callback defined in an outer scope.
         for func in _iter_functions(tree):
             inline_sites = [
                 node
                 for node in ast.walk(func)
-                if _is_inline_wrapped_run_chat_dispatch(node)
+                if _is_inline_wrapped_run_chat_dispatch(node, func, source)
             ]
             if not inline_sites:
                 continue
             consumes = any(
-                isinstance(n, ast.Attribute) and n.attr == "exception"
-                for n in ast.walk(func)
+                isinstance(n, ast.Attribute) and n.attr == "exception" for n in ast.walk(func)
             )
             if not consumes:
                 offenders.extend(f"{rel_path}:{s.lineno}" for s in inline_sites)
@@ -266,18 +338,57 @@ def _calls_named(node: ast.AST, name: str) -> bool:
     return False
 
 
-def _is_inline_wrapped_run_chat_dispatch(node: ast.AST) -> bool:
-    """True for ``create_task(wait_for(_run_chat(...)))`` — the inline form.
+def _is_inline_wrapped_run_chat_dispatch(node: ast.AST, scope: ast.AST, source: str) -> bool:
+    """True for a ``create_task`` path from ``_run_chat`` through its ceiling.
 
     ``spawn_guarded_turn`` sites are excluded: the helper consumes the
-    exception itself, which is the whole point of routing through it.
+    exception itself, which is the whole point of routing through it. Local
+    coroutine aliases are followed so a lifecycle wrapper cannot hide a
+    ``bounded_chat_turn`` dispatch from the source guard.
     """
     if not _calls_named(node, "create_task"):
         return False
-    subtree = list(ast.walk(node))
-    has_run_chat = any(_calls_named(n, "_run_chat") for n in subtree)
-    has_wait_for = any(_calls_named(n, "wait_for") for n in subtree)
-    return has_run_chat and has_wait_for
+    segment = ast.get_source_segment(source, node) or ""
+    resolved = _follow_local_dispatch_refs(segment, scope, source)
+    return "_run_chat(" in resolved and (
+        "wait_for(" in resolved or "bounded_chat_turn(" in resolved
+    )
+
+
+def test_detector_follows_hoisted_runner_through_bounded_turn(tmp_path: Path) -> None:
+    """A local lifecycle wrapper remains one visible, bounded dispatch."""
+    source = """\
+async def owner():
+    _run_chat_coro = _run_chat(state, slot, message)
+
+    async def _run_injected_completion():
+        await _run_chat_coro
+
+    _injected_completion_coro = _run_injected_completion()
+    asyncio.create_task(bounded_chat_turn(_injected_completion_coro))
+"""
+    path = tmp_path / "dispatch.py"
+    path.write_text(source, encoding="utf-8")
+
+    sites = _find_create_task_dispatches(path)
+    assert len(sites) == 1
+    assert "_run_chat(" in sites[0][1]
+    tree = ast.parse(source)
+    owner = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef))
+    dispatch = next(node for node in ast.walk(owner) if _calls_named(node, "create_task"))
+    assert _is_inline_wrapped_run_chat_dispatch(dispatch, owner, source) is True
+
+    # Opposite proof: hoisting alone is not a ceiling.
+    bare_source = source.replace(
+        "bounded_chat_turn(_injected_completion_coro)", "_injected_completion_coro"
+    )
+    path.write_text(bare_source, encoding="utf-8")
+    bare_tree = ast.parse(bare_source)
+    bare_owner = next(
+        node for node in ast.walk(bare_tree) if isinstance(node, ast.AsyncFunctionDef)
+    )
+    bare_dispatch = next(node for node in ast.walk(bare_owner) if _calls_named(node, "create_task"))
+    assert _is_inline_wrapped_run_chat_dispatch(bare_dispatch, bare_owner, bare_source) is False
 
 
 def test_dispatch_site_count_matches_expectation() -> None:

@@ -1343,14 +1343,25 @@ def _discard_queued_work(slot: Any) -> None:
     Attribute-tolerant on purpose: a foreign or partially-built slot may not
     carry these, and failing to discard must never be what breaks teardown.
     """
-    for attr in ("_queue", "_pending_steers"):
-        seq = getattr(slot, attr, None)
-        if seq is None:
-            continue
+    discard_queue = getattr(slot, "queue_discard_all", None)
+    if callable(discard_queue):
+        try:
+            discard_queue()
+        except Exception:
+            logger.debug("could not clear _queue during stop", exc_info=True)
+    else:
+        seq = getattr(slot, "_queue", None)
+        if seq is not None:
+            try:
+                seq.clear()
+            except Exception:
+                logger.debug("could not clear _queue during stop", exc_info=True)
+    seq = getattr(slot, "_pending_steers", None)
+    if seq is not None:
         try:
             seq.clear()
         except Exception:
-            logger.debug("could not clear %s during stop", attr, exc_info=True)
+            logger.debug("could not clear _pending_steers during stop", exc_info=True)
     try:
         slot._pending_synthesis = False
     except Exception:

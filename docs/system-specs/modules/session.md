@@ -707,6 +707,35 @@ Two more reads on this area follow config without a restart:
 (`_effective_prompt_timeout_async`), so `agent.chat_turn_timeout_secs` needed no
 applier — a raised turn budget is in force on the next prompt.
 
+## Queued completion cancellation ownership
+
+A queued sub-agent completion transfers its one-shot consumption, irreversible
+consumption, discard callback, and delivery fence into the queue-drain dispatch
+when the queue row is popped. A pre-entry owner keeps the discard callback until
+the dispatched wrapper begins `chat_runner._run_chat`; cancellation or task-
+construction failure before that point invokes the durable-discard path, while
+entry transfers exclusive recovery/discard ownership into `_run_chat`. If the
+turn fails before consumption, the runner must preserve that exact ownership on
+one held `lifecycle_recovery` row and must not auto-drain it in the same failing
+cycle. Every later model/system retry keeps that structural identity; unlike an
+ordinary `synthetic_recovery` replay of externally admitted user content,
+containment revalidation cannot reinterpret the row as user speech and discard
+it. This includes the dashboard turn ceiling cancelling the inner turn,
+transport/model cancellation, and any system cancellation with no user intent.
+A direct user Stop, explicit removal of the queued recovery row, slot teardown,
+or rewind remains authoritative: it discards the callback once and never
+recreates the row. Automatic queue-cap eviction cannot make that user decision:
+it removes the FIFO head only when that row is unowned. If the oldest row has a
+lifecycle owner, the incoming notification takes its fallback delivery path
+rather than growing the queue, skipping past the owned row, or settling an
+unseen completion. Shared session-mutation 409s name the holding state from the
+same diagnostic seam. Ordinary child work may settle or be removed through the
+direct Stop control; a one-shot retained discard says `retained completion
+requires restart recovery` and directs the operator to restart Kiro Crew for
+orphan recovery, or close the session if abandoning the goal is intentional.
+Callback transfer and discard are mutually exclusive, so no completion can
+settle twice.
+
 ## Stop Orchestration
 
 `stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `/kirocrew stop`, transport stop verbs). Sequence:

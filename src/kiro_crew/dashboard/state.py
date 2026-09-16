@@ -2123,6 +2123,7 @@ class _ChatSlot:
         "_pending_synthesis",
         "_synthesis_inflight",
         "_subagent_deliveries_inflight",
+        "_subagent_completion_pending",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
         "_recovery_retrigger_count",
@@ -2545,6 +2546,14 @@ class _ChatSlot:
         # fire-gate requires this to be 0 so a concurrently-finishing sibling
         # can't let an earlier turn fire synthesis before its result lands.
         self._subagent_deliveries_inflight: int = 0
+        # Completion turns that have been accepted for this slot but not yet
+        # consumed by its model. Counts are keyed by terminal agent id so a
+        # duplicate callback cannot release a sibling delivery. The stop guard
+        # reads this independently of result-file tombstone debt: rejected and
+        # stopped completions have no result to mark delivered, but their
+        # terminal fact must still reach the parent before an agent may stop its
+        # goal loop.
+        self._subagent_completion_pending: dict[str, int] = {}
         # IDs of sub-agents whose results were already delivered inline via the
         # blocking spawn_sub_agents MCP tool.  _subagent_done skips injection
         # for these to prevent a duplicate turn that clobbers [OPTIONS:] buttons.
@@ -3511,6 +3520,7 @@ class _ChatSlot:
         meta: dict | None = None,
         on_consumed: Callable[[bool], None] | None = None,
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
+        on_discarded: Callable[[], None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
     ) -> str:
@@ -3523,12 +3533,22 @@ class _ChatSlot:
             meta,
             on_consumed,
             on_irreversibly_consumed,
+            on_discarded,
             directive_user_origin,
             directive_channel_origin,
         )
 
     def queue_pop(self, index: int = 0) -> dict[str, Any]:
         return self._queue_repository.queue_pop(self, index)
+
+    def queue_evict_oldest_if_unowned(self) -> dict[str, Any] | None:
+        return self._queue_repository.evict_oldest_if_unowned(self)
+
+    def queue_discard_all(self) -> list[dict[str, Any]]:
+        return self._queue_repository.queue_discard_all(self)
+
+    def discard_queue_entries(self, items: list[dict[str, Any]]) -> None:
+        self._queue_repository.discard_entries(self, items)
 
     def note_pending_subagent_delivery(self, content: str, agent_ids: list[str]) -> None:
         self._queue_repository.note_pending_subagent_delivery(self, content, agent_ids)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -11,6 +12,8 @@ from typing import Any
 # This is well above the slot queue's legitimate in-flight set.  Eviction only
 # bounds orphaned bookkeeping; an evicted agent remains recoverable on restart.
 MAX_PENDING_SUBAGENT_DELIVERIES = 128
+
+logger = logging.getLogger(__name__)
 
 
 def _delivery_key(content: str) -> str:
@@ -176,6 +179,7 @@ class SlotQueueRepository:
         meta: dict | None = None,
         on_consumed: Callable[[bool], None] | None = None,
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
+        on_discarded: Callable[[], None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
     ) -> str:
@@ -195,6 +199,8 @@ class SlotQueueRepository:
             item["_on_consumed"] = on_consumed
         if on_irreversibly_consumed is not None:
             item["_on_irreversibly_consumed"] = on_irreversibly_consumed
+        if on_discarded is not None:
+            item["_on_discarded"] = on_discarded
         if directive_user_origin:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
@@ -204,8 +210,49 @@ class SlotQueueRepository:
         return queue_id
 
     def queue_pop(self, owner: Any, index: int = 0) -> dict[str, Any]:
-        """Remove and return the exact entry at *index*."""
+        """Remove and return the exact entry at *index* for consumption."""
         return owner._queue.pop(index)
+
+    def evict_oldest_if_unowned(self, owner: Any) -> dict[str, Any] | None:
+        """Evict the oldest row only when it has no lifecycle owner."""
+        if not owner._queue:
+            return None
+        oldest = owner._queue[0]
+        callback_keys = (
+            "_on_consumed",
+            "_on_irreversibly_consumed",
+            "_on_discarded",
+        )
+        if any(key in oldest for key in callback_keys):
+            return None
+        return owner._queue.pop(0)
+
+    @staticmethod
+    def _notify_discarded(item: dict[str, Any]) -> None:
+        """Retire producer ownership when an entry will never be consumed."""
+        if not isinstance(item, dict):
+            return
+        callback = item.pop("_on_discarded", None)
+        if not callable(callback):
+            return
+        try:
+            callback()
+        except Exception:
+            # The row is already gone. A callback failure must not resurrect it
+            # or break a user Stop/cancel, but it must remain diagnosable.
+            logger.warning("queued-entry discard callback failed", exc_info=True)
+
+    def discard_entries(self, owner: Any, items: list[dict[str, Any]]) -> None:
+        """Notify callbacks for entries a transaction already removed."""
+        for item in items:
+            self._notify_discarded(item)
+
+    def queue_discard_all(self, owner: Any) -> list[dict[str, Any]]:
+        """Remove every queued entry and retire each producer exactly once."""
+        discarded = list(owner._queue)
+        owner._queue.clear()
+        self.discard_entries(owner, discarded)
+        return discarded
 
     def note_pending_subagent_delivery(
         self,
@@ -243,6 +290,7 @@ class SlotQueueRepository:
         for index, item in enumerate(owner._queue):
             if item["id"] == queue_id:
                 del owner._queue[index]
+                self._notify_discarded(item)
                 return item["content"]
         return None
 
@@ -261,7 +309,10 @@ class SlotQueueRepository:
                 continue
             # Retry callbacks settle the exact automatic payload that failed;
             # moving them to replacement text would acknowledge the wrong work.
-            if "_on_consumed" in item or "_on_irreversibly_consumed" in item:
+            if any(
+                key in item
+                for key in ("_on_consumed", "_on_irreversibly_consumed", "_on_discarded")
+            ):
                 return False
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors

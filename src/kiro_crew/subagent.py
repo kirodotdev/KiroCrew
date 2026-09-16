@@ -1754,6 +1754,16 @@ class SubagentManager:
         self._followup_watchers: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         # task -> the agent whose terminal report it is delivering
         self._report_owners: dict[asyncio.Task, SubagentInfo] = {}  # type: ignore[type-arg]
+        # Parent session -> terminal agent id -> accepted completion count. The
+        # report task owns delivery only until ``_on_done`` returns; dashboard
+        # handoff can outlive that task and even its materialized slot. Keep the
+        # transferred ownership on the manager so slot-less channel stop checks
+        # still fail closed until consumption or durable discard settlement.
+        self._retained_completion_owners: dict[str, dict[str, int]] = {}
+        # A one-shot explicit discard that failed closed has no in-process retry.
+        # Keep that subset distinct so every stop/teardown refusal names restart
+        # orphan reconciliation instead of promising passive settlement.
+        self._retained_completion_recovery_required: dict[str, set[str]] = {}
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
@@ -2412,7 +2422,7 @@ class SubagentManager:
 
     def notify_injection_failed(
         self, info: SubagentInfo, reason: str = "delivery timed out"
-    ) -> None:
+    ) -> "asyncio.Task | None":  # type: ignore[type-arg]
         return self._terminal.notify_injection_failed_impl(info, reason)
 
     def _clamp_effective_cap(self) -> int:
@@ -2530,6 +2540,23 @@ class SubagentManager:
 
     def running_agents_for(self, parent_key: str) -> list[dict]:
         return self._run_events.running_agents_for_impl(parent_key)
+
+    def retain_completion_delivery(self, parent_session_key: str, agent_id: str) -> None:
+        self._terminal.retain_completion_delivery_impl(parent_session_key, agent_id)
+
+    def mark_completion_delivery_recovery_required(
+        self, parent_session_key: str, agent_id: str
+    ) -> None:
+        self._terminal.mark_completion_delivery_recovery_required_impl(parent_session_key, agent_id)
+
+    def release_completion_delivery(self, parent_session_key: str, agent_id: str) -> None:
+        self._terminal.release_completion_delivery_impl(parent_session_key, agent_id)
+
+    def completion_delivery_recovery_required_for(self, parent_session_key: str) -> bool:
+        return self._terminal.completion_delivery_recovery_required_for_impl(parent_session_key)
+
+    def terminal_delivery_inflight_for(self, parent_session_key: str) -> bool:
+        return self._terminal.terminal_delivery_inflight_for_impl(parent_session_key)
 
     def task_memory_rows(self) -> list[dict[str, object]]:
         return self._monitor.task_memory_rows_impl()
@@ -2701,6 +2728,9 @@ class SubagentManager:
 
     async def _safe_announce(self, info: SubagentInfo) -> None:
         return await self._admission._safe_announce_impl(info)
+
+    def _start_rejection_delivery(self, info: SubagentInfo) -> "asyncio.Task | None":  # type: ignore[type-arg]
+        return self._admission._start_rejection_delivery_impl(info)
 
     def _announce_rejection(self, info: SubagentInfo) -> SubagentInfo:
         return self._admission._announce_rejection_impl(info)

@@ -27,6 +27,7 @@ The design under test separates all of them:
   deliberately independent of ``done``, and executed under ``asyncio.shield`` so
   an interrupted claimer cannot strand the outcome.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -73,6 +74,7 @@ async def _schedule_recovery(mgr: SubagentManager, info: SubagentInfo) -> None:
     task that then EXITS — arming it from the test body would sit through the
     real ``_RESET_TIMEOUT + 60`` handshake.
     """
+
     async def _arm() -> None:
         mgr._schedule_cancel_recovery(info)
 
@@ -147,9 +149,9 @@ async def test_done_set_during_reap_teardown_still_reports_and_frees_one_slot():
 
     assert len(_done_events(mgr)) == 1, "outcome was not reported exactly once"
     assert mgr._on_done.await_count == 1, "completion never reached the parent"
-    assert mgr._running_count == 0, (
-        f"slot not freed exactly once (_running_count={mgr._running_count})"
-    )
+    assert (
+        mgr._running_count == 0
+    ), f"slot not freed exactly once (_running_count={mgr._running_count})"
 
 
 @pytest.mark.asyncio
@@ -248,9 +250,7 @@ async def test_cancel_during_subagent_done_still_delivers_once():
     mgr._fire_event = AsyncMock(side_effect=_slow_event)
     mgr._on_done = AsyncMock(side_effect=_record_delivery)
 
-    task = asyncio.ensure_future(
-        mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped")
-    )
+    task = asyncio.ensure_future(mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped"))
     await asyncio.wait_for(entered.wait(), timeout=2)  # now inside the shielded report
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -282,9 +282,7 @@ async def test_cancel_during_on_done_produces_no_second_delivery():
 
     mgr._on_done = AsyncMock(side_effect=_slow_on_done)
 
-    task = asyncio.ensure_future(
-        mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped")
-    )
+    task = asyncio.ensure_future(mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped"))
     # Wait until _on_done is actually executing before cancelling — avoids a
     # race under heavy xdist load where asyncio.sleep(0.01) could expire after
     # _force_reap already completed, so the cancel would be a no-op.
@@ -461,9 +459,9 @@ async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monk
     await mgr.cancel_all()
 
     assert task.cancelled(), "straggler should have been cancelled"
-    assert cleared == [info.id], (
-        "undelivered completion was left tombstoned — unrecoverable on restart"
-    )
+    assert cleared == [
+        info.id
+    ], "undelivered completion was left tombstoned — unrecoverable on restart"
 
 
 @pytest.mark.asyncio
@@ -601,9 +599,9 @@ async def test_reap_suppression_marker_is_set_before_the_teardown_await():
         "respawn suppression was not set while teardown was suspended — a "
         "recovery handshake expiring here would respawn the run being killed"
     )
-    assert seen["recovery_deregistered"] is True, (
-        "recovery task was still registered while teardown was suspended"
-    )
+    assert (
+        seen["recovery_deregistered"] is True
+    ), "recovery task was still registered while teardown was suspended"
     await asyncio.sleep(0)
     assert recovery.cancelled(), "recovery task was never actually cancelled"
 
@@ -718,9 +716,9 @@ async def test_cancelled_teardown_still_releases_slot_and_gate():
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert mgr._running_count == 0, (
-        f"cancelled teardown leaked the slot (_running_count={mgr._running_count})"
-    )
+    assert (
+        mgr._running_count == 0
+    ), f"cancelled teardown leaked the slot (_running_count={mgr._running_count})"
     assert "a1b2c3d4" not in mgr._tasks, "cancelled teardown left the task registered"
 
 
@@ -806,35 +804,24 @@ async def test_user_stop_during_pending_recovery_is_not_recorded_as_failure():
         mod.Stats = orig  # type: ignore[assignment]
 
     assert failures == [], (
-        "a neutral user Stop was counted as a subagent failure by the "
-        "cancelled-recovery arm"
+        "a neutral user Stop was counted as a subagent failure by the " "cancelled-recovery arm"
     )
     assert info.error == "", f"user stop synthesized an error: {info.error!r}"
 
 
 @pytest.mark.asyncio
 async def test_stop_during_pending_spawn_approval_reports_and_releases_once():
-    """The spawn-approval rejection path is a FIFTH terminal site.
+    """The spawn-approval rejection path shares all terminal ownership tokens.
 
-    It set `done`, decremented `_running_count` with a bare decrement and
-    announced via `_safe_announce` — outside both one-shot tokens. A user Stop
-    funnels into `_force_reap` and can land while the approval is still pending
-    (a human prompt has no deadline), so the reap released the slot and reported,
-    then the rejection path released and reported AGAIN: a negative concurrency
-    count and a duplicate completion.
+    A user Stop funnels into ``_force_reap`` and can land while approval is
+    pending. The reap must release the slot and own the report; the later
+    rejection sees both claims spent and may neither decrement nor announce.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False, started=time.time() - 5.0)
     mgr._agents["a1b2c3d4"] = info
     mgr._running_count = 1
     mgr._sessions.reset = _noop_reset
-
-    announced: list[str] = []
-
-    async def _safe_announce(_info):
-        announced.append(_info.id)
-
-    mgr._safe_announce = _safe_announce  # type: ignore[assignment]
 
     release_stop = asyncio.Event()
 
@@ -856,7 +843,7 @@ async def test_stop_during_pending_spawn_approval_reports_and_releases_once():
         f"slot released twice (_running_count={mgr._running_count}); a negative "
         "count permanently inflates apparent capacity"
     )
-    total_reports = len(_done_events(mgr)) + len(announced)
-    assert total_reports == 1, (
-        f"terminal outcome delivered {total_reports} times, expected exactly once"
-    )
+    total_reports = len(_done_events(mgr))
+    assert (
+        total_reports == 1
+    ), f"terminal outcome delivered {total_reports} times, expected exactly once"

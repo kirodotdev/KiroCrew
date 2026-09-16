@@ -144,6 +144,7 @@ class TestRemoveSlotForHistoryKey:
         state = _make_state({"dashboard_chat-1-100": slot})
         await _remove_slot_for_history_key(state, "dashboard_chat-1-100")
         assert "dashboard_chat-1-100" not in state._slots
+        slot.queue_discard_all.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_stripped_key_match(self):
@@ -3494,7 +3495,18 @@ class TestSessionLedgerOnPermanentDelete:
         held = self._ledger("acp-busy")
         # The append is what claims the lease -- ownership is taken lazily, on a
         # handle's first write.
-        held.append("session/opened", {"resumed": False}, src="gateway")
+        held.append(
+            "session/opened",
+            {
+                "agent": "kirocrew",
+                "slot": "dashboard_chat-1-100",
+                "model": "",
+                "cwd": "",
+                "owner": "default",
+                "resumed": False,
+            },
+            src="gateway",
+        )
         slot = _make_slot("dashboard_chat-1-100")
         state = _make_state({"dashboard_chat-1-100": slot})
         state.sessions.resumable_sid = MagicMock(return_value="acp-busy")
