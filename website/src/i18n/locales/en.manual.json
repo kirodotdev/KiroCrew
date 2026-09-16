@@ -1978,6 +1978,7 @@
     },
     "fileRenderers": {
       "media_preview_failed": "Playback failed — the browser cannot decode this file.",
+      "office_structure_unavailable": "Showing plain text — headings, lists and tables couldn't be read from this file. Download the original to see its full layout.",
       "office_open_hint": "Preview isn't available for this file. Open it in its app, or download a copy.",
       "scroll_for_more_count": "Scroll for more… ({{count}} remaining)",
       "sheet_cols_truncated": "Additional columns not shown",

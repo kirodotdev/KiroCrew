@@ -51,6 +51,7 @@ export function fileStreamUrl(filePath: string): string {
  * endpoint segment keeps one owner for the construction. The swap cannot
  * collide with the encoded path value — encodeURIComponent turns its
  * slashes into %2F, so the raw endpoint string appears exactly once. */
-export function fileOfficePreviewUrl(filePath: string): string {
-  return fileDownloadUrl(filePath).replace('/api/file-download', '/api/file-office-preview')
+export function fileOfficePreviewUrl(filePath: string, format?: 'blocks'): string {
+  const url = fileDownloadUrl(filePath).replace('/api/file-download', '/api/file-office-preview')
+  return format ? url + '&format=' + format : url
 }
