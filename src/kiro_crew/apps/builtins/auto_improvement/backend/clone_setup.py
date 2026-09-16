@@ -35,6 +35,7 @@ from kiro_crew.platform_compat import (
     is_link_or_junction,
     rmtree_force,
 )
+from kiro_crew.sandbox import LAUNCHER_EXIT_PREFIXES
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 from ..spine.git_safety import GIT_SAFE_CONFIG, require_pinned
@@ -145,14 +146,12 @@ class IsolationProbeError(RuntimeError):
 #: no echoed path can begin a line with ``sandbox: ``). ``sandbox: WARNING``
 #: is deliberately NOT classified: the launcher warns and then still runs the
 #: command, so a warning can coexist with git's own exit code and must not
-#: reclassify it. The prefixes are pinned against the generated launcher by a
-#: round-trip test so this list cannot drift silently.
-_LAUNCHER_EXIT_PREFIXES = (
-    "sandbox: BLOCKED",
-    "sandbox: FATAL",
-    "sandbox: unshare(",
-    "sandbox_launcher:",
-)
+#: reclassify it. The prefixes are owned by ``kiro_crew.sandbox`` — the module
+#: that generates the launcher — so this classifier and the gateway's own
+#: launcher-refusal reader cannot disagree about what the launcher says, and
+#: the one tuple is pinned against the generated launcher by a round-trip test
+#: so it cannot drift silently.
+_LAUNCHER_EXIT_PREFIXES = LAUNCHER_EXIT_PREFIXES
 _LAUNCHER_TRACEBACK_RE = re.compile(r'^\s*File "[^"\n]*kirocrew_sandbox_[^"\n]*\.py"', re.MULTILINE)
 
 

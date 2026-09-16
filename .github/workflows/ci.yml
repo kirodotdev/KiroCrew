@@ -1275,6 +1275,16 @@ jobs:
         # nothing -- the same failure mode the deselects created.
         run: unshare --mount --map-root-user true
 
+      - name: Verify Kiro Crew's own probe agrees with the kernel
+        # The probe is stricter than the bare `unshare` above: it also performs the
+        # launcher's propagation mount inside the new namespace, because a host
+        # that grants the namespaces and refuses that mount cannot build the
+        # sandbox. A probe that wrongly said "no sandbox" here would make every
+        # guarded test below skip and this job go green having asserted nothing,
+        # so the probe's verdict is asserted on its own, with its reason.
+        run: |
+          python3 -c "from kiro_crew.sandbox import userns_available, unavailable_reason; assert userns_available(), unavailable_reason()"
+
       - name: Run sandbox-dependent tests
         # `--no-cov` deliberately. This is the only lane that reaches these lines, so
         # measuring it is what would let setup.cfg drop the omit for the six guarded test

@@ -4323,6 +4323,264 @@ class TestSandboxUnavailableIsNotAMissingBinary:
         assert status["sandbox_detail"] == ""
         assert status["probe_timed_out"] is False
 
+    # The line the Linux launcher writes when a container grants both namespaces
+    # and refuses its first mount (the runtime's default AppArmor profile).
+    _LAUNCHER_MOUNT_REFUSED = (
+        "sandbox: BLOCKED -- making mount propagation private on / failed: errno 13 "
+        "(Permission denied). The sandbox could not establish this control, so the "
+        "agent would run with the path visible. Lower sandbox_level to run without "
+        "it deliberately."
+    )
+
+    @staticmethod
+    def _fake_spawn(monkeypatch: pytest.MonkeyPatch, stderr: bytes, returncode: int) -> None:
+        """A spawned child that writes *stderr* and exits *returncode*, unsandboxed.
+
+        The sandbox wrapper is stubbed to a passthrough so the test drives the
+        classification of the child's OUTPUT, not the host's ability to build a
+        sandbox.
+        """
+
+        class _Stream:
+            def __init__(self, data: bytes) -> None:
+                self._data = data
+
+            async def read(self, _size: int) -> bytes:
+                data, self._data = self._data, b""
+                return data
+
+        class _Process:
+            pid = 4321
+            returncode: int | None = None
+
+            def __init__(self) -> None:
+                self.stdout = _Stream(b"")
+                self.stderr = _Stream(stderr)
+
+            async def wait(self) -> int:
+                self.returncode = returncode
+                return returncode
+
+        async def spawn(*_argv: str, **_kwargs: Any) -> _Process:
+            return _Process()
+
+        monkeypatch.setattr(
+            "kiro_crew.kiro_prerequisite.sandboxed_spawn_argv",
+            lambda argv, **_k: (list(argv), {}, None),
+        )
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no launcher runs on Windows")
+    @pytest.mark.asyncio
+    async def test_a_launcher_refusal_after_the_spawn_is_a_typed_sandbox_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The second structural source of ``sandbox_failure``.
+
+        ``wrap_argv`` raises when the sandbox cannot be built BEFORE the spawn. A
+        host that passed the boot probe can still refuse a control at spawn time,
+        and that reaches here only as exit 1 plus the launcher's own line on
+        stderr -- indistinguishable from a broken candidate unless the line is
+        recognized. The candidate's line only triggers a fresh trusted launcher
+        run; the triple reported is that run's, so the child's text chooses
+        neither the detail nor the remedy the gate shows.
+        """
+        verdict = ("no_backend", "failed to install seccomp-BPF filter (prctl returned 1)", "")
+        seen: list[str] = []
+
+        def fake_corroborate(output: str, **_kwargs: object) -> tuple[str, str, str]:
+            seen.append(output)
+            return verdict
+
+        monkeypatch.setattr(
+            "kiro_crew.kiro_prerequisite.corroborate_launcher_refusal", fake_corroborate
+        )
+        self._fake_spawn(monkeypatch, self._LAUNCHER_MOUNT_REFUSED.encode(), 1)
+
+        result = await _run_process(
+            "/opt/kiro/kiro-cli", ["--version"], env={"PATH": "/usr/bin"}, timeout_secs=1
+        )
+
+        assert result.ok is False
+        assert result.sandbox_failure == verdict
+        assert seen == [result.output], "the candidate's own output triggers the corroboration"
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no launcher runs on Windows")
+    @pytest.mark.asyncio
+    async def test_a_forged_refusal_line_cannot_become_a_verdict(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The candidate IS the unverified binary; its stderr can carry the launcher's line.
+
+        With the trusted launcher run still building the sandbox and exiting 0,
+        that line is the child's text and nothing more -- no sandbox verdict, no
+        remedy card, no opt-out offered. The text stays in ``output`` for the
+        probe_error path.
+        """
+        seen: list[str] = []
+
+        def fake_corroborate(output: str, **_kwargs: object) -> None:
+            seen.append(output)
+            return None
+
+        monkeypatch.setattr(
+            "kiro_crew.kiro_prerequisite.corroborate_launcher_refusal", fake_corroborate
+        )
+        self._fake_spawn(monkeypatch, self._LAUNCHER_MOUNT_REFUSED.encode(), 1)
+
+        result = await _run_process(
+            "/tmp/planted/kiro-cli", ["--version"], env={"PATH": "/tmp/planted"}, timeout_secs=1
+        )
+
+        assert result.ok is False
+        assert result.sandbox_failure is None
+        assert len(seen) == 1, "the line triggers exactly one corroboration"
+        assert "making mount propagation private" in result.output
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no launcher runs on Windows")
+    @pytest.mark.asyncio
+    async def test_run_process_forwards_mode_and_dirs_to_the_corroborator(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The corroborating run must confine exactly as the refused spawn did.
+
+        The verdict is only faithful if the trusted no-op runs under the same
+        ``mode`` and hidden/visible dirs, so ``_run_process`` forwards them and
+        this pins that it does.
+        """
+        captured: dict[str, object] = {}
+
+        def fake_corroborate(output: str, **kwargs: object) -> None:
+            captured.update(kwargs)
+            return None
+
+        monkeypatch.setattr(
+            "kiro_crew.kiro_prerequisite.corroborate_launcher_refusal", fake_corroborate
+        )
+        self._fake_spawn(monkeypatch, self._LAUNCHER_MOUNT_REFUSED.encode(), 1)
+
+        await _run_process(
+            "/opt/kiro/kiro-cli",
+            ["--version"],
+            env={"PATH": "/usr/bin"},
+            timeout_secs=1,
+            sandbox_mode="standard",
+            extra_hidden_dirs=("/home/dev/.aws",),
+            extra_visible_dirs=("/home/dev/.config/kiro",),
+        )
+
+        assert captured == {
+            "mode": "standard",
+            "extra_hidden_dirs": ("/home/dev/.aws",),
+            "extra_visible_dirs": ("/home/dev/.config/kiro",),
+        }
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no launcher runs on Windows")
+    @pytest.mark.asyncio
+    async def test_a_candidate_that_fails_on_its_own_stays_untyped(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._fake_spawn(monkeypatch, b"error: unrecognized option '--version'\n", 2)
+
+        result = await _run_process(
+            "/opt/kiro/kiro-cli", ["--version"], env={"PATH": "/usr/bin"}, timeout_secs=1
+        )
+
+        assert result.ok is False
+        assert result.sandbox_failure is None
+        assert "unrecognized option" in result.output
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="the POSIX spawn path is under test")
+    @pytest.mark.asyncio
+    async def test_off_linux_a_launcher_line_is_the_candidates_own_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """macOS: the launcher is Seatbelt, which never writes these lines.
+
+        A matching line there can only be the child's own text, and the
+        Linux-only launcher run would refuse for reasons of its own -- so the
+        corroborator runs nothing and sets no verdict.
+        """
+        from kiro_crew import sandbox as sandbox_module
+
+        ran: list[int] = []
+        monkeypatch.setattr(sandbox_module.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_module,
+            "run_limited",
+            lambda argv, **kwargs: ran.append(1) or subprocess.CompletedProcess(argv, 1, "", ""),
+        )
+        self._fake_spawn(monkeypatch, self._LAUNCHER_MOUNT_REFUSED.encode(), 1)
+
+        result = await _run_process(
+            "/opt/kiro/kiro-cli", ["--version"], env={"PATH": "/usr/bin"}, timeout_secs=1
+        )
+
+        assert result.ok is False
+        assert result.sandbox_failure is None
+        assert ran == []
+
+    @pytest.mark.asyncio
+    async def test_a_sandbox_line_on_windows_is_the_candidates_own_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No launcher runs on Windows, so the prefix there cannot be a verdict."""
+
+        async def descendants(
+            _root_pid: int,
+            _retained_handles: dict[int, int] | None = None,
+            _root_handle: int | None = None,
+        ) -> dict[int, int]:
+            await asyncio.sleep(0)
+            return {}
+
+        monkeypatch.setattr(platform_compat, "duplicate_asyncio_process_handle", lambda _p: 8001)
+        monkeypatch.setattr(platform_compat, "descendant_termination_handles_async", descendants)
+        monkeypatch.setattr(platform_compat, "process_handle_active", lambda _handle: False)
+        monkeypatch.setattr(platform_compat, "close_process_handle", lambda _handle: None)
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        self._fake_spawn(monkeypatch, self._LAUNCHER_MOUNT_REFUSED.encode(), 1)
+
+        result = await _run_process(r"C:\fixed\kiro-cli.exe", ["--version"], env={}, timeout_secs=1)
+
+        assert result.ok is False
+        assert result.sandbox_failure is None
+
+    @pytest.mark.asyncio
+    async def test_a_present_binary_refused_by_the_launcher_is_not_missing(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """End to end through the status: the container case as the gate sees it.
+
+        This is the misdiagnosis the issue reported — CLI installed and signed in,
+        the launcher's first mount refused by the container, status says "not
+        installed" and every gated endpoint answers 503. The detail is the
+        corroborating probe's reason, never the child's line.
+        """
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+        detail = "mount(MS_REC|MS_PRIVATE) on / failed with errno 13 (EACCES)"
+
+        status = await self._service(
+            tmp_path,
+            self._sandbox_refused("no_backend", detail, "mount_denied"),
+        ).snapshot(force=True)
+
+        assert status["installed"] is True
+        assert status["sandbox_unavailable"] is True
+        assert status["sandbox_failure_kind"] == "no_backend"
+        assert status["sandbox_detail"] == detail
+        assert status["sandbox_remedy"] == "mount_denied"
+        assert status["ready"] is False
+        assert status["repair_required"] is False
+
 
 class TestTimedOutProbeIsNotAMissingBinary:
     """A probe that never ANSWERED must not be reported as "not installed".
@@ -5620,9 +5878,7 @@ class TestRejectedAgentSpecsNarrowReadiness:
                 # Reject ONLY the main spec: the lite spec is staged present and
                 # accepted, keeping this a pure single-spec rejection state.
                 if Path(args[-1]).name == "kirocrew.json":
-                    return ProcessResult(
-                        ok=True, output="x is invalid: bad", returncode=0
-                    )
+                    return ProcessResult(ok=True, output="x is invalid: bad", returncode=0)
             return ProcessResult(ok=True)
 
         service = self._service(tmp_path, run)
@@ -5900,9 +6156,7 @@ class TestAgentSpecRepair:
         monkeypatch.setattr(agent_module, "rebuild_agent_config", lambda: calls.append(1))
 
         def _write_lite() -> None:
-            (agents / LITE_AGENT_FILENAME).write_text(
-                '{"name": "kirocrew-lite"}', encoding="utf-8"
-            )
+            (agents / LITE_AGENT_FILENAME).write_text('{"name": "kirocrew-lite"}', encoding="utf-8")
 
         monkeypatch.setattr(agent_module, "_install_lite_agent_fallback", _write_lite)
 
@@ -5937,14 +6191,10 @@ class TestAgentSpecRepair:
         service = self._service(tmp_path)
         service._status.rejected_agent_specs = [AGENT_FILENAME]
         calls: list[int] = []
-        monkeypatch.setattr(
-            agent_module, "rebuild_agent_config", lambda: calls.append(1)
-        )
+        monkeypatch.setattr(agent_module, "rebuild_agent_config", lambda: calls.append(1))
 
         def _write_lite() -> None:
-            (agents / LITE_AGENT_FILENAME).write_text(
-                '{"name": "kirocrew-lite"}', encoding="utf-8"
-            )
+            (agents / LITE_AGENT_FILENAME).write_text('{"name": "kirocrew-lite"}', encoding="utf-8")
 
         monkeypatch.setattr(agent_module, "_install_lite_agent_fallback", _write_lite)
 
@@ -5979,9 +6229,7 @@ class TestAgentSpecRepair:
 
         status = await self._service(tmp_path).repair_agent_specs("owner")
 
-        assert "PermissionError: agents dir is read-only" in (
-            status["agent_spec_repair_error"]
-        )
+        assert "PermissionError: agents dir is read-only" in (status["agent_spec_repair_error"])
         assert status["ready"] is False
 
     @pytest.mark.asyncio
@@ -6002,9 +6250,7 @@ class TestAgentSpecRepair:
         agents = self._agents_dir(tmp_path, monkeypatch)
         (agents / AGENT_FILENAME).write_text('{"name": "kirocrew"}', encoding="utf-8")
         monkeypatch.setattr(agent_module, "rebuild_agent_config", lambda: None)
-        monkeypatch.setattr(
-            agent_module, "_install_lite_agent_fallback", lambda: None
-        )
+        monkeypatch.setattr(agent_module, "_install_lite_agent_fallback", lambda: None)
 
         status = await self._service(tmp_path).repair_agent_specs("owner")
 
