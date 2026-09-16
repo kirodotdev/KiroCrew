@@ -28,6 +28,11 @@ from kiro_crew.taskrunner import (
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
 
+# Bound for a wait on state that MUST arrive but whose latency the host controls
+# (an executor hop, an fsync). Returns as soon as the state is observed, so the
+# value only matters when the test is about to fail by name instead of hanging.
+_GENEROUS_DEADLINE = 30.0
+
 # ── Fixtures ──
 
 
@@ -98,7 +103,7 @@ async def _at_workflow_checkpoint(runner, operation, release, checkpoint="_workf
         task = asyncio.create_task(operation)
         try:
             done, _ = await asyncio.wait(
-                (ready, task), timeout=10, return_when=asyncio.FIRST_COMPLETED
+                (ready, task), timeout=_GENEROUS_DEADLINE, return_when=asyncio.FIRST_COMPLETED
             )
             if task in done:
                 task.result()  # Surface setup exceptions instead of an unrelated event timeout.
@@ -112,7 +117,7 @@ async def _at_workflow_checkpoint(runner, operation, release, checkpoint="_workf
             ready.cancel()
             if not task.done():
                 task.cancel()
-            done, _ = await asyncio.wait((task,), timeout=10)
+            done, _ = await asyncio.wait((task,), timeout=_GENEROUS_DEADLINE)
             assert task in done, "Cancellation test left its operation running"
             if not task.cancelled():
                 task.exception()  # Retrieve failures even when the entry-event wait failed.
@@ -348,9 +353,13 @@ class TestWorkflowRunIntegration:
         runner._decompose = AsyncMock(
             return_value=[Step(index=1, title="Implement", description="make the change")]
         )
-        persist_started = threading.Event()
+        # The hook runs on the persist worker thread, so it reports back to the
+        # loop with call_soon_threadsafe rather than parking a second executor
+        # thread on a threading.Event.
+        loop = asyncio.get_running_loop()
+        persist_started = asyncio.Event()
         allow_persist = threading.Event()
-        persist_finished = threading.Event()
+        persist_finished = asyncio.Event()
         lifecycle: list[str] = []
         original_atomic_write = taskrunner_module.atomic_write
         first_write = True
@@ -360,10 +369,10 @@ class TestWorkflowRunIntegration:
             if first_write and path == runner._runs_path():
                 first_write = False
                 lifecycle.append("persist_started")
-                persist_started.set()
-                assert allow_persist.wait(timeout=5)
+                loop.call_soon_threadsafe(persist_started.set)
+                assert allow_persist.wait(timeout=_GENEROUS_DEADLINE)
                 lifecycle.append("persist_finished")
-                persist_finished.set()
+                loop.call_soon_threadsafe(persist_finished.set)
             original_atomic_write(path, content, fsync=fsync)
 
         original_delete = runner._workflow_delete_link
@@ -375,19 +384,27 @@ class TestWorkflowRunIntegration:
         monkeypatch.setattr(taskrunner_module, "atomic_write", block_first_write)
         runner._workflow_delete_link = observe_delete  # type: ignore[method-assign]
 
-        planning = asyncio.create_task(runner.plan("implement the feature"))
-        assert await asyncio.to_thread(persist_started.wait, 2)
-        planning.cancel()
+        # _workflow_set_plan is the last workflow-store write before the runs.json
+        # persist, so the entry wait below covers only the to_thread hop into the
+        # hook, not the fsync-backed setup whose duration the host controls.
+        async with _at_workflow_checkpoint(
+            runner,
+            runner.plan("implement the feature"),
+            allow_persist,
+            checkpoint="_workflow_set_plan",
+        ) as planning:
+            await asyncio.wait_for(persist_started.wait(), timeout=_GENEROUS_DEADLINE)
+            planning.cancel()
 
-        async def release_after_rollback_gets_one_turn() -> None:
-            await asyncio.sleep(0)
-            allow_persist.set()
+            async def release_after_rollback_gets_one_turn() -> None:
+                await asyncio.sleep(0)
+                allow_persist.set()
 
-        release = asyncio.create_task(release_after_rollback_gets_one_turn())
-        with pytest.raises(asyncio.CancelledError):
-            await planning
-        await release
-        assert await asyncio.to_thread(persist_finished.wait, 2)
+            release = asyncio.create_task(release_after_rollback_gets_one_turn())
+            with pytest.raises(asyncio.CancelledError):
+                await planning
+            await release
+            await asyncio.wait_for(persist_finished.wait(), timeout=_GENEROUS_DEADLINE)
 
         assert lifecycle.index("persist_finished") < lifecycle.index("workflow_deleted")
         assert runner._runs == {}
