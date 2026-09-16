@@ -707,6 +707,64 @@ _thread_projects: dict[str, str] = {}
 # Guard set for _hydrate_thread_overrides to avoid repeated I/O per session.
 _hydrated_sessions: set[str] = set()
 
+# Retries granted to a Slack thread whose turn was abandoned after a TRANSIENT
+# compaction failure (a throttled or 5xx'd summarization call): session_key →
+# replays already queued in the current streak. Cleared by the first completion
+# that is not a compaction failure, and when the budget is spent. Same count as
+# the dashboard's _COMPACTION_FAILED_RETRIES and for the same reason: a throttle
+# still firing after two session resets is not clearing, and every attempt costs
+# the summarization call again.
+_COMPACTION_FAILED_RETRIES = 2
+_compaction_retries: dict[str, int] = {}
+
+# Posted in place of "(no response)" when the abandoned message has been
+# re-queued: the answer follows as the replayed turn's own reply.
+_COMPACTION_RETRY_NOTICE = "⟳ Compaction failed — retrying…"
+
+
+async def _requeue_after_transient_compaction(
+    sessions: SessionManager,
+    session_key: str,
+    *,
+    msg_ts: str,
+    text: str,
+    agent: str | None,
+    channel: str,
+    **queue_kwargs: object,
+) -> bool:
+    """Put the abandoned message back on this thread's own queue.
+
+    Slack's requeue mechanic is ``sessions.enqueue`` drained by the gateway's
+    ``_on_done`` callback (``slack/events.py``), which replays the entry through
+    ``_dispatch_queued`` -> ``handle_message`` as an ordinary turn. That queue
+    lives ON the session object, and the reset the caller just performed popped
+    that object -- so the session is respawned first (the same reset-then-respawn
+    sequence ``stop_turn`` uses on its hard path) and the entry is queued on the
+    successor. ``force=True`` because the successor holds no turn yet.
+
+    The permit ``get_or_create`` takes here is the one this turn's ``finally``
+    releases: the reset discarded the session whose permit the turn held, so the
+    single release lands on the successor exactly once.
+
+    Returns False -- and leaves the give-up behaviour in place -- when the
+    respawn fails or the queue refuses the entry. ``queue_kwargs`` are the keys
+    ``_dispatch_queued`` reads back (``thread_ts``, ``sender_id``, ``team_id``,
+    ``agent_override``, ``user_display_name``, ``from_trusted_bot``).
+    """
+    try:
+        await sessions.get_or_create(session_key, agent=agent, channel_id=channel)
+    except Exception:
+        logger.warning(
+            "Session respawn for the compaction retry failed for %s -- dropping the turn",
+            session_key,
+            exc_info=True,
+        )
+        return False
+    return bool(
+        sessions.enqueue(session_key, msg_ts, text, force=True, channel=channel, **queue_kwargs)
+    )
+
+
 # The privacy-mode machinery lives in ``messaging.privacy_mode`` so a second
 # channel gets the same trackers, the same durable flag and the same audit rather
 # than a second copy of them. The names below are the Slack-facing spellings the
@@ -4376,18 +4434,79 @@ async def handle_message(
             # still counts the prompt as in progress. Reset now (mirrors the
             # dashboard runner's needs_session_reset) or the NEXT message
             # collides with "prompt already in progress" and burns the busy
-            # recovery path. No re-queue: the compaction notice already told
-            # the user. The context-usage probe is skipped — compaction just
-            # failed and the session was torn down.
+            # recovery path. The context-usage probe is skipped — compaction
+            # just failed and the session was torn down.
+            _reset_ok = True
             try:
                 await sessions.reset(session_key)
             except Exception:
+                _reset_ok = False
                 logger.debug(
                     "Failed to reset session %s after compaction failure",
                     session_key,
                     exc_info=True,
                 )
+            # Whether the abandoned message is re-queued depends on WHY
+            # compaction failed, which is the verdict the ACP layer records. A
+            # compaction that overflowed the window fails again identically, so
+            # replaying it only burns the budget — the case the unconditional
+            # give-up was written for. A throttled or 5xx'd summarization call
+            # has nothing wrong with it, and dropping the message for it ends
+            # the turn on a backend hiccup the next attempt would clear.
+            _retries_used = _compaction_retries.get(session_key, 0)
+            if (
+                _reset_ok
+                # Compared against True rather than read for truthiness: the
+                # retry must require a real verdict, so a provider that never
+                # set the attribute (or exposes an auto-created stand-in for
+                # it) cannot be read as "transient" by accident.
+                and getattr(client, "last_compaction_transient", False) is True
+                # Verbatim replay is only safe before anything landed in the
+                # thread — text or a tool card. Once output or a tool call has
+                # landed, re-sending could repeat a side effect, so an emitted
+                # turn keeps the give-up behaviour.
+                and not accumulated
+                and _task_counter == 0
+                # Only a thread running on ITS OWN session is replayable this
+                # way: the gateway drains the queue under the bare thread key,
+                # which folds onto ``slack:<ts>`` and nothing else. A turn
+                # rerouted to a dashboard-owned or pinned session would queue
+                # where no Slack drain looks, and a review-mode thread would
+                # replay without the activation that keeps its output private.
+                and not route_pinned
+                and session_key == canonical_key(reply_ts)
+                and channel_activation != ACTIVATION_REVIEW
+                and _retries_used < _COMPACTION_FAILED_RETRIES
+                and await _requeue_after_transient_compaction(
+                    sessions,
+                    session_key,
+                    msg_ts=msg_ts,
+                    text=text,
+                    agent=_agent,
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    sender_id=user_id,
+                    team_id=team_id,
+                    agent_override=channel_agent,
+                    user_display_name=user_display_name,
+                    from_trusted_bot=from_trusted_bot,
+                )
+            ):
+                _compaction_retries[session_key] = _retries_used + 1
+                logger.info(
+                    "Transient compaction failure in %s (attempt %d/%d) — "
+                    "re-queuing the abandoned message",
+                    session_key,
+                    _retries_used + 1,
+                    _COMPACTION_FAILED_RETRIES,
+                )
+                # Replaces the "(no response)" the empty turn would otherwise
+                # post; the answer arrives as the replayed turn's own reply.
+                accumulated = _COMPACTION_RETRY_NOTICE
+            else:
+                _compaction_retries.pop(session_key, None)
         else:
+            _compaction_retries.pop(session_key, None)
             # Check context usage — fires background compaction at configured
             # threshold, never blocks. This runs AFTER ``_turn_completed_ok`` is
             # set (the model already finished cleanly), so a raise here must NOT

@@ -10,6 +10,8 @@ This module owns the sequence every non-Slack channel dispatcher runs around
     -> publish_turn_identity
     -> ctx_builder.build_message         (off-loop, embeds block)
     -> TurnDriver.run                    (shared redaction + approval ladder)
+    -> COMPACTION_FAILED: reset; replay once more if the failure was transient
+                                         and nothing was emitted (bounded)
     -> post-turn: record_success, persist, threshold notice, SEL audit
                                          (each guarded independently)
     -> finally: renderer.close() + release (release gated on acquire)
@@ -57,7 +59,15 @@ from kiro_crew.messaging.link import (
     channel_namespace_of,
     is_channel_session_key,
 )
-from kiro_crew.messaging.renderer import SilentRenderer
+from kiro_crew.messaging.renderer import (
+    DONE,
+    PROMPT_CHOICE,
+    TEXT_CHUNK,
+    TOOL_CALL,
+    OutputEvent,
+    Renderer,
+    SilentRenderer,
+)
 from kiro_crew.security import (
     redact,
     redact_credentials,
@@ -701,6 +711,132 @@ def hook_auto_reply(ctx_builder: Any, text: str) -> str | None:
     return redact(str(getattr(result, "text", "") or ""))
 
 
+# Retries granted to a turn abandoned after a TRANSIENT compaction failure (a
+# throttled or 5xx'd summarization call). Per drive_turn call, so the budget is
+# the turn's own and a throttle that keeps firing costs a bounded number of
+# cold starts. Same count as the dashboard's _COMPACTION_FAILED_RETRIES and for
+# the same reason: a throttle still firing after two session resets is not
+# clearing inside this turn, and every attempt costs the summarization call
+# again.
+_COMPACTION_FAILED_RETRIES = 2
+
+
+class _TransientCompactionRetryGuard(Renderer):
+    """The renderer the driver sees while :func:`drive_turn` may still retry.
+
+    A turn abandoned after a transient compaction failure is replayed INSIDE the
+    same ``drive_turn`` call, into the same renderer: the shared pipeline has no
+    queue of its own to put the message back on (five of the seven channels
+    riding it keep none), and the channel's renderer is one message's output
+    surface that finalizes on its first DONE -- so a completion delivered for
+    the abandoned attempt would close the reply before the replay could write
+    it. This guard therefore holds that one DONE back, and only that one:
+
+    * the completion must be ``STOP_REASON_COMPACTION_FAILED``;
+    * nothing may have been emitted through the guard this turn -- verbatim
+      replay is only safe before any text, tool call or permission prompt has
+      landed, exactly the guard the dashboard's transient siblings use;
+    * the provider must report ``last_compaction_transient`` as ``True`` --
+      compared against ``True``, not read for truthiness, so a provider that
+      never set the attribute (or exposes an auto-created stand-in for it)
+      cannot read as transient by accident;
+    * a retry must still be available.
+
+    Every other event passes straight through, and a held DONE is released
+    (``release_held``) when the pipeline decides not to replay after all.
+
+    Whole events are forwarded through the inner renderer's own ``dispatch``
+    rather than routed to its ``on_*`` handlers from here, so the bookkeeping
+    that method does on the way (``current_tool_name``) lands on the object
+    whose handlers read it. The ``on_*`` delegates below exist because the
+    contract declares them abstract; the driver itself reaches its renderer
+    through ``dispatch`` and ``on_turn_start`` only.
+    """
+
+    def __init__(self, renderer: Any) -> None:
+        # Same defensive read as the SilentRenderer substitution: the turn's
+        # renderer is typed ``Any`` and must not fail to wrap for lacking it.
+        capabilities: Any = getattr(renderer, "capabilities", None)
+        super().__init__(capabilities)
+        self.channel_type = getattr(renderer, "channel_type", "") or ""
+        #: The channel's renderer, which every forwarded event reaches.
+        self.inner = renderer
+        #: The provider of the CURRENT attempt; reassigned by the pipeline after
+        #: each ``get_or_create``, since a reset replaces it.
+        self.provider: Any = None
+        self.emitted = False
+        self.retries_used = 0
+        self._held_done: OutputEvent | None = None
+
+    @property
+    def held(self) -> bool:
+        """Whether the last completion was withheld pending a replay."""
+        return self._held_done is not None
+
+    async def on_turn_start(self) -> None:
+        await self.inner.on_turn_start()
+
+    async def close(self) -> None:
+        await self.inner.close()
+
+    async def on_text_chunk(self, text: str) -> None:
+        self.emitted = True
+        await self.inner.on_text_chunk(text)
+
+    async def on_thinking(self, text: str) -> None:
+        await self.inner.on_thinking(text)
+
+    async def on_tool_call(
+        self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
+    ) -> None:
+        self.emitted = True
+        await self.inner.on_tool_call(tool_call_id, title, tool_kind, tool_purpose)
+
+    async def on_prompt_choice(
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
+        tool_input: str = "",
+    ) -> None:
+        self.emitted = True
+        await self.inner.on_prompt_choice(options, request_id, tool_title, tool_purpose, tool_input)
+
+    async def on_compaction(self, context_usage_pct: float) -> None:
+        await self.inner.on_compaction(context_usage_pct)
+
+    async def on_done(self, stop_reason: str = "") -> None:
+        await self.inner.on_done(stop_reason)
+
+    async def dispatch(self, event: OutputEvent) -> None:
+        if event.kind == DONE and self._should_hold(event):
+            self._held_done = event
+            self.retries_used += 1
+            return
+        if event.kind in (TEXT_CHUNK, TOOL_CALL, PROMPT_CHOICE):
+            self.emitted = True
+        await self.inner.dispatch(event)
+
+    def _should_hold(self, event: OutputEvent) -> bool:
+        return (
+            event.stop_reason == STOP_REASON_COMPACTION_FAILED
+            and not self.emitted
+            and getattr(self.provider, "last_compaction_transient", False) is True
+            and self.retries_used < _COMPACTION_FAILED_RETRIES
+        )
+
+    async def release_held(self) -> None:
+        """Deliver the withheld completion: the replay is not happening."""
+        held, self._held_done = self._held_done, None
+        if held is not None:
+            await self.inner.dispatch(held)
+
+    def drop_held(self) -> None:
+        """Forget the withheld completion: the replay's own DONE supersedes it."""
+        self._held_done = None
+
+
 async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> None:
     """Run one authorized inbound message end to end.
 
@@ -772,156 +908,194 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # always did. Widening the call for everyone would make the new field's
         # cost fall on channels that gain nothing from it.
         extra: dict[str, Any] = {"model": turn.model} if turn.model else {}
-        # A linked member session must validate its own memory before a cold
-        # provider start. The same identity is then used for this turn's prompt.
-        memory_store = await session_store_for_turn(ctx_builder, session_key)
-        provider, is_new, resumed = await sessions.get_or_create(
-            session_key, agent=turn.agent, channel_id=turn.conversation_id, **extra
-        )
-        _acquired = True
-        if is_new:
-            await sessions.set_channel(session_key, turn.conversation_id)
-        # Bind this conversation as the session's origin AND its own mirror, so
-        # unattended notices and dashboard-side turns both reach the user here.
-        # After get_or_create, because a cold-start failure leaves no session to
-        # bind to; on EVERY turn, because the binding is what a restart, an
-        # unlink elsewhere, or a rival claim can take away, and only a
-        # self-healing bind cannot leave a live conversation silently unmirrored.
-        #
-        # Deliberately NOT gated on ``resumed``. Discord skips its bind for a
-        # resumed session, but its flag is a mirror-binding LOOKUP ("this turn is
-        # answering a dashboard-owned session"), whereas ``resumed`` here means
-        # "restored via ACP session/load" — a cold-start recovery of this very
-        # conversation, which is exactly the case a self-healing bind exists for.
-        # Skipping on it would leave every post-restart session unmirrored.
-        #
-        # Guarded as a pair. An unbound conversation is a degraded turn — the
-        # user still gets their answer here, they just lose the dashboard mirror
-        # — whereas a raise on this line drops a turn they are waiting on.
-        # ``bind_origin_mirror`` promises not to raise, but that promise covers
-        # the ownership conflict it names, not a session accessor failing, and
-        # this is the widest call site in the codebase: every channel on the
-        # shared pipeline routes through it.
-        if turn.origin_conversation is not None:
-            # Captured non-None for the closure: the ``is not None`` narrowing does
-            # not reach into the nested function (it could be called after the
-            # attribute changed), and a local binding is what makes it a
-            # ``ChannelLink`` there.
-            location = turn.origin_conversation
-            try:
-                # Offloaded, like ``turn.persist`` above: a FRESH bind (and an
-                # in-channel /link, /unlink, or legacy opt-out migration) has
-                # ``bind_origin_mirror`` write through ``SessionMap``, which
-                # rewrites the whole map synchronously -- blocking I/O that must
-                # not run on the shared gateway loop. The steady state returns
-                # early (a read) and costs the thread hop nothing.
-                def _bind_origin() -> None:
-                    # Both calls skip a ``unified:`` key, and for one reason:
-                    # ``dm_scope="unified"`` collapses every allowed user's DM into
-                    # a single bucket, so "the conversation this session is read in"
-                    # has no single answer. Recording one would point the session's
-                    # origin at whichever human spoke LAST, and a later notice (a
-                    # cron result, a subagent completion) would be delivered into
-                    # that person's chat regardless of whose turn produced it.
-                    # ``bind_origin_mirror`` already declines for exactly this
-                    # (link.py), so the sibling write must not be the hole that
-                    # reopens it.
-                    if channel_namespace_of(session_key) == DM_SCOPE_UNIFIED:
-                        return
-                    sessions.set_origin_link(session_key, location)
-                    bind_origin_mirror(sessions, key=session_key, location=location)
+        # Bounded by the guard's own countdown: it holds a DONE only while it
+        # still has a retry to grant, so this loop runs at most
+        # ``1 + _COMPACTION_FAILED_RETRIES`` times. The driver renders through the
+        # guard, so a retried attempt streams into the SAME still-open renderer
+        # (nothing was emitted, so there is nothing to duplicate); every other
+        # ``renderer`` use in this function -- the mute substitution above, the
+        # ``on_done``/``close`` below -- keeps the real object.
+        retry_guard = _TransientCompactionRetryGuard(renderer)
+        while True:
+            # A linked member session must validate its own memory before a cold
+            # provider start. The same identity is then used for this turn's prompt.
+            memory_store = await session_store_for_turn(ctx_builder, session_key)
+            provider, is_new, resumed = await sessions.get_or_create(
+                session_key, agent=turn.agent, channel_id=turn.conversation_id, **extra
+            )
+            _acquired = True
+            retry_guard.provider = provider
+            if is_new:
+                await sessions.set_channel(session_key, turn.conversation_id)
+            # Bind this conversation as the session's origin AND its own mirror, so
+            # unattended notices and dashboard-side turns both reach the user here.
+            # After get_or_create, because a cold-start failure leaves no session to
+            # bind to; on EVERY turn, because the binding is what a restart, an
+            # unlink elsewhere, or a rival claim can take away, and only a
+            # self-healing bind cannot leave a live conversation silently unmirrored.
+            #
+            # Deliberately NOT gated on ``resumed``. Discord skips its bind for a
+            # resumed session, but its flag is a mirror-binding LOOKUP ("this turn is
+            # answering a dashboard-owned session"), whereas ``resumed`` here means
+            # "restored via ACP session/load" — a cold-start recovery of this very
+            # conversation, which is exactly the case a self-healing bind exists for.
+            # Skipping on it would leave every post-restart session unmirrored.
+            #
+            # Guarded as a pair. An unbound conversation is a degraded turn — the
+            # user still gets their answer here, they just lose the dashboard mirror
+            # — whereas a raise on this line drops a turn they are waiting on.
+            # ``bind_origin_mirror`` promises not to raise, but that promise covers
+            # the ownership conflict it names, not a session accessor failing, and
+            # this is the widest call site in the codebase: every channel on the
+            # shared pipeline routes through it.
+            if turn.origin_conversation is not None:
+                # Captured non-None for the closure: the ``is not None`` narrowing does
+                # not reach into the nested function (it could be called after the
+                # attribute changed), and a local binding is what makes it a
+                # ``ChannelLink`` there.
+                location = turn.origin_conversation
+                try:
+                    # Offloaded, like ``turn.persist`` above: a FRESH bind (and an
+                    # in-channel /link, /unlink, or legacy opt-out migration) has
+                    # ``bind_origin_mirror`` write through ``SessionMap``, which
+                    # rewrites the whole map synchronously -- blocking I/O that must
+                    # not run on the shared gateway loop. The steady state returns
+                    # early (a read) and costs the thread hop nothing.
+                    def _bind_origin() -> None:
+                        # Both calls skip a ``unified:`` key, and for one reason:
+                        # ``dm_scope="unified"`` collapses every allowed user's DM into
+                        # a single bucket, so "the conversation this session is read in"
+                        # has no single answer. Recording one would point the session's
+                        # origin at whichever human spoke LAST, and a later notice (a
+                        # cron result, a subagent completion) would be delivered into
+                        # that person's chat regardless of whose turn produced it.
+                        # ``bind_origin_mirror`` already declines for exactly this
+                        # (link.py), so the sibling write must not be the hole that
+                        # reopens it.
+                        if channel_namespace_of(session_key) == DM_SCOPE_UNIFIED:
+                            return
+                        sessions.set_origin_link(session_key, location)
+                        bind_origin_mirror(sessions, key=session_key, location=location)
 
-                await asyncio.to_thread(_bind_origin)
-            except Exception:
-                logger.warning(
-                    "%s: origin/mirror bind failed session=%s",
-                    turn.channel_type,
-                    session_key,
-                    exc_info=True,
-                )
-        # Hand the live provider to whatever the channel could not resolve before
-        # the session existed. Before the driver runs, so the first turn of a
-        # generation behaves like every later one.
-        if turn.bind_provider is not None:
-            try:
-                turn.bind_provider(provider)
-            except Exception:
-                logger.warning(
-                    "%s: bind_provider failed session=%s",
-                    turn.channel_type,
-                    session_key,
-                    exc_info=True,
-                )
-        # Publish this turn's session identity so managed MCP tools resolve
-        # X-Session-Key; one shared writer lives in messaging.identity.
-        await publish_turn_identity(sessions, session_key)
-        # This conversation's own silo, from the session's RECORDED binding and
-        # never from ``turn.agent``: that field carries a kiro-cli template id, a
-        # namespace disjoint from ``cfg.agents``, so a store derived from it
-        # resolves to ``default`` for exactly the crew that configured otherwise.
-        # Resolved on the shared seam rather than per adopter for the same reason
-        # ``minimal_context`` is: every channel on this pipeline has the same
-        # exposure, and one that forgot would silently read the operator's memory.
-        # The member tier was prepared before provider acquisition; unavailable
-        # private memory refuses the turn instead of substituting global memory.
-        # A compaction drops session-start context. Read-and-clear the one-shot
-        # flag so this turn re-injects that context exactly once. The finally
-        # re-arms it if this turn never lands.
-        needs_reinjection = consume_reinjection(sessions, session_key)
+                    await asyncio.to_thread(_bind_origin)
+                except Exception:
+                    logger.warning(
+                        "%s: origin/mirror bind failed session=%s",
+                        turn.channel_type,
+                        session_key,
+                        exc_info=True,
+                    )
+            # Hand the live provider to whatever the channel could not resolve before
+            # the session existed. Before the driver runs, so the first turn of a
+            # generation behaves like every later one.
+            if turn.bind_provider is not None:
+                try:
+                    turn.bind_provider(provider)
+                except Exception:
+                    logger.warning(
+                        "%s: bind_provider failed session=%s",
+                        turn.channel_type,
+                        session_key,
+                        exc_info=True,
+                    )
+            # Publish this turn's session identity so managed MCP tools resolve
+            # X-Session-Key; one shared writer lives in messaging.identity.
+            await publish_turn_identity(sessions, session_key)
+            # This conversation's own silo, from the session's RECORDED binding and
+            # never from ``turn.agent``: that field carries a kiro-cli template id, a
+            # namespace disjoint from ``cfg.agents``, so a store derived from it
+            # resolves to ``default`` for exactly the crew that configured otherwise.
+            # Resolved on the shared seam rather than per adopter for the same reason
+            # ``minimal_context`` is: every channel on this pipeline has the same
+            # exposure, and one that forgot would silently read the operator's memory.
+            # The member tier was prepared before provider acquisition; unavailable
+            # private memory refuses the turn instead of substituting global memory.
+            # A compaction drops session-start context. Read-and-clear the one-shot
+            # flag so this turn re-injects that context exactly once. The finally
+            # re-arms it if this turn never lands.
+            needs_reinjection = consume_reinjection(sessions, session_key)
 
-        # Off-loop: build_message embeds the episodic query (blocking urllib).
-        full_message, _ = await run_in_embed_pool(
-            ctx_builder.build_message,
-            turn.user_text,
-            is_new,
-            session_key,
-            channel_id=turn.conversation_id,
-            agent=turn.agent,
-            memory_store=memory_store,
-            resumed=resumed,
-            needs_reinjection=needs_reinjection,
-            minimal_context=turn.minimal_context,
-            runtime_source=turn.channel_type,
-            context_provider=provider,
-        )
+            # Off-loop: build_message embeds the episodic query (blocking urllib).
+            full_message, _ = await run_in_embed_pool(
+                ctx_builder.build_message,
+                turn.user_text,
+                is_new,
+                session_key,
+                channel_id=turn.conversation_id,
+                agent=turn.agent,
+                memory_store=memory_store,
+                resumed=resumed,
+                needs_reinjection=needs_reinjection,
+                minimal_context=turn.minimal_context,
+                runtime_source=turn.channel_type,
+                context_provider=provider,
+            )
 
-        driver = TurnDriver(
-            provider,
-            renderer,
-            approval_mode=turn.approval_mode,
-            decider=turn.decider,
-            auto_approve_session=turn.auto_approve_session,
-            deny_all_tools=turn.deny_all_tools,
-            auto_approve_tool=build_auto_approve(ctx_builder),
-            tool_gate=build_tool_gate(ctx_builder, session_key=session_key, agent=turn.agent),
-            directive_consumer=turn.directive_consumer,
-            audit_session_key=session_key,
-            audit_agent=turn.agent or "kirocrew",
-            closing_gate=lambda: sessions.begin_turn(session_key),
-        )
-        accumulated = await driver.run(full_message)
+            driver = TurnDriver(
+                provider,
+                retry_guard,
+                approval_mode=turn.approval_mode,
+                decider=turn.decider,
+                auto_approve_session=turn.auto_approve_session,
+                deny_all_tools=turn.deny_all_tools,
+                auto_approve_tool=build_auto_approve(ctx_builder),
+                tool_gate=build_tool_gate(ctx_builder, session_key=session_key, agent=turn.agent),
+                directive_consumer=turn.directive_consumer,
+                audit_session_key=session_key,
+                audit_agent=turn.agent or "kirocrew",
+                closing_gate=lambda: sessions.begin_turn(session_key),
+            )
+            accumulated = await driver.run(full_message)
 
-        # Defensive lookup, like every other attribute read on this seam: the
-        # driver is resolved through the module attribute, so a caller (or a
-        # test) may supply a stand-in that predates this field. A missing
-        # reason means "no synthetic completion", never an AttributeError
-        # thrown at a real inbound message after the turn already ran.
-        if getattr(driver, "last_stop_reason", "") == STOP_REASON_COMPACTION_FAILED:
+            # Defensive lookup, like every other attribute read on this seam: the
+            # driver is resolved through the module attribute, so a caller (or a
+            # test) may supply a stand-in that predates this field. A missing
+            # reason means "no synthetic completion", never an AttributeError
+            # thrown at a real inbound message after the turn already ran.
+            if getattr(driver, "last_stop_reason", "") != STOP_REASON_COMPACTION_FAILED:
+                break
             # Synthetic completion: the backend abandoned the turn after a
             # failed auto-compaction and never sent end_turn, so it still
             # counts the prompt as in progress. Reset (mirrors the dashboard
             # runner's needs_session_reset) or this channel's NEXT message
-            # collides with "prompt already in progress". No re-queue: the
-            # compaction notice already reached the user via the renderer.
+            # collides with "prompt already in progress". Whether the abandoned
+            # message is then replayed is the guard's verdict, taken when the
+            # driver delivered the completion: a compaction that overflowed the
+            # window fails again identically, so replaying it only burns the
+            # budget, while a throttled or 5xx'd summarization call has nothing
+            # wrong with it and the very next attempt would clear it.
+            reset_ok = True
             try:
                 await sessions.reset(session_key)
             except Exception:
+                reset_ok = False
                 logger.warning(
                     "%s: session reset after compaction failure failed session=%s",
                     turn.channel_type,
                     session_key,
                     exc_info=True,
                 )
+            if not retry_guard.held:
+                break
+            if not reset_ok:
+                # The runtime this turn ran on is still counted as busy, so a
+                # replay would collide with "prompt already in progress".
+                # Finalize the renderer with the completion the guard held and
+                # keep the give-up behaviour.
+                await retry_guard.release_held()
+                break
+            retry_guard.drop_held()
+            logger.info(
+                "%s: transient compaction failure session=%s (attempt %d/%d) -- "
+                "replaying the abandoned message",
+                turn.channel_type,
+                session_key,
+                retry_guard.retries_used,
+                _COMPACTION_FAILED_RETRIES,
+            )
+            # Loop back to a fresh ``get_or_create``: the reset discarded the
+            # session whose turn permit this call holds, so the reacquire below
+            # takes the successor's, which the ``finally`` releases once.
 
         # ── Post-turn bookkeeping. Each step is guarded independently so a
         # failure here cannot fall through to the except and re-record a turn

@@ -10,16 +10,17 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from kiro_crew.acp.types import STOP_REASON_CANCELLED
+from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_COMPACTION_FAILED
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
-from kiro_crew.messaging.renderer import SilentRenderer
+from kiro_crew.messaging.renderer import COMPACTION, THINKING, SilentRenderer
 from kiro_crew.session_allocation import SessionClosingError
 
 
@@ -380,7 +381,8 @@ def test_a_compaction_failed_terminal_resets_the_session(monkeypatch) -> None:
     turn after a failed auto-compaction and never sent end_turn, so it still
     counts the prompt as in progress. The dispatcher must reset the session
     or this channel's NEXT message collides with "prompt already in
-    progress" (no re-queue; the notice already reached the user)."""
+    progress". With no transient verdict recorded there is no replay either:
+    the driver here delivers no completion the guard could hold."""
     from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
 
     class _AbandonedDriver(_Driver):
@@ -433,6 +435,249 @@ def test_an_ordinary_terminal_does_not_reset_the_session(monkeypatch) -> None:
     asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
 
     assert sessions.resets == 0
+
+
+# ── Transient compaction failure: replay inside the same turn ─────────────────
+#
+# The shared pipeline has no queue of its own, and the channel renderer is one
+# message's output surface that finalizes on its first DONE. So the replay of a
+# turn abandoned after a TRANSIENT compaction failure happens inside drive_turn:
+# the guard the driver renders through holds that one completion back, the
+# session is reset, and the message runs again into the same still-open
+# renderer. A permanent verdict keeps the old give-up behaviour.
+
+_COMPACTION_FAILED = STOP_REASON_COMPACTION_FAILED
+
+
+class _Provider:
+    def __init__(self, transient: bool | None) -> None:
+        # ``None`` models a provider that predates the verdict attribute.
+        if transient is not None:
+            self.last_compaction_transient = transient
+
+
+class _RetrySessions(_Sessions):
+    """Counts acquisitions and hands out a provider carrying the verdict."""
+
+    def __init__(self, *, transient: bool | None, reset_raises: bool = False) -> None:
+        super().__init__()
+        self.transient = transient
+        self.reset_raises = reset_raises
+        self.acquired = 0
+
+    async def get_or_create(self, key, agent=None, channel_id=None):
+        self.acquired += 1
+        return _Provider(self.transient), False, False
+
+    async def reset(self, key):
+        self.resets += 1
+        if self.reset_raises:
+            raise RuntimeError("reset failed")
+
+
+class _RecordingRenderer(_Renderer):
+    """Records every event the driver's renderer forwards into the channel."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[D.OutputEvent] = []
+        self.started = 0
+
+    async def on_turn_start(self):
+        self.started += 1
+
+    async def dispatch(self, event):
+        self.events.append(event)
+
+    async def on_done(self, stop_reason=""):
+        self.events.append(D.OutputEvent(kind=D.DONE, stop_reason=stop_reason))
+
+
+def _abandoning_driver(abandon_first: int, *, emit_before: bool = False) -> type:
+    """A driver whose first ``abandon_first`` runs end in a COMPACTION_FAILED
+    completion (delivered through the renderer, as the real driver does), and
+    whose next run answers normally."""
+    runs: list[str] = []
+
+    class _Abandoning(_Driver):
+        def __init__(self, provider, renderer, **kw):
+            super().__init__(**kw)
+            self.renderer = renderer
+
+        async def run(self, message):
+            runs.append(message)
+            if len(runs) <= abandon_first:
+                if emit_before:
+                    await self.renderer.dispatch(D.OutputEvent(kind=D.TEXT_CHUNK, text="part"))
+                self.last_stop_reason = _COMPACTION_FAILED
+                await self.renderer.dispatch(
+                    D.OutputEvent(kind=D.DONE, stop_reason=_COMPACTION_FAILED)
+                )
+                return ""
+            self.last_stop_reason = "end_turn"
+            await self.renderer.dispatch(D.OutputEvent(kind=D.TEXT_CHUNK, text="the reply"))
+            await self.renderer.dispatch(D.OutputEvent(kind=D.DONE, stop_reason="end_turn"))
+            return "the reply"
+
+    _Abandoning.runs = runs  # type: ignore[attr-defined]
+    return _Abandoning
+
+
+def _dones(renderer: _RecordingRenderer) -> list[str]:
+    return [e.stop_reason for e in renderer.events if e.kind == D.DONE]
+
+
+def test_a_transient_compaction_failure_replays_the_message_once(monkeypatch) -> None:
+    """Transient verdict, nothing emitted, budget unspent: the abandoned message
+    runs again on a fresh session and the ONE completion the channel sees is the
+    replay's. The abandoned attempt's DONE never reaches the renderer, or it
+    would have finalized the reply before the answer existed."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True)
+    renderer = _RecordingRenderer()
+    persisted: list[tuple[str, str, bool]] = []
+    turn = _turn(renderer)
+    turn.persist = lambda text, reply, is_new: persisted.append((text, reply, is_new))
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi", "hi"], "the same message is replayed verbatim"
+    assert sessions.resets == 1, "the abandoned runtime is torn down before the replay"
+    assert sessions.acquired == 2, "the replay runs on a freshly acquired session"
+    assert _dones(renderer) == ["end_turn"], "only the replay's completion reaches the channel"
+    assert [e.text for e in renderer.events if e.kind == D.TEXT_CHUNK] == ["the reply"]
+    # Post-turn bookkeeping happens once, for the turn that actually landed.
+    assert sessions.successes == 1
+    assert sessions.released == 1
+    assert renderer.closed == 1
+    assert persisted == [("hi", "the reply", False)]
+
+
+def test_a_permanent_compaction_failure_keeps_the_give_up_behaviour(monkeypatch) -> None:
+    """A compaction that overflowed the window fails again identically, so the
+    message is NOT replayed: one run, the reset, and the abandoned attempt's own
+    completion finalizes the channel's reply as before."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=False)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert sessions.resets == 1
+    assert sessions.acquired == 1
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+    assert sessions.released == 1
+
+
+def test_a_provider_without_a_verdict_is_not_read_as_transient(monkeypatch) -> None:
+    """The retry requires a real ``True``: a provider that never set the
+    attribute must not be replayed by accident."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=None)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+
+
+def test_an_emitted_turn_is_not_replayed_even_when_transient(monkeypatch) -> None:
+    """Verbatim replay is only safe before anything landed in the chat: once a
+    chunk has been rendered, re-sending the message could repeat a side effect,
+    so the turn keeps the give-up behaviour and its completion goes through."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1, emit_before=True)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert sessions.resets == 1
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+
+
+def test_the_replay_budget_is_bounded_per_turn(monkeypatch) -> None:
+    """A throttle that keeps firing gets exactly ``_COMPACTION_FAILED_RETRIES``
+    replays; the attempt after the last one gives up and its completion is the
+    one the channel sees, so the reply is finalized rather than left hanging."""
+    _patch_pipeline(monkeypatch)
+    budget = D._COMPACTION_FAILED_RETRIES
+    driver_cls = _abandoning_driver(budget + 5)  # never recovers
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert len(driver_cls.runs) == budget + 1
+    assert sessions.resets == budget + 1, "every abandoned attempt still resets its runtime"
+    assert sessions.acquired == budget + 1
+    assert _dones(renderer) == [_COMPACTION_FAILED], "the last attempt's completion goes through"
+    assert sessions.released == 1
+    assert renderer.closed == 1
+
+
+def test_a_failed_reset_releases_the_held_completion_instead_of_replaying(
+    monkeypatch,
+) -> None:
+    """When the reset itself fails the runtime still counts the prompt as in
+    progress, so a replay would collide with it. The guard's held completion is
+    delivered so the channel finalizes the reply, and nothing runs again."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True, reset_raises=True)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert sessions.acquired == 1
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+    assert sessions.released == 1
+
+
+def test_the_guard_forwards_whole_events_through_the_inner_dispatch() -> None:
+    """Events reach the channel through the inner renderer's own ``dispatch``,
+    so the bookkeeping that method does (``current_tool_name``) lands on the
+    object whose handlers read it; and the guard marks the turn as emitted for
+    exactly the kinds whose replay could repeat a side effect."""
+    inner = _RecordingRenderer()
+    guard = D._TransientCompactionRetryGuard(inner)
+    guard.provider = _Provider(True)
+
+    async def scenario():
+        await guard.dispatch(D.OutputEvent(kind=THINKING, text="hmm"))
+        assert guard.emitted is False, "thinking renders, but replaying after it repeats nothing"
+        await guard.dispatch(D.OutputEvent(kind=COMPACTION, context_usage_pct=90.0))
+        assert guard.emitted is False
+        await guard.dispatch(D.OutputEvent(kind=D.TOOL_CALL, tool_call_id="t1", title="Run"))
+        assert guard.emitted is True
+
+    asyncio.run(scenario())
+    assert [e.kind for e in inner.events] == [THINKING, COMPACTION, D.TOOL_CALL]
+
+
+def test_the_driver_reaches_its_renderer_only_through_the_guarded_surface() -> None:
+    """Tripwire for the wrapper: the guard subclasses ``Renderer`` and forwards
+    every declared handler, but the two methods the driver itself calls are the
+    ones that carry the hold logic. A driver that starts calling something else
+    must widen the guard on purpose, not silently bypass it."""
+    source = (Path(__file__).resolve().parents[1] / "src/kiro_crew/messaging/driver.py").read_text()
+    used = set(re.findall(r"self\.renderer\.([a-z_]+)", source))
+    assert used == {"dispatch", "on_turn_start"}, used
+    for name in used:
+        assert name in D._TransientCompactionRetryGuard.__dict__, name
 
 
 def test_a_denied_turn_neither_renders_nor_releases(monkeypatch) -> None:
@@ -522,7 +767,10 @@ def test_a_disconnected_conversation_is_silenced(monkeypatch) -> None:
         )
     )
 
-    assert isinstance(box[0], SilentRenderer), "the driver must stream into the silent one"
+    # The driver streams through the pipeline's retry guard; what the guard
+    # forwards into is the object under test.
+    assert isinstance(box[0], D._TransientCompactionRetryGuard)
+    assert isinstance(box[0].inner, SilentRenderer), "the driver must stream into the silent one"
     assert renderer.started == 0, "a disconnected conversation must not even show typing"
     assert renderer.closed == 0, "the real renderer was never used, so it has nothing to close"
     assert sessions.successes == 1, "the turn still ran"
@@ -545,7 +793,8 @@ def test_a_connected_conversation_keeps_its_real_renderer(monkeypatch) -> None:
         )
     )
 
-    assert box[0] is renderer
+    assert isinstance(box[0], D._TransientCompactionRetryGuard)
+    assert box[0].inner is renderer
     assert renderer.started == 1
     assert renderer.closed == 1
 

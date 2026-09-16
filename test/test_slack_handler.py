@@ -3192,6 +3192,190 @@ class TestStopReasonCompactionFailed:
         ), f"no session reset after COMPACTION_FAILED: {sessions.removed}"
 
 
+class _QueueingSessionManager(FakeSessionManager):
+    """Records what the transient-compaction retry puts on the thread's queue."""
+
+    def __init__(self, provider, *, accept: bool = True):
+        super().__init__(provider)
+        self.queued: list[tuple[str, str, str, dict]] = []
+        self.accept = accept
+
+    def enqueue(self, key, msg_ts, text, **kwargs):
+        if not self.accept:
+            return False
+        self.queued.append((key, msg_ts, text, kwargs))
+        return True
+
+
+def _visible_texts(slack):
+    """Every text the thread saw: fresh posts and edits of the placeholder."""
+    return [a[1]["text"] for a in slack.actions if a[0] in ("post", "update")]
+
+
+def _abandoned_provider(*, transient, events=()):
+    """A provider whose turn ends in the synthetic COMPACTION_FAILED completion
+    and that carries the ACP layer's verdict on WHY compaction failed."""
+    from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
+
+    provider = FakeProvider(
+        [*events, LLMEvent(kind="complete", stop_reason=STOP_REASON_COMPACTION_FAILED)]
+    )
+    if transient is not None:
+        provider.last_compaction_transient = transient
+    return provider
+
+
+class TestTransientCompactionRetry:
+    """Slack's own requeue mechanic is ``sessions.enqueue`` drained by the
+    gateway's ``_on_done`` callback (``slack/events.py``), which replays the
+    entry through ``handle_message`` as an ordinary turn. A turn abandoned
+    after a TRANSIENT compaction failure -- a throttled or 5xx'd summarization
+    call, nothing wrong with the message -- is put back on that queue instead
+    of being dropped. That queue lives on the session object the reset just
+    popped, so the session is respawned first and the entry queued on the
+    successor. A permanent verdict keeps the old give-up behaviour."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_budget(self, monkeypatch):
+        import kiro_crew.slack.handler as handler_mod
+
+        monkeypatch.setattr(handler_mod, "_compaction_retries", {}, raising=False)
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_requeues_the_abandoned_message(self):
+        from kiro_crew.slack.handler import _COMPACTION_RETRY_NOTICE
+
+        slack = MockSlackClient()
+        sessions = _QueueingSessionManager(_abandoned_provider(transient=True))
+
+        await handle_message(
+            slack,
+            sessions,
+            "C1",
+            "hello",
+            "thread1",
+            "msg1",
+            "U1",
+            team_id="T1",
+            channel_agent="ops",
+            user_display_name="Alice",
+        )
+
+        # Reset first, then the respawn the queue entry rides on.
+        assert "reset:thread1" in sessions.removed
+        assert sessions.keys_seen == ["thread1", "thread1"], sessions.keys_seen
+        # Exactly the entry _dispatch_queued reads back, keyed the way the
+        # gateway's drain will fold it.
+        assert len(sessions.queued) == 1
+        key, msg_ts, text, kwargs = sessions.queued[0]
+        assert (key, msg_ts, text) == ("thread1", "msg1", "hello")
+        assert kwargs == {
+            "force": True,
+            "channel": "C1",
+            "thread_ts": "thread1",
+            "sender_id": "U1",
+            "team_id": "T1",
+            "agent_override": "ops",
+            "user_display_name": "Alice",
+            "from_trusted_bot": False,
+        }
+        # The empty turn posts the retry notice rather than "(no response)".
+        posted = _visible_texts(slack)
+        assert any(_COMPACTION_RETRY_NOTICE in t for t in posted), posted
+        assert not any("(no response)" in t for t in posted), posted
+
+    @pytest.mark.asyncio
+    async def test_a_permanent_failure_keeps_the_give_up_behaviour(self):
+        slack = MockSlackClient()
+        sessions = _QueueingSessionManager(_abandoned_provider(transient=False))
+
+        await handle_message(slack, sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+        assert "reset:thread1" in sessions.removed
+        assert sessions.queued == [], "a compaction that overflowed the window is not replayed"
+        assert sessions.keys_seen == ["thread1"], "and no session is respawned for it"
+
+    @pytest.mark.asyncio
+    async def test_a_provider_without_a_verdict_is_not_read_as_transient(self):
+        slack = MockSlackClient()
+        sessions = _QueueingSessionManager(_abandoned_provider(transient=None))
+
+        await handle_message(slack, sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+        assert sessions.queued == []
+
+    @pytest.mark.asyncio
+    async def test_an_emitted_turn_is_not_requeued_even_when_transient(self):
+        """Verbatim replay is only safe before anything landed in the thread."""
+        slack = MockSlackClient()
+        sessions = _QueueingSessionManager(
+            _abandoned_provider(
+                transient=True, events=[LLMEvent(kind="text_chunk", text="partial")]
+            )
+        )
+
+        await handle_message(slack, sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+        assert "reset:thread1" in sessions.removed
+        assert sessions.queued == []
+
+    @pytest.mark.asyncio
+    async def test_the_budget_is_per_thread_and_bounded(self):
+        """Two replays per streak, then the thread gives up; a completion that
+        is not a compaction failure clears the streak."""
+        import kiro_crew.slack.handler as handler_mod
+
+        budget = handler_mod._COMPACTION_FAILED_RETRIES
+        slack = MockSlackClient()
+        sessions = _QueueingSessionManager(_abandoned_provider(transient=True))
+
+        for _ in range(budget + 1):
+            await handle_message(slack, sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+        assert len(sessions.queued) == budget
+        assert handler_mod._compaction_retries == {}, "a spent budget is cleared"
+
+        # A normal turn on the thread resets the streak for the next one.
+        sessions.queued.clear()
+        sessions._provider = FakeProvider()
+        await handle_message(slack, sessions, "C1", "fine", "thread1", "msg2", "U1")
+        sessions._provider = _abandoned_provider(transient=True)
+        await handle_message(slack, sessions, "C1", "hello", "thread1", "msg3", "U1")
+        assert len(sessions.queued) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_refused_enqueue_leaves_the_give_up_behaviour(self):
+        """The queue refusing the entry (no session to hold it) is not a
+        retry: nothing is charged to the budget and the empty turn posts as
+        it always did."""
+        import kiro_crew.slack.handler as handler_mod
+
+        slack = MockSlackClient()
+        sessions = _QueueingSessionManager(_abandoned_provider(transient=True), accept=False)
+
+        await handle_message(slack, sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+        assert sessions.queued == []
+        assert handler_mod._compaction_retries == {}
+        assert not any("retrying" in t for t in _visible_texts(slack))
+
+    @pytest.mark.asyncio
+    async def test_a_failed_respawn_leaves_the_give_up_behaviour(self):
+        class _NoRespawn(_QueueingSessionManager):
+            async def get_or_create(self, key, agent=None, channel_id=None):
+                if self.keys_seen:
+                    raise RuntimeError("cold start failed")
+                return await super().get_or_create(key, agent=agent, channel_id=channel_id)
+
+        slack = MockSlackClient()
+        sessions = _NoRespawn(_abandoned_provider(transient=True))
+
+        await handle_message(slack, sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+        assert sessions.queued == []
+        assert "reset:thread1" in sessions.removed
+
+
 class TestBuildTimingFooter:
     """Unit tests for the build_timing_footer helper."""
 
