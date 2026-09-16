@@ -79,6 +79,15 @@ const LottieRendererInner: React.FC<LottieRendererProps> = ({
 
     if (!containerRef.current || !animationData) return
 
+    // Empty the container before building. `destroy()` is supposed to do this,
+    // but it only removes what it knows about: an instance torn down BEFORE its
+    // SVG finished building (React runs mount effects twice in development, so
+    // every clip gets a load/destroy/load cycle) can leave an orphan node behind,
+    // and lottie then draws into a container that already has stale children.
+    // Starting from an empty node makes the outcome independent of that race.
+    // Carried over from Mochi's copy of this player when it became a re-export.
+    containerRef.current.replaceChildren()
+
     let parsed: unknown
     try {
       parsed = JSON.parse(animationData)

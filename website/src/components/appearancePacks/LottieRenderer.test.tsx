@@ -252,4 +252,32 @@ describe('loading a valid clip', () => {
     expect(loadAnimation.mock.calls[1][0].animationData).toEqual(JSON.parse(second_doc))
     expect(second.destroy).not.toHaveBeenCalled()
   })
+
+  it('hands the player an empty container, whatever a torn-down instance left behind', () => {
+    // `destroy()` removes only what the instance knows about. One torn down
+    // BEFORE its SVG finished building — React runs mount effects twice in
+    // development, so every clip gets a load/destroy/load cycle — can leave an
+    // orphan node, and the next build then draws beside stale children. Mochi's
+    // copy of this player carried the guard; it moved here with the player.
+    const first = fakeItem()
+    const second = fakeItem()
+    const childrenAtLoad: number[] = []
+    loadAnimation
+      .mockImplementationOnce((opts) => {
+        childrenAtLoad.push((opts.container as HTMLElement).childNodes.length)
+        // What a half-built instance leaves when destroy() misses it.
+        ;(opts.container as HTMLElement).appendChild(document.createElement('svg'))
+        return first as never
+      })
+      .mockImplementationOnce((opts) => {
+        childrenAtLoad.push((opts.container as HTMLElement).childNodes.length)
+        return second as never
+      })
+
+    const view = render(<LottieRenderer animationData={VALID} width={64} height={64} />)
+    const second_doc = VALID.replace('"op":48', '"op":96')
+    view.rerender(<LottieRenderer animationData={second_doc} width={64} height={64} />)
+
+    expect(childrenAtLoad).toEqual([0, 0])
+  })
 })
