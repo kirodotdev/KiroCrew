@@ -234,6 +234,19 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.fileExplorer.manifest.use_case_1'],
     configuration: ['apps.fileExplorer.manifest.configuration_1'],
   },
+  'guide': {
+    displayName: 'apps.guide.manifest.display_name',
+    description: 'apps.guide.manifest.description',
+    pageLabel: 'apps.guide.manifest.page_label',
+    highlights: [
+      'apps.guide.manifest.highlight_1',
+      'apps.guide.manifest.highlight_2',
+      'apps.guide.manifest.highlight_3',
+      'apps.guide.manifest.highlight_4',
+    ],
+    useCases: ['apps.guide.manifest.use_case_1'],
+    configuration: ['apps.guide.manifest.configuration_1'],
+  },
   'issue-radar': {
     displayName: 'apps.issueRadar.manifest.display_name',
     description: 'apps.issueRadar.manifest.description',
