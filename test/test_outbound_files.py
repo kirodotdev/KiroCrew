@@ -29,12 +29,13 @@ from kiro_crew.messaging.outbound_files import (
     REASON_SENSITIVE,
     REASON_SYMLINK,
     REASON_UNREADABLE,
-    REMOTE_PREFIXES,
     ExtractLimits,
     OutboundFile,
     Rejection,
     extract_local_refs,
     extract_local_refs_off_loop,
+    is_remote_destination,
+    iter_local_refs,
     local_destination,
     md_destination,
     strip_url_syntax,
@@ -201,7 +202,11 @@ class TestDestinationForms:
         """One normalizer, so the two directions cannot disagree on a path."""
         assert image_artifacts.strip_url_syntax is strip_url_syntax
         assert image_artifacts.local_destination is local_destination
-        assert image_artifacts.REMOTE_PREFIXES is REMOTE_PREFIXES
+        # The PREDICATE, not the prefix tuple: `//` reads as a protocol-relative
+        # URL or as a UNC path depending on the host and the path, and a second
+        # copy of that decision is how one direction starts treating a
+        # destination the other calls local as remote.
+        assert image_artifacts.is_remote_destination is is_remote_destination
         assert strip_url_syntax("file:///tmp/a.png?v=2#top") == "/tmp/a.png"
         assert local_destination("./rel.png") is None
 
@@ -259,6 +264,76 @@ class TestStripUrlSyntaxExtendedLengthPath:
             module, "Path", lambda raw: pytest.fail(f"path constructed for share: {raw}")
         )
         assert module.local_destination(self._SHARE) is None
+
+
+class TestUncDestinationIsNotARemoteUrl:
+    r"""``//host/share/...`` is a UNC path on Windows, not a protocol-relative URL.
+
+    A markdown destination cannot carry the backslash spelling of one: a
+    CommonMark parser drops a backslash before ASCII punctuation, so
+    ``chat_attachments._posix_separators`` writes a stored Windows destination
+    with forward slashes. On a roaming profile, where the data home is itself a
+    share, that produces ``//fileserver/home/me/.kiro/crew/...`` -- a string the
+    bare ``//`` prefix test read as remote, so the scan returned nothing for a
+    file this gateway had written itself.
+
+    Every spelling here is forward-slash and ``data_home`` is patched, for the
+    reason the UNC-gate tests already give: ``normcase``/``normpath`` leave
+    ``//host/...`` intact on POSIX, so the purely lexical gate answers the same on
+    the Linux CI box as on Windows. The real ``unc_probe_allowed`` is used rather
+    than a stub, because the whole claim is that the allowlist already in place is
+    what separates the two readings.
+    """
+
+    _UNC_HOME = "//fileserver/home/me/.kiro/crew"
+    _STORED = f"{_UNC_HOME}/sessions/chat-1.attachments/{'0' * 16}-shot.png"
+
+    @pytest.fixture
+    def windows_with_a_unc_data_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from kiro_crew.messaging import outbound_files as module
+
+        monkeypatch.setattr(module, "os", type("OS", (), {"name": "nt"})(), raising=False)
+        monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: Path(self._UNC_HOME))
+
+    def test_a_stored_unc_attachment_is_a_local_reference(
+        self, windows_with_a_unc_data_home: None
+    ) -> None:
+        assert is_remote_destination(self._STORED) is False
+        assert [ref.dest for ref in iter_local_refs(f"![s]({self._STORED})")] == [self._STORED]
+
+    def test_a_share_outside_the_gateways_own_directories_stays_remote(
+        self, windows_with_a_unc_data_home: None
+    ) -> None:
+        """The reclassification borrows the filesystem gate's allowlist, so an
+        attacker-chosen host is refused here exactly as it is there -- no new SMB
+        probe is reachable through a destination this admits."""
+        assert is_remote_destination("//evil/share/x.png") is True
+        assert iter_local_refs("![s](//evil/share/x.png)") == []
+        assert is_remote_destination("//fileserver/other/x.png") is True
+
+    def test_a_url_is_still_remote_on_windows(self, windows_with_a_unc_data_home: None) -> None:
+        for dest in (
+            "https://example.com/x.png",
+            "http://example.com/x.png",
+            "HTTPS://Example.com/x.png",
+            "data:image/png;base64,AAAA",
+        ):
+            assert is_remote_destination(dest) is True
+
+    def test_posix_keeps_every_double_slash_destination_remote(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A UNC path does not exist on POSIX, so ``//`` there can only be a URL."""
+        from kiro_crew.messaging import outbound_files as module
+
+        monkeypatch.setattr(module, "os", type("OS", (), {"name": "posix"})(), raising=False)
+        monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: Path(self._UNC_HOME))
+        assert is_remote_destination(self._STORED) is True
+        assert iter_local_refs(f"![s]({self._STORED})") == []
+
+    def test_an_ordinary_path_never_reaches_the_unc_question(self) -> None:
+        assert is_remote_destination("/tmp/a.png") is False
+        assert is_remote_destination(r"C:\Users\me\a.png") is False
 
 
 class TestOutboundSecurity:
