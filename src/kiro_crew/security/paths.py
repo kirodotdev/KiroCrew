@@ -385,8 +385,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     "trust",
     "member-memory-bindings",
     "security_events.jsonl",
-    # Rotated SEL segments. sel.py closes the live log at a size cap and renames
-    # it into this directory, so a segment holds exactly the same audit records
+    # Rotated SEL segments and their authenticated retention-floor marker.
+    # sel.py closes the live log at a size cap and renames it into this directory,
+    # so a segment holds exactly the same audit records
     # the live file does and must be gated identically — a rotated log that the
     # agent could read (or rewrite, then let the chain re-anchor from) would make
     # rotation itself the way around the fence. Directory entry, so every

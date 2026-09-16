@@ -7,6 +7,7 @@ import errno
 import inspect
 import json
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -72,6 +73,24 @@ def _make_event(**overrides) -> SecurityEvent:
     }
     base.update(overrides)
     return SecurityEvent(**base)
+
+
+def stop_sel_writer(log: SecurityEventLog, timeout: float = 10.0) -> None:
+    """Deterministically stop an async SecurityEventLog's daemon writer.
+
+    A test that starts the writer (any non-sync ``log.log()``) must join it
+    before returning. The session SEL directory is shared by every later test
+    in the worker, and flock treats each instance's fd as its own holder, so a
+    leftover live writer can hold the chain lock at the instant a LATER test's
+    loop-side critical audit takes its single shot and deny it spuriously. The
+    writer loop exits on its None sentinel.
+    """
+    writer = log._writer
+    if writer is None:
+        return
+    log._queue.put(None)
+    writer.join(timeout=timeout)
+    assert not writer.is_alive(), "sel-writer did not stop"
 
 
 def _lock_is_held(lock_path: Path) -> bool:
@@ -203,15 +222,17 @@ class TestEventLogging:
 
     def test_log_chains_hashes(self, log, sel_dir):
         for i in range(3):
-            log.log(SecurityEvent(
-                event_id=f"evt{i}",
-                timestamp="2026-01-01T00:00:00+00:00",
-                event_type="tool_invocation",
-                caller_identity="dashboard:slot0",
-                agent="kirocrew",
-                source="dashboard",
-                operation=f"op{i}",
-            ))
+            log.log(
+                SecurityEvent(
+                    event_id=f"evt{i}",
+                    timestamp="2026-01-01T00:00:00+00:00",
+                    event_type="tool_invocation",
+                    caller_identity="dashboard:slot0",
+                    agent="kirocrew",
+                    source="dashboard",
+                    operation=f"op{i}",
+                )
+            )
         sel_file = sel_dir / "security_events.jsonl"
         lines = sel_file.read_text(encoding="utf-8").strip().splitlines()
         entries = [json.loads(line) for line in lines]
@@ -295,38 +316,44 @@ class TestVerifyIntegrity:
 
     def test_valid_chain(self, log):
         for i in range(5):
-            log.log(SecurityEvent(
-                event_id=f"evt{i}",
-                timestamp="2026-01-01T00:00:00+00:00",
-                event_type="tool_invocation",
-                caller_identity="dashboard:slot0",
-                agent="kirocrew",
-                source="dashboard",
-                operation=f"op{i}",
-            ))
+            log.log(
+                SecurityEvent(
+                    event_id=f"evt{i}",
+                    timestamp="2026-01-01T00:00:00+00:00",
+                    event_type="tool_invocation",
+                    caller_identity="dashboard:slot0",
+                    agent="kirocrew",
+                    source="dashboard",
+                    operation=f"op{i}",
+                )
+            )
         total, valid = log.verify_integrity()
         assert total == 5
         assert valid == 5
 
     def test_detects_tampered_entry(self, log, sel_dir):
-        log.log(SecurityEvent(
-            event_id="evt0",
-            timestamp="2026-01-01T00:00:00+00:00",
-            event_type="tool_invocation",
-            caller_identity="dashboard:slot0",
-            agent="kirocrew",
-            source="dashboard",
-            operation="op0",
-        ))
-        log.log(SecurityEvent(
-            event_id="evt1",
-            timestamp="2026-01-01T00:00:00+00:00",
-            event_type="tool_invocation",
-            caller_identity="dashboard:slot0",
-            agent="kirocrew",
-            source="dashboard",
-            operation="op1",
-        ))
+        log.log(
+            SecurityEvent(
+                event_id="evt0",
+                timestamp="2026-01-01T00:00:00+00:00",
+                event_type="tool_invocation",
+                caller_identity="dashboard:slot0",
+                agent="kirocrew",
+                source="dashboard",
+                operation="op0",
+            )
+        )
+        log.log(
+            SecurityEvent(
+                event_id="evt1",
+                timestamp="2026-01-01T00:00:00+00:00",
+                event_type="tool_invocation",
+                caller_identity="dashboard:slot0",
+                agent="kirocrew",
+                source="dashboard",
+                operation="op1",
+            )
+        )
         # Tamper with first entry
         sel_file = sel_dir / "security_events.jsonl"
         lines = sel_file.read_text(encoding="utf-8").strip().splitlines()
@@ -344,15 +371,17 @@ class TestVerifyIntegrity:
 class TestRecent:
     def test_returns_most_recent(self, log):
         for i in range(10):
-            log.log(SecurityEvent(
-                event_id=f"evt{i}",
-                timestamp=f"2026-01-01T00:0{i}:00+00:00",
-                event_type="tool_invocation",
-                caller_identity="dashboard:slot0",
-                agent="kirocrew",
-                source="dashboard",
-                operation=f"op{i}",
-            ))
+            log.log(
+                SecurityEvent(
+                    event_id=f"evt{i}",
+                    timestamp=f"2026-01-01T00:0{i}:00+00:00",
+                    event_type="tool_invocation",
+                    caller_identity="dashboard:slot0",
+                    agent="kirocrew",
+                    source="dashboard",
+                    operation=f"op{i}",
+                )
+            )
         results = log.recent(limit=3)
         assert len(results) == 3
         assert results[0]["event_id"] == "evt9"
@@ -365,24 +394,28 @@ class TestRecent:
 class TestPrune:
     def test_removes_old_entries(self, log, sel_dir):
         # Write an entry with an old timestamp
-        log.log(SecurityEvent(
-            event_id="old",
-            timestamp="2020-01-01T00:00:00+00:00",
-            event_type="tool_invocation",
-            caller_identity="dashboard:slot0",
-            agent="kirocrew",
-            source="dashboard",
-            operation="old_op",
-        ))
-        log.log(SecurityEvent(
-            event_id="new",
-            timestamp="2099-01-01T00:00:00+00:00",
-            event_type="tool_invocation",
-            caller_identity="dashboard:slot0",
-            agent="kirocrew",
-            source="dashboard",
-            operation="new_op",
-        ))
+        log.log(
+            SecurityEvent(
+                event_id="old",
+                timestamp="2020-01-01T00:00:00+00:00",
+                event_type="tool_invocation",
+                caller_identity="dashboard:slot0",
+                agent="kirocrew",
+                source="dashboard",
+                operation="old_op",
+            )
+        )
+        log.log(
+            SecurityEvent(
+                event_id="new",
+                timestamp="2099-01-01T00:00:00+00:00",
+                event_type="tool_invocation",
+                caller_identity="dashboard:slot0",
+                agent="kirocrew",
+                source="dashboard",
+                operation="new_op",
+            )
+        )
         removed = log.prune(keep_days=365)
         assert removed == 1
         sel_file = sel_dir / "security_events.jsonl"
@@ -398,15 +431,17 @@ class TestForwardCallback:
     def test_callback_called_on_log(self, log):
         received = []
         log.set_forward_callback(lambda evt: received.append(evt))
-        log.log(SecurityEvent(
-            event_id="cb1",
-            timestamp="2026-01-01T00:00:00+00:00",
-            event_type="tool_invocation",
-            caller_identity="dashboard:slot0",
-            agent="kirocrew",
-            source="dashboard",
-            operation="test_op",
-        ))
+        log.log(
+            SecurityEvent(
+                event_id="cb1",
+                timestamp="2026-01-01T00:00:00+00:00",
+                event_type="tool_invocation",
+                caller_identity="dashboard:slot0",
+                agent="kirocrew",
+                source="dashboard",
+                operation="test_op",
+            )
+        )
         assert len(received) == 1
         assert received[0]["event_id"] == "cb1"
 
@@ -415,15 +450,17 @@ class TestForwardCallback:
             raise RuntimeError("callback exploded")
 
         log.set_forward_callback(bad_callback)
-        log.log(SecurityEvent(
-            event_id="cb2",
-            timestamp="2026-01-01T00:00:00+00:00",
-            event_type="tool_invocation",
-            caller_identity="dashboard:slot0",
-            agent="kirocrew",
-            source="dashboard",
-            operation="test_op",
-        ))
+        log.log(
+            SecurityEvent(
+                event_id="cb2",
+                timestamp="2026-01-01T00:00:00+00:00",
+                event_type="tool_invocation",
+                caller_identity="dashboard:slot0",
+                agent="kirocrew",
+                source="dashboard",
+                operation="test_op",
+            )
+        )
         # Event should still be written despite callback failure
         sel_file = sel_dir / "security_events.jsonl"
         assert sel_file.exists()
@@ -433,17 +470,20 @@ class TestForwardCallback:
 class TestThreadSafety:
     def test_concurrent_writes(self, log, sel_dir):
         """Multiple threads writing simultaneously should not corrupt the log."""
+
         def write_events(start_id, count):
             for i in range(count):
-                log.log(SecurityEvent(
-                    event_id=f"t{start_id}_{i}",
-                    timestamp="2026-01-01T00:00:00+00:00",
-                    event_type="tool_invocation",
-                    caller_identity="dashboard:slot0",
-                    agent="kirocrew",
-                    source="dashboard",
-                    operation=f"op{start_id}_{i}",
-                ))
+                log.log(
+                    SecurityEvent(
+                        event_id=f"t{start_id}_{i}",
+                        timestamp="2026-01-01T00:00:00+00:00",
+                        event_type="tool_invocation",
+                        caller_identity="dashboard:slot0",
+                        agent="kirocrew",
+                        source="dashboard",
+                        operation=f"op{start_id}_{i}",
+                    )
+                )
 
         threads = [threading.Thread(target=write_events, args=(t, 10)) for t in range(4)]
         for t in threads:
@@ -468,7 +508,7 @@ class TestCrossProcessSafety:
     its own cached chain tip — the case a thread lock cannot cover.
     """
 
-    _CHILD = '''
+    _CHILD = """
 import sys
 import time
 from pathlib import Path
@@ -498,7 +538,7 @@ for i in range(count):
         operation="op-" + tag + "-" + str(i),
     ))
 log.flush()
-'''
+"""
 
     def test_concurrent_processes_keep_one_unbroken_chain(self, tmp_path):
         sel_dir = tmp_path / "sel"
@@ -523,7 +563,14 @@ log.flush()
 
         procs = [
             subprocess.Popen(
-                [sys.executable, str(child), str(sel_dir), str(sync_dir), tag, str(events_per_child)],
+                [
+                    sys.executable,
+                    str(child),
+                    str(sel_dir),
+                    str(sync_dir),
+                    tag,
+                    str(events_per_child),
+                ],
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -951,9 +998,7 @@ log.flush()
 
         with pytest.raises(OSError):
             log.log(_make_event(event_id="symlink-1"), critical=True)
-        assert not log._path.exists() or "symlink-1" not in log._path.read_text(
-            encoding="utf-8"
-        )
+        assert not log._path.exists() or "symlink-1" not in log._path.read_text(encoding="utf-8")
 
     def test_hard_linked_sidecar_is_refused(self, tmp_path):
         """A second name for the same inode is outside the deny-list's reach."""
@@ -1113,14 +1158,12 @@ log.flush()
         src = inspect.getsource(kiro_crew_sel._acquire_chain_lock_on_loop)
         body = src.split('"""')[-1]
         assert "sleep" not in body, "on-loop chain-lock acquire sleeps on the event loop"
-        assert not hasattr(kiro_crew_sel, "time"), (
-            "kiro_crew.sel imports time again — the on-loop path must not sleep"
-        )
+        assert not hasattr(
+            kiro_crew_sel, "time"
+        ), "kiro_crew.sel imports time again — the on-loop path must not sleep"
 
     @pytest.mark.asyncio
-    async def test_loop_joiner_fails_closed_when_the_hold_is_promoted_mid_wait(
-        self, tmp_path
-    ):
+    async def test_loop_joiner_fails_closed_when_the_hold_is_promoted_mid_wait(self, tmp_path):
         """A join admitted under "append" must not wait through a promotion.
 
         The label check in ``_try_join_chain_hold`` runs before the gate wait,
@@ -1178,42 +1221,45 @@ log.flush()
 
 
 class TestInferSource:
-    @pytest.mark.parametrize("key,expected", [
-        ("dashboard:slot0", "dashboard"),
-        ("dashboard:slot5", "dashboard"),
-        # The side chat's isolated session (`side:<slot>`) IS a dashboard
-        # surface: a dashboard-bound governance profile must bind it. Before
-        # this branch the key fell through to the "slack" fallback and a
-        # dashboard-scoped profile skipped every side turn.
-        ("side:slot0", "dashboard"),
-        ("side:dashboard:slot0", "dashboard"),
-        ("cron:job123", "cron"),
-        ("subagent:abc", "subagent"),
-        ("taskrunner:spec1", "taskrunner"),
-        ("_bg", "background"),
-        ("cli_chat", "cli"),
-        # Namespaced messaging channels are attributed to their transport,
-        # matching context._runtime_display_name's set — via ``{ns}:`` …
-        ("discord:123:kirocrew", "discord"),
-        ("telegram:456", "telegram"),
-        ("wecom:c1", "wecom"),
-        ("weixin:c1", "weixin"),
-        ("feishu:c1", "feishu"),
-        ("webex:c1", "webex"),
-        ("teams:c1", "teams"),
-        ("slack:C08:thread", "slack"),
-        # … or the ``{ns}_`` prefix form.
-        ("discord_123", "discord"),
-        # Bare/legacy Slack keys (thread timestamps, no namespace) stay "slack".
-        ("C08HZAWV4TP:thread123", "slack"),
-        ("random_key", "slack"),
-        # An empty key carries no surface signal → "unknown", NOT "slack"
-        # (an app-activation governance degrade passes no session_key).
-        ("", "unknown"),
-        # The explicit host-process sentinel → "host" (stable bind target for
-        # host-side governance: app activation, workspace admission).
-        ("_host", "host"),
-    ])
+    @pytest.mark.parametrize(
+        "key,expected",
+        [
+            ("dashboard:slot0", "dashboard"),
+            ("dashboard:slot5", "dashboard"),
+            # The side chat's isolated session (`side:<slot>`) IS a dashboard
+            # surface: a dashboard-bound governance profile must bind it. Before
+            # this branch the key fell through to the "slack" fallback and a
+            # dashboard-scoped profile skipped every side turn.
+            ("side:slot0", "dashboard"),
+            ("side:dashboard:slot0", "dashboard"),
+            ("cron:job123", "cron"),
+            ("subagent:abc", "subagent"),
+            ("taskrunner:spec1", "taskrunner"),
+            ("_bg", "background"),
+            ("cli_chat", "cli"),
+            # Namespaced messaging channels are attributed to their transport,
+            # matching context._runtime_display_name's set — via ``{ns}:`` …
+            ("discord:123:kirocrew", "discord"),
+            ("telegram:456", "telegram"),
+            ("wecom:c1", "wecom"),
+            ("weixin:c1", "weixin"),
+            ("feishu:c1", "feishu"),
+            ("webex:c1", "webex"),
+            ("teams:c1", "teams"),
+            ("slack:C08:thread", "slack"),
+            # … or the ``{ns}_`` prefix form.
+            ("discord_123", "discord"),
+            # Bare/legacy Slack keys (thread timestamps, no namespace) stay "slack".
+            ("C08HZAWV4TP:thread123", "slack"),
+            ("random_key", "slack"),
+            # An empty key carries no surface signal → "unknown", NOT "slack"
+            # (an app-activation governance degrade passes no session_key).
+            ("", "unknown"),
+            # The explicit host-process sentinel → "host" (stable bind target for
+            # host-side governance: app activation, workspace admission).
+            ("_host", "host"),
+        ],
+    )
     def test_infer_source(self, key, expected):
         assert _infer_source(key) == expected
 
@@ -1233,15 +1279,17 @@ class TestSingleton:
 
 class TestReadLastHash:
     def test_reads_hash_from_existing_file(self, log, sel_dir):
-        log.log(SecurityEvent(
-            event_id="first",
-            timestamp="2026-01-01T00:00:00+00:00",
-            event_type="tool_invocation",
-            caller_identity="dashboard:slot0",
-            agent="kirocrew",
-            source="dashboard",
-            operation="op1",
-        ))
+        log.log(
+            SecurityEvent(
+                event_id="first",
+                timestamp="2026-01-01T00:00:00+00:00",
+                event_type="tool_invocation",
+                caller_identity="dashboard:slot0",
+                agent="kirocrew",
+                source="dashboard",
+                operation="op1",
+            )
+        )
         expected_hash = log._last_hash
         # Reset and re-read
         SecurityEventLog._instance = None
@@ -1307,6 +1355,7 @@ class TestHmacKeyManagementExtras:
         ``atomic_write`` calls on every platform — pinning that
         ``restrict_on_error="warn"`` keeps key creation fail-soft.
         """
+
         def _refuse(_target):
             raise OSError("icacls failed")
 
@@ -1374,9 +1423,7 @@ class TestLogHashAndCallbackExtras:
         # Hash MUST be stable when only the (excluded) entry_hash field changes.
         assert log._compute_hash(evt) == h_before
 
-    def test_log_invokes_forward_callback_with_redacted_payload(
-        self, tmp_path: Path
-    ) -> None:
+    def test_log_invokes_forward_callback_with_redacted_payload(self, tmp_path: Path) -> None:
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         captured: list[dict] = []
         log.set_forward_callback(captured.append)
@@ -1999,9 +2046,7 @@ class TestCorruptTailNewlineBoundary:
         assert log2._last_hash == tip  # recovered, not reset to genesis
         log2.log(_make_event(event_id="e_after"))
 
-        lines = (tmp_path / "security_events.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()
+        lines = (tmp_path / "security_events.jsonl").read_text(encoding="utf-8").splitlines()
         # Last physical line must be the NEW record, cleanly parseable — not
         # the corrupt fragment glued to it.
         last = json.loads(lines[-1])
@@ -2012,9 +2057,7 @@ class TestCorruptTailNewlineBoundary:
         # forensic evidence), not truncated away.
         assert any(fragment in ln for ln in lines)
 
-    def test_new_record_surfaces_in_recent_after_corrupt_tail(
-        self, tmp_path: Path
-    ) -> None:
+    def test_new_record_surfaces_in_recent_after_corrupt_tail(self, tmp_path: Path) -> None:
         self._crash_with_truncated_tail(tmp_path)
         log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
         log2.log(_make_event(event_id="visible"))
@@ -2337,9 +2380,7 @@ class TestHmacKeyTrustDirMigration:
         def _deny_unlink(path):
             raise PermissionError(30, "Read-only file system", str(path))
 
-        monkeypatch.setattr(
-            "kiro_crew.platform_compat.unlink_link_or_junction", _deny_unlink
-        )
+        monkeypatch.setattr("kiro_crew.platform_compat.unlink_link_or_junction", _deny_unlink)
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         assert log._hmac_key == legacy_key
         assert sel_hmac_key_path() == tmp_path / "sel_hmac.key"
@@ -2352,9 +2393,7 @@ class TestHmacKeyTrustDirMigration:
         with pytest.raises(RuntimeError, match="too short"):
             SecurityEventLog(base_dir=tmp_path, sync=True)
 
-    def test_key_bytes_accessor_returns_the_live_signing_key(
-        self, tmp_path: Path
-    ) -> None:
+    def test_key_bytes_accessor_returns_the_live_signing_key(self, tmp_path: Path) -> None:
         """The recovery path for the dependent protocol: SEL caches the
         validated bytes at init, so they stay available when the file behind the
         frozen resolved path fails to load."""
@@ -2379,14 +2418,14 @@ class TestHmacKeyTrustDirMigration:
         loads the key, so a concurrent reader can see an instance whose
         ``_hmac_key`` does not exist yet. ``_initialized`` is the barrier that
         makes that window return None instead of raising or yielding garbage."""
-        from kiro_crew.sel import SecurityEventLog as _SEL
+        from kiro_crew.sel import SecurityEventLog as _SecurityEventLog
         from kiro_crew.sel import _sel_hmac_key_bytes
 
         self._reset()
         try:
-            _SEL.__new__(_SEL)  # publishes _instance, leaves _initialized False
-            assert _SEL._instance is not None
-            assert not getattr(_SEL._instance, "_initialized", False)
+            _SecurityEventLog.__new__(_SecurityEventLog)
+            assert _SecurityEventLog._instance is not None
+            assert not getattr(_SecurityEventLog._instance, "_initialized", False)
             assert _sel_hmac_key_bytes() is None
         finally:
             self._reset()
@@ -2404,9 +2443,9 @@ class TestHmacKeyTrustDirMigration:
             # cannot decode the non-ASCII bytes several sources contain.
             and "_sel_hmac_key_bytes" in path.read_text(encoding="utf-8")
         }
-        assert callers == {root / "session_pid_sig.py"}, (
-            f"_sel_hmac_key_bytes gained a caller outside session_pid_sig: {callers}"
-        )
+        assert callers == {
+            root / "session_pid_sig.py"
+        }, f"_sel_hmac_key_bytes gained a caller outside session_pid_sig: {callers}"
 
     def test_concurrent_first_construction_initializes_once(self, tmp_path: Path) -> None:
         """``__new__`` publishes the instance BEFORE ``__init__`` runs, so two
@@ -2516,18 +2555,14 @@ class TestTrustRootPathReResolution:
         """The accessor returns a PATH the signing and verification code never
         reads, so a relocation cannot orphan records already chained."""
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
-        log.log_tool_invocation(
-            session_key="s1", tool_name="t1", tool_kind="tool", outcome="ok"
-        )
+        log.log_tool_invocation(session_key="s1", tool_name="t1", tool_kind="tool", outcome="ok")
         anchor = log._hmac_key
         legacy = tmp_path / "sel_hmac.key"
         os.replace(tmp_path / "trust" / "sel_hmac.key", legacy)
 
         assert sel_mod.sel_hmac_key_path() == legacy
         assert log._hmac_key == anchor
-        log.log_tool_invocation(
-            session_key="s2", tool_name="t2", tool_kind="tool", outcome="ok"
-        )
+        log.log_tool_invocation(session_key="s2", tool_name="t2", tool_kind="tool", outcome="ok")
         total, valid = log.verify_integrity()
         assert (total, valid) == (2, 2)
 
@@ -2618,9 +2653,7 @@ class TestSizeRotation:
         assert opener["metadata"]["previous_segment"] == closed.name
         assert opener["metadata"]["previous_bytes"] > 0
 
-    def test_the_rotation_record_makes_no_predecessor_hash_claim(
-        self, sel_dir, small_segments
-    ):
+    def test_the_rotation_record_makes_no_predecessor_hash_claim(self, sel_dir, small_segments):
         """A claim about the closed segment's tip cannot be kept true.
 
         A segment is not immutable the instant it is renamed: another process may
@@ -2636,9 +2669,7 @@ class TestSizeRotation:
         )
         assert "previous_entry_hash" not in opener["metadata"]
 
-    def test_a_late_append_into_the_closed_segment_still_verifies(
-        self, sel_dir, small_segments
-    ):
+    def test_a_late_append_into_the_closed_segment_still_verifies(self, sel_dir, small_segments):
         """The exact race the dropped claim could not survive.
 
         An appender holding an fd to the live log writes AFTER the rotator renamed
@@ -2659,9 +2690,9 @@ class TestSizeRotation:
             handle.write(json.dumps(asdict(late)) + "\n")
 
         total, valid = log.verify_integrity()
-        assert total == valid, (
-            f"{total - valid} entries reported as compromised by a benign late append"
-        )
+        assert (
+            total == valid
+        ), f"{total - valid} entries reported as compromised by a benign late append"
 
     def test_verify_integrity_spans_segments(self, sel_dir, small_segments):
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
@@ -2746,6 +2777,27 @@ class TestSizeRotation:
         _fill(log, 600, start=600)
         assert stray.exists(), "retention deleted a non-segment file"
         assert stray not in log._segments_oldest_first()
+
+    def test_floor_file_is_never_rotated_pruned_or_counted(self, sel_dir, small_segments):
+        """The floor shares the directory but is never audit-segment data."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 600)
+        marker = sel_dir / "security_events.d" / "retention_floor.json"
+        before = marker.read_bytes()
+        segments = log._segments_oldest_first()
+        assert marker not in segments
+        expected_entries = sum(
+            len(path.read_text(encoding="utf-8").splitlines()) for path in segments
+        )
+
+        with log._lock:
+            removed = log._prune_segments_locked(datetime.now(tz=timezone.utc) + timedelta(days=1))
+
+        assert removed == expected_entries, "the floor file was counted as audit entries"
+        assert marker.read_bytes() == before, "segment pruning changed the floor marker"
+        _fill(log, 300, start=600)
+        assert marker.read_bytes() == before, "rotation changed the floor marker"
+        assert marker not in log._segments_oldest_first()
 
     def test_rotation_failure_still_writes_the_event(self, sel_dir, small_segments, caplog):
         """An audit record must never be lost to a rotation that cannot happen."""
@@ -2907,9 +2959,9 @@ class TestRotationIsSerializedAcrossProcesses:
             ):
                 with log._rotation_window():
                     pass
-        assert log._last_hash == sibling_event.entry_hash, (
-            "kept a pre-rotation tip after deferring on contention"
-        )
+        assert (
+            log._last_hash == sibling_event.entry_hash
+        ), "kept a pre-rotation tip after deferring on contention"
 
     def test_a_serialization_failure_still_writes_the_event(self, sel_dir, small_segments):
         """An unusable lock must not cost an audit record."""
@@ -2966,9 +3018,7 @@ class TestRotationIsSerializedAcrossProcesses:
         assert log._segments_oldest_first() == before, "rotated through a linked lock"
         assert log.recent(limit=1)[0]["resources"] == "seq=4299"
 
-    def test_a_rotation_lost_to_another_process_re_anchors_the_chain(
-        self, sel_dir, small_segments
-    ):
+    def test_a_rotation_lost_to_another_process_re_anchors_the_chain(self, sel_dir, small_segments):
         """Winning the lock but finding the log already rotated must re-anchor.
 
         The cached tip points at a record that a sibling process has just moved
@@ -2981,9 +3031,7 @@ class TestRotationIsSerializedAcrossProcesses:
 
         # Stand in for the sibling process: force one real rotation, so the live
         # log is a fresh file whose tip differs from what we cached.
-        with patch.object(
-            SecurityEventLog, "_live_size", return_value=sel_mod._SEGMENT_MAX_BYTES
-        ):
+        with patch.object(SecurityEventLog, "_live_size", return_value=sel_mod._SEGMENT_MAX_BYTES):
             log._rotate_under_lock()
         fresh_tip = log._last_hash
         assert fresh_tip not in ("", stale_tip)
@@ -3041,10 +3089,7 @@ class TestSegmentDirIsPinnedOnRead:
             "audit history (false tamper alarm)"
         )
         live_lines = (
-            (sel_dir / "security_events.jsonl")
-            .read_text(encoding="utf-8")
-            .strip()
-            .splitlines()
+            (sel_dir / "security_events.jsonl").read_text(encoding="utf-8").strip().splitlines()
         )
         assert total == len(live_lines), "records beyond the live log were counted"
         # The swap is itself tampering, so the detailed result must not call
@@ -3086,9 +3131,9 @@ class TestSegmentDirIsPinnedOnRead:
 
         monkeypatch.setattr(sel_mod, "_open_segment_dir", repairing_open)
         result = log.verify_integrity(detailed=True)
-        assert result.history_verifiable is False, (
-            "a concurrent repair reclassified the refusal as verifiable"
-        )
+        assert (
+            result.history_verifiable is False
+        ), "a concurrent repair reclassified the refusal as verifiable"
 
     def test_a_fresh_install_stays_verifiable(self, sel_dir):
         """No segment dir yet is not tampering — nothing to vouch for."""
@@ -3155,9 +3200,7 @@ class TestSegmentDirIsPinnedOnRead:
         assert result.history_verifiable is False
         assert "refused" in result.reason
 
-    def test_a_mid_verification_swap_is_not_verifiable(
-        self, sel_dir, small_segments, monkeypatch
-    ):
+    def test_a_mid_verification_swap_is_not_verifiable(self, sel_dir, small_segments, monkeypatch):
         """A directory replaced mid-run leaves totals from the pinned tree,
         but the tree on disk is not that tree — the detail must say so."""
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
@@ -3197,9 +3240,7 @@ class TestSegmentDirIsPinnedOnRead:
             os.rename(segment_dir, sel_dir / "aside.d")
             (sel_dir / "security_events.d").symlink_to(decoy)
             names = {p.name for p in log._segments_oldest_first(pin=pin)}
-            assert names == real_names, (
-                "enumeration leaked names through a swapped path"
-            )
+            assert names == real_names, "enumeration leaked names through a swapped path"
             fd = sel_mod._open_segment(segment_dir / sorted(real_names)[0], pin=pin)
             assert fd is not None, "the pinned descriptor refused a real segment after the swap"
             os.close(fd)
@@ -3226,16 +3267,14 @@ class TestSegmentDirIsPinnedOnRead:
         assert log._segments_oldest_first(), "precondition: rotation happened"
         decoy = sel_dir / "decoy.d"
         decoy.mkdir()
-        (decoy / "security_events-000042-20260821T000000Z.jsonl").write_text(
-            "", encoding="utf-8"
-        )
+        (decoy / "security_events-000042-20260821T000000Z.jsonl").write_text("", encoding="utf-8")
         pin = sel_mod._SegmentDirPin(fd=None, identity=(0, 0))
         monkeypatch.setattr(sel_mod, "_open_segment_dir", lambda path: (pin, False))
         os.rename(segment_dir, sel_dir / "aside.d")
         platform_compat.symlink_or_junction(str(decoy), str(segment_dir))
-        assert log._segments_oldest_first(pin=pin) == [], (
-            "enumeration surfaced names through a swapped segment dir"
-        )
+        assert (
+            log._segments_oldest_first(pin=pin) == []
+        ), "enumeration surfaced names through a swapped segment dir"
         result = log.verify_integrity(detailed=True)
         assert result.history_verifiable is False
 
@@ -3249,9 +3288,7 @@ class TestAppendValidatesTheFileByFd:
     may be replaced before the open that follows.
     """
 
-    def test_a_rotation_between_chaining_and_opening_is_re_chained(
-        self, sel_dir, small_segments
-    ):
+    def test_a_rotation_between_chaining_and_opening_is_re_chained(self, sel_dir, small_segments):
         """The exact interleaving: we chain, a sibling renames, then we open."""
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 5)
@@ -3283,9 +3320,9 @@ class TestAppendValidatesTheFileByFd:
         ours = [r for r in records if r.get("resources") == "seq=7000"]
         assert ours, "our record was lost"
         sibling_rec = next(r for r in records if r.get("resources") == "sibling")
-        assert ours[0]["prev_hash"] == sibling_rec["entry_hash"], (
-            "record chained off a tip that lives in the closed segment"
-        )
+        assert (
+            ours[0]["prev_hash"] == sibling_rec["entry_hash"]
+        ), "record chained off a tip that lives in the closed segment"
         total, valid = log.verify_integrity()
         assert total == valid, f"{total - valid} entries failed verification"
 
@@ -3301,10 +3338,7 @@ class TestAppendValidatesTheFileByFd:
         tip_before = log._last_hash
         _fill(log, 1, start=8000)
         line = (
-            (sel_dir / "security_events.jsonl")
-            .read_text(encoding="utf-8")
-            .strip()
-            .splitlines()[-1]
+            (sel_dir / "security_events.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1]
         )
         assert json.loads(line)["prev_hash"] == tip_before
 
@@ -3340,9 +3374,7 @@ class TestAppendValidatesTheFileByFd:
         assert live.read_text(encoding="utf-8") == before, "a record was written anyway"
         assert log._last_hash == tip_before, "the chain tip was left advanced"
 
-    def test_contention_is_an_oserror_so_critical_writes_fail_closed(
-        self, sel_dir, small_segments
-    ):
+    def test_contention_is_an_oserror_so_critical_writes_fail_closed(self, sel_dir, small_segments):
         """A critical caller must be able to deny the action it could not audit.
 
         Keeps ``base_dir``: the critical path writes inline and never calls
@@ -3484,8 +3516,10 @@ class TestRetentionStopsAtAnUndeletableSegment:
         accumulated = log._segments_oldest_first()
         assert len(accumulated) == 6, f"precondition: expected 6 segments, got {len(accumulated)}"
 
-        monkeypatch.setattr(sel_mod, "_SEGMENT_KEEP", 3)
-        assert len(accumulated) - sel_mod._SEGMENT_KEEP == 3, "precondition: 3 to sweep"
+        # The keep-count is read once at construction, so tightening it on a live
+        # instance means patching the instance attribute, not the module default.
+        monkeypatch.setattr(log, "_segment_keep", 3)
+        assert len(accumulated) - log._segment_keep == 3, "precondition: 3 to sweep"
         oldest = accumulated[0]
         real_unlink = Path.unlink
 
@@ -3534,9 +3568,7 @@ class TestASiblingsAppendDoesNotReadAsCorruption:
         # _rotate_under_lock is called directly, so create the dir its caller
         # would normally have ensured.
         (sel_dir / "security_events.d").mkdir(parents=True, exist_ok=True)
-        with patch.object(
-            SecurityEventLog, "_live_size", return_value=sel_mod._SEGMENT_MAX_BYTES
-        ):
+        with patch.object(SecurityEventLog, "_live_size", return_value=sel_mod._SEGMENT_MAX_BYTES):
             log._rotate_under_lock()
 
         opener = json.loads(live.read_text(encoding="utf-8").splitlines()[0])
@@ -3560,9 +3592,7 @@ class TestSegmentNameProbingIsBounded:
 
         def counting_exists(inner_self, *args, **kwargs):
             nonlocal probes
-            if inner_self.parent == segment_dir and inner_self.name.startswith(
-                "security_events-"
-            ):
+            if inner_self.parent == segment_dir and inner_self.name.startswith("security_events-"):
                 probes += 1
                 return True  # every candidate name is taken
             return real_exists(inner_self, *args, **kwargs)
@@ -3585,9 +3615,10 @@ class TestSegmentNameProbingIsBounded:
         identity_before = (live.stat().st_dev, live.stat().st_ino)
         with patch.object(SecurityEventLog, "_next_segment_path", return_value=None):
             _fill(log, 50, start=9500)
-        assert (live.stat().st_dev, live.stat().st_ino) == identity_before, (
-            "the live log was renamed even though no free segment name was found"
-        )
+        assert (
+            live.stat().st_dev,
+            live.stat().st_ino,
+        ) == identity_before, "the live log was renamed even though no free segment name was found"
         assert log.recent(limit=1)[0]["resources"] == "seq=9549"
         total, valid = log.verify_integrity()
         assert total == valid
@@ -3606,13 +3637,13 @@ class TestCriticalWritesDoNotRotateInline:
     is not, so the inline path writes and leaves rotation to the background writer.
 
     These are the only tests here that exercise the ASYNC writer, so they omit
-    ``base_dir`` and use the session-scoped SEL directory from the rootdir
-    ``_isolate_sel_default_dir`` fixture. That is the repo convention for a reason
-    specific to this class: the writer is a daemon thread on a process singleton,
-    and against a per-test ``tmp_path`` it outlives the test and RE-CREATES the
-    directory on its next flush (``_flush_batch`` mkdirs), so a stray directory
-    reappears after the test's own cleanup removed it. Assertions here are all
-    relative to what the shared directory already holds.
+    ``base_dir``. Most use the session-scoped SEL directory from the rootdir
+    ``_isolate_sel_default_dir`` fixture. The rotation test uses its own
+    ``tmp_path_factory`` directory, which also survives for the session: a floor
+    marker left by an earlier test is monotone and may carry the production size
+    cap, so reusing it would make the small-cap fixture ineffective. A plain
+    per-test ``tmp_path`` is not safe because the daemon writer can outlive the
+    test and re-create a directory after its cleanup.
     """
 
     def test_a_critical_write_skips_the_rotation_window(self, small_segments):
@@ -3637,7 +3668,9 @@ class TestCriticalWritesDoNotRotateInline:
         assert any(e["resources"] == "critical" for e in log.recent(limit=20))
         assert log._segments_oldest_first() == segments_before
 
-    def test_the_background_writer_still_rotates(self, small_segments):
+    def test_the_background_writer_still_rotates(
+        self, small_segments, monkeypatch, tmp_path_factory
+    ):
         """Deferring must not mean never.
 
         Batches, not one shot, for two reasons that are both harness properties
@@ -3651,16 +3684,16 @@ class TestCriticalWritesDoNotRotateInline:
         (testing-conventions § Determinism).
 
         The observable is the highest segment SEQUENCE NUMBER, not the segment
-        count. Rotation ends with a retention sweep, and this class runs against
-        the shared session dir, so how many segments it already holds depends on
-        which tests ran earlier on this worker: at ``_SEGMENT_KEEP`` segments a
-        successful rotation adds one and the sweep deletes the oldest in the same
-        breath, leaving the COUNT flat -- a real rotation that a count comparison
-        calls "never rotated". The sequence only ever rises
+        count. Rotation ends with a retention sweep, so at ``_SEGMENT_KEEP``
+        segments a successful rotation adds one and the sweep deletes the oldest
+        in the same breath, leaving the COUNT flat -- a real rotation that a count
+        comparison calls "never rotated". The sequence only ever rises
         (``_next_segment_path`` continues from the highest segment still on
         disk, precisely so retention cannot make it go backwards), so it
         observes the rotation no matter what the sweep did.
         """
+        isolated_dir = tmp_path_factory.mktemp("sel-async-small-cap")
+        monkeypatch.setattr(sel_mod, "_default_dir", lambda: isolated_dir)
         log = SecurityEventLog(sync=False)
         _fill(log, 200)
         log.flush()
@@ -3792,9 +3825,9 @@ class TestTwoWritersCannotBothClaimGenesis:
         rows = [json.loads(line) for line in live.read_text(encoding="utf-8").splitlines()]
         assert [r["event_type"] for r in rows] == ["tool_invocation", "sel_rotation"]
         assert rows[0]["prev_hash"] == ""
-        assert rows[1]["prev_hash"] == rows[0]["entry_hash"], (
-            "the rotation record claimed genesis in a log that already had a record"
-        )
+        assert (
+            rows[1]["prev_hash"] == rows[0]["entry_hash"]
+        ), "the rotation record claimed genesis in a log that already had a record"
         total, valid = log.verify_integrity()
         assert total == valid, f"{total - valid} entries failed verification"
 
@@ -3819,9 +3852,7 @@ class TestCollisionRetryReanchorsUnconditionally:
     the collision had just invalidated and wrote it.
     """
 
-    def test_a_foreign_append_is_re_chained_not_re_written_stale(
-        self, sel_dir, small_segments
-    ):
+    def test_a_foreign_append_is_re_chained_not_re_written_stale(self, sel_dir, small_segments):
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 5)
         live = sel_dir / "security_events.jsonl"
@@ -3841,9 +3872,9 @@ class TestCollisionRetryReanchorsUnconditionally:
         rows = [json.loads(line) for line in live.read_text(encoding="utf-8").splitlines()]
         ours = rows[-1]
         assert ours["resources"] == "seq=6000"
-        assert ours["prev_hash"] == sibling.entry_hash, (
-            "wrote a stale prev_hash after the collision was detected"
-        )
+        assert (
+            ours["prev_hash"] == sibling.entry_hash
+        ), "wrote a stale prev_hash after the collision was detected"
         total, valid = log.verify_integrity()
         assert total == valid, f"{total - valid} entries failed verification"
 
@@ -3919,7 +3950,9 @@ class TestOnlyTheWriterThreadRotates:
             entered.append("yes")
             return real_window(inner_self)
 
-        with patch.object(SecurityEventLog, "_ensure_writer", side_effect=RuntimeError("no thread")):
+        with patch.object(
+            SecurityEventLog, "_ensure_writer", side_effect=RuntimeError("no thread")
+        ):
             with patch.object(SecurityEventLog, "_rotation_window", recording_window):
                 log.log(_make_event(event_id="fb0", resources="fallback"))
 
@@ -4001,9 +4034,7 @@ class TestPruneCannotClobberAConcurrentRotation:
         assert removed > 0, "precondition: something was pruned"
         assert held and all(held), "prune rewrote the live log without the rotation lock"
 
-    def test_prune_skips_the_live_sweep_when_it_cannot_serialize(
-        self, sel_dir, small_segments
-    ):
+    def test_prune_skips_the_live_sweep_when_it_cannot_serialize(self, sel_dir, small_segments):
         """Skipping beats an unserialized rewrite: the latter loses events."""
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         base = datetime(2020, 1, 1, tzinfo=timezone.utc)
@@ -4048,20 +4079,17 @@ class TestPruneCannotClobberAConcurrentRotation:
 
         total_before, valid_before = log.verify_integrity()
         orphaned = total_before - valid_before
-        assert orphaned == 1, (
-            f"expected exactly the known orphaned-first-survivor break, got {orphaned}"
-        )
+        assert (
+            orphaned == 1
+        ), f"expected exactly the known orphaned-first-survivor break, got {orphaned}"
 
         _fill(log, 1, start=900)
         total_after, valid_after = log.verify_integrity()
-        assert total_after - valid_after == orphaned, (
-            "the post-prune append introduced a NEW chain break"
-        )
+        assert (
+            total_after - valid_after == orphaned
+        ), "the post-prune append introduced a NEW chain break"
         last = json.loads(
-            (sel_dir / "security_events.jsonl")
-            .read_text(encoding="utf-8")
-            .strip()
-            .splitlines()[-1]
+            (sel_dir / "security_events.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1]
         )
         assert last["resources"] == "seq=900"
 
@@ -4126,9 +4154,7 @@ class TestSegmentDirIsNotFollowedThroughALink:
         # The audit records still landed in the live log.
         assert log.recent(limit=1)[0]["resources"] == "seq=2299"
 
-    def test_a_planted_segment_link_is_never_read_as_audit_history(
-        self, sel_dir, small_segments
-    ):
+    def test_a_planted_segment_link_is_never_read_as_audit_history(self, sel_dir, small_segments):
         """A segment-shaped SYMLINK must not be surfaced as events.
 
         Every reader resolves segments by name, and `recent()` backs the
@@ -4231,9 +4257,9 @@ class TestSegmentOpensValidateTheDescriptor:
         finally:
             alias_pin.close()
         assert newest in order, "the real newest segment vanished from the read order"
-        assert order.index(newest) < order.index(alias), (
-            "the alias outranked the real newest segment in newest-first reads"
-        )
+        assert order.index(newest) < order.index(
+            alias
+        ), "the alias outranked the real newest segment in newest-first reads"
         total, valid = log.verify_integrity()
         assert total == valid, "alias duplication broke signature validity"
 
@@ -4296,9 +4322,7 @@ class TestSegmentOpensValidateTheDescriptor:
         assert total == valid
         assert total > 0
 
-    def test_regular_segments_read_identically_through_the_funnel(
-        self, sel_dir, small_segments
-    ):
+    def test_regular_segments_read_identically_through_the_funnel(self, sel_dir, small_segments):
         """The guard must not change what a REAL segment verifies or yields."""
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 200)
@@ -4411,9 +4435,7 @@ class TestForeignRotationDoesNotBreakOurChain:
     after every foreign rotation.
     """
 
-    def test_a_replaced_live_log_re_anchors_before_the_next_append(
-        self, sel_dir, small_segments
-    ):
+    def test_a_replaced_live_log_re_anchors_before_the_next_append(self, sel_dir, small_segments):
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 5)
         stale_tip = log._last_hash
@@ -4446,9 +4468,9 @@ class TestForeignRotationDoesNotBreakOurChain:
         lines = live.read_text(encoding="utf-8").strip().splitlines()
         ours = json.loads(lines[-1])
         assert ours["resources"] == "seq=9000"
-        assert ours["prev_hash"] == sibling_tip, (
-            "chained off a tip that now lives in the closed segment"
-        )
+        assert (
+            ours["prev_hash"] == sibling_tip
+        ), "chained off a tip that now lives in the closed segment"
         total, valid = log.verify_integrity()
         assert total == valid, f"{total - valid} entries failed after a foreign rotation"
 
@@ -4661,13 +4683,15 @@ class TestMetadataRedaction:
         assert self.AKIA_TOKEN not in raw
 
     def test_nested_metadata_values_are_redacted(self, log, sel_dir):
-        log.log(_make_event(
-            event_id="nested1",
-            metadata={
-                "outer": {"inner": self.AKIA_TOKEN},
-                "items": [self.AKIA_TOKEN, 7, None],
-            },
-        ))
+        log.log(
+            _make_event(
+                event_id="nested1",
+                metadata={
+                    "outer": {"inner": self.AKIA_TOKEN},
+                    "items": [self.AKIA_TOKEN, 7, None],
+                },
+            )
+        )
         raw = self._disk_text(sel_dir)
         assert self.AKIA_TOKEN not in raw
         data = json.loads(raw.strip())
@@ -4690,10 +4714,12 @@ class TestMetadataRedaction:
     def test_redacted_events_chain_verifies(self, log):
         """The HMAC chain signs the redacted bytes, so verify stays green."""
         for i in range(3):
-            log.log(_make_event(
-                event_id=f"chain{i}",
-                metadata={"query": f"{self.AKIA_TOKEN} #{i}"},
-            ))
+            log.log(
+                _make_event(
+                    event_id=f"chain{i}",
+                    metadata={"query": f"{self.AKIA_TOKEN} #{i}"},
+                )
+            )
         total, valid = log.verify_integrity()
         assert total == 3
         assert valid == 3
@@ -4725,10 +4751,12 @@ class TestMetadataRedaction:
         from collections import namedtuple
 
         point = namedtuple("point", ["x", "y"])
-        log.log(_make_event(
-            event_id="nt1",
-            metadata={"pos": point(self.AKIA_TOKEN, 2)},
-        ))
+        log.log(
+            _make_event(
+                event_id="nt1",
+                metadata={"pos": point(self.AKIA_TOKEN, 2)},
+            )
+        )
         raw = self._disk_text(sel_dir)
         assert self.AKIA_TOKEN not in raw
         data = json.loads(raw.strip())
@@ -4741,10 +4769,12 @@ class TestMetadataRedaction:
             "kiro_crew.sel._redacted_metadata_copy",
             side_effect=RuntimeError("simulated redactor failure"),
         ):
-            log.log(_make_event(
-                event_id="rf1",
-                metadata={"query": self.AKIA_TOKEN},
-            ))
+            log.log(
+                _make_event(
+                    event_id="rf1",
+                    metadata={"query": self.AKIA_TOKEN},
+                )
+            )
         raw = self._disk_text(sel_dir)
         assert self.AKIA_TOKEN not in raw
         data = json.loads(raw.strip())
@@ -4806,11 +4836,13 @@ class TestMetadataRedaction:
     def test_identity_fields_stay_verbatim(self, log, sel_dir):
         """Identity-shaped fields are constrained vocabularies, not free text —
         the writer must not rewrite them."""
-        log.log(_make_event(
-            event_id="ident1",
-            caller_identity="dashboard:slot-AKIA-not-a-key",
-            downstream_service="kirocrew-core",
-        ))
+        log.log(
+            _make_event(
+                event_id="ident1",
+                caller_identity="dashboard:slot-AKIA-not-a-key",
+                downstream_service="kirocrew-core",
+            )
+        )
         data = json.loads(self._disk_text(sel_dir).strip())
         assert data["caller_identity"] == "dashboard:slot-AKIA-not-a-key"
         assert data["downstream_service"] == "kirocrew-core"
@@ -4919,9 +4951,7 @@ class TestControlCharacterSerialization:
             "/tmp/a\nforged: line",  # LF: forge a whole record
         ],
     )
-    def test_a_control_character_is_escaped_in_the_written_record(
-        self, log, sel_dir, payload
-    ):
+    def test_a_control_character_is_escaped_in_the_written_record(self, log, sel_dir, payload):
         log.log_tool_invocation(
             session_key="dashboard",
             tool_name="file_read",
@@ -4940,3 +4970,829 @@ class TestControlCharacterSerialization:
         # The value is present and round-trips intact, so escaping is not dropping
         # information -- it is only making it inert.
         assert json.loads(record)["resources"] == payload
+
+
+class TestEnvOverrides:
+    """The rotation limits are operator-tunable via env vars.
+
+    Read ONCE at ``SecurityEventLog`` construction; the module constants stay
+    the defaults. The overrides are RAISE-ONLY (floor = compiled default): the
+    audited agent controls child-process environments, so a lowerable limit
+    would let it erase shared audit history through the trusted writer.
+    Malformed values fail SOFT — an audit logger that refuses to start
+    converts a typo into lost audit coverage — and the fallback warning
+    must name the variable only, never echo the rejected value (a mis-pasted
+    deployment value can contain a secret, and the SEL process log is a small
+    exfiltration surface).
+    """
+
+    def test_defaults_unchanged_when_vars_unset(self, sel_dir):
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES
+        assert log._segment_keep == sel_mod._SEGMENT_KEEP
+        assert log._retention_days == sel_mod._RETENTION_DAYS
+
+    def test_max_bytes_raise_reaches_the_rotation_gate(self, sel_dir, monkeypatch):
+        """An env raise must govern the actual rotation trigger, not just the
+        attribute. Shrink the compiled default (and thus the raise-only floor)
+        so the env value 8192 is a genuine raise over it, then prove rotation
+        happens at the env value."""
+        monkeypatch.setattr(sel_mod, "_SEGMENT_MAX_BYTES", 4096)
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", "8192")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == 8192
+        _fill(log, 300)
+        segments = log._segments_oldest_first()
+        assert segments, "an 8 KiB cap over 300 events must have rolled the live log"
+        live = sel_dir / "security_events.jsonl"
+        assert live.stat().st_size < 8192 * 2
+
+    def test_keep_raise_controls_retained_segment_count(self, sel_dir, monkeypatch):
+        monkeypatch.setattr(sel_mod, "_SEGMENT_MAX_BYTES", 4096)
+        monkeypatch.setattr(sel_mod, "_SEGMENT_KEEP", 2)
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "3")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_keep == 3
+        _fill(log, 900)
+        assert len(log._segments_oldest_first()) == 3
+
+    def test_retention_days_raise_reaches_prune(self, sel_dir, monkeypatch):
+        monkeypatch.setattr(sel_mod, "_RETENTION_DAYS", 30)
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "40")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._retention_days == 40
+        now = datetime.now(tz=timezone.utc)
+        log.log(_make_event(event_id="old", timestamp=(now - timedelta(days=50)).isoformat()))
+        log.log(_make_event(event_id="mid", timestamp=(now - timedelta(days=35)).isoformat()))
+        # No explicit keep_days: prune must pick up the overridden 40-day
+        # window — the 35-day entry survives it (it would not survive the
+        # patched 30-day default).
+        assert log.prune() == 1
+        remaining = (sel_dir / "security_events.jsonl").read_text(encoding="utf-8")
+        assert "old" not in remaining and "mid" in remaining
+
+    def test_explicit_keep_days_still_wins_over_the_override(self, sel_dir, monkeypatch):
+        monkeypatch.setattr(sel_mod, "_RETENTION_DAYS", 30)
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "40")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        now = datetime.now(tz=timezone.utc)
+        log.log(_make_event(event_id="old", timestamp=(now - timedelta(days=50)).isoformat()))
+        assert log.prune(keep_days=365) == 0
+
+    def test_scrubbed_env_child_does_not_rotate_at_default_after_max_bytes_raise(
+        self, sel_dir, monkeypatch
+    ):
+        """A scrubbed sibling inherits MAX_BYTES before it can rotate early."""
+        monkeypatch.setattr(sel_mod, "_SEGMENT_MAX_BYTES", 1024)
+        raised_max_bytes = 1024 * 1024
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", str(raised_max_bytes))
+        operator = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert operator._segment_max_bytes == raised_max_bytes
+
+        SecurityEventLog._instance = None
+        monkeypatch.delenv("KIROCREW_SEL_MAX_BYTES")
+        child = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(child, 10)
+
+        assert not child._segments_oldest_first(), (
+            "the scrubbed sibling rotated at the compiled default instead of "
+            "the process-shared max-bytes floor"
+        )
+        assert child._segment_max_bytes == raised_max_bytes
+
+    def test_explicit_prune_cannot_narrow_authenticated_retention_floor(self, sel_dir, monkeypatch):
+        """An explicit short window cannot erase history inside a raised floor."""
+        monkeypatch.setattr(sel_mod, "_RETENTION_DAYS", 30)
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "100")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        now = datetime.now(tz=timezone.utc)
+        log.log(
+            _make_event(event_id="inside-floor", timestamp=(now - timedelta(days=50)).isoformat())
+        )
+
+        assert log.prune(keep_days=1) == 0
+        assert "inside-floor" in (sel_dir / "security_events.jsonl").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("raw", ["not-a-number", "0", "-5", "1.5"])
+    def test_malformed_values_fall_back_with_a_redacting_warning(
+        self, sel_dir, monkeypatch, caplog, raw
+    ):
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", raw)
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES
+        warnings = [
+            r.getMessage() for r in caplog.records if "KIROCREW_SEL_MAX_BYTES" in r.getMessage()
+        ]
+        assert warnings, "the fallback must be visible, not silent"
+        # Assert on the message BEFORE the interpolated default: the default's
+        # own digits must not be able to collide with the rejected raw value.
+        assert all(
+            raw not in msg.split("using the default")[0] for msg in warnings
+        ), "the rejected value must never be echoed into the log"
+
+    def test_each_variable_falls_back_independently(self, sel_dir, monkeypatch, caplog):
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", "junk")
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "20")
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "-1")
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES
+        assert log._segment_keep == 20
+        assert log._retention_days == sel_mod._RETENTION_DAYS
+
+    def test_lowering_attempts_clamp_to_the_compiled_defaults(self, sel_dir, monkeypatch, caplog):
+        """The audit-erasure vector from review: an agent-controlled child env
+        (`KIROCREW_SEL_MAX_BYTES=65536 KIROCREW_SEL_KEEP=1 kirocrew ...`) must
+        NOT be able to narrow the shared log's protection. Every lowering
+        attempt clamps up to the compiled default, with a warning."""
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", "65536")
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "1")
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "1")
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES
+        assert log._segment_keep == sel_mod._SEGMENT_KEEP
+        assert log._retention_days == sel_mod._RETENTION_DAYS
+        for var in (
+            "KIROCREW_SEL_MAX_BYTES",
+            "KIROCREW_SEL_KEEP",
+            "KIROCREW_SEL_RETENTION_DAYS",
+        ):
+            assert any(
+                var in r.getMessage() and "minimum" in r.getMessage() for r in caplog.records
+            ), f"the clamp on {var} must be visible, not silent"
+
+    def test_keep_count_clamps_below_the_scan_cap(self, sel_dir, monkeypatch, caplog):
+        """A keep-count the enumeration cap cannot admit would disable count
+        retention entirely (excess could never go positive)."""
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", str(sel_mod._SEGMENT_SCAN_CAP + 100))
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_keep == sel_mod._SEGMENT_KEEP_MAX
+        assert log._segment_keep < sel_mod._SEGMENT_SCAN_CAP
+        assert any(
+            "KIROCREW_SEL_KEEP" in r.getMessage() and "maximum" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_max_bytes_clamps_at_the_coherence_ceiling(self, sel_dir, monkeypatch, caplog):
+        """A TB-scale KIROCREW_SEL_MAX_BYTES (a byte count meant as MiB, say)
+        must clamp to the ceiling rather than fold an absurd value into the
+        monotone floor marker until an offline reset."""
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", str(sel_mod._SEGMENT_MAX_BYTES_MAX * 1000))
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES_MAX
+        assert any(
+            "KIROCREW_SEL_MAX_BYTES" in r.getMessage() and "maximum" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_retention_days_clamps_at_the_coherence_ceiling(self, sel_dir, monkeypatch, caplog):
+        """An absurd KIROCREW_SEL_RETENTION_DAYS must clamp to the ceiling
+        rather than pin the shared floor marker until an offline reset."""
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", str(sel_mod._RETENTION_DAYS_MAX + 10_000))
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._retention_days == sel_mod._RETENTION_DAYS_MAX
+        assert any(
+            "KIROCREW_SEL_RETENTION_DAYS" in r.getMessage() and "maximum" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_scrubbed_env_child_cannot_lower_a_raised_deletion_floor(self, sel_dir, monkeypatch):
+        """Operator raises KEEP/RETENTION via env; a
+        second process constructed WITHOUT those variables (scrubbed child
+        env) must inherit the raised deletion bounds from the shared marker,
+        never enforce the compiled defaults on the shared directory."""
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "100")
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "400")
+        operator = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert operator._segment_keep == 100
+        marker = sel_dir / "security_events.d" / "retention_floor.json"
+        assert marker.is_file(), "the raise must be persisted for other processes"
+        # Simulate the scrubbed-env child: SEL is a per-process singleton, so
+        # drop it (the idiom used across this file) and construct with the
+        # variables unset — a genuinely fresh instance on the same directory.
+        SecurityEventLog._instance = None
+        monkeypatch.delenv("KIROCREW_SEL_KEEP", raising=False)
+        monkeypatch.delenv("KIROCREW_SEL_RETENTION_DAYS", raising=False)
+        child = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert child._segment_keep == 100, "child must inherit the raised keep"
+        assert child._retention_days == 400, "child must inherit the raised window"
+
+    def test_old_path_forge_cannot_lower_segment_directory_floor(self, sel_dir, monkeypatch):
+        """A stale sandbox can write the old metadata leaf, but not segments.
+
+        Simulate an operator's raised keep, then a pre-upgrade attacker replacing
+        only ``security_events.meta/retention_floor.json`` with a low marker. The
+        post-upgrade child must retain the segment-directory authority and keep
+        every protected segment.
+        """
+        monkeypatch.setattr(sel_mod, "_SEGMENT_MAX_BYTES", 4096)
+        monkeypatch.setattr(sel_mod, "_SEGMENT_KEEP", 1)
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "3")
+        operator = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(operator, 900)
+        protected = operator._segments_oldest_first()
+        assert len(protected) == 3, "precondition: the raised floor protects three segments"
+
+        old_floor_dir = sel_dir / "security_events.meta"
+        old_floor_dir.mkdir(mode=0o700, exist_ok=True)
+        (old_floor_dir / "retention_floor.json").write_text(
+            json.dumps(
+                {
+                    "keep": 1,
+                    "retention_days": sel_mod._RETENTION_DAYS,
+                    "segment_max_bytes": sel_mod._SEGMENT_MAX_BYTES,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        SecurityEventLog._instance = None
+        monkeypatch.delenv("KIROCREW_SEL_KEEP")
+        child = SecurityEventLog(base_dir=sel_dir, sync=True)
+        with child._lock:
+            removed = child._enforce_segment_retention_locked()
+
+        assert removed == 0, "the forged old-path floor deleted protected audit segments"
+        assert child._segment_keep == 3
+        assert child._segments_oldest_first() == protected
+
+    def test_old_floor_values_only_seed_new_authority_upward(self, sel_dir):
+        """A valid old marker preserves raises but never authenticates deletion.
+
+        Migration copies its maxima into the segment-directory marker once. After
+        that marker exists, rewriting the retired path low cannot change the floor.
+        """
+        old_floor_dir = sel_dir / "security_events.meta"
+        old_floor_dir.mkdir(mode=0o700)
+        old_marker = old_floor_dir / "retention_floor.json"
+        raised = {
+            "keep": 100,
+            "retention_days": 400,
+            "segment_max_bytes": sel_mod._SEGMENT_MAX_BYTES * 2,
+        }
+        old_marker.write_text(json.dumps(raised), encoding="utf-8")
+
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        new_marker = sel_dir / "security_events.d" / "retention_floor.json"
+        assert json.loads(new_marker.read_text(encoding="utf-8")) == raised
+        assert (log._segment_keep, log._retention_days, log._segment_max_bytes) == (
+            raised["keep"],
+            raised["retention_days"],
+            raised["segment_max_bytes"],
+        )
+
+        old_marker.write_text(
+            json.dumps(
+                {
+                    "keep": sel_mod._SEGMENT_KEEP,
+                    "retention_days": sel_mod._RETENTION_DAYS,
+                    "segment_max_bytes": sel_mod._SEGMENT_MAX_BYTES,
+                }
+            ),
+            encoding="utf-8",
+        )
+        SecurityEventLog._instance = None
+        child = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert (child._segment_keep, child._retention_days, child._segment_max_bytes) == (
+            raised["keep"],
+            raised["retention_days"],
+            raised["segment_max_bytes"],
+        )
+
+    def test_a_child_constructed_before_the_raise_prunes_with_the_raised_floor(
+        self, sel_dir, monkeypatch
+    ):
+        """The other ordering of the same attack: the scrubbed-env process is
+        constructed FIRST (compiled defaults in memory), the operator raises
+        the bounds afterwards. The child's deletion paths must re-read the
+        shared floor at prune time instead of trusting construction-time
+        state, or its next sweep deletes segments the operator protected."""
+        child = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert child._segment_keep == sel_mod._SEGMENT_KEEP
+        # The operator raises the bounds in a separate process afterwards
+        # (fresh singleton on the same directory).
+        SecurityEventLog._instance = None
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "100")
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "400")
+        SecurityEventLog(base_dir=sel_dir, sync=True)  # operator stamps the floor
+        child.prune()  # deletion entry point must refresh from the marker
+        assert child._segment_keep == 100, "prune used the stale compiled keep"
+        assert child._retention_days == 400, "prune used the stale compiled window"
+
+    def test_a_child_constructed_before_max_bytes_raise_refreshes_before_rotation(
+        self, sel_dir, monkeypatch
+    ):
+        """Rotation re-reads a max-bytes raise made after child construction."""
+        monkeypatch.setattr(sel_mod, "_SEGMENT_MAX_BYTES", 1024)
+        raised_max_bytes = 1024 * 1024
+        child = SecurityEventLog(base_dir=sel_dir, sync=True)
+        child._segment_max_bytes = raised_max_bytes
+        _fill(child, 10)
+        assert child._live_size() > sel_mod._SEGMENT_MAX_BYTES
+        assert not child._segments_oldest_first()
+        child._segment_max_bytes = sel_mod._SEGMENT_MAX_BYTES
+
+        SecurityEventLog._instance = None
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", str(raised_max_bytes))
+        SecurityEventLog(base_dir=sel_dir, sync=True)
+        child._rotate_under_lock()
+
+        assert child._segment_max_bytes == raised_max_bytes
+        assert not child._segments_oldest_first(), "rotation ignored the later max-bytes raise"
+
+    def test_a_damaged_floor_marker_fails_soft_and_disables_deletion(self, sel_dir):
+        """A corrupt marker must not stop construction or permit erasure."""
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(mode=0o700, exist_ok=True)
+        marker = floor_dir / "retention_floor.json"
+        marker.write_text("{not json", encoding="utf-8")
+
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+
+        assert log._segment_keep == sel_mod._SEGMENT_KEEP
+        assert log._retention_days == sel_mod._RETENTION_DAYS
+        assert log._refresh_deletion_floor() is False
+        assert marker.read_text(encoding="utf-8") == "{not json"
+
+    @pytest.mark.parametrize("field", ["keep", "retention_days", "segment_max_bytes"])
+    @pytest.mark.parametrize(
+        "raw_value",
+        ["1e309", "30.5"],
+        ids=["non-finite", "fractional"],
+    )
+    def test_non_integer_floor_marker_fails_soft_and_disables_deletion(
+        self, sel_dir, field, raw_value
+    ):
+        """Every floor field must be an exact JSON integer."""
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(mode=0o700, exist_ok=True)
+        marker = floor_dir / "retention_floor.json"
+        fields = {
+            "keep": str(sel_mod._SEGMENT_KEEP),
+            "retention_days": str(sel_mod._RETENTION_DAYS),
+            "segment_max_bytes": str(sel_mod._SEGMENT_MAX_BYTES),
+        }
+        fields[field] = raw_value
+        raw_marker = (
+            f'{{"keep": {fields["keep"]}, '
+            f'"retention_days": {fields["retention_days"]}, '
+            f'"segment_max_bytes": {fields["segment_max_bytes"]}}}'
+        )
+        marker.write_text(raw_marker, encoding="utf-8")
+
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+
+        assert log._segment_keep == sel_mod._SEGMENT_KEEP
+        assert log._retention_days == sel_mod._RETENTION_DAYS
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES
+        assert log._refresh_deletion_floor() is False
+        assert marker.read_text(encoding="utf-8") == raw_marker
+
+    @pytest.mark.asyncio
+    async def test_first_touch_retention_init_runs_off_the_event_loop(self, sel_dir, monkeypatch):
+        """The writer serializes first-touch floor setup before queued events."""
+        key_path = sel_dir / "trust" / "sel_hmac.key"
+        key_path.parent.mkdir(mode=0o700)
+        key_path.write_bytes(b"k" * 32)
+
+        def _load_key(instance):
+            instance._hmac_key_file = key_path
+            return b"k" * 32
+
+        monkeypatch.setattr(SecurityEventLog, "_load_or_create_hmac_key", _load_key)
+        mkdir_threads: list[int] = []
+        fsync_threads: list[int] = []
+        real_mkdir = os.mkdir
+        real_fsync = os.fsync
+        retention_paths = {sel_dir / "security_events.d"}
+
+        def _record_mkdir(path, *args, **kwargs):
+            if Path(path) in retention_paths:
+                mkdir_threads.append(threading.get_ident())
+            return real_mkdir(path, *args, **kwargs)
+
+        def _record_fsync(fd):
+            fsync_threads.append(threading.get_ident())
+            return real_fsync(fd)
+
+        monkeypatch.setattr(sel_mod.os, "mkdir", _record_mkdir)
+        monkeypatch.setattr(sel_mod.os, "fsync", _record_fsync)
+        loop_thread = threading.get_ident()
+
+        log = SecurityEventLog(base_dir=sel_dir)
+        log.log(_make_event(event_id="first-touch-1"))
+        log.log(_make_event(event_id="first-touch-2"))
+        await asyncio.to_thread(log.flush)
+
+        assert mkdir_threads, "the first-touch retention directories were never initialized"
+        assert fsync_threads, "the first-touch retention marker was never durably published"
+        assert loop_thread not in mkdir_threads
+        assert loop_thread not in fsync_threads
+        written_ids = [
+            json.loads(line)["event_id"]
+            for line in log._path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert written_ids == ["first-touch-1", "first-touch-2"]
+        stop_sel_writer(log)
+
+    def test_retention_skip_emits_degraded_health_metric(self, sel_dir, monkeypatch):
+        """When the sweep is skipped for a missing/damaged floor, the signal
+        must be a metric (dashboard-visible), not only a log line — otherwise
+        rotation keeps minting segments with no health signal."""
+        import kiro_crew.metrics.events as events_mod
+
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(mode=0o700, exist_ok=True)
+        # A damaged marker fails soft: _refresh_deletion_floor() returns False,
+        # so the sweep is skipped and the degraded-health metric must fire.
+        (floor_dir / "retention_floor.json").write_text("{not json", encoding="utf-8")
+
+        emitted: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            events_mod, "emit_counter", lambda name, attrs: emitted.append((name, attrs))
+        )
+
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._refresh_deletion_floor() is False
+        with log._lock:
+            assert log._enforce_segment_retention_locked() == 0
+
+        assert (events_mod.SEL_RETENTION_SKIPPED, {"surface": "retention"}) in emitted
+
+    def test_retention_floor_publish_syncs_file_before_replace_and_directory_after(
+        self, tmp_path, monkeypatch
+    ):
+        """A published floor is durable before pending raise records can be cleared."""
+        floor_dir = tmp_path / "security_events.d"
+        floor_dir.mkdir(exist_ok=True)
+        target = floor_dir / "retention_floor.json"
+        events: list[str] = []
+        real_replace = os.replace
+
+        def record_fsync(fd):
+            kind = "directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+            events.append(f"fsync:{kind}")
+
+        def record_replace(src, dst):
+            events.append("replace")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(sel_mod.os, "fsync", record_fsync)
+        monkeypatch.setattr(sel_mod.os, "replace", record_replace)
+
+        sel_mod._write_retention_floor_file(
+            floor_dir,
+            target,
+            sel_mod._SEGMENT_KEEP,
+            sel_mod._RETENTION_DAYS,
+            sel_mod._SEGMENT_MAX_BYTES,
+        )
+
+        replace_index = events.index("replace")
+        assert (
+            "fsync:file" in events[:replace_index]
+        ), f"staged file was not fsynced before replace: {events}"
+        if os.name != "nt":
+            assert (
+                "fsync:directory" in events[replace_index + 1 :]
+            ), f"floor directory was not fsynced after replace: {events}"
+
+    def test_unsupported_directory_fsync_does_not_block_floor_rotation_or_prune(
+        self, sel_dir, small_segments, monkeypatch
+    ):
+        """A complete marker remains usable when directory fsync is unsupported."""
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(exist_ok=True)
+        marker = floor_dir / "retention_floor.json"
+        real_fsync = os.fsync
+
+        def reject_directory_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise PermissionError(errno.EACCES, "directory fsync unsupported")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(sel_mod.os, "fsync", reject_directory_fsync)
+        sel_mod._write_retention_floor_file(
+            floor_dir,
+            marker,
+            sel_mod._SEGMENT_KEEP,
+            sel_mod._RETENTION_DAYS,
+            sel_mod._SEGMENT_MAX_BYTES,
+        )
+
+        state = sel_mod._read_retention_floor_state(sel_dir / "security_events.d")
+        assert state.authenticated, "the complete marker was rejected after directory fsync"
+
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "directory fsync failure blocked rotation"
+
+        log.log(
+            _make_event(
+                event_id="old-after-dir-fsync",
+                timestamp="2020-01-01T00:00:00+00:00",
+            )
+        )
+        assert log.prune() >= 1, "a valid marker did not authorize pruning"
+
+    def test_directory_fsync_real_io_error_propagates(self, sel_dir, monkeypatch):
+        """A REAL durability failure (EIO) on the directory fsync — on a
+        platform where directory fsync IS supported — must PROPAGATE, not be
+        swallowed as an unsupported-platform hint. Swallowing it would let the
+        caller acknowledge a raise the storage never durably recorded."""
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(exist_ok=True)
+        marker = floor_dir / "retention_floor.json"
+        real_fsync = os.fsync
+
+        def fail_directory_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.EIO, "input/output error on directory fsync")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(sel_mod.os, "fsync", fail_directory_fsync)
+        with pytest.raises(OSError) as excinfo:
+            sel_mod._write_retention_floor_file(
+                floor_dir,
+                marker,
+                sel_mod._SEGMENT_KEEP,
+                sel_mod._RETENTION_DAYS,
+                sel_mod._SEGMENT_MAX_BYTES,
+            )
+        assert excinfo.value.errno == errno.EIO
+
+    def test_staged_file_fsync_failure_disables_prune_without_stopping_writer(
+        self, small_segments, monkeypatch, tmp_path_factory
+    ):
+        """A staged-file failure publishes nothing but cannot kill async rotation."""
+        sel_dir = tmp_path_factory.mktemp("sel-staged-fsync")
+        monkeypatch.setattr(sel_mod, "_default_dir", lambda: sel_dir)
+        trust_dir = sel_dir / sel_mod._TRUST_SUBDIR
+        trust_dir.mkdir()
+        (trust_dir / sel_mod._HMAC_KEY_FILE).write_bytes(os.urandom(32))
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(exist_ok=True)
+        marker = floor_dir / "retention_floor.json"
+        real_fsync = os.fsync
+
+        def reject_staged_file_fsync(fd):
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                raise PermissionError(errno.EACCES, "staged-file fsync failed")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(sel_mod.os, "fsync", reject_staged_file_fsync)
+        with pytest.raises(PermissionError, match="staged-file fsync failed"):
+            sel_mod._write_retention_floor_file(
+                floor_dir,
+                marker,
+                sel_mod._SEGMENT_KEEP,
+                sel_mod._RETENTION_DAYS,
+                sel_mod._SEGMENT_MAX_BYTES,
+            )
+        assert not marker.exists(), "a marker was published without a durable staged file"
+        assert not list(floor_dir.glob(".retention_floor.stage.*"))
+
+        log = SecurityEventLog(sync=False)
+        seq = _fill_until_over_cap(log, deadline=time.monotonic() + 30.0, start=0)
+        deadline = time.monotonic() + 30.0
+        iterations = 0
+        while not log._segments_oldest_first():
+            iterations += 1
+            assert iterations <= _POLL_ITERATION_CAP and time.monotonic() < deadline
+            _fill(log, 5, start=seq)
+            seq += 5
+            log.flush()
+
+        assert log._writer is not None and log._writer.is_alive()
+        live_before = log._path.read_bytes()
+        assert log.prune(keep_days=1) == 0
+        assert log._path.read_bytes() == live_before, "prune changed an unauthenticated log"
+
+    def test_the_floor_merge_is_per_field_monotone(self, sel_dir):
+        """Processes raising different fields cannot erase any prior raise."""
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(mode=0o700, exist_ok=True)
+        marker = floor_dir / "retention_floor.json"
+        initial_max_bytes = sel_mod._SEGMENT_MAX_BYTES * 2
+        raised_max_bytes = sel_mod._SEGMENT_MAX_BYTES * 3
+        marker.write_text(
+            json.dumps(
+                {
+                    "keep": 50,
+                    "retention_days": 500,
+                    "segment_max_bytes": initial_max_bytes,
+                }
+            ),
+            encoding="utf-8",
+        )
+        sel_mod._persist_retention_floor(seg_dir, 100, sel_mod._RETENTION_DAYS, raised_max_bytes)
+        assert json.loads(marker.read_text(encoding="utf-8")) == {
+            "keep": 100,
+            "retention_days": 500,
+            "segment_max_bytes": raised_max_bytes,
+        }
+
+        sel_mod._persist_retention_floor(seg_dir, 7, 365, sel_mod._SEGMENT_MAX_BYTES)
+        assert json.loads(marker.read_text(encoding="utf-8")) == {
+            "keep": 100,
+            "retention_days": 500,
+            "segment_max_bytes": raised_max_bytes,
+        }
+
+    def test_a_planted_authenticated_marker_link_blocks_deletion_and_repair(
+        self, sel_dir, monkeypatch
+    ):
+        """A linked marker is unauthenticated and never replaced with a lower floor."""
+        outside = sel_dir.parent / "agent-values.json"
+        outside.write_text(json.dumps({"keep": 4000, "retention_days": 9000}), encoding="utf-8")
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(mode=0o700, exist_ok=True)
+        marker = floor_dir / "retention_floor.json"
+        try:
+            marker.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/filesystem")
+        assert sel_mod._read_retention_floor(seg_dir) == (0, 0, 0)
+
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "100")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+
+        assert log._segment_keep == 100
+        assert log._refresh_deletion_floor() is False
+        assert marker.is_symlink(), "an unauthenticated marker was silently blessed"
+        assert json.loads(outside.read_text(encoding="utf-8"))["keep"] == 4000
+
+    def test_a_contended_stamp_defers_instead_of_writing(self, sel_dir):
+        """The round-3 contract: a stamp NEVER blocks and NEVER falls back to
+        an unlocked write. While another holder owns the rotation lock the
+        persist returns without touching the marker; after release it lands."""
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        marker = sel_dir / "security_events.d" / "retention_floor.json"
+        lock_path = seg_dir / ".rotate.lock"
+        with open(lock_path, "a+b") as holder:
+            holder.write(b"\0")
+            holder.flush()
+            assert platform_compat.try_acquire_lock(holder.fileno(), exclusive=True)
+            try:
+                sel_mod._persist_retention_floor(seg_dir, 100, 400, sel_mod._SEGMENT_MAX_BYTES)
+                assert (
+                    not marker.exists()
+                ), "a contended stamp wrote the marker (fail-open regression)"
+            finally:
+                platform_compat.release_lock(holder.fileno())
+        sel_mod._persist_retention_floor(seg_dir, 100, 400, sel_mod._SEGMENT_MAX_BYTES)
+        assert json.loads(marker.read_text(encoding="utf-8")) == {
+            "keep": 100,
+            "retention_days": 400,
+            "segment_max_bytes": sel_mod._SEGMENT_MAX_BYTES,
+        }
+
+    def test_contended_raises_are_published_before_a_low_sweep(self, sel_dir, monkeypatch):
+        """A lost construction-time stamp must survive until another try wins.
+
+        Pending raises must be visible to a low rotator before they are folded
+        into the canonical marker. Otherwise that rotator can close segments
+        early or delete the eighth segment while the raised process waits.
+        """
+        stale_low = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert stale_low._segment_keep == 7
+        marker = sel_dir / "security_events.d" / "retention_floor.json"
+        lock_path = sel_dir / "security_events.d" / ".rotate.lock"
+        raised_max_bytes = sel_mod._SEGMENT_MAX_BYTES * 2
+
+        real_try = platform_compat.try_acquire_lock
+        attempts = 0
+
+        def fail_two_rotation_acquires(fd, *, exclusive):
+            nonlocal attempts
+            actual = os.fstat(fd)
+            expected = lock_path.stat()
+            if (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino):
+                attempts += 1
+                if attempts <= 2:
+                    return False
+            return real_try(fd, exclusive=exclusive)
+
+        monkeypatch.setattr(platform_compat, "try_acquire_lock", fail_two_rotation_acquires)
+        SecurityEventLog._instance = None
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "100")
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", str(raised_max_bytes))
+        SecurityEventLog(base_dir=sel_dir, sync=True)
+        stored = json.loads(marker.read_text(encoding="utf-8"))
+        assert stored["keep"] == 7
+        assert stored["segment_max_bytes"] == sel_mod._SEGMENT_MAX_BYTES
+
+        protected = []
+        for seq in range(1, 9):
+            segment = stale_low._segment_dir / (
+                f"security_events-{seq:06d}-20200101T00000{seq - 1}Z.jsonl"
+            )
+            segment.write_text("{}\n", encoding="utf-8")
+            protected.append(segment)
+
+        assert stale_low._enforce_segment_retention_locked() == 0
+        assert stale_low._segment_keep == 100
+        assert stale_low._segment_max_bytes == raised_max_bytes
+        assert all(segment.exists() for segment in protected)
+
+        SecurityEventLog._instance = None
+        monkeypatch.delenv("KIROCREW_SEL_KEEP")
+        monkeypatch.delenv("KIROCREW_SEL_MAX_BYTES")
+        low = SecurityEventLog(base_dir=sel_dir, sync=True)
+        for _ in range(3):
+            low._ensure_segment_dir()
+            stored = json.loads(marker.read_text(encoding="utf-8"))
+            if stored["keep"] == 100 and stored["segment_max_bytes"] == raised_max_bytes:
+                break
+
+        assert attempts >= 3, "the contended publication was never retried"
+        stored = json.loads(marker.read_text(encoding="utf-8"))
+        assert stored["keep"] == 100
+        assert stored["segment_max_bytes"] == raised_max_bytes
+
+        stale_low._segment_keep = 7
+        stale_low._segment_max_bytes = sel_mod._SEGMENT_MAX_BYTES
+        assert stale_low._enforce_segment_retention_locked() == 0
+        assert stale_low._segment_keep == 100
+        assert stale_low._segment_max_bytes == raised_max_bytes
+        assert all(segment.exists() for segment in protected)
+
+    def test_a_retention_window_past_the_date_range_prunes_nothing(self, sel_dir, caplog):
+        """An over-wide window means "keep everything" — the sweep must not raise."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        log.log(_make_event(event_id="evt", timestamp="2020-01-01T00:00:00+00:00"))
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            assert log.prune(keep_days=10**9) == 0
+        assert any("representable" in r.getMessage() for r in caplog.records)
+
+    def test_a_planted_fifo_marker_neither_blocks_nor_is_trusted(self, sel_dir):
+        """A pre-planted FIFO at the marker path must not park the reader
+        (constructions run on event-loop threads): the non-blocking open plus
+        the regular-file gate read it as no floor, promptly."""
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFOs unavailable on this platform")
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(mode=0o700, exist_ok=True)
+        os.mkfifo(floor_dir / "retention_floor.json")
+        result: list[tuple[int, int, int]] = []
+        reader = threading.Thread(
+            target=lambda: result.append(sel_mod._read_retention_floor(seg_dir)),
+            daemon=True,
+        )
+        reader.start()
+        reader.join(timeout=5.0)
+        assert not reader.is_alive(), "the marker read blocked on a planted FIFO"
+        assert result == [(0, 0, 0)]
+
+    def test_an_oversized_marker_decoy_is_ignored(self, sel_dir):
+        """A marker past the size cap is not ours: the bounded read rejects it
+        instead of synchronously parsing arbitrary bytes on the hot path."""
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(mode=0o700, exist_ok=True)
+        decoy = {"keep": 4000, "retention_days": 9000, "pad": "x" * 8192}
+        (floor_dir / "retention_floor.json").write_text(json.dumps(decoy), encoding="utf-8")
+        assert sel_mod._read_retention_floor(seg_dir) == (
+            0,
+            0,
+            0,
+        ), "an oversized decoy marker was trusted"
+
+    def test_a_hard_linked_marker_is_not_trusted(self, sel_dir):
+        """A marker hard-linked from an agent-writable alias stays externally
+        mutable even after os.replace, so planted-high-then-lowered values
+        could defeat the monotone persist: st_nlink != 1 reads as no floor."""
+        outside = sel_dir.parent / "agent-alias.json"
+        outside.write_text(json.dumps({"keep": 4000, "retention_days": 9000}), encoding="utf-8")
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        floor_dir = sel_dir / "security_events.d"
+        floor_dir.mkdir(mode=0o700, exist_ok=True)
+        try:
+            os.link(outside, floor_dir / "retention_floor.json")
+        except (OSError, NotImplementedError):
+            pytest.skip("hard links unavailable on this platform/filesystem")
+        assert sel_mod._read_retention_floor(seg_dir) == (
+            0,
+            0,
+            0,
+        ), "a hard-linked marker's values were trusted"

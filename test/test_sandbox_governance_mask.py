@@ -293,6 +293,16 @@ class TestTheReconciliationIsComplete:
         assert "playwright-cli" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
         assert "tools/playwright-cli" not in sandbox._CREW_READONLY_LEAVES
 
+    def test_sel_floor_shares_the_segment_protection_domain(self) -> None:
+        assert "security_events.d" in sandbox._CREW_SANDBOX_VISIBLE_LEAVES
+        assert "security_events.meta" not in sandbox._CREW_READONLY_LEAVES
+        assert "security_events.meta" not in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+        assert "security_events.meta" not in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+
+        private_rules = "\n".join(sandbox._private_memory_seatbelt_rules())
+        assert "security_events\\\\.d" in private_rules
+        assert "retention_floor" not in private_rules
+
     @pytest.mark.parametrize("mode", _MODES)
     def test_every_mode_carries_the_derived_set(self, mode: str) -> None:
         """The governance tree is masked at every level, the way ``.vault`` already is.

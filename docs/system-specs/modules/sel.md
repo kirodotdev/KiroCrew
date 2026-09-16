@@ -111,7 +111,77 @@ grant audits retain their audit-or-deny contract.
 
 ## Retention
 
-Default 365 days. Pruned daily by heartbeat service (`_PRUNE_TICKS`).
+Size rotation closes the live log at 32 MiB and keeps 7 closed segments by
+default. The heartbeat prunes records after 365 days. All three limits are
+operator-tunable through `KIROCREW_SEL_MAX_BYTES`, `KIROCREW_SEL_KEEP`, and
+`KIROCREW_SEL_RETENTION_DAYS`.
+
+The overrides are **raise-only**. Each compiled default is the minimum, so an
+audited child cannot shrink retention through its environment. Once a value is
+stamped into the shared marker, no configuration, environment, or
+source-default edit lowers it; lowering is an offline marker reset (see
+below). A non-integer, zero, or negative value falls back to the default. The
+warning names only the variable, so it cannot echo a mis-pasted secret.
+`KIROCREW_SEL_KEEP` is capped at 4093, which keeps count retention below the
+bounded segment scan.
+
+`security_events.d/retention_floor.json` stores the highest max-bytes, keep,
+and days values declared for the shared log directory. The marker shares the
+same sandbox protection domain as the rotated history it governs. A sandbox
+that can write the marker can already unlink those segments, including across
+old and new sandbox profile generations.
+
+On first upgrade, a valid marker in the retired `security_events.meta` location
+is a max-only migration hint. It can raise the initial segment-directory floor,
+but it never authenticates deletion and cannot lower any field. Once the new
+marker exists, the old path is ignored. Missing or malformed old state is also
+ignored, while deletion remains disabled until the new marker is durably
+published.
+
+The marker is monotone per field. Before a writer attempts the non-blocking
+rotation lock, it atomically publishes an immutable pending raise in the same
+segment protection domain. A lock holder reads the canonical marker and every
+pending record before rotation or deletion. The next successful stamp folds
+the visible maxima into the canonical marker and removes covered pending
+records. Lock contention therefore cannot expose a lower-policy deletion
+window. An incomplete pending scan disables deletion.
+
+Marker reads are nofollow- and fd-fenced. Only a regular, single-link file with
+all three fields inside the 4 KiB cap is authenticated. A symlink, FIFO,
+hard-linked alias, oversized file, missing file, or malformed file cannot
+authorize deletion. A genuinely fresh marker is initialized eagerly. A
+present but unauthenticated marker is never replaced with current defaults.
+
+Construction takes `max(local, shared)` for all three bounds. Rotation refreshes
+the shared max-bytes floor under the rotation lock before comparing file size.
+Count and age sweeps refresh the same floor before deletion. Every sweep skips
+deletion when the marker is unauthenticated. `prune(keep_days=N)` also clamps
+`N` to the refreshed days floor before deleting closed segments or live-log
+entries. A child with a scrubbed environment therefore cannot rotate or erase
+history below an operator's raised policy.
+
+These values are plain `os.environ` reads rather than `kiro_crew.config` keys
+because importing that module here would create a cycle.
+
+### Lowering a stamped floor or resetting the marker
+
+The floor is deliberately raise-only at runtime: no config key, environment
+variable, or source-default edit lowers a value already stamped into
+`security_events.d/retention_floor.json` — construction and every sweep take
+the maximum of the configured value and the marker, so the marker wins. A
+malformed or damaged marker halts **all** retention deletion (fail closed)
+while size rotation keeps minting segments, so disk usage grows until the
+marker is reset; the repeated "no authenticated retention floor" warning in
+the logs is the signal.
+
+To lower a stamped floor (for example after a fat-fingered
+`KIROCREW_SEL_RETENTION_DAYS`) or to recover from a corrupted marker:
+
+1. Stop the gateway and every agent process.
+2. As the host user, edit `security_events.d/retention_floor.json` to the
+   intended values, or delete it.
+3. Restart. A missing marker is re-stamped from the current configuration, and
+   deletion sweeps resume on the next rotation and daily prune.
 
 ## Integration Points
 

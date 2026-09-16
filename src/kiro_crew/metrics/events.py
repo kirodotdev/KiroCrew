@@ -117,3 +117,11 @@ MCP_RECONNECTS = "kirocrew.mcp.reconnects"
 #: exactly as they are: they measure a specific hang-resilience fix on the
 #: child-permission path, and their population is not this one's.
 APPROVAL_DECISIONS = "kirocrew.approval.decisions"
+
+#: One per SEL retention sweep skipped because no authenticated retention floor
+#: marker was present (missing, unreadable, or damaged). This is a DEGRADED
+#: signal, not routine housekeeping: rotation keeps minting segments while the
+#: sweep is disabled, so a nonzero rate is unbounded audit-disk growth that a
+#: log line alone would not surface on a dashboard. ``surface`` is the closed
+#: set of skip sites — ``retention`` (count sweep) or ``prune`` (age sweep).
+SEL_RETENTION_SKIPPED = "kirocrew.sel.retention_skipped"

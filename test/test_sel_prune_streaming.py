@@ -15,12 +15,14 @@ from pathlib import Path
 
 import pytest
 
+import kiro_crew.sel as sel_mod
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
 
 @pytest.fixture(autouse=True)
-def reset_singleton():
-    """Reset the SEL singleton between tests."""
+def reset_singleton(monkeypatch):
+    """Reset SEL and use the 30-day floor these focused prune tests exercise."""
+    monkeypatch.setattr(sel_mod, "_RETENTION_DAYS", 30)
     SecurityEventLog._instance = None
     SecurityEventLog._initialized = False
     yield

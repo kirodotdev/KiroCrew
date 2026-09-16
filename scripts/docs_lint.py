@@ -355,6 +355,10 @@ _UNRESOLVABLE_REF_OK: frozenset[str] = frozenset(
         "apps/ops-mission-control/data/incidents/index.json",
         # spec-builder's trust keystone: `config_dir() / "trust" / ...`.
         "trust/spec-builder-decisions.json",
+        # SEL's authenticated retention high-water marker. `sel.py` keeps it
+        # beside the rotated segments so authority and history share one sandbox
+        # protection domain; neither directory nor marker exists in a checkout.
+        "security_events.d/retention_floor.json",
         # Optional dev-only override read from KIROCREW_PROJECT_DIR by
         # `agent.py`'s `_shipped_defaults()`; the shipped file is
         # `config/defaults.json`, which resolves.

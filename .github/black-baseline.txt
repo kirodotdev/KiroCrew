@@ -287,7 +287,6 @@ src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
 src/kiro_crew/security/__init__.py
-src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
 src/kiro_crew/service/common.py
 src/kiro_crew/service/linux.py
@@ -873,7 +872,6 @@ test/test_sandbox_unsandboxed_exec_consent.py
 test/test_scenarios_v2.py
 test/test_scenarios_v2_logic.py
 test/test_search_sessions_cost.py
-test/test_sel.py
 test/test_sel_dashboard_offload.py
 test/test_sel_prune_streaming.py
 test/test_service.py

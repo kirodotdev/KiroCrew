@@ -4452,6 +4452,7 @@ class TestIsSensitivePath:
         # does (sel.py closes the log at a size cap and renames it into this
         # dir), so rotation must not become the way around the fence.
         assert is_sensitive_path("~/.kiro/crew/security_events.d") is True
+        assert is_sensitive_path("~/.kiro/crew/security_events.d/retention_floor.json") is True
         assert (
             is_sensitive_path(
                 "~/.kiro/crew/security_events.d/security_events-000001-20260821T045139Z.jsonl"
