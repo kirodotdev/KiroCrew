@@ -8,6 +8,39 @@ the publish-facing policy in
 [../../app-kit/publishing-guide.md](../../app-kit/publishing-guide.md); this
 document is the behaviour and the one-way doors.
 
+## App Store source selection
+
+Discover's Sources rail filters the catalog shelf by namespaced source identity.
+External ids are prefixed with `registry:` for filtering and React keys, so even
+a registry named `__builtin__` or `__core__` cannot join a first-party bucket.
+Server-attached `_registry` takes precedence over installed origin. Raw registry
+names remain unchanged for display and metadata lookups.
+Selecting a source composes with text search and category selection; All sources
+clears only the source filter. Removing the selected source clears that filter.
+Source-row counts describe the full catalog population. Category counts and their
+All apps total describe the selected source and search, before category selection;
+zero-count categories remain selectable. The live result count describes the
+intersection of all active filters and announces changes to screen readers.
+Featured placements are hidden during a source filter, so unrelated apps do not
+appear above its results. Source selection never changes trust or review tier.
+Truncated rail names expose the complete name on hover; review explanations stay
+on the surrounding row.
+
+List rows, featured app rows (including collections), and the detail header show
+a visible Source line. Configured labels come from the shared registries query,
+with the pinned row winning an operator-name collision. A missing source label
+falls back to the server-attached registry id, not an endorsement. Details keep
+catalog provenance when merging installed metadata. Local installs show Local
+install even when a catalog listing shares their name. Other installed apps
+absent from the catalog show Unknown rather than claiming official origin;
+a built-in retains its built-in label. The source line describes the current
+catalog listing, not an attestation of an installed clone's bytes. A matched
+registry's known review tier appears beside its source name on every app surface;
+unlisted, local, and unknown sources carry no invented review claim. A failed
+registry-metadata read on the detail page keeps the known id visible and reports
+the failure through an inline ErrorNotice, rather than silently losing review
+information.
+
 ## 0. Three-axis classification: origin, resources, lifecycle
 
 An installed app's `installed.json` carries three **independent** fields, each

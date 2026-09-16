@@ -1,4 +1,11 @@
 {
+  "appStoreSources": {
+    "all": "All sources",
+    "source": "Source",
+    "local": "Local install",
+    "unknown": "Unknown",
+    "empty": "Try a different search, category, or source."
+  },
   "crewCapabilityEditing": {
     "sourceFailed": "Could not validate the saved configuration. Reload from server to retry.",
     "keep": "Hidden value kept. Type to replace.",

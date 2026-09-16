@@ -1,4 +1,11 @@
 {
+  "appStoreSources": {
+    "all": "所有来源",
+    "source": "来源",
+    "local": "本地安装",
+    "unknown": "未知",
+    "empty": "请尝试其他搜索词、分类或来源。"
+  },
   "crewCapabilityEditing": {
     "sourceFailed": "无法验证已保存的配置。请从服务器重新加载后重试。",
     "keep": "已保留隐藏值。输入即可替换。",

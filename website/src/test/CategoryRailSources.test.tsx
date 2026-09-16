@@ -15,6 +15,8 @@ function renderRail(sources: SourceRow[]) {
       selected="all"
       onSelect={vi.fn()}
       sources={sources}
+      selectedSource={null}
+      onSelectSource={vi.fn()}
       onAddSource={vi.fn()}
     />,
   )
@@ -85,6 +87,7 @@ describe('CategoryRail SOURCES review tier', () => {
   it('shows the display label, not the registry id', () => {
     renderRail([CURATED])
     expect(screen.getByText('Internal apps')).toBeInTheDocument()
+    expect(screen.getByTitle('Internal apps')).toBeInTheDocument()
     expect(screen.queryByText('internal')).toBeNull()
   })
 
@@ -97,4 +100,11 @@ describe('CategoryRail SOURCES review tier', () => {
       .map(n => n.textContent)
     expect(labels).toEqual(['Built-in', 'Internal apps', 'My registry', 'Community apps'])
   })
+})
+
+it('exposes a long source name on hover without hiding the review explanation', () => {
+  const label = 'A very long community apps registry name that does not fit the rail'
+  renderRail([{ ...COMMUNITY, label }])
+  expect(screen.getByTitle(label)).toHaveTextContent(label)
+  expect(screen.getByTitle('Community-listed, not vetted by the Kiro Crew team')).toBeVisible()
 })

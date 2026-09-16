@@ -1,4 +1,11 @@
 {
+  "appStoreSources": {
+    "all": "Todas las fuentes",
+    "source": "Fuente",
+    "local": "Instalación local",
+    "unknown": "Desconocida",
+    "empty": "Prueba otra búsqueda, categoría o fuente."
+  },
   "crewCapabilityEditing": {
     "sourceFailed": "No se pudo validar la configuración guardada. Recarga desde el servidor para reintentar.",
     "keep": "Valor oculto conservado. Escribe para reemplazarlo.",
