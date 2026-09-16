@@ -867,11 +867,23 @@ class KnowledgeStore:
             -- absence of a grant is not permission. Rows are removed with their
             -- item (see _delete_item_cascade / delete_items_batch_in_txn) so a
             -- removed item's grant cannot outlive it (KB-10).
+            --
+            -- managed: 1 for a cloud/structured item whose per-user ACL must be
+            --   enforced (and revalidated) at query time, 0 for trusted-local
+            --   material. Written at ingest from the source's own type; the
+            --   retriever also re-derives it from the live source_type so a
+            --   mislabelled/legacy row cannot downgrade a managed item.
+            -- fresh_as_of: epoch seconds at which this grant was last CONFIRMED
+            --   current against the provider (0 = never / ingest-time only).
+            --   The freshness check reads it; a managed grant older than the
+            --   staleness window with no fresh revalidation is denied.
             CREATE TABLE IF NOT EXISTS item_acl (
                 item_id TEXT PRIMARY KEY REFERENCES items(id),
                 subjects TEXT NOT NULL DEFAULT '[]',
                 tenant TEXT NOT NULL,
                 acl_version INTEGER NOT NULL DEFAULT 1,
+                managed INTEGER NOT NULL DEFAULT 0,
+                fresh_as_of REAL NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             );
 
@@ -1082,6 +1094,23 @@ class KnowledgeStore:
         if "source_uri" not in agent_cols:
             self.db.execute(
                 "ALTER TABLE agent_item_state ADD COLUMN source_uri TEXT")
+        # item_acl gained managed/fresh_as_of after first ship. A pre-existing
+        # grant row predates the managed/revalidation model, so it must NOT be
+        # assumed trusted: managed defaults to 0 here, but the retriever
+        # re-derives managed from the live source_type (get_item_grants' JOIN),
+        # so a legacy row on a cloud/structured item is still enforced. fresh_as_of
+        # defaults to 0 (never revalidated) -> a managed legacy grant is stale
+        # until a revalidation refreshes it, which is the correct fail-closed
+        # posture, not a regression.
+        acl_cols = {r[1] for r in self.db.execute(
+            "PRAGMA table_info(item_acl)").fetchall()}
+        if acl_cols:  # table exists (skip on a brand-new DB where DDL already made it)
+            if "managed" not in acl_cols:
+                self.db.execute(
+                    "ALTER TABLE item_acl ADD COLUMN managed INTEGER NOT NULL DEFAULT 0")
+            if "fresh_as_of" not in acl_cols:
+                self.db.execute(
+                    "ALTER TABLE item_acl ADD COLUMN fresh_as_of REAL NOT NULL DEFAULT 0")
         # The orphan sweep is NOT here any more -- see `reclaim_orphans`. The
         # constructor runs on the event loop before the socket binds, and the
         # sweep is data-scaled and writer-locked, so on a large store it
@@ -1451,20 +1480,22 @@ class KnowledgeStore:
     # knowledge/acl.py; the store only persists and returns grant records.
     # ------------------------------------------------------------------
 
-    def set_item_acl(self, item_id: str, subjects, tenant: str) -> int:
+    def set_item_acl(self, item_id: str, subjects, tenant: str, *,
+                     managed: bool = False, fresh_as_of: float = 0.0) -> int:
         """Write (or overwrite) *item_id*'s ACL grant. Returns the new acl_version.
 
         ``subjects`` is an iterable of subject ids (or the ``acl.PUBLIC_SUBJECT``
         sentinel); ``tenant`` is the org/workspace the grant belongs to (or
-        ``acl.PUBLIC_TENANT``). Overwriting an existing grant BUMPS
-        ``acl_version`` monotonically, so any decision cached on the old version
-        is invalidated the moment the grant changes -- this is what makes a
-        narrowed grant take effect on the very next query rather than after a
-        re-crawl.
+        ``acl.PUBLIC_TENANT``). ``managed`` marks a cloud/structured item whose
+        per-user ACL must be revalidated at query time; ``fresh_as_of`` is the
+        epoch-seconds moment the grant was last confirmed current against the
+        provider (0.0 = ingest-time only, which the query-time freshness check
+        treats as stale for a managed item until a revalidation refreshes it).
 
-        Idempotent in effect for an unchanged grant only in that it still bumps
-        the version; callers that re-ingest unchanged content should skip the
-        write (compare first) if they want to avoid a spurious cache flush.
+        Overwriting an existing grant BUMPS ``acl_version`` monotonically, so any
+        decision cached on the old version is invalidated the moment the grant
+        changes -- this is what makes a narrowed grant take effect on the very
+        next query rather than after a re-crawl.
         """
         subj_list = sorted({str(s) for s in subjects})
         now = datetime.now().isoformat()
@@ -1475,12 +1506,15 @@ class KnowledgeStore:
             ).fetchone()
             next_version = (row["acl_version"] + 1) if row else 1
             self.db.execute(
-                "INSERT INTO item_acl (item_id, subjects, tenant, acl_version, updated_at) "
-                "VALUES (?, ?, ?, ?, ?) "
+                "INSERT INTO item_acl "
+                "(item_id, subjects, tenant, acl_version, managed, fresh_as_of, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(item_id) DO UPDATE SET "
                 "subjects = excluded.subjects, tenant = excluded.tenant, "
-                "acl_version = excluded.acl_version, updated_at = excluded.updated_at",
-                (item_id, json.dumps(subj_list), tenant, next_version, now))
+                "acl_version = excluded.acl_version, managed = excluded.managed, "
+                "fresh_as_of = excluded.fresh_as_of, updated_at = excluded.updated_at",
+                (item_id, json.dumps(subj_list), tenant, next_version,
+                 1 if managed else 0, float(fresh_as_of), now))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -1490,11 +1524,12 @@ class KnowledgeStore:
     def revoke_item_acl(self, item_id: str) -> int:
         """Revoke ALL access to *item_id* by clearing its subject set.
 
-        The grant row is kept (not deleted) with an EMPTY subject set and a bumped
-        ``acl_version``, so the next query denies it (empty set matches no subject
-        and is not public) AND any cached decision keyed on the prior version is
-        invalidated. This is distinct from deleting the item: the content is still
-        present, only its visibility is revoked -- exactly the ACL-02/ACL-03 case
+        The grant row is kept (not deleted) with an EMPTY subject set, a bumped
+        ``acl_version`` AND ``fresh_as_of`` reset to 0, so the next query denies
+        it (empty set matches no subject, and a managed grant with no fresh stamp
+        is stale) AND any cached decision keyed on the prior version is
+        invalidated. This is distinct from deleting the item: the content is
+        still present, only its visibility is revoked -- the ACL-02/ACL-03 case
         where a group departure or link revocation must deny the next query
         without removing the underlying document. Returns the new acl_version, or
         0 if the item had no grant to revoke.
@@ -1510,9 +1545,45 @@ class KnowledgeStore:
                 return 0
             next_version = row["acl_version"] + 1
             self.db.execute(
-                "UPDATE item_acl SET subjects = '[]', acl_version = ?, updated_at = ? "
-                "WHERE item_id = ?",
+                "UPDATE item_acl SET subjects = '[]', acl_version = ?, "
+                "fresh_as_of = 0, updated_at = ? WHERE item_id = ?",
                 (next_version, now, item_id))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return next_version
+
+    def mark_item_acl_revalidated(self, item_id: str, subjects, *,
+                                  fresh_as_of: float, tenant: str | None = None) -> int:
+        """Record that a managed item's grant was CONFIRMED current by the provider.
+
+        This is the store side of the revalidation chain (knowledge/acl.py's
+        RevalidationHook is the interface that performs the provider probe and
+        then calls this). It writes the provider's freshly-observed subject set
+        and stamps ``fresh_as_of``, bumping ``acl_version`` so the previous
+        (stale) decision is invalidated. A revocation observed by the provider is
+        recorded by passing an empty ``subjects`` -- the next query then denies.
+        Returns the new acl_version. No-op returning 0 if the item has no grant
+        row to refresh.
+        """
+        subj_list = sorted({str(s) for s in subjects})
+        now = datetime.now().isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT acl_version, tenant FROM item_acl WHERE item_id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                self.db.execute("COMMIT")
+                return 0
+            next_version = row["acl_version"] + 1
+            new_tenant = tenant if tenant is not None else row["tenant"]
+            self.db.execute(
+                "UPDATE item_acl SET subjects = ?, tenant = ?, acl_version = ?, "
+                "fresh_as_of = ?, updated_at = ? WHERE item_id = ?",
+                (json.dumps(subj_list), new_tenant, next_version,
+                 float(fresh_as_of), now, item_id))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -1522,11 +1593,18 @@ class KnowledgeStore:
     def get_item_grants(self, item_ids):
         """Batch-fetch grant rows for *item_ids*, keyed by item_id.
 
-        Returns ``{item_id: {"subjects": <json str>, "tenant": str,
-        "acl_version": int}}`` for the ids that HAVE a grant row. Ids with no
-        row are simply absent from the dict -- the caller's fail-closed policy
-        treats absence as deny. Chunked under SQLITE_MAX_VARIABLE_NUMBER so a
-        large candidate set does not blow the bound-variable limit.
+        Returns, for each id that HAS a grant row::
+
+            {"subjects": <json str>, "tenant": str, "acl_version": int,
+             "managed": bool, "fresh_as_of": float, "source_type": str|None}
+
+        ``managed`` is the OR of the stored flag and a live re-derivation from
+        the item's current ``source_type`` (via a LEFT JOIN) -- a mislabelled or
+        legacy row cannot downgrade a genuinely-managed cloud item, because the
+        retriever's classifier trusts the live source type over the stored flag.
+        Ids with no grant row are absent from the dict; the caller's fail-closed
+        policy plus the source-type classifier decide those. Chunked under
+        SQLITE_MAX_VARIABLE_NUMBER.
         """
         out: dict[str, dict] = {}
         ids = list(item_ids)
@@ -1536,8 +1614,12 @@ class KnowledgeStore:
                 continue
             placeholders = ",".join("?" for _ in chunk)
             rows = self.db.execute(
-                "SELECT item_id, subjects, tenant, acl_version "  # noqa: S608
-                f"FROM item_acl WHERE item_id IN ({placeholders})",
+                "SELECT a.item_id, a.subjects, a.tenant, a.acl_version, "  # noqa: S608
+                "a.managed, a.fresh_as_of, i.source_id, s.source_type "
+                "FROM item_acl a "
+                "LEFT JOIN items i ON i.id = a.item_id "
+                "LEFT JOIN sources s ON s.id = i.source_id "
+                f"WHERE a.item_id IN ({placeholders})",
                 chunk,
             ).fetchall()
             for row in rows:
@@ -1545,7 +1627,46 @@ class KnowledgeStore:
                     "subjects": row["subjects"],
                     "tenant": row["tenant"],
                     "acl_version": row["acl_version"],
+                    "managed": bool(row["managed"]),
+                    "fresh_as_of": row["fresh_as_of"],
+                    "source_type": row["source_type"],
                 }
+        return out
+
+    def get_item_source_types(self, item_ids):
+        """Batch-fetch each item's ``(has_source, source_type)``, keyed by id.
+
+        The retriever's ACL classifier needs to tell three cases apart for EVERY
+        candidate, including ones with no grant row:
+
+        * ``has_source`` False -- a SOURCELESS item (``items.source_id`` NULL):
+          on-host content with no external connector, hence trusted-local (it
+          cannot carry a cloud per-user ACL).
+        * ``has_source`` True, ``source_type`` a known trusted-local type --
+          trusted-local.
+        * ``has_source`` True, ``source_type`` a managed/unknown type (including
+          a dangling source_id whose source row is missing) -- managed,
+          fail-closed.
+
+        An id with no item row at all resolves to ``(False, None)`` and is
+        treated as sourceless; it will not survive the item resolution downstream
+        anyway.
+        """
+        out: dict[str, tuple[bool, str | None]] = {}
+        ids = list(item_ids)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.db.execute(
+                "SELECT i.id, i.source_id, s.source_type FROM items i "  # noqa: S608
+                "LEFT JOIN sources s ON s.id = i.source_id "
+                f"WHERE i.id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                out[row["id"]] = (row["source_id"] is not None, row["source_type"])
         return out
 
     def _delete_item_cascade(self, item_id):

@@ -56,7 +56,7 @@ from kiro_crew.knowledge.ingestion import (
     start_rebuild_job,
 )
 from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
-from kiro_crew.knowledge.acl import ALLOW_ALL
+from kiro_crew.knowledge.acl import LOCAL_LIBRARY
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.knowledge.spend import source_spend
@@ -431,7 +431,7 @@ async def _search_until_exhausted(retriever, q: str, limit: int) -> list[dict]:
     results: list[dict] = []
     while True:
         results = await run_in_embed_pool(
-            retriever.search, q, limit=want, access_context=ALLOW_ALL
+            retriever.search, q, limit=want, access_context=LOCAL_LIBRARY
         )
         # Short read means the ranking is exhausted; nothing further to fetch.
         if len(results) < want or want >= _SCOPED_SEARCH_MAX:
@@ -533,7 +533,7 @@ async def list_items(request: web.Request) -> web.Response:
             all_results = await _search_until_exhausted(retriever, q, limit)
         else:
             all_results = await run_in_embed_pool(
-                retriever.search, q, limit=limit * 3, access_context=ALLOW_ALL
+                retriever.search, q, limit=limit * 3, access_context=LOCAL_LIBRARY
             )
         # Batch fetch all candidate items (avoid N+1). A scoped search escalates
         # its candidate pool, so this query and the row serialization can both be
@@ -2799,7 +2799,7 @@ async def search_for_context(request: web.Request) -> web.Response:
     # access is thread-safe here. mc-embed bulkhead: the query embed occupies
     # the shared model.
     results = await run_in_embed_pool(
-        retriever.search, q, limit=limit, access_context=ALLOW_ALL
+        retriever.search, q, limit=limit, access_context=LOCAL_LIBRARY
     )
 
     cards = []

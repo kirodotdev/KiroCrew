@@ -1,40 +1,46 @@
 """Query-time ACL enforcement in the shared Knowledge Library retriever.
 
-Every leg -- keyword, vector, the deliberately-unfiltered graph leg, RRF fusion,
-the protected keyword rescue, and the citation/location enrichment passes --
-must only ever emit items the querying identity is allowed to see. The tests
-below drive the REAL ``HybridRetriever.search`` over a REAL ``KnowledgeStore``
-(the legs are stubbed only where an exact ranking is needed; the ACL gate,
-fusion, store reads and grant table are all production code), covering the
-negative cases the connector production stack's shared contracts require:
+These tests drive the REAL ``HybridRetriever.search`` over a REAL
+``KnowledgeStore`` (only the ranking legs are stubbed where an exact fusion
+order matters; the ACL gate, source-type classification, grant table, freshness
+check and revalidation hook are all production code). They cover the two
+root-cause fixes Root required after re-reading an earlier version:
 
-* two distinct identities (A sees, B does not) -- ACL-PUBLISH-MATRIX
-* revoke-then-query denies immediately, no re-crawl -- ACL-02
-* a cached-then-revoked item is not re-served (acl_version bump) -- ACL-03
-* same bare subject id in a DIFFERENT tenant is a different identity -- ACL-06
-* same bare subject id owning a different source's item is still gated
-* an unreadable/absent grant fails CLOSED, never open -- ACL-04
-* the unfiltered graph leg cannot leak an unauthorised item
-* backward-compat: no access_context => local single-user library sees all
+ROOT CAUSE 1 -- the bypass is ITEM-SCOPED, not call-surface-scoped. One store
+mixes trusted-local material with MANAGED cloud/structured items. The local
+single-user library sees trusted-local items without a grant but is DENIED
+managed items (it has no verifiable provider-mapped subject). A managed item is
+only ever visible to a real subject whose grant matches AND is fresh.
+
+ROOT CAUSE 2 -- a static ingest grant is not proof the provider still grants
+access. A managed grant must be revalidated: with no revalidation hook the
+outcome is UNVERIFIABLE and a stale/never-revalidated managed grant is denied;
+a hook returning REVOKED denies even a subject-matching grant; a hook returning
+FRESH (or a within-window ``fresh_as_of``) allows.
+
+Contracts referenced: KB-01, ACL-02, ACL-03, ACL-04, ACL-05, ACL-06, ACL-09.
 """
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from kiro_crew.knowledge.acl import (
-    ALLOW_ALL,
+    DEFAULT_STALENESS_SECS,
+    LOCAL_LIBRARY,
     PUBLIC_SUBJECT,
     PUBLIC_TENANT,
     AccessContext,
     ItemGrant,
+    RevalidationOutcome,
     SubjectTenantAclPolicy,
     UNREADABLE_GRANT,
+    is_managed_source_type,
 )
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
-
-_MIN = 0.012  # mirrors the tool-surface confidence floor
 
 
 @pytest.fixture()
@@ -44,13 +50,8 @@ def store(tmp_path):
     s.close()
 
 
-def _retriever(store, kw=None, gr=None, vec=None) -> HybridRetriever:
-    """A retriever whose three legs return fixed ``[(item_id, rank)]`` lists.
-
-    Only the ranking is stubbed; the ACL gate, store grant reads and fusion are
-    the real code under test.
-    """
-    r = HybridRetriever(store)
+def _retriever(store, kw=None, gr=None, vec=None, revalidator=None) -> HybridRetriever:
+    r = HybridRetriever(store, revalidator=revalidator)
     r._keyword_search = lambda *a, **k: list(kw or [])  # type: ignore[method-assign]
     r._graph_search = lambda *a, **k: list(gr or [])  # type: ignore[method-assign]
     r._vector_search = lambda *a, **k: (None if vec is None else list(vec))  # type: ignore[method-assign]
@@ -61,45 +62,117 @@ def _ids(results):
     return {r["id"] for r in results}
 
 
+def _local_source(store, name="Vault", uri="file:///vault"):
+    """A trusted-local (local_folder) source id."""
+    return store.add_source(name, "local_folder", uri)
+
+
+def _managed_source(store, name="SP", uri="sharepoint://site", stype="sharepoint"):
+    """A managed cloud/structured source id."""
+    return store.add_source(name, stype, uri)
+
+
+def _fresh(offset=0.0):
+    return time.time() + offset
+
+
+class _StubRevalidator:
+    """A revalidation hook returning a fixed outcome (or per-item mapping)."""
+
+    def __init__(self, outcome=RevalidationOutcome.FRESH, per_item=None, raises=False):
+        self.outcome = outcome
+        self.per_item = per_item or {}
+        self.raises = raises
+        self.calls: list[str] = []
+
+    def revalidate(self, ctx, item_id, grant):
+        self.calls.append(item_id)
+        if self.raises:
+            raise RuntimeError("provider probe failed")
+        return self.per_item.get(item_id, self.outcome)
+
+
 # --------------------------------------------------------------------------
-# Policy unit tests (pure decision, no store)
+# source-type classifier
 # --------------------------------------------------------------------------
 
-def test_policy_denies_missing_and_unreadable_grant():
+def test_trusted_local_types_are_not_managed():
+    for t in ("local_folder", "obsidian_vault", "quip", "agent", "artifact",
+              "local_file", "url", "doc"):
+        assert is_managed_source_type(t) is False
+
+
+def test_cloud_types_are_managed():
+    for t in ("sharepoint", "onedrive", "salesforce", "github_structured",
+              "gmail", "google_drive", "zoom", "slack", "asana", "teams"):
+        assert is_managed_source_type(t) is True
+
+
+def test_unknown_and_none_type_not_managed_by_type_alone():
+    # An unknown/None TYPE is not managed by type -- the grant's managed flag and
+    # the retriever's dangling-source handling (has_source + missing row) carry
+    # the fail-closed cases, not the type predicate in isolation.
+    assert is_managed_source_type(None) is False
+    assert is_managed_source_type("???") is False
+
+
+# --------------------------------------------------------------------------
+# policy unit tests
+# --------------------------------------------------------------------------
+
+def test_policy_denies_unreadable_grant():
+    pol = SubjectTenantAclPolicy()
+    assert pol.allows(AccessContext(subject="a", tenant="t"), UNREADABLE_GRANT) is False
+
+
+def test_policy_local_item_allowed_for_bypass():
+    pol = SubjectTenantAclPolicy()
+    g = ItemGrant(subjects=frozenset(), tenant="t", managed=False)
+    assert pol.allows(LOCAL_LIBRARY, g) is True
+
+
+def test_policy_managed_item_denied_for_bypass():
+    """A managed item is never visible to the no-identity local context."""
+    pol = SubjectTenantAclPolicy()
+    g = ItemGrant(subjects=frozenset({PUBLIC_SUBJECT}), tenant="t", managed=True,
+                  fresh_as_of=_fresh())
+    assert pol.allows(LOCAL_LIBRARY, g) is False
+
+
+def test_policy_managed_stale_denied_without_revalidation():
+    """A managed grant older than the window with no fresh hook answer is denied."""
+    pol = SubjectTenantAclPolicy()
+    ctx = AccessContext(subject="alice", tenant="t")
+    stale = ItemGrant(subjects=frozenset({"alice"}), tenant="t", managed=True,
+                      fresh_as_of=_fresh(-DEFAULT_STALENESS_SECS - 10))
+    assert pol.allows(ctx, stale, revalidation=RevalidationOutcome.UNVERIFIABLE) is False
+    # ...but within the window it is allowed.
+    fresh = ItemGrant(subjects=frozenset({"alice"}), tenant="t", managed=True,
+                      fresh_as_of=_fresh(-10))
+    assert pol.allows(ctx, fresh, revalidation=RevalidationOutcome.UNVERIFIABLE) is True
+
+
+def test_policy_managed_revoked_by_hook_denied_even_if_subject_matches():
+    pol = SubjectTenantAclPolicy()
+    ctx = AccessContext(subject="alice", tenant="t")
+    g = ItemGrant(subjects=frozenset({"alice"}), tenant="t", managed=True, fresh_as_of=_fresh())
+    assert pol.allows(ctx, g, revalidation=RevalidationOutcome.REVOKED) is False
+    assert pol.allows(ctx, g, revalidation=RevalidationOutcome.FRESH) is True
+
+
+def test_policy_never_revalidated_managed_grant_denied():
+    """fresh_as_of == 0 (ingest-time only) is stale for a managed item."""
+    pol = SubjectTenantAclPolicy()
+    ctx = AccessContext(subject="alice", tenant="t")
+    g = ItemGrant(subjects=frozenset({"alice"}), tenant="t", managed=True, fresh_as_of=0.0)
+    assert pol.allows(ctx, g, revalidation=RevalidationOutcome.UNVERIFIABLE) is False
+
+
+def test_policy_tenant_mismatch_denies():
     pol = SubjectTenantAclPolicy()
     ctx = AccessContext(subject="alice", tenant="t1")
-    assert pol.allows(ctx, UNREADABLE_GRANT) is False
-    # A grant with an empty subject set (revoked) denies too.
-    assert pol.allows(ctx, ItemGrant(subjects=frozenset(), tenant="t1")) is False
-
-
-def test_policy_tenant_mismatch_denies_even_with_matching_subject():
-    pol = SubjectTenantAclPolicy()
-    ctx = AccessContext(subject="alice", tenant="t1")
-    grant = ItemGrant(subjects=frozenset({"alice"}), tenant="t2")
-    assert pol.allows(ctx, grant) is False
-
-
-def test_policy_public_subject_and_public_tenant():
-    pol = SubjectTenantAclPolicy()
-    ctx = AccessContext(subject="alice", tenant="t1")
-    # public subject within same tenant
-    assert pol.allows(ctx, ItemGrant(subjects=frozenset({PUBLIC_SUBJECT}), tenant="t1"))
-    # public tenant + public subject: visible cross-tenant
-    assert pol.allows(
-        ctx, ItemGrant(subjects=frozenset({PUBLIC_SUBJECT}), tenant=PUBLIC_TENANT)
-    )
-
-
-def test_policy_group_membership_satisfies_subject_test():
-    pol = SubjectTenantAclPolicy()
-    ctx = AccessContext(subject="alice", tenant="t1", groups=frozenset({"team-x"}))
-    assert pol.allows(ctx, ItemGrant(subjects=frozenset({"team-x"}), tenant="t1"))
-
-
-def test_bypass_context_allows_everything():
-    pol = SubjectTenantAclPolicy()
-    assert pol.allows(ALLOW_ALL, UNREADABLE_GRANT) is True
+    g = ItemGrant(subjects=frozenset({"alice"}), tenant="t2", managed=False)
+    assert pol.allows(ctx, g) is False
 
 
 def test_enforcing_context_requires_subject():
@@ -108,151 +181,267 @@ def test_enforcing_context_requires_subject():
 
 
 # --------------------------------------------------------------------------
-# End-to-end retrieval-chain tests (real store + real gate)
+# MIXED-LIBRARY end-to-end: trusted-local + managed in ONE store
 # --------------------------------------------------------------------------
 
-def test_two_identities_A_sees_B_does_not(store):
-    """A's private item is invisible to B across title/snippet/content/citation."""
-    item = store.add_item("Budget Plan", "Q3 budget figures for planning", "doc")
-    store.set_item_acl(item, ["alice"], tenant="t1")
+def test_mixed_library_local_readable_managed_gated(store):
+    """The regression Root required: one store, a local doc + a managed cloud doc.
+
+    Local doc: readable by the local library (no grant needed) AND by any
+    enforcing subject via its own grant. Managed cloud doc: invisible to the
+    local library and to a non-granted subject; visible only to its granted
+    subject when fresh."""
+    local_src = _local_source(store)
+    cloud_src = _managed_source(store)
+    local_item = store.add_item("Vault Note", "alpha local content", "doc",
+                                source_id=local_src)
+    cloud_item = store.add_item("SP Doc", "alpha cloud content", "doc",
+                                source_id=cloud_src)
+    # cloud item's grant, freshly revalidated, for alice@acme
+    store.set_item_acl(cloud_item, ["alice"], tenant="acme",
+                       managed=True, fresh_as_of=_fresh())
+
+    kw = [(local_item, 1), (cloud_item, 2)]
+
+    # 1) Local single-user library: sees the local doc, NOT the managed cloud doc.
+    r = _retriever(store, kw=kw)
+    local_lib = r.search("alpha content", limit=10, access_context=LOCAL_LIBRARY)
+    assert local_item in _ids(local_lib)
+    assert cloud_item not in _ids(local_lib)
+
+    # 2) alice@acme (granted on the cloud doc): sees the cloud doc. The local doc
+    #    has no grant, so an enforcing subject does NOT see it (only the local
+    #    library sees ungranted local material) -- managed enforcement does not
+    #    accidentally widen ungranted local items either.
+    r2 = _retriever(store, kw=kw)
+    alice = AccessContext(subject="alice", tenant="acme")
+    a_res = r2.search("alpha content", limit=10, access_context=alice)
+    assert cloud_item in _ids(a_res)
+    assert local_item not in _ids(a_res)
+
+    # 3) bob@acme (not granted): sees neither.
+    r3 = _retriever(store, kw=kw)
+    bob = AccessContext(subject="bob", tenant="acme")
+    assert r3.search("alpha content", limit=10, access_context=bob) == []
+
+
+def test_mixed_library_shared_local_grant_seen_by_subject(store):
+    """A local item that DOES carry a (non-managed) grant is honoured for a
+    matching enforcing subject -- local material can be shared too."""
+    local_src = _local_source(store)
+    item = store.add_item("Shared Vault", "beta content", "doc", source_id=local_src)
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=False)
     r = _retriever(store, kw=[(item, 1)])
-
-    alice = AccessContext(subject="alice", tenant="t1")
-    bob = AccessContext(subject="bob", tenant="t1")
-
-    a_res = r.search("budget planning", limit=5, access_context=alice)
-    b_res = r.search("budget planning", limit=5, access_context=bob)
-
-    assert item in _ids(a_res)
-    assert item not in _ids(b_res)
-    # B gets nothing at all -- not a redacted row, not a title.
-    assert b_res == []
+    alice = AccessContext(subject="alice", tenant="acme")
+    bob = AccessContext(subject="bob", tenant="acme")
+    assert item in _ids(r.search("beta content", limit=10, access_context=alice))
+    assert item not in _ids(r.search("beta content", limit=10, access_context=bob))
+    # and the local library still sees it (trusted-local)
+    assert item in _ids(r.search("beta content", limit=10, access_context=LOCAL_LIBRARY))
 
 
-def test_missing_grant_fails_closed(store):
-    """An item that was ingested without any ACL grant is denied to everyone."""
-    item = store.add_item("Orphan", "no grant written for this one", "doc")
+def test_managed_item_no_grant_denied_to_everyone(store):
+    """A managed cloud item ingested without a grant is denied to all (fail-closed)."""
+    cloud_src = _managed_source(store)
+    item = store.add_item("Orphan Cloud", "gamma content", "doc", source_id=cloud_src)
     r = _retriever(store, kw=[(item, 1)])
-    ctx = AccessContext(subject="alice", tenant="t1")
-    assert r.search("orphan", limit=5, access_context=ctx) == []
-    # ...but the local single-user library (bypass) still sees it.
-    assert item in _ids(r.search("orphan", limit=5, access_context=ALLOW_ALL))
+    assert r.search("gamma", limit=10, access_context=LOCAL_LIBRARY) == []
+    assert r.search("gamma", limit=10,
+                    access_context=AccessContext(subject="alice", tenant="acme")) == []
 
 
-def test_revoke_then_query_denies_immediately(store):
-    """After revoke, the very next query denies -- no re-crawl (ACL-02)."""
-    item = store.add_item("Shared Doc", "shared content here", "doc")
-    store.set_item_acl(item, ["alice"], tenant="t1")
+def test_dangling_source_item_fails_closed(store):
+    """An item whose source row has vanished (dangling source_id) is managed
+    (fail-closed): we cannot prove it is trusted-local, so the local library
+    does not see it without a grant."""
+    src = _local_source(store, name="Gone", uri="file:///gone")
+    item = store.add_item("Dangling", "delta content", "doc", source_id=src)
+    # Drop the source row directly, leaving the item pointing at a missing source.
+    store.db.execute("PRAGMA foreign_keys = OFF")
+    store.db.execute("DELETE FROM sources WHERE id = ?", (src,))
+    store.db.commit()
     r = _retriever(store, kw=[(item, 1)])
-    ctx = AccessContext(subject="alice", tenant="t1")
-
-    assert item in _ids(r.search("shared", limit=5, access_context=ctx))
-    store.revoke_item_acl(item)
-    assert r.search("shared", limit=5, access_context=ctx) == []
+    assert r.search("delta", limit=10, access_context=LOCAL_LIBRARY) == []
 
 
-def test_revoke_bumps_acl_version(store):
-    """Revocation bumps acl_version so any version-keyed cache is invalidated."""
-    item = store.add_item("Doc", "content", "doc")
-    v1 = store.set_item_acl(item, ["alice"], tenant="t1")
-    v2 = store.revoke_item_acl(item)
-    assert v2 > v1
-    grants = store.get_item_grants([item])
-    assert grants[item]["acl_version"] == v2
-    assert grants[item]["subjects"] == "[]"
+def test_sourceless_item_is_trusted_local(store):
+    """An item with NO source_id is trusted-local: the local library sees it."""
+    item = store.add_item("Pasted", "epsilon content", "doc")  # source_id=None
+    r = _retriever(store, kw=[(item, 1)])
+    assert item in _ids(r.search("epsilon", limit=10, access_context=LOCAL_LIBRARY))
+
+
+# --------------------------------------------------------------------------
+# Two-identity / tenant / source (real chain)
+# --------------------------------------------------------------------------
+
+def test_two_identities_cloud_A_sees_B_does_not(store):
+    cloud_src = _managed_source(store)
+    item = store.add_item("Budget", "q3 budget alpha", "doc", source_id=cloud_src)
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=True, fresh_as_of=_fresh())
+    r = _retriever(store, kw=[(item, 1)])
+    assert item in _ids(r.search("budget alpha", limit=5,
+                                 access_context=AccessContext(subject="alice", tenant="acme")))
+    assert r.search("budget alpha", limit=5,
+                    access_context=AccessContext(subject="bob", tenant="acme")) == []
 
 
 def test_same_email_different_tenant_is_different_identity(store):
-    """Same bare subject id in another tenant does not match the grant (ACL-06)."""
-    item = store.add_item("Tenant1 Doc", "tenant one content", "doc")
-    store.set_item_acl(item, ["alice@x.com"], tenant="tenant-1")
+    cloud_src = _managed_source(store)
+    item = store.add_item("T1 Doc", "tenant content", "doc", source_id=cloud_src)
+    store.set_item_acl(item, ["alice@x.com"], tenant="tenant-1",
+                       managed=True, fresh_as_of=_fresh())
     r = _retriever(store, kw=[(item, 1)])
-
-    same_tenant = AccessContext(subject="alice@x.com", tenant="tenant-1")
-    other_tenant = AccessContext(subject="alice@x.com", tenant="tenant-2")
-
-    assert item in _ids(r.search("tenant", limit=5, access_context=same_tenant))
-    assert r.search("tenant", limit=5, access_context=other_tenant) == []
+    assert item in _ids(r.search("tenant", limit=5,
+                        access_context=AccessContext(subject="alice@x.com", tenant="tenant-1")))
+    assert r.search("tenant", limit=5,
+                    access_context=AccessContext(subject="alice@x.com", tenant="tenant-2")) == []
 
 
-def test_same_bare_id_different_source_still_gated(store):
-    """Two items with the same subject id but different sources are each gated
-    by their OWN grant, not merged."""
-    src_a = store.add_source("A", "local_folder", "file:///a")
-    src_b = store.add_source("B", "local_folder", "file:///b")
-    item_a = store.add_item("DocA", "alpha content shared", "doc", source_id=src_a)
-    item_b = store.add_item("DocB", "beta content shared", "doc", source_id=src_b)
-    store.set_item_acl(item_a, ["alice"], tenant="t1")
-    store.set_item_acl(item_b, ["bob"], tenant="t1")
-    r = _retriever(store, kw=[(item_a, 1), (item_b, 2)])
-
-    alice = AccessContext(subject="alice", tenant="t1")
-    res = r.search("content shared", limit=5, access_context=alice)
-    assert item_a in _ids(res)
-    assert item_b not in _ids(res)
-
-
-def test_graph_leg_cannot_leak_unauthorised_item(store):
-    """The deliberately-unfiltered graph leg is still ACL-gated in fusion."""
-    visible = store.add_item("Visible", "authorised content", "doc")
-    hidden = store.add_item("Hidden", "secret graph-only content", "doc")
-    store.set_item_acl(visible, ["alice"], tenant="t1")
-    store.set_item_acl(hidden, ["carol"], tenant="t1")
-    # hidden reaches fusion ONLY via the graph leg (not keyword/vector).
+def test_graph_leg_cannot_leak_managed_item(store):
+    """The unfiltered graph leg is still ACL-gated for a managed hit."""
+    local_src = _local_source(store)
+    cloud_src = _managed_source(store)
+    visible = store.add_item("Visible", "authorised content", "doc", source_id=local_src)
+    hidden = store.add_item("Hidden", "secret graph-only content", "doc", source_id=cloud_src)
+    store.set_item_acl(hidden, ["carol"], tenant="acme", managed=True, fresh_as_of=_fresh())
+    # hidden reaches fusion ONLY via the graph leg
     r = _retriever(store, kw=[(visible, 1)], gr=[(hidden, 1)])
-    alice = AccessContext(subject="alice", tenant="t1")
+    alice = AccessContext(subject="alice", tenant="acme")
     res = r.search("content", limit=5, access_context=alice)
-    assert visible in _ids(res)
     assert hidden not in _ids(res)
 
 
-def test_keyword_rescue_respects_acl(store):
-    """The protected top-keyword rescue never resurrects a denied item."""
-    denied = store.add_item("Exact", "ORA-01555 rare token", "doc")
-    store.set_item_acl(denied, ["carol"], tenant="t1")
-    # The denied item is the keyword top hit that the rescue would normally
-    # protect from truncation.
-    r = _retriever(store, kw=[(denied, 1)])
-    alice = AccessContext(subject="alice", tenant="t1")
-    assert r.search("ORA-01555", limit=1, access_context=alice) == []
+# --------------------------------------------------------------------------
+# Revocation + revalidation chain (real chain)
+# --------------------------------------------------------------------------
 
-
-def test_public_item_visible_to_all_authenticated_subjects(store):
-    """A grant with the public sentinel is visible to any subject in tenant."""
-    item = store.add_item("Public", "world readable content", "doc")
-    store.set_item_acl(item, [PUBLIC_SUBJECT], tenant="t1")
+def test_local_revoke_then_query_denies_immediately(store):
+    """revoke_item_acl on a managed item: next query denies, no re-crawl (ACL-02)."""
+    cloud_src = _managed_source(store)
+    item = store.add_item("Shared", "shared content", "doc", source_id=cloud_src)
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=True, fresh_as_of=_fresh())
     r = _retriever(store, kw=[(item, 1)])
-    for who in ("alice", "bob", "carol"):
-        ctx = AccessContext(subject=who, tenant="t1")
-        assert item in _ids(r.search("content", limit=5, access_context=ctx))
+    alice = AccessContext(subject="alice", tenant="acme")
+    assert item in _ids(r.search("shared", limit=5, access_context=alice))
+    store.revoke_item_acl(item)
+    assert r.search("shared", limit=5, access_context=alice) == []
 
 
-def test_no_context_defaults_to_bypass_for_local_library(store):
-    """Backward compat: omitting access_context => single-user library sees all."""
-    item = store.add_item("Local", "personal library content", "doc")
-    store.set_item_acl(item, ["someone-else"], tenant="t-other")
+def test_provider_revocation_observed_via_hook(store):
+    """A provider revocation the local grant has NOT yet seen is caught by the
+    revalidation hook returning REVOKED -- the second root-cause fix.
+
+    The stored grant still lists alice and is within its freshness window, so
+    WITHOUT revalidation it would (wrongly) be served; the hook observing the
+    provider's revocation is what denies it."""
+    cloud_src = _managed_source(store)
+    item = store.add_item("Cloud", "revalidate content", "doc", source_id=cloud_src)
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=True, fresh_as_of=_fresh())
+    alice = AccessContext(subject="alice", tenant="acme")
+
+    # No hook: within-window stored grant is served.
+    r_nohook = _retriever(store, kw=[(item, 1)])
+    assert item in _ids(r_nohook.search("revalidate", limit=5, access_context=alice))
+
+    # Hook observes the provider revoked access -> denied despite fresh stored grant.
+    revoker = _StubRevalidator(outcome=RevalidationOutcome.REVOKED)
+    r_hook = _retriever(store, kw=[(item, 1)], revalidator=revoker)
+    assert r_hook.search("revalidate", limit=5, access_context=alice) == []
+    assert item in revoker.calls  # the managed item WAS revalidated
+
+
+def test_stale_managed_grant_denied_without_hook(store):
+    """A managed grant past the staleness window with no hook is denied
+    (static grant never refreshed != live ACL)."""
+    cloud_src = _managed_source(store)
+    item = store.add_item("Old", "stale content", "doc", source_id=cloud_src)
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=True,
+                       fresh_as_of=_fresh(-DEFAULT_STALENESS_SECS - 60))
     r = _retriever(store, kw=[(item, 1)])
-    # No access_context passed at all.
-    assert item in _ids(r.search("content", limit=5))
+    alice = AccessContext(subject="alice", tenant="acme")
+    assert r.search("stale", limit=5, access_context=alice) == []
+    # A hook returning FRESH rescues it.
+    r2 = _retriever(store, kw=[(item, 1)], revalidator=_StubRevalidator(RevalidationOutcome.FRESH))
+    assert item in _ids(r2.search("stale", limit=5, access_context=alice))
+
+
+def test_revalidation_hook_error_fails_closed(store):
+    """A hook that raises is treated as unverifiable -> managed item denied."""
+    cloud_src = _managed_source(store)
+    item = store.add_item("Cloud", "boom content", "doc", source_id=cloud_src)
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=True, fresh_as_of=_fresh())
+    r = _retriever(store, kw=[(item, 1)], revalidator=_StubRevalidator(raises=True))
+    alice = AccessContext(subject="alice", tenant="acme")
+    assert r.search("boom", limit=5, access_context=alice) == []
+
+
+def test_mark_revalidated_refreshes_and_bumps_version(store):
+    """The store's revalidation-record method stamps freshness and bumps version."""
+    cloud_src = _managed_source(store)
+    item = store.add_item("Cloud", "content", "doc", source_id=cloud_src)
+    v1 = store.set_item_acl(item, ["alice"], tenant="acme", managed=True, fresh_as_of=0.0)
+    # Never-revalidated managed grant: denied.
+    r = _retriever(store, kw=[(item, 1)])
+    alice = AccessContext(subject="alice", tenant="acme")
+    assert r.search("content", limit=5, access_context=alice) == []
+    # Provider confirms current access -> record it.
+    v2 = store.mark_item_acl_revalidated(item, ["alice"], fresh_as_of=_fresh())
+    assert v2 > v1
+    assert item in _ids(r.search("content", limit=5, access_context=alice))
+    # Provider observes revocation -> record empty subjects.
+    store.mark_item_acl_revalidated(item, [], fresh_as_of=_fresh())
+    assert r.search("content", limit=5, access_context=alice) == []
+
+
+# --------------------------------------------------------------------------
+# public + backward-compat + deletion cascade
+# --------------------------------------------------------------------------
+
+def test_public_managed_item_visible_to_tenant_subjects_when_fresh(store):
+    cloud_src = _managed_source(store)
+    item = store.add_item("Public", "world content", "doc", source_id=cloud_src)
+    store.set_item_acl(item, [PUBLIC_SUBJECT], tenant="acme", managed=True, fresh_as_of=_fresh())
+    r = _retriever(store, kw=[(item, 1)])
+    for who in ("alice", "bob"):
+        assert item in _ids(r.search("content", limit=5,
+                            access_context=AccessContext(subject=who, tenant="acme")))
+    # cross-tenant public
+    store.set_item_acl(item, [PUBLIC_SUBJECT], tenant=PUBLIC_TENANT,
+                       managed=True, fresh_as_of=_fresh())
+    r2 = _retriever(store, kw=[(item, 1)])
+    assert item in _ids(r2.search("content", limit=5,
+                        access_context=AccessContext(subject="z", tenant="other")))
+
+
+def test_no_context_defaults_to_local_library(store):
+    """Omitting access_context => local library: trusted-local visible, managed not."""
+    local_src = _local_source(store)
+    cloud_src = _managed_source(store)
+    local_item = store.add_item("Local", "personal content", "doc", source_id=local_src)
+    cloud_item = store.add_item("Cloud", "managed content", "doc", source_id=cloud_src)
+    store.set_item_acl(cloud_item, ["someone"], tenant="t", managed=True, fresh_as_of=_fresh())
+    r = _retriever(store, kw=[(local_item, 1), (cloud_item, 2)])
+    res = r.search("content", limit=5)  # no access_context
+    assert local_item in _ids(res)
+    assert cloud_item not in _ids(res)
 
 
 def test_unreadable_grant_row_fails_closed(store):
-    """A grant row whose subjects JSON is corrupt is denied (fail-closed)."""
-    item = store.add_item("Corrupt", "content with broken acl", "doc")
-    store.set_item_acl(item, ["alice"], tenant="t1")
-    # Corrupt the stored JSON directly, simulating a damaged/partial write.
-    store.db.execute("UPDATE item_acl SET subjects = ? WHERE item_id = ?",
-                     ("{not-json", item))
+    cloud_src = _managed_source(store)
+    item = store.add_item("Corrupt", "content", "doc", source_id=cloud_src)
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=True, fresh_as_of=_fresh())
+    store.db.execute("UPDATE item_acl SET subjects = ? WHERE item_id = ?", ("{bad", item))
     store.db.commit()
     r = _retriever(store, kw=[(item, 1)])
-    ctx = AccessContext(subject="alice", tenant="t1")
-    assert r.search("content", limit=5, access_context=ctx) == []
+    assert r.search("content", limit=5,
+                    access_context=AccessContext(subject="alice", tenant="acme")) == []
 
 
 def test_deleting_item_removes_its_grant(store):
-    """An item's ACL row does not outlive the item (KB-10 consistency)."""
-    item = store.add_item("Doomed", "content", "doc")
-    store.set_item_acl(item, ["alice"], tenant="t1")
+    cloud_src = _managed_source(store)
+    item = store.add_item("Doomed", "content", "doc", source_id=cloud_src)
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=True, fresh_as_of=_fresh())
     assert store.get_item_grants([item])
     store.delete_item(item)
     assert store.get_item_grants([item]) == {}

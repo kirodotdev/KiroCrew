@@ -248,15 +248,18 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     retriever = mcp_core.HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
 
     # Query-time ACL. This tool serves the on-host PERSONAL Knowledge Library
-    # (the single-user knowledge.db under the config workspace), which has no
-    # multi-identity boundary -- so it runs under the local single-user context,
-    # which admits every ingested item. A SHARED / multi-tenant knowledge source
-    # (per the connector production stack's ACL contracts) must instead resolve
-    # the querying subject+tenant from the authenticated caller and pass a real
-    # AccessContext here; the retriever then fail-closed-gates every leg against
-    # it. Passing the context explicitly (rather than relying on the parameter's
-    # default) keeps that boundary visible at the call site.
-    access_context = acl.ALLOW_ALL
+    # (the single-user knowledge.db under the config workspace), a caller with no
+    # cross-identity boundary -- so it runs under the local single-user context.
+    # That context is NOT "see everything": the gate is item-scoped, so it serves
+    # trusted-local material (folders, vaults, pasted/agent docs, artifacts)
+    # without a grant, but a MANAGED cloud/structured item mixed into the same
+    # store is still checked against a real current subject and DENIED here
+    # (a local context carries no verifiable provider-mapped subject). A shared /
+    # multi-tenant caller must instead resolve the querying subject+tenant from
+    # the authenticated caller (for a managed item, the provider-mapped identity)
+    # and pass a real AccessContext, plus wire a revalidation hook; the retriever
+    # then fail-closed-gates and revalidates every managed leg.
+    access_context = acl.LOCAL_LIBRARY
 
     results = retriever.search(
         query, limit=limit, source_id=source_id, namespace=namespace,

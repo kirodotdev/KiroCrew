@@ -15,7 +15,15 @@ except ImportError:
     import sqlite3
 
 from .._sqlite_compat import fts5_cjk_match_groups, is_cjk_char
-from .acl import ALLOW_ALL, DEFAULT_POLICY, AccessContext, AclPolicy, ItemGrant
+from .acl import (
+    DEFAULT_POLICY,
+    AccessContext,
+    AclPolicy,
+    ItemGrant,
+    RevalidationHook,
+    RevalidationOutcome,
+    is_managed_source_type,
+)
 from .embedder import embedder_signature
 from .store import KnowledgeStore
 
@@ -111,7 +119,8 @@ class HybridRetriever:
     """FTS5 keyword + graph traversal + optional vector search, fused with RRF."""
 
     def __init__(self, store: KnowledgeStore, embedder=None, *, embed_sig: str | None = None,
-                 acl_policy: AclPolicy | None = None):
+                 acl_policy: AclPolicy | None = None,
+                 revalidator: RevalidationHook | None = None):
         """store: KnowledgeStore instance. embedder: optional callable(str) -> list[float].
 
         ``embed_sig`` is the :func:`~kiro_crew.knowledge.embedder.embed_signature`
@@ -139,6 +148,7 @@ class HybridRetriever:
         self.embedder = embedder
         self.embed_sig = embed_sig
         self.acl_policy: AclPolicy = acl_policy or DEFAULT_POLICY
+        self.revalidator: RevalidationHook | None = revalidator
 
     def search(
         self,
@@ -165,24 +175,28 @@ class HybridRetriever:
         filters compose (both applied when both are given).
 
         ``access_context`` is the SECURITY boundary the two filters above are
-        not. It is the verified subject+tenant the query runs as (resolved from
-        the authenticated caller, never self-reported), and every returned row
-        -- from every leg, including the unfiltered graph leg and the protected
-        keyword rescue below, and everything the citation/location enrichment
-        passes then attach -- is gated against it by :attr:`acl_policy`
-        (fail-closed: an item with no readable grant is dropped). ``None`` means
-        the caller has NOT resolved an identity; that is treated as
-        :data:`acl.ALLOW_ALL` for backward compatibility with the single-user
-        local library, so a SHARED/multi-tenant caller MUST pass a real context
-        rather than relying on the default. The gate runs BEFORE the result
-        window is cut, so a denied item never occupies a slot a permitted one
-        could have taken, never triggers the keyword rescue, and is never
-        enriched or cited.
+        not. It is the verified subject+tenant the query runs as (for a MANAGED
+        item, the PROVIDER-mapped identity -- resolved from the authenticated
+        caller, never self-reported). Every returned row -- from every leg,
+        including the unfiltered graph leg and the protected keyword rescue, and
+        everything the citation/location enrichment passes then attach -- is
+        gated against it by :attr:`acl_policy`. The gate is ITEM-SCOPED, not
+        call-surface-scoped: a trusted-local item (a personal folder, vault,
+        pasted/agent doc, artifact) is servable to the local single-user library
+        without a grant, but a MANAGED cloud/structured item is ALWAYS checked
+        against the current subject AND revalidated -- and denied when the
+        context carries no verifiable identity or the grant is stale/unverifiable
+        (fail-closed). ``None`` means the caller has NOT resolved an identity;
+        that is treated as :data:`acl.LOCAL_LIBRARY` (sees trusted-local items,
+        denies managed ones), so a SHARED/multi-tenant caller MUST pass a real
+        context. The gate runs BEFORE the result window is cut, so a denied item
+        never occupies a slot, triggers the rescue, or is enriched/cited.
 
         Returns at most ``limit`` ranked rows, plus at most ONE extra trailing
         row -- the keyword leg's protected top hit (see below).
         """
-        ctx = access_context if access_context is not None else ALLOW_ALL
+        from .acl import LOCAL_LIBRARY
+        ctx = access_context if access_context is not None else LOCAL_LIBRARY
         kw = self._keyword_search(
             query, limit=limit * 2, source_id=source_id, namespace=namespace
         )
@@ -202,9 +216,12 @@ class HybridRetriever:
         # only on this filtered list, so a denied item cannot leak through any of
         # them (including via the deliberately-unfiltered graph leg, whose
         # cross-source hits are exactly the ones this gate must catch). The gate
-        # is a single batched grant read (one query, chunked) + a pure policy
-        # decision per candidate: fail-closed, so an item with no readable grant
-        # is dropped. A bypass context (local single-user library) admits all.
+        # is item-scoped: one batched grant read + one source-type read, then a
+        # per-item classify (trusted-local vs managed) + policy decision +
+        # managed-item revalidation. Fail-closed throughout: a managed item with
+        # no readable grant, a stale/unverifiable grant, or no verifiable
+        # identity is dropped -- while a trusted-local item is still servable to
+        # the local single-user library.
         fused = self._acl_filter(fused, ctx)
 
         # Resolve every fused candidate up front: both the recency tie-break below
@@ -288,32 +305,85 @@ class HybridRetriever:
     ) -> list[tuple[str, float]]:
         """Keep only fused candidates the querying identity may see (fail-closed).
 
-        One batched grant read for every candidate id, then a pure per-item
-        policy decision. An item with no grant row, or a grant whose stored JSON
-        cannot be decoded, is dropped -- absence or corruption of a grant is
-        never permission. A bypass context (local single-user library) skips the
-        grant read entirely and admits everything, so the personal library pays
-        nothing for the shared-library boundary.
+        Item-scoped, NOT call-surface-scoped. For every candidate:
+
+        * classify it managed-vs-trusted-local from its LIVE ``source_type``
+          (re-derived here, so a mislabelled/legacy grant row cannot downgrade a
+          genuinely managed cloud item);
+        * a TRUSTED-LOCAL item with no grant is servable to a bypass (local)
+          context and otherwise takes the subject/tenant test;
+        * a MANAGED item ALWAYS takes the current-subject check AND revalidation:
+          the optional :attr:`revalidator` is consulted (it performs the provider
+          live-permission probe); with no revalidator wired the outcome is
+          UNVERIFIABLE and the policy falls back to the stored freshness stamp,
+          denying a stale/never-revalidated managed grant. A managed item under a
+          bypass context (no verifiable provider-mapped subject) is denied.
 
         Runs before any downstream read of ``fused``, so it is the ONE place the
-        gate needs to live: the result window, recency tie-break, keyword rescue
-        and enrichment passes all consume this filtered list.
+        gate lives: the result window, recency tie-break, keyword rescue and
+        enrichment passes all consume this filtered list.
         """
-        if ctx.bypass_acl:
-            return fused
         if not fused:
             return fused
-        grants = self.store.get_item_grants(item_id for item_id, _ in fused)
+        ids = [item_id for item_id, _ in fused]
+        grants = self.store.get_item_grants(ids)
+        # Every candidate needs its live source classification, including the ones
+        # with NO grant row (a trusted-local item legitimately has none). One
+        # batched read returns (has_source, source_type) per id.
+        source_info = self.store.get_item_source_types(ids)
         kept: list[tuple[str, float]] = []
         for item_id, score in fused:
             raw = grants.get(item_id)
-            if raw is None:
-                # No grant row at all: fail-closed deny.
-                continue
-            grant = ItemGrant.from_row(
-                raw.get("subjects"), raw.get("tenant"), raw.get("acl_version")
+            has_source, source_type = source_info.get(item_id, (False, None))
+            # Managed classification:
+            #  - sourceless (no source_id) -> trusted-local: on-host content with
+            #    no external connector cannot carry a cloud per-user ACL.
+            #  - has a source of a managed cloud/structured type -> managed.
+            #  - has a source whose row is MISSING (dangling source_id, type None)
+            #    -> managed, fail-closed: we cannot prove it is local.
+            #  - has a source of any other (local/on-host) type -> trusted-local,
+            #    unless the per-item grant flag says managed (checked below).
+            managed_by_type = has_source and (
+                source_type is None or is_managed_source_type(source_type)
             )
-            if self.acl_policy.allows(ctx, grant):
+            if raw is None:
+                # No grant row. A trusted-local item is allowed for a bypass
+                # context (the local library) and denied for an enforcing one
+                # (it names a real subject an ungranted item cannot match). A
+                # managed item with no grant is always denied (fail-closed).
+                if not managed_by_type and ctx.bypass_acl:
+                    kept.append((item_id, score))
+                continue
+            managed = managed_by_type or bool(raw.get("managed"))
+            grant = ItemGrant.from_row(
+                raw.get("subjects"), raw.get("tenant"), raw.get("acl_version"),
+                managed=managed, fresh_as_of=raw.get("fresh_as_of"),
+            )
+            revalidation = RevalidationOutcome.UNVERIFIABLE
+            hook_consulted = False
+            if managed and grant.readable and not ctx.bypass_acl and self.revalidator is not None:
+                hook_consulted = True
+                try:
+                    revalidation = self.revalidator.revalidate(ctx, item_id, grant)
+                except Exception:
+                    # A hook that errors is treated as UNVERIFIABLE, never as a
+                    # silent allow -- the fail-closed posture must survive a
+                    # broken/timed-out provider probe.
+                    logger.warning(
+                        "Knowledge ACL revalidation hook raised for item %s; "
+                        "treating as unverifiable (fail-closed)", item_id,
+                        exc_info=True)
+                    revalidation = RevalidationOutcome.UNVERIFIABLE
+            # When a hook WAS consulted, its answer is authoritative: an
+            # UNVERIFIABLE (couldn't reach the provider / errored) is a hard deny
+            # for a managed item and must NOT fall back to the stored freshness
+            # stamp -- otherwise a broken provider probe would keep serving a
+            # within-window snapshot, defeating the point of revalidating. The
+            # stamp fallback only applies when NO hook is wired at all.
+            if (managed and hook_consulted
+                    and revalidation == RevalidationOutcome.UNVERIFIABLE):
+                continue
+            if self.acl_policy.allows(ctx, grant, revalidation=revalidation):
                 kept.append((item_id, score))
         return kept
 
