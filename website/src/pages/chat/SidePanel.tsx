@@ -982,7 +982,7 @@ export default function SidePanel({
               <div key={t.id} className="absolute inset-0">
                 <FilesHomePanel
                   projectDir={projectDir ?? ''}
-                  onFileOpen={(abs, diff) => onFileOpen?.(abs, { diffMode: diff })}
+                  onFileOpen={(abs, diff, opts) => onFileOpen?.(abs, { diffMode: diff, line: opts?.line })}
                   onAddToContext={onAddToContext}
                 />
               </div>
@@ -1194,7 +1194,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   onDiskContent: (c: string) => void
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
-  onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; replaceId?: string; canReplace?: () => boolean }) => void
   /** Right-click "Add to context" on a rail row. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onClose: () => void
@@ -1241,9 +1241,11 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
           // through the panel's dirty guard first, exactly as closing does.
           // `canReplace` re-asks after the file read: the user can start typing
           // during a slow load, and by then the up-front answer is stale.
-          onFileOpen={(abs, diff) => {
+          onFileOpen={(abs, diff, opts) => {
             const nav = (stillClean?: () => boolean) =>
-              onFileOpen(abs, { diffMode: diff, replaceId: tab.id, canReplace: stillClean })
+              onFileOpen(abs, {
+                diffMode: diff, line: opts?.line, replaceId: tab.id, canReplace: stillClean,
+              })
             const panel = panelRef.current
             if (panel) panel.requestNavigate(nav); else nav()
           }}
@@ -1269,7 +1271,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
    *  so the strip label tracks where the user actually is. */
   onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
-  onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; replaceId?: string; canReplace?: () => boolean }) => void
   /** Right-click "Add to context" on a file-browser rail row. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onSubmitComments?: (m: string) => void | boolean | Promise<void | boolean>

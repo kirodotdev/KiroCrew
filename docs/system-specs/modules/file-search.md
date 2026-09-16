@@ -2,6 +2,13 @@
 
 ## Overview
 
+This module owns two endpoints over the same handler. `GET /api/file-search`
+finds files and directories by NAME and backs the `@`-mention picker;
+`POST /api/file-grep` finds them by CONTENT and backs the chat side panel's Files
+tab. They share `handlers/files.py`, the sensitive-path fence and the off-loop
+probe discipline, and nothing else: separate roots, separate budgets, separate
+result shapes.
+
 File search backs the `@`-mention picker in the dashboard chat composer. A user types `@` followed by a query that meets the endpoint minimum, picks a result, and the composer inserts a token that serializes into the prompt as an attachment marker; `test_short_query_returns_empty` pins the minimum-query refusal.
 
 Results cover both **files** and **directories**. A file is an attachment whose content reaches the agent. A directory is a **path reference only**: the agent receives the path and explores it with its own glob/grep/read tools. No directory listing or recursive content is inlined.
@@ -34,6 +41,102 @@ Response:
 - The endpoint returns at most the normalized `limit`; `test_max_results_capped` and `test_limit_param_honoured` pin the default and expansion behavior. The folder panel expands through its fixed tiers while callers that omit `limit` retain the default page.
 - `root` echoes the sole scoped safe root. Unscoped fallback searches return an empty `root`, as `api_file_search` constructs the response.
 - Ranking is by fuzzy score, then **files before directories** on an equal score, then shorter name, then recency. The file bias keeps directory entries from crowding out the file a user is most likely searching for; `FileIndex.search` and `api_file_search` apply the same ordering, pinned by `test_index_files_outrank_dirs_on_equal_score`.
+
+### `POST /api/file-grep`
+
+Content search under one directory, for the chat side panel's Files tab
+(`FileBrowserRail`, Content mode). Answers "which files under this root CONTAIN
+this text", one row per file.
+
+| Param | Required | Description |
+|---|---|---|
+| `root` | yes | Directory to search, validated by `_grep_resolve_root` off the event loop. A sensitive path is 403 `sensitive_path`; a file rather than a directory is `not_a_directory`. |
+| `q` | yes | Literal query. Outside `_GREP_MIN_QUERY_CHARS`..`_GREP_MAX_QUERY_CHARS`, or containing a line break, the endpoint answers the EMPTY payload rather than an error — for a line break that is also the true answer, since both engines are line-oriented. |
+
+Response: `{"results", "truncated", "engine", "skipped_docs", "root"}`. Each result
+is `{"file", "line", "preview", "label"}`; `line` is 0 for a document hit, which
+has no line to reveal, and `label` names a place inside the document (`p 2`,
+`slide 7`, `Costs · row 12`) or is empty where the format has none, as `.docx`
+does not.
+
+**Two engines, one contract.** A text pass runs `rg --json` where the host has a
+ripgrep this endpoint may run, and an equivalent python walk where it does not.
+ripgrep is pinned to the fallback's semantics rather than its own defaults, and
+each flag closes a divergence: `--fixed-strings` (both python passes match
+`re.escape(query)`), `--ignore-case` rather than `--smart-case` (both fold case
+unconditionally), `--no-ignore` (`os.walk` cannot honour ignore files),
+`--max-filesize` and `--max-count 1` to match the fallback's own ceilings, and
+`--no-config`, because `RIPGREP_CONFIG_PATH` can carry `--pre=<binary>` and the
+child inherits this process's environment. Document containers are excluded with
+`--iglob`, not `--glob`: the document pass claims a file by
+`splitext(name)[1].lower()`, so a case-sensitive exclusion leaves `REPORT.DOCX` in
+ripgrep's pass and the file is reported twice. Directory skips stay
+case-sensitive, matching the walk's own exact-name screen — extensions are folded
+on both sides, directory names on neither. Every glob is negated, which is
+load-bearing: one non-negated glob flips ripgrep's whole set into allowlist mode.
+
+**The pattern channel is stdin.** A child's arguments are readable by other
+accounts through `/proc/<pid>/cmdline` and `ps`, and the query is secret-class
+text — it is redacted before every SEL write, because "which file holds this key"
+is an ordinary reason to type a credential into a search box. `--file -` hands the
+pattern over stdin instead, so the argv carries the flags and the root only. That
+is also why a query containing a line break is refused: `--file` is
+line-delimited, so two lines would become two patterns OR-ed together while the
+python pass matches one literal.
+
+**The binary is vetted by the shared chokepoint.**
+`github_runner.validate_provider_executable`, the same one `gh`, `glab`, `az` and
+`aws` resolve through, so the trust policy stays single-sourced. `rg` takes the
+default relaxed policy — it is handed no provider credentials — and any refusal
+takes the python engine rather than failing the search.
+
+**Sensitive exclusions are anchored under the root.** `is_sensitive_path` is
+HOME-anchored, so `~/.npmrc` is a credential store and a project's own `.npmrc` is
+an ordinary file the python walk searches. Each entry is therefore resolved to its
+absolute home path and emitted only when it truly lies inside the tree being
+searched, as `!/<relative>` — with the leading slash, because ripgrep follows
+gitignore semantics under which a slash-less pattern matches a basename at any
+depth. A root outside HOME emits no exclusions and loses nothing.
+
+**One budget, and partial answers say so.** Both passes share a single wall-clock
+deadline. `truncated` reports that the answer is short and `skipped_docs` is a
+FLOOR of documents the budget did not reach, so "no matches" and "the search
+stopped" stay different facts. ripgrep's records are read on a thread through a
+bounded queue, because ripgrep prints nothing for a non-matching file and an
+inline read could not observe the deadline until it chose to speak; a record over
+`_GREP_RG_MAX_RECORD_BYTES` is skipped and marks the answer short rather than
+being truncated into invalid JSON; and a dead reader with an empty queue ends the
+search, since the end-of-stream sentinel is a non-blocking put that a full queue
+drops.
+
+**Document extraction is deadline-bounded and re-parsed per request.** A
+document pass extracts `.docx`/`.pptx`/`.xlsx`. The character cap bounds TEXT, not
+work: a workbook of empty rows produces none, so the worksheet row loop samples
+the deadline every `_GREP_ROW_DEADLINE_STRIDE` rows. A parse that did not see all
+of a document's text — deadline, mid-read failure, or the character cap — marks
+the answer `truncated`. There is no extraction cache: the shared 2 s budget
+already bounds what one keystroke can cost, and a cache keyed by content had to
+carry the partial-parse flag with it to stay honest.
+
+**`.pdf` is deliberately absent.** Extracting PDF text has no memory ceiling this
+process can enforce: `pdfplumber` exposes no length limit, and the allocation is
+the parsed character list itself, so any check runs after the memory is already
+committed — a 25 MB input can decompress to orders of magnitude more text.
+Without the extension a PDF is not a document to this pass, and both engines then
+skip it as binary (ripgrep by its own detection, the python walk by its NUL
+sniff); `test_a_pdf_is_not_searched_at_all` pins that, with a `.docx` beside it so
+the assertion cannot pass by finding nothing. Restoring PDF needs a
+resource-bounded extractor, which belongs with the identical exposure in
+`knowledge/readers.py:_read_pdf` rather than in this module alone.
+
+**Every string a row carries is redacted**, asserted as a rule over the row rather
+than field by field: preview, label and path. The path uses the same
+`redact_path_segments` the tree and git listings use, so a clean path stays
+byte-for-byte openable.
+
+Off-loop like its sibling: root validation and the search both run through
+`_run_path_probe`, and the search takes a TRANSFER pool slot rather than a probe
+slot because it holds its worker for the length of the search.
 
 ### Result sourcing
 
@@ -71,9 +174,9 @@ per-request walk.
 
 ## Scope of this module
 
-This document covers discovery (how the endpoint and index find files and
-directories, and how the picker stages them in the composer) and the folder
-reference lifecycle below.
+This document covers discovery -- how the two endpoints and the index find
+files and directories by name and by content, and how the picker stages them in
+the composer -- and the folder reference lifecycle below.
 
 ## Folder references (composer -> wire -> render)
 
@@ -126,7 +229,9 @@ shows literally — the same trade-off inline file mentions make.
 
 | File | Role |
 |---|---|
-| `src/kiro_crew/dashboard/handlers/files.py` | `api_file_search` endpoint, fuzzy scorer, walk fallback |
+| `src/kiro_crew/dashboard/handlers/files.py` | `api_file_search` endpoint, fuzzy scorer, walk fallback; `api_file_grep` endpoint, rg argv + stdin pattern channel, python fallback, document pass |
+| `website/src/pages/chat/FileBrowserRail.tsx` | Files tab: Name/Content toggle, result rows, status row |
+| `website/src/api/fileGrep.ts` | `/api/file-grep` client and result types |
 | `src/kiro_crew/dashboard/file_index.py` | `FileIndex`, `FileIndexRegistry` |
 | `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion |
 | `website/src/components/ChatInput.tsx` | Composer wiring, pending file/folder preview strip |
@@ -138,6 +243,9 @@ shows literally — the same trade-off inline file mentions make.
 | File | Coverage |
 |---|---|
 | `test/test_file_search.py` | Endpoint behaviour, scoring, exclusions |
+| `test/test_file_grep.py` | Engine parity, the stdin pattern channel, anchored exclusions, deadline-bounded extraction, row redaction |
+| `website/src/test/FileBrowserRail.test.tsx` | Toggle default and remount, request floor, status row, document note, project-switch invalidation |
+| `website/src/test/fileGrep.test.ts` | The wire call: path, URL-encoded `root`/`q`, body returned as-is, transport errors surface |
 | `test/test_file_index.py` | Index build, refresh, registry refcounting |
 | `test/test_file_search_dirs.py` | Directory results, `kinds` filter, independent scan budgets, dirs-visited ceiling, symlink security |
 | `website/src/test/FilePickerMenu.dirs.test.tsx` | Folder rows, selection payloads, trailing slash |

@@ -23,7 +23,8 @@ function basename(p: string): string {
  */
 export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext }: {
   projectDir: string
-  onFileOpen: (absPath: string, diff: boolean) => void
+  /** `opts.line` opens the file at that line — a rail content-search hit. */
+  onFileOpen: (absPath: string, diff: boolean, opts?: { line?: number }) => void
   /** Right-click "Add to context" on a tree row — forwarded to the composer
    *  host so a file/folder becomes an `@`-mention. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
