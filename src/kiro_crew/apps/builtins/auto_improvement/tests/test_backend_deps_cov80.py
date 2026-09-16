@@ -117,16 +117,24 @@ class TestCheckDeps:
     def test_everything_present_is_ok_with_nothing_blocking(
         self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        which.update({"git": _stub_bin("git"), "gh": _stub_bin("gh"), "ruff": _stub_bin("ruff")})
+        which.update(
+            {
+                "git": _stub_bin("git"),
+                "gh": _stub_bin("gh"),
+                "glab": _stub_bin("glab"),
+                "ruff": _stub_bin("ruff"),
+            }
+        )
         monkeypatch.setattr(deps.subprocess, "run", lambda *a, **k: _proc(0))
         report = deps.check_deps()
         assert report["ok"] is True
         assert report["blocking"] == []
         by_id = {d["id"]: d for d in report["deps"]}
-        assert set(by_id) == {"git", "gh", "ruff"}
+        assert set(by_id) == {"git", "gh", "glab", "ruff"}
         assert by_id["git"]["detail"] == _stub_bin("git")
         assert by_id["ruff"]["installable"] is True
         assert by_id["gh"]["installable"] is False
+        assert by_id["glab"]["installable"] is False
 
     def test_a_missing_required_binary_blocks_the_run(
         self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
@@ -156,10 +164,38 @@ class TestCheckDeps:
     def test_both_required_entries_can_block_at_once(
         self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """With a GitHub target configured, git and gh can block together."""
+        monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITHUB)
         monkeypatch.setattr(deps.subprocess, "run", lambda *a, **k: _proc(0))
         report = deps.check_deps()
         assert report["blocking"] == ["git", "gh"]
         assert report["ok"] is False
+
+    def test_a_gitlab_target_requires_glab_not_gh(
+        self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The forge CLI requirement follows the configured target's provider."""
+        monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITLAB)
+        monkeypatch.setattr(deps.subprocess, "run", lambda *a, **k: _proc(0))
+        report = deps.check_deps()
+        assert report["blocking"] == ["git", "glab"]
+        by_id = {d["id"]: d for d in report["deps"]}
+        assert by_id["gh"]["required"] is False
+        assert by_id["glab"]["required"] is True
+        assert "glab auth login" in by_id["glab"]["fix"]
+
+    def test_no_configured_target_leaves_both_forge_clis_optional(
+        self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Neither CLI can block setup before a repository is connected."""
+        which["git"] = _stub_bin("git")
+        monkeypatch.setattr(deps.subprocess, "run", lambda *a, **k: _proc(0))
+        report = deps.check_deps()
+        assert report["ok"] is True
+        assert report["blocking"] == []
+        by_id = {d["id"]: d for d in report["deps"]}
+        assert by_id["gh"]["required"] is False
+        assert by_id["glab"]["required"] is False
 
 
 class TestInstallDeps:

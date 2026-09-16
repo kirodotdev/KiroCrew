@@ -254,6 +254,28 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("secret",),
         ("workflow", "run"),
     ),
+    # The GitLab CLI, mirroring the `gh` entry verb-for-verb: same watcher, same
+    # attacker-writable inputs (MR descriptions, review notes), same operator identity
+    # behind the token. `mr update` covers `--ready` — GitLab's publish verb — and every
+    # other MR mutation (there is no separate `mr edit`); `mr note` is `pr comment`;
+    # `mr approve` is `pr review --approve`; `variable` is `secret`; `ci run` is
+    # `workflow run`. The app's own draft MR comes from
+    # `profiles/gitlab_repo/mr_recipe.py`, which builds its argv directly and never
+    # passes through this denylist, so nothing legitimate is lost.
+    "glab": (
+        ("mr", "merge"),
+        ("mr", "update"),
+        ("mr", "close"),
+        ("mr", "note"),
+        ("mr", "approve"),
+        ("mr", "create"),
+        ("issue",),
+        ("release",),
+        ("auth",),
+        ("api",),  # can PATCH/POST anything the token reaches
+        ("variable",),
+        ("ci", "run"),
+    ),
     "git": (
         ("push",),
         ("remote", "set-url"),
@@ -263,6 +285,29 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
 #: Binaries a loop/watcher agent must never invoke at all — network fetch and remote shell.
 #: No subcommand analysis needed: the binary itself is the capability.
 _FORBIDDEN_BINARIES = ("curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "telnet")
+
+#: ``glab`` is authorized by ALLOWLIST, not denylist — the opposite of ``gh``/``git`` above.
+#: The watcher's whole input is attacker-writable MR text, and a denylist can only refuse the
+#: mutating verbs someone thought to name: ``glab repo delete group/project --yes`` (an
+#: injected instruction the watcher would read) sailed past the ``glab`` denylist because
+#: ``repo`` was never enumerated there. An allowlist inverts the default to REFUSE, so a verb
+#: is permitted only if it is one of the READ-ONLY reads the nudge prompt actually asks for
+#: (``mr view``/``mr diff`` for PR state and threads, ``ci view``/``ci status`` for checks).
+#: Every publish/mutate verb — ``mr update``/``mr merge``/``mr note``/``mr approve``,
+#: ``repo``, ``api``, ``auth``, ``variable``, ``ci run`` — is refused by simply not being
+#: listed, including verbs that do not exist yet. The app's own draft-MR authoring builds its
+#: argv directly in ``profiles/gitlab_repo/mr_recipe.py`` and never passes through this
+#: refusal, so nothing legitimate is lost. ``gh`` is deliberately left on its denylist
+#: (``_FORBIDDEN_SUBCOMMANDS``) unchanged — GitHub is single-host here and its denylist was
+#: already hardened by prior review; this only tightens the GitLab path to the safer shape.
+_GLAB_ALLOWED_SUBCOMMANDS: tuple[tuple[str, ...], ...] = (
+    ("mr", "view"),
+    ("mr", "diff"),
+    ("mr", "list"),
+    ("ci", "view"),
+    ("ci", "status"),
+    ("ci", "list"),
+)
 
 
 def _shell_words(command: str) -> list[str]:
@@ -475,6 +520,21 @@ def _refusal(text: str, *, depth: int) -> str:
                 skip_next = "=" not in word and word.split("=", 1)[0] in value_taking
                 continue
             rest.append(word.lower())
+        if binary == "glab":
+            # ALLOWLIST gate (see `_GLAB_ALLOWED_SUBCOMMANDS`): refuse unless the
+            # subcommand path is an explicitly enumerated READ-ONLY verb. An empty
+            # `rest` (bare `glab`) names no allowed read and is refused. This
+            # inverts the default to deny, so a mutating verb — named or not,
+            # existing or future — is blocked by omission rather than by being
+            # listed. `gh`/`git` fall through to the denylist below, unchanged.
+            if not any(tuple(rest[: len(p)]) == p for p in _GLAB_ALLOWED_SUBCOMMANDS):
+                shown = " ".join(rest[:2]) if rest else "(no subcommand)"
+                return (
+                    f"glab {shown} is not an allowed read-only command here "
+                    "(the watcher may only run glab mr view/diff/list and glab ci "
+                    "view/status/list)"
+                )
+            continue
         for path in forbidden:
             if tuple(rest[: len(path)]) == path:
                 return f"{binary} {' '.join(path)} cannot mutate state here"
