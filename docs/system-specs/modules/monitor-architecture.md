@@ -434,13 +434,24 @@ leaves it enforced nowhere:
   it does group, by context -- and maps `CANCELLED` to failed in `_normalize_check`.
   Since the state fold prefers `failed`, a superseded cancelled attempt reads as a
   live failure and can wake on a phantom.
-- A published aggregate verdict is authoritative over the individual rows. A
-  reader that only enumerates rows can report green while the aggregate is
-  pending, which is not a hypothetical: a subject has been observed with every
-  individual check complete and green while the aggregate context still read
-  pending. Enforced today only in the status tool, which resolves the aggregate
-  through `resolve_readiness_context`; the structured provider has no aggregate
-  notion at all (`target`).
+- A published aggregate is one signal in the worst-wins fold, never an override
+  of the rows. It is read like any other row: a `PR Readiness` StatusContext with
+  state FAILURE is a failing row and makes the verdict red, and one with state
+  PENDING keeps the monitor waiting instead of concluding early. What it cannot
+  do is subtract information -- a green aggregate does not clear an observed
+  failing row, because the aggregate is identified by its context name, a display
+  string any status publisher on the pull request can set, and a name anyone can
+  write must not be able to remove a failure. The fold keeps the aggregate's
+  failure and its pending while granting its green no authority over the rows.
+  The problem aggregate authority was reaching for is real and still answered:
+  green rows sitting under a still-pending aggregate must not conclude the round
+  early. Worst-wins pending already answers it -- a pending aggregate is a
+  pending row, so the monitor waits -- without letting a green one subtract a
+  failure. Both current implementations now follow this rule: the structured
+  provider reads the aggregate as an ordinary worst-wins row, and the skill's
+  status tool was brought onto the same rule by
+  [PR #10731](https://github.com/kirodotdev/KiroCrew/pull/10731), merged
+  2026-09-14.
 - A stale reviewer stamp is an entry (`stale:<name>`), not a paragraph.
 - An un-dispositioned finding is an entry, so readiness cannot be declared over
   one.
