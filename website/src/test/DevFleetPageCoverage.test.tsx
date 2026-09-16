@@ -871,6 +871,47 @@ describe('DevFleetPage provision failures', () => {
     // The accumulated output is retained and auto-expanded on failure.
     expect(screen.getAllByText('pip install still running').length).toBeGreaterThan(0)
   }, 25000)
+
+  it('names a failed provision step from its stderr tail, not from the stale stdout line that follows it', async () => {
+    // Same defect class as the sync runner's: provision runs pip/npm with both
+    // streams landing in ONE pipe, a child block-buffers stdout to a pipe while
+    // writing stderr unbuffered, so the stdout progress line flushes LAST. The
+    // provision runner labels the failing step's stderr tail with the same
+    // `::steperr::` markers the sync runner uses, and the notice must read them
+    // -- one rule for both failure notices.
+    const output = [
+      '  $ /w/new/.venv/bin/pip install --editable /w/new  (cwd=/w/new)',
+      'ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied',
+      'Consider using the `--user` option or check the permissions.',
+      'Collecting kiro-crew',
+      '::steperr::2::ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied',
+      '::steperr::2::Consider using the `--user` option or check the permissions.',
+      "pod: provisioning 'wt-new' failed (see output above)",
+    ]
+    installFetch(fleetOf(MAIN_ROW, unbuilt), (u, opts) => {
+      if (u.includes('/pod/provision') && isPost(opts)) return res({ ok: true, run_id: 'prov-err' })
+      if (u.includes('/run?id=prov-err')) return res({ status: 'done', exit_code: 1, output })
+      return null
+    })
+    renderPage()
+    await waitForRow('wt-new')
+    fireEvent.click(screen.getByText('Provision'))
+    // Toast and notice both carry the title; the notice is the one under test.
+    const notice = await waitFor(() => screen.getByTestId('provision-error-wt-new'), { timeout: 8000 })
+    expect(notice.textContent).toContain('Provision failed (exit 1)')
+    expect(notice.textContent).toContain('Permission denied')
+    expect(notice.textContent).toContain('Consider using the `--user` option')
+    // Neither the stdout progress line nor the CLI's closing line names the failure.
+    expect(notice.textContent).not.toContain('Collecting kiro-crew')
+    expect(notice.textContent).not.toContain('see output above')
+    expect(notice.textContent).not.toContain('::steperr::')
+
+    // The log is the transcript once: markers filtered, tail not duplicated.
+    const pre = await waitFor(() => document.querySelector('pre') as HTMLPreElement)
+    expect(pre.textContent).not.toContain('::steperr::')
+    expect(pre.textContent).toContain('Collecting kiro-crew')
+    expect(pre.textContent?.match(/Consider using the/g)).toHaveLength(1)
+  }, 20000)
 })
 
 describe('DevFleetPage prune failures', () => {

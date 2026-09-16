@@ -580,7 +580,16 @@ red state.
 **Failure persistence:** on failure/timeout the run is **not** cleared — the
 strip shows a red `✕ Provision failed (exit N)` label with the log
 auto-expanded, and both persist until the user clicks the dismiss `×`
-(dismiss also refreshes the fleet). On success it flashes a green
+(dismiss also refreshes the fleet). The notice's message is the failing step's
+stderr tail, read from the same `::steperr::<idx>::<line>` markers the sync
+runner emits (`provision.py::_run` pipes each step's two streams, relays both
+to stderr line by line, and `_fail` re-emits the stderr tail of the step whose
+failure ENDED provisioning — a recovered failure such as `npm ci` falling back
+to `npm install` is log text only). The last output line is the fallback, for a
+gateway whose provision emits no markers. See "When there is no reserved code"
+below for why the last line alone names a progress line; the same relay, the
+same byte-derived read cap, and the same marker filtering in the log panel
+apply to both runners. On success it flashes a green
 `✓ Provisioned` briefly, then clears (the fleet refetch flips the row to its
 built state).
 
@@ -941,6 +950,9 @@ fails, `run_steps` re-emits those as `::steperr::<idx>::<line>` markers, and the
 UI's ladder is `cause` → the `::steperr::` block → the last output line. Both
 marker families are filtered out of the log panel: the stderr lines already
 appear there in their own order, so the markers would only duplicate the tail.
+`pod/provision.py::_run` speaks the same protocol for the provision run (its
+markers go to stderr, so a `pod up --json --provision` stdout stays pure JSON),
+which is why one frontend helper, `syncFailureTail`, names both failures.
 
 Order WITHIN each stream is preserved; order ACROSS the two is unspecified. The
 child writes stdout straight to the inherited descriptor while the pump relays
