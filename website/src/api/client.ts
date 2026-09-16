@@ -4165,6 +4165,13 @@ export const api = {
   /** Detail payload carries `script_validation` (`SkillScriptValidation`) so the
    *  review card can warn BEFORE the click that Approve cannot succeed as-is. */
   skillPendingDetail: (slug: string) => fetch('/api/skills/-/pending/' + encodeURIComponent(slug)).then(j),
+  /** Pending-vs-live overlap clusters for the Skills tab audit modal and the
+   *  per-row "Related skills" hint. */
+  skillsAudit: () => fetch('/api/skills/-/audit').then(j),
+  restagePendingSkill: (slug: string, target: string) =>
+    post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/restage', { target }).then(j) as Promise<{ staged: string; slug: string; target: string }>,
+  undoRestagedPendingSkill: (slug: string) =>
+    post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/restage-undo', {}).then(j) as Promise<{ restored: string; slug: string }>,
   /** Throws ApiError on refusal: 404 `pending_skill_not_found`, 409
    *  `live_skill_exists`, 422 `script_validation_failed` (body carries a
    *  `report` of `{file: [findings]}`), 409 `pending_approval_refused`. */

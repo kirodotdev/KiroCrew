@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
+import { lazy, Suspense } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
@@ -25,6 +26,9 @@ import { fmtBytes, fmtCompact } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
+import type { SkillAuditCluster, SkillAuditMember } from './SkillsAuditModal'
+
+const SkillsAuditModal = lazy(() => import('./SkillsAuditModal'))
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
 /**
@@ -76,6 +80,8 @@ export default function SkillsTab() {
   const [detailEditing, setDetailEditing] = useState(false)
   // Multi-provider skill browser drawer (Add Skill button).
   const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
+  const [auditOpen, setAuditOpen] = useState(false)
+  const [auditFocus, setAuditFocus] = useState<{ pendingSlug: string; target: string } | null>(null)
   const [createError, setCreateError] = useState('')
   // Update/delete failures get their own state rather than sharing one string:
   // the save failure belongs next to the detail editor where the save was
@@ -288,6 +294,25 @@ export default function SkillsTab() {
     setSelectedKey(s.key); setDetailEditing(false); openDetail()
   }
 
+  const focusAuditMember = (member: SkillAuditMember): boolean => {
+    let rowId: string
+    if (member.kind === 'pending' && member.slug) {
+      rowId = `pending-skill-row-${member.slug}`
+    } else {
+      const skill = skills.find(item => item.key === member.name || item.name === member.name)
+      if (!skill) return false
+      selectSkill(skill)
+      rowId = `skill-row-${skill.key}`
+    }
+    setAuditOpen(false)
+    requestAnimationFrame(() => {
+      const row = document.getElementById(rowId)
+      row?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+      row?.focus()
+    })
+    return true
+  }
+
   /** One row in the left list. */
   const renderRow = (s: Skill) => {
     const isSel = s.key === selectedKey
@@ -297,6 +322,7 @@ export default function SkillsTab() {
     const rowInert = updateSkill.isPending
     return (
       <div
+        id={`skill-row-${s.key}`}
         key={s.key}
         role="button"
         tabIndex={0}
@@ -357,8 +383,23 @@ export default function SkillsTab() {
     && !createSkill.isPending
 
   return (<>
-    <PendingSkillsPanel />
+    <PendingSkillsPanel
+      onOpenAudit={(pendingSlug, target) => {
+        setAuditFocus({ pendingSlug, target })
+        setAuditOpen(true)
+      }}
+    />
     <ProjectSkillsTrustList />
+    {auditOpen && (
+      <Suspense fallback={null}>
+        <SkillsAuditModal
+          open
+          onClose={() => setAuditOpen(false)}
+          onSelectMember={focusAuditMember}
+          focus={auditFocus}
+        />
+      </Suspense>
+    )}
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not
         the combined path: a segment that sanitizes to nothing (typically one
@@ -395,6 +436,9 @@ export default function SkillsTab() {
           {skillFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setSkillFilter('')} aria-label={i18nT('pages.overview.skillsTab.clear_search')}>{"\u00d7"}</button>}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <Btn onClick={() => { setAuditFocus(null); setAuditOpen(true) }}>
+            {i18nT('pages.overview.skillsTab.audit_find_overlapping_skills')}
+          </Btn>
           <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.skillsTab.refresh_skills')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
@@ -641,6 +685,18 @@ interface PendingSkill {
    *  card warn BEFORE the click that Approve cannot succeed as-is. */
   script_validation?: SkillScriptValidation
 }
+interface AuditRelatedSkill {
+  target: string
+  classification: SkillAuditCluster['classification']
+  score: number
+  canRestage: boolean
+}
+
+const AUDIT_CLASSIFICATION_KEY = {
+  duplicate: 'pages.overview.skillsTab.audit_duplicate',
+  subsumed: 'pages.overview.skillsTab.audit_subsumed',
+  overlapping: 'pages.overview.skillsTab.audit_overlapping',
+} as const
 interface PendingDetail {
   name: string
   content: string
@@ -691,7 +747,7 @@ function ValidationFindings({ report }: { report: Record<string, string[]> }) {
   )
 }
 
-function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprove, onDismiss }: {
+function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, related, onApprove, onDismiss, onRestage, onOpenRelated }: {
   p: PendingSkill
   /** True when a notification deep-linked at THIS candidate (?review=<slug>). */
   autoOpen?: boolean
@@ -700,8 +756,11 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   /** True when the queue holds a flagged candidate — the only shape where the
       disabled fade can be misread as a validation state. */
   mixedQueue?: boolean
+  related: AuditRelatedSkill[]
   onApprove: (slug: string) => void
   onDismiss: (slug: string) => void
+  onRestage: (slug: string, target: string) => void
+  onOpenRelated: (pendingSlug: string, target: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -726,7 +785,12 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
     enabled: open,
   })
   return (
-    <div ref={rowRef} className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}>
+    <div
+      id={`pending-skill-row-${p.slug}`}
+      ref={rowRef}
+      tabIndex={-1}
+      className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}
+    >
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-strong truncate">
@@ -835,6 +899,40 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
           />
         </div>
       )}
+      {related.length > 0 && (() => {
+        // The first RESTAGEABLE match drives the button, not related[0]: a
+        // hand-authored skill can outrank an eligible auto-skill target and
+        // would otherwise hide the only merge the user can actually perform.
+        const restageTarget = related.find(item => item.canRestage)
+        return (
+          <div className="mt-2 flex items-center gap-2 text-[11px] text-muted">
+            <div className="min-w-0 flex-1 flex flex-wrap gap-x-1">
+              <span>{i18nT('pages.overview.skillsTab.related_skills')}:</span>
+              {related.map((item, index) => (
+                <span key={item.target}>
+                  {index > 0 && <span aria-hidden="true">, </span>}
+                  <button
+                    type="button"
+                    className="text-accent underline underline-offset-2 hover:text-text-strong"
+                    onClick={() => onOpenRelated(p.slug, item.target)}
+                  >
+                    {item.target}{' '}
+                    <span className="text-muted">
+                      ({i18nT(AUDIT_CLASSIFICATION_KEY[item.classification])})
+                    </span>
+                  </button>
+                </span>
+              ))}
+
+            </div>
+            {!isUpdate && restageTarget && (
+              <Btn onClick={() => onRestage(p.slug, restageTarget.target)}>
+                {i18nT('pages.overview.skillsTab.audit_update_target', { target: restageTarget.target })}
+              </Btn>
+            )}
+          </div>
+        )
+      })()}
       {open && detail && (
         <div className="mt-2 space-y-2">
           {(detail.script_validation?.ok === false || p.script_validation?.ok === false)
@@ -928,7 +1026,11 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   )
 }
 
-function PendingSkillsPanel() {
+function PendingSkillsPanel({
+  onOpenAudit,
+}: {
+  onOpenAudit: (pendingSlug: string, target: string) => void
+}) {
   const qc = useQueryClient()
   // Shared ['skills'] cache (same key/fn as the tab's own list): read-only
   // here, resolving a not-found notice's "approved or dismissed" — whether a
@@ -1048,6 +1150,39 @@ function PendingSkillsPanel() {
       return null
     })
   }, [pending, isSuccess])
+  const { data: auditData } = useQuery<{ clusters: SkillAuditCluster[] }>({
+    queryKey: ['skills-audit'],
+    queryFn: () => api.skillsAudit(),
+    enabled: pending.length > 0,
+    staleTime: 0,
+  })
+  const relatedBySlug = useMemo(() => {
+    const result = new Map<string, AuditRelatedSkill[]>()
+    for (const cluster of auditData?.clusters ?? []) {
+      const byId = new Map(cluster.members.map(member => [member.id, member]))
+      for (const relation of cluster.relations) {
+        const pair = relation.members.map(id => byId.get(id)).filter(Boolean) as SkillAuditMember[]
+        const pendingMember = pair.find(member => member.kind === 'pending')
+        const liveMember = pair.find(member => member.kind === 'live')
+        if (!pendingMember?.slug || !liveMember) continue
+        const canRestage = cluster.update_targets.some(
+          target => target.pending_slug === pendingMember.slug && target.target === liveMember.name,
+        )
+        const items = result.get(pendingMember.slug) ?? []
+        items.push({
+          target: liveMember.name,
+          classification: relation.classification,
+          score: relation.score,
+          canRestage,
+        })
+        result.set(pendingMember.slug, items)
+      }
+    }
+    for (const items of result.values()) {
+      items.sort((left, right) => right.score - left.score || left.target.localeCompare(right.target, 'en'))
+    }
+    return result
+  }, [auditData])
   const approve = useMutation({
     mutationFn: (slug: string) => api.approvePendingSkill(slug),
     onMutate: (slug: string) => {
@@ -1178,7 +1313,58 @@ function PendingSkillsPanel() {
       // row keeps rendering its pre-approval diff from cache.
       qc.invalidateQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
       qc.invalidateQueries({ queryKey: ['skills'] })
+    },
+  })
+  const [restageError, setRestageError] = useState('')
+  const [restaged, setRestaged] = useState<{
+    target: string
+    staged: string
+    slug: string
+    originalSlug: string
+  } | null>(null)
+  const restage = useMutation({
+    mutationFn: ({ slug, target }: { slug: string; target: string }) =>
+      api.restagePendingSkill(slug, target),
+    onMutate: () => {
+      setRestageError('')
+      setRestaged(null)
+    },
+    onSuccess: (data: { staged: string; slug: string; target: string }, { slug }) => {
+      if (slug === reviewSlug) setReviewSlug(null)
+      setRestaged({
+        target: data.target,
+        staged: data.staged,
+        slug: data.slug,
+        originalSlug: slug,
+      })
+      setReviewSlug(data.slug)
+      qc.removeQueries({ queryKey: ['skills-pending-detail', slug] })
+      qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
+    },
+    onError: (err: Error) => {
+      const code = err instanceof ApiError ? parseErrorCode(err.body) : undefined
+      if (code === 'restage_rejected') {
+        setRestageError(i18nT('pages.overview.skillsTab.audit_proposal_failed'))
+      } else {
+        setRestageError(err.message)
+      }
+    },
+  })
+  const undoRestage = useMutation({
+    mutationFn: (slug: string) => api.undoRestagedPendingSkill(slug),
+    onMutate: () => setRestageError(''),
+    onSuccess: (data: { restored: string; slug: string }) => {
+      setRestaged(null)
+      setReviewSlug(data.slug)
+      qc.removeQueries({ queryKey: ['skills-pending-detail'] })
+      qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
+    },
+    onError: (err: Error) => {
+      setRestageError(err.message)
     },
   })
   const dismiss = useMutation({
@@ -1263,6 +1449,7 @@ function PendingSkillsPanel() {
       // user might then approve without seeing the replacement).
       qc.removeQueries({ queryKey: ['skills-pending-detail', slug] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
     },
   })
   const dismissAll = useMutation({
@@ -1288,6 +1475,7 @@ function PendingSkillsPanel() {
       setApproveRefusals({})
       qc.removeQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
     },
   })
   // Only claim a deep-linked candidate is gone once the queue has actually been
@@ -1374,6 +1562,39 @@ function PendingSkillsPanel() {
           {i18nT('pages.overview.skillsTab.linked_candidate_no_longer_pending')}
         </div>
       )}
+      {restageError && (
+        <ErrorNotice
+          className="mb-2"
+          variant="inline"
+          askAgent
+          message={restageError}
+          onDismiss={() => setRestageError('')}
+          testId="skill-restage-failure"
+        />
+      )}
+      {restaged && (
+        <div
+          className="mb-2 flex items-center gap-2 text-[11px] p-2 rounded bg-bg-elevated border border-border text-muted"
+          data-testid="skill-restage-success"
+          translate="no"
+        >
+          <span className="min-w-0 flex-1">
+            {i18nT('pages.overview.skillsTab.pending_update_candidate_created', {
+              target: restaged.target,
+              name: restaged.staged,
+            })}
+          </span>
+          <Btn onClick={() => setReviewSlug(restaged.slug)}>
+            {i18nT('pages.overview.skillsTab.review')}
+          </Btn>
+          <Btn
+            disabled={undoRestage.isPending}
+            onClick={() => undoRestage.mutate(restaged.slug)}
+          >
+            {i18nT('pages.overview.skillsTab.undo')}
+          </Btn>
+        </div>
+      )}
       {pending.length > 0 && (
         <Card>
           <div className="space-y-2">
@@ -1384,8 +1605,11 @@ function PendingSkillsPanel() {
                 autoOpen={p.slug === reviewSlug}
                 approveRefusal={approveRefusals[p.slug]}
                 mixedQueue={pending.some(c => c.script_validation?.ok === false)}
+                related={relatedBySlug.get(p.slug) ?? []}
                 onApprove={s => approve.mutate(s)}
                 onDismiss={s => dismiss.mutate(s)}
+                onRestage={(slug, target) => restage.mutate({ slug, target })}
+                onOpenRelated={onOpenAudit}
               />
             ))}
           </div>
