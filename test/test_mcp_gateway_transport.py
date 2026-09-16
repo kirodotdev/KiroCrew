@@ -838,6 +838,69 @@ def test_probe_live_reports_an_unknown_error_as_dead(
     assert transport.probe_live("C:/state/gateway.sock") is False
 
 
+# --- POSIX probe reachable from Windows --------------------------------------
+
+
+class _ScriptedConnectSocket:
+    """Stub socket whose ``connect`` raises a scripted exception (or nothing)."""
+
+    def __init__(self, connect_exc: BaseException | None) -> None:
+        self._connect_exc = connect_exc
+
+    def settimeout(self, _timeout: float) -> None:
+        pass
+
+    def connect(self, _address: str) -> None:
+        if self._connect_exc is not None:
+            raise self._connect_exc
+
+    def close(self) -> None:
+        pass
+
+
+def _force_posix_probe_branch(
+    monkeypatch: pytest.MonkeyPatch, connect_exc: BaseException | None
+) -> None:
+    """Route ``probe_live`` into its POSIX branch with a stub socket factory."""
+    monkeypatch.setattr(pc, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        transport,
+        "_socket",
+        type(
+            "FakeSocketModule",
+            (),
+            {
+                "AF_UNIX": 1,
+                "SOCK_STREAM": 2,
+                "timeout": socket.timeout,
+                "socket": staticmethod(lambda *args: _ScriptedConnectSocket(connect_exc)),
+            },
+        ),
+    )
+
+
+def test_probe_live_treats_a_connect_timeout_as_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connect that times out is an inconclusive probe, not a dead endpoint.
+
+    When the listener's accept backlog is full, POSIX blocks ``connect()``
+    instead of refusing it, so the 1s timeout fires on a healthy but heavily
+    loaded daemon. Reporting that as dead lets ``remove_stale`` unlink a live
+    daemon's socket.
+    """
+    _force_posix_probe_branch(monkeypatch, socket.timeout("timed out"))
+    assert transport.probe_live("/state/gateway.sock") is True
+
+
+def test_probe_live_treats_a_refused_connect_as_dead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The true negative stays negative: a refused connect means no listener."""
+    _force_posix_probe_branch(monkeypatch, ConnectionRefusedError(111, "refused"))
+    assert transport.probe_live("/state/gateway.sock") is False
+
+
 @pytest.mark.asyncio
 async def test_serve_rejects_a_loop_without_pipe_support(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

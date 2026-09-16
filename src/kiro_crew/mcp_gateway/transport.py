@@ -546,7 +546,9 @@ def probe_live(socket_path: str | os.PathLike[str]) -> bool:
     Runs in a thread at every call site (it blocks for up to a second) and
     never raises: an inconclusive probe reports ``True`` so callers, which use
     this to decide whether it is safe to clobber an endpoint, err toward
-    leaving it alone.
+    leaving it alone. A connect that times out is inconclusive -- a full
+    accept backlog blocks ``connect()`` instead of refusing it -- while a
+    refused connect is a real negative.
     """
     address = resolve_address(socket_path)
     if not platform_compat.IS_WINDOWS:
@@ -554,6 +556,14 @@ def probe_live(socket_path: str | os.PathLike[str]) -> bool:
         try:
             s.settimeout(1.0)
             s.connect(address)
+            return True
+        except _socket.timeout:
+            # The listener exists but its accept backlog is full, so the
+            # kernel queued rather than refused the connection until the
+            # timeout fired. That is a heavily loaded daemon -- exactly when
+            # the endpoint must NOT be taken away -- so report live.
+            # ``socket.timeout`` is an ``OSError`` subclass and must be
+            # caught before the arm below.
             return True
         except (ConnectionRefusedError, OSError):
             return False
