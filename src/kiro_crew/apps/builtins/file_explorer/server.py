@@ -4,8 +4,8 @@ A small stdlib-only HTTP server that exposes a read-only filesystem API for the
 file-explorer frontend. Bound to localhost; KiroCrew proxies requests from
 ``/apps/file-explorer/api/*`` to this process.
 
-Endpoints (all relative to the proxied base — the server itself sees them at
-the root since KiroCrew strips the prefix):
+Endpoints (public paths are relative to the proxied base; the backend receives
+``/api/<path>`` and also accepts direct ``/<path>`` aliases):
 
   GET  /health                                  → {"status": "ok"}
   GET  /resolve?path=<p>                        → {"path", "exists", "type", "size", "mtime"}
@@ -17,7 +17,10 @@ the root since KiroCrew strips the prefix):
 
 Path safety: callers may only access paths under the user's home dir or the
 system temp dir on any OS, plus ``/home/`` and ``/opt/`` on POSIX (after
-symlink resolution).  Paths outside the allow-list return 403.
+symlink resolution), plus the project directories the dashboard has recorded
+in ``recent_projects.json`` — a user whose project lives outside the static
+roots can still browse it here.  Paths outside the allow-list return 403.
+Sensitive paths are refused in every case.
 
 Size / depth caps are tunable via env vars but have safe defaults.
 """
@@ -43,8 +46,8 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.proxy_auth import verify_proxy_request
-from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.hooks import safe_read_file_bytes
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.hooks import is_unc_shape, safe_read_file_bytes
 from kiro_crew.platform import boot_platform
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, wrap_argv
 from kiro_crew.security import is_sensitive_path
@@ -63,6 +66,8 @@ MAX_TREE_ENTRIES = int(os.environ.get("FE_MAX_TREE_ENTRIES", 5000))
 MAX_SEARCH_RESULTS = int(os.environ.get("FE_MAX_SEARCH_RESULTS", 500))
 SEARCH_TIMEOUT_SEC = int(os.environ.get("FE_SEARCH_TIMEOUT_SEC", 15))
 GIT_TIMEOUT_SEC = int(os.environ.get("FE_GIT_TIMEOUT_SEC", 5))
+MAX_RECENT_PROJECTS = int(os.environ.get("FE_MAX_RECENT_PROJECTS", 100))
+MAX_RECENT_PROJECTS_BYTES = int(os.environ.get("FE_MAX_RECENT_PROJECTS_BYTES", 1_000_000))
 
 # Allow-list of root paths (resolved). Anything outside is denied.
 #
@@ -341,8 +346,7 @@ def _safe_path(raw: str, must_exist: bool = True) -> Path:
     if must_exist and the file/dir is missing.
     """
     p = _expand(raw)
-    in_allow = any(_is_within(p, root) for root in ALLOWED_ROOTS)
-    if not in_allow:
+    if not _is_in_allowed_roots(p):
         raise PathError(f"path not allowed: {p}", 403)
     if _is_sensitive(p):
         raise PathError("access denied: sensitive path", 403)
@@ -364,7 +368,8 @@ def _contain_in_allowed_roots(path: Path, *, operation: str, audit_denial: bool 
 
     The single sanitizer for user-derived paths that bypass ``_safe_path`` (the
     crew-home tree-list special case): ``resolve()`` collapses ``..`` traversal
-    and follows symlinks, then containment is checked against ``ALLOWED_ROOTS``.
+    and follows symlinks, then containment is checked against the effective
+    allowed roots.
     A violation is SEL-audited and raises ``PathError`` — so the RETURNED path is
     always inside the allow-list and safe to stat/read. Callers must use the
     returned value, never the original, so no untrusted path reaches a
@@ -377,14 +382,14 @@ def _contain_in_allowed_roots(path: Path, *, operation: str, audit_denial: bool 
     The raise itself is unconditional — only the audit emission is deferred.
     """
     # ``resolve()`` collapses ``..``/symlinks; the very next statement raises
-    # unless the result is inside ALLOWED_ROOTS, so this function IS the
-    # sanitizer and its return value is contained. CodeQL's py/path-injection
+    # unless the result is inside the effective allowed roots, so this function
+    # IS the sanitizer and its return value is contained. CodeQL's py/path-injection
     # query does not model the ``relative_to``-based containment guard as a
     # barrier, so it flags this resolve of a user-derived path — the same
     # false-positive the codebase suppresses at ``security.is_sensitive_path``'s
     # resolve(). Suppress at the barrier itself; no read/write happens here.
     resolved = path.resolve()  # lgtm[py/path-injection]
-    if not any(_is_within(resolved, root) for root in ALLOWED_ROOTS):
+    if not _is_in_allowed_roots(resolved):
         if audit_denial:
             _sel_audit(operation, str(path), outcome="denied")
         raise PathError(f"path not allowed: {path}", 403)
@@ -439,7 +444,7 @@ def _kirocrew_safe_children(kirocrew_dir: Path) -> list[dict]:
     Sensitive file names (config.json, *.key, memory.db) are never exposed.
     """
     # Re-contain at entry so the iterdir() sink consumes the RETURN of a raising
-    # ALLOWED_ROOTS barrier (idempotent — callers already pass a contained Path;
+    # allowed-roots barrier (idempotent — callers already pass a contained Path;
     # this makes the containment legible to CodeQL py/path-injection).
     kirocrew_dir = _contain_in_allowed_roots(kirocrew_dir, operation="tree_list")
     out: list[dict] = []
@@ -468,6 +473,140 @@ def _sel_audit(operation: str, resources: str, outcome: str = "granted") -> None
         source="builtin-app",
         resources=resources,
     )
+
+
+# ---------------------------------------------------------------------------
+# Recent projects
+# ---------------------------------------------------------------------------
+
+_FileStamp = tuple[int, int, int, int, int]  # dev, ino, mtime_ns, ctime_ns, size
+_RECENT_ROOTS_CACHE: tuple[_FileStamp, tuple[Path, ...]] | None = None
+
+
+def _recent_projects_path() -> Path:
+    return config_dir() / "recent_projects.json"
+
+
+def _file_stamp(st: os.stat_result) -> _FileStamp | None:
+    # A zero inode is NO identity (same rule as project_scan.root_identity):
+    # (dev, 0, ...) would be shared by every file on the volume, so a
+    # replacement would read as unchanged.
+    if not st.st_ino:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+
+
+def _recent_projects_stamp(fp: Path) -> _FileStamp | None:
+    try:
+        st = fp.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return _file_stamp(st)
+
+
+def _open_recent_projects_fd(fp: Path) -> int:
+    if platform_compat.IS_POSIX:
+        # O_NONBLOCK so a path swapped for a FIFO cannot stall this worker.
+        return os.open(
+            os.fspath(fp),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+    # Windows: this helper's share mode includes FILE_SHARE_DELETE, which the
+    # dashboard's os.replace needs. It can follow a reparse point, so the
+    # caller's identity checks decide acceptance.
+    return platform_compat.open_log_file_for_tail(str(fp))
+
+
+def _load_recent_projects_entries(fp: Path) -> tuple[_FileStamp | None, list[str]] | None:
+    """One bounded snapshot. A None stamp must not be cached; a None return is a
+    transient failure or an identity race."""
+    try:
+        fd = _open_recent_projects_fd(fp)
+    except OSError:
+        return None
+    try:
+        opened_stat = os.fstat(fd)
+        opened_stamp = _file_stamp(opened_stat)
+        if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_size > MAX_RECENT_PROJECTS_BYTES:
+            return (opened_stamp, [])
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read(MAX_RECENT_PROJECTS_BYTES + 1)
+        if len(raw) > MAX_RECENT_PROJECTS_BYTES:
+            return (opened_stamp, [])
+        # The bytes are only trustworthy if the pathname still names the file
+        # they came from; a replacement or link swap mid-read invalidates them.
+        if opened_stamp is not None and _recent_projects_stamp(fp) != opened_stamp:
+            return None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError):
+        return (opened_stamp, [])
+    if not isinstance(data, list):
+        return (opened_stamp, [])
+    return (opened_stamp, [entry for entry in data if isinstance(entry, str) and entry])
+
+
+def _resolve_project_root(entry: str) -> Path | None:
+    try:
+        expanded = os.path.expanduser(entry)
+        # Resolving a UNC path on Windows opens it and can initiate SMB auth.
+        if platform_compat.IS_WINDOWS and is_unc_shape(expanded):
+            return None
+        root = Path(expanded).resolve()
+        if not root.is_dir() or _is_sensitive(root):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return root
+
+
+def _recent_project_roots() -> list[Path]:
+    """Validated recent roots, reloaded only when the file's identity changes."""
+    global _RECENT_ROOTS_CACHE
+    fp = _recent_projects_path()
+    observed = _recent_projects_stamp(fp)
+
+    cached = _RECENT_ROOTS_CACHE
+    if observed is not None and cached is not None and cached[0] == observed:
+        return list(cached[1])
+
+    loaded = _load_recent_projects_entries(fp)
+    if loaded is None:
+        # Not cached, so a missing file or transient failure can recover on the
+        # next request instead of waiting for a timestamp change.
+        return []
+    opened_stamp, entries = loaded
+
+    seen: set[Path] = set()
+    roots: list[Path] = []
+    for entry in entries[:MAX_RECENT_PROJECTS]:
+        root = _resolve_project_root(entry)
+        if root is None or root in seen:
+            continue
+        seen.add(root)
+        roots.append(root)
+
+    if opened_stamp is not None:
+        _RECENT_ROOTS_CACHE = (opened_stamp, tuple(roots))
+    return roots
+
+
+def _effective_allowed_roots() -> list[Path]:
+    """Static roots FIRST — the frontend opens at roots[0]."""
+    return list(dict.fromkeys(ALLOWED_ROOTS + _recent_project_roots()))
+
+
+def _is_in_allowed_roots(path: Path, roots: list[Path] | None = None) -> bool:
+    """Pass ``roots`` to reuse one snapshot across a walk."""
+    candidates = _effective_allowed_roots() if roots is None else roots
+    return any(_is_within(path, root) for root in candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -541,11 +680,13 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
     """List directory contents up to ``depth`` levels (1 = immediate children).
     Returns (entries, truncated)."""
     # Re-contain the listing root so iterdir() consumes the RETURN of a raising
-    # ALLOWED_ROOTS barrier (idempotent for the contained Path callers pass;
+    # allowed-roots barrier (idempotent for the contained Path callers pass;
     # makes the containment legible to CodeQL py/path-injection). Descent into
     # subdirs is already gated by the _is_within check in walk().
     p = _contain_in_allowed_roots(p, operation="tree_list")
     count = [0]
+    # One snapshot for the whole walk, not one read per child.
+    roots = _effective_allowed_roots()
 
     def walk(d: Path, rem: int) -> list[dict]:
         if count[0] >= MAX_TREE_ENTRIES:
@@ -585,9 +726,7 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
                     resolved_child = child.resolve()
                 except OSError:
                     resolved_child = None
-                if resolved_child is not None and any(
-                    _is_within(resolved_child, root) for root in ALLOWED_ROOTS
-                ):
+                if resolved_child is not None and _is_in_allowed_roots(resolved_child, roots):
                     meta["children"] = walk(child, rem - 1)
             items.append(meta)
         return items
@@ -599,7 +738,7 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
 def _is_binary_file(p: Path) -> bool:
     if p.suffix.lower() in BINARY_EXTS:
         return True
-    # Re-contain so the read sink consumes the RETURN of a raising ALLOWED_ROOTS
+    # Re-contain so the read sink consumes the RETURN of a raising allowed-roots
     # barrier (idempotent for the _safe_path'd Path the caller passes; makes the
     # containment legible to CodeQL py/path-injection).
     p = _contain_in_allowed_roots(p, operation="file_read")
@@ -642,7 +781,7 @@ def _guess_mime(p: Path) -> str:
 def _git_repo_root(p: Path) -> Path | None:
     """Walk up to find a .git directory."""
     # Re-contain the start dir so the .exists() probes consume the RETURN of a
-    # raising ALLOWED_ROOTS barrier (idempotent for the _safe_path'd Path the
+    # raising allowed-roots barrier (idempotent for the _safe_path'd Path the
     # caller passes; makes the containment legible to CodeQL py/path-injection).
     # The discovered repo root is separately re-contained by the caller before
     # any git command runs against it.
@@ -748,7 +887,7 @@ def _search(root: Path, query: str, include: str = "", exclude: str = "") -> lis
 
 def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]:
     # Re-contain so the search root passed to the rg argv is the RETURN of a
-    # raising ALLOWED_ROOTS barrier (idempotent for the _safe_path'd caller
+    # raising allowed-roots barrier (idempotent for the _safe_path'd caller
     # value; makes the containment legible to CodeQL py/path-injection).
     root = _contain_in_allowed_roots(root, operation="file_search")
     cmd = [
@@ -867,7 +1006,7 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
 
 def _search_python(root: Path, query: str, include: str, exclude: str) -> list[dict]:
     # Re-contain the walk root so os.walk() + the per-file read sink below
-    # consume the RETURN of a raising ALLOWED_ROOTS barrier (idempotent for the
+    # consume the RETURN of a raising allowed-roots barrier (idempotent for the
     # _safe_path'd Path the caller passes; makes the containment legible to
     # CodeQL py/path-injection — walked descendants clear transitively).
     root = _contain_in_allowed_roots(root, operation="file_search")
@@ -1065,15 +1204,15 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         # _safe_path, but we expose only safe children via the dedicated helper.
         # SECURITY: the user-derived path is fully sanitized BEFORE any filesystem
         # access — ``_expand`` + ``.resolve()`` collapse ``..`` and symlinks, and
-        # ``_contain_in_allowed_roots`` rejects anything outside ALLOWED_ROOTS and
-        # raises. Only the returned, containment-checked path is ever stat'd or
+        # ``_contain_in_allowed_roots`` rejects anything outside the effective
+        # allowed roots and raises. Only the returned, containment-checked path is ever stat'd or
         # read (``.exists()``/``.is_dir()``/``_kirocrew_safe_children``), so no
         # untrusted value reaches a filesystem operation (closes CodeQL
         # py/path-injection: the guard dominates every path use below).
         expanded = _expand(raw)
         if _is_crew_home_root(expanded):
             resolved = _contain_in_allowed_roots(expanded, operation="tree_list")
-            # ``resolved`` is the return of the raising ALLOWED_ROOTS barrier, so
+            # ``resolved`` is the return of the raising allowed-roots barrier, so
             # it is contained; CodeQL doesn't trace the barrier across the call,
             # so suppress its py/path-injection flag on these stat-only ops.
             if resolved.exists() and resolved.is_dir():  # lgtm[py/path-injection]
@@ -1174,7 +1313,7 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         repo = _git_repo_root(p if p.is_dir() else p.parent)
         if not repo:
             return self._json(200, {"repoRoot": "", "branch": "", "statuses": {}})
-        if not any(_is_within(repo, root) for root in ALLOWED_ROOTS):
+        if not _is_in_allowed_roots(repo):
             raise PathError(f"git repo root not allowed: {repo}", 403)
         return self._json(200, _git_status(repo))
 

@@ -8866,7 +8866,11 @@ def _recent_projects_path() -> Path:
 
 
 def _save_recent_project(path: str) -> None:
-    """Prepend path to recent projects list (deduped, capped)."""
+    """Prepend path to recent projects list (deduped, capped).
+
+    File Explorer consumes this list as authorization input; keep its ``list[str]``
+    schema and path-admission semantics in sync with that reader.
+    """
 
     fp = _recent_projects_path()
     fp.parent.mkdir(parents=True, exist_ok=True)
