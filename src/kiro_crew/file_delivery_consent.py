@@ -312,23 +312,25 @@ def audit_decision(destination_class: str, *, outcome: str, detail: str = "") ->
     the security-event layer pulls the redaction stack the read path never needs.
     """
     try:
-        from kiro_crew.security import redact_and_truncate
+        from kiro_crew.platform.context import redact_log_via_context
         from kiro_crew.sel import sel
 
         # ``detail`` is caller text bound for a durable, dashboard-readable audit
         # field, so redaction runs over the FULL text before the 200-char clip:
         # clipping first cuts a credential straddling the boundary in half, and
         # the surviving prefix matches no credential grammar, so SEL's own
-        # write-path pass cannot recover it. The ``if detail`` branch stays --
-        # the helper coalesces ``text or ""``, and an empty ``detail`` must
-        # still emit the bare ``destination_class`` with no ``": "`` separator.
+        # write-path pass cannot recover it. The context-aware spelling is the
+        # one for a gate-side audit line (a loaded companion's patterns apply,
+        # and it never raises); the slice follows it. The ``if detail`` branch
+        # stays: an empty ``detail`` must still emit the bare
+        # ``destination_class`` with no ``": "`` separator.
         sel().log_api_access(
             caller="owner" if outcome in ("granted", "revoked") else "gateway",
             operation=f"file_delivery_consent.{outcome}",
             outcome=outcome,
             source="file-delivery-consent",
             resources=(
-                f"{destination_class}: {redact_and_truncate(detail, 200)}"
+                f"{destination_class}: {redact_log_via_context(detail)[:200]}"
                 if detail
                 else destination_class
             ),
