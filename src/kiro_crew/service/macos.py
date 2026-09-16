@@ -392,19 +392,33 @@ def uninstall() -> None:
         pass
 
 
+def _target() -> str:
+    """The gui-domain service target the modern ``launchctl`` verbs address.
+
+    ``os.getuid`` is absent on Windows; the ``getattr`` guard keeps this
+    module importable there (the test suite imports it on every platform),
+    mirroring the pod runtime and Dev Fleet's ``gateway_service.domain()``.
+    """
+    uid = getattr(os, "getuid", lambda: -1)()
+    return f"gui/{uid}/{LAUNCHD_LABEL}"
+
+
 def is_active() -> bool:
-    """Return True if launchd reports the agent loaded with a PID."""
-    res = _launchctl("list", LAUNCHD_LABEL)
-    if res.returncode != 0:
-        return False
-    # `launchctl list <label>` prints a plist-ish dict with PID = <int>;
-    # an unloaded agent returns nonzero. A loaded-but-not-running agent
-    # has PID = "-" instead of a number.
-    for line in res.stdout.splitlines():
-        line = line.strip()
-        if line.startswith('"PID"'):
-            return "=" in line and line.split("=")[-1].strip().rstrip(";").isdigit()
-    return True  # `list <label>` succeeded; treat as active even if PID line absent
+    """Return True if launchd reports the agent loaded in the gui domain.
+
+    The gateway is installed as a LaunchAgent in the ``gui/<uid>`` domain,
+    where the legacy ``launchctl list <label>`` spelling exits non-zero with
+    empty output even while the agent is serving. Probe with the
+    domain-explicit ``launchctl print gui/<uid>/<label>`` instead, which
+    exits non-zero when the label is not loaded in that domain.
+
+    A zero exit counts as active even when the agent is loaded but not
+    running (``state = not running`` / ``waiting``): callers must not take
+    the no-service path for an agent that launchd still manages, e.g.
+    between ``KeepAlive`` respawns.
+    """
+    res = _launchctl("print", _target())
+    return res.returncode == 0
 
 
 def stop() -> None:
@@ -437,14 +451,40 @@ def restart() -> bool:
     """
     if not PLIST_PATH.exists():
         return False
-    uid = getattr(os, "getuid", lambda: -1)()
-    target = f"gui/{uid}/{LAUNCHD_LABEL}"
-    return _launchctl("kickstart", "-k", target).returncode == 0
+    return _launchctl("kickstart", "-k", _target()).returncode == 0
 
 
 def status() -> str:
-    """Return a human-readable status block from launchctl."""
-    res = _launchctl("list", LAUNCHD_LABEL)
+    """Return a human-readable status block from launchctl.
+
+    Probes ``launchctl print gui/<uid>/<label>`` (the legacy ``list``
+    spelling fails for a gui-domain agent) but renders a terse summary
+    rather than the multi-kilobyte ``print`` dump: state, pid, and the
+    plist path.
+    """
+    res = _launchctl("print", _target())
     if res.returncode != 0:
-        return f"kirocrew service is not loaded ({res.stderr.strip() or 'no entry'})\n"
-    return res.stdout
+        # launchctl's refusal can land on either stream (the pod runtime's
+        # _service_absent scans both for the same reason); take the first
+        # stdout line before degrading to the generic fallback.
+        reason = res.stderr.strip()
+        if not reason and res.stdout.strip():
+            reason = res.stdout.strip().splitlines()[0]
+        return f"kirocrew service is not loaded ({reason or 'no entry'})\n"
+    state = _launchctl_print_value(res.stdout, "state")
+    pid = _launchctl_print_value(res.stdout, "pid")
+    path = _launchctl_print_value(res.stdout, "path") or str(PLIST_PATH)
+    lines = [f"{LAUNCHD_LABEL}: {state or 'loaded'}"]
+    if pid:
+        lines.append(f"  pid: {pid}")
+    # The one field that diagnoses a crash-looping agent: loaded and not
+    # running says nothing about WHY without the exit code. Both launchd
+    # spellings are read, and the numeric check keeps placeholders like
+    # `(never exited)` out by construction.
+    last_exit = _launchctl_print_value(res.stdout, "last exit code") or _launchctl_print_value(
+        res.stdout, "last exit status"
+    )
+    if last_exit and last_exit.removeprefix("-").isdecimal() and last_exit != "0":
+        lines.append(f"  last exit: {last_exit}")
+    lines.append(f"  plist: {path}")
+    return "\n".join(lines) + "\n"

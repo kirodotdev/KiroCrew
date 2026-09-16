@@ -1677,10 +1677,37 @@ class TestMacOSControlPaths:
             svc_macos.uninstall()
         run.assert_not_called()
 
+    @staticmethod
+    def _print_output(
+        *,
+        state: str = "running",
+        pid: int | None = 1234,
+        last_exit: str | None = None,
+        last_exit_key: str = "last exit code",
+    ) -> str:
+        """A ``launchctl print gui/<uid>/<label>`` shaped fixture."""
+        uid = getattr(os, "getuid", lambda: -1)()
+        lines = [
+            f"gui/{uid}/{LAUNCHD_LABEL} = {{",
+            "\tactive count = 1",
+            f"\tpath = /Users/me/Library/LaunchAgents/{LAUNCHD_LABEL}.plist",
+            f"\tstate = {state}",
+        ]
+        if pid is not None:
+            lines.append(f"\tpid = {pid}")
+        if last_exit is not None:
+            lines.append(f"\t{last_exit_key} = {last_exit}")
+        lines.append("}")
+        return "\n".join(lines) + "\n"
+
     def test_is_active_returns_false_when_launchctl_errors(self):
         from kiro_crew.service import macos as svc_macos
 
-        not_loaded = MagicMock(returncode=1, stdout="", stderr="not loaded")
+        not_loaded = MagicMock(
+            returncode=113,
+            stdout="",
+            stderr=f'Could not find service "{LAUNCHD_LABEL}" in domain for uid: 501',
+        )
         with patch("kiro_crew.service.macos.subprocess.run", return_value=not_loaded):
             assert svc_macos.is_active() is False
 
@@ -1689,27 +1716,71 @@ class TestMacOSControlPaths:
 
         loaded = MagicMock(
             returncode=0,
-            stdout='{\n\t"PID" = 1234;\n\t"Label" = "dev.kirocrew.gateway";\n}\n',
+            stdout=self._print_output(state="running", pid=1234),
             stderr="",
         )
         with patch("kiro_crew.service.macos.subprocess.run", return_value=loaded):
             assert svc_macos.is_active() is True
 
     def test_is_active_returns_true_when_loaded_without_pid_line(self):
-        """`launchctl list <label>` succeeds even if the agent is loaded
-        but not running. We treat that as active so callers don't trip
-        over a transient state."""
+        """``launchctl print`` exits zero even if the agent is loaded but
+        not running (no ``pid =`` line, ``state = not running``). We treat
+        that as active so callers don't trip over a transient state."""
         from kiro_crew.service import macos as svc_macos
 
         loaded_no_pid = MagicMock(
             returncode=0,
-            stdout='{\n\t"Label" = "dev.kirocrew.gateway";\n}\n',
+            stdout=self._print_output(state="not running", pid=None),
             stderr="",
         )
-        with patch(
-            "kiro_crew.service.macos.subprocess.run", return_value=loaded_no_pid
-        ):
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=loaded_no_pid):
             assert svc_macos.is_active() is True
+
+    def test_is_active_probes_domain_target_not_legacy_list(self):
+        """Pins the domain-explicit probe.
+
+        A LaunchAgent loaded in the ``gui/<uid>`` domain answers
+        ``launchctl print gui/<uid>/<label>`` (rc 0) while the legacy
+        ``launchctl list <label>`` spelling exits non-zero with empty
+        output. Only the domain-explicit probe may read a live gateway as
+        active — anything else reports a serving agent as absent (a false
+        negative)."""
+        from kiro_crew.service import macos as svc_macos
+
+        uid = getattr(os, "getuid", lambda: -1)()
+        target = f"gui/{uid}/{LAUNCHD_LABEL}"
+        printed = self._print_output(state="running", pid=1234)
+
+        def fake_run(argv, **kwargs):
+            if argv == ["launchctl", "print", target]:
+                return MagicMock(returncode=0, stdout=printed, stderr="")
+            # The reporter's measured behaviour: the legacy spelling
+            # fails with empty stdout AND empty stderr.
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        with patch("kiro_crew.service.macos.subprocess.run", side_effect=fake_run):
+            assert svc_macos.is_active() is True
+
+    def test_status_reports_loaded_via_domain_target(self):
+        """Pins the domain-explicit probe for `status()`: only
+        `print gui/<uid>/<label>` answers, so `status()` must not report
+        a live agent as "is not loaded"."""
+        from kiro_crew.service import macos as svc_macos
+
+        uid = getattr(os, "getuid", lambda: -1)()
+        target = f"gui/{uid}/{LAUNCHD_LABEL}"
+        printed = self._print_output(state="running", pid=1234)
+
+        def fake_run(argv, **kwargs):
+            if argv == ["launchctl", "print", target]:
+                return MagicMock(returncode=0, stdout=printed, stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        with patch("kiro_crew.service.macos.subprocess.run", side_effect=fake_run):
+            out = svc_macos.status()
+        assert "not loaded" not in out
+        assert "running" in out
+        assert "1234" in out
 
     def test_stop_unloads_plist_when_present(self, tmp_path, monkeypatch):
         # ``launchctl stop`` would just send SIGTERM and KeepAlive would
@@ -1790,25 +1861,116 @@ class TestMacOSControlPaths:
             svc_macos.restart()
         run.assert_not_called()
 
-    def test_status_returns_launchctl_output_when_loaded(self):
+    def test_status_returns_terse_summary_when_loaded(self):
         from kiro_crew.service import macos as svc_macos
 
         loaded = MagicMock(
             returncode=0,
-            stdout='{\n\t"PID" = 1234;\n}\n',
+            stdout=self._print_output(state="running", pid=1234, last_exit="(never exited)"),
             stderr="",
         )
         with patch("kiro_crew.service.macos.subprocess.run", return_value=loaded):
             out = svc_macos.status()
-        assert "PID" in out
+        # A terse summary, not the ~3 KB `launchctl print` dump: state,
+        # pid, and the plist path. A healthy agent's `(never exited)`
+        # placeholder is noise, not diagnosis, and stays out.
+        assert "running" in out
+        assert "1234" in out
+        assert ".plist" in out
+        assert "never exited" not in out
+        assert len(out.splitlines()) <= 4
+
+    def test_status_carries_last_exit_code_for_a_dead_agent(self):
+        """The crash-loop shape: loaded, not running, non-zero last exit.
+
+        The one field that diagnoses a dying agent must survive the terse
+        rendering — state alone says `not running` without saying why."""
+        from kiro_crew.service import macos as svc_macos
+
+        dead = MagicMock(
+            returncode=0,
+            stdout=self._print_output(state="not running", pid=None, last_exit="78"),
+            stderr="",
+        )
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=dead):
+            out = svc_macos.status()
+        assert "not running" in out
+        assert "last exit" in out
+        assert "78" in out
+        assert "not loaded" not in out
+        assert len(out.splitlines()) <= 5
+
+    def test_status_accepts_the_last_exit_status_spelling(self):
+        """launchd emits `last exit status` on some builds; the pod module
+        accepts both spellings and this summary must not be narrower."""
+        from kiro_crew.service import macos as svc_macos
+
+        printed = self._print_output(
+            state="not running", pid=None, last_exit="143", last_exit_key="last exit status"
+        )
+        dead = MagicMock(returncode=0, stdout=printed, stderr="")
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=dead):
+            out = svc_macos.status()
+        assert "last exit" in out
+        assert "143" in out
+
+    def test_status_suppresses_a_clean_last_exit(self):
+        """A cleanly exited agent is not a crash loop: `last exit code = 0`
+        stays out of the summary, as does any non-numeric placeholder."""
+        from kiro_crew.service import macos as svc_macos
+
+        clean = MagicMock(
+            returncode=0,
+            stdout=self._print_output(state="not running", pid=None, last_exit="0"),
+            stderr="",
+        )
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=clean):
+            out = svc_macos.status()
+        assert "last exit" not in out
+
+    def test_status_last_exit_accepts_only_a_decimal_code(self):
+        """The numeric gate matches the pod runtime's `-?\\d+` contract:
+        one optional leading sign, decimal digits. A doubled sign or a
+        digit-like character outside the decimal class (superscripts)
+        is a malformed value, not a code."""
+        from kiro_crew.service import macos as svc_macos
+
+        for value, expect in (("-15", True), ("--78", False), ("\u00b2\u00b3", False)):
+            fixture = MagicMock(
+                returncode=0,
+                stdout=self._print_output(state="not running", pid=None, last_exit=value),
+                stderr="",
+            )
+            with patch("kiro_crew.service.macos.subprocess.run", return_value=fixture):
+                out = svc_macos.status()
+            assert ("last exit" in out) is expect, value
+
+    def test_status_not_loaded_reason_falls_back_to_stdout(self):
+        """launchctl's diagnostic stream is not reliably stderr: when the
+        refusal lands on stdout, its first line is the reason; only a fully
+        silent failure degrades to the generic `no entry`."""
+        from kiro_crew.service import macos as svc_macos
+
+        refused = MagicMock(
+            returncode=113,
+            stdout="Could not find service in domain for uid: 501\nsecond line\n",
+            stderr="",
+        )
+        with patch("kiro_crew.service.macos.subprocess.run", return_value=refused):
+            out = svc_macos.status()
+        assert "not loaded" in out
+        assert "Could not find service in domain" in out
+        assert "second line" not in out
+        assert "no entry" not in out
 
     def test_status_returns_friendly_message_when_not_loaded(self):
         from kiro_crew.service import macos as svc_macos
 
-        not_loaded = MagicMock(returncode=1, stdout="", stderr="no entry")
+        not_loaded = MagicMock(returncode=113, stdout="", stderr="")
         with patch("kiro_crew.service.macos.subprocess.run", return_value=not_loaded):
             out = svc_macos.status()
         assert "not loaded" in out
+        assert "no entry" in out
 
     def test_kirocrew_bin_falls_back_to_argv0(self, monkeypatch):
         """If `kirocrew` is not on PATH, kirocrew_bin should resolve
