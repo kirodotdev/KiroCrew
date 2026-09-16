@@ -202,6 +202,57 @@ class TestBarePathPassIsNarrowerThanTheInliner:
         assert out == f"docs say `open {_ABS_A}`, and here it is:\n{STRIPPED_IMAGE_MARKER}"
 
 
+class TestBarePathPassAgreesWithTheUncPredicate:
+    r"""Both passes answer "is this ``//`` destination remote?" the same way.
+
+    ``iter_local_refs`` classifies a destination through
+    ``is_remote_destination``, which on Windows reclassifies a roaming
+    profile's own UNC attachment (``//fileserver/home/me/.kiro/crew/...``) as
+    local -- the fix this contract pins. The bare-path pass must call the SAME
+    predicate: testing the raw ``REMOTE_PREFIXES`` tuple instead reads that
+    stored attachment as a remote URL, so a replayed row keeps a dangling UNC
+    path the builder itself would have inlined -- the exact divergence the
+    predicate exists to close.
+
+    The fixture mirrors ``TestUncDestinationIsNotARemoteUrl`` in
+    ``test_outbound_files.py``: every spelling is forward-slash (the only
+    spelling a markdown destination can carry) and the gate is purely lexical,
+    so the simulated-Windows form answers the same on a POSIX CI box.
+    """
+
+    _UNC_HOME = "//fileserver/home/me/.kiro/crew"
+    _STORED = f"{_UNC_HOME}/sessions/chat-1.attachments/{'0' * 16}-shot.png"
+
+    @pytest.fixture
+    def windows_with_a_unc_data_home(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from kiro_crew.messaging import outbound_files as module
+
+        monkeypatch.setattr(module, "os", type("OS", (), {"name": "nt"})(), raising=False)
+        monkeypatch.setattr(
+            "kiro_crew.config.paths.data_home", lambda: pathlib.Path(self._UNC_HOME)
+        )
+
+    def test_a_stored_unc_attachment_is_stripped_by_both_passes(
+        self, windows_with_a_unc_data_home: None
+    ) -> None:
+        # Markdown form (pass one) and bare form (pass two) of the same stored
+        # attachment: both are local to the predicate, so both are scrubbed --
+        # neither reading of a dangling reference survives a replay.
+        out = strip_image_refs(f"![shot]({self._STORED}) and bare:\n{self._STORED}")
+
+        assert self._STORED not in out
+        assert out.count(STRIPPED_IMAGE_MARKER) == 2
+
+    def test_a_share_outside_the_gateways_own_directories_keeps_its_text(
+        self, windows_with_a_unc_data_home: None
+    ) -> None:
+        # The predicate borrows the filesystem gate's allowlist, so an
+        # attacker-chosen host stays remote here exactly as it does in the
+        # builder -- left alone by both passes.
+        text = "see //evil/share/x.png and //fileserver/other/x.png here"
+        assert strip_image_refs(text) == text
+
+
 class TestReplayedHistoryCarriesNoImage:
     """Both readings of an arriving reference, at the boundary that produces them."""
 

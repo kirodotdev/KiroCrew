@@ -173,7 +173,7 @@ def _bare_path_spans(text: str) -> list[tuple[int, int]]:
     # Deferred: see this module's IMPORT RULE. kiro_crew.messaging.__init__
     # reaches kiro_crew.acp.types, and prompt_blocks imports this module at its
     # own module scope, so importing it above would close that cycle.
-    from kiro_crew.messaging.outbound_files import REMOTE_PREFIXES
+    from kiro_crew.messaging.outbound_files import is_remote_destination
     from kiro_crew.messaging.split import iter_fence_spans
 
     try:
@@ -188,17 +188,21 @@ def _bare_path_spans(text: str) -> list[tuple[int, int]]:
             continue
         # A protocol-relative URL ("//cdn/x.png") is a path shape to both
         # grammars -- `_POSIX_PATH_RE` because it opens with "/", and
-        # `_WINDOWS_PATH_RE` because "//" also spells a UNC share -- but
-        # `iter_local_refs` classifies it REMOTE and declines it, so pass one
-        # leaves it for this pass to eat. Reading the SAME `REMOTE_PREFIXES`
-        # tuple it reads makes the two agree by construction rather than by
-        # coincidence, which is what the "remote references are left alone"
-        # contract above actually requires. The builder leaves such a candidate
-        # in place too (nothing answers `is_file()` for it), so declining here
-        # is also the direction that matches it; a genuine Windows UNC
-        # attachment is therefore not scrubbed, which loses nothing -- it is
-        # still inlined by the builder exactly as on the current turn.
-        if match.group(1).lower().startswith(REMOTE_PREFIXES):
+        # `_WINDOWS_PATH_RE` because "//" also spells a UNC share. Whether a
+        # given "//" destination is remote is exactly the question
+        # `is_remote_destination` exists to answer (a roaming profile's own
+        # UNC attachment is local; an arbitrary share or URL is not), and
+        # `iter_local_refs` already answers it through that predicate. Calling
+        # the SAME predicate here makes the two passes agree by construction
+        # rather than by coincidence, which is what the "remote references are
+        # left alone" contract above actually requires -- testing the
+        # `REMOTE_PREFIXES` tuple directly is the bug its own docstring warns
+        # against, reading a stored UNC attachment as a remote URL. The
+        # directions still match the builder's: a destination the predicate
+        # calls remote is left in place (nothing answers `is_file()` for it),
+        # and one it calls local is stripped here exactly as the builder would
+        # inline it out of the current turn.
+        if is_remote_destination(match.group(1)):
             continue
         spans.append((start, match.end(1)))
     return spans
@@ -243,9 +247,10 @@ def strip_image_refs(text: str) -> str:
     Remote and ``data:`` references are left alone, matching
     ``iter_local_refs``: neither is a local path, so neither is inlined and a
     URL stays usable to a tool-capable agent. That agreement is enforced rather
-    than assumed -- the bare-path pass reads the same ``REMOTE_PREFIXES`` tuple,
-    because a protocol-relative ``//cdn/x.png`` is a path shape to BOTH grammars
-    and pass one declines it as remote, leaving it for pass two.
+    than assumed -- the bare-path pass calls the same ``is_remote_destination``
+    predicate, because a protocol-relative ``//cdn/x.png`` is a path shape to
+    BOTH grammars and only the predicate can tell a genuine URL from a stored
+    UNC attachment on a roaming profile's share.
 
     Two residues remain, both inherited and both narrower than the builder's own
     behaviour rather than wider. ``_PATH_RE`` is platform-gated, so a bare
