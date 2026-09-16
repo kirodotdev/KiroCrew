@@ -122,6 +122,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_system_injection_item,
     mirror_is_paused,
     parse_workflow_command,
+    recompute_queue_hold,
     remember_slack_options,
     slack_mirror_is_paused,
     user_text_span,
@@ -4116,8 +4117,9 @@ _pending_reset_retries: dict[str, tuple["_ChatSlot", asyncio.Task]] = {}
 
 
 def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None:
-    """Own the retry of a declined deferred reset (channel slots have no
-    turn-boundary consume, so somebody must).
+    """Own the retry of a declined deferred teardown -- a project reset or a
+    conversation discard (channel slots have no turn-boundary consume, so
+    somebody must).
 
     Deduped by OWNER IDENTITY, not just key: a decline observed by the retry
     task itself re-enters here and must not stack a second task, while a
@@ -4131,20 +4133,46 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
 
     async def _retry() -> None:
         ticks = 0
+
+        def _teardown_owed() -> bool:
+            return (
+                slot._pending_reset_history_key is not None
+                or slot._pending_discard_conversation_key is not None
+            )
+
+        async def _release_and_drain() -> None:
+            # Landing a teardown here is outside any turn boundary, so nothing else
+            # recomputes the hold: release it or the queue parks on an idle slot.
+            # Re-asserted HERE rather than at the callers: the consume above yields,
+            # so a replacement can take the key and this would drain the retired slot.
+            if state.get_slot(slot.key) is not slot:
+                return
+            if slot._pending_discard_conversation_key is not None or slot.running:
+                return
+            if not slot._queue or not slot._queue_held:
+                return
+            # Only the teardown cause is settled here. A signed-out CLI still holds,
+            # and draining it is the repeat-failure loss the auth hold exists to stop.
+            if recompute_queue_hold(slot):
+                return
+            await _start_next_queued_turn(state, slot)
+
         try:
             while True:
                 await asyncio.sleep(_PENDING_RESET_RETRY_DELAY_SECS)
                 if state.get_slot(slot.key) is not slot:
                     return  # slot deleted or replaced; nothing owed BY US
-                if not slot._pending_reset_history_key:
+                if not _teardown_owed():
+                    await _release_and_drain()
                     return  # consumed by a turn boundary or eager consume
-                await _consume_pending_reset(state, slot)
-                if not slot._pending_reset_history_key:
+                await _consume_pending_reset(state, slot, allow_discard=True)
+                if not _teardown_owed():
+                    await _release_and_drain()
                     return
                 ticks += 1
                 if ticks % _PENDING_RESET_RETRY_WARN_EVERY == 0:
                     logger.warning(
-                        "Pending project-change reset for slot %s still armed "
+                        "Pending session teardown for slot %s still armed "
                         "after %d retries; the owning session has stayed busy "
                         "(or kept children attached) the whole time",
                         slot.key,
@@ -4160,6 +4188,18 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
                 _pending_reset_retries.pop(slot.key, None)
 
     _pending_reset_retries[slot.key] = (slot, asyncio.create_task(_retry()))
+
+
+# Whether a turn ends with the queue HELD rather than drained, stored on
+# ``slot._queue_held``. Deliberately a BOOLEAN and not a reason string: every
+# cause means the same thing to every drain gate -- this turn proved every queued
+# prompt would fail identically -- and no DRAIN gate, log line or test asks WHICH.
+# The causes today are a signed-out CLI, a queued project change refused before the
+# turn, one left deferred after it, and a queued conversation discard left deferred;
+# a further cause composes by setting this
+# flag, and a further drain site by asking this one question.
+# A RELEASE site is the exception, and needs one cause apart: landing a teardown
+# settles only its own cause, so ``slot._queue_held_auth`` survives that release.
 
 
 async def _consume_pending_reset(
@@ -4314,6 +4354,7 @@ async def _consume_pending_reset(
                 "Deferring queued conversation discard for slot %s: sub-agents attached",
                 slot.key,
             )
+            _arm_pending_reset_retry(state, slot)
             return torn_down
         try:
             # ``skip_if_busy`` rather than a busy-probe here: the check and the
@@ -4335,6 +4376,9 @@ async def _consume_pending_reset(
                     "Deferring queued conversation discard for slot %s: turn in flight",
                     slot.key,
                 )
+                # Same reason the reset branch arms: a channel-linked slot passes no
+                # dashboard turn boundary, so nothing else would ever land this.
+                _arm_pending_reset_retry(state, slot)
                 return torn_down
             torn_down = True
             # The discarded conversation is the one that advertised the model
@@ -6045,12 +6089,15 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         merge = False
 
     in_stage = bool(slot._in_stage_execution)
+    # `_queue_held` joins this gate rather than gating the drain separately: every
+    # drain caller routes here, and injections still select past a held prompt.
     hold_users = bool(
         (
             state.subagents is not None
             and state.subagents.running_agents_for(f"dashboard:{slot.key}")
         )
         or in_stage
+        or slot._queue_held
     )
     if hold_users:
         # During a multi-stage plan hold cron notifications too: each stage is
@@ -6431,10 +6478,36 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 def _finish_queue_cycle(
     state: DashboardState, slot: _ChatSlot, *, allow_automatic_successor: bool = True
 ) -> None:
-    """Start synthesis when eligible, otherwise mark a queue cycle idle."""
+    """Start synthesis when eligible, otherwise mark a queue cycle idle.
+
+    ``slot._queue_held`` withholds the synthesis dispatch for the same reason the
+    caller withheld the queue drain, and is read off the slot rather than taken as
+    a parameter: the only caller that ever set it published it to the slot a few
+    lines earlier in the same scope, so a parameter was a second spelling of one
+    fact. Synthesis is not a dead end for the
+    queue: ``_run_pending_synthesis`` drains it too, calling
+    ``_start_next_queued_turn`` when ``slot._queue`` is non-empty. So a caller that
+    held the queue back and then let synthesis start would have the prompts
+    dequeued behind it, reach the same failure, and lose them — defeating the hold
+    entirely. Withheld rather than cancelled: ``_pending_synthesis`` is cleared
+    inside ``_run_pending_synthesis``, so not dispatching leaves the note ARMED for
+    the next cycle, and this function still finalizes the turn below.
+
+    This CHANGES a pre-existing default, deliberately. Before, only the tail drain
+    consulted the auth hold and this dispatch did not, so a signed-out CLI held the
+    queue here and then lost the same prompts through synthesis -- the loss path
+    above, reached by the older of the two causes. Generalising the gate closes that
+    rather than introducing a new restriction, so the auth cause is not carved out:
+    a carve-out would knowingly keep the leak for the cause that predates this
+    change. Pinned by ``test_a_signed_out_cli_also_holds_the_queue_against_synthesis``,
+    which drives the real ``AcpAuthRequired`` path, against
+    ``test_synthesis_still_dispatches_when_nothing_is_held`` as the positive control
+    that an unheld cycle still synthesises.
+    """
 
     will_synthesize = (
         allow_automatic_successor
+        and not slot._queue_held
         and slot._pending_synthesis
         and not slot._synthesis_inflight
         # A slot gone from the registry is being torn down, so it has no next
@@ -7230,7 +7303,15 @@ async def _run_chat(
     # by the consecutive pre-stream-exhaustion branch in the AcpError handler
     # below.
     needs_conversation_discard = False
-    _auth_required = False
+    # Whether this turn holds the queue instead of draining it; False drains.
+    # Several causes can set it, and they are NOT mutually exclusive: the auth wall
+    # is found in the streaming section, while a deferred reset is found later, in
+    # the end-of-turn consume. Where both occur the flag stays set -- the
+    # end-of-turn inference only ever ADDS a hold, it never clears one.
+    _queue_held = False
+    # Tracked apart because a release site that lands a teardown must preserve this
+    # cause, and no slot field records a sign-out it could read it back from.
+    _queue_held_auth = False
     saw_compaction = False
     # True once a compaction STARTED notice landed this turn, so the terminal
     # branch can tell "the backend compacted in the middle of this turn" from
@@ -13187,7 +13268,8 @@ async def _run_chat(
         # Every queued prompt would hit the same wall. Popping them one by one
         # would drain the whole queue into identical failures, leaving nothing to
         # resume after the user signs in — so hold the queue intact instead.
-        _auth_required = True
+        _queue_held = True
+        _queue_held_auth = True
         needs_session_reset = True
         _persist_partial_reply()
         _auth_msg = str(exc)
@@ -14215,6 +14297,16 @@ async def _run_chat(
                 schedule_eager_spawn(state, slot)
         except Exception:
             logger.debug("_consume_pending_reset failed", exc_info=True)
+        # OUTSIDE the guard above: a RAISING consume leaves the flag ARMED, and computing
+        # this inside let that raise drain a queue whose reset had never been applied.
+        # Pinned by ``test_a_reset_left_deferred_holds_the_queue`` (busy-decline deferral).
+        # The discard is the SAME hazard through its own flag: refused above, draining here
+        # runs the queued prompt against the conversation the user asked to discard.
+        _queue_held = (
+            _queue_held
+            or slot._pending_reset_history_key is not None
+            or slot._pending_discard_conversation_key is not None
+        )
         # ── Requeue unconsumed steers ──
         # A steer handed to kiro-cli that never echoed steering_consumed dies
         # with the turn (stall-cancel, soft STOP, error, or a steer that raced
@@ -14245,26 +14337,46 @@ async def _run_chat(
             slot._wait_state = None
             slot._end_wait_request = None
             slot._wait_contested = False
-        # Record this turn's auth outcome so the orchestrator _stage_loop, which
-        # runs stages as separate _run_chat calls, can mirror this same
-        # "hold the queue for post-login resume" guard on its end-of-plan handoff.
-        slot._last_turn_auth_required = _auth_required
+        # Publish this turn's hold outcome so every drain gate OUTSIDE this frame
+        # reads the same answer: the orchestrator's _exit_cancelled_plan and
+        # _stage_loop finally, which run stages as separate _run_chat calls and
+        # drain the queue themselves. Set in the `finally` so it is published on
+        # every exit path, including one that leaves the frame by raising: those
+        # gates run their own `finally` and drain through
+        # `_start_next_queued_turn`, so the prompts held just below would be popped
+        # there instead and burned into repeat failures. Assigned unconditionally so
+        # it self-clears on the next turn rather than latching.
+        slot._queue_held = _queue_held
+        slot._queue_held_auth = _queue_held_auth
         next_turn_started = False
-        if slot._queue and not _auth_required and _memory_preparation_admitted:
+        if slot._queue and not _queue_held and _memory_preparation_admitted:
             # After startup admission, the successor's own ACP attempt remains
             # the authority for a later sign-out. A turn cancelled while waiting
             # on shared preparation retains the queue instead of walking every
             # item through the same unfinished or cancelled gateway task.
             #
-            # `_auth_required` is the ONE exception: this turn just proved the CLI
-            # is signed out, so every queued prompt would fail identically. The
-            # queue is left intact (cards stay visible and individually
-            # cancellable) and resumes on the user's next send after they log in
-            # — the no-loss rule, without a readiness waiter to strand it.
+            # The exception is a HOLD REASON, of which there are currently four --
+            # the CLI is signed out, a queued project change was refused before the
+            # turn, one was left deferred after it, or a queued conversation discard
+            # was left deferred. All four say the same
+            # thing, which is why this asks only whether a reason is set: this
+            # turn proved every queued prompt would fail identically, so draining
+            # would burn the queue into error cards with nothing run. Held, the
+            # queue stays intact (cards visible and individually cancellable) and
+            # resumes on the user's next send — after they log in, or once the
+            # holding turn releases — the no-loss rule, without a readiness waiter
+            # to strand it.
             state.push_slots_update()
             next_turn_started = await _start_next_queued_turn(state, slot)
 
         if not next_turn_started:
+            # Same holds, second drain site. The guard above stops the tail drain,
+            # but synthesis drains the queue as well (``_run_pending_synthesis``
+            # calls ``_start_next_queued_turn`` whenever the queue is non-empty),
+            # so a hold must suppress it too or the prompts are dequeued there
+            # instead and burned. The reason is passed straight through rather than
+            # re-derived here, so this site cannot drift out of agreement with the
+            # gate above.
             _finish_queue_cycle(
                 state,
                 slot,

@@ -3516,7 +3516,8 @@ class _ChatSlot:
         "_plan_cancelled",
         "_auto_run",
         "_in_stage_execution",
-        "_last_turn_auth_required",
+        "_queue_held",
+        "_queue_held_auth",
         "_recovery_chat_triggered",
         "_stage_titles",
         "_stage_descriptions",
@@ -3905,11 +3906,31 @@ class _ChatSlot:
         # still drain) until the plan ends — so autopilot reuses the normal-chat
         # queue/chip path without changing slot.task / slot.running semantics.
         self._in_stage_execution: bool = False
-        # Set by _run_chat's teardown to that turn's ACP auth-required outcome, so
-        # the orchestrator _stage_loop can mirror the "hold the queue for
-        # post-login resume" guard on its end-of-plan handoff (a signed-out CLI
-        # must not pop the held follow-up into another auth failure).
-        self._last_turn_auth_required: bool = False
+        # Whether the queue is HELD rather than drained; False drains. Set by
+        # _run_chat's teardown to that turn's outcome, and read at the drain choke
+        # point, the synthesis dispatch in _finish_queue_cycle, _run_chat's tail, and
+        # the orchestrator's two handoffs (_exit_cancelled_plan, _stage_loop's
+        # finally). Draining NOW serves the queue worse than leaving it: a repeat failure
+        # for two causes, a wait behind the streaming turn for the third — so they
+        # stay queued (visible, individually cancellable) and resume on the user's
+        # next send. The claim is about the QUEUE, not about this turn having run
+        # nothing: two causes are discovered before a turn runs, but a deferred
+        # project reset is discovered at the END of a turn that completed normally.
+        #
+        # ONE predicate rather than one flag per cause, deliberately. Each cause as
+        # its own boolean (base: ONE, 6 refs, 3 files, TWO gates) is hand-wired into
+        # every gate, so adding one risks MISSING one, silently dequeuing and burning
+        # prompts — which is exactly how the synthesis and stage-handoff gaps got
+        # shipped. A new cause now composes by setting this flag, and a new drain
+        # site composes by asking this one question.
+        #
+        # A BOOLEAN and not a reason string: the causes today are a signed-out CLI,
+        # a queued project change refused before the turn, a reset or discard left deferred
+        # after it — and no DRAIN gate, log line or test asks which of them it was.
+        self._queue_held: bool = False
+        # The one hold cause a release site cannot re-derive: the others are still
+        # readable off `_pending_reset_history_key` / `_pending_discard_conversation_key`.
+        self._queue_held_auth: bool = False
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
         self._stage_titles: list[str] = []  # stage titles extracted from plan
         self._stage_descriptions: list[list[str]] = []  # bullet points per stage

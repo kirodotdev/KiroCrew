@@ -849,7 +849,7 @@ def chat_done_payload(
             continuing
             or slot._in_stage_execution
             or slot._pending_synthesis
-            or (slot.queue_depth and not slot._last_turn_auth_required)
+            or (slot.queue_depth and not slot._queue_held)
             or subagents_attached(state, slot, effective_session_key(slot), "completion_sound")
             or (
                 workflows is not None
@@ -2925,6 +2925,28 @@ def carries_attachments(item: dict) -> bool:
     if not isinstance(meta, dict):
         return False
     return any(isinstance(meta.get(k), list) and meta.get(k) for k in ATTACHMENT_META_KEYS)
+
+
+def recompute_queue_hold(slot) -> bool:
+    """Derive ``slot._queue_held`` from every live cause and return it.
+
+    The drain side meets one choke point, but a release happens at two unrelated
+    sites -- an idle send that lands a deferred teardown, and the background reset
+    retry -- and each deriving the flag by hand is the missed-gate class this
+    module's queue gate exists to close. Deriving covers BOTH directions, which
+    hand-inlined release does not: a cause still live leaves the hold SET, where a
+    site that only ever clears turns a still-pending teardown into a queue nothing
+    drains until the user happens to send again.
+
+    ``_queue_held_auth`` is read rather than re-derived: a signed-out CLI is the one
+    cause no release site can recover from slot state once the turn has ended.
+    """
+    slot._queue_held = bool(
+        slot._queue_held_auth
+        or slot._pending_reset_history_key is not None
+        or slot._pending_discard_conversation_key is not None
+    )
+    return slot._queue_held
 
 
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
