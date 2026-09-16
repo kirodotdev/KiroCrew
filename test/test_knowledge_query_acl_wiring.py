@@ -132,13 +132,28 @@ from kiro_crew.dashboard.handlers.knowledge import _register_optional_connector 
 
 
 class _FakeConnector:
-    """Mirrors the real vendor contract: OPTIONAL injected runner (None default)."""
+    """Mirrors the real vendor contract: OPTIONAL injected factory (None default),
+    injected BY KEYWORD (here ``operations_factory``, as Google's is)."""
 
-    def __init__(self, runner_factory=None):
-        self._runner_factory = runner_factory
+    def __init__(self, operations_factory=None):
+        self._factory = operations_factory
 
     def source_type(self) -> str:
         return "fake_vendor"
+
+
+class _SFShapeConnector:
+    """Mirrors Salesforce's constructor: a positional ``call_runner`` and a
+    keyword-only ``runner_factory``. A positional inject would WRONGLY land the
+    per-source factory in ``call_runner``; keyword inject must target
+    ``runner_factory``."""
+
+    def __init__(self, call_runner=None, *, runner_factory=None):
+        self.call_runner = call_runner
+        self.runner_factory = runner_factory
+
+    def source_type(self) -> str:
+        return "salesforce"
 
 
 def _install_fake_module(monkeypatch, mod_name: str, cls):
@@ -151,17 +166,32 @@ def _install_fake_module(monkeypatch, mod_name: str, cls):
     return mod_name
 
 
-def test_optional_connector_registers_with_injected_runner(monkeypatch):
+def test_optional_connector_injects_by_keyword(monkeypatch):
     mod_name = _install_fake_module(monkeypatch, "kiro_crew._fake_vendor_mod", _FakeConnector)
-    runner = object()  # stands in for the W01-backed runner factory
+    runner = object()  # stands in for the host-installed per-source factory
     connectors: dict = {}
     ok = _register_optional_connector(
-        connectors, mod_name, "_FakeConnector", runner_factory=runner
+        connectors, mod_name, "_FakeConnector",
+        runner_factory=runner, inject_kw="operations_factory",
     )
     assert ok is True
-    # Keyed by the connector's OWN source_type; constructed WITH the runner.
-    assert "fake_vendor" in connectors
-    assert connectors["fake_vendor"]._runner_factory is runner
+    assert connectors["fake_vendor"]._factory is runner
+
+
+def test_optional_connector_sf_shape_factory_lands_in_runner_factory(monkeypatch):
+    # The mis-wire Root warned about: a positional inject would put the factory
+    # in call_runner. Keyword inject targets runner_factory; call_runner stays None.
+    mod_name = _install_fake_module(monkeypatch, "kiro_crew._sf_shape_mod", _SFShapeConnector)
+    factory = object()
+    connectors: dict = {}
+    ok = _register_optional_connector(
+        connectors, mod_name, "_SFShapeConnector",
+        runner_factory=factory, inject_kw="runner_factory",
+    )
+    assert ok is True
+    conn = connectors["salesforce"]
+    assert conn.runner_factory is factory
+    assert conn.call_runner is None
 
 
 def test_optional_connector_registers_without_runner_using_default(monkeypatch):
@@ -172,11 +202,12 @@ def test_optional_connector_registers_without_runner_using_default(monkeypatch):
     mod_name = _install_fake_module(monkeypatch, "kiro_crew._fake_vendor_mod2", _FakeConnector)
     connectors: dict = {}
     ok = _register_optional_connector(
-        connectors, mod_name, "_FakeConnector", runner_factory=None
+        connectors, mod_name, "_FakeConnector", runner_factory=None,
+        inject_kw="operations_factory",
     )
     assert ok is True
     assert "fake_vendor" in connectors
-    assert connectors["fake_vendor"]._runner_factory is None
+    assert connectors["fake_vendor"]._factory is None
 
 
 def test_optional_connector_absent_module_is_failclosed():
@@ -198,7 +229,7 @@ def test_optional_connector_broken_module_is_skipped(monkeypatch):
     mod = types.ModuleType("kiro_crew._broken_vendor_mod")
 
     class _Broken:
-        def __init__(self, runner_factory):
+        def __init__(self, runner_factory=None):
             raise RuntimeError("vendor ctor blew up")
 
     mod._Broken = _Broken  # type: ignore[attr-defined]
@@ -206,7 +237,8 @@ def test_optional_connector_broken_module_is_skipped(monkeypatch):
 
     connectors: dict = {"local_folder": object()}
     ok = _register_optional_connector(
-        connectors, "kiro_crew._broken_vendor_mod", "_Broken", runner_factory=object()
+        connectors, "kiro_crew._broken_vendor_mod", "_Broken",
+        runner_factory=object(), inject_kw="runner_factory",
     )
     assert ok is False
     # Built-ins untouched by a broken vendor module.

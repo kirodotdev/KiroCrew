@@ -214,7 +214,7 @@ async def test_handler_injected_runner_drives_real_chain(store, monkeypatch):
     connectors: dict = {}
     ok = _register_optional_connector(
         connectors, "kiro_crew._injected_vendor_mod", "_InjectedConnector",
-        runner_factory=_runner_factory,
+        runner_factory=_runner_factory, inject_kw="operations_factory",
     )
     assert ok is True
     conn = connectors["teststruct"]

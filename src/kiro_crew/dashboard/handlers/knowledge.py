@@ -1930,6 +1930,7 @@ def _register_optional_connector(
     module_path: str,
     class_name: str,
     runner_factory=None,
+    inject_kw: str | None = None,
 ) -> bool:
     """Register a structured vendor connector, injecting its live-read runner.
 
@@ -1974,10 +1975,20 @@ def _register_optional_connector(
         return False
     try:
         connector_cls = getattr(module, class_name)
-        # Inject the W01-backed runner when the host has installed one; else
-        # construct with the connector's own default (it self-enforces
-        # fail-closed live reads until a runner is wired).
-        connector = connector_cls(runner_factory) if runner_factory is not None else connector_cls()
+        # Inject the host-installed PER-SOURCE runner factory when present, by the
+        # connector's OWN keyword (they differ: Google ``operations_factory``,
+        # GitHub ``transport_provider``, Salesforce ``runner_factory``). Injecting
+        # positionally would be WRONG for a connector whose first positional param
+        # is something else -- e.g. Salesforce's ``__init__(call_runner=None, *,
+        # runner_factory=None)`` takes a single pre-composed runner first, so a
+        # positional factory would land in ``call_runner`` and be mistaken for a
+        # runner. When no factory is installed (or no keyword is known), construct
+        # with the connector's own default (it self-enforces fail-closed live
+        # reads until wired).
+        if runner_factory is not None and inject_kw:
+            connector = connector_cls(**{inject_kw: runner_factory})
+        else:
+            connector = connector_cls()
         connectors[connector.source_type()] = connector
     except Exception:  # pragma: no cover - defensive; a broken vendor module
         logger.exception(
@@ -3129,20 +3140,24 @@ def setup_knowledge_routes(app: web.Application) -> None:
         # Built-ins are set BEFORE the edition merge below so an edition can
         # still ADD or override a source_type. See _register_optional_connector.
         _runner_factories = app.get("knowledge_connector_runners") or {}
-        for _stype, _mod, _cls in (
+        # (source_type, module, class, inject_kw) -- inject_kw is the connector's
+        # OWN keyword for its per-source runner factory, which differs per vendor
+        # (see _register_optional_connector's positional-injection warning).
+        for _stype, _mod, _cls, _kw in (
             ("github",
              "kiro_crew.knowledge.connectors.github_structured",
-             "GithubStructuredConnector"),
+             "GithubStructuredConnector", "transport_provider"),
             ("google_drive",
              "kiro_crew.knowledge.connectors.google_drive",
-             "GoogleDriveConnector"),
+             "GoogleDriveConnector", "operations_factory"),
             ("salesforce",
              "kiro_crew.knowledge.connectors.salesforce_structured",
-             "SalesforceStructuredConnector"),
+             "SalesforceStructuredConnector", "runner_factory"),
         ):
             _register_optional_connector(
                 connectors, _mod, _cls,
                 runner_factory=_runner_factories.get(_stype),
+                inject_kw=_kw,
             )
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
