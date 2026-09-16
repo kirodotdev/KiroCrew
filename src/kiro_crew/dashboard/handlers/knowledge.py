@@ -1918,47 +1918,35 @@ def _register_optional_connector(
     class_name: str,
     runner_factory=None,
 ) -> bool:
-    """Register a structured vendor connector, INJECTING its live-read runner.
+    """Register a structured vendor connector, injecting its live-read runner.
 
     The structured vendor connectors (GitHub / Google Drive / Salesforce) each
     live in their OWN package and land on ``main`` through their OWN PR. This
     shared handler is their single registration site, but it must not
     hard-``import`` a module that has not landed yet: a top-level import of an
     absent module would break this handler's own import on a tree where the
-    vendor PR is not merged. So the import is guarded.
+    vendor PR is not merged. So the import is guarded — when the module is
+    absent the source_type is simply NOT registered (fail-closed: ``add_source``
+    rejects an unregistered source_type and the retrieval gate never sees it,
+    never public).
 
-    Critically, these connectors are NOT constructed no-arg. Each takes an
-    INJECTED runner/factory (Google ``operations_factory``, Salesforce
-    ``call_runner``, ...) that composes the W01 control-plane executor with the
-    per-source trusted handle + credential custody + real transport (controlled
-    TLS). Constructed WITHOUT it, the connector's own ``validate_config`` /
-    ``fetch`` refuse fail-closed ("no runner wired") — so registering a no-arg
-    instance would be a dead, misleading registration that only ever rejects.
+    Each connector takes its live-read dependency as an OPTIONAL injected arg
+    (GitHub ``transport_provider``, Google ``operations_factory``, Salesforce
+    ``call_runner``) and is the authority on its own fail-closed behavior when
+    that dependency is absent (GitHub refuses at fetch/detect_changes; Google/SF
+    refuse at validate_config). So the connector is registered whenever its
+    module imports — matching its documented contract (registered + editable,
+    refusing live reads until wired) — and the ``runner_factory`` is passed into
+    the constructor ONLY when the host has installed one (once the W01
+    control-plane executor, PR #11286, is available); otherwise it is
+    constructed with its own default. This is real construction+injection (not
+    an ``app[...]`` presence flag), and copies no vendor code — only the import
+    + injected instantiation live here.
 
-    Therefore a vendor is registered ONLY when BOTH its module is importable AND
-    a real ``runner_factory`` is supplied (the host installs it once the W01
-    executor — PR #11286 — is available). When the module is absent OR no runner
-    factory is installed, the source_type is simply NOT registered — fail-closed:
-    ``add_source`` rejects an unregistered source_type and the retrieval gate
-    never sees it, so a not-yet-wired vendor is unreachable, never public. This
-    is real construction+injection (not an ``app[...]`` presence flag), and it
-    copies no vendor code — only the import + injected instantiation live here.
-
-    ``runner_factory`` is the callable this call passes as the connector's
-    injected dependency (its exact keyword is per-connector; the caller maps it).
-    Returns True only when the connector was constructed with its runner and
-    registered.
+    Returns True when the connector was registered.
     """
     import importlib
 
-    if runner_factory is None:
-        logger.debug(
-            "knowledge connector %s: no W01 runner factory installed; not "
-            "registered (fail-closed; needs the control-plane executor, PR "
-            "#11286, and the host to install its runner)",
-            module_path,
-        )
-        return False
     try:
         module = importlib.import_module(module_path)
     except ImportError:
@@ -1970,7 +1958,10 @@ def _register_optional_connector(
         return False
     try:
         connector_cls = getattr(module, class_name)
-        connector = connector_cls(runner_factory)
+        # Inject the W01-backed runner when the host has installed one; else
+        # construct with the connector's own default (it self-enforces
+        # fail-closed live reads until a runner is wired).
+        connector = connector_cls(runner_factory) if runner_factory is not None else connector_cls()
         connectors[connector.source_type()] = connector
     except Exception:  # pragma: no cover - defensive; a broken vendor module
         logger.exception(
@@ -3101,16 +3092,17 @@ def setup_knowledge_routes(app: web.Application) -> None:
         connectors["obsidian_vault"] = LocalFolderConnector()
         # Structured vendor connectors (GitHub / Google Drive / Salesforce).
         # Each lives in its own module that lands on main through its own PR;
-        # this is their single registration site. Each is constructed with an
-        # INJECTED W01-backed runner/factory (controlled TLS + credential
-        # custody + real transport) that the host installs on the app under
-        # ``knowledge_connector_runners`` — a {source_type: runner_factory} map —
-        # once the control-plane executor (PR #11286) is available. A connector
-        # is registered ONLY when BOTH its module is importable AND its runner
-        # factory is installed; otherwise it is not registered (fail-closed:
-        # add_source rejects the source_type and the retrieval gate never sees
-        # it, never public). No vendor implementation is copied here — only the
-        # import + injected instantiation live in this shared handler. See
+        # this is their single registration site. A connector is registered
+        # whenever its module imports (its documented contract: registered +
+        # edition-overridable, refusing live reads until wired), and its
+        # W01-backed runner/factory is INJECTED when the host has installed one
+        # under ``knowledge_connector_runners`` — a {source_type: runner_factory}
+        # map wired once the control-plane executor (PR #11286) is available.
+        # Absent module → not registered (fail-closed: add_source rejects the
+        # source_type, retrieval never sees it, never public). No vendor code is
+        # copied here; only the import + injected instantiation live in this
+        # shared handler. Built-ins are set BEFORE the edition merge below so an
+        # edition can still ADD or override a source_type. See
         # _register_optional_connector.
         _runner_factories = app.get("knowledge_connector_runners") or {}
         for _stype, _mod, _cls in (

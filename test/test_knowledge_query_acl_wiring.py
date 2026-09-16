@@ -88,22 +88,20 @@ def test_binding_resolver_returns_installed():
 
 # ── optional vendor-connector registration seam ────────────────────────────
 # The structured vendor connectors (GitHub/Google/Salesforce) each land on main
-# through their own PR AND require an injected W01-backed runner/factory
-# (controlled TLS + credential custody). The shared handler registers each ONLY
-# when its module is importable AND a runner factory is installed; the connector
-# is constructed WITH that runner. Absent module OR absent runner => not
-# registered (fail-closed, never public) -- because a no-arg vendor connector's
-# own validate/fetch refuse "no runner wired", so a runnerless registration
-# would be a dead, misleading entry.
+# through their own PR. Each takes its live-read dependency as an OPTIONAL
+# injected arg and self-enforces fail-closed when it is absent (GitHub refuses
+# at fetch, Google/SF at validate). The shared handler registers each connector
+# whenever its module imports (its documented registered+editable contract), and
+# injects the runner factory into the constructor when the host installs one.
+# Absent module => not registered (fail-closed, never public).
 
 from kiro_crew.dashboard.handlers.knowledge import _register_optional_connector  # noqa: E402
 
 
 class _FakeConnector:
-    """Mirrors the real vendor construction contract: takes an injected runner."""
+    """Mirrors the real vendor contract: OPTIONAL injected runner (None default)."""
 
-    def __init__(self, runner_factory):
-        assert runner_factory is not None
+    def __init__(self, runner_factory=None):
         self._runner_factory = runner_factory
 
     def source_type(self) -> str:
@@ -133,17 +131,19 @@ def test_optional_connector_registers_with_injected_runner(monkeypatch):
     assert connectors["fake_vendor"]._runner_factory is runner
 
 
-def test_optional_connector_no_runner_is_not_registered(monkeypatch):
-    # Module present but NO runner factory installed -> not registered. A
-    # runnerless vendor connector would only ever refuse, so registering it
-    # would be a dead, misleading entry. Fail-closed instead.
+def test_optional_connector_registers_without_runner_using_default(monkeypatch):
+    # Module present but NO runner factory installed -> STILL registered, built
+    # with the connector's own default. The connector self-enforces fail-closed
+    # live reads (registered + edition-overridable is its documented contract);
+    # it is not a dead entry.
     mod_name = _install_fake_module(monkeypatch, "kiro_crew._fake_vendor_mod2", _FakeConnector)
     connectors: dict = {}
     ok = _register_optional_connector(
         connectors, mod_name, "_FakeConnector", runner_factory=None
     )
-    assert ok is False
-    assert connectors == {}
+    assert ok is True
+    assert "fake_vendor" in connectors
+    assert connectors["fake_vendor"]._runner_factory is None
 
 
 def test_optional_connector_absent_module_is_failclosed():
