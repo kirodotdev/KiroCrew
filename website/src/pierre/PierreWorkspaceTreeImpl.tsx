@@ -312,6 +312,9 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     refetchInterval: 5_000,
     refetchOnWindowFocus: true,
   })
+  const truncatedDirectoriesRef = useRef<Set<string>>(new Set())
+  truncatedDirectoriesRef.current = new Set(tree?.truncatedDirectories ?? [])
+  const truncatedDirectoriesKey = (tree?.truncatedDirectories ?? []).join('\n')
 
   const { model } = useFileTree({
     paths: [],
@@ -329,6 +332,12 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     // for keyboards), the affordance shown only when the row is hovered/focused
     // so a narrow rail stays uncluttered.
     composition: { contextMenu: { triggerMode: 'both', buttonVisibility: 'when-needed' } },
+    renderRowDecoration: ({ item }) => {
+      const path = item.path.replace(/\/$/, '')
+      if (item.kind !== 'directory' || !truncatedDirectoriesRef.current.has(path)) return null
+      const label = i18nT('pages.chat.activityViewer.workspace_directory_truncated')
+      return { text: label, title: label }
+    },
   })
 
   // The tree endpoint returns paths relative to the PROJECT dir while git
@@ -371,11 +380,23 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           // resetPaths useLayoutEffect below, taking down the whole route.
           // De-dup here (preserving order + first occurrence, mirroring the
           // `changed` branch's statusEntries seen-Set) so a duplicate degrades
-          // to a single (missing) row instead of a render crash.
-          Array.from(new Set(tree?.paths ?? [])),
+          // to a single (missing) row instead of a render crash. Explicit
+          // trailing-slash paths keep directory rows even when every direct
+          // file in that directory fell beyond the file budget.
+          Array.from(new Set([
+            ...(tree?.paths ?? []),
+            ...(tree?.directories ?? []).map(path => `${path.replace(/\/$/, '')}/`),
+          ])),
     [mode, statusEntries, tree],
   )
   const ready = mode === 'changed' ? status != null : tree != null
+
+  // The row-decoration callback reads a ref because Pierre creates the model
+  // once. Re-render its view when only the truncation set changes and the path
+  // set therefore does not reset the model.
+  useEffect(() => {
+    model.setComposition(model.getComposition())
+  }, [model, truncatedDirectoriesKey])
 
   // Feed data into the model imperatively (the model is created once; path
   // resets and git-status patches are the supported update API). Layout

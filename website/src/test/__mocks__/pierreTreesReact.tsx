@@ -49,6 +49,7 @@ export function createFakeModel(options: Record<string, unknown>) {
     select: [] as string[],
     deselect: [] as string[],
     expand: [] as string[],
+    compositionRenders: 0,
     unsubscribes: 0,
   }
 
@@ -79,13 +80,19 @@ export function createFakeModel(options: Record<string, unknown>) {
     resetPaths(next: readonly string[], options?: ResetOptions) {
       calls.resetPaths.push([...next])
       calls.resetPathsOptions.push(options)
-      files.splice(0, files.length, ...next)
+      files.splice(0, files.length, ...next.filter(path => !path.endsWith('/')))
       dirs.clear()
       for (const p of next) {
-        const segments = p.split('/')
+        const explicitDirectory = p.endsWith('/')
+        const normalized = explicitDirectory ? p.slice(0, -1) : p
+        if (!normalized) continue
+        if (explicitDirectory) dirs.add(normalized)
+        const segments = normalized.split('/')
         for (let i = 1; i < segments.length; i++) dirs.add(segments.slice(0, i).join('/'))
       }
     },
+    getComposition: () => options.composition,
+    setComposition() { calls.compositionRenders++ },
     setGitStatus(entries: readonly StatusEntry[] = []) {
       calls.gitStatus.push([...entries])
     },

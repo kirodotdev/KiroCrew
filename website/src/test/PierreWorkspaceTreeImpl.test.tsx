@@ -176,6 +176,30 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     expect(treeMock.last().calls.resetPaths).toEqual([['README.md', 'src/a.ts']])
   })
 
+  it('keeps explicit directory rows and marks directories whose files were sampled', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['alpha/a.ts'],
+      directories: ['alpha', 'late', 'late/nested'],
+      truncatedDirectories: ['late'],
+      truncated: true,
+    }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([
+      ['alpha/a.ts', 'alpha/', 'late/', 'late/nested/'],
+    ])
+    const decorate = treeMock.last().options.renderRowDecoration as (
+      context: { item: MenuItem },
+    ) => { text: string; title?: string } | null
+    expect(decorate({ item: { kind: 'directory', name: 'late', path: 'late' } })).toEqual({
+      text: 'files hidden',
+      title: 'files hidden',
+    })
+    expect(decorate({ item: { kind: 'directory', name: 'alpha', path: 'alpha' } })).toBeNull()
+    expect(screen.getByText(/all folders remain available/i)).toBeInTheDocument()
+  })
+
   it('reports an empty workspace instead of an empty tree', async () => {
     vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: [] }))
     renderTree()
