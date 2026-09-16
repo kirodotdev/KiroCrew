@@ -619,6 +619,24 @@ schema 4 regenerates cached delimiter-based overlays on upgrade. Upgrades must
 keep the rewriter and stub from the same package; an older stub cannot consume
 the new flags.
 
+Encoding the backend arguments alone leaves the rest of the stub's metadata raw:
+the target executable path, work dir, socket, env sidecar path, server and agent
+names and the `autoApprove` JSON. `cmd.exe` expands `%NAME%` for any NAME set
+in its environment inside any of these, quoted or not, and offers no escape for
+it on a `/c` command line -- measured natively, `python%X%.exe` reached the stub
+as `pythonexpanded.exe` and the tool name `read%X%` as `readexpanded`, so the
+stub launched a different executable and registered a different approval hash
+than the daemon computed from the operator's spec. The overlay therefore carries
+the stub's whole flag list as ONE envelope, `--stub-flags-b64`, using the same
+codec; inside it the flags keep their plain spelling. `stub._parse_args` and the
+rewriter's `_collect_target_env` splice the envelope back through
+`hashing.expand_stub_flags` before reading, so a plain-flag overlay written by an
+older rewriter parses through the same path and hashes identically. The
+per-session `--channel-id` appended by `session_servers` rides its own envelope.
+Fingerprint schema 5 regenerates cached plain-flag overlays on upgrade. The
+interpreter path in the entry's `command` is the one value the codec cannot
+cover: the CLI runs it, not the stub.
+
 ## How app agents reach MCP servers
 
 An app declares MCP servers in its manifest, and

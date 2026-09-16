@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.mcp_gateway import rewriter
-from kiro_crew.mcp_gateway.hashing import is_secret_env_key
+from kiro_crew.mcp_gateway.hashing import expand_stub_flags, is_secret_env_key
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_gateway.rewriter import (
     _WRAPPER_MARKER,
@@ -218,7 +218,7 @@ def test_allowlisted_server_gets_the_poolable_flag(tmp_path: Path) -> None:
     }
     new_spec, _ = _rewrite(spec, tmp_path, stub_servers=frozenset({"shareable"}))
 
-    assert "--poolable" in new_spec["mcpServers"]["shareable"]["args"]
+    assert "--poolable" in expand_stub_flags(new_spec["mcpServers"]["shareable"]["args"])
 
 
 def test_private_server_with_declared_env_is_not_warned_about(tmp_path: Path, caplog) -> None:
@@ -251,7 +251,7 @@ def test_private_server_with_declared_env_is_not_warned_about(tmp_path: Path, ca
         )
 
     assert wrapped == 1  # stubbed
-    assert "--poolable" not in new_spec["mcpServers"]["needs-env"]["args"]
+    assert "--poolable" not in expand_stub_flags(new_spec["mcpServers"]["needs-env"]["args"])
     env_warnings = [r for r in caplog.records if "declares" in r.getMessage()]
     assert env_warnings == [], (
         "a private backend was warned about with pooled-backend advice: "
@@ -319,7 +319,7 @@ def test_resolvable_bare_command_lands_absolute_in_the_stub(tmp_path: Path) -> N
     new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"bare"}), forward_env=True)
 
     assert wrapped == 1
-    args = new_spec["mcpServers"]["bare"]["args"]
+    args = expand_stub_flags(new_spec["mcpServers"]["bare"]["args"])
     resolved = args[args.index("--target-command") + 1]
     assert Path(resolved).is_absolute(), resolved
     assert Path(resolved).name == exe_name
@@ -504,7 +504,7 @@ def test_pooling_disabled_still_wraps_but_shares_nothing(tmp_path: Path) -> None
     assert wrapped == 1
     listed = new_spec["mcpServers"]["listed"]
     assert listed.get(_WRAPPER_MARKER) is True, "listed lost its stub"
-    assert "--poolable" not in listed["args"], "listed still marked shareable"
+    assert "--poolable" not in expand_stub_flags(listed["args"]), "listed still marked shareable"
 
     declared = new_spec["mcpServers"]["declared"]
     assert (
@@ -727,7 +727,7 @@ def _spec_with_env(source_dir: Path) -> None:
 
 def _overlay_stub_args(overlay_dir: Path) -> list[str]:
     spec = json.loads((overlay_dir / "test-agent.json").read_text(encoding="utf-8"))
-    return list(spec["mcpServers"]["myserver"].get("args", []))
+    return expand_stub_flags(spec["mcpServers"]["myserver"].get("args", []))
 
 
 def test_env_sidecar_directory_goes_through_make_owner_only_dir(

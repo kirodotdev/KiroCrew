@@ -43,8 +43,10 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.env import mcp_search_path, spec_path_key
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import (
+    STUB_FLAGS_FLAG,
     decode_target_args,
     encode_target_args,
+    expand_stub_flags,
     hash_command,
     is_secret_env_key,
 )
@@ -95,6 +97,8 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # of serving overlays produced by older logic. The package version is also in
 # the fingerprint, so a release bump invalidates regardless; this constant is
 # the explicit knob for in-development changes.
+# 5: the stub's flags ride inside one STUB_FLAGS_FLAG envelope, so a kept
+# plain-flag overlay would keep exposing its raw metadata to cmd.exe.
 # Deliberately NOT bumped for the retained legacy settings overlay: the
 # per-agent overlay bytes do not depend on it, the leftover overlay file is
 # retained and ignored (never consumed), and a stored ``settings_overlay``
@@ -102,7 +106,7 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # relock — so an older fingerprint still validates correctly, and bumping would
 # gratuitously defeat the transient-keep gate (which compares stored vs current
 # inputs) on the first upgraded boot.
-_FINGERPRINT_SCHEMA = 4
+_FINGERPRINT_SCHEMA = 5
 
 
 @dataclass
@@ -557,12 +561,27 @@ def _build_stub_entry(
     wrapped.update({
         _WRAPPER_MARKER: True,
         "command": sys.executable,
-        # ``-m kiro_crew.mcp_gateway.stub`` leads; the stub's own flags follow.
+        # ``-m kiro_crew.mcp_gateway.stub`` leads; the stub's own flags follow
+        # as ONE encoded envelope. Every value above is raw operator or
+        # filesystem text -- the executable path, the work dir, the socket, the
+        # sidecar path, the server and agent names, the autoApprove
+        # identifiers -- and a CLI that launches this entry through cmd.exe
+        # expands ``%NAME%`` inside any plain token, quoted or not, with no
+        # escape available on that command line. Only ``--target-args-b64``
+        # was encoded before, so ``python%X%.exe`` reached the stub as
+        # ``pythonexpanded.exe`` and a tool name ``read%X%`` as ``readexpanded``
+        # -- a different executable and a different approval set than the
+        # operator wrote, and a different hash than the daemon registered. The
+        # base64url alphabet has no ``%`` and no other cmd.exe metacharacter, so
+        # the tokens inside arrive byte-for-byte; ``stub._parse_args`` and
+        # ``_collect_target_env`` both splice them back through
+        # ``expand_stub_flags`` before reading, and an older plain-flag overlay
+        # still parses through the same path.
         # channel_id is NOT here: the overlay is written once at startup and is
         # session-agnostic, so it is appended per session by
         # ``session_servers.pooled_session_servers`` at ACP injection time,
         # where the value is in scope.
-        "args": ["-m", _STUB_MODULE, *stub_args],
+        "args": ["-m", _STUB_MODULE, f"{STUB_FLAGS_FLAG}={encode_target_args(stub_args)}"],
         # autoApprove must stay on the wrapper — kiro-cli reads it at the
         # permission-prompt UI layer, separately from the backend.
         "autoApprove": auto_approve,
@@ -2084,7 +2103,9 @@ def _collect_target_env(
         ):
             continue
         env_key = "KIROCREW_MCP_TARGET_" + server_name.replace("-", "_").upper()
-        args = entry.get("args", []) or []
+        # Same splice as the stub's parser, so both sides read the flags an
+        # envelope carries -- and a plain-flag overlay -- identically.
+        args = expand_stub_flags(entry.get("args", []) or [])
         target_cmd: str | None = None
         target_args_b64: str | None = None
         target_args_legacy = ""

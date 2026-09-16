@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.mcp_gateway.rewriter import _rewrite_single_spec
 
 STUB_MARKER = "mcp_gateway.stub"
@@ -46,7 +47,10 @@ def _spec() -> dict:
 
 
 def _argv(entry: dict) -> str:
-    return " ".join([str(entry.get("command", ""))] + [str(a) for a in entry.get("args") or []])
+    return " ".join(
+        [str(entry.get("command", ""))]
+        + [str(a) for a in expand_stub_flags(entry.get("args") or [])]
+    )
 
 
 def test_nothing_is_routed_by_default(tmp_path: Path) -> None:

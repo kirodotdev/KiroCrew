@@ -42,7 +42,12 @@ from kiro_crew.jsonl_util import bounded_records, rotate_jsonl_at
 from kiro_crew.mcp_caller import CallerContext, _parent_pid
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
-from kiro_crew.mcp_gateway.hashing import decode_target_args, hash_command, hash_effective_env
+from kiro_crew.mcp_gateway.hashing import (
+    decode_target_args,
+    expand_stub_flags,
+    hash_command,
+    hash_effective_env,
+)
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
 from kiro_crew.metrics.events import MCP_RECONNECTS, emit_counter
 
@@ -185,7 +190,14 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     is accepted and ignored — older installations' overlay wrappers may
     still pass it; we swallow the flag so the stub stays backward-
     compatible with on-disk agent overlays written by earlier rewriter
-    revisions."""
+    revisions.
+
+    The rewriter emits the flags as one ``--stub-flags-b64`` envelope so raw
+    paths and identifiers cross a cmd.exe launch without ``%NAME%`` expansion;
+    it is spliced back into plain tokens here, ahead of the parser, and an
+    overlay that spells the flags out directly parses the same way.
+    """
+    argv = expand_stub_flags(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(
         prog="kirocrew-mcp-stub",
         description="KiroCrew MCP shim: proxies kiro-cli stdio to the local gateway",

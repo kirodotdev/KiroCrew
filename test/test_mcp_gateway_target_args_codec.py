@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -13,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew import platform_compat
-from kiro_crew.mcp_gateway import hashing, rewriter, stub
+from kiro_crew.mcp_gateway import hashing, rewriter, session_servers, stub
 
 CASES = [
     [],
@@ -25,6 +26,15 @@ CASES = [
     ["a&b", "c^d", "e%PATH%f", "g>h", "i<j", "k;l", "!bang!"],
 ]
 
+# cmd.exe expands a percent-delimited NAME that is set in its environment; the
+# probe value carries no quote or delimiter so a single token stays one token.
+PROBE = "KC_ARGV_PROBE"
+PROBE_ENV = {PROBE: "expanded"}
+PERCENT = f"%{PROBE}%"
+
+# base64url payload plus the flag spelling and its ``=`` joiner.
+SHELL_INERT = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=")
+
 
 def _entry(
     tmp_path: Path,
@@ -32,16 +42,21 @@ def _entry(
     identity: bool = False,
     auto_approve: list[str] | None = None,
     target_command: str = sys.executable,
+    server_name: str = "probe",
+    agent_name: str = "probe-agent",
+    stubs_dir: Path | None = None,
+    socket_path: Path | None = None,
+    work_dir: Path | None = None,
 ) -> dict:
     return rewriter._build_stub_entry(
-        stubs_dir=tmp_path / "stubs",
-        server_name="probe",
-        agent_name="probe-agent",
+        stubs_dir=stubs_dir or tmp_path / "stubs",
+        server_name=server_name,
+        agent_name=agent_name,
         original={"command": target_command, "args": args, "autoApprove": auto_approve or []},
         env_pairs={"ALPHA": "a", "BETA": "b"} if identity else {},
         target_command=target_command,
-        socket_path=tmp_path / "absent.sock",
-        work_dir=tmp_path,
+        socket_path=socket_path or tmp_path / "absent.sock",
+        work_dir=work_dir or tmp_path,
         sandbox_mode="standard",
         approval_mode="interactive",
         identity_keys=("ALPHA", "BETA") if identity else (),
@@ -52,10 +67,35 @@ def _parsed(entry: dict):
     return stub._parse_args(entry["args"][2:])
 
 
+def _percent_entry(tmp_path: Path, identity: bool = True) -> dict:
+    """Every raw metadata value the rewriter emits carries the probe name."""
+    base = tmp_path / f"dir{PERCENT}"
+    work_dir = base / f"work{PERCENT}"
+    work_dir.mkdir(parents=True)
+    return _entry(
+        tmp_path,
+        [f"literal{PERCENT}", "-P"],
+        identity=identity,
+        auto_approve=[f"read{PERCENT}", "write_file"],
+        target_command=str(base / f"python{PERCENT}.exe"),
+        server_name=f"probe{PERCENT}",
+        agent_name=f"agent{PERCENT}",
+        stubs_dir=base / "stubs",
+        socket_path=base / f"gw{PERCENT}.sock",
+        work_dir=work_dir,
+    )
+
+
+def _modelled_cmd_expansion(tokens: list[str], env: dict[str, str]) -> list[str]:
+    """cmd.exe ``/c`` substitutes ``%NAME%`` for a set NAME and leaves an unset
+    one literal. Applied per token because the probe value has no quote."""
+    return [re.sub(r"%([^%]+)%", lambda m: env.get(m.group(1), m.group(0)), tok) for tok in tokens]
+
+
 @pytest.mark.parametrize("args", CASES)
 def test_codec_roundtrip(args):
     encoded = hashing.encode_target_args(args)
-    assert set(encoded) <= set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=")
+    assert set(encoded) <= SHELL_INERT
     assert hashing.decode_target_args(encoded) == args
 
 
@@ -67,6 +107,120 @@ def test_bad_payload_rejected_without_echo(payload):
         "malformed target-args payload",
         "target-args payload is not a JSON array of strings",
     }
+
+
+def test_generated_metadata_tokens_are_shell_inert(tmp_path):
+    entry = _percent_entry(tmp_path)
+    assert entry["args"][:2] == ["-m", rewriter._STUB_MODULE]
+    for token in entry["args"][2:]:
+        assert set(token) <= SHELL_INERT, token
+    # The envelope is the only carrier; nothing raw rides beside it.
+    flags = hashing.expand_stub_flags(entry["args"][2:])
+    assert any(PERCENT in tok for tok in flags)
+    assert "--auto-approve" in flags and "--env-file" in flags
+
+
+def test_percent_metadata_survives_modelled_expansion(tmp_path):
+    entry = _percent_entry(tmp_path)
+    direct = _parsed(entry)
+    parsed = stub._parse_args(_modelled_cmd_expansion(entry["args"][2:], PROBE_ENV))
+    assert vars(parsed) == vars(direct)
+    for field in ("server", "agent", "target_command", "work_dir", "socket", "env_file"):
+        assert PERCENT in getattr(parsed, field), field
+    assert stub._parse_auto_approve(parsed.auto_approve) == [f"read{PERCENT}", "write_file"]
+    assert stub._resolve_target_args(parsed) == [f"literal{PERCENT}", "-P"]
+    payload = stub.build_register_payload(parsed)
+    expected = stub.build_register_payload(direct)
+    for field in ("autoapprove_set_hash", "command_args_hash", "effective_env_hash"):
+        assert payload[field] == expected[field]
+    # The daemon side reads the same envelope and hashes the same argv.
+    env: dict[str, str] = {}
+    rewriter._collect_target_env({"probe": entry}, env)
+    assert env["KIROCREW_MCP_TARGET_PROBE__" + payload["command_args_hash"]] == " ".join(
+        shlex.quote(p) for p in [parsed.target_command, f"literal{PERCENT}", "-P"]
+    )
+
+
+def test_plain_flag_overlay_parses_to_identical_payload(tmp_path):
+    """An overlay written before the envelope keeps its meaning and its hashes."""
+    entry = _percent_entry(tmp_path)
+    plain = dict(entry, args=entry["args"][:2] + hashing.expand_stub_flags(entry["args"][2:]))
+    assert not any(t.startswith(hashing.STUB_FLAGS_FLAG) for t in plain["args"])
+    assert vars(_parsed(plain)) == vars(_parsed(entry))
+    from_plain = stub.build_register_payload(_parsed(plain))
+    from_envelope = stub.build_register_payload(_parsed(entry))
+    for field in ("autoapprove_set_hash", "command_args_hash", "effective_env_hash", "work_dir"):
+        assert from_plain[field] == from_envelope[field]
+    enveloped_env: dict[str, str] = {}
+    plain_env: dict[str, str] = {}
+    rewriter._collect_target_env({"probe": entry}, enveloped_env)
+    rewriter._collect_target_env({"probe": plain}, plain_env)
+    assert enveloped_env == plain_env
+
+
+@pytest.mark.parametrize("equals", [True, False])
+def test_expand_stub_flags_splices_in_place(equals):
+    inner = ["--server", "s%X%", "--work-dir", "C:\\w%X%\\d", "--poolable"]
+    encoded = hashing.encode_target_args(inner)
+    envelope = (
+        [f"{hashing.STUB_FLAGS_FLAG}={encoded}"] if equals else [hashing.STUB_FLAGS_FLAG, encoded]
+    )
+    argv = ["--agent", "a", *envelope, "--channel-id", "C1"]
+    assert hashing.expand_stub_flags(argv) == ["--agent", "a", *inner, "--channel-id", "C1"]
+
+
+def test_expand_stub_flags_passes_plain_and_non_string_tokens():
+    argv = ["--server", "s", 7, None, "--poolable"]
+    assert hashing.expand_stub_flags(argv) == argv
+    assert hashing.expand_stub_flags([]) == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [f"{hashing.STUB_FLAGS_FLAG}="],
+        [f"{hashing.STUB_FLAGS_FLAG}=!!!!"],
+        [f"{hashing.STUB_FLAGS_FLAG}={hashing.encode_target_args(['ok'])[:-3]}"],
+        [hashing.STUB_FLAGS_FLAG],
+    ],
+)
+def test_expand_stub_flags_rejects_malformed_envelope(argv):
+    with pytest.raises(ValueError):
+        hashing.expand_stub_flags(argv)
+    with pytest.raises(ValueError):
+        stub._parse_args(["--server", "s", *argv])
+
+
+def test_session_channel_id_rides_the_envelope(tmp_path):
+    entry = _percent_entry(tmp_path)
+    shaped = session_servers._acp_server_entry("probe", entry, f"C{PERCENT}")
+    assert shaped is not None
+    for token in shaped["args"][2:]:
+        assert set(token) <= SHELL_INERT, token
+    parsed = stub._parse_args(_modelled_cmd_expansion(shaped["args"][2:], PROBE_ENV))
+    assert parsed.channel_id == f"C{PERCENT}"
+    assert vars(parsed) == dict(vars(_parsed(entry)), channel_id=f"C{PERCENT}")
+    # A second shaping of an entry that already names its channel adds nothing.
+    again = session_servers._acp_server_entry("probe", shaped, "other")
+    assert again is not None and again["args"] == shaped["args"]
+    assert session_servers._acp_server_entry("probe", entry, None)["args"] == entry["args"]
+
+
+@pytest.mark.parametrize("channel_id", [None, "C1"])
+def test_session_skips_a_stub_with_an_unreadable_envelope(tmp_path, caplog, channel_id):
+    """An overlay entry whose envelope cannot be decoded is left out of the
+    session, like a command-less one; the session itself still starts."""
+    entry = _percent_entry(tmp_path)
+    broken = dict(entry, args=entry["args"][:2] + [f"{hashing.STUB_FLAGS_FLAG}=!!!!"])
+    assert session_servers._acp_server_entry("probe", broken, channel_id) is None
+    assert any("unreadable flag envelope" in r.message for r in caplog.records)
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    (overlay / "agent.json").write_text(
+        json.dumps({"mcpServers": {"broken": broken, "probe": entry}}), encoding="utf-8"
+    )
+    injected = session_servers.pooled_session_servers(overlay, "agent", channel_id)
+    assert [s["name"] for s in injected] == ["probe"]
 
 
 @pytest.mark.parametrize("args", CASES)
@@ -116,10 +270,15 @@ def test_legacy_separator_and_flag_spelling(tmp_path, sep, equals):
     assert shlex.split(env["KIROCREW_MCP_TARGET_PROBE"]) == [sys.executable, *argv]
 
 
+def _plain_flags(entry: dict) -> list[str]:
+    """Rewrite an emitted entry into the pre-envelope plain-flag overlay shape."""
+    return entry["args"][:2] + hashing.expand_stub_flags(entry["args"][2:])
+
+
 @pytest.mark.parametrize("equals", [True, False])
 def test_encoded_precedence_matches_daemon(tmp_path, equals):
     entry = _entry(tmp_path, [])
-    entry["args"] = [a for a in entry["args"] if not a.startswith("--target-args-b64=")]
+    entry["args"] = [a for a in _plain_flags(entry) if not a.startswith("--target-args-b64=")]
     encoded = hashing.encode_target_args([""])
     entry["args"].extend(
         [f"--target-args-b64={encoded}"] if equals else ["--target-args-b64", encoded]
@@ -133,7 +292,7 @@ def test_encoded_precedence_matches_daemon(tmp_path, equals):
 
 def test_empty_encoded_flag_never_falls_back(tmp_path):
     entry = _entry(tmp_path, [])
-    entry["args"] = [a for a in entry["args"] if not a.startswith("--target-args-b64=")]
+    entry["args"] = [a for a in _plain_flags(entry) if not a.startswith("--target-args-b64=")]
     entry["args"].extend(["--target-args-b64=", "--target-args=wrong"])
     with pytest.raises(ValueError):
         stub._resolve_target_args(_parsed(entry))
@@ -145,7 +304,8 @@ def test_pool_identity_names_and_hash(tmp_path):
     entry = _entry(tmp_path, [], identity=True)
     parsed = _parsed(entry)
     assert stub._resolve_pool_identity_env(parsed) == frozenset({"ALPHA", "BETA"})
-    assert "|" not in entry["args"][entry["args"].index("--pool-identity-env-b64") + 1]
+    flags = hashing.expand_stub_flags(entry["args"][2:])
+    assert "|" not in flags[flags.index("--pool-identity-env-b64") + 1]
     encoded = stub.build_register_payload(parsed)
     parsed.pool_identity_env_b64 = None
     parsed.pool_identity_env = "ALPHA|BETA"
@@ -169,7 +329,7 @@ def test_fallback_uses_decoded_argv(tmp_path, monkeypatch):
     assert seen == [[sys.executable, "value|pipe", ""]]
 
 
-def _through_cmd(tmp_path: Path, entry: dict) -> dict:
+def _through_cmd(tmp_path: Path, entry: dict, extra_env: dict[str, str] | None = None) -> dict:
     # Resolve from the OS system-directory API, not a mutable SystemRoot env var.
     cmd = platform_compat.trusted_system_bin("cmd")
     assert cmd is not None, "native Windows regression requires the system cmd.exe"
@@ -185,6 +345,7 @@ def _through_cmd(tmp_path: Path, entry: dict) -> dict:
         os.environ,
         PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
         PYTHONIOENCODING="utf-8",
+        **(extra_env or {}),
     )
     completed = subprocess.run(
         f'"{cmd}" /d /s /c "{inner}"',
@@ -237,7 +398,40 @@ def test_generated_paths_with_spaces_through_cmd(tmp_path):
         assert result["args"][field] == getattr(direct, field)
 
 
-def test_rewrite_invalidates_legacy_fingerprint(tmp_path):
+@pytest.mark.skipif(not platform_compat.IS_WINDOWS, reason="requires native cmd.exe")
+def test_generated_percent_metadata_through_cmd(tmp_path):
+    """With the probe SET in the child's environment, every raw metadata value
+    arrives literal and the parsed hashes match a direct parse."""
+    entry = _percent_entry(tmp_path)
+    direct = _parsed(entry)
+    result = _through_cmd(tmp_path, entry, PROBE_ENV)
+    assert result["args"] == vars(direct)
+    for field in ("server", "agent", "target_command", "work_dir", "socket", "env_file"):
+        assert PERCENT in result["args"][field], field
+        assert "expanded" not in result["args"][field], field
+    assert json.loads(result["args"]["auto_approve"]) == [f"read{PERCENT}", "write_file"]
+    expected = stub.build_register_payload(direct)
+    for field in ("autoapprove_set_hash", "command_args_hash", "effective_env_hash", "work_dir"):
+        assert result["payload"][field] == expected[field]
+    assert result["payload"]["command_args_hash"] == hashing.hash_command(
+        direct.target_command, [f"literal{PERCENT}", "-P"]
+    )
+
+
+@pytest.mark.skipif(not platform_compat.IS_WINDOWS, reason="requires native cmd.exe")
+def test_plain_flag_metadata_expands_through_cmd(tmp_path):
+    """The pre-envelope overlay shape is what the issue measured: the same
+    percent-bearing values expand when the flags cross cmd.exe raw. This pins
+    the premise so the envelope test above is known to be load-bearing."""
+    entry = _percent_entry(tmp_path)
+    plain = dict(entry, args=_plain_flags(entry))
+    result = _through_cmd(tmp_path, plain, PROBE_ENV)
+    assert result["args"]["target_command"].endswith("pythonexpanded.exe")
+    assert "readexpanded" in json.loads(result["args"]["auto_approve"])
+
+
+@pytest.mark.parametrize("schema", [3, 4])
+def test_rewrite_invalidates_legacy_fingerprint(tmp_path, schema):
     agents = tmp_path / "kiro" / "agents"
     agents.mkdir(parents=True)
     (agents / "probe.json").write_text(
@@ -256,8 +450,9 @@ def test_rewrite_invalidates_legacy_fingerprint(tmp_path):
         work_dir=tmp_path / "work",
         stub_servers=frozenset({"probe"}),
     )
-    # A cache built with the delimiter-era schema must not pin that output.
-    with patch.object(rewriter, "_FINGERPRINT_SCHEMA", 3):
+    # A cache built with the delimiter-era (3) or plain-flag-era (4) schema
+    # must not pin that output.
+    with patch.object(rewriter, "_FINGERPRINT_SCHEMA", schema):
         rewriter.rewrite_agents(**kwargs)
     with patch.object(
         rewriter, "_rewrite_single_spec", wraps=rewriter._rewrite_single_spec
