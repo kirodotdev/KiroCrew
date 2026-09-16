@@ -7,6 +7,7 @@ import { deleteNotification, ackNotification, unackNotification } from '../../st
 import { switchSlot, resumeFromHistory } from '../../store/chatSlice'
 import { Badge } from '../ui'
 import MarkdownRenderer from '../MarkdownRenderer'
+import MessageErrorBoundary from '../MessageErrorBoundary'
 import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
@@ -121,7 +122,12 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-5 py-4">
         <div className="msg-content bg-card border border-border rounded-lg px-5 py-4 text-sm leading-relaxed text-text shadow-[inset_0_1px_0_var(--card-hl)] max-w-[820px] overflow-x-auto break-words">
-          <MarkdownRenderer content={n.body || ''} />
+          {/* Per-item boundary: a body that crashes the markdown renderer
+              degrades the body alone; the header and actions stay usable
+              instead of the whole panel escalating to the app ErrorBoundary. */}
+          <MessageErrorBoundary rawContent={n.body || ''}>
+            <MarkdownRenderer content={n.body || ''} />
+          </MessageErrorBoundary>
         </div>
 
         {/* Kind-specific actions */}

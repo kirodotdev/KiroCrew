@@ -9,6 +9,7 @@ import ApprovalCard from '../components/ApprovalCard'
 import ErrorNotice from '../components/ErrorNotice'
 import { Btn, Input, Badge, EmptyState, PageHeader } from '../components/ui'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import AgentSelector from '../components/AgentSelector'
 import { useAgents } from '../hooks/useAgents'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -171,7 +172,11 @@ export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }:
           )}
           <span className="text-[13px] text-muted ml-auto">{time}</span>
         </div>
-        <div className="text-sm text-text">{msg.msgType === 'approval' ? <span className="whitespace-pre-wrap">{msg.content}</span> : <MarkdownRenderer content={msg.content} />}</div>
+        {/* Per-message boundary, as the chat transcript has: a markdown render
+            crash (an unmodeled nesting spelling past the depth bound, an
+            unknown HTML element) degrades this one message instead of
+            escalating to the app-level ErrorBoundary and replacing the view. */}
+        <div className="text-sm text-text">{msg.msgType === 'approval' ? <span className="whitespace-pre-wrap">{msg.content}</span> : <MessageErrorBoundary rawContent={msg.content}><MarkdownRenderer content={msg.content} /></MessageErrorBoundary>}</div>
         {/* Approval card. The title is the tool name the backend embedded in
             the message — the TrustDropdown derives its trust_command /
             trust_base patterns from it, so the agent ROLE (fromRole) is only
