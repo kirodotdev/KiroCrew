@@ -213,6 +213,12 @@ _MARKER_OPEN_CLASS = "[" + re.escape(MARKER_OPENERS) + "]"
 #: turn that run quadratic.
 _MARKER_BRACKETS = re.escape(MARKER_OPENERS + MARKER_CLOSERS)
 
+#: Paired opener-closer tuples for matched-pair parsing (see issue #9375).
+#: Each opener at index i pairs with the closer at the same index.
+#: Upstream already ships MARKER_OPENERS with full opener-aware grammar;
+#: this tuple is the PR's additive convenience view over the same pairing.
+MARKER_PAIRS = tuple(zip(MARKER_OPENERS, MARKER_CLOSERS))
+
 #: Markdown WRAPPER characters tolerated around a complete marker line.
 #: A model sometimes wraps the whole marker in inline code or emphasis --
 #: ``\`[OPTIONS: A | B]\``` or ``**[OPTIONS: A | B]**``. The wrapper character

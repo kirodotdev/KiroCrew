@@ -30,11 +30,13 @@ from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.renderer import (
     Renderer,
     credential_redaction_notice,
+    redaction_notice,
     render_options_as_text,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -183,9 +185,10 @@ class IMessageRenderer(Renderer):
         # turn. That trade is deliberate -- the answer is out; losing the notice
         # is a degraded warning, losing the turn would discard a delivered reply.
         _cred_redactions = sum(content.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-        if _cred_redactions > 0:
+        _url_redactions = content.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+        if _cred_redactions > 0 or _url_redactions > 0:
             try:
-                await self._client.send(self._handle, credential_redaction_notice(_cred_redactions))
+                await self._client.send(self._handle, redaction_notice(_cred_redactions, _url_redactions))
             except (RpcError, RpcTransportError) as exc:
                 logger.warning(
                     "imessage: could not deliver the redaction notice to %s "
