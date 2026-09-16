@@ -2935,14 +2935,24 @@ def _lesson_scope_selector(stored: object) -> str | None:
     ``remove`` guards on ``is not None``; the vector store's
     ``_lesson_scope_unusable`` answers False for a null), and anything else is
     judged by :func:`scope_is_admissible`, the same predicate both stores use.
-    Not redacted: this value is a delete selector and must round-trip
-    byte-exact, and an admissible value is fragment-shaped by construction.
+
+    The selector must round-trip byte-exact to name its row, so it cannot be
+    rewritten -- but it is still a stored string leaving through this handler,
+    and every such string goes through the shared redaction chain. A fragment
+    the chain would alter carries a credential shape, and echoing it raw to
+    make the row selectable is the one trade this surface must not make: it is
+    withheld (``None``) instead, so the row reads as unusable and stays
+    reachable only through the unselective delete, exactly like a broken
+    scope. A fragment the chain leaves alone is emitted as-is.
     """
     if stored is None:
         return ""
     if not scope_is_admissible(stored):
         return None
-    return canonical_scope(stored)
+    selector = canonical_scope(stored)
+    if _redact_memory_field(selector) != selector:
+        return None
+    return selector
 
 
 async def api_lessons(request: web.Request) -> web.Response:

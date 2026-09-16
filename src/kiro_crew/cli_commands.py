@@ -100,7 +100,7 @@ from kiro_crew.memory_stores import (
     rollback_member_memory_archive_if_active,
 )
 from kiro_crew.port_resolution import resolve_client_port_ex
-from kiro_crew.project_scope import scope_selector_is_inadmissible
+from kiro_crew.project_scope import scope_is_admissible, scope_selector_is_inadmissible
 from kiro_crew.secrets.migrate import (
     MigrationConflictError,
     format_report,
@@ -124,7 +124,13 @@ from kiro_crew.validation import (
     WORKSPACE_NAME_RE,
     normalize_lesson_category,
 )
-from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore, _lesson_display_text
+from kiro_crew.vector_memory import (
+    LessonWriteOutcome,
+    VectorMemoryStore,
+    _lesson_display_text,
+    _lesson_scope,
+    _lesson_scope_unusable,
+)
 
 # Workspace dirs are confined to the data home: a workspace is agent-writable
 # working state, so letting --dir escape would let it be pointed at ~/.ssh or the
@@ -2341,6 +2347,32 @@ _LEARN_DEDUP_NOTE = (
 )
 
 
+def _lesson_scope_suffix(scope: str | None) -> str:
+    """Render a lesson's ``repo_scope`` so same-rule rows in two scopes read apart.
+
+    A lesson's identity is ``(rule, repo_scope)`` and ``learn remove --repo-scope``
+    selects by it, so a listing that hid the scope showed two distinct lessons as
+    one duplicated line and gave the user nothing to pass. ``""`` is the global
+    row and renders bare (the common case); a fragment names that scope; ``None``
+    marks a stored scope the store cannot use, which only an unselective remove
+    reaches -- worth saying where the user decides which flag to pass. A stored
+    fragment the credential redactor would alter is printed as unusable too,
+    like the dashboard list: the selector has to round-trip byte-exact, so it
+    cannot be printed redacted, and printing it raw is not an option.
+    """
+    if scope is None:
+        return " (scope: unusable)"
+    if not scope:
+        return ""
+    # Strip terminal controls FIRST, then judge the stripped text: a credential
+    # split by an embedded escape sequence would pass the redactor whole and be
+    # reassembled by the stripping, so only the value that is printed is judged.
+    printable = _TERMINAL_CTRL_RE.sub("", scope)
+    if not printable or redact(printable) != printable:
+        return " (scope: unusable)"
+    return f" (scope: {printable})"
+
+
 def _learn(args: argparse.Namespace) -> None:
     """Save, list, or remove learned corrections."""
 
@@ -2486,7 +2518,12 @@ def _learn(args: argparse.Namespace) -> None:
                         strict=False,
                     )
                     text = _TERMINAL_CTRL_RE.sub("", _lesson_display_text(val) or str(val))
-                    print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {text}")
+                    # The store's own readers decide the row's scope, so this
+                    # surface and ``remove --repo-scope`` agree on what it is.
+                    scope = _lesson_scope_suffix(
+                        None if _lesson_scope_unusable(val) else (_lesson_scope(val) or ""),
+                    )
+                    print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {text}{scope}")
             else:
                 lessons = jsonl_store.load_all()
                 if not lessons:
@@ -2498,8 +2535,17 @@ def _learn(args: argparse.Namespace) -> None:
                     # the dashboard's JSONL path: a blank/legacy category gets
                     # the store's own "knowledge" default instead of printing [].
                     category = normalize_lesson_category(le.category, strict=False)
+                    # Same classification the JSONL store's scope-selective remove
+                    # applies: None is global, anything else is judged admissible.
+                    scope = _lesson_scope_suffix(
+                        (
+                            ""
+                            if le.repo_scope is None
+                            else (le.repo_scope if scope_is_admissible(le.repo_scope) else None)
+                        ),
+                    )
                     print(
-                        f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}"
+                        f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}{scope}"
                     )
 
         elif action == "remove":

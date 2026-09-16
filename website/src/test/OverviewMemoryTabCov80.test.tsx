@@ -445,25 +445,80 @@ describe('MemoryTab — lessons', () => {
     })
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await screen.findByText('src/pkg')
-    // Two rows share the rule; the Scope column is what tells them apart.
+    // Two rows share the rule; the Scope column is what tells them apart, and
+    // each of the three selector values reads differently.
     const sameRule = screen.getAllByText('zzq-same-rule').map((td) => td.closest('tr') as HTMLElement)
     expect(sameRule).toHaveLength(2)
     expect(screen.getByRole('columnheader', { name: /Scope/ })).toBeInTheDocument()
     const scoped = sameRule.find((tr) => tr.textContent?.includes('src/pkg')) as HTMLElement
     const global = sameRule.find((tr) => !tr.textContent?.includes('src/pkg')) as HTMLElement
+    expect(global).toHaveTextContent(/Global/)
+    const broken = screen.getByText('zzq-broken-rule').closest('tr') as HTMLElement
+    expect(broken).toHaveTextContent(/Unusable scope/)
     const deleteIn = (tr: HTMLElement) => Array.from(tr.querySelectorAll('button'))
       .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
+    const dialogTitle = /Delete this lesson in every scope\?/
 
+    // A scoped or global row deletes without a prompt: its selector reaches
+    // exactly that row.
     await userEvent.click(deleteIn(scoped))
     await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-same-rule', 'src/pkg'))
     expect(api.deleteLesson).not.toHaveBeenCalledWith('zzq-same-rule', '')
-
     await userEvent.click(deleteIn(global))
     await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-same-rule', ''))
+    expect(screen.queryByText(dialogTitle)).not.toBeInTheDocument()
 
-    const broken = screen.getByText('zzq-broken-rule').closest('tr') as HTMLElement
+    // The null row's delete is the unselective one, so it asks first through
+    // the shared dialog, whose confirm button restates the act. Cancel sends
+    // nothing; confirming sends the null through (the client drops the key).
     await userEvent.click(deleteIn(broken))
+    expect(await screen.findByText(dialogTitle)).toBeInTheDocument()
+    expect(screen.getByText(/every lesson whose text contains this rule will be removed/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /^Cancel$/ }))
+    await waitFor(() => expect(screen.queryByText(dialogTitle)).not.toBeInTheDocument())
+    expect(api.deleteLesson).not.toHaveBeenCalledWith('zzq-broken-rule', null)
+
+    await userEvent.click(deleteIn(broken))
+    await userEvent.click(await screen.findByRole('button', { name: /^Delete in every scope$/ }))
     await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-broken-rule', null))
+  })
+
+  it('reports a rejected delete beside the table instead of swallowing it (#10651)', async () => {
+    api.deleteLesson.mockRejectedValueOnce(new Error('zzq-delete-refused'))
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    const reads = api.lessons.mock.calls.length
+    const row = screen.getByText('zzq-rule-beta').closest('tr') as HTMLElement
+    const del = Array.from(row.querySelectorAll('button'))
+      .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
+    await userEvent.click(del)
+
+    const notice = await screen.findByText('zzq-delete-refused')
+    expect(notice).toBeInTheDocument()
+    expect(screen.getByText(/Could not delete the lesson/)).toBeInTheDocument()
+    // The row is still there and the list was not re-read as if it had gone.
+    expect(screen.getByText('zzq-rule-beta')).toBeInTheDocument()
+    expect(api.lessons.mock.calls.length).toBe(reads)
+
+    // Dismissable, and a later successful delete clears it on its own.
+    await userEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    await waitFor(() => expect(screen.queryByText('zzq-delete-refused')).not.toBeInTheDocument())
+  })
+
+  it('reports a failed re-read after a successful delete (#10651)', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    api.lessons.mockRejectedValueOnce(new Error('zzq-refresh-refused'))
+    const row = screen.getByText('zzq-rule-beta').closest('tr') as HTMLElement
+    const del = Array.from(row.querySelectorAll('button'))
+      .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
+    await userEvent.click(del)
+
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-rule-beta', ''))
+    expect(await screen.findByText('zzq-refresh-refused')).toBeInTheDocument()
+    // Titled for what actually failed: the row is gone, the list is stale.
+    expect(screen.getByText(/Lesson deleted, but the list could not be refreshed/)).toBeInTheDocument()
+    expect(screen.queryByText(/Could not delete the lesson/)).not.toBeInTheDocument()
   })
 
   it('shows an empty state rather than a bare table', async () => {
