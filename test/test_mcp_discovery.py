@@ -6,9 +6,11 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -41,6 +43,22 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 def _clear_cache() -> None:
     _probe_cache.clear()
+
+
+def _make_executable(path: Path) -> Path:
+    """Create *path* as a runnable file, parents included.
+
+    Runnable by the predicate the code under test applies, ``isfile`` plus
+    ``X_OK``. Windows answers ``X_OK`` for any existing file but wants an
+    executable SUFFIX, so give it one ``PATHEXT`` lists; POSIX needs the mode
+    bit and ignores the suffix.
+    """
+    if platform_compat.IS_WINDOWS:
+        path = path.with_suffix(".exe")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("")
+    path.chmod(0o755)
+    return path
 
 
 @pytest.fixture(autouse=True)
@@ -1065,7 +1083,8 @@ class TestDiscoverNew:
         """Short command name matching the basename of the agent's resolved path is not flagged."""
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
-        cfg = {"mcpServers": {"srv": {"command": "/usr/local/bin/my-server"}}}
+        pinned = _make_executable(tmp_path / "bin" / "my-server")
+        cfg = {"mcpServers": {"srv": {"command": str(pinned)}}}
         (agent_dir / "defaults.json").write_text(json.dumps(cfg))
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         mcp_json = tmp_path / "mcp.json"
@@ -1074,6 +1093,29 @@ class TestDiscoverNew:
         result = discover_servers_to_sync()
         assert result == []
 
+    def test_discover_proposes_resync_for_vanished_pinned_path(self, tmp_path, monkeypatch) -> None:
+        """A pinned absolute command whose file is gone must reach the sync list.
+
+        This is the user-visible half of the basename heuristic's blind spot: an
+        agent entry pinned to a version-stamped path keeps that basename after
+        the release is deleted, so with no liveness probe the row reads as
+        already-synced and the server fails at spawn time with no warning.
+        """
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        pinned = _make_executable(tmp_path / "tools" / "my-server" / "1.0.1" / "my-server")
+        cfg = {"mcpServers": {"srv": {"command": str(pinned)}}}
+        (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(json.dumps({"mcpServers": {"srv": {"command": "my-server"}}}))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        assert discover_servers_to_sync() == []
+
+        shutil.rmtree(pinned.parent)
+        result = discover_servers_to_sync()
+        assert [s.name for s in result] == ["srv"]
+
 
 class TestCommandsDiverged:
     def test_identical_commands(self) -> None:
@@ -1081,10 +1123,47 @@ class TestCommandsDiverged:
 
         assert _commands_diverged("foo", "foo") is False
 
-    def test_short_vs_resolved_path(self) -> None:
+    def test_short_vs_resolved_path(self, tmp_path) -> None:
+        """A bare name and the live absolute path it resolved to are one server."""
         from kiro_crew.mcp_discovery import _commands_diverged
 
-        assert _commands_diverged("deep-research", "/home/user/.toolbox/bin/deep-research") is False
+        pinned = _make_executable(tmp_path / "bin" / "deep-research")
+        assert _commands_diverged("deep-research", str(pinned)) is False
+
+    def test_short_vs_vanished_resolved_path_diverges(self, tmp_path) -> None:
+        """The basename match is void once the pinned path stops resolving.
+
+        A version-stamped pin keeps its basename after a tool update removes the
+        directory that held it, so a name-only comparison can never propose the
+        re-sync that would repair the entry.
+        """
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        pinned = _make_executable(tmp_path / "tools" / "deep-research" / "1.0.1" / "deep-research")
+        assert _commands_diverged("deep-research", str(pinned)) is False
+
+        shutil.rmtree(pinned.parent)
+        assert _commands_diverged("deep-research", str(pinned)) is True
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS,
+        reason="POSIX-only: clearing the execute bit does not make a file unrunnable on Windows.",
+    )
+    def test_present_but_non_executable_pin_diverges(self, tmp_path) -> None:
+        """A pin the process cannot execute is as unusable as an absent one."""
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        pinned = _make_executable(tmp_path / "bin" / "srv")
+        pinned.chmod(0o444)
+        assert _commands_diverged("srv", str(pinned)) is True
+
+    def test_distinct_existing_paths_sharing_a_basename_diverge(self, tmp_path) -> None:
+        """Two live files with one name are two servers, not two spellings of one."""
+        from kiro_crew.mcp_discovery import _commands_diverged
+
+        first = _make_executable(tmp_path / "a" / "srv")
+        second = _make_executable(tmp_path / "b" / "srv")
+        assert _commands_diverged(str(first), str(second)) is True
 
     def test_resolved_vs_short(self) -> None:
         from kiro_crew.mcp_discovery import _commands_diverged
@@ -1134,7 +1213,7 @@ class TestCommandsDiverged:
         not platform_compat.IS_WINDOWS,
         reason="Windows-only: PATHEXT suffixing and case/separator-insensitive paths.",
     )
-    def test_pathext_resolved_command_does_not_diverge(self, monkeypatch) -> None:
+    def test_pathext_resolved_command_does_not_diverge(self, tmp_path, monkeypatch) -> None:
         """A bare name matches the ``shutil.which`` result that carries a PATHEXT suffix.
 
         ``agent._resolve_command`` resolves ``npx`` to ``...\\npx.CMD`` because
@@ -1144,7 +1223,12 @@ class TestCommandsDiverged:
         from kiro_crew.mcp_discovery import _commands_diverged
 
         monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-        assert _commands_diverged("npx", r"C:\Program Files\nodejs\npx.CMD") is False
+        # A real file, because the resolved side is now probed for liveness: a
+        # fabricated path under Program Files would make this assertion depend on
+        # what the runner image has installed.
+        resolved = tmp_path / "npx.CMD"
+        resolved.write_text("")
+        assert _commands_diverged("npx", str(resolved)) is False
         assert _commands_diverged(r"C:\tools\my-server.exe", "my-server") is False
 
     @pytest.mark.skipif(
@@ -1170,6 +1254,20 @@ class TestCommandsDiverged:
 
         assert _commands_diverged("srv", "/usr/bin/srv") is False
         assert _commands_diverged(r"\tools\srv", "srv") is False
+
+    def test_other_os_path_spelling_is_not_probed(self) -> None:
+        """A path this host does not address is never called stale.
+
+        The filesystem cannot answer for the other OS's spelling, nor for a
+        driveless root that resolves against whichever drive is current, so
+        neither may be reported as a vanished pin -- doing so would re-sync a
+        portable config on every pass.
+        """
+        from kiro_crew.mcp_discovery import _pinned_command_missing
+
+        foreign = r"C:\tools\nope\srv" if not platform_compat.IS_WINDOWS else "/usr/bin/nope/srv"
+        assert _pinned_command_missing(foreign) is False
+        assert _pinned_command_missing("srv") is False
 
     @pytest.mark.skipif(
         platform_compat.IS_WINDOWS,

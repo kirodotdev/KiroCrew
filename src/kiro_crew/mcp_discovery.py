@@ -2663,6 +2663,13 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     /home/user/.local/bin/deep-research) while mcp.json stores the
     short name (deep-research). These refer to the same binary and
     should not trigger a sync.
+
+    That basename comparison is a "same program" guess with no liveness in it,
+    so it holds only while the resolved path still names a runnable file. An
+    agent entry pinned to a version-stamped absolute path keeps its basename
+    after the directory that held it is removed; reporting that pin as unchanged
+    leaves the server to fail at spawn time with no earlier warning. A pin that
+    does not resolve is therefore divergence.
     """
     if source_cmd == agent_cmd:
         return False
@@ -2684,10 +2691,48 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     # so a resolved-vs-short pair authored on POSIX would spuriously read as
     # diverged and trigger an endless re-sync.
     if _names_a_location(agent_cmd) and _basenames_match(agent_cmd, source_cmd):
-        return False
+        # Only the AGENT side is probed for liveness. mcp.json holds what the
+        # user authored; the agent entry holds what some past resolution pinned,
+        # so only the pin can rot on its own. Probing the source instead would
+        # keep re-proposing a sync that re-resolves the same absent name every
+        # pass, which is the endless re-sync this branch was added to prevent.
+        return _pinned_command_missing(agent_cmd)
     if _names_a_location(source_cmd) and _basenames_match(source_cmd, agent_cmd):
         return False
     return True
+
+
+def _pinned_command_missing(cmd: str) -> bool:
+    """True when *cmd* pins an absolute path that cannot be executed now.
+
+    Probed only when *cmd* is ROOTED IN A NAMED VOLUME on this host, which is
+    narrower than :func:`_names_a_location` in the two ways that matter:
+
+    * A path in the other OS's spelling is not this host's to judge. POSIX
+      rejects ``C:\\tools\\srv`` on its own, since ``posixpath.isabs`` is False
+      for it.
+    * ``ntpath.isabs`` accepts a DRIVELESS root -- ``\\tools\\srv``, and a POSIX
+      ``/usr/bin/srv`` in an ``mcp.json`` carried onto Windows -- which resolves
+      against whichever drive happens to be current, so the filesystem cannot
+      answer for it either. The resolver never writes one (``shutil.which``
+      returns a drive-qualified path there), so a driveless agent command is an
+      authored spelling rather than a pin, and calling it stale would re-sync a
+      portable config on every pass.
+
+    The test is the resolver's own, ``isfile`` plus ``X_OK``, as
+    ``agent._resolve_command`` applies it to an absolute command -- deliberately
+    not ``shutil.which``, which can report a perfectly good file as unresolvable
+    inside a user-namespace sandbox. Asking a different question than the writer
+    would let this report a live pin as gone and re-sync it forever, which is the
+    failure the basename comparison exists to avoid. Nothing here searches
+    ``PATH``, so no unrelated binary of the same name can vouch for a pin that
+    is gone.
+    """
+    if not os.path.isabs(cmd):
+        return False
+    if platform_compat.IS_WINDOWS and not ntpath.splitdrive(cmd)[0]:
+        return False
+    return not (os.path.isfile(cmd) and os.access(cmd, os.X_OK))
 
 
 def _envs_agree(agent_env: dict, source_env: dict) -> bool:
