@@ -219,6 +219,77 @@ class BindingResolver(Protocol):
         ...
 
 
+class _AccessGrantBindingResolver:
+    """Adapts a W01 binding resolver (``resolve -> AccessGrant | None``) to this
+    module's :class:`BindingResolver` contract (``resolve -> AccessContext``).
+
+    W01's ``ControlPlaneBindingResolver.resolve`` returns an ``AccessGrant``
+    record carrying ``subject`` / ``tenant`` / ``groups`` from the trusted
+    store's VERIFIED ``subject_ref`` / ``tenant_ref``. That record is NOT an
+    :class:`AccessContext`: it has no ``bypass_acl`` and, crucially, no
+    ``subject_ids`` -- the exact set the policy's subject test reads
+    (``grant.subjects & ctx.subject_ids``). Feeding a raw ``AccessGrant`` into
+    the gate would therefore ``AttributeError`` on ``subject_ids``.
+
+    This bridge maps the grant into a genuine ``AccessContext`` field-for-field
+    (``subject`` <- grant.subject, ``tenant`` <- grant.tenant, ``groups`` <-
+    grant.groups, ``bypass_acl`` = False -- a provider-mapped identity is never a
+    bypass), so ``subject_ids`` and the tenant/bypass checks work unchanged. The
+    policy is untouched; only the record shape is adapted at the seam.
+
+    A ``None`` grant (principal holds no binding on that provider/account) maps
+    to ``None`` -- the gate denies, fail-closed, exactly as before. The wrapped
+    resolver is duck-typed (only ``.resolve`` is required), so this module takes
+    no import dependency on the W01 control-plane package.
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: object) -> None:
+        if not hasattr(inner, "resolve"):
+            raise TypeError(
+                "binding resolver must expose resolve(principal, provider, "
+                "account); got %r" % (type(inner).__name__,)
+            )
+        self._inner = inner
+
+    def resolve(
+        self, principal: "QueryPrincipal", provider: str, account: str
+    ) -> "AccessContext | None":
+        grant = self._inner.resolve(principal, provider, account)
+        if grant is None:
+            return None
+        # Already an AccessContext (e.g. a test resolver or a host that mapped
+        # it itself)? Pass it straight through.
+        if isinstance(grant, AccessContext):
+            return grant
+        subject = getattr(grant, "subject", None)
+        tenant = getattr(grant, "tenant", None)
+        if not subject or not tenant:
+            # A grant with no verified subject/tenant is not a usable
+            # provider-mapped identity: deny rather than build a weak context.
+            return None
+        return AccessContext(
+            subject=subject,
+            tenant=tenant,
+            groups=frozenset(getattr(grant, "groups", ()) or ()),
+            bypass_acl=False,
+        )
+
+
+def bridge_binding_resolver(inner: object) -> "BindingResolver":
+    """Wrap a W01 ``resolve -> AccessGrant`` resolver as a :class:`BindingResolver`.
+
+    Use at the host/dashboard wiring point when installing
+    ``app['knowledge_binding_resolver']`` from W01's
+    ``ControlPlaneBindingResolver`` (or any resolver returning an AccessGrant),
+    so the retrieval gate receives a real :class:`AccessContext`. A resolver
+    that already returns :class:`AccessContext` is wrapped harmlessly (the
+    isinstance pass-through), so this is safe to apply unconditionally.
+    """
+    return _AccessGrantBindingResolver(inner)
+
+
 #: Default staleness window for a managed item's revalidation, in seconds. A
 #: grant last confirmed current more than this long ago is treated as stale and
 #: must be re-confirmed by the revalidation hook before the item is served.

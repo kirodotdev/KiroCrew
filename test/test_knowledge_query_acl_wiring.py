@@ -81,9 +81,42 @@ def test_binding_resolver_none_when_unwired():
     assert _knowledge_binding_resolver(_request({})) is None
 
 
-def test_binding_resolver_returns_installed():
-    resolver = object()
-    assert _knowledge_binding_resolver(_request({"knowledge_binding_resolver": resolver})) is resolver
+def test_binding_resolver_bridges_installed_accessgrant_resolver():
+    # The handler wraps the installed W01 resolver through the bridge so its
+    # AccessGrant (no subject_ids) is mapped to a real AccessContext.
+    import dataclasses
+
+    from kiro_crew.knowledge.acl import AccessContext, QueryPrincipal
+
+    @dataclasses.dataclass(frozen=True)
+    class _Grant:  # mirrors W01 AccessGrant: no subject_ids
+        subject: str
+        tenant: str
+        groups: frozenset = dataclasses.field(default_factory=frozenset)
+        bypass_acl: bool = False
+
+    class _Inner:
+        def resolve(self, principal, provider, account):
+            return _Grant(subject="sp-alice", tenant="ms-A")
+
+    bridged = _knowledge_binding_resolver(_request({"knowledge_binding_resolver": _Inner()}))
+    out = bridged.resolve(QueryPrincipal("alice"), "sharepoint", "tenant-A")
+    assert isinstance(out, AccessContext)
+    assert out.subject == "sp-alice" and out.tenant == "ms-A"
+    assert out.subject_ids == frozenset({"sp-alice"})
+
+
+def test_binding_resolver_bridge_passes_through_accesscontext():
+    from kiro_crew.knowledge.acl import AccessContext, QueryPrincipal
+
+    ctx = AccessContext(subject="sp-bob", tenant="ms-B")
+
+    class _Inner:
+        def resolve(self, principal, provider, account):
+            return ctx
+
+    bridged = _knowledge_binding_resolver(_request({"knowledge_binding_resolver": _Inner()}))
+    assert bridged.resolve(QueryPrincipal("bob"), "sharepoint", "acct") is ctx
 
 
 # ── optional vendor-connector registration seam ────────────────────────────

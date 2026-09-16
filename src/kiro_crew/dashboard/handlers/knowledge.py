@@ -260,8 +260,21 @@ def _knowledge_query_principal(request: web.Request):
 def _knowledge_binding_resolver(request: web.Request):
     """The per-candidate provider BindingResolver, if a deployment installed one
     on ``app["knowledge_binding_resolver"]``; None otherwise (managed items then
-    fall back to the whole-query context, i.e. denied under the local library)."""
-    return request.app.get("knowledge_binding_resolver")
+    fall back to the whole-query context, i.e. denied under the local library).
+
+    The installed resolver is W01's ``ControlPlaneBindingResolver``, whose
+    ``resolve`` returns an ``AccessGrant`` record (subject/tenant/groups from the
+    trusted store's VERIFIED refs) — NOT an ``AccessContext``, so it lacks the
+    ``subject_ids`` the policy's subject test reads. It is wrapped here through
+    ``acl.bridge_binding_resolver`` so the retrieval gate receives a genuine
+    ``AccessContext``; a resolver that already returns ``AccessContext`` is
+    wrapped harmlessly (isinstance pass-through). The policy is untouched."""
+    inner = request.app.get("knowledge_binding_resolver")
+    if inner is None:
+        return None
+    from kiro_crew.knowledge.acl import bridge_binding_resolver
+
+    return bridge_binding_resolver(inner)
 
 
 def _knowledge_revalidator(request: web.Request):

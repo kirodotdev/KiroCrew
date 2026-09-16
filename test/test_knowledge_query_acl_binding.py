@@ -10,6 +10,7 @@ grant at ingest and survives read/round-trip.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 
 import pytest
@@ -20,6 +21,7 @@ from kiro_crew.knowledge.acl import (
     ProviderResourceRef,
     QueryPrincipal,
     RevalidationOutcome,
+    bridge_binding_resolver,
 )
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
@@ -158,3 +160,89 @@ def test_local_principal_denies_managed_but_sees_local(store):
     res = r.search("epsilon", limit=10, query_principal=LOCAL_PRINCIPAL)
     assert loc in _ids(res)
     assert mg not in _ids(res)
+
+
+# ── W01 ControlPlaneBindingResolver bridge ──────────────────────────────────
+# W01's resolver returns an ``AccessGrant`` record (subject/tenant/groups/
+# bypass_acl), NOT an AccessContext -- it has no ``subject_ids``, the exact set
+# the policy's subject test reads. acl.bridge_binding_resolver maps that record
+# into a real AccessContext so the gate works with W01 UNMODIFIED. The record
+# below mirrors kiro_crew.connections.control_plane.acl_binding_resolver
+# .AccessGrant field-for-field (that module is on the W01 L04 worktree, not on
+# this tree, so its exact shape is reproduced rather than imported).
+
+
+@dataclasses.dataclass(frozen=True)
+class _AccessGrant:
+    """Mirror of W01's AccessGrant: subject/tenant/groups, and NO subject_ids."""
+
+    subject: str
+    tenant: str
+    groups: frozenset = dataclasses.field(default_factory=frozenset)
+    bypass_acl: bool = False
+
+
+class _GrantResolver:
+    """A W01-shaped resolver: resolve(...) -> _AccessGrant | None."""
+
+    def __init__(self, grants):
+        self.grants = grants  # {(provider, account): _AccessGrant}
+
+    def resolve(self, principal, provider, account):
+        return self.grants.get((provider, account))
+
+
+def test_raw_accessgrant_has_no_subject_ids():
+    # The mismatch Root flagged: the record the real resolver returns cannot be
+    # fed straight into the policy -- it lacks subject_ids.
+    g = _AccessGrant(subject="sp-alice", tenant="ms-A")
+    assert not hasattr(g, "subject_ids")
+
+
+def test_bridge_maps_accessgrant_into_a_working_gate(store):
+    item = _managed(store, "Doc", "omega content", provider="sharepoint",
+                    account="tenant-A", subjects=["sp-alice"], tenant="ms-A")
+    inner = _GrantResolver({("sharepoint", "tenant-A"):
+                            _AccessGrant(subject="sp-alice", tenant="ms-A")})
+    bridged = bridge_binding_resolver(inner)
+    r = HybridRetriever(store, revalidator=_fresh_hook(), binding_resolver=bridged)
+    r._keyword_search = lambda *a, **k: [(item, 1)]
+    # Bridged AccessGrant -> real AccessContext -> gate admits the granted item.
+    res = r.search("omega", limit=10, query_principal=QueryPrincipal("alice"))
+    assert item in _ids(res)
+
+
+def test_bridge_wrong_account_grant_denies(store):
+    item = _managed(store, "Doc", "omega content", provider="sharepoint",
+                    account="tenant-A", subjects=["sp-alice"], tenant="ms-A")
+    # Principal holds a binding on a DIFFERENT account -> no grant for tenant-A.
+    inner = _GrantResolver({("sharepoint", "tenant-B"):
+                            _AccessGrant(subject="sp-alice", tenant="ms-A")})
+    bridged = bridge_binding_resolver(inner)
+    r = HybridRetriever(store, revalidator=_fresh_hook(), binding_resolver=bridged)
+    r._keyword_search = lambda *a, **k: [(item, 1)]
+    assert r.search("omega", limit=10, query_principal=QueryPrincipal("alice")) == []
+
+
+def test_bridge_group_from_grant_satisfies_subject_test(store):
+    # A grant whose SUBJECT differs but whose GROUPS include the granted id:
+    # groups must participate in subject_ids after bridging.
+    item = _managed(store, "Doc", "omega content", provider="sharepoint",
+                    account="tenant-A", subjects=["sp-team"], tenant="ms-A")
+    inner = _GrantResolver({("sharepoint", "tenant-A"):
+                            _AccessGrant(subject="sp-alice", tenant="ms-A",
+                                         groups=frozenset({"sp-team"}))})
+    bridged = bridge_binding_resolver(inner)
+    r = HybridRetriever(store, revalidator=_fresh_hook(), binding_resolver=bridged)
+    r._keyword_search = lambda *a, **k: [(item, 1)]
+    res = r.search("omega", limit=10, query_principal=QueryPrincipal("alice"))
+    assert item in _ids(res)
+
+
+def test_bridge_none_grant_denies(store):
+    item = _managed(store, "Doc", "omega content", provider="sharepoint",
+                    account="tenant-A", subjects=["sp-alice"], tenant="ms-A")
+    bridged = bridge_binding_resolver(_GrantResolver({}))
+    r = HybridRetriever(store, revalidator=_fresh_hook(), binding_resolver=bridged)
+    r._keyword_search = lambda *a, **k: [(item, 1)]
+    assert r.search("omega", limit=10, query_principal=QueryPrincipal("alice")) == []
