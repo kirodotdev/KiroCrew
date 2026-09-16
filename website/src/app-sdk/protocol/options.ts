@@ -3,12 +3,41 @@ import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
-import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
+import { findLastOptionMarker, stripOptionMarkers, matchActionMarkers } from './optionMarker'
 
 // A plan is recognised by BOTH its header and at least one stage line, so ordinary
 // prose that happens to mention a plan is not mistaken for one.
 const PLAN_HEADER_RE = /📋\s*Plan for:/i
 const STAGE_RE = /^Stage\s+\d+\s*:/m
+
+/** A zero-turn UI action offered alongside the prose, from an `[OPTION-ACTIONS:]` marker. */
+export interface OptionAction {
+  /** The verb, lower-cased. A CLOSED enum — see `ACTION_NAMES`. */
+  action: 'close'
+  /** Everything after the first `=`, trimmed. Arbitrary model-emitted prose. */
+  label: string
+}
+
+/**
+ * The dispatch allow-list, and the reason the action is a FIELD rather than a reserved
+ * label: an unknown verb degrades to no chip instead of to an unpredictable local effect,
+ * so a marker from a newer agent than this build cannot do anything here.
+ */
+const ACTION_NAMES: readonly string[] = ['close']
+
+/**
+ * The marker body is ONE entry, so `|` is label text rather than a separator — the
+ * content path's `,`/`|` split would tear `close=Nothing else, close this tab` in half.
+ * Splitting on the FIRST `=` only is what lets a label carry one (`close=Set x=1`).
+ */
+function parseAction(entries: string): OptionAction | null {
+  const eq = entries.indexOf('=')
+  if (eq < 0) return null
+  const name = entries.slice(0, eq).trim().toLowerCase()
+  const label = entries.slice(eq + 1).trim()
+  if (!label || !ACTION_NAMES.includes(name)) return null
+  return { action: name as OptionAction['action'], label }
+}
 
 /** A message split into the prose the user reads and the choices offered alongside it. */
 export interface ParsedOptions {
@@ -20,6 +49,8 @@ export interface ParsedOptions {
   multi: boolean
   /** The message is a plan (header plus at least one stage line), not a plain question. */
   isPlan: boolean
+  /** The action from the LAST `[OPTION-ACTIONS:]` marker, or `null` when none applies. */
+  action: OptionAction | null
 }
 
 export function parseOptions(content: string): ParsedOptions {
@@ -29,7 +60,26 @@ export function parseOptions(content: string): ParsedOptions {
   // this cannot be done by halves. It also clones the regex per call, so the g-flag
   // `lastIndex` hazard is no longer a caller's problem to remember.
   const last = findLastOptionMarker(content)
-  if (!last || last.index === undefined) return { text: content, options: [], multi: true, isPlan: false }
+  // `matchActionMarkers`, never the raw pattern: it drops a match nested inside an
+  // unclosed head, which is what stops broken syntax from yielding a live chip. Group 1
+  // is the entry list. The LAST marker wins, matching the content path.
+  const actionMarkers = matchActionMarkers(content)
+  const action = parseAction(actionMarkers.at(-1)?.[1] ?? '')
+  const isPlan = PLAN_HEADER_RE.test(content) && STAGE_RE.test(content)
+  // Strip ALL accepted markers from the displayed text (not just the last) so a stray
+  // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
+  // come from the LAST marker (computed below). A REFUSED candidate is deliberately
+  // left in place — it is prose the user should still see, and removing it is the
+  // defect the check exists to prevent.
+  //
+  // Both kinds are stripped whenever EITHER is present, and the no-marker case returns
+  // `content` untouched rather than trimmed: an action-only message used to take the
+  // early return below and render its own marker as raw text, while `searchableText`
+  // excluded that same span — text on screen that search could not find. Trimming
+  // unconditionally instead would break the older contract that marker-less prose comes
+  // back byte-identical, whitespace included.
+  const stripped = last || actionMarkers.length > 0 ? stripOptionMarkers(content).trim() : content
+  if (!last || last.index === undefined) return { text: stripped, options: [], multi: true, isPlan: false, action }
   // The marker pattern is a two-branch alternation (line-anchored-with-wrappers
   // vs mid-line): groups 1/2 belong to the first branch, 3/4 to the second, and
   // exactly one pair is defined per match. `??` (not `||`) so an empty label
@@ -38,14 +88,7 @@ export function parseOptions(content: string): ParsedOptions {
   const labels = (last[2] ?? last[4]) ?? ''
   const sep = labels.includes('|') ? '|' : ','
   const options = labels.split(sep).map(o => o.trim()).filter(Boolean)
-  const isPlan = PLAN_HEADER_RE.test(content) && STAGE_RE.test(content)
-  // Strip ALL accepted markers from the displayed text (not just the last) so a stray
-  // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
-  // come from the LAST marker (computed above). A REFUSED candidate is deliberately
-  // left in place — it is prose the user should still see, and removing it is the
-  // defect the check exists to prevent.
-  const text = stripOptionMarkers(content).trim()
-  return { text, options, multi, isPlan }
+  return { text: stripped, options, multi, isPlan, action }
 }
 
 export interface FollowUpDerivation {
