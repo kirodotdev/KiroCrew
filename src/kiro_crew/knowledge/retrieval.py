@@ -22,7 +22,7 @@ from .acl import (
     ItemGrant,
     RevalidationHook,
     RevalidationOutcome,
-    is_managed_source_type,
+    is_managed_trust_class,
 )
 from .embedder import embedder_signature
 from .store import KnowledgeStore
@@ -307,14 +307,17 @@ class HybridRetriever:
 
         Item-scoped, NOT call-surface-scoped. For every candidate:
 
-        * classify it managed-vs-trusted-local from its LIVE ``source_type``
-          (re-derived here, so a mislabelled/legacy grant row cannot downgrade a
-          genuinely managed cloud item);
-        * a TRUSTED-LOCAL item with no grant is servable to a bypass (local)
-          context and otherwise takes the subject/tenant test;
-        * a MANAGED item ALWAYS takes the current-subject check AND revalidation:
-          the optional :attr:`revalidator` is consulted (it performs the provider
-          live-permission probe); with no revalidator wired the outcome is
+        * classify it managed-vs-trusted-local from its source PROVENANCE stamp
+          (``sources.trust_class``, evidence written at creation) -- NOT from a
+          source_type name guess, so a new/misspelled cloud type or a managed
+          source missing its per-item flag cannot be waved through as local;
+        * a TRUSTED-LOCAL item (sourceless, or a source stamped local_admitted)
+          with no grant is servable to a bypass (local) context and otherwise
+          takes the subject/tenant test;
+        * a MANAGED item (managed/unstamped/dangling provenance, or a grant
+          explicitly flagged managed) ALWAYS takes the current-subject check AND
+          revalidation: the optional :attr:`revalidator` performs the provider
+          live-permission probe; with no revalidator wired the outcome is
           UNVERIFIABLE and the policy falls back to the stored freshness stamp,
           denying a stale/never-revalidated managed grant. A managed item under a
           bypass context (no verifiable provider-mapped subject) is denied.
@@ -327,34 +330,30 @@ class HybridRetriever:
             return fused
         ids = [item_id for item_id, _ in fused]
         grants = self.store.get_item_grants(ids)
-        # Every candidate needs its live source classification, including the ones
-        # with NO grant row (a trusted-local item legitimately has none). One
-        # batched read returns (has_source, source_type) per id.
-        source_info = self.store.get_item_source_types(ids)
+        # Every candidate needs its source PROVENANCE, including the ones with NO
+        # grant row (a trusted-local item legitimately has none). One batched read
+        # returns (has_source, trust_class) per id -- the evidence stamp the gate
+        # classifies from, never a source_type guess.
+        trust = self.store.get_item_trust(ids)
         kept: list[tuple[str, float]] = []
         for item_id, score in fused:
             raw = grants.get(item_id)
-            has_source, source_type = source_info.get(item_id, (False, None))
-            # Managed classification:
-            #  - sourceless (no source_id) -> trusted-local: on-host content with
-            #    no external connector cannot carry a cloud per-user ACL.
-            #  - has a source of a managed cloud/structured type -> managed.
-            #  - has a source whose row is MISSING (dangling source_id, type None)
-            #    -> managed, fail-closed: we cannot prove it is local.
-            #  - has a source of any other (local/on-host) type -> trusted-local,
-            #    unless the per-item grant flag says managed (checked below).
-            managed_by_type = has_source and (
-                source_type is None or is_managed_source_type(source_type)
-            )
+            has_source, trust_class = trust.get(item_id, (False, None))
+            # Managed classification from the provenance stamp (fail-closed):
+            #  - sourceless -> trusted-local;
+            #  - source stamped local_admitted -> trusted-local;
+            #  - source stamped managed, OR unstamped/unknown, OR a dangling
+            #    source row (trust_class None) -> managed.
+            managed_by_provenance = is_managed_trust_class(has_source, trust_class)
             if raw is None:
                 # No grant row. A trusted-local item is allowed for a bypass
                 # context (the local library) and denied for an enforcing one
                 # (it names a real subject an ungranted item cannot match). A
                 # managed item with no grant is always denied (fail-closed).
-                if not managed_by_type and ctx.bypass_acl:
+                if not managed_by_provenance and ctx.bypass_acl:
                     kept.append((item_id, score))
                 continue
-            managed = managed_by_type or bool(raw.get("managed"))
+            managed = managed_by_provenance or bool(raw.get("managed"))
             grant = ItemGrant.from_row(
                 raw.get("subjects"), raw.get("tenant"), raw.get("acl_version"),
                 managed=managed, fresh_as_of=raw.get("fresh_as_of"),

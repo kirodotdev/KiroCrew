@@ -61,45 +61,36 @@ PUBLIC_SUBJECT = "<public>"
 # same-email-different-tenant rule (ACL-06) for everything else.
 PUBLIC_TENANT = "<public-tenant>"
 
-# Source types whose items carry a per-user ACL enforced by an external
-# provider -- the cloud/structured connectors from the connector production
-# stack (the 12 named service ranges and their structured surfaces). An item
-# from one of these is MANAGED: its visibility must be checked against the
-# current subject AND revalidated at query time, no matter which entry point
-# retrieves it.
-#
-# Everything NOT in this set -- local folders, single local files, Obsidian
-# vaults, pasted/agent-added documents, dashboard artifacts, and other on-host
-# content -- is TRUSTED-LOCAL: on-host material with no external per-user ACL,
-# servable to the local single-user library without a grant.
-#
-# The AUTHORITATIVE managed signal at query time is the per-item grant's own
-# ``managed`` flag, which the ingest path writes (``set_item_acl(managed=True)``)
-# for exactly these sources; this set is the backstop the retriever ORs in so a
-# managed item cannot be downgraded by a missing/legacy flag. A cloud connector
-# added later MUST both write ``managed=True`` at ingest AND appear here.
-MANAGED_SOURCE_TYPES = frozenset({
-    # Microsoft 365 / Graph
-    "sharepoint", "onedrive", "onenote", "teams", "outlook", "excel",
-    # Google Workspace
-    "gmail", "google_drive", "google_people",
-    # Structured / SaaS
-    "github_structured", "salesforce", "zoom", "slack", "asana",
-})
+# The source ``trust_class`` provenance values (mirrored from
+# knowledge/store.py, kept here so acl.py has no store import). A source is
+# TRUSTED-LOCAL only with the explicit ``local_admitted`` stamp its local
+# creator wrote; everything else -- the ``managed`` stamp, an unstamped/unknown
+# source, or a missing source row -- is MANAGED and gated. This is the
+# evidence-based provenance axis, NOT a source_type name guess.
+TRUST_LOCAL = "local_admitted"
+TRUST_MANAGED = "managed"
 
 
-def is_managed_source_type(source_type: str | None) -> bool:
-    """True when an item of this source type carries an external per-user ACL.
+def is_managed_trust_class(has_source: bool, trust_class: str | None) -> bool:
+    """True when an item must be treated as managed (gated + revalidated).
 
-    Only the explicit cloud/structured connector types in
-    :data:`MANAGED_SOURCE_TYPES` are managed. A local/on-host or unknown type is
-    trusted-local by TYPE -- but the retriever still ORs in the per-item grant's
-    ``managed`` flag, so an item explicitly ingested as managed is enforced even
-    if its type is not (yet) listed here. This keeps genuinely-local content
-    (local_file, url upload, pasted text) servable while a managed item stays
-    gated on the grant flag the ingest path is contracted to write.
+    Fail-closed by construction:
+
+    * a SOURCELESS item (``has_source`` False) is trusted-local -- on-host
+      content with no source cannot carry an external per-user ACL;
+    * a source explicitly stamped :data:`TRUST_LOCAL` is trusted-local;
+    * ANYTHING ELSE -- a ``managed`` stamp, an unstamped/unknown/``None`` stamp
+      (a source predating the stamp that the migration did not classify local,
+      or a dangling source_id whose row is gone) -- is managed.
+
+    The decision reads the stored provenance stamp only; it never re-guesses
+    trust from a source_type string, so a new/misspelled cloud connector type,
+    or a managed source missing its per-item flag, cannot be waved through as
+    local.
     """
-    return source_type in MANAGED_SOURCE_TYPES
+    if not has_source:
+        return False
+    return trust_class != TRUST_LOCAL
 
 
 @dataclass(frozen=True)

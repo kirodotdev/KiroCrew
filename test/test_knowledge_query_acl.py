@@ -32,12 +32,14 @@ from kiro_crew.knowledge.acl import (
     LOCAL_LIBRARY,
     PUBLIC_SUBJECT,
     PUBLIC_TENANT,
+    TRUST_LOCAL,
+    TRUST_MANAGED,
     AccessContext,
     ItemGrant,
     RevalidationOutcome,
     SubjectTenantAclPolicy,
     UNREADABLE_GRANT,
-    is_managed_source_type,
+    is_managed_trust_class,
 )
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
@@ -96,24 +98,21 @@ class _StubRevalidator:
 # source-type classifier
 # --------------------------------------------------------------------------
 
-def test_trusted_local_types_are_not_managed():
-    for t in ("local_folder", "obsidian_vault", "quip", "agent", "artifact",
-              "local_file", "url", "doc"):
-        assert is_managed_source_type(t) is False
+def test_sourceless_is_trusted_local_classifier():
+    assert is_managed_trust_class(has_source=False, trust_class=None) is False
+    assert is_managed_trust_class(has_source=False, trust_class=TRUST_MANAGED) is False
 
 
-def test_cloud_types_are_managed():
-    for t in ("sharepoint", "onedrive", "salesforce", "github_structured",
-              "gmail", "google_drive", "zoom", "slack", "asana", "teams"):
-        assert is_managed_source_type(t) is True
+def test_local_admitted_stamp_is_trusted_local_classifier():
+    assert is_managed_trust_class(has_source=True, trust_class=TRUST_LOCAL) is False
 
 
-def test_unknown_and_none_type_not_managed_by_type_alone():
-    # An unknown/None TYPE is not managed by type -- the grant's managed flag and
-    # the retriever's dangling-source handling (has_source + missing row) carry
-    # the fail-closed cases, not the type predicate in isolation.
-    assert is_managed_source_type(None) is False
-    assert is_managed_source_type("???") is False
+def test_managed_unstamped_dangling_are_managed_classifier():
+    # managed stamp, unstamped/unknown, and a dangling (missing source -> None)
+    # are ALL managed -- fail-closed by construction.
+    assert is_managed_trust_class(has_source=True, trust_class=TRUST_MANAGED) is True
+    assert is_managed_trust_class(has_source=True, trust_class=None) is True
+    assert is_managed_trust_class(has_source=True, trust_class="something-new") is True
 
 
 # --------------------------------------------------------------------------
@@ -248,6 +247,43 @@ def test_managed_item_no_grant_denied_to_everyone(store):
     assert r.search("gamma", limit=10, access_context=LOCAL_LIBRARY) == []
     assert r.search("gamma", limit=10,
                     access_context=AccessContext(subject="alice", tenant="acme")) == []
+
+
+def test_unknown_new_cloud_type_is_managed_and_gated(store):
+    """A brand-new / never-seen source_type is stamped managed at creation, so it
+    is gated -- the fail-open hole Root flagged in the type-list design is closed
+    because trust comes from the provenance stamp, not a type membership test."""
+    src = store.add_source("Newfangled", "brand_new_saas_2027", "newfangled://x")
+    # Provenance stamp defaulted to managed (unknown type is not a local creator).
+    assert store.db.execute(
+        "SELECT trust_class FROM sources WHERE id = ?", (src,)).fetchone()[0] == TRUST_MANAGED
+    item = store.add_item("New Doc", "zeta content", "doc", source_id=src)
+    # No grant -> denied to everyone; local library does NOT get it.
+    r = _retriever(store, kw=[(item, 1)])
+    assert r.search("zeta", limit=10, access_context=LOCAL_LIBRARY) == []
+    assert r.search("zeta", limit=10,
+                    access_context=AccessContext(subject="alice", tenant="acme")) == []
+
+
+def test_managed_source_cannot_be_relabelled_local_via_missing_flag(store):
+    """A managed source whose per-item grant forgot managed=True is STILL gated:
+    the provenance stamp (trust_class=managed) OR-derives managed even when the
+    grant flag is absent."""
+    cloud_src = _managed_source(store)  # sharepoint -> trust_class managed
+    item = store.add_item("Cloud", "eta content", "doc", source_id=cloud_src)
+    # Grant written WITHOUT managed=True (the mislabel Root warned about).
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=False, fresh_as_of=_fresh())
+    r = _retriever(store, kw=[(item, 1)])
+    alice = AccessContext(subject="alice", tenant="acme")
+    # It is still treated as managed (needs revalidation): with no hook and a
+    # fresh stamp it is served, but the local library is still denied it and a
+    # stale/hook-revoked check denies -- proving it is on the managed path, not
+    # local. Verify the local library cannot see it (managed enforcement holds).
+    assert r.search("eta", limit=10, access_context=LOCAL_LIBRARY) == []
+    # And a provider-revoke hook denies it even though the grant flag was False.
+    rr = _retriever(store, kw=[(item, 1)],
+                    revalidator=_StubRevalidator(RevalidationOutcome.REVOKED))
+    assert rr.search("eta", limit=10, access_context=alice) == []
 
 
 def test_dangling_source_item_fails_closed(store):

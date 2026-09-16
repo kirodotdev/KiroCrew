@@ -195,6 +195,48 @@ def is_auto_registered(props: dict) -> bool:
 # by type here for the same structural reason.)
 _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 
+# ---------------------------------------------------------------------------
+# Source trust classification (query-time ACL provenance -- knowledge/acl.py)
+#
+# ``sources.trust_class`` records, as EVIDENCE written when the source is
+# created, whether the source's content is admitted-local (on-host material with
+# no external per-user ACL) or managed (a remote connector whose items carry a
+# provider-enforced ACL). The query-time ACL gate reads ONLY this stamp; it does
+# NOT re-guess trust from a source_type string at read time. Default is
+# ``managed`` (fail-closed): a source created without an explicit local stamp,
+# or of an unknown/misspelled type, is treated as managed and gated.
+#
+# TRUST_LOCAL is stamped ONLY by the real LOCAL production creators enumerated
+# below -- the ingestion paths that write items directly on-host with no remote
+# fetch. This set is defined FROM those creators (dashboard file upload,
+# single-file ingestion, auto_research local files, the folder watcher, the
+# agent-added aggregate, and the dashboard artifact aggregate), not from a
+# guess, and is used at exactly two places: stamping at creation and the
+# one-time migration backfill below. Every OTHER source_type -- every remote
+# SyncScheduler connector (sharepoint/onedrive/salesforce/github_structured/…)
+# -- is created ``managed``.
+TRUST_LOCAL = "local_admitted"
+TRUST_MANAGED = "managed"
+
+# The source_types created by a genuinely-local, on-host ingestion path. Derived
+# from the production add_source creators, NOT from a runtime type guess: used
+# only to stamp trust_class at creation and to backfill legacy rows once. A
+# remote connector type is deliberately absent, so it defaults to managed.
+_LOCAL_CREATOR_SOURCE_TYPES = frozenset(
+    {"local_folder", "obsidian_vault", "local_file", "artifact", "agent", "doc"}
+)
+
+
+def initial_trust_class(source_type: str | None) -> str:
+    """The trust_class a NEW source of this type is created with.
+
+    Local iff the type is one the local production creators use; managed
+    otherwise (fail-closed). This runs at CREATE time only -- the query-time gate
+    reads the stored stamp, never this function.
+    """
+    return TRUST_LOCAL if source_type in _LOCAL_CREATOR_SOURCE_TYPES else TRUST_MANAGED
+
+
 # Every query in this module funnels through the ``db`` property, so one check
 # there covers every caller at any stack depth -- including the ones a lexical
 # ``async def`` scan cannot see, which is why this guard exists.
@@ -679,6 +721,7 @@ class KnowledgeStore:
                 uri TEXT UNIQUE NOT NULL,
                 properties TEXT DEFAULT '{}',
                 last_synced TEXT,
+                trust_class TEXT NOT NULL DEFAULT 'managed',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -945,6 +988,21 @@ class KnowledgeStore:
         src_cols = {r[1] for r in self.db.execute("PRAGMA table_info(sources)").fetchall()}
         if "sync_status" not in src_cols:
             self.db.execute("ALTER TABLE sources ADD COLUMN sync_status TEXT DEFAULT 'pending'")
+        # trust_class: query-time ACL provenance stamp (knowledge/acl.py). Older
+        # rows predate the column; add it defaulting to MANAGED (fail-closed),
+        # then backfill TRUST_LOCAL onto exactly the rows created by a known
+        # LOCAL production creator type -- ONE-TIME migration semantics derived
+        # from the real creators, NOT a runtime type guess (the gate never reads
+        # source_type). A remote-connector row keeps the managed default. This is
+        # gated on the column being freshly added so it runs once, not every open.
+        if "trust_class" not in src_cols:
+            self.db.execute(
+                f"ALTER TABLE sources ADD COLUMN trust_class TEXT NOT NULL DEFAULT '{TRUST_MANAGED}'")
+            local_types = tuple(sorted(_LOCAL_CREATOR_SOURCE_TYPES))
+            placeholders = ",".join("?" for _ in local_types)
+            self.db.execute(
+                f"UPDATE sources SET trust_class = ? WHERE source_type IN ({placeholders})",  # noqa: S608
+                (TRUST_LOCAL, *local_types))
         # ONE pass over the rows that still carry a blob copy of the status:
         # repair the column where it was never written, then retire the copy.
         # After this pass no row has a copy at all, so on a store that has
@@ -1596,14 +1654,16 @@ class KnowledgeStore:
         Returns, for each id that HAS a grant row::
 
             {"subjects": <json str>, "tenant": str, "acl_version": int,
-             "managed": bool, "fresh_as_of": float, "source_type": str|None}
+             "managed": bool, "fresh_as_of": float, "trust_class": str|None}
 
-        ``managed`` is the OR of the stored flag and a live re-derivation from
-        the item's current ``source_type`` (via a LEFT JOIN) -- a mislabelled or
-        legacy row cannot downgrade a genuinely-managed cloud item, because the
-        retriever's classifier trusts the live source type over the stored flag.
-        Ids with no grant row are absent from the dict; the caller's fail-closed
-        policy plus the source-type classifier decide those. Chunked under
+        ``trust_class`` is the source's PROVENANCE stamp (``local_admitted`` /
+        ``managed``), read via a LEFT JOIN -- the retriever classifies managed
+        from it, NOT from a source_type guess. ``None`` when the item has no
+        source (sourceless -> trusted-local) OR its source row is missing
+        (dangling -> the retriever fails that closed). The stored ``managed``
+        flag is also returned so an item explicitly ingested managed cannot be
+        downgraded. Ids with no grant row are absent; the classifier decides
+        those from trust_class + the fail-closed policy. Chunked under
         SQLITE_MAX_VARIABLE_NUMBER.
         """
         out: dict[str, dict] = {}
@@ -1615,7 +1675,7 @@ class KnowledgeStore:
             placeholders = ",".join("?" for _ in chunk)
             rows = self.db.execute(
                 "SELECT a.item_id, a.subjects, a.tenant, a.acl_version, "  # noqa: S608
-                "a.managed, a.fresh_as_of, i.source_id, s.source_type "
+                "a.managed, a.fresh_as_of, i.source_id, s.trust_class "
                 "FROM item_acl a "
                 "LEFT JOIN items i ON i.id = a.item_id "
                 "LEFT JOIN sources s ON s.id = i.source_id "
@@ -1629,28 +1689,24 @@ class KnowledgeStore:
                     "acl_version": row["acl_version"],
                     "managed": bool(row["managed"]),
                     "fresh_as_of": row["fresh_as_of"],
-                    "source_type": row["source_type"],
+                    "trust_class": row["trust_class"],
+                    "has_source": row["source_id"] is not None,
                 }
         return out
 
-    def get_item_source_types(self, item_ids):
-        """Batch-fetch each item's ``(has_source, source_type)``, keyed by id.
+    def get_item_trust(self, item_ids):
+        """Batch-fetch each item's ``(has_source, trust_class)``, keyed by id.
 
-        The retriever's ACL classifier needs to tell three cases apart for EVERY
+        The retriever's ACL classifier needs the source PROVENANCE for EVERY
         candidate, including ones with no grant row:
 
-        * ``has_source`` False -- a SOURCELESS item (``items.source_id`` NULL):
-          on-host content with no external connector, hence trusted-local (it
-          cannot carry a cloud per-user ACL).
-        * ``has_source`` True, ``source_type`` a known trusted-local type --
-          trusted-local.
-        * ``has_source`` True, ``source_type`` a managed/unknown type (including
-          a dangling source_id whose source row is missing) -- managed,
-          fail-closed.
+        * ``has_source`` False -- a SOURCELESS item: on-host content, trusted-local.
+        * ``has_source`` True, ``trust_class`` == ``local_admitted`` -- trusted-local.
+        * ``has_source`` True, ``trust_class`` == ``managed`` (or a MISSING source
+          row -> ``trust_class`` None) -- managed, fail-closed.
 
-        An id with no item row at all resolves to ``(False, None)`` and is
-        treated as sourceless; it will not survive the item resolution downstream
-        anyway.
+        The gate reads THIS stamp; it never re-guesses trust from source_type.
+        An id with no item row resolves to ``(False, None)``.
         """
         out: dict[str, tuple[bool, str | None]] = {}
         ids = list(item_ids)
@@ -1660,13 +1716,13 @@ class KnowledgeStore:
                 continue
             placeholders = ",".join("?" for _ in chunk)
             rows = self.db.execute(
-                "SELECT i.id, i.source_id, s.source_type FROM items i "  # noqa: S608
+                "SELECT i.id, i.source_id, s.trust_class FROM items i "  # noqa: S608
                 "LEFT JOIN sources s ON s.id = i.source_id "
                 f"WHERE i.id IN ({placeholders})",
                 chunk,
             ).fetchall()
             for row in rows:
-                out[row["id"]] = (row["source_id"] is not None, row["source_type"])
+                out[row["id"]] = (row["source_id"] is not None, row["trust_class"])
         return out
 
     def _delete_item_cascade(self, item_id):
@@ -2497,11 +2553,18 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         now = datetime.now().isoformat()
         properties = kwargs.get("properties", {})
         stored = _without_sync_status(properties)
+        # trust_class is EVIDENCE, written once at creation from the creating
+        # path's own knowledge of the source type; the query-time ACL gate reads
+        # it and never re-guesses. A caller may pass trust_class explicitly (a
+        # remote connector could stamp TRUST_MANAGED even for a type not in the
+        # local-creator set); otherwise it defaults from the type, fail-closed to
+        # managed for anything not a known local creator.
+        trust_class = kwargs.get("trust_class") or initial_trust_class(source_type)
         self.db.execute(
             "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "trust_class, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (sid, name, source_type, uri, json.dumps(stored),
-             self._initial_sync_status(properties), now, now))
+             self._initial_sync_status(properties), trust_class, now, now))
         self.db.commit()
         return sid
 
