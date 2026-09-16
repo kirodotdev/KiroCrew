@@ -1143,32 +1143,17 @@ export interface TailnetMobileData {
   /** Per-process marker used only to prove a requested restart completed. */
   boot_id: string
   step: TailnetMobileStep
-  /** MagicDNS name as resolved right now; `''` when unresolvable. */
-  host: string
   origin: string
-  installed: boolean
-  reachable: boolean
-  logged_in: boolean
   /** Other devices on this tailnet. `0` means there is nothing to reach this
    *  dashboard FROM — publishing and the QR both still succeed, so this is the
    *  only signal that the scan is going to fail. */
   peer_count: number
   /** How many of those are online right now. */
   peers_online: number
-  /** `dashboard.tailscale.enabled` — the origin-trust config switch. */
-  trusted: boolean
-  /** Whether the RUNNING server trusted this exact name at startup. */
-  startup_trusted: boolean
-  /** `null` when serve state could not be determined — never render as false. */
-  published: boolean | null
   keep_awake: boolean
-  governance_pinned: boolean
   /** Verbatim daemon/serve text. Shown as-is; never rephrased client-side. */
   detail: string
   download_url: string
-  qr_ttl_secs: number
-  serve_port: number
-  dashboard_port: number
 }
 
 /** Result of a publish/unpublish attempt. `detail` carries the daemon's own
@@ -1176,7 +1161,6 @@ export interface TailnetMobileData {
  *  rewords its errors. */
 export interface TailnetMobileMutation {
   ok: boolean
-  code: string
   detail: string
 }
 
@@ -1205,7 +1189,6 @@ export interface TailnetMobileQr {
   /** Window in which the LINK must be opened — much shorter than `ttl_secs`,
    *  and the part that surprises people. */
   link_window_secs: number
-  host: string
 }
 
 /**
@@ -2760,8 +2743,8 @@ export const api = {
   // render — because the response is a live credential. `sessionKey` carries
   // the caller's REAL slot key so the server's restricted-session guard sees
   // it instead of the shared `dashboard:ui` placeholder.
-  tailnetMobileQr: (ttl?: string, sessionKey?: string) =>
-    post('/api/tailnet/mobile/qr', ttl ? { ttl } : {}, sessionKey).then(j) as Promise<TailnetMobileQr>,
+  tailnetMobileQr: (sessionKey?: string) =>
+    post('/api/tailnet/mobile/qr', {}, sessionKey).then(j) as Promise<TailnetMobileQr>,
   // Denied commands (Settings → Security). Every endpoint returns the full
   // refreshed snapshot so callers can seed their query cache from the response.
   deniedCommands: () => get('/api/security/denied-commands').then(j) as Promise<DeniedCommandsData>,
