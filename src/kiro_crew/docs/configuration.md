@@ -196,7 +196,10 @@ Set via `kirocrew config set agent.acp_backend kas`.
     "embedding_provider": "llama_cpp",
     "embedding_dim": 1024,
     "history_idle_hours": 3.0,
-    "history_max_days": 365
+    "history_max_days": 365,
+    "persistence_enabled": true,
+    "inject_memory": true,
+    "inject_lessons": true
   },
   "skills": {
     "max_triggered": 0
@@ -432,6 +435,9 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.private_provisioning_enabled` | Allow new private V2 stores for member creation, discovery sync and explicit V1-to-V2 setup; turning off leaves existing stores and their isolation active | `true` |
 | `memory.backup_enabled` | Periodic rotating backups of active member V2 stores only; V1 backups remain manual and retention does not delete active V2 memories | `true` |
 | `memory.backup_keep` | Backup copies retained per store, with a minimum of one | `7` |
+| `memory.persistence_enabled` | Global switch for persistent memory. Off: no automatic memory writes anywhere — `learn_add` and `kirocrew learn add` refuse, history consolidation pauses entirely (no LLM turn spent), task-runner lesson extraction skips — and stored memory/lessons are not injected into new sessions. Within-conversation context is unaffected, and explicit dashboard edits/deletions (the right to forget) stay available. One documented exception: an installed app's own ingestion sweep (Ops Mission Control's ledger import) still writes app-scoped episodic rows, because it is reached only through that app's trigger | `true` |
+| `memory.inject_memory` | Inject the stored memory block (preferences, projects, recent history, semantic + episodic recall) into new-session context. Writes are unaffected | `true` |
+| `memory.inject_lessons` | Inject the learned-corrections and user-profile blocks into new-session context. Writes are unaffected | `true` |
 
 Decay, episodic capacity eviction and history age pruning apply to V1 only.
 V2 keeps memory until explicit correction, replacement, forgetting or restoration.

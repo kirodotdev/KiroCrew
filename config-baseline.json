@@ -1475,6 +1475,9 @@
         "private_provisioning_enabled": true,
         "backup_enabled": true,
         "backup_keep": 7,
+        "persistence_enabled": true,
+        "inject_memory": true,
+        "inject_lessons": true,
         "migrated": false
       }
     },
@@ -1846,6 +1849,48 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 7
+    },
+    {
+      "path": "memory.persistence_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Persistence Enabled",
+      "help": "Global switch for persistent memory. Off: no automatic memory writes (lessons, consolidation extraction, task-runner lessons) and no stored memory/lessons injected into new sessions; within-conversation context is unaffected. Explicit dashboard edits and deletions stay available. An installed app's own ingestion sweep is out of scope and still writes app-scoped rows.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "memory.inject_memory",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Inject Memory Context",
+      "help": "Inject the stored memory block (preferences, projects, recent history, semantic and episodic recall) into new-session context.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "memory.inject_lessons",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Inject Lessons Context",
+      "help": "Inject the learned-corrections and user-profile blocks into new-session context.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "memory.migrated",

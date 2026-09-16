@@ -1742,6 +1742,9 @@ class MemoryConfig:
     embed_model_legacy_ids: list[str] = field(default_factory=list)  # managed compatibility labels retained across restarts; explicit model apply clears them and rebuilds inherited vectors
     history_idle_hours: float = 3.0  # consolidate history after N hours idle
     history_max_days: int = 365      # prune daily history files older than this
+    persistence_enabled: bool = True # global switch: off = no automatic memory writes (lessons, consolidation, task-runner) AND no stored memory/lessons injected
+    inject_memory: bool = True       # inject the [Memory] block (prefs/projects/history/semantic/episodic) into new-session context
+    inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
 
 @dataclass
 class KnowledgeConfig:
@@ -2477,7 +2480,10 @@ Returns the effective config for a channel:
   },
   "memory": {
     "history_idle_hours": 3.0,
-    "history_max_days": 365
+    "history_max_days": 365,
+    "persistence_enabled": true,
+    "inject_memory": true,
+    "inject_lessons": true
   },
   "knowledge": {
     "auto_add_documents": false,

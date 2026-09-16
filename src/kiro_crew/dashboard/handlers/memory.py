@@ -2109,6 +2109,29 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
         return gate
     if not state.consolidator:
         return web.json_response({"error": "consolidator not available"}, status=503)
+    # Global persistence switch (memory.persistence_enabled). The
+    # inner _consolidate gate would refuse anyway; refusing here tells the
+    # dashboard caller WHY instead of returning a generic refusal, and spends
+    # no transcript read on a request that cannot proceed. The denial is
+    # SEL-recorded: the request passed identity and the write gate, so the
+    # refusal is a config-state decision an audit trail has to show rather than
+    # an unauthenticated caller being turned away upstream.
+    if not KiroCrewConfig.load().memory.persistence_enabled:
+        _sel().log_api_access(
+            caller=request.headers.get("X-Session-Key", ""),
+            operation="memory.consolidate",
+            outcome="denied",
+            source="dashboard",
+            resources="persistence_disabled",
+        )
+        return web.json_response(
+            {
+                "error": "Consolidation is paused: persistent memory is disabled "
+                "(memory.persistence_enabled is false).",
+                "code": "persistence_disabled",
+            },
+            status=403,
+        )
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err

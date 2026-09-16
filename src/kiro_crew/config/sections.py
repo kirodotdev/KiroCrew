@@ -1894,6 +1894,33 @@ class MemoryConfig:
             "Values below 1 are treated as 1 so retention cannot empty the directory.",
         ),
     )
+    persistence_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Persistence Enabled",
+            "Global switch for persistent memory. Off: no automatic memory "
+            "writes (lessons, consolidation extraction, task-runner lessons) "
+            "and no stored memory/lessons injected into new sessions; "
+            "within-conversation context is unaffected. Explicit dashboard "
+            "edits and deletions stay available. An installed app's own "
+            "ingestion sweep is out of scope and still writes app-scoped rows.",
+        ),
+    )
+    inject_memory: bool = field(
+        default=True,
+        metadata=_meta(
+            "Inject Memory Context",
+            "Inject the stored memory block (preferences, projects, recent "
+            "history, semantic and episodic recall) into new-session context.",
+        ),
+    )
+    inject_lessons: bool = field(
+        default=True,
+        metadata=_meta(
+            "Inject Lessons Context",
+            "Inject the learned-corrections and user-profile blocks into " "new-session context.",
+        ),
+    )
     migrated: bool = field(
         default=False,
         metadata=_meta("Migrated", "Whether memory has been migrated to vector store."),

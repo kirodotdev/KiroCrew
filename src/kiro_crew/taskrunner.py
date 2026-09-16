@@ -2106,6 +2106,12 @@ class TaskRunner:
     # ── Learn from Failures ──
 
     async def _extract_lesson(self, task: Task, run: Project | None = None) -> None:
+        # Global persistence switch (memory.persistence_enabled):
+        # skip BEFORE the LLM call, so a disabled system spends no turn
+        # distilling a lesson it is not allowed to store. Placed ahead of store
+        # resolution so member-private lesson stores are covered too.
+        if not KiroCrewConfig.load().memory.persistence_enabled:
+            return
         try:
             from kiro_crew.member_memory_auth import read_private_session_store
             from kiro_crew.memory_stores import UnknownMemoryStore

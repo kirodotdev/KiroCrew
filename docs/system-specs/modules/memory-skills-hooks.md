@@ -568,6 +568,16 @@ only within the call. Every file open still checks containment, links, the
 opened inode and size limits. Dashboard profile and history reads run off the
 event loop.
 
+Whether a group is in scope is the intersection of the caller-passed
+`context_groups` (subagent narrowing) with the operator's config toggles —
+`memory.inject_memory` / `memory.inject_lessons`, with
+`memory.persistence_enabled` as the global switch — computed once inside
+`build_session_context()` so every surface (dashboard, channels, cron,
+heartbeat, task runner, eval, subagents) obeys the config without passing
+anything. The `[CONTEXT SCOPE]` withheld-groups block stays keyed to the
+caller-passed value only: "your parent withheld" describes per-spawn
+narrowing, not the operator's standing config choice.
+
 `MemoryStore.get_context()` retains `history_cap=25_000` as its default for
 programmatic readers. V1 `ContextBuilder` calls it with the scaled history cap
 when building fresh session context. V2 reads preference/project anchors without
