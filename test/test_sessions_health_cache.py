@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -32,15 +33,29 @@ async def test_cache_deduplicates_calls_within_ttl():
     """Two calls within TTL window should only invoke compute once."""
     call_count = 0
 
-    def fake_compute():
+    def fake_compute(*args, **kwargs):
         nonlocal call_count
         call_count += 1
-        return {"sess-1": {"reason": "subagent_timeout"}}
+        return {"stalled": {"sess-1": {"reason": "subagent_timeout"}}}
 
-    with patch("kiro_crew.dashboard.session_health.compute_session_health", side_effect=fake_compute):
+    with patch(
+        "kiro_crew.dashboard.session_health.compute_session_health", side_effect=fake_compute
+    ):
         resp1 = await sessions.api_sessions_health(_make_request())
         resp2 = await sessions.api_sessions_health(_make_request())
 
     assert call_count == 1
     assert resp1.status == 200
     assert resp2.status == 200
+    body = json.loads(resp1.text)
+    assert body["stalled"] == {"sess-1": {"reason": "subagent_timeout"}}
+    # The structured payload keys are always present, even from a partial compute.
+    assert set(body) >= {
+        "stalled",
+        "waiting",
+        "recovering",
+        "queued",
+        "effective_caps",
+        "degrade_reason",
+        "counts",
+    }

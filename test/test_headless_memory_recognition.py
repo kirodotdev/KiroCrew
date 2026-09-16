@@ -165,9 +165,15 @@ async def test_shared_handle_recognition_ends_at_unregister(tmp_path):
     )
     manager._agents[info.id] = info
     provider = await manager._create_shared_session(info, key, "kirocrew")
-    runtime.create_session.assert_awaited_once_with(
-        cwd=str(tmp_path), agent="kirocrew", session_key=key
-    )
+    # The identity kwargs are what this test is about; the session-start gate
+    # also passes two runtime-owned callbacks (`on_gate_acquired`,
+    # `late_adopter`) whose identity is per-call, so they are asserted by shape.
+    assert runtime.create_session.await_count == 1
+    start_kwargs = dict(runtime.create_session.await_args.kwargs)
+    assert callable(start_kwargs.pop("on_gate_acquired", None))
+    assert callable(start_kwargs.pop("late_adopter", None))
+    assert start_kwargs == {"cwd": str(tmp_path), "agent": "kirocrew", "session_key": key}
+    assert runtime.create_session.await_args.args == ()
     state = SimpleNamespace(
         sessions=sessions,
         subagents=manager,

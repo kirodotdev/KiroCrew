@@ -315,7 +315,8 @@ class TestBatchIdentity:
         )
         mgr.spawn = lambda **kw: rejected
 
-        mgr._drain_queue()
+        # The pump is a coroutine on a running loop; await one pass.
+        await mgr._drain_queue_async()
         assert "reject-q-reject" in mgr._tasks, "a rejection at drain time was dropped on the floor"
         await mgr._tasks["reject-q-reject"]
         assert [i.id for i in announced] == ["q-reject"]
@@ -641,6 +642,7 @@ class TestBatchIdentity:
         ctx = MagicMock()
         ctx.hooks.auto_approve_subagent_spawn = False  # hooks exist, gate closed
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=ctx, on_done=_on_done)
+        await mgr.wait_taskq_ready()
         mgr._is_yolo = None
         mgr._on_spawn_approval = None  # no approval callback configured
         mgr._spawn_stagger_secs = 0.0
@@ -748,6 +750,7 @@ class TestBatchIdentity:
     @pytest.mark.asyncio
     async def test_batch_fields_set_and_started_event_fires_once(self):
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        await mgr.wait_taskq_ready()
         mgr._spawn_stagger_secs = 0.0  # no stagger queueing in this test
         events: list[tuple[str, dict]] = []
 
@@ -2322,3 +2325,92 @@ class TestRetryGating:
         assert resp.status == 200
         assert mgr.spawn.call_args.args[0] == "original raw task"
         assert mgr.spawn.call_args.kwargs["parent_session_key"] == "dashboard:m"
+
+
+# ── 6. Durable task queue at scale ───────────────────────────────────
+
+
+class TestDurableQueueScale:
+    """The in-memory ``_queue`` is a bounded window over ``tasks.db``.
+
+    2000 accepted spawns are 2000 committed rows and at most
+    ``agent.task_dispatch_window`` dicts in memory; every row survives the
+    manager being thrown away, and a fresh manager drains them in order.
+    """
+
+    @pytest.mark.asyncio
+    async def test_2000_spawns_are_2000_rows_and_at_most_64_dicts(self):
+        from kiro_crew.taskq import model
+
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=4)
+        await mgr.wait_taskq_ready()
+        mgr._spawn_stagger_secs = 0.0
+        store = mgr._taskq
+        assert store is not None and store.window == 64
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+        ):
+            ids = [
+                mgr.spawn(f"task {i}", parent_session_key="dashboard:s1").id for i in range(2000)
+            ]
+        assert len(set(ids)) == 2000
+        assert store.count() == 2000
+        assert store.count(state=model.STARTING) == 4
+        assert store.count(state=model.QUEUED) == 1996
+        assert len(mgr._queue) == 64
+        assert mgr.queued_count_for("dashboard:s1") == 1996
+        assert mgr.has_pending_work_for("dashboard:s1") is True
+        # the window holds the OLDEST queued rows, in submission order
+        assert [p["_preassigned_id"] for p in mgr._queue] == ids[4:68]
+
+    @pytest.mark.asyncio
+    async def test_queue_survives_manager_loss_and_drains_fifo(self):
+        from kiro_crew.taskq import model
+
+        first = SubagentManager(
+            sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=1
+        )
+        await first.wait_taskq_ready()
+        first._spawn_stagger_secs = 0.0
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+        ):
+            ids = [first.spawn(f"t{i}", parent_session_key="dashboard:s1").id for i in range(200)]
+        first._taskq.close()
+        del first
+        second = SubagentManager(
+            sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=3
+        )
+        await second.wait_taskq_ready()
+        second._spawn_stagger_secs = 0.0
+        second._last_spawn_ts = 0.0
+        store = second._taskq
+        assert store.count(state=model.QUEUED) == 199
+        started: list[str] = []
+
+        async def run(self, info):
+            started.append(info.id)
+            info.done = True
+            second._claim_finalize(info)
+            if second._release_slot(info):
+                second._running_count -= 1
+                second._drain_queue()
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=run),
+        ):
+            second._drain_queue()
+            deadline = time.monotonic() + 30
+            while store.count(state=model.DONE) < 199 and time.monotonic() < deadline:
+                await asyncio.sleep(0.005)
+                second._drain_queue()
+        assert started == ids[1:]  # FIFO across the window boundary, none lost
+        assert store.count(state=model.DONE) == 199
+        assert len(mgr_queue := second._queue) == 0, mgr_queue
+        assert second._running_count == 0

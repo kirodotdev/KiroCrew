@@ -282,7 +282,7 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "slack/events.py": 2,
     "slack/gateway.py": 7,
     "slack/handler.py": 3,
-    "subagent_manager/admission.py": 4,
+    "subagent_manager/admission/gate.py": 4,
     "voice_reply.py": 4,
 }
 

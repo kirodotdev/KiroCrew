@@ -8,6 +8,8 @@
  */
 
 import { describe, it, expect } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
 import { CATALOGS as RUNTIME_CATALOGS } from '../catalogs'
 
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
@@ -60,6 +62,77 @@ describe('fr punctuation (style/fr.md §1)', () => {
       .map(([k]) => k)
     // "vous" lowercase can appear in many contexts; only flag uppercase "Vous" at sentence start
     expect(bad.length, report(bad)).toBeLessThanOrEqual(11)
+  })
+})
+
+/* ── §1 spacing, scoped to the values THIS BRANCH wrote ── */
+
+const REPO = join(__dirname, '..', '..', '..', '..')
+const CATALOG = 'website/src/i18n/locales/fr.json'
+
+/**
+ * A letter, then a plain space or nothing, then `;` `:` `?` `!`.
+ *
+ * The baselined check above accepts U+0020 ("imperfect but acceptable"), so it
+ * can only catch a MISSING space and the exact defect §1 names — the wrong space
+ * — is invisible to it. Zero tolerance is affordable on the values a branch
+ * writes even though the inherited catalog is mostly U+0020.
+ */
+const WRONG_DOUBLE_SPACE = /[a-zA-Zàâéèêëïîôùûüÿçœæ][\u0020]?[;:?!]/
+
+/**
+ * The fr values this branch added or edited, or null when there is nothing to
+ * diff against (`I18N_BASE_REF` unset — a bare local run; CI always supplies it).
+ *
+ * Diff scope rather than a catalog-wide sweep, and the same reasoning as
+ * `bnStyle`'s register gate: the inherited catalog predates the rule, so a
+ * repo-wide assertion could only land as another baselined COUNT, and a count
+ * cannot tell "one fixed" from "one fixed and one broken". Nothing is stored, so
+ * two i18n branches have no ledger line to conflict on.
+ */
+function changedFrValues(): Record<string, string> | null {
+  const baseRef = process.env.I18N_BASE_REF
+  if (!baseRef) return null
+  const git = (args: string[]) =>
+    execFileSync('git', args, { cwd: REPO, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })
+  // A ref that IS configured but cannot be resolved throws: a gate that cannot
+  // run must fail, never pass quietly.
+  git(['rev-parse', '--verify', `${baseRef}^{commit}`])
+  let from: string
+  try {
+    from = git(['merge-base', baseRef, 'HEAD']).trim()
+  } catch {
+    // CI checks out at depth 1 and fetches the base at depth 1 too, so there is
+    // no shared history to find a merge base in; the base tip needs only the two
+    // trees.
+    from = baseRef
+  }
+  let base: Record<string, string> = {}
+  try {
+    base = flatten(JSON.parse(git(['show', `${from}:${CATALOG}`])))
+  } catch {
+    // No catalog at the base ref: every value in it is this branch's.
+  }
+  return Object.fromEntries(Object.entries(fr).filter(([key, value]) => base[key] !== value))
+}
+
+describe('fr spacing (style/fr.md §1)', () => {
+  it('[changed-values] puts U+202F before double punctuation, never a plain space', () => {
+    const changed = changedFrValues()
+    if (changed === null) {
+      // eslint-disable-next-line no-console -- stdout IS this gate's report channel: a gate that returns silently is one nobody can tell ran, and this skip is reachable on a bare local run
+      console.log('[changed-values] skipped — I18N_BASE_REF is unset, so there is no branch to diff.')
+      return
+    }
+    const bad = Object.entries(changed)
+      .filter(([, value]) => {
+        if (/https?:\/\//.test(value)) return false
+        if (/\d:\d/.test(value)) return false
+        return WRONG_DOUBLE_SPACE.test(value)
+      })
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
+      .toEqual([])
   })
 })
 

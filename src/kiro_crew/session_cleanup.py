@@ -165,8 +165,10 @@ class CleanupDeps:
     # completion delivery in flight). With session sharing on, children run on
     # the parent's runtime after the parent's own turn ends, so the busy
     # semaphore alone cannot see them. Defaults to "no children" so a manager
-    # without a dashboard keeps its existing behaviour.
-    has_attached_subagents: Callable[[str], bool] = _no_attached_subagents
+    # without a dashboard keeps its existing behaviour. The answer may be an
+    # AWAITABLE: the dashboard's probe reads the task store, and the sweep
+    # asking is on the gateway loop.
+    has_attached_subagents: Callable[[str], bool | Awaitable[bool]] = _no_attached_subagents
 
 
 class SessionCleanup:
@@ -360,7 +362,7 @@ class SessionCleanup:
                 # runtime, so a reset here discards their work. reset() only
                 # re-checks the semaphore under its lock; this is the sole
                 # guard for attached children, so it runs as late as possible.
-                if self._has_attached_subagents(key):
+                if await self._has_attached_subagents(key):
                     self._deps.logger.debug(
                         "RSS recycle: session %s tree rss=%dMB exceeds %dMB "
                         "but has attached sub-agent work; skipping",
@@ -393,15 +395,22 @@ class SessionCleanup:
                 # One victim cannot suppress the rest of this tick.
                 self._deps.logger.exception("RSS recycle failed for session %s", key)
 
-    def _has_attached_subagents(self, key: str) -> bool:
+    async def _has_attached_subagents(self, key: str) -> bool:
         """Fail-closed wrapper around the injected sub-agent probe.
 
         A probe that raises is a probe that cannot see the children, not a
         session with none; recycling on that answer is exactly the hazard the
         guard exists to prevent, so an error keeps the session.
+
+        An AWAITABLE answer is awaited: the dashboard's probe reads the task
+        store off the loop, and a sync probe (a double, a build with no queue)
+        answers straight away.
         """
         try:
-            return bool(self._deps.has_attached_subagents(key))
+            answer = self._deps.has_attached_subagents(key)
+            if isinstance(answer, Awaitable):
+                answer = await answer
+            return bool(answer)
         except Exception:
             self._deps.logger.debug(
                 "RSS recycle: sub-agent probe failed for session %s; keeping it",

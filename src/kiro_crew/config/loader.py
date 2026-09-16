@@ -2586,6 +2586,68 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         resource_pressure_gb=_safe_float(agent_data.get("resource_pressure_gb", 4.0), 4.0),
         resource_critical_gb=_safe_float(agent_data.get("resource_critical_gb", 2.0), 2.0),
         admission_gate=_safe_bool(agent_data.get("admission_gate"), True),
+        # Durable task queue keys, adjacent to admission_gate because a
+        # gated spawn is what the queue defers instead of refusing.
+        task_queue_enabled=_safe_bool(agent_data.get("task_queue_enabled"), True),
+        task_dispatch_window=_safe_int(agent_data.get("task_dispatch_window", 64), 64, 1, 4096),
+        task_store_journal_mode=(
+            str(agent_data.get("task_store_journal_mode") or "auto").lower()
+            if str(agent_data.get("task_store_journal_mode") or "auto").lower()
+            in ("auto", "wal", "delete")
+            else "auto"
+        ),
+        admit_wait_secs=_safe_int(agent_data.get("admit_wait_secs", 30), 30, 1, 3600),
+        start_collect_timeout_secs=_safe_int(
+            agent_data.get("start_collect_timeout_secs", 300), 300, 10, 3600
+        ),
+        # Fairness lanes (taskq/lanes.py): weights shape the share of
+        # picks; the reserve keeps children startable under full parents.
+        lane_weights=(
+            {
+                lane: _safe_int(weight, 1, 1, 64)
+                for lane, weight in _lane_weights.items()
+                if isinstance(lane, str) and lane
+            }
+            if isinstance(_lane_weights := agent_data.get("lane_weights"), dict)
+            else {}
+        ),
+        child_reserve=_safe_int(agent_data.get("child_reserve", 1), 1, 0, 8),
+        # Shared recovery ladder schedule (recovery/policy.py bounds).
+        recovery_backoff_base_secs=_safe_float(
+            agent_data.get("recovery_backoff_base_secs", 2.0), 2.0, 0.1, 60.0
+        ),
+        recovery_backoff_max_secs=_safe_float(
+            agent_data.get("recovery_backoff_max_secs", 120.0), 120.0, 1.0, 3600.0
+        ),
+        # Session-start gate (acp/runtime.py SessionStartGate).
+        session_start_concurrency=_safe_int(
+            agent_data.get("session_start_concurrency", 2), 2, 1, 64
+        ),
+        # Adaptive controller (adaptive/policy.py params_from_config).
+        adaptive_concurrency=_safe_bool(agent_data.get("adaptive_concurrency"), True),
+        adaptive_concurrency_mode=(
+            "fixed" if agent_data.get("adaptive_concurrency_mode") == "fixed" else "aimd"
+        ),
+        adaptive_floor=_safe_int(agent_data.get("adaptive_floor", 1), 1, 1, 64),
+        adaptive_initial=_safe_int(agent_data.get("adaptive_initial", 4), 4, 1, 64),
+        controller_sample_secs=_safe_int(agent_data.get("controller_sample_secs", 5), 5, 1, 300),
+        # Dependency coordinator (taskq/dependency.py coordinator_from_config).
+        dependency_max_attempts=_safe_int(
+            agent_data.get("dependency_max_attempts", 20), 20, 1, 1000
+        ),
+        dependency_wait_deadline_secs=_safe_int(
+            agent_data.get("dependency_wait_deadline_secs", 3600), 3600, 0, 86400
+        ),
+        dependency_wake_per_tick=_safe_int(
+            agent_data.get("dependency_wake_per_tick", 0), 0, 0, 4096
+        ),
+        dependency_wake_spacing_secs=_safe_float(
+            agent_data.get("dependency_wake_spacing_secs", 1.0), 1.0, 0.0, 60.0
+        ),
+        # Tool-stall watchdog (acp/session_handle.py WatchdogSettings).
+        interactive_command_policy=(
+            "wait" if agent_data.get("interactive_command_policy") == "wait" else "cancel"
+        ),
         subagent_max_turns=_safe_int(
             agent_data.get("subagent_max_turns", 100), 100, 1, SUBAGENT_MAX_TURNS_CEILING
         ),
@@ -2601,8 +2663,10 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             COMPLETION_KEEP_CHARS_MAX,
         ),
         subagent_result_ttl_secs=_safe_int(agent_data.get("subagent_result_ttl_secs", 3600), 3600),
+        # Same band workflows/service.py clamp_run_timeout enforces, so a
+        # hand-edited file and the live-bound setter agree.
         workflow_run_timeout_secs=_safe_int(
-            agent_data.get("workflow_run_timeout_secs", 3600), 3600
+            agent_data.get("workflow_run_timeout_secs", 3600), 3600, 60, 21600
         ),
         subagent_cwd_allowed_roots=(
             [r for r in _roots if isinstance(r, str)]
@@ -3336,6 +3400,8 @@ def _build_computer_use_config(computer_use_data: dict) -> ComputerUseConfig:
 
 
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
+    _spawn_min = max(1, _safe_int(mcp_gateway_data.get("spawn_concurrency_min", 1), 1))
+    _spawn_max = max(_spawn_min, _safe_int(mcp_gateway_data.get("spawn_concurrency_max", 8), 8))
     return McpGatewayConfig(
         enabled=bool(mcp_gateway_data.get("enabled", False)),
         # Absent -> True so installs that never configured this keep
@@ -3375,6 +3441,31 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
             0, _safe_int(mcp_gateway_data.get("resolve_once_refresh_hours", 24), 24)
         ),
         max_backends=max(1, _safe_int(mcp_gateway_data.get("max_backends", 64), 64)),
+        # Admission keys. Clamps mirror the dataclass defaults: floor
+        # >= 1, ceiling >= floor, initial inside the band; 0 keeps the
+        # "auto" meaning on the host-budget ceilings.
+        spawn_concurrency_min=_spawn_min,
+        spawn_concurrency_max=_spawn_max,
+        spawn_concurrency_initial=min(
+            _spawn_max,
+            max(
+                _spawn_min,
+                _safe_int(mcp_gateway_data.get("spawn_concurrency_initial", 4), 4),
+            ),
+        ),
+        spawn_queue_wait_secs=max(
+            1, _safe_int(mcp_gateway_data.get("spawn_queue_wait_secs", 600), 600)
+        ),
+        initialize_timeout_secs=max(
+            1, _safe_int(mcp_gateway_data.get("initialize_timeout_secs", 10), 10)
+        ),
+        host_budget_max_procs=max(
+            0, _safe_int(mcp_gateway_data.get("host_budget_max_procs", 0), 0)
+        ),
+        host_budget_max_rss_mb=max(
+            0, _safe_int(mcp_gateway_data.get("host_budget_max_rss_mb", 0), 0)
+        ),
+        host_budget_max_fds=max(0, _safe_int(mcp_gateway_data.get("host_budget_max_fds", 0), 0)),
         poolable_servers=[
             s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
         ],

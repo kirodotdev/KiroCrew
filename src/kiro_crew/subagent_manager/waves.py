@@ -9,8 +9,6 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from ..subagent import (
         _RESET_TIMEOUT,
-        _WAVE_STUCK_SECS,
-        DIGEST_HOLD_SECS,
         SubagentInfo,
         asyncio,
         logger,
@@ -33,9 +31,31 @@ class WaveDigestCoordinator(ManagerComponent):
         a fast-failing first member must not finalize the
         wave and emit a partial digest before the rest of the batch even
         arrives). The wave digest must also not be held hostage by unrelated
-        agents under the same parent."""
+        agents under the same parent.
+
+        Inline variant (sync callers): the store read runs on the calling
+        thread. :meth:`batch_members_pending_async_impl` runs it on the
+        store's writer thread."""
         if not batch_id:
             return False
+        if self._batch_pending_in_memory(batch_id):
+            return True
+        # A member queued in the store outside the in-memory window also holds
+        # the wave open.
+        return self._manager._admission.taskq_batch_pending(batch_id)
+
+    async def batch_members_pending_async_impl(self, batch_id: str) -> bool:
+        """:meth:`batch_members_pending_impl` for an event-loop caller: the
+        in-memory halves are read on the loop, the store-only one off it."""
+        if not batch_id:
+            return False
+        if self._batch_pending_in_memory(batch_id):
+            return True
+        return await self._manager._admission.taskq_batch_pending_async(batch_id)
+
+    def _batch_pending_in_memory(self, batch_id: str) -> bool:
+        """The halves of :meth:`batch_members_pending_impl` that read manager
+        state: submissions in flight, live members, window entries."""
         _bs = self._manager._batch_submitted.get(batch_id)
         if _bs is not None and _bs[1] > 0 and _bs[0] < _bs[1]:
             return True  # submissions still in flight
@@ -163,34 +183,73 @@ class WaveDigestCoordinator(ManagerComponent):
         consumer so held sibling results deliver instead of stranding until
         restart. Also bounds the ``_batch_submitted``/``_batch_progress_ts``
         leak in the stuck case.
+
+        Inline variant (sync callers): the per-wave store read runs on the
+        calling thread. :meth:`_sweep_stuck_waves_async_impl` runs it on the
+        store's writer thread.
         """
+        for batch_id, parent in self._stuck_wave_candidates(now):
+            if self._manager._admission.taskq_batch_pending(batch_id):
+                continue  # store-only queued members still pending
+            self._reconcile_stuck_wave(batch_id, parent, now)
+
+    async def _sweep_stuck_waves_async_impl(self, now: float) -> None:
+        """:meth:`_sweep_stuck_waves_impl` for an event-loop caller: the
+        candidates come from manager state on the loop, and each one's
+        store-only membership check runs on the writer thread."""
+        for batch_id, parent in self._stuck_wave_candidates(now):
+            if await self._manager._admission.taskq_batch_pending_async(batch_id):
+                continue  # store-only queued members still pending
+            self._reconcile_stuck_wave(batch_id, parent, now)
+
+    def _stuck_wave_candidates(self, now: float) -> list[tuple[str, str]]:
+        """``(batch id, parent session key)`` for every wave that manager state
+        alone reads as wedged; the store-only check is the caller's."""
+        # Reached through the FACADE module: this helper is not an ``*_impl``, so
+        # it runs on this module's globals rather than ``subagent``'s
+        # (``bind_component_globals``) and the constants are not in scope here.
+        from .. import subagent as _facade
+
+        out: list[tuple[str, str]] = []
         for batch_id, _bs in list(self._manager._batch_submitted.items()):
             if _bs[1] <= 0 or _bs[0] >= _bs[1]:
                 continue  # complete or unbounded — not wedged by lost POSTs
             last = self._manager._batch_progress_ts.get(batch_id, 0.0)
-            if now - last < _WAVE_STUCK_SECS:
+            if now - last < _facade._WAVE_STUCK_SECS:
                 continue  # still within the grace window
             members = [a for a in self._manager._agents.values() if a.batch_id == batch_id]
             if any(not a.done for a in members):
                 continue  # live members will re-evaluate the wave on completion
             if any(p.get("batch_id") == batch_id for p in self._manager._queue):
                 continue  # queued members still pending — not stuck
-            parent = members[0].parent_session_key if members else ""
-            logger.warning(
-                "Reaper: wave %s stuck (%d/%d submitted, no progress for %.0fs)"
-                " — reconciling one lost submission",
-                batch_id,
-                _bs[0],
-                _bs[1],
-                now - last,
-            )
-            self._manager.record_lost_submission(
-                batch_id,
-                _bs[1],
-                f"submission never arrived (wave stuck > {_WAVE_STUCK_SECS}s"
-                " — reconciled by reaper liveness backstop)",
-                parent_session_key=parent,
-            )
+            out.append((batch_id, members[0].parent_session_key if members else ""))
+        return out
+
+    def _reconcile_stuck_wave(self, batch_id: str, parent: str, now: float) -> None:
+        """Reconcile ONE lost submission of a wedged wave. The counters are
+        re-read here, because an await can sit between the candidate scan and
+        this step."""
+        from .. import subagent as _facade
+
+        _bs = self._manager._batch_submitted.get(batch_id)
+        if _bs is None:
+            return
+        last = self._manager._batch_progress_ts.get(batch_id, 0.0)
+        _facade.logger.warning(
+            "Reaper: wave %s stuck (%d/%d submitted, no progress for %.0fs)"
+            " — reconciling one lost submission",
+            batch_id,
+            _bs[0],
+            _bs[1],
+            now - last,
+        )
+        self._manager.record_lost_submission(
+            batch_id,
+            _bs[1],
+            f"submission never arrived (wave stuck > {_facade._WAVE_STUCK_SECS}s"
+            " — reconciled by reaper liveness backstop)",
+            parent_session_key=parent,
+        )
 
     def _sweep_digest_holds_impl(self, now: float) -> None:
         """Reaper backstop: release wave results whose HOLD DEADLINE expired.
@@ -211,9 +270,36 @@ class WaveDigestCoordinator(ManagerComponent):
         :meth:`record_lost_submission` uses), which forces the partial digest
         out. Ordinary fast waves never reach the deadline, so the deliberate
         "small wave = one consolidated digest" behavior is untouched.
+
+        Inline variant (sync callers): the per-wave store read behind
+        ``batch_members_pending`` runs on the calling thread.
+        :meth:`_sweep_digest_holds_async_impl` runs it on the writer thread.
         """
-        if DIGEST_HOLD_SECS <= 0 or self._manager._on_done is None:
-            return  # deadline disabled — count-trigger-only
+        for hold in self._expired_digest_holds(now):
+            if not self._manager.batch_members_pending(hold[0]):
+                # The wave is closing on its own — the real wave-close flush is
+                # already in flight (or the held flags are stale bookkeeping).
+                # Forcing a partial digest here would race it and could emit a
+                # duplicate chunk for the same members.
+                continue
+            self._force_digest_flush_for(hold)
+
+    async def _sweep_digest_holds_async_impl(self, now: float) -> None:
+        """:meth:`_sweep_digest_holds_impl` for an event-loop caller: the held
+        records are read on the loop, each wave's store-only membership check
+        on the writer thread."""
+        for hold in self._expired_digest_holds(now):
+            if not await self._manager.batch_members_pending_async(hold[0]):
+                continue  # the wave is closing on its own (see the sync form)
+            self._force_digest_flush_for(hold)
+
+    def _expired_digest_holds(self, now: float) -> list[tuple[str, float, str, int]]:
+        """``(batch id, hold age, parent session key, batch total)`` for every
+        wave whose OLDEST hold is past the deadline."""
+        from .. import subagent as _facade
+
+        if _facade.DIGEST_HOLD_SECS <= 0 or self._manager._on_done is None:
+            return []  # deadline disabled — count-trigger-only
         oldest: dict[str, float] = {}
         parents: dict[str, str] = {}
         totals: dict[str, int] = {}
@@ -226,29 +312,25 @@ class WaveDigestCoordinator(ManagerComponent):
                 oldest[_bid] = info._digest_held_at
             parents.setdefault(_bid, info.parent_session_key)
             totals.setdefault(_bid, info.batch_total)
-        for batch_id, held_at in oldest.items():
-            age = now - held_at
-            if age < DIGEST_HOLD_SECS:
-                continue  # still inside the grace window
-            if not self._manager.batch_members_pending(batch_id):
-                # The wave is closing on its own — the real wave-close flush is
-                # already in flight (or the held flags are stale bookkeeping).
-                # Forcing a partial digest here would race it and could emit a
-                # duplicate chunk for the same members.
-                continue
-            logger.warning(
-                "Reaper: wave %s held results for %.0fs (deadline %.0fs) —"
-                " forcing partial digest flush",
-                batch_id,
-                age,
-                DIGEST_HOLD_SECS,
-            )
-            self._manager.force_digest_flush(
-                batch_id,
-                parents.get(batch_id, ""),
-                totals.get(batch_id, 0),
-                age,
-            )
+        return [
+            (batch_id, now - held_at, parents.get(batch_id, ""), totals.get(batch_id, 0))
+            for batch_id, held_at in oldest.items()
+            if now - held_at >= _facade.DIGEST_HOLD_SECS
+        ]
+
+    def _force_digest_flush_for(self, hold: tuple[str, float, str, int]) -> None:
+        """Force out the partial digest of one expired hold."""
+        from .. import subagent as _facade
+
+        batch_id, age, parent, total = hold
+        _facade.logger.warning(
+            "Reaper: wave %s held results for %.0fs (deadline %.0fs) —"
+            " forcing partial digest flush",
+            batch_id,
+            age,
+            _facade.DIGEST_HOLD_SECS,
+        )
+        self._manager.force_digest_flush(batch_id, parent, total, age)
 
     def force_digest_flush_impl(
         self,

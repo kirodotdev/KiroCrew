@@ -1468,6 +1468,337 @@ Bounds (`validation.py`, single source of truth) still gate the tool's arguments
 
 **Legacy blocking stack (retained in code, no longer used by the tool, slated for removal).** The former second blocking round-trip — `DashboardState.request_question` / `resolve_question` over `_pending_questions` / `_question_futures`, the `ask_id`, the `question_card_resolved` broadcast, the `POST /api/ask-question` + `POST /api/ask-question/{ask_id}/answer` + `GET /api/ask-question/pending` endpoints, the caller-chosen `_QUESTION_TIMEOUT_*` window bounded by the ACP tool-stall watchdog (`acp/client.py::_TOOL_STALL_TIMEOUT`), and the `_unblock_pending_waits` / `cancel_questions_for_slot` release chokepoints — still exists in the codebase but is dead on the `ask_question` path. It is described here only so a reader tracing those symbols knows they are no longer how the tool works.
 
+### Tasks & capacity (`handlers/tasks.py`, `pages/system/TasksCapacityCard.tsx`)
+
+The durable task queue's read surface and the one dashboard panel that renders
+it (System > Services, below the host-runtime card). It exists so an operator
+with 2000 accepted tasks can see the queue drain, the concurrency it drains
+under, and why that concurrency is below what they configured — without
+reading logs (SPEC §二.8, RFC overload-resilience §7).
+
+Routes (all behind the ordinary token middleware, NOT on the internal-path
+lists, so an MCP caller with only the loopback secret is refused like
+`/api/sessions/health`):
+
+- `GET /api/tasks?state=&lane=&limit=` — rows from `TaskStore.list_rows`,
+  oldest first, `limit` in `[1, 1000]` (default 100; over-cap values are
+  clamped, non-integers are 400 `bad_limit`; an unknown `state` is 400
+  `bad_state` naming the valid set). Each row carries `id, kind, state, lane,
+  session_key, parent_id, root_id, attempts, generation, next_run_at,
+  deadline_at, lease_owner, lease_expires_at, wait{reason, since, deadline_at,
+  resume_kind, dependency_scope, cancel_semantics, tool_call_id},
+  wait_reason, wait_since, wait_deadline_at, age_secs, created_at,
+  updated_at, terminal`. `lane` is the stored column (`taskq.lanes`, resolved
+  at accept so a nested row reports its ROOT's lane), so `?lane=` is the store's own
+  `list_rows(lane=)` SQL predicate. `age_secs` is measured on the
+  STORE's clock (`TaskStore.now`), never `time.time()`, so it agrees with the
+  rows' own stamps under an injected clock.
+- `GET /api/tasks/summary` — `{generated_at, available, depth{by_state,
+  queued, waiting, recovering, running, total}, oldest_wait_secs,
+  lanes{<lane>: {effective, user_max, running?, window_queued?}},
+  degrade_reason, adaptive, slots[{key, classification, age_secs, evidence}],
+  waiting[<row>], recovering{tasks[<row>], task_attempts, slots[…],
+  ladder[…]}, stalled, counts, stall_after_secs}`. `depth.queued` sums
+  `session_health.TASK_QUEUED_STATES` (`queued + admitted + retry_wait +
+  waiting_infra`) — the constant itself, shared with `/api/sessions/health`'s
+  `queued.count`, never a second list here. `depth` is a set of VIEWS over the
+  rows, not a partition of them: `retry_wait` counts under both `queued` (it
+  waits for capacity) and `recovering` (it is being retried). `lanes` merges the health monitor's registered cap
+  sources (the subagent manager's live cap under `subagents`) with
+  `resource_status.adaptive_state()` — the controller supplies `user_max`
+  (`exec_ceiling`) and the `spawn_gate` lane; a value the monitor already
+  published is not overwritten. `degrade_reason` is the monitor's registered
+  pressure source when one answers, else the controller's own reading (paused
+  → its last decision's reason, probing, or a `decrease`/`pause` last action).
+  `recovering.task_attempts` sums `attempts` over `recovering`/`retry_wait`
+  rows; `recovering.ladder` is `default_ladder().table()`. `available` is
+  false when the gateway has no `TaskStore` (a MagicMock state, the legacy
+  in-memory queue) — the panel then says so instead of rendering zeros. The
+  slot snapshot is taken ON the loop, everything else in `to_thread`; the log
+  scan is never run here (`/api/sessions/health` owns that evidence).
+- `GET /api/tasks/{task_id}` — `{task: <row>, events: [{seq, ts, kind,
+  data}]}`, the last `_EVENTS_TAIL` (200) events oldest-first. 404
+  `not_found`; 404 `unavailable` with no store; 503 `unavailable` on a store
+  read error.
+
+**Store prose is redacted on the way out, on every route above.** A row's wait
+`reason` and an event's `data` carry a failing tool's, subagent's or dependency
+adapter's own text — a `finish(error=…)` detail, a GitHub stderr tail, an HTTP
+body — which the store keeps VERBATIM so the row stays diagnosable after the
+process that failed is gone. `handlers/tasks._scrub_prose` runs
+`security.redact_and_truncate` over every string leaf, walking nested dicts and
+lists (a credential inside a signal dict is the same leak), which is the
+composition `subagent.py`'s `_redact` and `taskrunner._execute_tasks` spell for
+the same strings: **exfiltration URLs first, then credentials.** That order is
+load-bearing — a URL whose query IS the credential is what the URL rewriter
+exists for and it removes the whole URL, while credentials-first leaves
+`?token=[REDACTED: credential]`, in which nothing suspicious remains, so the
+destination survives. Non-string leaves and mapping keys pass through (a number
+carries no credential; a key is a field name the writers spell in code).
+Identifiers — `id`, `lane`, `session_key`, `lease_owner`, an event `kind` — are
+served as stored: the panel keys its rows by them, and rewriting one would break
+the match. The list and detail routes build their payloads INSIDE the
+`asyncio.to_thread` that reads the rows, because a redacted `limit=1000` page or
+a 200-event tail costs about as much as the read itself and the loop is shared.
+Pinned by `test_api_tasks.py::test_task_routes_redact_store_prose`
+(a real store, a real handler, both shapes, nested) and
+`::test_redaction_runs_exfil_before_credentials`.
+- `POST /api/tasks/{task_id}/cancel` — cancels THROUGH the owner that can
+  stop the work, never by writing the store for a running row. Subagent rows:
+  `SubagentManager.cancel(task_id)` — the manager's cascade is what unqueues a
+  row that never started (`_unqueue` → `taskq_cancel_queued`), reaps a live
+  one (`_force_reap` → `taskq_settle`, children cancelled children-first), and
+  writes the SEL record, so a task stopped here is indistinguishable from one
+  stopped on its activity card. TaskRunner step / workflow agent-call rows
+  (`taskq.adapters.runner.owner_of`): a parked row (queued, admitted,
+  deferred, any wait — `taskq.model.PARKED`) ends through
+  `RunnerAdmission.cancel_wait` (the parked coroutine resumes and sees the
+  cancel); a row whose runtime is live (`starting`, `running` —
+  `taskq.model.EXECUTING`) cancels its run
+  (`TaskRunner.cancel(run_id, exact=True)` / `WorkflowService.cancel(run_id)`)
+  because a step is one unit of its run and the run's own exit path settles
+  the row. The row read here ROUTES the cancel but does not authorize it: the
+  parked branch hands that read's generation to `cancel_wait`, so a row an
+  admission takes live in between is refused by the store rather than cancelled
+  over a live step, and the caller sees the fresh state. Answers
+  `{ok, cancelled, task}`; 409 `terminal` for a row already
+  ended (no owner is called); 409 `no_cancel_adapter` when no owner took the
+  cancel and the row is still live — including that refusal, where the row the
+  reply carries is the live one it moved to and the live lever is one more
+  click; 404 `not_found`; 500 `cancel_failed` when
+  the cascade raised. `test_api_tasks.py::test_cancel_goes_through_the_manager_not_the_store`
+  pins the no-direct-write property for subagent rows by tripping every store
+  writer; `test_overload_integration_glue.py` pins the runner routing.
+- `POST /api/tasks/{task_id}` — one action on a TaskRunner / workflow row:
+  `{"action": "answer_input", "answer": "<text>"}` delivers the operator's
+  answer to a `waiting_input` row through `RunnerAdmission.answer_input`
+  (bound to that row's wait; the runner never auto-answers, and a late answer
+  after the wait ended is 409 `not_waiting_input`); `{"action": "cancel_wait"}`
+  ends the wait of a row that holds NO live runtime, without an answer (row
+  `cancelled`). This route is wait-only: it never reaches the owning run, so a
+  row whose runtime is live (`starting`, `running`) is 409 `not_waiting` and the
+  store is not written — cancelling the wait under a live executor would leave
+  it running against a `cancelled` row, the mirror of the orphan row the queue
+  exists to remove, and the next reconcile would then settle or re-dispatch work
+  that is still executing. Stopping a live row is `/cancel`, which routes
+  through the owner.
+
+  **The state tests here are pre-checks; the fence is the writer's.** Both arms
+  read the row over the wire, and a row can move between that read and the
+  write, so the verdict that decides is the store's under the generation the read
+  returned — `cancel(only_from=taskq.model.PARKED, generation=…)` for
+  `cancel_wait`, `wake_wait`'s in-transaction WAITING test for `answer_input`
+  (`taskq.md` § A cancel whose PRECONDITION came from an earlier read). A refusal
+  there answers the SAME code the pre-check would have, read off the row's state
+  as it stands: 409 `terminal` for a row that ended, 409 `not_waiting` for one an
+  admission took live, 409 `not_waiting_input` for an answer whose wait is over.
+  409 `action_failed` is what remains for a refusal the state does not explain —
+  the store was unavailable, or the row moved on under a new generation while
+  still parked — because naming a state reason there would be a guess. A cancel
+  that did not happen is never 200. Both arms test TERMINAL FIRST, on both paths,
+  because a settled row is not "an answer whose wait is over" and only that
+  ordering makes the two paths agree; pinned per action by
+  `test_overload_integration_glue.py::test_a_settled_row_reads_the_same_code_whichever_side_of_the_window_it_landed`.
+
+  400 `invalid_json` / `bad_action` (names the valid set) /
+  `answer_required`; 409 `no_input_adapter` for a subagent row or when no
+  admission is attached, 409 `terminal`, 409 `not_waiting`, 409
+  `not_waiting_input`, 409 `action_failed`; 404 `not_found` / `unavailable`.
+  Registered before `/{task_id}/cancel`.
+  `test_overload_integration_glue.py::test_cancel_wait_refuses_a_row_whose_runtime_is_live`
+  pins the no-direct-write property the same way the `/cancel` sibling's is
+  pinned: every store writer trips if the handler reaches it for a live row.
+  `::test_cancel_wait_refuses_a_row_a_concurrent_admission_took_live` pins the
+  race itself — the handler's read held open while a real `admit` takes the row
+  `running` — and `::test_every_state_gets_the_route_verdict_its_own_set_names`
+  pins that every PARKED state still cancels through the real route.
+
+Panel (`TasksCapacityCard`): polls `api.tasksSummary()` every 5s (the
+spawn-panel cadence) and renders three columns in the Services plane's own
+label/value shape — Queue ("Waiting for a slot" = `depth.queued` LESS the
+`retry_wait` rows `by_state` reports, running, "Paused mid-run", "Tasks
+retrying" = `depth.recovering` (task rows re-dispatched after a stall plus rows
+parked in `retry_wait`), oldest wait), Capacity per lane (the cap in force
+leads every lane — the bare "Up to N at once" while the lane is not under the
+user's ceiling, and one line carrying both numbers when it is — then the cause
+where this lane is its home, then the live count ("N running now") — never
+`N of M`, which beside the running line reads as two answers to one question),
+Recovery ("Retry attempts" = `recovering.task_attempts`, "Backends restarting" =
+`recovering.slots` (live chat/run sessions restarting after a stalled turn —
+sessions, not rows), stalled) — then one list, stalls first and longest wait
+first within each group, of every waiting/retrying task row, every stalled slot
+and every other non-running live slot with its state badge, id, reason, attempts
+(when >1) and age, bounded at 8 rows by a fold that OPENS IN PLACE (a "Show N
+more" / "Show fewer" button carrying `aria-expanded` and `aria-controls` on the
+list): a count of rows the reader cannot reach is a dead end, and the bounded
+default is what keeps a 2000-row queue from becoming the whole card.
+
+**The capacity column states a relationship, never two numbers.** Two maxima
+printed as two labelled facts are read as two unrelated answers, and this column
+answers one question. So `effective == user_max` is ONE fact ("Your full limit",
+no second number to reconcile) and `effective < user_max` puts BOTH numbers in ONE
+line, joined by the verb that relates them ("Up to 4 at once, lowered from
+your 14"), plus the degrade reason itself when that reason is one of the mapped
+`adaptive_*` tokens. A bare cap stacked over a line that calls the ceiling "your
+limit" states two limits, and a reader asks which of them is in force; one line
+makes the second number the ORIGIN of the first, and the cause beneath it
+continues the same verb. `cap_ceiling` ("Your limit: N") is left for the wire
+contradiction alone, a cap ABOVE the configured ceiling, where neither of those
+statements is true. The ceiling is glued to the word before it with U+00A0 in
+every locale that can break there: a wrapped line leaving a bare "14" under
+"lowered from your" puts back the loose second number this line exists to remove.
+The bare "Up to N at once" is the ONE line this column keeps from wrapping, since
+it is short; every line that says more than the number is prose, set in the UI
+font and free to wrap, because a phrase that cannot wrap at the ~230px a column
+gets lands on top of the column beside it. The lead line is never muted whichever
+shape it takes — it is the answer the column exists for.
+
+**The reason has ONE home, the closest to the number it explains**: the lane line
+when EXACTLY ONE lane is under its ceiling and this catalog can say why, else the
+"Degrade reason" row. `degrade_reason` is one GLOBAL string and the controller
+lowers global concurrency, so two lowered lanes are the ordinary case under
+`adaptive_decrease` / `adaptive_pause`, and a cause printed per lowered lane is
+then the same sentence twice — which reads as two causes. Above one lowered lane
+no single number owns the cause, so the row states it once for the whole card.
+That row is therefore absent when nothing is degraded — a labelled "none" beside
+a red "Stalled" badge reads as a missing answer rather than as "nothing lowered
+this", and the stalled COUNT in the Recovery column, with its row in the list, is
+where a stall is reported — and absent again when the single lowered lane already
+carries the sentence.
+Both arms are pinned: one lowered lane puts the sentence on that lane and drops
+the row, two lowered lanes put it in the row exactly once and on neither lane.
+Machine text never reaches a lane line: an unmapped reason stays in the row, in
+mono with `translate="no"`, while mapped catalog copy there is set in the UI font
+like the prose it is. A payload carrying no lane renders
+the two the endpoint publishes (`subagents`, `spawn_gate`) with an em dash, since
+a label reachable only in the no-data state ("Effective cap") teaches a term the
+populated card never uses again.
+
+Every counter label is DISJOINT from every other one, and so is the SET each one
+counts, because the reader has no tooltip open while comparing them: "Waiting for a
+slot" is accepted work holding no runtime and not being retried, "Paused mid-run"
+is a run that already started and gave its slot back, "Tasks retrying" is queue
+rows, "Retry attempts" is the attempts those rows have spent, "Backends
+restarting" is sessions, "Stalled" is slots making no progress with no wait reason
+that explains it. Three of those numbers are computed BY THE CARD rather than read
+off the wire, because the wire's own fields double-count or undercount against
+that rule:
+
+- `depth.queued` sums `queued + admitted + retry_wait + waiting_infra`, and
+  `depth.recovering` counts those same `retry_wait` rows as work being retried, so
+  the card SUBTRACTS `by_state.retry_wait` from "Waiting for a slot". A row parked
+  until its next attempt is retrying — the more specific fact, and the one its own
+  list badge ("Waiting to retry") states — so it is counted under "Tasks retrying"
+  alone. `queued_tip` states that rule; a tip that confessed the overlap instead
+  would leave the two numbers unaddable on the surface where they sit side by side.
+- "Paused mid-run" is counted off the list's OWN entries (the `waiting_*` ones),
+  not off `depth.waiting`: the wire field counts store rows only, so a live chat
+  slot parked on the operator's approval was a list row that no counter admitted to.
+- "Stalled" is counted off those same entries, so the count and the row it points
+  at come from one array.
+
+The card therefore reconciles — list rows == Paused mid-run + Tasks retrying +
+Backends restarting + Stalled — and no counter can drift from the rows beneath it.
+
+One concept, ONE word: nested work is **subagents** everywhere the card names it
+— the lane ("Subagent runs"), the `waiting_children` badge ("Waiting for
+subagents") and the "Paused mid-run" tooltip. "Task" is already spoken for here
+(a queue ROW: "Tasks retrying", "Retry attempts"), so "child task" or "subtask"
+would spend one word on two things, and the key stays `state_waiting_children`
+because a key names its WIRE state. Each locale uses its own subagent term
+(`子代理` in zh-CN, per that catalog's style glossary), never a calque of
+"children". The rule reaches the backend's `wait_reason` prose too ("waiting on N
+subagent(s)", `taskq/waits.py`): that string is evidence text the card passes
+through untranslated rather than card copy, so it is not catalog-checked, but it
+renders in the same row as the badge and a second word there would read as the
+drift this rule removes.
+
+The same rule governs RETRY, where three surfaces can spell it — a queue counter,
+a column heading and the list heading — and one word across all three belongs to
+none of them, which is why a reader cannot otherwise tell whether "Retry
+attempts" and "Tasks retrying" count the same jobs. **They do**: the same rows,
+one counted as rows and the other as the attempts those rows have spent, and each
+tip names the other's unit so the pair is answerable without leaving the card. So
+the counters are "Tasks retrying" and "Retry attempts", the list is "Waiting &
+retrying" — the words its own badges use ("Waiting to retry", "Retrying now") —
+and `recover*` survives only as the column heading "Recovery", the grouping.
+The four retry surfaces name four disjoint things in that ONE vocabulary: "Tasks
+retrying" is the rows, "Retry attempts" the attempts those rows have spent, the
+two badges ("Retrying now", "Waiting to retry") the two states inside that count,
+and "Waiting for a slot" the accepted work that is NOT among them — which is why
+the retry-wait subtraction above is what makes the vocabulary answerable rather
+than merely consistent. The keys stay `recovering`, `task_retries` and
+`section_waits` because a key names its wire state, not its copy. Both halves of
+this rule are pinned by `TasksCapacityCard.test.tsx`.
+
+A row whose wait is on a PERSON (`waiting_input` / `waiting_permission`) and
+whose session is a dashboard chat carries one trailing labelled "Open chat" link
+to `/chat?sid=<slot>` (`sessionRows.sessionChatPath`, the Sessions plane's own
+route). The id is never the control, on any row: colour alone cannot distinguish
+an actionable id from the identically shaped inert ones beside it, and the
+visible label IS the link's accessible name (no `aria-label`, so WCAG 2.5.3
+holds in the locales that reorder words). Every other state, and any session
+with no chat window (cron, channel, `_bg`), renders no link. **The card stays
+READ-ONLY** — it never calls `POST /api/tasks/{task_id}`; the answer/approve
+lever lives in the chat the link opens.
+
+**A stall always has a row.** It is the one condition on this card that nothing
+recovers on its own, so the number that raises the alarm must be openable. The
+card reads ONE set — the `stalled` map's keys unioned with every slot whose own
+`classification` says stalled (`stalledKeysOf`) — and the badge, the "Stalled"
+counter and the list rows all come off it, so the card can neither go red over a
+stall with no row nor list a row no counter admits to; the key is skipped in the
+slot loop, so one stall is one row. That row's reason column carries the stall's
+EVIDENCE rather than its `reason` field, because `session_health` files
+`no_progress` there for every stall the structured view classifies — the badge
+already says that — and puts a sentence there only from the log-scan arm, which
+this endpoint never runs; the `reason` is therefore the fallback for a stall with
+no evidence. A stall renders no "Open chat" link (nobody is being waited on, and
+the card is read-only) and sorts AHEAD of the waits: the fold shows the first rows,
+so ordering by age alone can hide the one row the red badge names behind it, and a
+five-second stall is still the alarm where a two-hour approval wait is not.
+
+A healthy / degraded badge sits in the title, and the late-queue one is "Backlog":
+"Backed up" is first read as a backup copy. Its rules read the numbers the card
+SHOWS, never a wire field the card presents differently — the depth arm counts the
+slot waiters the Queue column prints, not the raw `depth.queued`, because an amber
+"Backlog" over a queue count below its own threshold is a verdict the card
+contradicts on the same line. **No badge sits there at all when no
+verdict is supported.** The stalled and degraded rules read the live session
+monitor and the controller, which a gateway with no task store still publishes, so
+those two verdicts stand on any install; every input the healthy and backlog rules
+stand on (`depth`, `oldest_wait_secs`) is a zero such a payload has nothing to fill
+with, and a green "Healthy" over the store notice is then a health claim about a
+queue nothing is recording — indistinguishable, to the reader, from "there is
+nothing to show". So `cardHealth` answers null there and the notice is the only
+statement. Empty state is one line ("Nothing
+is waiting or retrying."); a gateway without a store gets a notice above the
+columns that names what the READER loses ("Queue history isn't stored here; only
+live sessions are shown."), never the component that is absent — "gateway" and
+"task store" are this codebase's words, not theirs. A failed fetch renders
+through `ErrorNotice` with the agent hand-off on, and its `error.message` is
+printed only when that message is PROSE (`proseReason`: two or more
+letter-bearing words, and no leading `{`, `[` or `<`). An empty JSON error body
+reaches the client as `{}` and a body-less refusal as `HTTP 500`; either one,
+printed after "Could not load the task queue", is a blank where the cause
+belongs, so the sentence stands alone while the raw text still reaches the
+hand-off through the error journal (`findReport`). Wait names, lane names and the
+degrade reason resolve through full-literal
+catalog-key maps (`pages.tasksCapacityCard.state_*`, `lane_*`, `degrade_*`) so
+the i18n key-refs gate sees every label: the three `adaptive_*` tokens
+`slack/gateway.py` publishes become catalog copy, because the badge already
+reads "Degraded" in the reader's language and the explanation beside it cannot
+be a snake_case wire token. Any other reason — the controller's own free-text
+reading — renders verbatim with `translate="no"` because that text is machine
+data; an unknown wait or lane token likewise renders as itself. Tests:
+`test/test_api_tasks.py` (26; tmp store, fake manager, real token middleware
+for the auth case, route order), `website/src/test/TasksCapacityCard.test.tsx`.
+UX evidence: `website/scripts/capture-tasks-capacity.mjs` photographs the real
+built card, one scene per branch it colours or explains — including BOTH homes of
+the degrade reason (the row when two lanes are lowered, the lane line when one is)
+and both arms that mount no health badge — and refuses to write a frame whose
+title row or badge is clipped or painted over.
+
 ### Key Endpoints
 
 **AutoNudge maintenance**: `maintenance_service()` gives administrative recovery one authoritative store view and holds a per-data-home transaction lock across its full cleanup; service startup and public `add()` / `update()` / `remove()` transactions take the same lock, so maintenance cannot scan a temporary in-memory absence from a removal that later rolls back or race an external reactivation. The maintenance view owns unserialized cleanup mutations while its transaction is held. A per-loop quiesce signal wakes an update/removal already queued behind that transaction instead of letting a firing timer and maintenance wait on each other's lock; cleanup retains and ultimately removes the durable row. A caller-authorized arm carries a commit-time session predicate into `add()`, evaluated only after it owns this transaction, so an arm validated before cleanup cannot recreate the archived slot afterward. Startup holds the lock across load, repair, timer arming, and singleton publication, while concurrent maintenance waits and then reuses the published live service. An offline view never arms timers or publishes the singleton. `deactivate_and_wait()` persists an inactive restart marker and waits for both the timer captured before the update and any replacement installed while that update waited. Administrative recovery removes the marker only after its dependent worker cleanup succeeds. Persistence is the commit point for every mutation: failed add/update writes restore the prior live loop and timer state, while failed removal restores the in-memory row (and its timer when active), leaving the same durable view visible for an immediate retry.

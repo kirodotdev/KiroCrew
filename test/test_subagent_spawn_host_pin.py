@@ -99,6 +99,10 @@ class TestTheSpawnHostMemoryPinRatchet:
         # not break them -- an inner patch lands on top -- but it would state a
         # precondition the opposite of what they exist to vary.
         "test_admission_gate.py": "drives both guards itself, to refused and to admitted",
+        # A shared fake, not a collected test module: ``ManagerHarness`` pins
+        # both host-memory readings itself for as long as it is open, so every
+        # module that spawns through it is pinned without naming the fixture.
+        "overload_fakes.py": "fake harness pins the host readings itself",
     }
 
     def test_every_spawning_module_is_pinned_or_excluded(self) -> None:

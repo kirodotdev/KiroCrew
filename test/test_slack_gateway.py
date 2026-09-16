@@ -1868,7 +1868,8 @@ class TestInitCron:
         # Real predicate semantics: pending work == a running agent with this
         # parent (no queued spawns in this scenario).
         orch.subagent_mgr.queued_count_for = MagicMock(return_value=0)
-        orch.subagent_mgr.has_pending_work_for = MagicMock(
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(return_value=0)
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
             side_effect=lambda key: any(
                 a.parent_session_key == key for a in orch.subagent_mgr.running
             )
@@ -1952,10 +1953,10 @@ class TestInitCron:
         # Nothing RUNNING for planner — but one spawn is QUEUED for it.
         orch.subagent_mgr = MagicMock()
         orch.subagent_mgr.running = []
-        orch.subagent_mgr.queued_count_for = MagicMock(
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(
             side_effect=lambda key: 1 if key == "cron:j1:planner" else 0
         )
-        orch.subagent_mgr.has_pending_work_for = MagicMock(
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
             side_effect=lambda key: key == "cron:j1:planner"
         )
 
@@ -3608,7 +3609,9 @@ class TestSubagentDone:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -4359,7 +4362,9 @@ class TestSubagentSlackInjection:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -5949,7 +5954,9 @@ class TestInjectWithRetry:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -6037,7 +6044,9 @@ class TestOrchestrationGuard:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -6422,7 +6431,9 @@ class TestRetriggerRecovery:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -7391,7 +7402,9 @@ class TestSlackSubagentCompletionPersistence:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -7641,7 +7654,9 @@ class TestSubagentChannelTransportDelivery:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()

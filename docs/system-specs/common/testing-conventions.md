@@ -113,6 +113,30 @@ such as `.kiro/crew` that may also occur in `tmp_path`'s ancestors. Parameterize
 path-repair tests with a same-named ancestor directory so this stays independent
 of the runner's temporary directory.
 
+**A shared append is not atomic off POSIX, so N processes must not observe through
+one file.** `open(path, "a")` is race-free on POSIX because `O_APPEND` makes the
+seek-to-end and the write one kernel step; the Windows CRT emulates append with a
+separate seek and write, so two processes that reach the end offset together write
+over each other and one line is simply GONE. A harness that counts lines to observe
+"how many backends launched" or "how many handshakes completed" then reports a number
+short of the truth, and the test reads it as the behaviour being broken —
+`test_mcp_gateway_pool_integ` counted 11 of 12 windows on Windows while all 12 stubs
+had in fact been answered. The clustered writes are the ones that collide, and a
+coarse clock creates them: several processes sleeping the same delay wake on the same
+15.6 ms tick. Fix by removing the shared file, not by locking it — one file per
+writer (`fake_pool_mcp_server._record` writes `<log>.d/<pid>.txt`) and a reader that
+concatenates them, which needs no cross-platform locking primitive and keeps the
+observation closed-box.
+
+**Ship that reader beside the writer and have every consumer import it**
+(`fake_pool_mcp_server.recorded`). The layout is the harness's contract, not one
+test's private detail, and a consumer that opens the log path itself reads an empty
+history — which is indistinguishable from "the subject recorded nothing", so it stays
+silent until some assertion happens to expect a non-empty one.
+`test_mcp_gateway_pool_integ.test_every_consumer_of_the_fake_reads_it_through_recorded`
+pins the import for every module that spawns the fake, because co-location alone does
+not stop a second consumer from hand-rolling the read.
+
 ### Links: use the conftest helpers, do not skip on Windows
 
 Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`; an unelevated
@@ -1855,6 +1879,62 @@ Two more shapes, both MEASURED in a 5x full-suite run on Windows:
   the real pass, which makes eligibility pure arithmetic and also stops an `== 0`
   assertion passing vacuously because a stamp aged out. Reading the clock inside the
   test instead is the weaker fix — it shrinks the gap to microseconds without closing it.
+
+Three more shapes this class hides, all Windows-only and all green on every Linux run:
+
+- **A state written in two phases across a thread boundary.** Waiting on ONE half is
+  not waiting on the state. A dependency park registers its waiter on the store's
+  writer thread and yields the lane slot in the continuation the thread's wake
+  schedules, so a barrier that stops at `len(coordinator.waiters(scope)) == 2` samples
+  `_running_count` mid-park: microseconds wide where a cross-thread wake is a self-pipe
+  write, tens of milliseconds where the loop has to return from an IOCP wait, and
+  `assert 1 == 0` when it loses. Wait on the CONJUNCTION the assertions then read
+  (`test_runloop_integration._await_parked`: waiters, slot count and row state
+  together) with a generous ceiling, never on the first half to become true. That
+  ceiling is a lost-run guard, so reaching it RAISES with the conjunction it last read:
+  a barrier that returns anyway hands its caller a state nobody asked about, and the
+  run then fails as whichever later assertion happens to touch it first — a park that
+  never happened reported as `assert [] == ['provider:acp']` three lines on.
+- **A timer asyncio runs BEFORE its own `when`.** `BaseEventLoop._run_once` runs every
+  handle within `loop._clock_resolution` of now, and that resolution IS the `monotonic()`
+  tick above: 15.625 ms on Windows against ~1 ns on Linux. So a callback there reads
+  `loop.time() < handle.when()` for the very handle it was armed as, and code that
+  re-arms a one-shot from inside its own callback while skipping the arm whenever some
+  handle still looks future-dated arms nothing at all — once per rung on Windows, never
+  on Linux. Emulating it locally takes ONE property: `_clock_resolution` set per LOOP
+  INSTANCE, because `BaseEventLoop.__init__` writes its own from
+  `time.get_clock_info('monotonic').resolution` and a class-level value is never read —
+  an unpatched loop reads `1e-09` however coarse the module clock is made. Flooring
+  `BaseEventLoop.time` to the same tick as well reproduces the shard's own SYMPTOM — the
+  park barrier's 20 s gather timing out — in 3 of 24 whole-file runs with the defect in
+  memory, where the pin named next fails on all 24; neither `time.time()` nor the
+  module-level `time.monotonic()` has to move for either.
+  `test_runloop_integration.test_the_ramp_is_woken_when_the_pump_timer_fires_inside_the_clock_resolution`
+  pins the invariant from the resolution alone, with no fake clock. Such a pin also needs
+  a poll SHORTER than the resolution, and that makes a sleep length load-bearing where
+  this file otherwise says to wait on a signal: `_run_once` pops a handle early only
+  while the loop is AWAKE inside `(when - resolution, when)`, so a poll longer than that
+  window leaves the loop asleep until the timer is overdue, no early fire happens, and
+  the pin goes green having exercised nothing. Set the resolution COARSER than the delay
+  under test (4 ticks against a 0.05 s arm) so the window is the whole wait instead of
+  its last tick — at Windows' own 15.625 ms the pop is a lottery on when the loop
+  happens to wake, and 1 of 15 runs starved on one busy core never saw it, which is a
+  flake rather than a defect. Then ASSERT the precondition instead of trusting whoever
+  reads the test next to leave the poll alone — and assert the precondition the DEFECT
+  needs, not merely that a spent future-dated handle was seen somewhere: the pass must
+  have had a deadline to arm, and the margin must fall inside the delay that pass wanted
+  (the dedup's own `now < when <= now + delay`). A spent handle read on a final
+  `deadline is None` pass, or one further out than the pass would have armed, strands
+  nothing, so counting it certifies a precondition the defect never needed and the pin
+  is green again for the wrong reason.
+- **`time.monotonic()` has a ~15.6 ms tick on Windows through 3.12** (GetTickCount64;
+  QueryPerformanceCounter only from 3.13). Two reads inside one tick return the SAME
+  float, so a duration synthesized as `t0 = monotonic() - 0.2` and measured against a
+  second read is exactly 0.2 s round-tripped through a float subtraction — 199.999… at
+  some machine uptimes, which a `>= 200` assertion reads as a failure while the code is
+  correct. Bound such a sample instead of pinning it on the boundary: a floor an order
+  of magnitude below (which still fails a seconds-for-milliseconds bug) and, as the
+  ceiling, a span the test measures itself.
 
 **Guess-the-latency sleeps are this class too.** `asyncio.sleep(0.05)` "to let the
 first prompt register" is a bet that two awaits and a `to_thread` hop finish inside

@@ -789,29 +789,35 @@ class TestKeywordCommands:
 # spawn helpers
 # ──────────────────────────────────────────────────────────────────────
 class TestSpawnHelpers:
-    def test_no_prefix_is_ignored(self):
-        assert h._handle_spawn_command("please spawn later", MagicMock()) is None
+    @pytest.mark.asyncio
+    async def test_no_prefix_is_ignored(self):
+        assert await h._handle_spawn_command("please spawn later", MagicMock()) is None
 
-    def test_bg_prefix_accepted(self):
+    @pytest.mark.asyncio
+    async def test_bg_prefix_accepted(self):
         mgr = MagicMock(max_concurrent=2)
         mgr.spawn.return_value = MagicMock(id="z9")
-        assert "z9" in _reply(h._handle_spawn_command("bg do it", mgr))
+        assert "z9" in _reply(await h._handle_spawn_command("bg do it", mgr))
 
-    def test_empty_task_returns_none(self):
-        assert h._handle_spawn_command("spawn   ", MagicMock()) is None
+    @pytest.mark.asyncio
+    async def test_empty_task_returns_none(self):
+        assert await h._handle_spawn_command("spawn   ", MagicMock()) is None
 
-    def test_list_with_no_agents(self):
-        assert mc.spawn_task_reply("list", MagicMock(running=[])) == "No subagents running."
+    @pytest.mark.asyncio
+    async def test_list_with_no_agents(self):
+        assert await mc.spawn_task_reply("list", MagicMock(running=[])) == "No subagents running."
 
-    def test_status_lists_running_agents(self):
+    @pytest.mark.asyncio
+    async def test_status_lists_running_agents(self):
         agent = MagicMock(id="a7", started=time.time() - 5, task="reindex the corpus")
-        out = _reply(mc.spawn_task_reply("status", MagicMock(running=[agent])))
+        out = _reply(await mc.spawn_task_reply("status", MagicMock(running=[agent])))
         assert "a7" in out and "reindex the corpus" in out
 
-    def test_capacity_reached(self):
+    @pytest.mark.asyncio
+    async def test_capacity_reached(self):
         mgr = MagicMock(max_concurrent=3)
         mgr.spawn.return_value = None
-        assert "capacity reached (3)" in _reply(mc.spawn_task_reply("work", mgr))
+        assert "capacity reached (3)" in _reply(await mc.spawn_task_reply("work", mgr))
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 from ._component import ManagerComponent
 
@@ -205,6 +205,10 @@ class CancellationCoordinator(ManagerComponent):
         the entry lets cancellation publish the same neutral stopped terminal
         outcome as a run that had already started, including batch accounting.
         """
+        # The persisted row is cancelled FIRST, so a drain racing this cannot
+        # claim it, then it is dropped from the window. A row outside the window is cancelled here as well and its
+        # params come back from the store so the queued-stop report is whole.
+        stored = self._manager._admission.taskq_cancel_queued(agent_id)
         for index, params in enumerate(self._manager._queue):
             if str(params.get("_preassigned_id") or "") != agent_id:
                 continue
@@ -217,7 +221,7 @@ class CancellationCoordinator(ManagerComponent):
             except Exception:
                 logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
             return dropped
-        return None
+        return stored
 
     def _report_queued_stop_impl(self, params: dict) -> None:
         """Publish a neutral terminal record for work stopped before startup."""
@@ -260,20 +264,21 @@ class CancellationCoordinator(ManagerComponent):
         """
         if not parent_session_key:
             return (0, 0)
-        queued_ids = [
-            str(params.get("_preassigned_id") or "")
-            for params in self._manager._queue
-            if params.get("parent_session_key", "") == parent_session_key
-        ]
-        queued_stopped = 0
-        for agent_id in queued_ids:
-            if not agent_id:
-                continue
-            queued = self._manager._unqueue(agent_id)
-            if queued is None:
-                continue
-            self._manager._report_queued_stop(queued)
-            queued_stopped += 1
+        queued_stopped = self._stop_queued(
+            [
+                str(params.get("_preassigned_id") or "")
+                for params in self._manager._queue
+                if params.get("parent_session_key", "") == parent_session_key
+            ]
+        )
+        # This parent's rows waiting outside the in-memory window. The read is
+        # a store read, so it comes AFTER the in-memory queue is drained: its
+        # await is the first suspension point this method has, and one taken
+        # before the drain would let a stagger timer start a queued agent. A row
+        # started from disk during it is caught by the running sweep below.
+        queued_stopped += self._stop_queued(
+            await self._manager._admission.taskq_pending_ids_for_async(parent_session_key)
+        )
 
         running_ids = [
             info.id
@@ -289,6 +294,23 @@ class CancellationCoordinator(ManagerComponent):
         )
         running_stopped = sum(result is True for result in results)
         return (running_stopped, queued_stopped)
+
+    def _stop_queued(self, agent_ids: Sequence[str]) -> int:
+        """Unqueue each id that is still waiting and report it stopped; count them.
+
+        A SEQUENCE, not an iterable: ``_unqueue`` mutates ``_queue``, so a lazy
+        generator over it would stop short of the ids it was asked to remove.
+        """
+        stopped = 0
+        for agent_id in agent_ids:
+            if not agent_id:
+                continue
+            queued = self._manager._unqueue(agent_id)
+            if queued is None:
+                continue
+            self._manager._report_queued_stop(queued)
+            stopped += 1
+        return stopped
 
     async def cancel_impl(self, agent_id: str) -> bool:
         """Cancel a single running subagent. Returns True if found and cancelled.

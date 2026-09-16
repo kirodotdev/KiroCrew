@@ -1657,9 +1657,11 @@ class TestLauncherStagingSitesArePrefixed:
         tree = ast.parse(script)  # string-template edits must keep it parseable
 
         staging = self._staging_calls(tree)
-        # The template always emits all three staging sites (per-dir empties,
-        # per-file empties, SSH shadow); the level varies the DATA, not the code.
-        assert len(staging) == 3
+        # The template always emits all four staging sites (per-dir empties,
+        # per-file empties, SSH shadow, and the private-window stage that holds
+        # a window's real contents while its parent is masked); the level varies
+        # the DATA, not the code.
+        assert len(staging) == 4
         for call in staging:
             prefix_kw = next((k for k in call.keywords if k.arg == "prefix"), None)
             assert prefix_kw is not None, ast.dump(call)
@@ -1687,7 +1689,7 @@ class TestLauncherStagingSitesArePrefixed:
             and node.func.value.id == "tempfile"
             and node.func.attr in ("mkdtemp", "mkstemp")
         ]
-        assert len(calls) == 5  # three staging sites, tmpfs probe, parent journal
+        assert len(calls) == 6  # four staging sites, tmpfs probe, parent journal
         journals = [
             call
             for call in calls

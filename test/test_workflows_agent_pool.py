@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from overload_fakes import settle_dependency_park, settle_store_writes
 
 from kiro_crew.workflows.agent_pool import build_pooled_agent_fn
 
@@ -558,3 +559,515 @@ def test_max_turns_constant_is_shared_with_agent_exec():
     from kiro_crew.workflows import agent_exec, agent_pool
 
     assert agent_pool._MAX_TURNS_PER_STEP is agent_exec._MAX_TURNS_PER_STEP
+
+
+# ── taskq admission: the effective cap bounds the pool ────────────────────────
+
+
+class _Peak:
+    """Counts overlapping calls through a wrapped agent_fn."""
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.peak = 0
+
+    def wrap(self, agent_fn):
+        async def _fn(prompt, opts):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                return await agent_fn(prompt, opts)
+            finally:
+                self.active -= 1
+
+        return _fn
+
+
+def _admission(cap: int, *, mode: str = "aimd", store=None):
+    from kiro_crew.taskq.adapters.runner import RunnerAdmission, RunnerLane
+
+    return RunnerAdmission(store, lane=RunnerLane(cap, mode=mode))
+
+
+@pytest.mark.asyncio
+async def test_worker_pool_honours_the_effective_cap_beneath_max_workers():
+    """The lane's effective cap, not the pool's max_workers, is the live bound."""
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    sessions = _FakeSessions()
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="cap1", max_workers=4)
+    adm = _admission(2)
+    peak = _Peak()
+    fn = admitted_agent_fn(peak.wrap(agent_fn), adm, run_id="cap1", session_key="chat:a")
+    try:
+        await asyncio.gather(*(fn(f"t{i}", {}) for i in range(6)))
+    finally:
+        await pool.shutdown()
+    assert peak.peak == 2  # pool would allow 4; the effective cap says 2
+    assert sessions.cold_starts <= 2
+    assert adm.lane.running == 0 and adm.lane.stats()["granted"] == 6
+
+
+@pytest.mark.asyncio
+async def test_worker_pool_follows_a_cap_change_mid_run():
+    """set_effective_cap (the adaptive controller's actuator) lowers the bound live."""
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    sessions = _FakeSessions()
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="cap2", max_workers=4)
+    adm = _admission(3)
+    peak = _Peak()
+    fn = admitted_agent_fn(peak.wrap(agent_fn), adm, run_id="cap2", session_key="chat:a")
+    try:
+        first = [asyncio.create_task(fn(f"a{i}", {})) for i in range(3)]
+        await asyncio.sleep(0)
+        assert adm.lane.running == 3
+        assert adm.lane.set_effective_cap(1) == 1  # pressure: 3 -> 1
+        await asyncio.gather(*first)
+        peak.peak = 0
+        await asyncio.gather(*(fn(f"b{i}", {}) for i in range(4)))
+        assert peak.peak == 1  # the lowered cap holds for the rest of the run
+        adm.lane.set_effective_cap(None)
+        peak.peak = 0
+        await asyncio.gather(*(fn(f"c{i}", {}) for i in range(4)))
+        assert peak.peak == 3  # lifted: back to the ceiling
+        assert adm.lane.set_effective_cap(0) == 0  # paused: nothing new is granted
+        parked = asyncio.create_task(fn("d0", {}))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert adm.lane.waiting == 1 and not parked.done()
+        adm.lane.set_effective_cap(2)
+        assert (await parked).endswith("d0")
+    finally:
+        await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_worker_pool_fixed_mode_ignores_the_actuator():
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    sessions = _FakeSessions()
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="fix", max_workers=4)
+    adm = _admission(2, mode="fixed")
+    adm.lane.set_effective_cap(1)  # pinned: the controller cannot move it
+    peak = _Peak()
+    fn = admitted_agent_fn(peak.wrap(agent_fn), adm, run_id="fix")
+    try:
+        await asyncio.gather(*(fn(f"t{i}", {}) for i in range(5)))
+    finally:
+        await pool.shutdown()
+    assert peak.peak == 2
+
+
+@pytest.mark.asyncio
+async def test_workflow_agent_calls_are_rows_in_the_launching_sessions_lane(tmp_path):
+    """Every ctx.agent() call is a workflow_agent row: written before it runs, settled after."""
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False).open()
+    try:
+        sessions = _FakeSessions()
+        agent_fn, pool = build_pooled_agent_fn(sessions, run_id="rows", max_workers=2)
+        adm = _admission(2, store=store)
+        fn = admitted_agent_fn(agent_fn, adm, run_id="rows", session_key="chat:bob")
+        try:
+            out = await asyncio.gather(fn("p1", {}), fn("p2", {"model": "m2"}))
+        finally:
+            await pool.shutdown()
+        assert all(o.endswith(("p1", "p2")) for o in out)
+        rows = sorted(store.list_rows(kind=m.KIND_WORKFLOW_AGENT), key=lambda x: x.id)
+        assert [x.id for x in rows] == ["workflow:rows:agent1", "workflow:rows:agent2"]
+        assert all(x.state == m.DONE and x.params["lane"] == "chat:bob" for x in rows)
+        assert rows[1].provider == "m2"
+        kinds = [e.kind for e in store.events("workflow:rows:agent1")]
+        assert kinds[:2] == ["accepted", "claimed"] and kinds.count("claimed") == 1
+
+        # A cron-launched run (no session) queues in the system lane.
+        agent_fn2, pool2 = build_pooled_agent_fn(sessions, run_id="rows2", max_workers=1)
+        try:
+            await admitted_agent_fn(agent_fn2, adm, run_id="rows2", source="cron")("p", {})
+        finally:
+            await pool2.shutdown()
+        assert store.get("workflow:rows2:agent1").params["lane"] == "system"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_workflow_agent_failure_settles_the_row_failed(tmp_path):
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False).open()
+    try:
+
+        async def _boom(prompt, opts):
+            raise RuntimeError("model exploded")
+
+        adm = _admission(1, store=store)
+        fn = admitted_agent_fn(_boom, adm, run_id="bad", session_key="chat:c")
+        with pytest.raises(RuntimeError, match="model exploded"):
+            await fn("p", {})
+        row = store.get("workflow:bad:agent1")
+        assert row.state == m.FAILED and adm.lane.running == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_workflow_agent_rate_limit_waits_then_retries(tmp_path):
+    """A 429 parks the call in waiting_dependency (slot released) and re-runs it on wake."""
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.adapters.runner import RunnerAdmission, RunnerLane
+    from kiro_crew.taskq.dependency import KIND_RATE_LIMITED, SIGNAL_ATTR, DependencySignal
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    now = {"t": 100.0}
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False, clock=lambda: now["t"]).open()
+    try:
+        adm = RunnerAdmission(store, lane=RunnerLane(1), clock=lambda: now["t"])
+        calls = []
+        raised = asyncio.Event()
+
+        async def _flaky(prompt, opts):
+            calls.append(prompt)
+            if len(calls) == 1:
+                exc = RuntimeError("HTTP 429")
+                setattr(
+                    exc,
+                    SIGNAL_ATTR,
+                    DependencySignal(
+                        kind=KIND_RATE_LIMITED, dependency_scope="prov", source="t", retry_at=130.0
+                    ),
+                )
+                raised.set()  # the 429 is leaving the call: the park follows it
+                raise exc
+            return "ok"
+
+        fn = admitted_agent_fn(_flaky, adm, run_id="rl", session_key="chat:d")
+        task = asyncio.create_task(fn("p", {}))
+        await settle_dependency_park(adm, store, raised)
+        assert store.get("workflow:rl:agent1").state == m.WAITING_DEPENDENCY
+        assert adm.lane.running == 0
+        now["t"] = 131.0
+        assert adm.tick() == ["workflow:rl:agent1"]
+        assert await task == "ok"
+        assert len(calls) == 2 and store.get("workflow:rl:agent1").state == m.DONE
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_call_waiting_for_a_lane_slot_leaves_no_queued_row(tmp_path):
+    """A run cancel (or the wall-clock ceiling) landing while a ``ctx.agent()``
+    call waits for its lane slot: the row was already accepted, so it must be
+    settled -- ``workflow_agent`` has no dispatcher and a workflow resumes only
+    through its own registry, never by re-dispatching one call row."""
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False).open()
+    try:
+        gate = asyncio.Event()
+
+        async def _gated(prompt, opts):
+            await gate.wait()
+            return prompt
+
+        adm = _admission(1, store=store)
+        fn = admitted_agent_fn(_gated, adm, run_id="cx", session_key="chat:c")
+        first = asyncio.create_task(fn("p1", {}))
+        for _ in range(20):
+            await settle_store_writes(store)
+            if store.state_of("workflow:cx:agent1") == m.RUNNING:
+                break
+        second = asyncio.create_task(fn("p2", {}))
+        for _ in range(20):
+            await settle_store_writes(store)
+            if adm.lane.waiting == 1:
+                break
+        assert store.state_of("workflow:cx:agent2") == m.QUEUED
+
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+
+        assert store.state_of("workflow:cx:agent2") == m.CANCELLED
+        gate.set()
+        assert await first == "p1"
+        assert store.state_of("workflow:cx:agent1") == m.DONE
+        # The two numbers a forever-queued row corrupts on /api/tasks/summary.
+        assert store.oldest_wait_secs() == 0.0
+        assert set(store.count_by_state()) == {m.DONE, m.CANCELLED}
+        assert adm.lane.running == 0 and adm.lane.waiting == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_call_parked_on_a_dependency_leaves_no_orphan_wait(tmp_path):
+    """Same for a call parked in ``waiting_dependency``: the coroutine that was
+    waiting for the scope's wake is the only thing that could have resumed it."""
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.adapters.runner import RunnerAdmission, RunnerLane
+    from kiro_crew.taskq.dependency import KIND_RATE_LIMITED, SIGNAL_ATTR, DependencySignal
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    now = {"t": 100.0}
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False, clock=lambda: now["t"]).open()
+    try:
+        adm = RunnerAdmission(store, lane=RunnerLane(1), clock=lambda: now["t"])
+
+        async def _throttled(prompt, opts):
+            exc = RuntimeError("HTTP 429")
+            setattr(
+                exc,
+                SIGNAL_ATTR,
+                DependencySignal(
+                    kind=KIND_RATE_LIMITED, dependency_scope="prov", source="t", retry_at=130.0
+                ),
+            )
+            raise exc
+
+        fn = admitted_agent_fn(_throttled, adm, run_id="dep", session_key="chat:d")
+        call = asyncio.create_task(fn("p", {}))
+        for _ in range(20):
+            await settle_store_writes(store)
+            if store.state_of("workflow:dep:agent1") == m.WAITING_DEPENDENCY:
+                break
+        assert store.state_of("workflow:dep:agent1") == m.WAITING_DEPENDENCY
+
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+
+        row = store.get("workflow:dep:agent1")
+        assert row.state == m.CANCELLED and row.wait is None
+        assert store.oldest_wait_secs() == 0.0
+        assert adm.lane.running == 0 and adm.lane.waiting == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_service_attach_settles_a_call_row_that_was_never_claimed(tmp_path):
+    """Crash after accept: the row is ``queued`` under a dead incarnation, which
+    the boot reconciler never examines. The attach sweep gives it an explicit
+    terminal state, and a repeat sweep settles nothing twice."""
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.reconcile import reconcile_on_boot
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.service import WorkflowService
+
+    path = tmp_path / "tasks.db"
+    store_a = TaskStore(path, network_fs=False).open()
+    adm_a = _admission(1, store=store_a)
+    accepted = adm_a.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:old:agent1")
+    assert store_a.state_of(accepted.id) == m.QUEUED
+    store_a.close()  # -- crash before the lane granted a slot
+
+    store_b = TaskStore(path, network_fs=False).open()
+    try:
+        assert reconcile_on_boot(store_b).examined == 0  # a queued row is not ACTIVE
+        svc = WorkflowService(sessions=_FakeSessions(), persist=False, pool_agents=True)
+        svc.attach_task_admission(_admission(2, store=store_b))
+
+        report = await svc.adopt_task_rows()
+
+        assert report.cancelled == [accepted.id]
+        assert store_b.state_of(accepted.id) == m.CANCELLED
+        assert store_b.oldest_wait_secs() == 0.0
+        again = await svc.adopt_task_rows()
+        assert again.examined == 0 and again.cancelled == []
+    finally:
+        store_b.close()
+
+
+@pytest.mark.asyncio
+async def test_service_attach_settles_orphaned_workflow_agent_rows(tmp_path):
+    """A workflow restarts through its registry: orphaned call rows never re-dispatch."""
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.service import WorkflowService
+
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False).open()
+    try:
+        for row_id, safe in (("workflow:old:agent1", True), ("workflow:old:agent2", False)):
+            store.accept_one(
+                m.TaskRecord(id=row_id, kind=m.KIND_WORKFLOW_AGENT, params={"safe_retry": safe})
+            )
+            store.claim(row_id, owner="dead")
+            store.transition(row_id, m.STARTING)
+            store.transition(row_id, m.RUNNING)
+        svc = WorkflowService(sessions=_FakeSessions(), persist=False, pool_agents=True)
+        adm = _admission(2, store=store)
+        svc.attach_task_admission(adm)
+        assert svc.task_admission is adm
+        report = await svc.adopt_task_rows()
+        assert report.failed == ["workflow:old:agent1"]
+        assert report.unknown_side_effect == ["workflow:old:agent2"]
+        assert store.get("workflow:old:agent1").state == m.FAILED
+        assert store.get("workflow:old:agent2").state == m.UNKNOWN_SIDE_EFFECT
+        # The runner the service builds meters its agent_fn through the lane.
+        runner = svc._runner("new", session_key="chat:z")
+        assert runner is not None
+        svc.attach_task_admission(None)
+        assert svc.task_admission is None
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_workflow_agent_call_writes_its_row_off_loop(tmp_path, monkeypatch):
+    """``ctx.agent()``'s whole row lifecycle under the STRICT on-loop guard.
+
+    Nothing is stubbed: the accept, the claim, the ``starting``/``running``
+    marks and the terminal write all go through the store's writer thread, so a
+    site that slips back onto the loop reds here rather than costing an operator
+    a contended ``BEGIN IMMEDIATE`` on the gateway's only loop.
+    """
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq import store as store_mod
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False).open()
+    try:
+        adm = _admission(1, store=store)
+
+        async def _agent_fn(prompt, opts):
+            return f"out:{prompt}"
+
+        fn = admitted_agent_fn(_agent_fn, adm, run_id="off", session_key="chat:zoe")
+        before = store.loop_thread_calls
+        monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
+        try:
+            assert await fn("p1", {}) == "out:p1"
+        finally:
+            monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
+        assert store.loop_thread_calls == before  # the reads below are the test's own
+        row = store.get("workflow:off:agent1")
+        assert row is not None and row.state == m.DONE
+        kinds = [e.kind for e in store.events(row.id)]
+        assert kinds[:2] == ["accepted", "claimed"]
+        assert [e.data["to"] for e in store.events(row.id) if e.kind == "transition"] == [
+            m.STARTING,
+            m.RUNNING,
+            m.DONE,
+        ]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_call_whose_running_mark_is_refused_never_runs(tmp_path):
+    """The row is the authority for "a runtime is executing under this call". A
+    refused ``starting -> running`` leaves a row that reaches no WAITING state --
+    so the dependency park above could not persist -- and may belong to a newer
+    owner, so the call ends instead of running under it."""
+    import sqlite3
+
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.adapters.runner import RunnerAdmissionRefused
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    class _LockedOnRunning(TaskStore):
+        """A REAL store whose FILE another connection locks for the ``running``
+        write only, so that ONE transition gets ``database is locked``."""
+
+        def transition(self, task_id, state, **kw):
+            if state != m.RUNNING:
+                return super().transition(task_id, state, **kw)
+            blocker = sqlite3.connect(str(self.path), timeout=0, check_same_thread=False)
+            blocker.execute("BEGIN EXCLUSIVE")
+            try:
+                return super().transition(task_id, state, **kw)
+            finally:
+                blocker.execute("ROLLBACK")
+                blocker.close()
+
+    store = _LockedOnRunning(tmp_path / "tasks.db", network_fs=False, busy_timeout_secs=0.05).open()
+    try:
+        calls = []
+
+        async def _agent_fn(prompt, opts):
+            calls.append(prompt)
+            return f"out:{prompt}"
+
+        adm = _admission(1, store=store)
+        fn = admitted_agent_fn(_agent_fn, adm, run_id="mark", session_key="chat:e")
+        with pytest.raises(RunnerAdmissionRefused, match="running mark"):
+            await fn("p1", {})
+        assert calls == [], "the call ran under a row the store left starting"
+        assert store.get("workflow:mark:agent1").state == m.FAILED
+        assert adm.lane.running == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_nested_agent_call_is_refused_not_parked_behind_its_ancestor(tmp_path):
+    """ONE RunnerLane serves both runner consumers, and a ``ctx.agent()`` call
+    holds its slot for the whole model turn. A call whose row descends from the
+    row holding that slot therefore waits on a release only its own ancestor can
+    make, and ``RunnerLane.acquire`` parks with no timeout -- so the fence
+    refuses it instead, and the run reports the refusal.
+
+    The wait is bounded HERE so a regression is this assertion, not a lost
+    worker. ``accept`` hands back a row that already exists and is still
+    claimable (the resume path), which is how the parentage is recorded.
+    """
+    from kiro_crew.taskq import model as m
+    from kiro_crew.taskq.adapters.runner import RunnerAdmissionRefused
+    from kiro_crew.taskq.store import TaskStore
+    from kiro_crew.workflows.agent_pool import admitted_agent_fn
+
+    store = TaskStore(tmp_path / "tasks.db", network_fs=False).open()
+    try:
+        calls: list[str] = []
+
+        async def _agent_fn(prompt, opts):
+            calls.append(prompt)
+            return f"out:{prompt}"
+
+        adm = _admission(1, store=store)
+        # The ancestor: a TaskRunner step holding the lane's only slot.
+        step = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task1")
+        holder = await adm.admit(step.id, lane="chat:n")
+        # The nested call's row, recorded as the step's child before the call runs.
+        adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:nest:agent1", parent_id=step.id)
+        fn = admitted_agent_fn(_agent_fn, adm, run_id="nest", session_key="chat:n")
+        call = asyncio.ensure_future(fn("p1", {}))
+        # Bounded here, with headroom for a loaded runner: the refusal resolves
+        # on the loop's next tick, so no green run spends this.
+        await asyncio.wait({call}, timeout=5.0)
+        assert call.done(), "the nested call parked behind its own ancestor's slot"
+        with pytest.raises(RunnerAdmissionRefused):
+            call.result()
+        from kiro_crew.taskq.adapters.runner import RunnerLaneSelfBlocked
+
+        assert isinstance(call.exception(), RunnerLaneSelfBlocked)
+        assert calls == [], "the nested call ran without a slot"
+        await settle_store_writes(store)
+        assert store.state_of("workflow:nest:agent1") == m.CANCELLED
+        # The ancestor is untouched and the ceiling held throughout.
+        assert holder.slot_held and adm.lane.running == 1 and adm.lane.waiting == 0
+        holder.done()
+        assert adm.lane.running == 0
+
+        # And once the ancestor lets go, the SAME call runs: the fence declines a
+        # wait nothing but the ancestor could end, never nesting as such.
+        again = admitted_agent_fn(_agent_fn, adm, run_id="nest2", session_key="chat:n")
+        assert (await again("p2", {})) == "out:p2"
+        assert calls == ["p2"]
+    finally:
+        store.close()

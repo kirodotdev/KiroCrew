@@ -390,6 +390,23 @@ def _drop_live_config_snapshot():
 
 
 @pytest.fixture(autouse=True)
+def _inline_taskq_pump(_floor_monkeypatch):
+    """Run the subagent pump and the store open inline for the suite.
+
+    In production the pump is a coroutine whose store reads run on the task
+    store's writer thread, and a manager built on a running loop opens its
+    store on a worker; the suite's harnesses settle with ``sleep(0)`` loops
+    and virtual clocks, and construct a manager and spawn on the next line,
+    which cannot wait for a thread hop. Both off-loop paths are pinned by their
+    own tests, which turn the switches back on.
+    """
+    from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+
+    _floor_monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", False)
+    _floor_monkeypatch.setattr(SpawnAdmissionCoordinator, "open_store_off_loop", False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_aim_skills_dir(_floor_monkeypatch):
     """Prevent SkillsLoader from discovering edition-contributed skill roots.
 

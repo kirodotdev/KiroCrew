@@ -27,7 +27,7 @@ import uuid
 import weakref
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import acp_tool_gate, agent_scratch, platform_compat
 from kiro_crew.acp._dispatch import (
@@ -140,9 +140,12 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AcpRuntime",
     "AcpRuntimeError",
+    "AcpSessionStartTimeout",
     "AcpWorkspaceBindingError",
     "AcpRuntimeDead",
     "AcpRequestTimeout",
+    "SessionStartGate",
+    "StartCollector",
     "AcpRuntimeProtocol",
     "AcpSessionHandle",
     # Re-exported from the harnesses that own them, so a caller that read them
@@ -247,6 +250,403 @@ def _cold_start_counts() -> tuple[int, int]:
     return admission.active, admission.queued
 
 
+# ── Session-start gate (RFC §4.4) ─────────────────────────────────────────────
+#
+# ``_ColdStartAdmission`` above bounds runtime spawn + initialize. This bounds
+# the OTHER expensive start: ``session/new`` on an already-running runtime,
+# which blocks while kiro-cli initializes the session's MCP servers. Under a
+# burst of subagent starts every session/new competes for the same process,
+# each one gets slower, and the 90s budget is hit by requests that would have
+# completed in isolation -- a timeout that says nothing about the runtime's
+# health. The gate keeps at most ``agent.session_start_concurrency`` (default 2)
+# session/new requests outstanding per event loop; waiters queue in FIFO order.
+# It is a FIXED semaphore on purpose: the adaptive loop lives in the gatewayd
+# spawn gate and the execution-cap controller, and two adapting loops on one
+# resource oscillate. The same gate serves every harness (kiro-cli, KAS, a
+# later Claude host): it wraps ``create_session``, which every backend's
+# session start runs through.
+_SESSION_START_CONCURRENCY_DEFAULT = 2
+_SESSION_START_CONCURRENCY_FLOOR = 1
+
+
+def _resolve_session_start_concurrency() -> int:
+    """Snapshot ``agent.session_start_concurrency`` from config (off-loop caller)."""
+    try:
+        from kiro_crew.config import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        return max(_SESSION_START_CONCURRENCY_FLOOR, int(cfg.agent.session_start_concurrency))
+    except Exception:
+        logger.debug("session_start_concurrency unreadable -- using default", exc_info=True)
+        return _SESSION_START_CONCURRENCY_DEFAULT
+
+
+def _record_session_start(start_t0: float, *, ok: bool, attributable_timeout: bool = False) -> None:
+    """Feed one ``session/new`` outcome to the adaptive controller, when one runs.
+
+    The controller is process-wide (``adaptive.controller.current``); without
+    one this is a no-op. ``key`` groups the samples by the start kind so a slow
+    ACP handshake reads apart from a slow MCP backend spawn.
+    """
+    try:
+        from kiro_crew.adaptive.controller import current as _current_controller
+
+        controller = _current_controller()
+        if controller is None:
+            return
+        controller.record_start(
+            (time.monotonic() - start_t0) * 1000.0,
+            ok=ok,
+            attributable_timeout=attributable_timeout,
+            key="acp:session/new",
+        )
+    except Exception:
+        logger.debug("session start sample not recorded", exc_info=True)
+
+
+class SessionStartGate:
+    """Loop-affine FIFO semaphore around ``session/new``.
+
+    ``acquire()`` returns a :class:`StartPermit` carrying the queue wait in
+    milliseconds so the caller can set the run's start clock at gate EXIT --
+    time spent waiting here is queue time and must not count against the
+    session-start budget or the startup watchdog. ``StartPermit.release()`` is
+    idempotent, which is what makes "released exactly once on every path"
+    checkable: ``releases`` counts real releases.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = max(_SESSION_START_CONCURRENCY_FLOOR, int(limit))
+        self._semaphore = asyncio.Semaphore(self.limit)
+        self.active = 0
+        self.queued = 0
+        self.releases = 0
+
+    async def acquire(self) -> "StartPermit":
+        started = time.monotonic()
+        self.queued += 1
+        try:
+            await self._semaphore.acquire()
+        finally:
+            self.queued -= 1
+        self.active += 1
+        return StartPermit(self, (time.monotonic() - started) * 1000.0)
+
+    def _release(self) -> None:
+        self.active = max(0, self.active - 1)
+        self.releases += 1
+        self._semaphore.release()
+
+
+class StartPermit:
+    """One acquired gate slot; ``release()`` is a no-op after the first call."""
+
+    def __init__(self, gate: SessionStartGate, queue_wait_ms: float) -> None:
+        self._gate = gate
+        self.queue_wait_ms = queue_wait_ms
+        self.released = False
+
+    def release(self) -> bool:
+        if self.released:
+            return False
+        self.released = True
+        self._gate._release()
+        return True
+
+
+_session_start_gates: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, SessionStartGate] = (
+    weakref.WeakKeyDictionary()
+)
+_session_start_gates_lock = threading.Lock()
+
+
+async def session_start_gate() -> SessionStartGate:
+    """The current loop's gate, sized from config the first time it is asked for.
+
+    Config is resolved off-loop (``KiroCrewConfig.load`` is disk I/O) unless the
+    live watcher's snapshot is armed. The size is fixed for the loop's lifetime;
+    ``agent.session_start_concurrency`` is ``restart=True``. The gate is a
+    strong value keyed weakly by loop, so it lives exactly as long as its loop.
+    """
+    loop = asyncio.get_running_loop()
+    with _session_start_gates_lock:
+        gate = _session_start_gates.get(loop)
+    if gate is not None:
+        return gate
+    snap = live.snapshot()
+    limit: int | None = None
+    if snap is not None:
+        try:
+            limit = int(snap.agent.session_start_concurrency)
+        except Exception:
+            limit = None
+    if limit is None:
+        limit = await asyncio.to_thread(_resolve_session_start_concurrency)
+    with _session_start_gates_lock:
+        gate = _session_start_gates.get(loop)
+        if gate is None:
+            gate = SessionStartGate(limit)
+            _session_start_gates[loop] = gate
+    return gate
+
+
+def session_start_gate_counts() -> tuple[int, int]:
+    """``(active, queued)`` for the current loop's gate; ``(0, 0)`` when none exists."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return (0, 0)
+    with _session_start_gates_lock:
+        gate = _session_start_gates.get(loop)
+    return (gate.active, gate.queued) if gate is not None else (0, 0)
+
+
+class _PendingRequests(dict):
+    """``{req_id: Future}`` for awaited control-plane requests, with ownership transfer.
+
+    A request that timed out is normally popped: nobody will read its answer.
+    ``adopt(req_id)`` is the other choice -- keep the entry so the late answer
+    still resolves the future, and record who owns it now. The reader loop
+    keeps popping on response exactly as before; only the timeout path changes.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.adopted: set[int] = set()
+
+    def adopt(self, req_id: int) -> "asyncio.Future[dict[str, Any]] | None":
+        future = self.get(req_id)
+        if future is None:
+            return None
+        self.adopted.add(req_id)
+        return future
+
+    def pop(self, key, default=None):  # type: ignore[override]
+        self.adopted.discard(key)
+        return super().pop(key, default)
+
+    def clear(self) -> None:
+        self.adopted.clear()
+        super().clear()
+
+
+class AcpSessionStartTimeout(AcpRequestTimeout):
+    """``session/new`` exceeded its budget while a :class:`StartCollector` still owns it.
+
+    Distinct from a bare :class:`AcpRequestTimeout` so a caller can tell "the
+    answer was lost" from "the request never went out": the session may still
+    be created by the runtime, the collector holds the request id, and the
+    caller may :meth:`StartCollector.adopt` the late session or let the
+    collector tear it down. Re-queuing the task, or starting a dedicated
+    process in its place, would leave that session running unowned.
+    ``collector`` is None when the request never reached the wire (nothing to
+    own).
+    """
+
+    def __init__(self, message: str, *, collector: "StartCollector | None") -> None:
+        super().__init__(message)
+        self.collector = collector
+
+
+# Bounds every init-frame holder below. A frame is staged only while the session
+# id that would claim it is still unknown, so one that nobody ever claims must
+# not accumulate for the runtime's life.
+_INIT_NOTIFICATION_BUFFER_LIMIT = 100
+
+
+def _split_init_frames(
+    staged: "deque[JsonRpcMessage]", session_id: str
+) -> tuple[list[JsonRpcMessage], "deque[JsonRpcMessage]"]:
+    """Partition staged init frames into *session_id*'s and everyone else's.
+
+    An empty *session_id* claims NOTHING: a start whose request never answered
+    has no id to match on, and matching everything there would hand it a
+    concurrent start's registrations.
+    """
+    matched: list[JsonRpcMessage] = []
+    retained: deque[JsonRpcMessage] = deque(maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT)
+    for msg in staged:
+        params = msg.params if isinstance(msg.params, dict) else {}
+        if session_id and str(params.get("sessionId") or "") == session_id:
+            matched.append(msg)
+        else:
+            retained.append(msg)
+    return matched, retained
+
+
+StartAdopter = Callable[[str, dict[str, Any]], Awaitable[bool]]
+
+START_OUTCOME_ADOPTED = "adopted"
+START_OUTCOME_TORN_DOWN = "torn_down"
+START_OUTCOME_ABANDONED = "abandoned"
+START_OUTCOME_RUNTIME_DEAD = "runtime_dead"
+START_OUTCOME_ERROR = "error"
+
+
+class StartCollector:
+    """Owns a ``session/new`` whose answer outlived the caller's budget.
+
+    Created by :meth:`AcpRuntime.create_session` on timeout. Holds the adopted
+    request future and the gate permit, and waits up to ``timeout``
+    (``agent.start_collect_timeout_secs``) for the answer:
+
+    * late result + an adopter registered -> the adopter decides; ``True``
+      means the session continues under its original owner (``adopted``);
+    * late result, no adopter (or the adopter declined) -> the session is torn
+      down through the runtime's normal per-session teardown (``torn_down``),
+      never by killing the shared runtime;
+    * the runtime dies -> nothing to tear down (``runtime_dead``);
+    * the cleanup deadline passes -> the request is dropped (``abandoned``).
+
+    Whichever path settles it releases the gate permit exactly once and
+    unregisters the collector. ``settled`` is an ``asyncio.Event`` for callers
+    that want to wait for the verdict.
+
+    It also holds the MCP-init frames its session may still send, because those
+    frames name a session id nobody can claim until this request answers -- see
+    :meth:`stage_init_frame`.
+    """
+
+    def __init__(
+        self,
+        runtime: "AcpRuntime",
+        req_id: int,
+        future: "asyncio.Future[dict[str, Any]]",
+        *,
+        permit: "StartPermit | None",
+        timeout: float,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        self._runtime = runtime
+        self.req_id = req_id
+        self._future = future
+        self._permit = permit
+        self.timeout = float(timeout)
+        self.context = dict(context or {})
+        self._adopter: StartAdopter | None = None
+        self.outcome: str | None = None
+        self.session_id: str = ""
+        self.settled = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        self.created_at = time.monotonic()
+        self._staged_init: deque[JsonRpcMessage] = deque(maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT)
+
+    def start(self) -> "StartCollector":
+        if self._task is None:
+            self._task = asyncio.ensure_future(self._run())
+        return self
+
+    @property
+    def is_settled(self) -> bool:
+        return self.settled.is_set()
+
+    def adopt(self, adopter: StartAdopter) -> bool:
+        """Register who takes the session if it arrives late; False once settled."""
+        if self.is_settled:
+            return False
+        self._adopter = adopter
+        return True
+
+    def gate_released(self) -> bool:
+        return self._permit is None or self._permit.released
+
+    def seed_init_frames(self, staged: "deque[JsonRpcMessage]") -> None:
+        """Copy the frames the timed-out start already staged into this collector.
+
+        A copy, not a move: a CONCURRENT start's frames sit in the same runtime
+        deque and only the id inside a frame says whose it is, so both holders
+        keep every candidate and each claims by id (:meth:`take_init_frames`).
+        """
+        self._staged_init.extend(staged)
+
+    def stage_init_frame(self, msg: JsonRpcMessage) -> None:
+        """Hold one MCP-init frame that may belong to this start's late session.
+
+        Held HERE rather than in the runtime's own staging deque because
+        ``_mcp_init_progress`` reads that one un-keyed, by server NAME: a frame
+        left there past its own init scope would be reported as the next
+        session-start timeout's progress, which is the one diagnostic that has to
+        stay attributable.
+        """
+        self._staged_init.append(msg)
+
+    def take_init_frames(self, session_id: str) -> list[JsonRpcMessage]:
+        """Take the staged frames that name *session_id*, leaving the rest."""
+        matched, self._staged_init = _split_init_frames(self._staged_init, session_id)
+        return matched
+
+    def drop_init_frames(self) -> None:
+        """Forget the staged frames: no claimant is left."""
+        self._staged_init.clear()
+
+    async def _run(self) -> None:
+        outcome = START_OUTCOME_ERROR
+        try:
+            try:
+                resp = await asyncio.wait_for(asyncio.shield(self._future), timeout=self.timeout)
+            except asyncio.TimeoutError:
+                self._runtime._pending_requests.pop(self.req_id, None)
+                if not self._future.done():
+                    self._future.cancel()
+                outcome = START_OUTCOME_ABANDONED
+                logger.warning(
+                    "start collector: session/new req_id=%d never answered within %gs; "
+                    "attempt abandoned",
+                    self.req_id,
+                    self.timeout,
+                )
+                return
+            except AcpRuntimeDead:
+                outcome = START_OUTCOME_RUNTIME_DEAD
+                return
+            except Exception:
+                logger.debug(
+                    "start collector: session/new req_id=%d failed late",
+                    self.req_id,
+                    exc_info=True,
+                )
+                return
+            session_id = str((resp or {}).get("sessionId") or "")
+            self.session_id = session_id
+            if not session_id:
+                return
+            adopted = False
+            if self._adopter is not None:
+                try:
+                    adopted = bool(await self._adopter(session_id, resp))
+                except Exception:
+                    logger.warning(
+                        "start collector: adopter for late session %s raised; tearing down",
+                        session_id,
+                        exc_info=True,
+                    )
+                    adopted = False
+            if adopted:
+                outcome = START_OUTCOME_ADOPTED
+                return
+            await self._runtime._teardown_late_session(session_id)
+            outcome = START_OUTCOME_TORN_DOWN
+        finally:
+            self.outcome = outcome
+            # Settled on EVERY outcome: an adopted session already took its own
+            # frames, and on any other outcome nothing will ever claim them.
+            # Holding them would keep one attempt's registrations alive for the
+            # runtime's life.
+            self.drop_init_frames()
+            released = self._permit.release() if self._permit is not None else False
+            self._runtime._start_collectors.pop(self.req_id, None)
+            logger.info(
+                "start collector settled: req_id=%d outcome=%s session=%s gate_released=%s "
+                "after %.1fs",
+                self.req_id,
+                outcome,
+                self.session_id or "-",
+                released,
+                time.monotonic() - self.created_at,
+            )
+            self.settled.set()
+
+
 # Session start (session/new, session/load) gets its own budget because kiro-cli
 # blocks the response while it initializes the session's MCP servers, and a
 # remote server pending OAuth holds that initialization for its FULL 30s
@@ -313,7 +713,6 @@ def _capped_names(names: list[str]) -> str:
     return f"{joined} (+{rest} more)" if rest > 0 else joined
 
 
-_INIT_NOTIFICATION_BUFFER_LIMIT = 100
 # Teardown must be snappy: a session is usually terminated on a hot path
 # (background task done, subagent reaped). kiro-cli's terminate handler responds
 # as soon as it enqueues the eviction (the actual shutdown runs in its actor
@@ -681,6 +1080,23 @@ def _get_rss_tree_mb(pid: int) -> float | None:
     return total_kib / 1024.0
 
 
+#: ``agent.start_collect_timeout_secs`` built-in default: how long a
+#: StartCollector keeps a timed-out session/new before abandoning the attempt.
+_START_COLLECT_TIMEOUT_DEFAULT = 300.0
+
+
+def _resolve_start_collect_timeout() -> float:
+    """Snapshot ``agent.start_collect_timeout_secs`` from config (off-loop caller)."""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        return max(10.0, float(cfg.agent.start_collect_timeout_secs))
+    except Exception:
+        logger.debug("start_collect_timeout_secs unreadable -- using default", exc_info=True)
+        return _START_COLLECT_TIMEOUT_DEFAULT
+
+
 def _resolve_session_start_timeout() -> float:
     """Snapshot ``agent.session_start_timeout_secs`` from config.
 
@@ -843,7 +1259,13 @@ class AcpRuntime:
         self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
 
         # Demux routing
-        self._pending_requests: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        self._pending_requests: _PendingRequests = _PendingRequests()
+        # session/new requests whose caller timed out but whose answer is still
+        # owned (RFC §4.4); keyed by request id, settled by the collector.
+        self._start_collectors: dict[int, StartCollector] = {}
+        # Cleanup deadline for those collectors; resolved off-loop like the
+        # session-start budget and cached for the runtime's lifetime.
+        self._start_collect_timeout: float | None = None
         # Maps req_id → sessionId for responses that should be routed to a session queue
         # (e.g. session/prompt response signals turn completion and must reach the session)
         self._routed_requests: dict[int, str] = {}
@@ -853,7 +1275,10 @@ class AcpRuntime:
         # frames while an init is active, then transfer the matching session's
         # frames into its queue. The bounded buffer is cleared when the last
         # concurrent init finishes so an abandoned URL cannot reach a later
-        # session that happens to reuse the same id.
+        # session that happens to reuse the same id. A start whose caller timed
+        # out keeps its own copy on its StartCollector instead, so this deque
+        # never outlives the init scope whose progress it describes (see
+        # _stage_init_frame).
         self._session_inits_in_flight = 0
         self._pending_init_notifications: deque[JsonRpcMessage] = deque(
             maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
@@ -1437,12 +1862,27 @@ class AcpRuntime:
         # ``private_kwargs``: that dict is the private-memory socket bundle and is
         # empty on the ordinary path, so folding an unrelated concern into it would
         # make the mask disappear whenever private memory is off.
+        # Per-process scratch containment (twin of acp/client.py). Allocated
+        # BEFORE the wrap: the scratch ROOT is masked for every sandboxed
+        # process, so this runtime's own directory is carved back out.
+        self._scratch_dir = None
+        try:
+            self._scratch_dir = await self._to_thread_guarding_sandbox(
+                agent_scratch.allocate_scratch, "runtime"
+            )
+        except OSError:
+            logger.warning(
+                "agent-scratch: could not allocate; spawning with inherited temp",
+                exc_info=True,
+            )
+        scratch_window = (str(self._scratch_dir),) if self._scratch_dir is not None else ()
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
             is_kiro_cli=delegate_internal_sandbox,
             extra_hidden_dirs=plan.extra_hidden_dirs,
+            extra_private_dirs=scratch_window,
             extra_expose_files=plan.extra_expose_files,
             _prepare=wrap_argv,
             **private_kwargs,
@@ -1529,23 +1969,13 @@ class AcpRuntime:
             lifecycle_env = {**os.environ, **browser_env}
             env.update(await self._to_thread_guarding_sandbox(browser_socket_env, lifecycle_env))
         # Per-process scratch containment: the agent's temp AND its
-        # prompt-guided work products land in an owned directory instead of
-        # the shared system temp dir. Allocated off-loop (mkdir + config read)
-        # through the sandbox guard like the env resolution above, and
-        # fail-open -- scratch is hygiene, not a spawn prerequisite. The
+        # prompt-guided work products land in the owned directory allocated
+        # before the sandbox wrap, instead of the shared system temp dir.
+        # Fail-open -- scratch is hygiene, not a spawn prerequisite. The
         # owner pid is recorded after spawn; reclamation is liveness-keyed
         # (agent_scratch.sweep_dead_scratch), never age-keyed.
-        self._scratch_dir = None
-        try:
-            self._scratch_dir = await self._to_thread_guarding_sandbox(
-                agent_scratch.allocate_scratch, "runtime"
-            )
+        if self._scratch_dir is not None:
             env.update(agent_scratch.scratch_env(self._scratch_dir))
-        except OSError:
-            logger.warning(
-                "agent-scratch: could not allocate; spawning with inherited temp",
-                exc_info=True,
-            )
         # Memory-aware cap for pytest-xdist's ``-n auto`` (subagent spawn path —
         # mirrors acp/client.py): xdist sizes auto to the CPU count, ignoring
         # memory; PYTEST_XDIST_AUTO_NUM_WORKERS bounds ONLY auto resolution.
@@ -2562,16 +2992,13 @@ class AcpRuntime:
                         await self._spawn_answer_task(msg, session_id)
                         # Same yield rationale as the routed-owner branch above.
                         await asyncio.sleep(0)
-                    elif self._session_inits_in_flight and msg.method in _mcp_init:
-                        # session/new can emit OAuth and MCP registration frames
-                        # before its response. The response is what gives
-                        # create_session the id needed to register this queue,
-                        # so retain the frames until then. Registration frames
-                        # matter beyond logging: drain_init() arms its idle
-                        # shortcut on the first one, so dropping them here would
-                        # make every warm session look report-less and pay the
-                        # full no-report ceiling.
-                        self._pending_init_notifications.append(msg)
+                    elif msg.method in _mcp_init and (
+                        # Read live, never hoisted beside _mcp_init: collectors
+                        # appear and settle during one reader lifetime.
+                        self._session_inits_in_flight
+                        or self._start_collectors
+                    ):
+                        self._stage_init_frame(msg)
                     else:
                         # Counted, not logged per frame: this is the measured
                         # flood (transcript replay during session/load, plus any
@@ -3074,7 +3501,11 @@ class AcpRuntime:
 
         Reports are runtime-wide rather than per-session: a request that never
         answered has no session id to match its frames against, so a concurrent
-        init is called out in the text instead of being silently folded in.
+        init is called out in the text instead of being silently folded in. What
+        keeps that bounded to the CONCURRENT inits is that a start whose caller
+        already gave up keeps its own frames on its :class:`StartCollector`
+        instead of here — un-keyed by name, they would otherwise be read as this
+        attempt's progress and hide the servers that never reported.
         Likewise the staging deque is bounded, so on a very large fleet the
         reported count is a floor, not an exact tally.
         """
@@ -3159,17 +3590,33 @@ class AcpRuntime:
             return exc
         return AcpRequestTimeout(f"{exc} ({progress})")
 
+    def _stage_init_frame(self, msg: JsonRpcMessage) -> None:
+        """Hold one MCP-init frame until the session id that claims it is known.
+
+        ``session/new`` can emit OAuth and MCP registration frames before its
+        response, and the response is what gives ``create_session`` the id needed
+        to register the queue. Registration frames matter beyond logging:
+        ``drain_init()`` arms its idle shortcut on the first one, so dropping them
+        here makes the session look report-less and pay the full no-report
+        ceiling.
+
+        Two holders, and a frame goes to both — the in-flight init scope's deque,
+        which ``_mcp_init_progress`` also reads un-keyed, and every live
+        :class:`StartCollector`, which owns a start whose id is still unknown.
+        Neither can hand a frame to the other's session (both claim by the id in
+        the frame, and two ``session/new`` answers never carry the same one), and
+        both are bounded, so a frame nobody claims cannot accumulate.
+        """
+        if self._session_inits_in_flight:
+            self._pending_init_notifications.append(msg)
+        for collector in self._start_collectors.values():
+            collector.stage_init_frame(msg)
+
     def _finish_session_init(self, session_id: str) -> list[JsonRpcMessage]:
         """Take staged init frames for one session and close its init scope."""
-        matched: list[JsonRpcMessage] = []
-        retained: deque[JsonRpcMessage] = deque(maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT)
-        for msg in self._pending_init_notifications:
-            params = msg.params if isinstance(msg.params, dict) else {}
-            if session_id and str(params.get("sessionId") or "") == session_id:
-                matched.append(msg)
-            else:
-                retained.append(msg)
-        self._pending_init_notifications = retained
+        matched, self._pending_init_notifications = _split_init_frames(
+            self._pending_init_notifications, session_id
+        )
         self._session_inits_in_flight -= 1
         if self._session_inits_in_flight == 0:
             # Anything unmatched belongs to a failed/abandoned init. Never let
@@ -3422,6 +3869,10 @@ class AcpRuntime:
                 )
         if self._session_start_timeout is None:
             self._session_start_timeout = await asyncio.to_thread(_resolve_session_start_timeout)
+        if getattr(self, "_start_collect_timeout", None) is None:
+            # Same off-loop resolve, so the timeout path (which cannot block on
+            # disk) finds the collector's cleanup budget already cached.
+            self._start_collect_timeout = await asyncio.to_thread(_resolve_start_collect_timeout)
         return self._session_start_timeout
 
     def _refuse_unprojected_pooled_servers(self, pooled: list[dict[str, Any]]) -> None:
@@ -3513,6 +3964,8 @@ class AcpRuntime:
         crew_agent: str | None = None,
         member_session_key: str = "",
         session_key: str = "",
+        on_gate_acquired: Callable[[float], None] | None = None,
+        late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None" = None,
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -3530,6 +3983,16 @@ class AcpRuntime:
         session-level entry (identity via ``KIROCREW_SESSION_KEY``), and the
         KAS wire agent's projection widens to grant its tools. Empty — every
         non-member session — leaves both paths byte-identical to before.
+
+        ``session/new`` runs under the loop's :class:`SessionStartGate`
+        (``agent.session_start_concurrency``). ``on_gate_acquired(queue_wait_ms)``
+        fires at gate EXIT so the caller can start its own clocks there: the
+        queue wait is not start time. On a ``session/new`` timeout the request
+        is NOT abandoned: a :class:`StartCollector` keeps it for
+        ``agent.start_collect_timeout_secs`` and either hands the late session
+        to ``late_adopter`` (which returns True to keep it) or tears it down;
+        the raised :class:`AcpSessionStartTimeout` carries that collector. The
+        gate permit is released exactly once on every path.
         """
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
@@ -3612,19 +4075,206 @@ class AcpRuntime:
                     )
 
         budget = await self._session_start_budget()
+        # Gate BEFORE the request goes out, released exactly once: on success
+        # right after the answer (the rest of session setup is not what the
+        # gate protects), on a timeout by the collector that now owns the
+        # request, on any other failure here.
+        gate = await session_start_gate()
+        permit = await gate.acquire()
+        if on_gate_acquired is not None:
+            try:
+                on_gate_acquired(permit.queue_wait_ms)
+            except Exception:
+                logger.debug("on_gate_acquired callback raised", exc_info=True)
         self._session_inits_in_flight += 1
         session_id = ""
+        # Start latency is measured from gate EXIT: the queue wait is admission's
+        # cost, not the runtime's, and the adaptive controller reads these
+        # samples for its ``start_latency`` / ``timeouts`` signals.
+        start_t0 = time.monotonic()
         try:
             resp = await self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget)
             session_id = str(resp.get("sessionId") or "")
+            permit.release()
             if not session_id:
+                # One failed start, one sample: the ``except`` below records it.
                 raise AcpRuntimeError(f"session/new did not return sessionId: {resp}")
+            _record_session_start(start_t0, ok=True)
         except AcpRequestTimeout as exc:
+            # A start that outlived its budget is the congestion signal the
+            # controller keys its decrease on (attributable timeout).
+            _record_session_start(start_t0, ok=False, attributable_timeout=True)
             # Read the staged MCP reports before the finally below clears them.
-            raise self._session_start_stalled(exc, METHOD_SESSION_NEW, mcp_servers) from exc
+            stalled = self._session_start_stalled(exc, METHOD_SESSION_NEW, mcp_servers)
+            collector = self._collect_late_start(
+                exc,
+                permit,
+                agent=agent,
+                crew_agent=crew_agent,
+                kas_agents=kas_agents,
+                mcp_servers=mcp_servers,
+                budget=budget,
+                stub_token=stub_token,
+                active_agent=active_agent,
+                session_work_dir=session_work_dir,
+                projected_sources=projected_sources,
+                payload_snapshot=payload_snapshot,
+                late_adopter=late_adopter,
+            )
+            if collector is None:
+                permit.release()
+            raise AcpSessionStartTimeout(str(stalled), collector=collector) from exc
+        except BaseException:
+            permit.release()
+            _record_session_start(start_t0, ok=False)
+            raise
         finally:
             buffered_init = self._finish_session_init(session_id)
 
+        return await self._finish_create_session(
+            session_id,
+            resp,
+            buffered_init=buffered_init,
+            agent=agent,
+            crew_agent=crew_agent,
+            kas_agents=kas_agents,
+            mcp_servers=mcp_servers,
+            budget=budget,
+            stub_token=stub_token,
+            active_agent=active_agent,
+            session_work_dir=session_work_dir,
+            projected_sources=projected_sources,
+            payload_snapshot=payload_snapshot,
+        )
+
+    def _collect_late_start(
+        self,
+        exc: AcpRequestTimeout,
+        permit: StartPermit,
+        *,
+        agent: str | None,
+        crew_agent: str | None,
+        kas_agents: Any,
+        mcp_servers: list[dict[str, Any]],
+        budget: float,
+        stub_token: str,
+        active_agent: str,
+        session_work_dir: str | Path,
+        projected_sources: dict[str, str],
+        payload_snapshot: Any,
+        late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None",
+    ) -> StartCollector | None:
+        """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
+
+        None when the request never went out (a patched or pre-wire failure
+        leaves no ``req_id`` on the exception): there is nothing to own, and
+        the caller releases the permit itself. The collector's cleanup budget
+        is read from the live snapshot when armed, else the cached value from
+        the last off-loop resolve (default 300s) -- a collector is created on
+        the timeout path and must not block on disk there.
+        """
+        req_id = getattr(exc, "req_id", None)
+        future = getattr(exc, "adopted_future", None)
+        if req_id is None or future is None:
+            return None
+        timeout = getattr(self, "_start_collect_timeout", None)
+        if timeout is None:
+            snap = live.snapshot()
+            try:
+                timeout = (
+                    max(10.0, float(snap.agent.start_collect_timeout_secs))
+                    if snap is not None
+                    else _START_COLLECT_TIMEOUT_DEFAULT
+                )
+            except Exception:
+                timeout = _START_COLLECT_TIMEOUT_DEFAULT
+        collector = StartCollector(
+            self,
+            int(req_id),
+            future,
+            permit=permit,
+            timeout=timeout,
+            context={"agent": agent or "", "crew_agent": crew_agent or ""},
+        )
+        # Seeded and registered with no await in between, so the reader loop
+        # cannot stage a frame into only one of the two holders: what this start
+        # already staged is copied here, and everything from now on is handed to
+        # the collector as well as to any init still in flight. The caller's
+        # ``finally`` closes the in-flight scope a moment from now and clears that
+        # deque; the collector's copy is what survives to be claimed.
+        collector.seed_init_frames(self._pending_init_notifications)
+        if late_adopter is not None:
+
+            async def _adopt(session_id: str, resp: dict[str, Any]) -> bool:
+                handle = await self._finish_create_session(
+                    session_id,
+                    resp,
+                    buffered_init=collector.take_init_frames(session_id),
+                    agent=agent,
+                    crew_agent=crew_agent,
+                    kas_agents=kas_agents,
+                    mcp_servers=mcp_servers,
+                    budget=budget,
+                    stub_token=stub_token,
+                    active_agent=active_agent,
+                    session_work_dir=session_work_dir,
+                    projected_sources=projected_sources,
+                    payload_snapshot=payload_snapshot,
+                )
+                # A declining (or raising) adopter answers False and the
+                # collector performs the one teardown.
+                return bool(await late_adopter(handle))
+
+            collector.adopt(_adopt)
+        self._start_collectors[int(req_id)] = collector
+        logger.warning(
+            "acp_startup_stage stage=session_new outcome=collecting req_id=%d "
+            "collect_budget_s=%g gate_active=%d gate_queued=%d",
+            int(req_id),
+            timeout,
+            *session_start_gate_counts(),
+        )
+        return collector.start()
+
+    async def _teardown_late_session(self, session_id: str) -> None:
+        """Tear down a session that arrived after its caller gave up.
+
+        Per-session teardown only (the harness's cancel/terminate verb plus the
+        local unregister); the shared runtime and its other sessions are never
+        touched. A dead runtime has nothing to tear down.
+        """
+        if self._dead or self._process is None:
+            return
+        await self.terminate_session(session_id)
+
+    def start_collectors(self) -> list[StartCollector]:
+        """Live collectors, for diagnostics and tests."""
+        return list(self._start_collectors.values())
+
+    async def _finish_create_session(
+        self,
+        session_id: str,
+        resp: dict[str, Any],
+        *,
+        buffered_init: list[JsonRpcMessage],
+        agent: str | None,
+        crew_agent: str | None,
+        kas_agents: Any,
+        mcp_servers: list[dict[str, Any]],
+        budget: float,
+        stub_token: str,
+        active_agent: str,
+        session_work_dir: str | Path,
+        projected_sources: dict[str, str],
+        payload_snapshot: Any,
+    ) -> AcpSessionHandle:
+        """Everything after a successful ``session/new``: queue, handle, mode, drain.
+
+        Shared by the direct path and a late adoption through
+        :class:`StartCollector`. ``buffered_init`` comes from whichever holder
+        staged the frames while this id was unknown: the runtime's in-flight
+        scope on the direct path, the collector on an adoption.
+        """
         # Register session queue
         queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
         self._session_queues[session_id] = queue
@@ -4148,7 +4798,20 @@ class AcpRuntime:
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
-            self._pending_requests.pop(req_id, None)
+            if method == METHOD_SESSION_NEW:
+                # The answer may still come, and if it does it names a session
+                # the runtime has CREATED. Keep the future registered so the
+                # reader loop resolves it, and hand ownership to the caller's
+                # StartCollector via ``adopt`` (RFC §4.4) instead of leaving an
+                # unowned session in the shared process. ``wait_for`` cancelled
+                # the future; give the adopter a fresh one bound to the same id.
+                fresh: asyncio.Future[dict[str, Any]] = loop.create_future()
+                self._pending_requests[req_id] = fresh
+                adopt = getattr(self._pending_requests, "adopt", None)
+                adopted = adopt(req_id) if adopt is not None else fresh
+            else:
+                self._pending_requests.pop(req_id, None)
+                adopted = None
             active_starts, queued_starts = _cold_start_counts()
             if self._process is None:
                 process_state = "absent"
@@ -4171,7 +4834,12 @@ class AcpRuntime:
             )
             # Name the budget: a session-start timeout (90s) must be
             # distinguishable from a generic control-plane one (30s).
-            raise AcpRequestTimeout(f"Request {method} timed out after {timeout:g}s")
+            timeout_exc = AcpRequestTimeout(f"Request {method} timed out after {timeout:g}s")
+            if adopted is not None:
+                # What create_session needs to build the collector.
+                setattr(timeout_exc, "req_id", req_id)
+                setattr(timeout_exc, "adopted_future", adopted)
+            raise timeout_exc
         if stage is not None:
             active_starts, queued_starts = _cold_start_counts()
             logger.info(

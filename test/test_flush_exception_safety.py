@@ -202,7 +202,7 @@ class TestSeam2FinishQueueCycle:
             # has restored the data-home environment.
             patch.object(chat_runner, "generate_session_summary", new=AsyncMock()),
         ):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert any(m.get("role") == "done" for m in slot.messages), "no done row => wedge"
