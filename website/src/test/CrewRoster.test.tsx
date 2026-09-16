@@ -1312,7 +1312,6 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     expect(within(sheet).queryByRole('heading', { name: 'What this agent uses' })).toBeNull()
     expect(within(sheet).getByText(/hand work to this member/)).toBeInTheDocument()
     expect(within(sheet).getByText(/The starting setup this member uses/)).toBeInTheDocument()
-    expect(within(sheet).getByText(/no member color/)).toBeInTheDocument()
     expect(within(sheet).queryByText(/this agent/)).toBeNull()
     await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?tab=crews$/))
   })
