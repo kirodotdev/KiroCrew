@@ -105,7 +105,7 @@ WECOM_CAPABILITIES = TransportCapabilities(
     edit=True,
     reactions=False,
     files_inbound=True,
-    files_outbound=False,
+    files_outbound=True,
     rich_blocks=False,
     threads=False,
     # Keep canonical tables: an adaptive representation can exceed the cap while
