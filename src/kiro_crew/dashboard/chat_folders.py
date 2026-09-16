@@ -14,11 +14,12 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+from kiro_crew.dashboard.chat_tags import _effective_request_app as _effective_request_app_shared
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot, derive_caller_app
+from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
@@ -1188,29 +1189,12 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-def _effective_request_app(state: DashboardState, request: web.Request) -> str:
-    """App identity to enforce ownership against, or "" for the dashboard user.
-
-    Reads the claim ``token_auth_middleware`` publishes, and re-derives through
-    the SAME shared rule (``token_auth.derive_caller_app``) when it is absent.
-
-    The internal-secret transport (the managed MCP set) carries no app claim of
-    its own, so the middleware derives one for every route on that transport.
-    The re-derivation here is defense-in-depth for a caller that reaches the
-    handler without having passed that branch, and it calls the shared function
-    rather than restating the rule so the two can never disagree.
-
-    Never read from request BODY or tool arguments — a caller that could name
-    its own scope could name someone else's.
-    """
-    declared = request.get("app", "")
-    if declared:
-        return str(declared)
-    app_name = derive_caller_app(
-        getattr(state, "_slots", None),
-        request.headers.get("X-Session-Key", ""),
-    )
-    return app_name
+# ``_effective_request_app`` is defined in ``chat_tags`` (this module already
+# imports from it, and the reverse import would be a cycle) and re-exported here
+# under its historical name: every folder route calls it, ``chat_folder_scaffold``
+# imports it from here, and ``test_internal_secret_app_identity_3690`` pins it as
+# ``chat_folders._effective_request_app``.
+_effective_request_app = _effective_request_app_shared
 
 
 # Per-STATE metadata-write transaction lock for the slot metadata PATCH

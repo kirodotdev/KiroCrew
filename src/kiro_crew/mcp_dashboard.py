@@ -20,8 +20,13 @@ that must be grantable separately belongs in a server of its own.
 
 What it controls today is the chat (sidebar) folder tree: read it, create a
 folder, reparent a folder, and file a live session into one. Create and move
-only — no delete and no rename, so nothing here can lose a conversation. Every
-tool is a thin proxy over the dashboard's existing endpoints (loopback +
+only — no delete and no rename, so nothing here can lose a conversation. It also
+controls session TAGS with the same posture: read the vocabulary, create a tag,
+and add or remove tags on a live session — no tag delete, no rename, and the
+assignment is a DELTA the endpoint applies compare-and-set against the
+revision this server read, so an agent never clobbers a tag the person clicked
+on meanwhile. Every tool is a thin proxy over the dashboard's existing endpoints
+(loopback +
 ``X-Internal-Secret``); the endpoints keep owning every tree invariant, and the
 gateway audits each write with the caller's declared component name — this
 server's requests carry ``X-Internal-Caller: kirocrew-dashboard`` (attached
@@ -79,6 +84,7 @@ from kiro_crew.mcp_core import (
     _get,
     _patch,
     _post,
+    _put,
     _resolve_session_key,
     require_strict_session_key,
 )
@@ -90,6 +96,9 @@ from kiro_crew.validation import (
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     CHAT_FOLDER_TREE_SCHEMA,
+    CHAT_TAG_ASSIGN_SCHEMA,
+    CHAT_TAG_CREATE_SCHEMA,
+    CHAT_TAG_LIST_SCHEMA,
     MCP_DASHBOARD_SCHEMAS,
     SESSION_CLOSE_SCHEMA,
     SESSION_CREATE_SCHEMA,
@@ -123,6 +132,11 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
 # address afterwards; a mismatch shows up as the duplicate-creation the
 # too-long-segment test pins.
 _MAX_FOLDER_NAME = 100
+
+# Same mirror for tags: the tag endpoints store ``name[:60]``
+# (``chat_tags._NAME_MAX``), and a silently truncated name is one no later
+# ``chat_tag_assign`` name lookup can match.
+_MAX_TAG_NAME = 60
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
@@ -279,6 +293,82 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         ),
                     },
                 },
+            },
+        },
+        {
+            "name": "chat_tag_list",
+            "description": (
+                "List the sidebar's tag vocabulary: every tag's id, name, color and "
+                "whether it is a STATUS tag (a status tag is what a Trello-style "
+                "column filters on, so a session normally carries one at a time). "
+                "Read-only. Call it before chat_tag_assign to see which tags exist, "
+                "and chat_tag_create when the one you need does not."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "chat_tag_create",
+            "description": (
+                "Create a NEW tag in the sidebar's shared vocabulary. ``name`` is "
+                "matched case-insensitively against existing tags: an existing name "
+                "is returned rather than duplicated, so calling this for a tag that "
+                "already exists is a safe no-op. ``color`` is an optional '#rrggbb'; "
+                "``status`` marks it a status tag (one a Trello-style column can "
+                "filter on). Create only — this server can neither rename nor delete "
+                "a tag, so nothing here can lose a label the person put on a session."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Tag name (max 60 chars)."},
+                    "color": {
+                        "type": "string",
+                        "description": "Optional '#rrggbb' color; the dashboard default when omitted.",
+                    },
+                    "status": {
+                        "type": "boolean",
+                        "description": "Mark as a status tag (default false).",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "chat_tag_assign",
+            "description": (
+                "Add and/or remove tags on a LIVE chat session. ``session`` is a slot "
+                "key or 'dashboard:<slot>' session key from chat_folder_tree, or a "
+                "session's exact title when that title is unique. ``add`` and "
+                "``remove`` each take tag ids or exact tag names (see chat_tag_list); "
+                "at least one must be non-empty, and a tag must already exist "
+                "(chat_tag_create makes one). This is a DELTA on the session's current "
+                "tags — tags you do not name are kept — and it is applied "
+                "compare-and-set against the tag list this call read, so if the "
+                "person changes the session's tags at the same moment the call fails "
+                "with the current list instead of overwriting their click; re-read and "
+                "retry. Metadata only: the transcript, model and any running turn are "
+                "untouched. ARCHIVED (history) sessions cannot be tagged — revive one "
+                "into the sidebar first."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Slot key, 'dashboard:<slot>' session key, or exact unique session title.",
+                    },
+                    "add": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tag ids or exact names to add.",
+                    },
+                    "remove": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tag ids or exact names to remove.",
+                    },
+                },
+                "required": ["session"],
             },
         },
         {
@@ -1014,6 +1104,65 @@ def _resolve_chat_slot_key(ref: str, slots: list[dict]) -> tuple[str, str | None
         f"no live session matches {redact(ref)} — call chat_folder_tree for slot "
         "keys. An ARCHIVED session cannot be moved: revive it into the sidebar first"
     )
+
+
+def _resolve_chat_tag_ids(refs: list[str], tags: list[dict]) -> tuple[list[str], str | None]:
+    """Resolve tag references (ids or exact names) to tag ids, in call order.
+
+    Tag ids are minted as ``uuid.uuid4().hex[:12]`` (``chat_tags.create_tag_definition``).
+    A reference is a tag id or a tag's exact name, matched case-insensitively
+    and never as a substring — so a partial or unknown name fails loudly naming
+    the vocabulary instead of tagging with the wrong label. Ids win over names
+    when a tag is NAMED like another's id, since the id is the unambiguous form.
+    Duplicates collapse; an unknown reference fails the whole call, so a delta
+    is applied whole or not at all.
+    """
+    by_id = {str(t.get("id") or ""): t for t in tags if t.get("id")}
+    by_name: dict[str, list[str]] = {}
+    for t in tags:
+        nm = str(t.get("name") or "").strip().lower()
+        if nm and t.get("id"):
+            by_name.setdefault(nm, []).append(str(t["id"]))
+    out: list[str] = []
+    for raw in refs:
+        ref = str(raw or "").strip()
+        if not ref:
+            continue
+        tid = ""
+        if ref in by_id:
+            tid = ref
+        else:
+            named = by_name.get(ref.lower(), [])
+            if len(named) > 1:
+                return [], (
+                    f"{len(named)} tags share the name {redact(ref)} "
+                    f"({', '.join(named)}) — pass the tag id instead"
+                )
+            if named:
+                tid = named[0]
+        if not tid:
+            return [], (
+                f"no tag matches {redact(ref)} — call chat_tag_list for the vocabulary, "
+                "or chat_tag_create to add it"
+            )
+        if tid not in out:
+            out.append(tid)
+    return out, None
+
+
+def _render_chat_tags(tags: list[dict]) -> str:
+    """One line per tag: id, name, color, and the status marker."""
+    if not tags:
+        return "No tags defined yet — chat_tag_create makes one."
+    lines = [f"\U0001f3f7\ufe0f Tag vocabulary — {len(tags)} tag{'' if len(tags) == 1 else 's'}"]
+    # Same coercion as folder rows: ``tags.json`` is loaded verbatim, so a
+    # hand-edited ``order`` must sort as 0 rather than end the tool call.
+    for t in sorted(tags, key=_chat_folder_order):
+        marker = "  [status]" if t.get("status") else ""
+        lines.append(
+            f"- `{t.get('name', '?')}`  id={t.get('id', '?')}  color={t.get('color', '?')}{marker}"
+        )
+    return "\n".join(lines)
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -1884,6 +2033,139 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return redact(
             f"Filed this session (`{own_key}`) in `{folder_label}` (id={fld_id}).{made_note}"
         )
+    if name == "chat_tag_list":
+        validate_tool_args(args, CHAT_TAG_LIST_SCHEMA)
+        # The vocabulary is one shared list of labels with no per-session or
+        # per-app content in it — nothing here names a session — so it needs no
+        # caller scoping, unlike the slot list every other read here goes through.
+        tags, tags_err = _get_rows("/api/chat/tags")
+        if tags_err:
+            return f"Error: {tags_err}"
+        return redact(_render_chat_tags(tags))
+    if name == "chat_tag_create":
+        args = validate_tool_args(args, CHAT_TAG_CREATE_SCHEMA)
+        # Same gate as the folder writes: it settles whether the caller can be
+        # placed at all and returns the verified key the write must carry. The
+        # app rule itself — an app-scoped caller may not coin a shared tag —
+        # lives in the endpoint (``api_chat_tag_create``), which judges every
+        # transport on the middleware's validated claim; restating it here
+        # would be a second copy that can only drift.
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable("creating a tag")
+        if gate:
+            return gate
+        # Agent-authored name landing in durable, re-rendered state — redact
+        # before the write, like folder names. The endpoint stores ``name[:60]``,
+        # and redaction can lengthen a string (a credential becomes a marker), so
+        # the length is checked on what would be stored: a truncated name is one
+        # no later chat_tag_assign name lookup can match.
+        safe_name = redact(str(args["name"])).strip()
+        if not safe_name:
+            return "Error: tag name must not be empty"
+        if len(safe_name) > _MAX_TAG_NAME:
+            return (
+                f"Error: tag name too long after redaction ({len(safe_name)} chars): "
+                f"`{safe_name[:40]}…` — keep it to {_MAX_TAG_NAME} characters or fewer"
+            )
+        tag_body: dict[str, Any] = {"name": safe_name, "status": bool(args.get("status", False))}
+        if args.get("color"):
+            tag_body["color"] = str(args["color"])
+        # The verified key is passed through unchanged, per the gate's contract.
+        d = _post("/api/chat/tags", tag_body, session_key=caller_key)
+        if d.get("error"):
+            if d.get("code") == "app_forbidden":
+                return (
+                    "Error: an app-owned session cannot create a tag — tags are one "
+                    "shared vocabulary with no per-app owner. Use the tags that already "
+                    "exist (chat_tag_list)."
+                )
+            return redact(f"Error: {d['error']}")
+        tid = str(d.get("id") or "?")
+        got_name = str(d.get("name") or safe_name)
+        marker = " (status tag)" if d.get("status") else ""
+        if got_name.lower() != safe_name.lower():
+            # Cannot happen through the endpoint's own dedup (it matches on the
+            # lowered name), but the response is the record: report what exists.
+            return redact(f"Tag `{got_name}` (id={tid}){marker} already covers `{safe_name}`.")
+        return redact(
+            f"Tag `{got_name}` (id={tid}, color={d.get('color', '?')}){marker} is available."
+        )
+    if name == "chat_tag_assign":
+        args = validate_tool_args(args, CHAT_TAG_ASSIGN_SCHEMA)
+        add_refs = [str(x) for x in (args.get("add") or [])]
+        remove_refs = [str(x) for x in (args.get("remove") or [])]
+        if not add_refs and not remove_refs:
+            return "Error: pass at least one tag in ``add`` or ``remove``"
+        tags, tags_err = _get_rows("/api/chat/tags")
+        if tags_err:
+            return f"Error: {tags_err}"
+        add_ids, add_err = _resolve_chat_tag_ids(add_refs, tags)
+        if add_err:
+            return redact(f"Error: {add_err}")
+        remove_ids, remove_err = _resolve_chat_tag_ids(remove_refs, tags)
+        if remove_err:
+            return redact(f"Error: {remove_err}")
+        clash = [t for t in add_ids if t in remove_ids]
+        if clash:
+            return f"Error: {', '.join(clash)} named in both ``add`` and ``remove``"
+        chat_slots, slots_err = _visible_chat_slots()
+        if slots_err:
+            return f"Error: {slots_err}"
+        slot_key, slot_err = _resolve_chat_slot_key(args["session"], chat_slots)
+        if slot_err:
+            return redact(f"Error: {slot_err}")
+        slot_row = next((s for s in chat_slots if str(s.get("key") or "") == slot_key), {})
+        current = [str(t) for t in (slot_row.get("tags") or []) if isinstance(t, str)]
+        new_tags = [t for t in current if t not in remove_ids]
+        for tid in add_ids:
+            if tid not in new_tags:
+                new_tags.append(tid)
+        # Like chat_folder_move_session, this writes to a session OTHER than the
+        # caller's, so identity is resolved STRICTLY and the verified key rides
+        # on the write unchanged — see that tool for why the lenient walk is
+        # unsafe here.
+        caller_key, strict_err = require_strict_session_key(
+            "Error: cannot verify which session is calling, so this tag change is "
+            "refused — tagging another session requires a caller identity the "
+            "gateway can vouch for.",
+            server=SERVER_NAME,
+        )
+        if not caller_key:
+            return strict_err
+        names_by_id = {str(t.get("id") or ""): str(t.get("name") or "?") for t in tags}
+        if new_tags == current:
+            shown = ", ".join(f"`{names_by_id.get(t, t)}`" for t in current) or "none"
+            return redact(f"No change: session `{slot_key}` already carries {shown}.")
+        # The revision the list above was composed on. The endpoint applies the
+        # write compare-and-set against it, so a tag the person toggles between
+        # this read and the PUT is not silently dropped by a wholesale replace —
+        # the call fails 409 ``stale_base`` and is retried on the fresh list.
+        put_body: dict[str, Any] = {"tags": new_tags}
+        base_rev = str(slot_row.get("tags_revision") or "")
+        if base_rev:
+            put_body["base_tags_revision"] = base_rev
+        d = _put(
+            f"/api/chat/slots/{quote(slot_key, safe='')}/tags",
+            put_body,
+            session_key=caller_key,
+        )
+        if d.get("error"):
+            if d.get("code") == "stale_base":
+                return redact(
+                    f"Error: the tags on `{slot_key}` changed while this call was "
+                    "composing its delta (someone else toggled a tag). Nothing was "
+                    "written — call chat_tag_assign again; it re-reads the current list."
+                )
+            return redact(f"Error: {d['error']}")
+        final = [str(t) for t in (d.get("tags") or new_tags) if isinstance(t, str)]
+        shown = ", ".join(f"`{names_by_id.get(t, t)}`" for t in final) or "none"
+        added = ", ".join(f"`{names_by_id.get(t, t)}`" for t in add_ids if t not in current)
+        removed = ", ".join(f"`{names_by_id.get(t, t)}`" for t in remove_ids if t in current)
+        parts = []
+        if added:
+            parts.append(f"added {added}")
+        if removed:
+            parts.append(f"removed {removed}")
+        return redact(f"Session `{slot_key}`: {'; '.join(parts)}. Tags now: {shown}.")
     return f"Error: unknown tool '{name}'"
 
 

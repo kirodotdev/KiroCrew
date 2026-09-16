@@ -2032,6 +2032,50 @@ CHAT_FOLDER_FILE_SELF_SCHEMA = ToolSchema(
     ],
 )
 
+# The tag endpoints store ``name[:60]`` (``chat_tags._NAME_MAX``); the cap is
+# mirrored here so the server refuses an overlong name instead of writing one
+# that no later ``chat_tag_assign`` name lookup can match.
+_CHAT_TAG_NAME_MAX = 60
+#: A tag reference is a 12-hex id or the tag's exact name; the two share no
+#: charset, so only the length is bounded — the handler resolves the shape.
+_CHAT_TAG_REF_MAX = 64
+#: Sidebar tag lists are short by construction (a strip of columns); the cap
+#: bounds one call, not the vocabulary.
+_CHAT_TAG_MAX_ITEMS = 32
+
+CHAT_TAG_LIST_SCHEMA = ToolSchema(tool_name="chat_tag_list", fields=[])
+
+CHAT_TAG_CREATE_SCHEMA = ToolSchema(
+    tool_name="chat_tag_create",
+    fields=[
+        FieldSpec("name", str, required=True, max_len=_CHAT_TAG_NAME_MAX),
+        FieldSpec("color", str, pattern=re.compile(r"^#[0-9a-fA-F]{6}$")),
+        FieldSpec("status", bool),
+    ],
+)
+
+CHAT_TAG_ASSIGN_SCHEMA = ToolSchema(
+    tool_name="chat_tag_assign",
+    fields=[
+        # Same session-reference shape as ``chat_folder_move_session.session``.
+        FieldSpec("session", str, required=True, max_len=512),
+        FieldSpec(
+            "add",
+            list,
+            item_type=str,
+            item_max_len=_CHAT_TAG_REF_MAX,
+            max_items=_CHAT_TAG_MAX_ITEMS,
+        ),
+        FieldSpec(
+            "remove",
+            list,
+            item_type=str,
+            item_max_len=_CHAT_TAG_REF_MAX,
+            max_items=_CHAT_TAG_MAX_ITEMS,
+        ),
+    ],
+)
+
 ARTIFACT_MOVE_SCHEMA = ToolSchema(
     tool_name="artifact_move",
     fields=[
@@ -3216,6 +3260,9 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,
     "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     "chat_folder_file_self": CHAT_FOLDER_FILE_SELF_SCHEMA,
+    "chat_tag_list": CHAT_TAG_LIST_SCHEMA,
+    "chat_tag_create": CHAT_TAG_CREATE_SCHEMA,
+    "chat_tag_assign": CHAT_TAG_ASSIGN_SCHEMA,
 }
 
 # ── Tool Schemas (MCP Work ledger — server ``kirocrew-work``) ──

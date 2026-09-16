@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import uuid
 import weakref
@@ -25,6 +26,7 @@ from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState, mint_tags_revision
+from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot, derive_caller_app
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -252,18 +254,106 @@ async def create_tag_definition_off_loop(
         return tag
 
 
+def _effective_request_app(state: DashboardState, request: web.Request) -> str:
+    """App identity to enforce ownership against, or "" for the dashboard user.
+
+    Reads the claim ``token_auth_middleware`` publishes, and re-derives through
+    the SAME shared rule (``token_auth.derive_caller_app``) when it is absent.
+
+    The internal-secret transport (the managed MCP set) carries no app claim of
+    its own, so the middleware derives one for every route on that transport.
+    The re-derivation here is defense-in-depth for a caller that reaches the
+    handler without having passed that branch, and it calls the shared function
+    rather than restating the rule so the two can never disagree.
+
+    Never read from request BODY or tool arguments — a caller that could name
+    its own scope could name someone else's.
+
+    Defined here rather than in ``chat_folders`` because that module imports
+    this one; ``chat_folders`` re-exports it under the same name for its routes
+    and for ``chat_folder_scaffold``.
+    """
+    declared = request.get("app", "")
+    if declared:
+        return str(declared)
+    app_name = derive_caller_app(
+        getattr(state, "_slots", None),
+        request.headers.get("X-Session-Key", ""),
+    )
+    return app_name
+
+
+def _tag_order(tag: dict) -> int:
+    """A tag's stored position as a sort key; anything that is not a number is 0.
+
+    ``tags.json`` is loaded verbatim (``DashboardState.load_tags``), and the
+    product's own writers only ever store an int — so a non-numeric ``order``
+    is a hand edit. A sort key that raises on it takes down every reader of the
+    vocabulary (the sidebar's tag list, the MCP tag tools) for one bad row.
+    """
+    value = tag.get("order", 0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
+    return int(value)
+
+
 # ── Tag vocabulary ─────────────────────────────────────────────────────────
 
 
 async def api_chat_tags(request: web.Request) -> web.Response:
     """GET /api/chat/tags — list all tag definitions."""
     state: DashboardState = request.app["state"]
-    return web.json_response(sorted(state._tags, key=lambda t: t.get("order", 0)))
+    return web.json_response(sorted(state._tags, key=_tag_order))
 
 
 async def api_chat_tag_create(request: web.Request) -> web.Response:
     """POST /api/chat/tags — create a new tag."""
     state: DashboardState = request.app["state"]
+    # A ``dashboard:`` key that names a slot absent from the registry is a tab
+    # that closed between the MCP tool's pre-check and this request. The app it
+    # would have been confined to is exactly what got popped, so
+    # ``derive_caller_app`` answers ``""`` — which the check below would read as
+    # the PERSON. Same per-route refusal the folder writes apply
+    # (``chat_folders`` explains why it is not in the middleware).
+    if caller_names_a_missing_slot(
+        getattr(state, "_slots", None), request.headers.get("X-Session-Key", "")
+    ):
+        sel().log_api_access(
+            caller="unattributable",
+            operation="chat.tag_create",
+            outcome="denied",
+            source="app_isolation",
+            resources=request.path,
+            error="caller names a dashboard slot that is gone",
+        )
+        return web.json_response(
+            {
+                "error": "the calling session is gone, so this write cannot be attributed",
+                "code": "caller_unattributable",
+            },
+            status=403,
+        )
+    # Tags are ONE shared vocabulary with no owner: a folder an app creates is
+    # the app's own (``chat_folders._folder_owner_app``), but a tag an app coins
+    # lands in the person's list with nothing to tell it apart, and nothing
+    # bounds a later rename or delete to the app that made it. So an app-scoped
+    # caller may not create one. Decided HERE, on the middleware's validated
+    # claim, so the rule holds for every transport — the ``chat_tag_create`` MCP
+    # tool included — rather than only where a tool layer chooses to restate it.
+    request_app = _effective_request_app(state, request)
+    if request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.tag_create",
+            outcome="denied",
+            source="app_isolation",
+            error="apps cannot create shared tags",
+        )
+        return web.json_response(
+            {"error": "apps cannot create shared tags", "code": "app_forbidden"}, status=403
+        )
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -527,6 +617,30 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    # App ownership (App Kit §5.2) — the same deny-by-default rule
+    # ``chat_folders.api_chat_slot_folder`` applies to filing, and for the same
+    # reason: tagging is a write to a session's own state, and the
+    # ``chat_tag_assign`` MCP tool reaches this route on behalf of an app agent
+    # that scopes what it can SEE client-side — the boundary has to hold here,
+    # where the authoritative slot table is. Same 404 for both reasons so the
+    # route is not an existence oracle for slots the caller cannot see. The
+    # identity comes from the middleware's claim, re-derived through the shared
+    # rule when absent — never from the body.
+    request_app = _effective_request_app(state, request)
+    if request_app and getattr(slot, "_app", "") != request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.slot_tags",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error=(
+                "app cannot access unscoped slots"
+                if not getattr(slot, "_app", "")
+                else "app does not own this slot"
+            ),
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     # Capture the transcript key the lookup above just covered, BEFORE the
     # body-parse and lock awaits: ``linked_session_key`` is rebound on
     # already-live slots with no ``running`` gate (cron completions, workflow

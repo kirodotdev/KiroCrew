@@ -697,7 +697,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `session_create`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`, `chat_tag_list`, `chat_tag_create`, `chat_tag_assign`, `session_create`, `session_send`, `session_read_message`, `session_stop`, `session_close` |
 
 `kirocrew-dashboard` is one transport carrying **two** authorization models, which is
 what makes its assignment decision larger than its name suggests. The
@@ -1141,6 +1141,27 @@ MCP tool set can apply the rule `_caller_app_scope` already applies inside it. I
 stays per-route rather than in the middleware on purpose: a popped slot no longer
 says whose tab it was, so refusing centrally would also refuse the person's own
 in-flight calls on every internal route at once.
+
+**Tags ride the same server, with the same shape.** `chat_tag_list` reads the
+vocabulary (`GET /api/chat/tags`), `chat_tag_create` adds to it
+(`POST /api/chat/tags`, which dedups on the lowered name so a repeat call is a
+no-op), and `chat_tag_assign` labels a live session
+(`PUT /api/chat/slots/<slot>/tags`). No delete and no rename, like the folders.
+Two differences from the folder verbs follow from tags having no owner. First,
+`POST /api/chat/tags` refuses an app-scoped caller outright (403 `app_forbidden`,
+which `chat_tag_create` surfaces): a folder an app makes is the app's own, but a
+tag lands in the person's one shared list with nothing to tell it apart, so
+there is no boundary to bound that write to. The rule sits in the endpoint, on
+the middleware's validated claim, for the same reason the folder policy does —
+a tool-layer copy could only drift.
+Second, `chat_tag_assign` takes `add` / `remove` DELTAS rather than a list to
+replace, and sends the slot's `tags_revision` as `base_tags_revision` so the
+endpoint applies the write compare-and-set: a tag the person toggles between the
+tool's read and its PUT is not silently dropped by a wholesale replace — the call
+fails 409 `stale_base` and re-reads. The session is resolved through the same
+scoped `_visible_chat_slots` as `chat_folder_move_session`, and the PUT route
+applies the same App Kit ownership check `api_chat_slot_folder` does, so an app
+agent cannot reach a foreign session's tags from either side.
 
 **Assignment is still not authorization.** Being unreferenced by default keeps a
 capability cheap and deliberate; it does not prove the user consented to reach the

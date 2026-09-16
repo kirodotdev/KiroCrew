@@ -6029,6 +6029,14 @@ handle immediately.
 #:   same-workspace session, losing filing the user did by hand.
 #: * ``chat_folder_move`` — WITHHELD. Reparents an existing folder tree, and no
 #:   conductor step needs it.
+#: * ``chat_tag_list`` / ``chat_tag_create`` — WITHHELD, not because either
+#:   fails the invariant (a read, and a create that dedups on name) but because
+#:   no conductor step needs them; a verb is granted for a step, not for being
+#:   harmless.
+#: * ``chat_tag_assign`` — WITHHELD. Writes another session's ``tags``: the PUT
+#:   goes to ``/api/chat/slots/<target>/tags`` where the target is the session
+#:   named in the ARGUMENTS — the same shape as ``chat_folder_move_session``.
+#:   Ingested content could re-label any persistent same-workspace session.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.
