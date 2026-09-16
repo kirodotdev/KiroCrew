@@ -12167,7 +12167,11 @@
         "workspace": "workspace",
         "auto_create_hint": "{{productName}} può anche redigere competenze dalle sessioni completate automaticamente — disattivato per impostazione predefinita, controllato da <settingRef/>.",
         "approval_required_hint": "I candidati attendono qui la tua approvazione. Le skill di sola prosa possono essere pubblicate automaticamente quando <settingRef/> è disattivato — le skill che includono script richiedono sempre una revisione.",
-        "scripts_always_require_review": "Gli script inclusi richiedono sempre una revisione manuale, anche quando l'approvazione delle skill è disattivata."
+        "scripts_always_require_review": "Gli script inclusi richiedono sempre una revisione manuale, anche quando l'approvazione delle skill è disattivata.",
+        "related_skills": "Skill correlate",
+        "audit_duplicate": "Duplicata",
+        "audit_subsumed": "Inclusa",
+        "audit_overlapping": "Sovrapposta"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Convenzioni Markdown che l’agente legge. La modalità di inclusione di ogni file decide quando: sempre, solo per i file corrispondenti o su richiesta. I file globali stanno in ~/.kiro/steering e valgono ovunque; quelli del workspace stanno in <project>/.kiro/steering e valgono solo per quel progetto.",

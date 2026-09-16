@@ -19,7 +19,7 @@ import SkillContextBudget from './SkillContextBudget'
 
 import { Trans } from 'react-i18next'
 
-import { fmtBytes, fmtCompact } from '../../i18n/format'
+import { fmtBytes, fmtCompact, fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { parseErrorCode } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
@@ -74,6 +74,7 @@ export default function SkillsTab() {
   const [detailEditing, setDetailEditing] = useState(false)
   // Multi-provider skill browser drawer (Add Skill button).
   const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
+  const [auditOpen, setAuditOpen] = useState(false)
   const [createError, setCreateError] = useState('')
 
   // Deep-linkable view param: ?view=budget swaps to the control plane.
@@ -96,6 +97,13 @@ export default function SkillsTab() {
     // list). The shared ['skills'] cache still backs the palette/picker.
     staleTime: 0,
     refetchOnMount: 'always',
+  })
+
+  const { data: fullAudit } = useQuery<{ clusters: SkillAuditCluster[] }>({
+    queryKey: ['skills-audit'],
+    queryFn: () => api.skillsAudit(),
+    enabled: auditOpen,
+    staleTime: 0,
   })
 
   // Content of the selected skill's SKILL.md — only needed to seed the edit
@@ -258,6 +266,28 @@ export default function SkillsTab() {
   return (<>
     <PendingSkillsPanel />
     <ProjectSkillsTrustList />
+    <Modal
+      open={auditOpen}
+      onClose={() => setAuditOpen(false)}
+      title={i18nT('pages.overview.skillsTab.related_skills')}
+      maxWidth={560}
+    >
+      <div className="space-y-2">
+        {(fullAudit?.clusters ?? []).map(cluster => (
+          <div
+            key={cluster.members.map(member => member.id).join('|')}
+            className="rounded-md border border-border bg-card p-3"
+          >
+            <div className="text-[12px] font-semibold text-text-strong">
+              {i18nT(AUDIT_CLASSIFICATION_KEY[cluster.classification])} · {fmtPercent(cluster.score)}
+            </div>
+            <div className="mt-1 text-[12px] text-muted" translate="no">
+              {cluster.members.map(member => member.name).join(' · ')}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Modal>
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not
         the combined path: a segment that sanitizes to nothing (typically one
@@ -294,6 +324,9 @@ export default function SkillsTab() {
           {skillFilter && <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text transition-colors cursor-pointer" onClick={() => setSkillFilter('')} aria-label={i18nT('pages.overview.skillsTab.clear_search')}>{"\u00d7"}</button>}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <Btn onClick={() => setAuditOpen(true)}>
+            {i18nT('pages.overview.skillsTab.related_skills')}
+          </Btn>
           <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.skillsTab.refresh_skills')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
@@ -481,6 +514,40 @@ interface PendingSkill {
   target?: string | null
   base_version?: number | null
 }
+interface SkillAuditMember {
+  id: string
+  kind: 'pending' | 'live'
+  name: string
+  slug?: string
+}
+interface SkillAuditRelation {
+  classification: 'duplicate' | 'subsumed' | 'overlapping'
+  score: number
+  members: [string, string]
+}
+interface SkillAuditCluster {
+  classification: SkillAuditRelation['classification']
+  score: number
+  members: SkillAuditMember[]
+  relations: SkillAuditRelation[]
+  update_targets: {
+    pending_slug: string
+    target: string
+    classification: SkillAuditRelation['classification']
+    score: number
+  }[]
+}
+interface AuditRelatedSkill {
+  target: string
+  classification: SkillAuditRelation['classification']
+  score: number
+  canRestage: boolean
+}
+const AUDIT_CLASSIFICATION_KEY = {
+  duplicate: 'pages.overview.skillsTab.audit_duplicate',
+  subsumed: 'pages.overview.skillsTab.audit_subsumed',
+  overlapping: 'pages.overview.skillsTab.audit_overlapping',
+} as const
 interface PendingDetail {
   name: string
   content: string
@@ -495,12 +562,14 @@ interface PendingDetail {
   stale_base?: boolean
 }
 
-function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
+function PendingCandidateRow({ p, autoOpen, related, onApprove, onDismiss, onRestage }: {
   p: PendingSkill
   /** True when a notification deep-linked at THIS candidate (?review=<slug>). */
   autoOpen?: boolean
+  related: AuditRelatedSkill[]
   onApprove: (slug: string) => void
   onDismiss: (slug: string) => void
+  onRestage: (slug: string, target: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -556,6 +625,18 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
         <Btn primary disabled={!open || !detail || (isUpdate && (!detail.diff || !!detail.stale_base))} onClick={() => onApprove(p.slug)}>{i18nT('pages.overview.skillsTab.approve')}</Btn>
         <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
+      {related.length > 0 && (
+        <div className="mt-2 flex items-center gap-2 text-[11px] text-muted">
+          <span className="min-w-0 flex-1 truncate">
+            {i18nT('pages.overview.skillsTab.related_skills')}: {related.map(item => item.target).join(', ')}
+          </span>
+          {!isUpdate && related[0].canRestage && (
+            <Btn onClick={() => onRestage(p.slug, related[0].target)}>
+              {i18nT('pages.overview.skillsTab.update')}
+            </Btn>
+          )}
+        </div>
+      )}
       {open && detail && (
         <div className="mt-2 space-y-2">
           {p.has_scripts && (
@@ -642,6 +723,39 @@ function PendingSkillsPanel() {
     refetchOnMount: 'always',
   })
   const pending: PendingSkill[] = data?.pending ?? []
+  const { data: auditData } = useQuery<{ clusters: SkillAuditCluster[] }>({
+    queryKey: ['skills-audit'],
+    queryFn: () => api.skillsAudit(),
+    enabled: pending.length > 0,
+    staleTime: 0,
+  })
+  const relatedBySlug = useMemo(() => {
+    const result = new Map<string, AuditRelatedSkill[]>()
+    for (const cluster of auditData?.clusters ?? []) {
+      const byId = new Map(cluster.members.map(member => [member.id, member]))
+      for (const relation of cluster.relations) {
+        const pair = relation.members.map(id => byId.get(id)).filter(Boolean) as SkillAuditMember[]
+        const pendingMember = pair.find(member => member.kind === 'pending')
+        const liveMember = pair.find(member => member.kind === 'live')
+        if (!pendingMember?.slug || !liveMember) continue
+        const canRestage = cluster.update_targets.some(
+          target => target.pending_slug === pendingMember.slug && target.target === liveMember.name,
+        )
+        const items = result.get(pendingMember.slug) ?? []
+        items.push({
+          target: liveMember.name,
+          classification: relation.classification,
+          score: relation.score,
+          canRestage,
+        })
+        result.set(pendingMember.slug, items)
+      }
+    }
+    for (const items of result.values()) {
+      items.sort((left, right) => right.score - left.score || left.target.localeCompare(right.target, 'en'))
+    }
+    return result
+  }, [auditData])
   const approve = useMutation({
     mutationFn: (slug: string) => api.approvePendingSkill(slug),
     onSuccess: (_data, slug) => {
@@ -661,7 +775,18 @@ function PendingSkillsPanel() {
       // row keeps rendering its pre-approval diff from cache.
       qc.invalidateQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
       qc.invalidateQueries({ queryKey: ['skills'] })
+    },
+  })
+  const restage = useMutation({
+    mutationFn: ({ slug, target }: { slug: string; target: string }) =>
+      api.restagePendingSkill(slug, target),
+    onSuccess: (_data, { slug }) => {
+      if (slug === reviewSlug) setReviewSlug(null)
+      qc.removeQueries({ queryKey: ['skills-pending-detail', slug] })
+      qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
     },
   })
   const dismiss = useMutation({
@@ -675,6 +800,7 @@ function PendingSkillsPanel() {
       // user might then approve without seeing the replacement).
       qc.removeQueries({ queryKey: ['skills-pending-detail', slug] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
     },
   })
   const dismissAll = useMutation({
@@ -683,6 +809,7 @@ function PendingSkillsPanel() {
       setReviewSlug(null)
       qc.removeQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
+      qc.invalidateQueries({ queryKey: ['skills-audit'] })
     },
   })
   // Only claim a deep-linked candidate is gone once the queue has actually been
@@ -729,8 +856,10 @@ function PendingSkillsPanel() {
                 key={p.slug}
                 p={p}
                 autoOpen={p.slug === reviewSlug}
+                related={relatedBySlug.get(p.slug) ?? []}
                 onApprove={s => approve.mutate(s)}
                 onDismiss={s => dismiss.mutate(s)}
+                onRestage={(slug, target) => restage.mutate({ slug, target })}
               />
             ))}
           </div>

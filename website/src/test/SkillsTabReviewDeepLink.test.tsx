@@ -21,8 +21,10 @@ const mockApi = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   deleteSkill: vi.fn(),
+  skillsAudit: vi.fn(),
   skillsPending: vi.fn(),
   skillPendingDetail: vi.fn(),
+  restagePendingSkill: vi.fn(),
   approvePendingSkill: vi.fn(),
   dismissPendingSkill: vi.fn(),
 }))
@@ -93,6 +95,7 @@ beforeEach(() => {
   mockApi.skills.mockResolvedValue([])
   mockApi.skillTree.mockResolvedValue({ entries: [] })
   mockApi.skillsPending.mockResolvedValue({ pending: [ROW_A, ROW_B] })
+  mockApi.skillsAudit.mockResolvedValue({ clusters: [] })
   mockApi.skillPendingDetail.mockImplementation((slug: string) =>
     Promise.resolve({ name: `auto/${slug}`, content: `BODY OF ${slug}`, scripts: [] }),
   )

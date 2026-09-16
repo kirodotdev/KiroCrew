@@ -12167,7 +12167,11 @@
         "workspace": "workspace",
         "auto_create_hint": "O {{productName}} também pode rascunhar habilidades de sessões concluídas automaticamente — desativado por padrão, controlado por <settingRef/>.",
         "approval_required_hint": "Os candidatos aguardam aqui sua aprovação. Habilidades somente de prosa podem ser publicadas automaticamente quando <settingRef/> está desativado — habilidades que incluem scripts sempre exigem revisão.",
-        "scripts_always_require_review": "Scripts incluídos sempre exigem revisão manual, mesmo quando a aprovação de habilidades está desativada."
+        "scripts_always_require_review": "Scripts incluídos sempre exigem revisão manual, mesmo quando a aprovação de habilidades está desativada.",
+        "related_skills": "Skills relacionados",
+        "audit_duplicate": "Duplicado",
+        "audit_subsumed": "Incluído",
+        "audit_overlapping": "Sobreposição"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Convenções Markdown que o agente lê. O modo de inclusão de cada arquivo decide quando: sempre, apenas para arquivos correspondentes ou sob demanda. Arquivos globais ficam em ~/.kiro/steering e valem em todo lugar; os do espaço de trabalho ficam em <project>/.kiro/steering e valem só para aquele projeto.",

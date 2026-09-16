@@ -11997,7 +11997,11 @@
         "workspace": "Workspace",
         "auto_create_hint": "{{productName}} kann auch automatisch Skills aus abgeschlossenen Sitzungen erstellen — standardmäßig deaktiviert, gesteuert durch <settingRef/>.",
         "approval_required_hint": "Kandidaten warten hier auf Ihre Genehmigung. Reine Prosa-Skills können automatisch live gehen, wenn <settingRef/> deaktiviert ist — Skills mit Skripten erfordern immer eine Überprüfung.",
-        "scripts_always_require_review": "Gebündelte Skripte erfordern immer eine manuelle Überprüfung, auch wenn die Skill-Genehmigung deaktiviert ist."
+        "scripts_always_require_review": "Gebündelte Skripte erfordern immer eine manuelle Überprüfung, auch wenn die Skill-Genehmigung deaktiviert ist.",
+        "related_skills": "Verwandte Skills",
+        "audit_duplicate": "Duplikat",
+        "audit_subsumed": "Abgedeckt",
+        "audit_overlapping": "Überschneidung"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Markdown-Konventionen, die der Agent liest. Der Einbindungsmodus jeder Datei entscheidet wann: immer, nur für passende Dateien oder bei Bedarf. Globale Dateien liegen in ~/.kiro/steering und gelten überall; Workspace-Dateien liegen in <project>/.kiro/steering und gelten nur für dieses Projekt.",

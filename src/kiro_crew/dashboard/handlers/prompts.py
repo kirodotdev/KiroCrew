@@ -2543,6 +2543,88 @@ async def api_skills_pending(request: web.Request) -> web.Response:
     return web.json_response({"pending": items})
 
 
+async def api_skills_audit(request: web.Request) -> web.Response:
+    """GET /api/skills/-/audit — compare pending and live skills for overlap."""
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    try:
+        clusters = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.audit
+        )
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skills_audit",
+            tool_kind="skill",
+            outcome="error",
+            metadata={},
+        )
+        return web.json_response({"error": "internal error", "code": "internal_error"}, status=500)
+    _sel().log_tool_invocation(
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skills_audit",
+        tool_kind="skill",
+        outcome="ok",
+        metadata={"count": len(clusters)},
+    )
+    return web.json_response({"clusters": clusters})
+
+
+async def api_skill_pending_restage(request: web.Request) -> web.Response:
+    """POST /api/skills/-/pending/{slug}/restage — turn a candidate into an update."""
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    slug = request.match_info["slug"]
+    if not _plain_stem_ok(slug):
+        return web.json_response({"error": "invalid slug", "code": "invalid_slug"}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    target = body.get("target") if isinstance(body, dict) else None
+    if not isinstance(target, str) or not target.strip():
+        return web.json_response(
+            {"error": "target is required", "code": "target_required"}, status=400
+        )
+    try:
+        staged = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.restage_as_update, slug, target.strip()
+        )
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_restage",
+            tool_kind="skill",
+            outcome="error",
+            metadata={"slug": slug},
+        )
+        return web.json_response({"error": "internal error", "code": "internal_error"}, status=500)
+    _sel().log_tool_invocation(
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skill_pending_restage",
+        tool_kind="skill",
+        outcome="ok" if staged else "rejected",
+        metadata={"slug": slug, "target": target.strip()},
+    )
+    if staged is None:
+        return web.json_response(
+            {
+                "error": "candidate or live auto-skill target was not found",
+                "code": "restage_rejected",
+            },
+            status=409,
+        )
+    return web.json_response({"staged": staged, "target": target.strip()})
+
+
 async def api_skill_pending_detail(request: web.Request) -> web.Response:
     """GET /api/skills/-/pending/{slug} — full candidate incl. body + scripts."""
     state: DashboardState = request.app["state"]

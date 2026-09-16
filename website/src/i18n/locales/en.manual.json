@@ -4964,7 +4964,11 @@
         "budget_footnote": "A pinned (always: true) or package-owned skill shows its cost but has no switch.",
         "budget_empty_title": "No budget data yet",
         "budget_empty_subtitle": "No skills installed yet.",
-        "scripts_always_require_review": "Bundled scripts always require manual review, even when skill approval is turned off."
+        "scripts_always_require_review": "Bundled scripts always require manual review, even when skill approval is turned off.",
+        "related_skills": "Related skills",
+        "audit_duplicate": "Duplicate",
+        "audit_subsumed": "Subsumed",
+        "audit_overlapping": "Overlapping"
       },
       "steeringTab": {
         "delete_confirm": "Delete “{{path}}”?",
