@@ -986,6 +986,16 @@ class TestRedactionSinkRegistry:
             # the generic scanners cannot know about — strictly more than either
             # scanner alone, so a sink using it is fully covered.
             "redact_mcp_error",
+            # redact_mcp_app_payload_text runs redact_exfiltration_urls THEN
+            # redact_credentials (security/__init__.py), masking a plausible inline
+            # media data: body around BOTH so a webp does not get a credential tag
+            # spliced into it. Both scanners still run, so a sink using it is fully
+            # covered. It is listed by name because mcp_apps_render.py reaches the
+            # dual passes through it and through a bare ``security.redact``
+            # reference it hands on as a value — neither spells the ``redact(``
+            # needle above, and a sink that runs both scanners must not be reported
+            # as partially covered.
+            "redact_mcp_app_payload_text",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")
