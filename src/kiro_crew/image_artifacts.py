@@ -23,6 +23,9 @@ message can never collapse to the same slug.
 Scope guards (all deliberate, all mirror the widget path):
 
 * http(s)/data/protocol-relative URLs are skipped — only LOCAL files are copied.
+  Which destinations those are is :func:`is_remote_destination`, shared with the
+  upload direction: a ``//host/share`` UNC path is spelled like a
+  protocol-relative URL and is local, so the two directions decide it once.
 * only absolute paths to existing, readable, non-sensitive raster files
   (png/jpeg/webp/gif by extension) are registered.
 * restricted (incognito/temporary) sessions register nothing — the caller gates
@@ -50,7 +53,7 @@ from kiro_crew.artifacts import (
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.messaging.outbound_files import (
     IMAGE_MD_RE,
-    REMOTE_PREFIXES,
+    is_remote_destination,
     local_destination,
     md_destination,
     strip_url_syntax,
@@ -193,9 +196,11 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
         raw_path = md_destination(text[m.end():])
         if not raw_path:
             continue
-        low = raw_path.lower()
-        if low.startswith(REMOTE_PREFIXES):
-            # Remote / data / protocol-relative — nothing local to copy.
+        if is_remote_destination(raw_path):
+            # Remote / data / protocol-relative — nothing local to copy. The
+            # shared predicate, not a second copy of the prefix test: a UNC
+            # destination is local, and the two directions must not disagree
+            # about which of them a `//` string is.
             continue
         mime = _mime_for_path(raw_path)
         if mime is None:
