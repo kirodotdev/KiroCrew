@@ -384,17 +384,11 @@ def _corpus() -> list[str]:
         _ENCODED_CRED_STEM + "==",
         _ENCODED_CRED_STEM,
         f"payload {_ENCODED_CRED_STEM}= end",
-        # ── redact by span, not by value ──
-        # A decodable chunk hosted inside an earlier non-decodable run (pass 2),
-        # and a bare key hosted inside an earlier declined run (pass 3).
-        f"{_ENCODED_CRED_HOST} {_HOSTED_ENCODED_CRED}",
+        # ── positional shapes on which redacting by value happened to land right ──
+        # The standalone credential comes FIRST, so the value's first occurrence
+        # is its own span and the legacy redactor agrees with the by-span one.
         f"{_HOSTED_ENCODED_CRED} {_ENCODED_CRED_HOST}",
-        f"{_SLASHY_SECRET_HOST} {_SLASHY_SECRET}",
         f"{_SLASHY_SECRET} {_SLASHY_SECRET_HOST}",
-        # A run partly claimed by pass 1: a glued key whose tail is the first word
-        # of the label that follows it, and a prefixed key whose head pass 1 took.
-        f"D{AWS_SECRET}ZGHUT8aws_secret_access_key={AWS_SECRET}",
-        f"sk-proj-{'a' * 20}Z{AWS_SECRET}",
         # The same value twice, once inside a labelled match and once bare: the
         # bare one is judged on its own span, not on whether the value remains.
         f"aws_secret_access_key={AWS_SECRET} {AWS_SECRET}",
@@ -403,7 +397,75 @@ def _corpus() -> list[str]:
     return cases
 
 
-CORPUS = _corpus()
+# Every shape on which the legacy by-value redactor and the by-span one
+# disagree, paired with the plaintext the legacy output KEEPS and the by-span
+# output removes. Kept apart from `_corpus()` so the legacy-equivalence test
+# below can assert agreement on everything else and disagreement on exactly
+# these.
+LEGACY_DIVERGENT_SHAPES: tuple[tuple[str, str], ...] = (
+    # A decodable chunk hosted inside an earlier non-decodable run (pass 2): the
+    # legacy tag lands inside the host and the WHOLE standalone chunk survives.
+    (f"{_ENCODED_CRED_HOST} {_HOSTED_ENCODED_CRED}", f" {_HOSTED_ENCODED_CRED}"),
+    # A bare key hosted inside an earlier declined run (pass 3): same, the whole
+    # standalone key survives.
+    (f"{_SLASHY_SECRET_HOST} {_SLASHY_SECRET}", f" {_SLASHY_SECRET}"),
+    # A glued key whose tail is the first word of the label that follows it.
+    # Legacy skips the run (its tail is gone), then the labelled value's own
+    # pass-3 lookup lands inside the run by coincidence of equal text and
+    # redacts exactly the key, leaving the glue around it. With a DIFFERENT
+    # labelled value that coincidence is gone and the glued key leaks whole; the
+    # by-span redactor removes the whole run either way.
+    (f"D{AWS_SECRET}ZGHUT8aws_secret_access_key={AWS_SECRET}", "ZGHUT8"),
+    # A run whose head pass 1 took (`sk-proj-` consumes alphanumerics up to the
+    # first slash): legacy skips the run and the key's 26-char tail survives.
+    (f"sk-proj-{'a' * 20}Z{AWS_SECRET}", AWS_SECRET[14:]),
+)
+
+LEGACY_EQUIVALENT_CORPUS = _corpus()
+CORPUS = LEGACY_EQUIVALENT_CORPUS + [text for text, _ in LEGACY_DIVERGENT_SHAPES]
+
+
+# ── The by-value redactor this change retires, kept verbatim as a second oracle ──
+
+
+def _legacy_redact_credentials(text: str) -> tuple[str, list[str]]:
+    """Passes 2 and 3 as they shipped before the by-span rewrite. Do not fix this.
+
+    This is the SHIPPED behaviour, leak included, so that the rewrite's two
+    claims are both checked in CI rather than asserted in a PR body: on every
+    shape where redacting by value happened to land on the right span, the
+    by-span redactor is byte-identical to it, warnings included
+    (``test_by_span_agrees_with_legacy_wherever_legacy_landed_right``); and on
+    each divergent shape the legacy redactor keeps plaintext the by-span one
+    removes (``test_legacy_diverges_on_every_by_span_shape``). The by-span
+    oracle above shares its algorithm with the live function, so it cannot
+    carry either claim on its own.
+    """
+    warnings: list[str] = []
+    result = text
+
+    def _redact_one(m: "re.Match[str]") -> str:
+        warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
+        return _REDACTED_CREDENTIAL_TAG
+
+    result = _CREDENTIAL_PATTERNS.sub(_redact_one, result)
+
+    for m in _B64_CHUNK_RE.finditer(text):
+        chunk = m.group()
+        if _decode_b64_safe(chunk):
+            result = result.replace(chunk, "[REDACTED: encoded credential]", 1)
+            warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
+
+    for m in _BARE_SECRET_RUN_RE.finditer(text):
+        run = m.group()
+        if not _contains_bare_secret(run):
+            continue
+        if run not in result:
+            continue
+        result = result.replace(run, _REDACTED_CREDENTIAL_TAG, 1)
+        warnings.append(f"Redacted bare secret key ({len(run)} chars)")
+
+    return result, warnings
 
 
 # ── Differential assertions ──
@@ -412,6 +474,26 @@ CORPUS = _corpus()
 @pytest.mark.parametrize("text", CORPUS, ids=range(len(CORPUS)))
 def test_output_is_byte_identical_to_reference(text: str) -> None:
     assert redact_credentials(text) == _reference_redact_credentials(text)
+
+
+@pytest.mark.parametrize("text", LEGACY_EQUIVALENT_CORPUS, ids=range(len(LEGACY_EQUIVALENT_CORPUS)))
+def test_by_span_agrees_with_legacy_wherever_legacy_landed_right(text: str) -> None:
+    """Outside the leak shapes, the rewrite changes nothing: text nor warning order."""
+    assert redact_credentials(text) == _legacy_redact_credentials(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "legacy_keeps"),
+    LEGACY_DIVERGENT_SHAPES,
+    ids=range(len(LEGACY_DIVERGENT_SHAPES)),
+)
+def test_legacy_diverges_on_every_by_span_shape(text: str, legacy_keeps: str) -> None:
+    """Each divergent shape is a real pin: legacy keeps plaintext the rewrite removes."""
+    legacy_text, _ = _legacy_redact_credentials(text)
+    live_text, _ = redact_credentials(text)
+    assert legacy_text != live_text
+    assert legacy_keeps in legacy_text, "corpus assumption: the legacy redactor kept this"
+    assert legacy_keeps not in live_text, "the by-span redactor left plaintext behind"
 
 
 def test_matched_span_is_redacted_not_an_earlier_lookalike() -> None:

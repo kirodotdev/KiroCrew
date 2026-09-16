@@ -10,9 +10,11 @@ Covered:
 
 * ``redact_credentials`` pass 1 was ``for m in
   _CREDENTIAL_PATTERNS.finditer(result): result = result.replace(...)``, which
-  rebuilt the whole string per match (O(n^2) on credential-dense text). It is now
-  a single ``_CREDENTIAL_PATTERNS.sub(...)``. The redacted text AND the
-  ``warnings`` list (content *and* order) must be unchanged.
+  rebuilt the whole string per match (O(n^2) on credential-dense text). Pass 1
+  walks ``_CREDENTIAL_PATTERNS.finditer(text)`` exactly once and records each
+  match as a span; the string is spliced a single time after every pass. The
+  redacted text AND the ``warnings`` list (content *and* order) must be
+  unchanged.
 * The sensitive-path regex anchor rewrite. That regex is gone (the
   shell gate does not match paths in command text; the OS sandbox and
   ``is_sensitive_path`` hold the fence), so what remains of the differential is
@@ -206,14 +208,17 @@ def inspect_source(func: object) -> str:
 
 
 def test_credential_pattern_module_still_compiles_one_alternation() -> None:
-    """Invariant: the rewritten pass 1 still uses the shared compiled pattern.
+    """Invariant: pass 1 uses the shared compiled pattern, gated by its pre-filter.
 
     Guards against a future refactor swapping in a locally compiled regex, which
-    would silently drop the ``_might_contain_credential`` pre-filter pairing.
+    would silently drop the ``_might_contain_credential`` pre-filter pairing, and
+    against the pre-filter and the scan being asked about different strings --
+    the pre-filter is only a sound gate for the exact text the scan then walks.
     """
     from kiro_crew import security as security_mod
 
     assert isinstance(security_mod._CREDENTIAL_PATTERNS, re.Pattern)
     body = inspect_source(security_mod.redact_credentials)
-    assert "_CREDENTIAL_PATTERNS.sub(" in body
-    assert "_might_contain_credential(result)" in body
+    assert "_CREDENTIAL_PATTERNS.finditer(text)" in body
+    assert "_might_contain_credential(text)" in body
+    assert "re.compile(" not in body
