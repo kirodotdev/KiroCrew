@@ -13,7 +13,12 @@ from aiohttp import web
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.sections import OrchestratorConfig
 from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
-from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
+from kiro_crew.dashboard.chat_runner import (
+    _POSTTOKEN_RECOVER_MSG,
+    _STOP_REASON_PROVIDER_BUDGET_ARTIFACT,
+    _run_chat,
+    _start_next_queued_turn,
+)
 from kiro_crew.dashboard.chat_utils import chat_done_payload
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, append_and_surface
 from kiro_crew.dashboard.turn_dispatch import _bounded_turn
@@ -22,6 +27,11 @@ from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exf
 from kiro_crew.sel import SecurityEvent, sel
 
 logger = logging.getLogger(__name__)
+
+# Direct unit harnesses call `_stage_loop` with a detached slot; production
+# always registers it. One stable sentinel lets the controller lease distinguish
+# "still intentionally detached" from "the registered production slot vanished".
+_MISSING_STAGE_SLOT = object()
 
 
 async def _build_stage_context(
@@ -146,6 +156,16 @@ def _collect_stage_result_parts(slot: "_ChatSlot") -> tuple[str, ...]:
             result_parts.append(m.get("content", ""))
     result_parts.reverse()
     return tuple(result_parts)
+
+
+def _stage_continuation_completed(slot: "_ChatSlot") -> bool:
+    """Whether the synchronous banner continuation completed its stage answer.
+
+    The runner derives this predicate from terminal, model-text, synthetic, and
+    permission-decision provenance. Host status and file-change rows, visible
+    refusal prose, cancellation, and provider errors therefore cannot satisfy it.
+    """
+    return slot._last_turn_stage_answer
 
 
 def _write_stage_result(
@@ -288,6 +308,42 @@ def _orchestration_stopped(slot: "_ChatSlot", tracker: OrchestrationTracker) -> 
     for by cancelling a plan.
     """
     return bool(slot._stopping) or bool(tracker.stopped)
+
+
+def _stage_turn_is_current(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    tracker: OrchestrationTracker,
+    *,
+    stage_num: int,
+    stop_generation: int,
+    slot_identity: object,
+) -> bool:
+    """Whether the controller lease still owns this stage continuation.
+
+    Stop teardown can return ``_stop_state`` to idle before an awaited stage turn
+    hands control back here. The monotonic generation preserves that resolved
+    Stop. Slot, tracker, and stage identity are checked with it so a replacement
+    controller cannot inherit the old turn's host authorization. Call this after
+    every await and again inside the bounded dispatch task: that final check has
+    no suspension before entering ``_run_chat``.
+
+    Production captures the registered slot object. Direct unit harnesses that
+    intentionally pass a detached slot capture :data:`_MISSING_STAGE_SLOT`; the
+    lease accepts only the same continued absence, never a remove/replace edge.
+    """
+    slots = getattr(state, "_slots", None)
+    current_slot_identity = (
+        slots.get(slot.key, _MISSING_STAGE_SLOT) if isinstance(slots, dict) else _MISSING_STAGE_SLOT
+    )
+    return bool(
+        current_slot_identity is slot_identity
+        and (slot_identity is _MISSING_STAGE_SLOT or slot_identity is slot)
+        and slot._orch_tracker is tracker
+        and tracker.current_stage == stage_num
+        and slot._stop_generation == stop_generation
+        and not _orchestration_stopped(slot, tracker)
+    )
 
 
 def _is_plan_approval_entry(entry: dict) -> bool:
@@ -651,6 +707,16 @@ async def _stage_loop(
             # NOT `record_round`: a round is a spawn wave, and the cap this PR
             # makes real is the wave budget -- see `OrchestrationTracker.start_stage`.
             tracker.start_stage(stage_num)
+            # Controller lease for every await in this stage. A Stop press bumps
+            # the generation even when its teardown resolves back to idle before
+            # control returns; a later explicit Go captures the newer generation.
+            _stage_stop_generation = slot._stop_generation
+            _slots = getattr(state, "_slots", None)
+            _stage_slot_identity = (
+                _slots.get(slot.key, _MISSING_STAGE_SLOT)
+                if isinstance(_slots, dict)
+                else _MISSING_STAGE_SLOT
+            )
             title = titles[stage_idx] if stage_idx < len(titles) else ""
             label = f"Stage {stage_num}: {title}" if title else f"Stage {stage_num}"
             sep = f"\n\n───── {label} ─────\n"
@@ -662,7 +728,7 @@ async def _stage_loop(
                 {"slot": slot.key, "html": sep, "cls": "msg msg-a stage-sep"},
             )
 
-            # Build focused context and execute
+            # Build focused context and execute.
             context = await _build_stage_context(slot, tracker, stage_idx)
             context, _ = redact_exfiltration_urls(context)
             context, _ = redact_credentials(context)
@@ -710,23 +776,118 @@ async def _stage_loop(
                 # in the tracker, so skip the ceiling entirely rather than
                 # passing 0, which would cut every stage instantly.
                 _turn_timeout = tracker.stage_timeout_seconds
-                if _turn_timeout:
-                    await _bounded_turn(
-                        _run_chat(
+                _turn_loop = asyncio.get_running_loop()
+                _turn_deadline = _turn_loop.time() + _turn_timeout if _turn_timeout else None
+
+                async def _run_stage_message(
+                    stage_message: str, *, synthetic: bool = False
+                ) -> bool:
+                    remaining = None
+                    if _turn_deadline is not None:
+                        remaining = _turn_deadline - _turn_loop.time()
+                        if remaining <= 0:
+                            raise TimeoutError
+
+                    async def _dispatch_stage_message() -> bool:
+                        # `_bounded_turn` schedules its input as a child task. Put
+                        # the lease check INSIDE that child, immediately before
+                        # entering `_run_chat`, so a resolved Stop that lands
+                        # after the parent check but before the child runs still
+                        # fences dispatch.
+                        if not _stage_turn_is_current(
                             state,
                             slot,
-                            context,
+                            tracker,
+                            stage_num=stage_num,
+                            stop_generation=_stage_stop_generation,
+                            slot_identity=_stage_slot_identity,
+                        ):
+                            return False
+                        if synthetic:
+                            # Spend the one-shot only when the recovery is about
+                            # to enter the runner. A Stop in the bounded-task
+                            # scheduling gap must leave a later explicit Go with
+                            # its recovery budget intact.
+                            slot._posttoken_retry_used = True
+                        # A pre-dispatch runner failure cannot produce a terminal
+                        # reason. Clear the prior turn's value at the shared
+                        # dispatch seam, used by both initial and recovery turns.
+                        slot._last_stop_reason = ""
+                        await _run_chat(
+                            state,
+                            slot,
+                            stage_message,
+                            _synthetic_payload=synthetic,
                             _directive_user_origin=False,
-                        ),
-                        _turn_timeout,
+                            # Host-owned stage execution explicitly authorizes the
+                            # one bounded provider-banner continuation. Model text
+                            # alone can never mint this provenance.
+                            _host_authorized_provider_recovery=True,
+                        )
+                        return True
+
+                    turn = _dispatch_stage_message()
+                    if remaining is not None:
+                        return bool(await _bounded_turn(turn, remaining))
+                    return await turn
+
+                if not await _run_stage_message(context):
+                    break
+                if not _stage_turn_is_current(
+                    state,
+                    slot,
+                    tracker,
+                    stage_num=stage_num,
+                    stop_generation=_stage_stop_generation,
+                    slot_identity=_stage_slot_identity,
+                ):
+                    break
+                if slot._last_stop_reason == _STOP_REASON_PROVIDER_BUDGET_ARTIFACT:
+                    logger.warning(
+                        "Stage %d returned a provider budget artifact for slot %s; "
+                        "running one synchronous continuation before result capture",
+                        stage_num,
+                        slot.key,
                     )
-                else:
-                    await _run_chat(
+                    if not await _run_stage_message(_POSTTOKEN_RECOVER_MSG, synthetic=True):
+                        break
+                    if not _stage_turn_is_current(
                         state,
                         slot,
-                        context,
-                        _directive_user_origin=False,
-                    )
+                        tracker,
+                        stage_num=stage_num,
+                        stop_generation=_stage_stop_generation,
+                        slot_identity=_stage_slot_identity,
+                    ):
+                        break
+                    if slot._last_stop_reason == _STOP_REASON_PROVIDER_BUDGET_ARTIFACT:
+                        slot._auto_run = False
+                        artifact_msg = (
+                            f"⚠️ Stage {stage_num} returned an internal model status twice. "
+                            "Auto-run stopped before marking the stage complete."
+                        )
+                        slot.append("assistant", artifact_msg, "msg msg-a")
+                        state.broadcast_ws(
+                            "chat_append",
+                            {"slot": slot.key, "html": artifact_msg, "cls": "msg msg-a"},
+                        )
+                        break
+                    if not _stage_continuation_completed(slot):
+                        # `_run_chat` handles provider/auth/process failures and
+                        # cancellation internally, so a normal return is not proof
+                        # that the continuation answered. Keep the stage unrecorded;
+                        # its retry/cancel state remains available for a later Go.
+                        slot._auto_run = False
+                        incomplete_msg = (
+                            f"⚠️ Stage {stage_num} continuation did not complete. "
+                            "Auto-run stopped before marking the stage complete."
+                        )
+                        slot.append("assistant", incomplete_msg, "msg msg-a")
+                        state.broadcast_ws(
+                            "chat_append",
+                            {"slot": slot.key, "html": incomplete_msg, "cls": "msg msg-a"},
+                        )
+                        break
             except (asyncio.TimeoutError, TimeoutError):
                 # `_bounded_turn` raises builtin TimeoutError; on 3.10
                 # asyncio.TimeoutError is a DIFFERENT class, so catch both (the

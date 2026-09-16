@@ -346,6 +346,37 @@ class TestFlushFileChanges:
         assert "stopped" in last["content"].lower()
         assert last["meta"]["file_changes"][0]["path"] == str(f)
 
+    def test_error_only_turn_never_overwrites_prior_equal_content_selector(
+        self, short_tmp_dir: Path
+    ) -> None:
+        """Current files belong to a synthetic row, not an older active variant."""
+        changed = short_tmp_dir / "current.py"
+        changed.write_text("after\n", encoding="utf-8")
+        first_changes = [{"path": "first.py", "before": "a", "after": "b"}]
+        second_changes = [{"path": "second.py", "before": "c", "after": "d"}]
+
+        slot = _ChatSlot("error-only-selector")
+        prior = slot.append("assistant", "Done.", "msg msg-a", broadcast=False)
+        prior["variants"] = [
+            {"content": "Done.", "ts": "first", "meta": {"file_changes": first_changes}},
+            {"content": "Done.", "ts": "second", "meta": {"file_changes": second_changes}},
+        ]
+        prior["variant_idx"] = 1
+        prior["meta"] = {"file_changes": second_changes}
+        boundary = len(slot.messages)
+        slot.append("error", "provider failed", "msg msg-err", broadcast=False)
+        slot._file_changes = [{"path": str(changed), "content": "before\n"}]
+
+        _flush_file_changes(slot, turn_boundary=boundary)
+
+        assert prior["meta"]["file_changes"] == second_changes
+        assert prior["variants"][0]["meta"]["file_changes"] == first_changes
+        assert prior["variants"][1]["meta"]["file_changes"] == second_changes
+        current = slot.messages[-1]
+        assert current["role"] == "assistant"
+        assert "variants" not in current
+        assert current["meta"]["file_changes"][0]["path"] == str(changed)
+
 
 # ── Regression tests: real event ordering & content-block paths ────────────
 

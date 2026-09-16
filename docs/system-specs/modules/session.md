@@ -725,6 +725,55 @@ re-inject the cancelled user prompt and partial assistant output. This is
 necessary because kiro-cli discards cancelled turns from its own ACP
 conversation log, so the LLM has no memory of the interrupted request.
 
+Dashboard regeneration recovery has one terminal ownership rule. While the
+banner-recovery continuation owns a selector row, every terminal exit — success,
+cancellation, or provider exception — settles through the same commit-once owner.
+Buffered tool-boundary segments and the live tail replace only the active variant;
+earlier variants and their file-change snapshots stay byte-for-byte intact. If the
+owned selector vanished, settlement appends exactly one fallback assistant row
+instead. An empty terminal marks the owner committed without changing the earlier
+variant. The committed owner remains attached through file-change flush and turn
+teardown, then retires in the same event-loop turn. A mid-turn steer is an earlier
+boundary: it settles and file-flushes the owner before its user row is persisted,
+then retires it so later output is ordinary post-steer history and cannot target
+that older selector. A later terminal or unrelated turn therefore cannot duplicate
+or overwrite the recovered answer. Ordinary chat keeps its normal per-segment
+terminal history. File-change flushes also carry the
+turn's starting message boundary. An ordinary success, cancellation, or provider
+error may attach files only to an assistant row created by that turn; an error-only
+turn gets a synthetic stopped row instead of walking backward into an earlier
+selector. That host row cannot set `_last_turn_stage_answer`. The runner sets that
+boolean only for normalized model text with a landed raw `end_turn`, no provider
+refusal or runner-recorded permission denial, and no synthetic terminal. The stage
+controller consumes this predicate without parsing refusal sentiment, so visible
+refusal/deny prose, host rows, cancellation, and errors cannot complete a stage.
+The explicit recovery owner is the sole exception, because that turn is intentionally
+completing its older active variant (or its one fallback row).
+New variants store `meta.file_changes: []` for a known no-file answer. A missing
+legacy snapshot stays unknown through both switching and regeneration; only an
+explicit top-level list may populate or replace a variant snapshot, so observed
+no-file output remains known-empty without converting legacy unknown attribution
+to `[]`. A legacy message with no `variant_idx` backfills one unique content match
+on first regenerate, while modern equal-content variants remain index-identified
+only.
+
+Ordinary provider-banner recovery is allowed only while tool approval remains
+interactive. YOLO, session trust, and scoped unattended trust downgrade a
+banner-only turn to a notice requiring an explicit Continue; the same check is
+re-applied when a queued recovery drains so a trust grant racing the enqueue
+cannot authorize it. Provider-budget and ordinary post-token transient queue
+entries carry distinct typed recovery provenance. Queue drain copies that tag to
+the persisted inject row, and `_run_chat` reads the current row as the sole
+recovery owner: only provider-budget provenance may strip banner text or settle a
+parked regeneration selector. A transient retry with byte-identical continuation
+or answer text preserves its model answer, file attribution, and queue position.
+Both owners remain independently subject to the same monotonic Stop-generation
+lease and user-intervention purge, so structural separation does not weaken queue
+safety. The provider-budget value is shared with the structural stop reason so
+producer and consumer cannot drift. Host-owned stage execution is the narrow
+exception: the stage controller passes an explicit recovery authorization before
+the model runs. Model output cannot mint or infer any recovery provenance.
+
 ### Edit rewind context boundary
 
 Dashboard Edit + Send replaces the ACP session and rebuilds context from the
