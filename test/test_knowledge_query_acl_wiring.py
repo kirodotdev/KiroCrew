@@ -84,3 +84,67 @@ def test_binding_resolver_none_when_unwired():
 def test_binding_resolver_returns_installed():
     resolver = object()
     assert _knowledge_binding_resolver(_request({"knowledge_binding_resolver": resolver})) is resolver
+
+
+# ── optional vendor-connector registration seam ────────────────────────────
+# The structured vendor connectors (GitHub/Google/Salesforce) each land on main
+# through their own PR. The shared handler registers each ONLY when its module
+# is importable, keyed by the connector's own source_type. Absent module => not
+# registered => add_source rejects it (fail-closed, never public).
+
+from kiro_crew.dashboard.handlers.knowledge import _register_optional_connector  # noqa: E402
+
+
+class _FakeConnector:
+    def source_type(self) -> str:
+        return "fake_vendor"
+
+
+def test_optional_connector_registers_when_module_present(monkeypatch):
+    import sys
+    import types
+
+    mod = types.ModuleType("kiro_crew._fake_vendor_mod")
+    mod.FakeConnector = _FakeConnector  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kiro_crew._fake_vendor_mod", mod)
+
+    connectors: dict = {}
+    ok = _register_optional_connector(
+        connectors, "kiro_crew._fake_vendor_mod", "FakeConnector"
+    )
+    assert ok is True
+    # Keyed by the connector's OWN source_type, not the module/class name.
+    assert "fake_vendor" in connectors
+    assert isinstance(connectors["fake_vendor"], _FakeConnector)
+
+
+def test_optional_connector_absent_module_is_failclosed():
+    connectors: dict = {}
+    ok = _register_optional_connector(
+        connectors, "kiro_crew.knowledge.connectors._not_landed_yet", "Nope"
+    )
+    assert ok is False
+    assert connectors == {}  # source_type simply not present -> add_source rejects
+
+
+def test_optional_connector_broken_module_is_skipped(monkeypatch):
+    import sys
+    import types
+
+    mod = types.ModuleType("kiro_crew._broken_vendor_mod")
+
+    class _Broken:
+        def __init__(self):
+            raise RuntimeError("vendor ctor blew up")
+
+    mod._Broken = _Broken  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kiro_crew._broken_vendor_mod", mod)
+
+    connectors: dict = {"local_folder": object()}
+    ok = _register_optional_connector(
+        connectors, "kiro_crew._broken_vendor_mod", "_Broken"
+    )
+    assert ok is False
+    # Built-ins untouched by a broken vendor module.
+    assert "local_folder" in connectors
+    assert len(connectors) == 1

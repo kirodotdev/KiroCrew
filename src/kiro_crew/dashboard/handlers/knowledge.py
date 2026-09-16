@@ -1912,6 +1912,62 @@ def _task_registry(app: web.Application, key: str) -> set:  # type: ignore[type-
     return tasks
 
 
+def _register_optional_connector(
+    connectors: "dict[str, BaseConnector]",
+    module_path: str,
+    class_name: str,
+) -> bool:
+    """Register a vendor connector into *connectors* IFF its module is present.
+
+    The structured vendor connectors (GitHub / Google Drive / Salesforce) each
+    live in their OWN package and land on ``main`` through their OWN PR, on their
+    own schedule. This shared handler is their single registration site, but it
+    must not hard-``import`` a module that has not landed yet: a top-level import
+    of an absent module would break this handler's own import on a tree where the
+    vendor PR is not merged.
+
+    So the registration is import-guarded. When the module is importable, its
+    connector is instantiated and keyed by its own ``source_type()`` (the class
+    is the authority on the string, not this call site). When it is absent, the
+    source_type is simply NOT registered — which is fail-closed: ``add_source``
+    rejects an unregistered ``source_type`` and the retrieval gate never sees
+    such a source, so a not-yet-landed vendor is unreachable, never public.
+
+    This is real registration, not an ``app[...]`` presence flag: the connector
+    object is constructed and wired into the ``SyncScheduler``'s map here. It is
+    NOT a copy of the vendor implementation — the implementation stays in the
+    vendor's module; only the import + instantiation live here.
+
+    Returns True when the connector was registered, False when its module was
+    absent (logged at debug, not an error — absence is the expected state until
+    the vendor PR merges).
+    """
+    import importlib
+
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError:
+        logger.debug(
+            "knowledge connector module %s not present; source_type not "
+            "registered (fail-closed until its PR lands)",
+            module_path,
+        )
+        return False
+    try:
+        connector_cls = getattr(module, class_name)
+        connector = connector_cls()
+        connectors[connector.source_type()] = connector
+    except Exception:  # pragma: no cover - defensive; a broken vendor module
+        logger.exception(
+            "knowledge connector %s.%s failed to register; skipping "
+            "(built-in connectors unaffected)",
+            module_path,
+            class_name,
+        )
+        return False
+    return True
+
+
 def _track_scan_task(app: web.Application, task: asyncio.Task) -> None:  # type: ignore[type-arg]
     """Keep strong reference to scan task and log exceptions."""
     tasks = _task_registry(app, "_scan_tasks")
@@ -3028,6 +3084,24 @@ def setup_knowledge_routes(app: web.Application) -> None:
         # Local folder connector (always available)
         connectors["local_folder"] = LocalFolderConnector()
         connectors["obsidian_vault"] = LocalFolderConnector()
+        # Structured vendor connectors (GitHub / Google Drive / Salesforce).
+        # Each lives in its own module that lands on main through its own PR;
+        # this is their single registration site. The registration is
+        # import-guarded (see _register_optional_connector): a connector is wired
+        # in only when its module is present, and the source_type it answers to
+        # is taken from the connector itself. Absent module → source_type not
+        # registered → add_source rejects it and the retrieval gate never sees
+        # it (fail-closed, never public). No vendor implementation is copied
+        # here; only the import + instantiation live in this shared handler.
+        for _mod, _cls in (
+            ("kiro_crew.knowledge.connectors.github_structured",
+             "GithubStructuredConnector"),
+            ("kiro_crew.knowledge.connectors.google_drive",
+             "GoogleDriveConnector"),
+            ("kiro_crew.knowledge.connectors.salesforce_structured",
+             "SalesforceStructuredConnector"),
+        ):
+            _register_optional_connector(connectors, _mod, _cls)
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
         # ever needs to, override a built-in. The Default returns {} → standalone
