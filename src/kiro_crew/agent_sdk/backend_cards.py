@@ -195,12 +195,13 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     # harness in NEITHER has none of Crew's tools in its sessions, which is the
     # single most consequential thing this card says.
     #
-    # ``ACP_BACKENDS_ACP_RUNTIME`` stands for that family, and the substitution is
-    # held to it: ``test_backend_cards`` fails if the runtime set ever gains a
-    # member outside the kiro-family marker, because such a harness would be
-    # served by the shared runtime for TRANSPORT reasons while reading none of
-    # Crew's agent spec -- and would silently inherit this line.
-    _LineSpec(LINE_CREW_TOOLS, ("ACP_BACKENDS_SESSION_MCP_ARRAY", "ACP_BACKENDS_ACP_RUNTIME")),
+    # ``ACP_BACKENDS_KIRO_SLASH_COMMANDS`` is the kiro-family marker and stands for
+    # that family here. The runtime set does NOT: codex is served by the shared
+    # runtime for TRANSPORT reasons while reading none of Crew's agent spec, so a
+    # line keyed on it would hand codex this claim by the wrong route.
+    _LineSpec(
+        LINE_CREW_TOOLS, ("ACP_BACKENDS_SESSION_MCP_ARRAY", "ACP_BACKENDS_KIRO_SLASH_COMMANDS")
+    ),
     _LineSpec(LINE_MEMBER_THREAD_TOOLS, ("ACP_BACKENDS_MEMBER_DISPATCH",)),
     _LineSpec(LINE_MEMBER_SAVED_AGENT, ("ACP_BACKENDS_MEMBER_CAPABILITIES",)),
     _LineSpec(LINE_PRIVATE_MEMBER_SESSIONS, ("ACP_BACKENDS_PRIVATE_MEMORY_MCP",)),
@@ -219,11 +220,11 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     ),
     # Same shape for the model: the config-option members take a switch as
     # ``session/set_config_option``, and the kiro family takes it as the native
-    # set-model request no membership set names positively -- so the runtime set,
-    # under the ratchet named on the first line above, stands for it.
+    # set-model request no membership set names positively -- so the kiro-family
+    # marker stands for it, as on the first line above.
     _LineSpec(
         LINE_MODEL_SWITCH,
-        ("ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION", "ACP_BACKENDS_ACP_RUNTIME"),
+        ("ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION", "ACP_BACKENDS_KIRO_SLASH_COMMANDS"),
     ),
     _LineSpec(LINE_MARKDOWN_AGENTS, ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS",)),
 )
@@ -269,6 +270,20 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_ACP_RUNTIME": (
+        "which transport starts a session: one shared process demuxed by AcpRuntime, or "
+        "one process per session. The user gets a session either way; a wrong membership "
+        "is a spawn that fails, which is a defect"
+    ),
+    "ACP_BACKENDS_SESSION_EVICTION": (
+        "whether the teardown verb Crew sends disposes a session on the shared process. "
+        "Invisible when right, a memory leak when wrong, which is a defect"
+    ),
+    "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": (
+        "which channel carries the agent spec's own servers to the session, read by the "
+        "unresolved-ref detector. The servers arrive either way; a wrong membership is a "
+        "false diagnostic, which is a defect"
+    ),
     "ACP_BACKENDS_INLINE_COMPACTION": (
         "whether a manual /compact is awaited or immediate. The user sees /compact "
         "finish either way; a wrong membership is a hung wait, which is a defect"
@@ -343,14 +358,11 @@ MEMBERSHIP_FLOOR_SET = "ACP_BACKENDS_KNOWN"
 
 #: The set that marks the kiro family, for the union lines that stand on it.
 #:
-#: ``ACP_BACKENDS_ACP_RUNTIME`` is read by two lines as "the family that loads
-#: Crew's agent spec and takes the native set-model request", and no set says that
-#: positively. The substitution holds only while every runtime member is a
-#: kiro-family harness, which is what this pairing lets a test assert.
+#: Two lines read it as "the family that loads Crew's agent spec and takes the
+#: native set-model request", and no set says that positively. The runtime set
+#: cannot stand in for it: it is a TRANSPORT property, and codex sits in it while
+#: reading no agent spec of Crew's. A test holds both lines to reading THIS set.
 KIRO_FAMILY_MARKER_SET = "ACP_BACKENDS_KIRO_SLASH_COMMANDS"
-
-#: The set the union lines borrow as a stand-in for the kiro family.
-KIRO_FAMILY_STAND_IN_SET = "ACP_BACKENDS_ACP_RUNTIME"
 
 
 @dataclass(frozen=True)

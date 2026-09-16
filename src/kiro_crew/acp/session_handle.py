@@ -99,6 +99,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STRUCTURED_REFUSAL,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -4029,14 +4030,17 @@ class AcpSessionHandle:
             self.last_prompt_stats.note_pct_reported()
             self._backfill_context_window(pct_f)
         self.last_prompt_stats.credits += credits
-        # Every handle on the shared runtime is kiro-cli or KAS -- both members
-        # of ACP_BACKENDS_STRUCTURED_REFUSAL (ACP_BACKENDS_ACP_RUNTIME is a
-        # subset of it, pinned by test_harness_parity) -- so the refusal
-        # envelope is read unconditionally here. Folded onto the terminal by
-        # ``terminal_refusal``; a frame without the envelope leaves it alone.
-        _refusal = parse_refusal(params)
-        if _refusal is not None:
-            self.last_prompt_stats.refusal = _refusal
+        # Gated on membership, exactly as the AcpClient path gates the same read.
+        # The shared runtime carries hosts outside ACP_BACKENDS_STRUCTURED_REFUSAL,
+        # so an unconditional read here hands a parser written for one vocabulary
+        # another host's notification -- and its answer would be attached to the turn
+        # as a refusal category that host never sent. Folded onto the terminal by
+        # ``terminal_refusal``; a frame without the envelope, and a host outside the
+        # set, both leave it alone.
+        if self._runtime.acp_backend in ACP_BACKENDS_STRUCTURED_REFUSAL:
+            _refusal = parse_refusal(params)
+            if _refusal is not None:
+                self.last_prompt_stats.refusal = _refusal
 
     def _backfill_context_window(self, pct: float) -> None:
         """Derive window/used tokens from a percentage-only reading.

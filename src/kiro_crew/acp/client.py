@@ -89,7 +89,6 @@ from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_deny_rules
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
-    ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
@@ -215,7 +214,6 @@ from kiro_crew.mcp_gateway.session_servers import (
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.mirrors import MIRRORS, mirror_for
-from kiro_crew.providers.mirrors.codex import drop_unadvertised_transports
 from kiro_crew.recovery.ladder import L3_ACP_RUNTIME as _L3_ACP_RUNTIME
 from kiro_crew.recovery.ladder import LADDER as _LADDER
 from kiro_crew.resource_status import inject_xdist_auto_cap
@@ -250,11 +248,11 @@ _T = TypeVar("_T")
 # upstream ACP SDK (numeric integer, currently 1).  See acp.types.
 PROTOCOL_VERSION = "2025-08-22"
 PROTOCOL_VERSION_CLAUDE = 1
-# codex-acp speaks the same numeric ACP version as the claude adapter today.
-# Kept as its OWN literal rather than folded into the claude one: harness-parity
-# H10 wants the handshake stated per harness, so a divergence is a one-line edit
-# here instead of a silent downgrade of whichever harness moved first.
-PROTOCOL_VERSION_CODEX = 1
+# codex-acp has no literal here, and its absence is the point: this core drives
+# only the harnesses in the table below, and codex is not one of them. Its
+# handshake dialect is declared by ``acp.harness.codex``, on the core that does
+# drive it. One harness, one declaration -- a second copy on a core that never
+# performs the handshake is a copy nothing can keep honest.
 # OpenCode answers ``initialize`` with an integer ``protocolVersion`` of 1, so it
 # speaks the SPEC dialect rather than kiro-cli's date-stamped one. Verified off its
 # own wire, and its own literal for the same reason codex has one (harness-parity
@@ -278,11 +276,10 @@ PROTOCOL_VERSION_DEEPSEEK = launch_for(ACP_BACKEND_DEEPSEEK).protocol_version
 #: later is one row here; an id with no row speaks kiro-cli's date-stamped dialect.
 _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     ACP_BACKEND_CLAUDE: PROTOCOL_VERSION_CLAUDE,
-    ACP_BACKEND_CODEX: PROTOCOL_VERSION_CODEX,
     ACP_BACKEND_PI: PROTOCOL_VERSION_PI,
     # Every harness whose own binary serves ACP declares its dialect in its
     # ``ACP_BACKEND_LAUNCH`` row, so those rows are read rather than restated here.
-    # The three adapters above keep explicit rows: each is a separate package with
+    # The two adapters above keep explicit rows: each is a separate package with
     # its own release cadence, and none has a launch record to read.
     **{backend: record.protocol_version for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
 }
@@ -4554,23 +4551,13 @@ class AcpClient:
         # over-strict, while a None substituted there would short-circuit the
         # re-check on any path that reached it. None = no spawn yet.
         self._derived_spec_snapshot: DerivedSpecSnapshot | None = None
-        # What THIS session's agent said it can carry MCP over, straight from
-        # initialize's ``agentCapabilities.mcpCapabilities``. Held because the codex
-        # projection must not send a transport the adapter did not claim -- one such
-        # element fails the WHOLE session/new there, so the array that is its only
-        # channel takes every other server down with it. Read rather than
-        # remembered: a constant would encode one adapter version's answer and be
-        # silently wrong on the next. Empty until the handshake, and cleared on
-        # reset so a re-spawned session re-reads it.
-        self._agent_mcp_capabilities: dict[str, Any] = {}
         # The mirror's CLIENT OBLIGATION from the same spec parse as the array
         # (``SessionProjection.denied_tools``): ``(server, tool)`` pairs the spec
         # switched off that the backend cannot refuse on the wire, so this client
         # refuses them when the backend asks permission (``_deny_spec_disabled_tool``).
-        # Codex fills it; a backend that honours the restriction natively (kiro-cli)
-        # or through a file Crew writes (claude's ``permissions.deny``) leaves it
-        # empty, and an empty set makes the refusal a no-op. Cleared on reset with
-        # the array.
+        # A backend that honours the restriction natively (kiro-cli) or through a
+        # file Crew writes (claude's ``permissions.deny``) leaves it empty, and an
+        # empty set makes the refusal a no-op. Cleared on reset with the array.
         self._spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
         # The inline harness config this session's routing seed travels in, resolved
         # in the opencode spawn arm and read back there before the first prompt. The
@@ -4876,10 +4863,6 @@ class AcpClient:
         return self.backend == ACP_BACKEND_CLAUDE
 
     @property
-    def _is_codex(self) -> bool:
-        return self.backend == ACP_BACKEND_CODEX
-
-    @property
     def _is_opencode(self) -> bool:
         return self.backend == ACP_BACKEND_OPENCODE
 
@@ -5143,9 +5126,10 @@ class AcpClient:
         detects has landed on three harnesses already
         (``providers/mirrors/README.md``), so a check that only ran on the harness
         someone had already thought about would be the same omission a fourth
-        time. kiro-cli is judged against the spec's own ``mcpServers`` instead of
-        the wire -- it loads them via ``--agent`` -- which the guard resolves from
-        the backend id.
+        time. A host that mounts the spec's own ``mcpServers`` off the wire
+        (``ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE``: kiro-cli loads them via
+        ``--agent``) is judged against the spec's definition instead of the array,
+        which the detector resolves from the backend id.
 
         Synchronous, in-memory and non-raising, in that order of importance: the
         composition site is shared with kiro-cli, so this adds no scheduling point
@@ -5241,60 +5225,12 @@ class AcpClient:
         """
         return self._session_mcp_servers()
 
-    def _codex_session_mcp_servers(self) -> list:
-        """MCP server array passed to a codex ``session/new`` / ``session/load``.
-
-        The codex twin of :meth:`_claude_session_mcp_servers`, and it must stay
-        non-empty. An empty array here is byte-identical for kiro-cli, which gets
-        its servers through ``--agent``, and a REAL GAP for codex: codex-acp reads
-        no ``~/.kiro/agents/<name>.json``, so nothing Crew declares reaches the
-        session and only the shared gateway's broker stubs arrive -- which makes the
-        GATEWAY rather than this hook decide whether Crew's own control plane is
-        there at all, and with that gateway off (the default) leaves the session
-        with no MCP tools whatsoever. codex is in ``BASELINE_SELECTABLE_BACKENDS``,
-        so a plain public build reaches exactly that.
-
-        The translation lives in the mirror
-        (:mod:`kiro_crew.providers.mirrors.codex`), not here, for the same reason
-        claude's does: projecting the agent spec onto a backend's native shape is
-        one named contract with one implementation per backend. Two rules there are
-        codex's own and both were MEASURED against a real adapter rather than
-        assumed -- an ``sse`` element is dropped (codex-acp answers ``-32600`` for
-        the WHOLE ``session/new``), and Crew's own servers carry
-        ``KIROCREW_SESSION_KEY`` on the element because codex-rs launches a stdio
-        server with ``env_clear()`` plus an allowlist and inherits nothing.
-
-        Only ``sse`` is fatal, and the scope matters because it is tempting to
-        generalise it into sending nothing at all: a malformed stdio element, or an
-        array member that is not an object, leaves ``session/new`` SUCCEEDING with
-        that element dropped, and ``sse`` fails with ``-32600`` rather than the
-        ``-32602`` an unadvertised transport is easy to assume. See
-        ``test/test_codex_session_mcp.py::test_real_codex_acp_accepts_the_crew_stdio_element``.
-
-        The transport narrowing runs HERE rather than inside the cached translation,
-        for a timing reason: the array is translated on the spawn path, before the
-        adapter process exists, while the set of transports it accepts is not known
-        until ``initialize`` answers. Reading it here uses what THIS session was
-        told instead of what some version once said, and it stays a pure in-memory
-        narrowing of an already-cached list.
-
-        The seam is deliberately KEPT rather than replaced by a capability-set
-        call: an edition may override this method, and swapping the call site for a
-        set membership test would silently stop calling that override.
-
-        In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so
-        this accessor adds no scheduling or failure point to a call site shared with
-        kiro-cli (harness-parity H13).
-        """
-        return drop_unadvertised_transports(
-            self._session_mcp_servers(), self._agent_mcp_capabilities
-        )
-
     def _opencode_session_mcp_servers(self) -> list:
         """MCP server array passed to an opencode ``session/new`` / ``session/load``.
 
-        The opencode twin of :meth:`_codex_session_mcp_servers`, and it must stay
-        non-empty for the same reason: ``opencode acp`` reads no
+        The opencode twin of
+        :meth:`kiro_crew.acp.harness.codex.CodexHarness.session_mcp_servers`, and it
+        must stay non-empty for the same reason: ``opencode acp`` reads no
         ``~/.kiro/agents/<name>.json``, so nothing Crew declares reaches the session
         through any other door. Until this hook existed an opencode session held
         none of Crew's own tools at all -- no ``spawn_run``, no ``cron_add``, no
@@ -7222,76 +7158,6 @@ class AcpClient:
             argv: list[str] = claude_argv
             spawn_label = _adapter_spawn_label(argv, CLAUDE_ACP_BIN)
             stderr_label = _adapter_spawn_label(argv, "claude-acp")
-        elif self._is_codex:
-            # Selectable on a public build (BASELINE_SELECTABLE_BACKENDS), so this
-            # branch runs for real users; what is unwritten is the session MCP array
-            # (_codex_session_mcp_servers), not the spawn. codex-acp takes no argv of
-            # its own: the adapter is spawned bare and driven entirely over the pipe,
-            # so unlike the kiro branch there is nothing to append. CODEX_PATH is
-            # left exactly as the operator set it (the adapter ships its own Codex
-            # binary; overriding it is an explicit choice, never a default).
-            global _codex_acp_argv_cache  # noqa: PLW0603
-            cached_codex_resolution: tuple[list[str] | None, str] | object = _codex_acp_argv_cache
-            if cached_codex_resolution is _UNRESOLVED:
-                # Fenced on the resolution generation -- see ``_resolution_generation``.
-                epoch = _resolution_epoch(ACP_BACKEND_CODEX)
-                cached_codex_resolution = await asyncio.to_thread(_resolve_codex_acp_bin)
-                if _resolution_epoch(ACP_BACKEND_CODEX) == epoch:
-                    _codex_acp_argv_cache = cached_codex_resolution
-            codex_argv, codex_search_path = (
-                cached_codex_resolution
-                if isinstance(cached_codex_resolution, tuple)
-                else (None, "")
-            )
-            if not isinstance(codex_argv, list) or not codex_argv:
-                raise AcpError(codex_acp_not_found_message(codex_search_path))
-            argv = codex_argv
-            # Translate the agent spec into this session's MCP array HERE, on
-            # codex's own arm, for exactly the reason the claude arm above does it
-            # on its own: the translation reads disk, and doing it at the shared
-            # session/new call site would put an executor hop and a new failure
-            # mode on EVERY backend's construction path, kiro-cli included
-            # (harness-parity H13). No ordering constraint of claude's applies --
-            # codex has no settings file to author first, because its permission
-            # routing is asserted per session over session/set_config_option
-            # rather than seeded to a file. Correctness does not depend on this
-            # warm: _session_mcp_servers resolves a cold cache itself; the warm is
-            # what keeps the read off the loop.
-            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
-            spawn_label = _adapter_spawn_label(argv, CODEX_ACP_BIN)
-            stderr_label = spawn_label
-            # Fail closed BEFORE the spawn when the mask below would be dropped:
-            # several wrap_argv paths return without applying extra_hidden_dirs,
-            # which would start an enforced adapter with no compensating control
-            # at all. Placed inside this pre-existing codex arm rather than in a
-            # gate of its own on the shared path: harness-parity H13 asks whether
-            # the kiro path CHANGED, and a conditional or an awaited step added
-            # there in service of an adapter is the change it names -- so the
-            # adapter's work lives entirely behind the adapter's own seam.
-            # Keyed on the ROUTING, not on codex's identity: _sandbox_preflight
-            # re-checks acp_tool_gate.is_enforced(self.backend) itself, so this
-            # site cannot mask a harness this core does not enforce. A future
-            # SESSION_CONFIG harness gets its own arm here and must make the same
-            # call; test_acp_tool_gate ratchets that so it cannot be forgotten.
-            # OFF-LOOP: both halves touch the filesystem -- the refusal probes for
-            # a sandbox backend (a cold probe shells out via subprocess.run) and
-            # the mask resolves the home plus every env-override root -- so they
-            # run in ONE worker thread rather than blocking the gateway loop, and
-            # the wait is bounded (a stalled mount otherwise held the spawn open
-            # until the startup watchdog; found in review).
-            adapter_hidden_dirs = await _run_preflight_bounded(
-                _sandbox_preflight, self.backend, self._sandbox_mode
-            )
-            # The other half of the Bedrock trade: ``.aws`` stays in the mask
-            # above and only ``.aws/config`` comes back read-only, through each
-            # backend's own carve-out primitive. Empty for every unenforced
-            # harness. Pure path projection, no disk access, so no thread hop --
-            # which holds only because the mask resolved above is HANDED IN. Each
-            # re-exposed file must sit inside a directory that mask hides, and
-            # re-resolving the mask here to check that would put a filesystem read
-            # (a stalled home mount, a Windows directory open) back on the event
-            # loop the preflight above exists to keep it off.
-            adapter_expose = acp_tool_gate.adapter_expose_files(self.backend, adapter_hidden_dirs)
         elif self._is_opencode:
             # This harness serves ACP from its own binary, so the argv is that binary
             # plus its ``acp`` subcommand: no adapter entry script, no node, and no
@@ -8343,7 +8209,6 @@ class AcpClient:
         # Same per-spawn freshness rule as the array above: an edited spec must be
         # what the next session's guard judges, not this one's.
         self._mcp_ref_spec = None
-        self._agent_mcp_capabilities = {}
         self._spec_denied_tools = frozenset()
         # Save PIDs before clearing state — needed for untracking
         saved_pid = self._pid
@@ -8484,7 +8349,6 @@ class AcpClient:
             # The pooled read stays off the loop, as it already was.
             "mcpServers": [
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
-                *(self._codex_session_mcp_servers() if self._is_codex else []),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(self._goose_session_mcp_servers() if self._is_goose else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
@@ -8587,13 +8451,13 @@ class AcpClient:
             )
         else:
             self._can_load_session = bool(capabilities.get("loadSession", False))
-        # Which MCP transports this agent will accept in the session array. Only the
-        # codex projection consults it (see _codex_session_mcp_servers); every other
-        # backend either reads no array or accepts the shapes Crew already sends --
-        # opencode is the measured case of the latter, accepting stdio, http and sse
-        # alike, so its hook applies no filter (see _opencode_session_mcp_servers).
-        advertised = (init_resp.get("agentCapabilities") or {}).get("mcpCapabilities")
-        self._agent_mcp_capabilities = dict(advertised) if isinstance(advertised, dict) else {}
+        # No harness this core drives narrows the session MCP array against the
+        # advertised ``mcpCapabilities``: every one of them either reads no array
+        # or accepts the shapes Crew already sends, opencode being the measured
+        # case of the latter (stdio, http and sse alike -- see
+        # ``_opencode_session_mcp_servers``). The harness that DOES narrow reads
+        # the handshake on the core that drives it, in
+        # ``acp.harness.codex.session_mcp_servers``, so nothing is held here.
         self._agent_version = agent_version_from_init(init_resp)
         self._note_pi_adapter_version()
         self._note_goose_version()
@@ -8679,7 +8543,6 @@ class AcpClient:
                         # off-loop there, for the same reasons as session/new.
                         "mcpServers": [
                             *(self._claude_session_mcp_servers() if self._is_claude else []),
-                            *(self._codex_session_mcp_servers() if self._is_codex else []),
                             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                             *(self._goose_session_mcp_servers() if self._is_goose else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),

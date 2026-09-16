@@ -105,6 +105,14 @@ class SpawnPlan:
 
     argv: list[str]
 
+    rss_depth: int | None = field(default=None, kw_only=True)
+    """Resolved RSS generations below the pid Crew launches.
+
+    ``None`` measures the whole descendant subtree. A bounded value is already
+    relative to the launched pid, including any resident sandbox launcher, so the
+    shared spawn path only copies it and performs no host-specific probe.
+    """
+
     native_context_documents: tuple[tuple[str, str], ...] = field(default=(), kw_only=True)
     """Admitted sources owned by this exact native launch configuration."""
 
@@ -241,8 +249,10 @@ class TeardownPolicy:
 class ReclaimPolicy:
     """When a warm process is recycled.
 
-    Both numbers are already per-instance on the runtime, so a host with a
-    different memory profile needs no branch -- only different values.
+    The two numbers are already per-instance on the runtime, so a host with a
+    different memory profile needs no branch -- only different values. The process
+    scope belongs to :class:`SpawnPlan`, where the harness can resolve it against
+    the exact spawn configuration before this threshold is applied.
     """
 
     max_age_secs: float
@@ -447,4 +457,8 @@ class HarnessAdapter(abc.ABC):
         The runtime's values are passed in so an operator's configuration still
         wins; a harness narrows them for a host that is known to leak faster,
         and otherwise passes them straight through.
+
+        A host that measures a different process scope may return a ceiling in
+        that scope's unit rather than narrow the input. The resolved scope travels
+        separately on :class:`SpawnPlan`.
         """

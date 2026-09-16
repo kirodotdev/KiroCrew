@@ -126,11 +126,14 @@ Every kind is additionally cross-checked against something outside its own text,
 so no kind's honesty rests on how its reason is worded. `mirror` needs a
 registered class and an `mcpServers` ruling of `delivered` or `translated`;
 `external` needs an importable module; `no-channel` needs a channel, a resolvable
-tracking pointer and an onboarding row; and `native` is checked against
-`agent_sdk/mcp_refs.py`, which has to know the same fact to resolve a `@server`
-ref at all — it satisfies a ref from the spec's OWN `mcpServers` for a
-spec-reading backend and from the wire array for every other. A declaration and
-the resolver acting on it may not diverge, in either direction. A selectable backend
+tracking pointer and an onboarding row; and `native` and `external` are checked
+against `agent_sdk/mcp_refs.py`, which has to know the same fact to resolve a
+`@server` ref at all — it satisfies a ref from the spec's OWN `mcpServers` for a
+backend whose spec servers reach the session off the wire
+(`ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE`: the harness reads the file itself, or Crew
+projects it down a channel that is not the array) and from the wire array for
+every other. A declaration and the resolver acting on it may not diverge, in
+either direction. A selectable backend
 whose projection was not written could previously sit under one name with an
 explanation of when it would be, and every check stayed green — which is the
 structural reason the same missing-tools defect shipped on four harnesses in a row.
@@ -149,8 +152,9 @@ structural reason the same missing-tools defect shipped on four harnesses in a r
    `AcpClient` at the mirror so the declaration and the wire agree.
 4. **The parity test then holds you to it** (`test/test_provider_mirrors.py`):
    one declaration per known and selectable id, `mirror` only with a class,
-   `mcpServers` ruled `delivered` or `translated` on a mirror, `native` only for an
-   id `agent_sdk/mcp_refs.py` resolves against the spec itself, a resolvable
+   `mcpServers` ruled `delivered` or `translated` on a mirror, `native` and
+   `external` only for an id `agent_sdk/mcp_refs.py` resolves against the spec
+   itself and every other kind only for one it resolves against the array, a resolvable
    `tracking`, an importable `projection`, and every concern answered with a
    reason.
 5. **The doctor row.** A selected `no-channel` backend prints one informational
@@ -214,11 +218,21 @@ a tool they switched off answers anyway.
 Codex is the reason this section exists. Its hook sat at `[]` behind a docstring
 that stated, as the one established constraint, that codex-acp answers `-32602`
 for the whole `session/new` when it meets a transport it does not advertise. A
-real adapter says otherwise: a malformed stdio element — and even an array member
-that is not an object — leaves `session/new` succeeding with that element
-dropped, while `sse` is the one fatal shape and fails with `-32600`. The fear was
-the wrong code AND the wrong scope, and it had been load-bearing for a whole
-harness's tool surface.
+real adapter answers by the element's SHAPE, and both answers are measured. A
+malformed stdio element — and even an array member that is not an object — leaves
+`session/new` succeeding with that element dropped. An `sse` element the adapter's
+own `mcpCapabilities` marks unsupported is refused with `-32600` when it is
+schema-complete (carrying its `headers` array, the shape Crew's translation
+emits), and the refusal fails the WHOLE `session/new`; the same element without
+`headers` falls to the untagged variant and leaves `session/new` succeeding with
+that server accepted and never wired, exactly as a deliberately meaningless
+`{"type": "nonsense-type"}` control does. So the fear was wrong in its code and
+its scope, and half-wrong in its direction — and the fail-OPEN half is the
+expensive one: a healthy session with a silently missing tool, which nothing
+downstream reports. Client-side transport narrowing is therefore both a defence
+against a fatal refusal AND the only guard that the array Crew sends is the array
+the adapter honours, and that argument had been load-bearing for a whole
+harness's tool surface in one direction only.
 
 So a new mirror's transport and environment rules are MEASURED. `codex.py` cites
 what was run and `test/test_codex_session_mcp.py` pins it against an installed

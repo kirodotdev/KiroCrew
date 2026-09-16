@@ -468,14 +468,14 @@ spawn+initialize handshakes per gateway loop); admission is backend-neutral, so 
 adapted runtime harness neither bypasses the bound nor changes the Kiro path.
 
 - **A runtime backend (`is_acp_runtime_backend`, i.e. membership in
-  `acp_runtime_backends()`)** → `_start_kiro_runtime()`. This spawns an
-  `AcpRuntime` (carrying the provider's sandbox mode, extra env, and MCP-gateway
-  overlay/socket), resumes via `runtime.load_session()` when a prior transcript
-  exists or otherwise `runtime.create_session()`, applies the configured model,
-  and replaces `self._client` with an `AcpSessionProvider` (which implements the
-  same interface as `AcpClient`, so downstream callers are unchanged). Any
-  failure after `spawn()` kills the runtime so a half-initialised session never
-  leaks an orphaned `kiro-cli`.
+  `ACP_BACKENDS_ACP_RUNTIME` — kiro, KAS and codex)** → `_start_kiro_runtime()`.
+  This spawns an `AcpRuntime` (carrying the provider's sandbox mode, extra env,
+  and MCP-gateway overlay/socket), resumes via `runtime.load_session()` when a
+  prior transcript exists or otherwise `runtime.create_session()`, applies the
+  configured model, and replaces `self._client` with an `AcpSessionProvider`
+  (which implements the same interface as `AcpClient`, so downstream callers are
+  unchanged). Any failure after `spawn()` kills the runtime so a half-initialised
+  session never leaks an orphaned `kiro-cli`.
 
   This path builds a mirrored host's MCP array through that host's mirror.
   `AcpRuntime._mirrored_session_mcp` answers `None` for a backend with no mirror
@@ -511,22 +511,47 @@ adapted runtime harness neither bypasses the bound nor changes the Kiro path.
   positive membership, not `not is_claude_backend`, so a harness added later
   does not inherit the kiro-family path (harness-parity H5).
 
-`acp_runtime_backends()` and not the frozenset itself is what the FOREGROUND start
-path reads (`AcpProvider.is_acp_runtime_backend`, its only consumer). The
-background path (`session._bg_runtime_backends`) reads the frozenset on purpose,
-so the switch does not reach it — see `session.md`, "Multiplexed _bg runtime". It
-returns `ACP_BACKENDS_ACP_RUNTIME` verbatim unless `KIROCREW_CODEX_ACP_RUNTIME` is
-set to `1`/`true`/`yes`/`on`, which adds codex for the life of that process. The
-switch is a preview and is **off** by default: it exists so codex's `AcpRuntime`
-path can be exercised before the membership itself changes, and the frozenset
-stays the shipped answer. A future harness author looking for "the one gate" is
-looking for that function; the set is vocabulary, and `harness_for()` serves a
-host whether or not the switch names it.
+`AcpProvider.is_acp_runtime_backend` reads `ACP_BACKENDS_ACP_RUNTIME` directly.
+There is no indirection function and no env switch in front of it, so the
+FOREGROUND start path and the background path (`session._bg_runtime_backends`)
+read the same frozenset — background narrows it further with
+`ACP_BACKENDS_SESSION_EVICTION`, for the reason given in `session.md`,
+"Multiplexed _bg runtime". Two sites narrow by that set, not one: warm pooled
+reuse (`AcpSessionProvider.new_conversation`) reads it for the same reason from
+the other direction — running on the shared runtime is what makes a resident
+session possible, and only an evicting teardown makes reusing one cheap rather
+than cumulative.
+
+That predicate answers ONLY the transport question: which start path a session
+takes. It does **not** answer who reads the kiro-family workspace `cli.json`
+overlay. Codex runs on the shared runtime, reads no such file, and takes effort
+over `session/set_config_option`, so the two sites that keyed overlay work off
+the runtime predicate key off `ACP_BACKENDS_KIRO_SLASH_COMMANDS` instead — the
+set that owns that question (harness-parity H6). A harness author looking for
+"the one gate" is looking at the frozensets themselves; `harness_for()` serves a
+host whether or not a capability set names it.
+
+**A provider switch on codex is process-wide, not per session.** codex-acp's
+`providers/set` restarts the shared `codex app-server`: it waits on every active
+prompt, stops every session's async tasks, restarts the child, then resumes each
+session individually — and a per-session resume can FAIL while the restart as a
+whole reports success. On a per-session adapter the blast radius is the one user
+who asked for the change; on the shared runtime it is every session on that
+process, so one chat's provider change is a liveness event for all the others.
+Nothing sends `providers/set` per session, and nothing should start.
 
 `AcpProvider.is_session_sharing_eligible` is membership in
 `ACP_BACKENDS_SESSION_SHARING` (harness-parity H6), not `not is_claude_backend`:
 a capability granted by the absence of one backend is inherited by every backend
 added later. It is what `SessionManager.is_session_sharing_eligible()` consults
-to decide whether a parent session can host multiplexed subagent sessions. The
-invariants governing what an added harness may and may not change are in
+to decide whether a parent session can host multiplexed subagent sessions. Kiro
+is the only member. Codex is deliberately out, on two counts. The teardown Crew
+sends it is a `session/close` request that evicts the session, so a shared
+subagent session would not survive the teardown of the conversation that spawned
+it — KAS's position exactly, a disposing verb with no keep-aware variant. And the
+shared-subagent path persists a provider label `SessionMap` reads as kiro-cli, so
+`spawn_continue` on a codex subagent answers `conversation_gone`. KAS sits in the
+same position — on the runtime, out of this set until a keep-aware teardown lands —
+and codex follows that precedent rather than re-arguing it. The invariants governing what an
+added harness may and may not change are in
 [harness-parity.md](harness-parity.md).

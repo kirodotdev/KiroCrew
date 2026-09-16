@@ -314,7 +314,6 @@ test/metrics/test_gateway_http_metrics.py
 test/metrics/test_generation_disclosure.py
 test/metrics/test_mcp_gateway_metrics.py
 test/metrics/test_schema.py
-test/metrics/test_startup_channel_attrs.py
 test/metrics/test_telemetry_titles.py
 test/metrics/test_watchdog_metrics.py
 test/test_acp_dynamic_config.py

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 
 import pytest
 
@@ -395,22 +396,29 @@ def test_every_enforced_harness_declares_its_own_credential() -> None:
 
 
 def test_every_enforced_harness_reaches_the_spawn_preflight() -> None:
-    """An enforced harness whose spawn arm skips the preflight would start unmasked.
+    """An enforced harness whose spawn path skips the preflight starts unmasked.
 
-    The preflight (refuse-then-mask) is invoked from inside each adapter's OWN arm
-    of ``AcpClient._spawn`` rather than from a gate on the shared path, so the kiro
-    construction path gains no conditional and no awaited step in service of an
-    adapter (harness-parity H13). The cost of that placement is that a new enforced
-    harness needs its own call: forgetting one would spawn it with no mask and no
-    refusal. This pins one preflight call site per enforced harness, so the
-    omission fails here instead of silently shipping an unmasked adapter.
+    The preflight (refuse-then-mask) is invoked from inside each adapter's OWN spawn
+    path rather than from a gate on a shared one, so the kiro construction path
+    gains no conditional and no awaited step in service of an adapter
+    (harness-parity H13). The cost of that placement is that a new enforced harness
+    needs its own call: forgetting one would spawn it with no mask and no refusal.
+
+    An enforced harness reaches its spawn through ONE of two cores, so this counts
+    both. A harness on the shared runtime resolves its own plan in its
+    ``HarnessAdapter``, so its call lives there; a per-session harness has an arm in
+    ``AcpClient._spawn``. Counting only the client core would read a runtime harness
+    as missing its preflight while it has one, and -- worse in the other direction --
+    would let a harness moved onto the runtime lose its call silently, because the
+    arm it was counted by is deleted in the same change that moves it.
     """
     import ast
     import inspect
     import textwrap
 
     from kiro_crew.acp.client import AcpClient
-    from kiro_crew.acp_backends import ACP_BACKEND_ROUTING
+    from kiro_crew.acp.harness import harness_for
+    from kiro_crew.acp_backends import ACP_BACKEND_ROUTING, ACP_BACKENDS_ACP_RUNTIME
 
     enforced = {
         backend
@@ -419,16 +427,51 @@ def test_every_enforced_harness_reaches_the_spawn_preflight() -> None:
     }
     assert enforced, "the gate enforces no mechanism; this ratchet would be vacuous"
 
-    spawn_tree = ast.parse(textwrap.dedent(inspect.getsource(AcpClient._spawn)))
-    call_sites = sum(
-        1
-        for node in ast.walk(spawn_tree)
-        if isinstance(node, ast.Name) and node.id == "_sandbox_preflight"
-    )
-    assert call_sites == len(enforced), (
-        f"{len(enforced)} enforced harness(es) {sorted(enforced)!r} but "
-        f"{call_sites} _sandbox_preflight call site(s) in AcpClient._spawn: every "
-        "enforced harness must invoke the preflight inside its own spawn arm"
+    def _preflight_calls(fn: object) -> int:
+        """References to the preflight, however it is spelled.
+
+        A bare name in the client core; ``client_mod._sandbox_preflight`` on a
+        harness, which reaches it through the module rather than importing it. An
+        ``ast.Name``-only count reads the second as zero and reports a harness that
+        does hold the mask as one that does not.
+        """
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        total = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "_sandbox_preflight":
+                total += 1
+            elif isinstance(node, ast.Attribute) and node.attr == "_sandbox_preflight":
+                total += 1
+        return total
+
+    on_runtime = {b for b in enforced if b in ACP_BACKENDS_ACP_RUNTIME}
+    on_client = enforced - on_runtime
+    assert on_runtime, "no enforced harness runs on the shared runtime; check the sets"
+    assert on_client, "no enforced harness runs on AcpClient; check the sets"
+
+    # A runtime harness resolves its plan itself, so the call is reachable from its
+    # own spawn seam. Followed one level into the module helper the seam delegates
+    # to, which is where these harnesses put the refuse-then-mask pair.
+    for backend in sorted(on_runtime):
+        adapter = harness_for(backend)
+        module = sys.modules[type(adapter).__module__]
+        calls = _preflight_calls(type(adapter).resolve_spawn)
+        for name in ("resolve_spawn_masks",):
+            helper = getattr(module, name, None)
+            if helper is not None:
+                calls += _preflight_calls(helper)
+        assert calls == 1, (
+            f"enforced harness {backend!r} runs on the shared runtime and reaches "
+            f"_sandbox_preflight {calls} time(s); exactly one is the contract -- zero "
+            "spawns with no mask and no refusal, two enforces twice"
+        )
+
+    # A per-session harness keeps its arm in the client core, one call each.
+    client_calls = _preflight_calls(AcpClient._spawn)
+    assert client_calls == len(on_client), (
+        f"{len(on_client)} enforced harness(es) on AcpClient {sorted(on_client)!r} "
+        f"but {client_calls} _sandbox_preflight call site(s) in AcpClient._spawn: "
+        "every enforced harness must invoke the preflight inside its own spawn arm"
     )
 
 

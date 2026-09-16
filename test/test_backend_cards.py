@@ -277,29 +277,23 @@ def test_the_card_module_names_no_harness_in_a_line_id() -> None:
 # ── 4. the union stand-in, pinned ──────────────────────────────────────────
 
 
-def test_the_kiro_family_stand_in_still_stands_for_the_kiro_family() -> None:
-    """Two lines borrow the runtime set to mean "the kiro family". Hold it to that.
+def test_the_kiro_family_lines_read_the_marker_not_the_runtime_set() -> None:
+    """Two lines mean "the kiro family". They must read the set that says so.
 
-    ``ACP_BACKENDS_ACP_RUNTIME`` means "served by the shared runtime", which is a
-    TRANSPORT property; the two union lines read it as "loads Crew's agent spec"
-    and "takes the native set-model request", which no set names positively. The
-    two align only while every runtime member is a kiro-family harness. The
-    runtime set's own docstring names the harness that would break it -- a
-    multiplexer needing a demux that is not kiro-shaped -- and on the day such a
-    harness joins, it would silently inherit both capability claims.
-
-    Failing here is the signal to add the positive sets rather than to widen this
-    one: a harness on the shared runtime that reads no kiro agent spec must not
-    be told it has Crew's tools.
+    ``ACP_BACKENDS_ACP_RUNTIME`` is a TRANSPORT property and codex is in it while
+    reading none of Crew's agent spec, so a line keyed on it would hand codex
+    "loads Crew's agent spec" and "takes the native set-model request" by the
+    wrong route. Pinned on the specs themselves, so a substitution back to the
+    runtime set is a red rather than a comment.
     """
-    stand_in = getattr(sdk_backends, cards_mod.KIRO_FAMILY_STAND_IN_SET)
-    marker = getattr(sdk_backends, cards_mod.KIRO_FAMILY_MARKER_SET)
-    assert stand_in <= marker, (
-        f"{cards_mod.KIRO_FAMILY_STAND_IN_SET} gained a member outside "
-        f"{cards_mod.KIRO_FAMILY_MARKER_SET}: {sorted(stand_in - marker)}. The card's "
-        f"crew_tools and model_switch lines read the first set as 'the kiro family'. "
-        f"Declare the capability positively instead of widening the stand-in."
-    )
+    by_id = {spec.id: spec for spec in cards_mod.USER_FACING_LINES}
+    for line in (cards_mod.LINE_CREW_TOOLS, cards_mod.LINE_MODEL_SWITCH):
+        sets = by_id[line].sets
+        assert cards_mod.KIRO_FAMILY_MARKER_SET in sets, (line, sets)
+        assert "ACP_BACKENDS_ACP_RUNTIME" not in sets, (
+            f"{line} reads the runtime set as the kiro family; codex is a runtime member "
+            "that reads no kiro agent spec"
+        )
 
 
 # ── 5. the lines say what the memberships say ──────────────────────────────

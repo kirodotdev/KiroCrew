@@ -126,10 +126,13 @@ class TestStartupAttrs:
             session_key="telegram:1",
             meta={"resumed": False, "resume_outcome": "fallback_replay"},
         )
-        assert ("kirocrew.session.resume.outcome", {
-            "outcome": "fallback_replay",
-            "channel": "telegram",
-        }) in rec.counters
+        assert (
+            "kirocrew.session.resume.outcome",
+            {
+                "outcome": "fallback_replay",
+                "channel": "telegram",
+            },
+        ) in rec.counters
 
     def test_no_resume_counter_on_a_fresh_session(self):
         rec = self._emit(session_key="dashboard:chat-1")
@@ -183,6 +186,41 @@ class TestChannelSurvivesClientSwap:
         """Pins WHY the capture exists: the swapped client alone yields unknown."""
         rec = self._emit_after_swap("telegram:9:1", {})
         assert {a["channel"] for _, a in rec.hist} == {"unknown"}
+
+
+class TestBackendAttribute:
+    """The runtime start path serves every shared-runtime host; the metric names it.
+
+    ``_start_kiro_runtime`` captures the client's backend id into ``meta`` before the
+    impl swaps the client, for the same reason it captures the session key. A codex
+    or KAS cold start filed under ``backend=kiro`` would corrupt the one bucket the
+    default host's dashboard reads.
+    """
+
+    def _emit(self, meta):
+        from kiro_crew.providers.acp import AcpProvider
+
+        rec = _Rec()
+        provider = AcpProvider.__new__(AcpProvider)
+        provider._client = type("_Swapped", (), {"_session_key": "", "backend": "kas"})()
+        with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+            provider._emit_kiro_startup_metric(0.0, {"spawn_init": 1.0}, "ready", meta)
+        return rec
+
+    def test_a_codex_start_is_filed_under_codex(self):
+        rec = self._emit({"session_key": "dash:1", "backend": "codex"})
+        assert {a["backend"] for _, a in rec.hist} == {"codex"}
+
+    def test_the_default_host_still_files_as_kiro(self):
+        # kiro-cli's id is the empty string; the metric spells it "kiro".
+        rec = self._emit({"session_key": "dash:1", "backend": ""})
+        assert {a["backend"] for _, a in rec.hist} == {"kiro"}
+
+    def test_a_meta_without_a_backend_does_not_read_the_swapped_client(self):
+        # The live client is not consulted for the id: an emit without the capture
+        # degrades to the default label rather than to whatever client is bound now.
+        rec = self._emit({"session_key": "dash:1"})
+        assert {a["backend"] for _, a in rec.hist} == {"kiro"}
 
 
 class TestPrefixDrift:

@@ -107,14 +107,18 @@ with no row here.
        is gated before the spawn -- the activation guard that runs after
        ``session/new`` reads it through the harness, only on its refusal
        branch, to explain a markdown-only agent the host did not load)
-   * - ``acp_runtime_backends()``
-     - pre-session registry query (the same question as the row above, with the
-       ``KIROCREW_CODEX_ACP_RUNTIME`` preview switch applied). The FOREGROUND
-       start path reads this; the background ``_bg`` path reads the set above on
-       purpose, so a preview never reaches high-churn handles. A function rather
-       than a set for the reason
-       ``backends_retired_by_host_logout()`` is one: the answer is derived, and
-       ``ACP_BACKENDS_*`` is reserved for vocabulary
+   * - ``ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE``
+     - driver-internal (whether the agent spec's own ``mcpServers`` reach the
+       session by a channel other than the ``session/new`` array, so the
+       unresolved-``@server``-ref detector counts them as satisfied instead of
+       judging the spec against an array that was never meant to carry them)
+   * - ``ACP_BACKENDS_SESSION_EVICTION``
+     - pre-session registry query (whether this harness's teardown verb disposes
+       one session, which is what decides if a path that creates and destroys
+       sessions on a shared process -- the high-churn background handles, warm
+       pooled reuse, the entitlement probe -- may run on it). Separate from the
+       row above because multiplexing and eviction are separate claims: a harness
+       can serve N sessions on one process and still have no verb that frees one
    * - ``host_auth.backends_retired_by_host_logout()``
      - pre-session registry query (whether a kiro-cli logout retires the child).
        Declared per harness in :mod:`kiro_crew.agent_sdk.host_auth`, not here, and a
@@ -177,8 +181,6 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, FrozenSet, Mapping, Set
-
-from kiro_crew.constants import env_flag_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -721,10 +723,30 @@ def resolve_selected_backend(value: object) -> str:
 # spawn_continue (conversation_gone). KAS therefore opts in only once a
 # keep-aware teardown lands (native subagent work); until then its subagents get
 # dedicated sessions. claude-agent-acp runs through AcpClient (one process per
-# session) and is not a member. codex-acp is not either, for the same reason: one
-# adapter process serves one session, so there is nothing to share.
-# opencode is not a member for the same reason: one binary serves one session over
-# its own stdio pipe, so there is no second session to share.
+# session) and is not a member.
+#
+# codex-acp is NOT a member, and it is the case worth reading closely, because it
+# fails the test on BOTH halves for the same reason KAS fails the second. One
+# adapter process does serve N sessions. But its teardown is a ``session/close``
+# request, which EVICTS the addressed session -- measured, and the property
+# ``ACP_BACKENDS_SESSION_EVICTION`` records -- so a shared subagent session would
+# not survive the teardown of the conversation that spawned it. That is KAS's
+# position exactly: a disposing teardown verb and no keep-aware variant of it.
+#
+# The second half is on CREW's side. The shared-subagent path persists the
+# provider label ``PROVIDER_LABEL_DEFAULT``, and ``SessionMap`` reads that label
+# as kiro-cli and prunes the entry when the flat kiro transcript it implies is
+# absent -- so ``spawn_continue`` on a codex subagent answers
+# ``conversation_gone``. Membership would therefore advertise the one capability
+# it exists to grant while breaking it on the ordinary path.
+#
+# The KAS precedent is followed rather than re-argued: on the runtime, out of
+# this set until the missing pieces land -- a keep-aware teardown, and a provider
+# label the continuation path can read. Until then its subagents get dedicated
+# sessions, which is the working behaviour rather than a degraded one.
+#
+# opencode is not a member: one binary serves one session over its own stdio pipe,
+# so there is no second session to share.
 # pi is not a member: Crew spawns one ``pi-acp`` process per session over its own
 # stdio pipe, so there is no second session to share.
 #
@@ -945,9 +967,7 @@ ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 # ``not is_claude_backend`` — an inference that silently captures every harness
 # added later. This is a SUPERSET of ACP_BACKENDS_SESSION_SHARING: running on
 # AcpRuntime is necessary for session sharing but not sufficient (KAS runs here
-# yet is excluded from sharing until keep-aware teardown lands). codex-acp is not a
-# member: it is spawned per session and reads none of the kiro-family cli.json
-# overlay, so it takes the AcpClient path.
+# yet is excluded from sharing until keep-aware teardown lands).
 # opencode is not a member: it is spawned per session and reads none of the
 # kiro-family cli.json overlay, so it takes the AcpClient path.
 # pi is not a member for the same reason: one ``pi-acp`` process per session, no
@@ -960,7 +980,24 @@ ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 # and the ``_kiro/*`` auth and delete verbs -- so serving this harness from it means
 # a demux that is not kiro-shaped, which is its own work. It takes the AcpClient
 # path, one process per session, until that exists.
-ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+#
+# ``ACP_BACKEND_CODEX`` IS a member, and it is the first one that is not
+# kiro-shaped. It earns membership on the two facts a shared process needs, both
+# captured off a live ``codex-acp`` 1.11.0 against a real ``codex`` build:
+#
+# * one adapter process serves N sessions and keeps them apart. Two
+#   ``session/new`` calls on one connection return distinct ids, and across a
+#   prompt on one of them every ``session/update`` notification carries that
+#   session's id -- none leaks to the other.
+# * the adapter itself does not grow with sessions: 103 MB at zero sessions and
+#   85 MB at eight. The growth is in ``codex app-server``, and it is gentle
+#   (+14 MB per session on a minimal config, +37 MB with a host MCP registry).
+#
+# What it does NOT bring is the kiro-family spawn convention: it reads no
+# cli.json overlay and takes effort through ``session/set_config_option``. That
+# is why membership here is a statement about the TRANSPORT and nothing else --
+# every kiro-family convention is its own set, and codex is absent from each.
+ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
 
 # Backends that load an agent defined as ONE markdown file (YAML frontmatter
 # plus the body as the system prompt) -- the form the v3 engine and Kiro IDE
@@ -1065,79 +1102,65 @@ def overlay_project_scope(backend: str, work_dir: Any) -> dict[str, Any]:
     }
 
 
-# ── The preview switch: codex-acp on AcpRuntime ──
+# Backends whose agent spec's own ``mcpServers`` reach the session OFF the wire --
+# by a channel other than the ``session/new`` ``mcpServers`` array.
 #
-# ``ENV_CODEX_ACP_RUNTIME`` is the ONE thing that moves codex-acp from AcpClient
-# onto AcpRuntime, and it is OFF unless an operator sets it. With it unset this
-# build behaves exactly as the frozenset above says: the FOREGROUND start path asks
-# "is this backend on the shared runtime?" through :func:`acp_runtime_backends`,
-# which with the switch unset returns that frozenset verbatim, so a codex session
-# still gets its own AcpClient process. The background ``_bg`` path does not ask
-# through this function at all -- ``session._bg_runtime_backends`` reads the
-# frozenset directly, so the switch cannot reach it even when it is on. Its reason
-# is in ``session.py`` beside that reader: codex's teardown verb ends a turn without
-# evicting the session, and background handles churn at a rate the user never
-# controls.
+# The unresolved-``@server``-ref detector (``agent_sdk.mcp_refs``) judges a spec's
+# ``tools`` refs against the servers the session actually receives, and for an
+# array-backed host that is the wire array: what is not in it is not mounted.
+# These two hosts mount the spec's servers by another channel, so for them the
+# spec's own server names are satisfied by construction and only a ref naming a
+# server the spec does NOT declare is unresolved. kiro-cli resolves ``--agent``
+# itself and loads the spec's servers from disk, which is why Crew hands it an
+# empty array. KAS receives the spec's servers as a projected agent definition in
+# ``_meta.kiro.customAgents`` (``acp/kas_agents.py``), with only the broker stubs
+# on the array. codex is NOT a member: the array Crew sends is the whole of what
+# it mounts, so judging its refs against that array is exactly right. Read by
+# membership rather than as "is kiro": a host added later that mounts a spec's
+# servers by its own channel joins here, and the detector says nothing wrong about
+# it on day one.
+ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends whose teardown verb actually EVICTS the session from the adapter's own
+# session map, freeing what it held.
 #
-# Why a switch rather than a member. The frozenset above is the SHIPPED answer,
-# and adding codex to it IS the product change. That change is worth its own
-# commit -- one line, reviewed on its own, reverted on its own -- rather than
-# being folded into the commit that writes the harness. So the harness lands
-# first, dark, with a switch that exercises it; then the member lands and this
-# switch is deleted. Deleting it is the whole flip: nothing else moves.
+# Running on a shared process (the set above) is not that claim. A harness can
+# multiplex perfectly and still have no verb that disposes one session, and the
+# difference only shows on a process that outlives many sessions: every
+# non-evicting teardown leaves its session addressable and its context resident,
+# so the adapter grows without bound at whatever rate sessions are created.
 #
-# Why an env read rather than a second registry. ``register_selectable_backend``
-# exists because an EDITION must be able to add a harness this build has never
-# heard of. Nothing of the kind is happening here -- codex is already known and
-# already selectable, and the only open question is which transport it takes --
-# so a registry would be a mutable global that one caller writes once. An env read
-# holds no state, is re-read per call so a test can turn it on around a single
-# assertion, and cannot be aimed at a harness other than codex.
-ENV_CODEX_ACP_RUNTIME = "KIROCREW_CODEX_ACP_RUNTIME"
-
-
-def codex_runs_on_acp_runtime() -> bool:
-    """Whether the codex-on-AcpRuntime preview switch is on. Default ``False``.
-
-    Read per call and never cached at import, for the same reason
-    :func:`kiro_crew.session._bg_runtime_backends` is computed per call: the
-    gateway sets its environment before it spawns anything and a test sets the
-    variable around one assertion, so a value frozen at import answers for
-    whichever of the two happened to run first.
-
-    The truthy set is spelled out by :data:`kiro_crew.constants.ENV_TRUTHY` and read
-    through :func:`kiro_crew.constants.env_flag_enabled`, which exists for exactly
-    this footgun: an operator who exports ``=0`` or ``=false`` to keep a preview OFF
-    must not get it on, and a bare ``bool()`` would give it to them silently, since
-    the session starts either way and only the transport differs. ``constants`` is
-    stdlib-only, so reading it here keeps this module's leaf property (see the
-    module docstring) -- the forbidden edges are ``kiro_crew.config``,
-    ``kiro_crew.platform`` and ``kiro_crew.acp``.
-    """
-    return env_flag_enabled(ENV_CODEX_ACP_RUNTIME)
-
-
-def acp_runtime_backends() -> FrozenSet[str]:
-    """Backends served by AcpRuntime in THIS process, preview switch included.
-
-    The one home the switch has: every FOREGROUND site asking "is this backend on
-    the shared runtime?" reads this instead of the environment. Equal to
-    ``ACP_BACKENDS_ACP_RUNTIME`` whenever the switch is off, which is the default.
-
-    Not every reader of that question. ``session._bg_runtime_backends`` reads the
-    frozenset directly, deliberately, so the switch is scoped to the foreground —
-    its reason lives beside that reader. A site that wants the switch reads here; a
-    site the switch must not reach reads the set and says why.
-
-    A function rather than a set for the reason the module docstring gives for
-    ``host_auth.backends_retired_by_host_logout()``: this is a DERIVED answer, not
-    vocabulary, and the harness-parity gate reserves the ``ACP_BACKENDS_*``
-    spelling for vocabulary.
-    """
-    if codex_runs_on_acp_runtime():
-        return ACP_BACKENDS_ACP_RUNTIME | {ACP_BACKEND_CODEX}
-    return ACP_BACKENDS_ACP_RUNTIME
-
+# kiro-cli and KAS are members: their teardown verbs (``_kiro.dev/session/terminate``
+# and ``_kiro/session/delete``) remove the session from the process.
+#
+# codex is a member on captured evidence. Crew's teardown verb for it is the
+# standard ``session/close``, sent as a request; measured live against codex-acp
+# 1.11.0, the adapter answers it with ``{}`` and afterwards the same sessionId
+# stops answering ``session/set_config_option`` -- the session is gone from the
+# process, while the Codex thread's own record survives (evict, not delete). The
+# contrast on the same wire is ``session/cancel``: after it the same oracle keeps
+# answering and a further ``session/prompt``'s ``cachedReadTokens`` shows the
+# context resident, so ``cancel`` interrupts a turn and is not a teardown, and a
+# harness sending it as one is correctly excluded here. The harness docstring on
+# ``CodexHarness.teardown`` carries the full measurement, and a gated live test
+# repeats it on every install that has the adapter.
+#
+# Read by every path that creates and destroys sessions on a shared process, and
+# that is why membership is one fact rather than one gate per caller:
+# :func:`kiro_crew.session._bg_runtime_backends` (background handles -- title
+# generation, suggestions, folders, nav -- each taking an ephemeral sessionId many
+# times per conversation), ``AcpSessionProvider.new_conversation`` (warm pooled
+# reuse, resetting at the rate a workflow's steps run), and the entitlement probe
+# in ``AcpRuntime`` (a throwaway session per unavailable-model pick). A harness
+# whose teardown does not evict leaks one session on every one of those paths, at
+# rates the operator never controls; a harness in this set frees it on each.
+#
+# An opt-in set rather than a subtraction at any call site, for the reason every
+# set in this section is opt-in (harness-parity H6/H7): a harness added later and
+# spelled as "not <some host>" would inherit an eviction guarantee it has never
+# demonstrated, and the operator who never opted into it is the one who finds the
+# adapter growing. Membership is earned by a measured teardown, not by default.
+ACP_BACKENDS_SESSION_EVICTION = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
 
 # ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` is gone, and it has no replacement HERE.
 # Whether a ``kiro-cli logout`` may retire a running child is a fact about how the

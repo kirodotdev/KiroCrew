@@ -44,14 +44,13 @@ __all__ = [
 _HARNESSES: dict[str, type[HarnessAdapter]] = {
     ACP_BACKEND_KIRO: KiroHarness,
     ACP_BACKEND_KAS: KasHarness,
-    # Registered whether or not codex is currently ROUTED here. The two questions
-    # are separate on purpose: this table answers "can the shared-process runtime
-    # drive this host?", and ``acp_runtime_backends()`` answers "does a codex
-    # session take that path today?" -- which the ``KIROCREW_CODEX_ACP_RUNTIME``
-    # switch decides, and which is off by default. A registry gated on the switch
-    # would make the harness unreachable to its own tests and to an operator
-    # trying the preview, and would leave the runtime resolving a harness that
-    # exists on disk but not in the table.
+    # This table answers "can the shared-process runtime drive this host?", and
+    # ``ACP_BACKENDS_ACP_RUNTIME`` answers "does a session take that path?". They
+    # agree for every member here, and they are still separate questions: a harness
+    # is written and tested before it is routed, so the table has to be reachable
+    # while the set does not yet name it. Gating registration on the set would make
+    # a harness unreachable to its own tests, and would leave the runtime resolving
+    # one that exists on disk but not in the table.
     ACP_BACKEND_CODEX: CodexHarness,
 }
 

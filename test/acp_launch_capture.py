@@ -41,11 +41,16 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from kiro_crew.acp import client as client_mod
+from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.harness import codex as codex_harness_mod
+from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.config import paths as config_paths
@@ -369,16 +374,150 @@ def _reset_bin_caches() -> None:
     client_mod._self_served_bin_caches.clear()
 
 
-def capture(backend: str, tmp_path: Path) -> dict[str, Any]:
-    """Drive ``_spawn`` for *backend* and return its four launch answers.
+#: Hosts launched ONLY by ``AcpRuntime``. The kiro family is on the runtime too but
+#: keeps a client arm for the per-session path, so it is captured through ``_spawn``
+#: like every other harness; a runtime-only host has no client arm to drive, and its
+#: launch is the plan its harness resolves at Seam 1.
+RUNTIME_ONLY_BACKENDS = frozenset(ACP_BACKENDS_ACP_RUNTIME - ACP_BACKENDS_KIRO_SLASH_COMMANDS)
 
+
+class _Captured(Exception):
+    """Raised by the stubbed process factory once the launch has been recorded.
+
+    The runtime's spawn continues into the handshake after the factory returns,
+    and that half is the wire, not the launch. Stopping at the factory keeps the
+    capture to the four answers the golden pins.
+    """
+
+
+def _env_delta(parent_env: dict, child_env: dict) -> tuple[dict[str, str], list[str]]:
+    """What the launch ADDED to and REMOVED from the environment it inherited.
+
+    *parent_env* is the environment the child actually inherited, which the caller
+    reads back from ``os.environ`` inside the patched context -- NOT the pre-roundtrip
+    dict it asked ``os.environ`` to become. The two differ on Windows, where
+    ``os.environ`` folds every variable name to a single case: a name the host
+    supplies as ``SystemRoot`` is stored, and inherited by the child, as
+    ``SYSTEMROOT``. Comparing the child against the pre-roundtrip ``SystemRoot`` key
+    then reports a removal that never happened. Reading the parent back through
+    ``os.environ`` applies the OS's own case rules once, so the comparison here stays
+    a plain case-sensitive dict comparison -- distinct names on POSIX, the folded name
+    on Windows -- and a name the child genuinely dropped is still reported removed.
+    """
+    added = {
+        key: VOLATILE_ENV.get(key, value)
+        for key, value in sorted(child_env.items())
+        if parent_env.get(key) != value
+    }
+    removed = sorted(key for key in parent_env if key not in child_env)
+    return added, removed
+
+
+def _capture_runtime_served(backend: str, tmp_path: Path, parent_env: dict) -> dict[str, Any]:
+    """The launch of a runtime-only host, driven through ``AcpRuntime._spawn_admitted``.
+
+    The full runtime spawn path with the same collaborators stubbed as the client
+    capture, so what is recorded is what the runtime hands the process factory: the
+    argv after the harness's plan and the pass-through wraps, and the environment
+    after the harness's ``apply_spawn_env`` and every runtime-side addition. The
+    runtime has no per-harness spawn or stderr labels, so the entry names its server
+    instead; the process factory is stubbed to record and stop, since everything
+    after it is the handshake rather than the launch.
+    """
+    rec = _Recorder()
+
+    async def _factory(*argv: str, **kwargs: Any):
+        rec.argv = list(argv)
+        rec.env = dict(kwargs.get("env") or {})
+        raise _Captured()
+
+    stack: list = [patch.dict(os.environ, parent_env, clear=True)]
+    stack.extend(
+        patch.object(runtime_mod, name, side_effect=_stub_for(getattr(runtime_mod, name), answer))
+        for name, answer in _PASSTHROUGH_STUBS.items()
+        if hasattr(runtime_mod, name)
+    )
+    stack.extend(
+        patch.object(
+            runtime_mod, name, side_effect=_async_stub_for(getattr(runtime_mod, name), answer)
+        )
+        for name, answer in _ASYNC_PASSTHROUGH_STUBS.items()
+    )
+    stack.extend(
+        [
+            patch.object(runtime_mod, "create_subprocess_limited", side_effect=_factory),
+            patch.object(runtime_mod, "_forward_ssh_auth_sock", return_value=False),
+            patch.object(runtime_mod, "browser_session_env", return_value={}),
+            patch.object(runtime_mod, "browser_socket_env", return_value={}),
+            patch.object(runtime_mod, "inject_xdist_auto_cap", return_value=None),
+            patch.object(runtime_mod, "resolve_krb5_ccname", return_value=None),
+            # No scratch dir: it is a per-process temp root the sandbox masks, not a
+            # launch answer, and allocating one would write outside tmp_path.
+            patch.object(runtime_mod.agent_scratch, "allocate_scratch", return_value=None),
+            patch.object(
+                client_mod, "_resolve_codex_acp_bin", return_value=(_CODEX_ACP_ARGV, _SEARCH_PATH)
+            ),
+            patch.object(
+                codex_harness_mod, "resolve_spawn_masks", new=AsyncMock(return_value=((), ()))
+            ),
+            patch.object(codex_harness_mod, "_sandbox_wrapper_generations", return_value=0),
+            # Same default-home pin as the client capture, for the same reason.
+            patch.object(config_paths, "_resolve_default_home", lambda: tmp_path / "default-home"),
+        ]
+    )
+    saved_caches = snapshot_bin_caches()
+    _reset_bin_caches()
+    entered: list = []
+    # The environment the child inherits, read back from ``os.environ`` inside the
+    # patched context so the delta is measured against the parent's names as the OS
+    # actually stored them (see :func:`_env_delta`).
+    inherited_env: dict[str, str] = {}
+    try:
+        for ctx in stack:
+            entered.append(ctx.__enter__())
+        inherited_env = dict(os.environ)
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "workspace",
+            agent="kirocrew",
+            acp_backend=backend,
+            expect_mcp_reports=False,
+        )
+        try:
+            asyncio.run(runtime._spawn_admitted())
+        except _Captured:
+            pass
+    finally:
+        for ctx in reversed(stack):
+            try:
+                ctx.__exit__(None, None, None)
+            except Exception:  # pragma: no cover - teardown must not mask a failure
+                pass
+        restore_bin_caches(saved_caches)
+    assert rec.argv, f"{backend}: the runtime spawn never reached the process factory"
+    added, removed = _env_delta(inherited_env, rec.env)
+    return {
+        "argv": rec.argv,
+        "served_by": "AcpRuntime",
+        "env_added": added,
+        "env_removed": removed,
+    }
+
+
+def capture(backend: str, tmp_path: Path) -> dict[str, Any]:
+    """Drive the launch for *backend* and return its answers.
+
+    A runtime-only host is captured from its harness (see
+    :func:`_capture_runtime_served`); every other id is driven through ``_spawn``.
     ``tmp_path`` is the work dir the client is built against; nothing is written
     inside the repository.
     """
+    if backend in RUNTIME_ONLY_BACKENDS:
+        return _capture_runtime_served(backend, tmp_path, fixed_parent_env())
     rec = _Recorder()
-    # The parent the delta is measured against, and the one the spawn actually runs
-    # under: both are this fixed environment, so ``env_added`` is what _spawn
-    # contributes rather than what this host happened not to have already.
+    # The environment the spawn runs under: this fixed parent, so ``env_added`` is
+    # what _spawn contributes rather than what this host happened not to have already.
+    # The delta itself is measured against ``os.environ`` as installed from it (see
+    # ``inherited_env`` below and :func:`_env_delta`).
     parent_env = fixed_parent_env()
     # Snapshot BEFORE the reset, restore in ``finally``: the reset clears the caches
     # and the stubbed resolvers then fill them with this file's synthetic paths, so
@@ -388,9 +527,13 @@ def capture(backend: str, tmp_path: Path) -> dict[str, Any]:
     stack: list = [patch.dict(os.environ, parent_env, clear=True)]
     _stub_common(stack, rec, tmp_path)
     entered: list = []
+    # The environment the child inherits, read back from ``os.environ`` inside the
+    # patched context (see :func:`_env_delta`).
+    inherited_env: dict[str, str] = {}
     try:
         for ctx in stack:
             entered.append(ctx.__enter__())
+        inherited_env = dict(os.environ)
         client = AcpClient(
             work_dir=tmp_path / "workspace",
             session_key="golden-session",
@@ -405,11 +548,7 @@ def capture(backend: str, tmp_path: Path) -> dict[str, Any]:
             except Exception:  # pragma: no cover - teardown must not mask a failure
                 pass
         restore_bin_caches(saved_caches)
-    added = {
-        key: VOLATILE_ENV.get(key, value)
-        for key, value in sorted(rec.env.items())
-        if parent_env.get(key) != value
-    }
+    added, _removed = _env_delta(inherited_env, rec.env)
     return {
         "argv": rec.argv,
         "spawn_label": rec.spawn_label,

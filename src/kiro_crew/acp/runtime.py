@@ -70,6 +70,7 @@ from kiro_crew.acp.kas_transport import (
     KAS_AUTH_CALLBACK_ERROR_CODE,
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
 )
+from kiro_crew.acp.mcp_ref_guard import warn_unresolved_server_refs
 from kiro_crew.acp.mcp_session_report import (
     active_custom_agent,
     required_managed_servers,
@@ -85,6 +86,7 @@ from kiro_crew.acp.session_handle import (
     _load_watchdog_settings,
     advertised_models_from_session,
 )
+from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -1014,22 +1016,30 @@ def _get_rss_mb(pid: int) -> float | None:
         return None
 
 
-def _iter_descendant_pids(pid: int) -> list[int]:
+def _iter_descendant_pids(pid: int, max_depth: int | None = None) -> list[int]:
     """Return ``[pid, *descendants]`` (Linux only), best-effort.
 
     Walks ``/proc/<pid>/task/<tid>/children`` breadth-first. Returns ``[pid]``
     when the interface is unavailable. Used so RSS accounting can cover a
     sandbox launcher's exec'd child — see _get_rss_tree_mb().
+
+    ``max_depth`` bounds the walk in generations below *pid*: ``None`` is the
+    whole subtree, ``0`` is *pid* alone, ``1`` adds its direct children. The queue
+    carries each pid's own depth rather than the loop tracking a level, so a
+    process reachable at two depths is counted once, at whichever it is reached
+    first — the same single-visit rule the unbounded walk has.
     """
     order: list[int] = []
     visited: set[int] = set()
-    stack = [pid]
-    while stack:
-        p = stack.pop()
+    queue: list[tuple[int, int]] = [(pid, 0)]
+    while queue:
+        p, depth = queue.pop()
         if p in visited:
             continue
         visited.add(p)
         order.append(p)
+        if max_depth is not None and depth >= max_depth:
+            continue
         try:
             entries = os.listdir(f"/proc/{p}/task")
         except OSError:
@@ -1046,7 +1056,7 @@ def _iter_descendant_pids(pid: int) -> list[int]:
                 except ValueError:
                     continue
                 if cpid not in visited:
-                    stack.append(cpid)
+                    queue.append((cpid, depth + 1))
     return order
 
 
@@ -1134,8 +1144,24 @@ def _ps_process_table() -> _ProcessTable | None:
         return table
 
 
-def _get_rss_tree_mb(pid: int) -> float | None:
-    """Sum RSS (MiB) of *pid* and all its descendants, or None if unavailable.
+def _get_rss_tree_mb(pid: int, max_depth: int | None = None) -> float | None:
+    """Sum RSS (MiB) of *pid* and its descendants, or None if unavailable.
+
+    ``max_depth`` bounds the sum in generations below *pid*, for a host that
+    declares one through ``SpawnPlan.rss_depth``. ``None``, the default, is
+    the whole subtree and is what every kiro-family host uses.
+
+    Windows answers None for any bounded request rather than a subtree total. The
+    bound is not available there: the tree is summed through
+    ``proc_rss_tree_mb_for_pid``, whose lineage-VALIDATED walk returns a flat set
+    of genuine descendants with no generation attached, and the naive parent-map
+    walk that would carry depth is the unsafe one that walk exists to avoid.
+    Answering with the subtree instead would judge a bounded host's ceiling
+    against an unbounded measurement — and for a host that declares a bound
+    because its subtree is dominated by a per-session fleet, that reads as a leak
+    on the first session and recycles a healthy process. None is the "unknown, do
+    not judge" answer this probe's caller already handles, so the age ceiling
+    still governs while the RSS ceiling abstains.
 
     On Linux the kirocrew-lite background runtime is spawned through the
     namespace sandbox launcher, which ``fork()``s: ``self._pid`` is the
@@ -1154,7 +1180,7 @@ def _get_rss_tree_mb(pid: int) -> float | None:
     if sys.platform == "linux":
         total = 0.0
         found = False
-        for p in _iter_descendant_pids(pid):
+        for p in _iter_descendant_pids(pid, max_depth):
             r = _get_rss_mb(p)
             if r is not None:
                 total += r
@@ -1162,6 +1188,10 @@ def _get_rss_tree_mb(pid: int) -> float | None:
         return total if found else None
 
     if platform_compat.IS_WINDOWS:
+        if max_depth is not None:
+            # See the docstring: no depth-carrying validated walk exists here, and
+            # a subtree total would be judged against a bounded host's ceiling.
+            return None
         # Windows spawns kiro-cli WITHOUT a launcher fork, but it still spawns
         # MCP-server / tool children that can leak. Sum the tree via
         # proc_rss_tree_mb_for_pid, which enumerates descendants through
@@ -1186,14 +1216,16 @@ def _get_rss_tree_mb(pid: int) -> float | None:
         return None
     total_kib = 0
     visited: set[int] = set()
-    stack = [pid]
-    while stack:
-        p = stack.pop()
+    queue: list[tuple[int, int]] = [(pid, 0)]
+    while queue:
+        p, depth = queue.pop()
         if p in visited:
             continue
         visited.add(p)
         total_kib += rss_kib.get(p, 0)
-        stack.extend(children.get(p, []))
+        if max_depth is not None and depth >= max_depth:
+            continue
+        queue.extend((c, depth + 1) for c in children.get(p, []))
     return total_kib / 1024.0
 
 
@@ -1237,6 +1269,47 @@ def _resolve_session_start_timeout() -> float:
         return _SESSION_NEW_TIMEOUT
 
 
+def _ref_spec_snapshot(agent: str | None, work_dir: str | Path) -> dict[str, Any] | None:
+    """The unresolved-ref guard's spec snapshot, or ``None`` -- never an exception.
+
+    The runtime twin of ``AcpClient._read_mcp_ref_spec``, and best-effort for the
+    same reason: this rides inside the hop that builds a session's MCP array, on
+    every host's establishment path including kiro's. ``agent_spec_snapshot`` goes
+    through the derived-spec freshness gate, which refuses a stale mirror it could
+    not repair -- the right answer for the projection, whose output IS the
+    session's MCP surface, and the wrong one for a diagnostic: a guard that can
+    fail ``session/new`` is a worse defect than the unresolved ref it reports.
+    ``None`` makes the guard silent and leaves the session's fate to the array.
+    """
+    try:
+        return agent_spec_snapshot(agent, work_dir=work_dir)
+    except Exception:
+        logger.debug("unresolved-ref guard: agent spec unreadable", exc_info=True)
+        return None
+
+
+def _pooled_session_servers_and_ref_spec(
+    overlay: Any, agent: str | None, backend: str, work_dir: str | Path
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """The pooled stub array AND the guard's spec snapshot, from one off-loop hop.
+
+    Module-level so the hop is one ``to_thread`` call with no closure, and so the
+    two reads stay together: adding the snapshot as a second hop would be the
+    scheduling point H13 forbids on the kiro path. The array is resolved FIRST
+    and the snapshot is the passenger: a snapshot failure resolves to ``None``
+    and cannot cost the session its array.
+
+    The overlay lookup's scope is :func:`overlay_project_scope`'s answer for
+    *backend*, splatted at the call itself: the ``session_servers`` ratchet reads
+    the scope off the call that resolves the overlay, and this is that call for
+    both of the runtime's session-array paths. The snapshot reads the spec against
+    the session's checkout regardless -- a user-level-only host scopes its overlay
+    lookup to nothing, and the guard still judges the spec it is running.
+    """
+    servers = pooled_session_servers(overlay, agent, **overlay_project_scope(backend, work_dir))
+    return servers, _ref_spec_snapshot(agent, work_dir)
+
+
 class _MirroredSessionMcp(NamedTuple):
     """One mirrored host's ``session/new`` MCP array and what came with it.
 
@@ -1258,6 +1331,13 @@ class _MirroredSessionMcp(NamedTuple):
     denied_tools: frozenset[tuple[str, str]]
     stub_token: str
     derived_spec_snapshot: Any
+    ref_spec: Any = None
+    """The agent spec as the unresolved-ref detector reads it, or ``None``.
+
+    Read in the same off-loop hop as the projection, so the guard that consumes
+    it costs session start no scheduling point of its own (H13). ``None`` when the
+    spec is unreadable, which the guard treats as nothing to say.
+    """
 
 
 class AcpRuntime:
@@ -1382,6 +1462,10 @@ class AcpRuntime:
         # neither threshold means anything before a process exists.
         self._max_age_secs = max_age_secs
         self._max_rss_mb = max_rss_mb
+        # Which processes the ceiling above is measured over. None = the whole
+        # descendant subtree, which is every kiro-family host. The spawn plan carries
+        # a bounded host's depth relative to the exact pid Crew launches.
+        self._max_rss_depth: int | None = None
 
         # session/new + session/load budget — resolved lazily on first use
         # (never in __init__: KiroCrewConfig.load() is a synchronous disk
@@ -1698,8 +1782,22 @@ class AcpRuntime:
                 return None
 
         rss_mb = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), _get_rss_tree_mb, self._pid
+            subprocess_executor(), _get_rss_tree_mb, self._pid, self._max_rss_depth
         )
+        if self._max_rss_depth is not None:
+            # A bounded scope rests on a structural fact about the host's process
+            # tree (which generation the resident process sits at). Record what the
+            # bound captured against the ceiling it is judged by, so a host release
+            # that moves that process out of scope is attributable from the log
+            # rather than showing up only as a ceiling that never trips.
+            logger.debug(
+                "rss probe: backend=%r pid=%s depth=%s rss_mb=%s ceiling_mb=%s",
+                self.acp_backend,
+                self._pid,
+                self._max_rss_depth,
+                rss_mb,
+                self._max_rss_mb,
+            )
         if rss_mb is not None and rss_mb > self._max_rss_mb:
             return "rss"
 
@@ -1990,6 +2088,7 @@ class AcpRuntime:
 
         try:
             plan = await self._resolve_spawn_plan()
+            self._max_rss_depth = plan.rss_depth
             argv = plan.argv
         except _KiroExecutableTrustError as exc:
             raise AcpRuntimeError(str(exc)) from exc
@@ -4649,31 +4748,47 @@ class AcpRuntime:
             **overlay_project_scope(self.acp_backend, work_dir),
         )
         stubs, stub_token = await self._own_stub_session(stubs, session_key)
-        projection = await asyncio.to_thread(
-            mirror.session_projection,
-            active_agent,
-            stub_server_names=stubbed,
-            stub_elements=stubs,
-            permission_surface_owned=False,
-            work_dir=work_dir,
-            session_key=session_key,
-            channel_id=channel_id,
-            # THIS session's own name, minted just above. It reaches the projection
-            # for the same reason ``session_key`` does -- the control-plane elements
-            # are the only carriers a mirrored host has -- but it answers a question
-            # the key cannot: on a shared runtime the key of the session that
-            # CLAIMED the process is not the key of the subagent session running on
-            # it, and after a warm-pool rekey the key baked into an element names the
-            # previous owner. The token is per session and its mapping is
-            # republished, so it stays right in both cases.
-            session_token=stub_token,
-        )
+
+        def _project_and_snapshot() -> tuple[Any, Any]:
+            # One hop, two reads of the same file: the projection the array is
+            # built from and the snapshot the unresolved-ref guard judges against.
+            # Both go through session_mcp's own resolution order, so they resolve
+            # the same spec FILE; the bytes can still differ if a save lands
+            # between the two reads. That window is accepted for the snapshot,
+            # because its only consumer is a diagnostic: a mismatch costs one
+            # possibly-wrong warning, never the array, and threading the
+            # projection's own parse through every mirror is a wider change than
+            # that warning is worth. The projection may refuse (a stale derived
+            # spec is the session's MCP surface, so refusing IS the answer); the
+            # snapshot may not, and resolves to None instead.
+            projection = mirror.session_projection(
+                active_agent,
+                stub_server_names=stubbed,
+                stub_elements=stubs,
+                permission_surface_owned=False,
+                work_dir=work_dir,
+                session_key=session_key,
+                channel_id=channel_id,
+                # THIS session's own name, minted just above. It reaches the projection
+                # for the same reason ``session_key`` does -- the control-plane elements
+                # are the only carriers a mirrored host has -- but it answers a question
+                # the key cannot: on a shared runtime the key of the session that
+                # CLAIMED the process is not the key of the subagent session running on
+                # it, and after a warm-pool rekey the key baked into an element names the
+                # previous owner. The token is per session and its mapping is
+                # republished, so it stays right in both cases.
+                session_token=stub_token,
+            )
+            return projection, _ref_spec_snapshot(active_agent, work_dir)
+
+        projection, ref_spec = await asyncio.to_thread(_project_and_snapshot)
         servers = projection.params.get("mcpServers") or []
         return _MirroredSessionMcp(
             servers=list(servers) if isinstance(servers, list) else [],
             denied_tools=projection.denied_tools,
             stub_token=stub_token,
             derived_spec_snapshot=projection.derived_spec_snapshot,
+            ref_spec=ref_spec,
         )
 
     def _mirrored_spec_check_needed(self, snapshot: Any) -> bool:
@@ -4820,6 +4935,7 @@ class AcpRuntime:
         session_work_dir = await self._session_work_dir(cwd)
         denied_tools: frozenset[tuple[str, str]] = frozenset()
         mirrored_snapshot: Any = None
+        ref_spec: Any = None
         if mcp_servers is None:
             # A mirrored host takes its whole array from the mirror; every other host
             # takes the pooled stubs it always took. Which one is a synchronous
@@ -4840,17 +4956,22 @@ class AcpRuntime:
                 stub_token = mirrored.stub_token
                 denied_tools = mirrored.denied_tools
                 mirrored_snapshot = mirrored.derived_spec_snapshot
+                ref_spec = mirrored.ref_spec
             else:
-                mcp_servers = await asyncio.to_thread(
-                    pooled_session_servers,
+                pooled, ref_spec = await asyncio.to_thread(
+                    _pooled_session_servers_and_ref_spec,
                     self._mcp_gateway_overlay,
                     agent or self._agent,
-                    **overlay_project_scope(self.acp_backend, session_work_dir),
+                    self.acp_backend,
+                    session_work_dir,
                 )
-                mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+                mcp_servers, stub_token = await self._own_stub_session(pooled, session_key)
         else:
             # An explicit array is the caller's own composition (a mirror's
-            # projection, a test double); it is not this method's to re-key.
+            # projection, a test double); it is not this method's to re-key, and it
+            # carries no spec snapshot, so the unresolved-ref guard has nothing to
+            # judge against and stays silent -- as the client does with no warmed
+            # snapshot.
             stub_token = ""
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
@@ -4900,11 +5021,17 @@ class AcpRuntime:
         # describing its tools narrows it to the transports it advertised at
         # handshake, because a single unsupported element can cost the whole
         # session/new rather than that one server.
+        # Bound ONCE and threaded to every consumer that means "what this session
+        # was sent": the request, the stall diagnostic, the session report and the
+        # unresolved-ref guard. The pre-filter roster is not that; a host that
+        # narrows its array would otherwise be reported as having been sent servers
+        # the wire never carried, and the guard would judge refs against them.
+        wire_servers = self._harness.session_mcp_servers(
+            mcp_servers, agent_capabilities=self._agent_capabilities
+        )
         params = build_session_new_params(
             session_work_dir,
-            mcp_servers=self._harness.session_mcp_servers(
-                mcp_servers, agent_capabilities=self._agent_capabilities
-            ),
+            mcp_servers=wire_servers,
             kas_custom_agents=kas_agents,
         )
 
@@ -4951,18 +5078,19 @@ class AcpRuntime:
             # controller keys its decrease on (attributable timeout).
             _record_session_start(start_t0, ok=False, attributable_timeout=True)
             # Read the staged MCP reports before the finally below clears them.
-            stalled = self._session_start_stalled(exc, METHOD_SESSION_NEW, mcp_servers)
+            stalled = self._session_start_stalled(exc, METHOD_SESSION_NEW, wire_servers)
             collector = self._collect_late_start(
                 exc,
                 permit,
                 agent=agent,
                 crew_agent=crew_agent,
                 kas_agents=kas_agents,
-                mcp_servers=mcp_servers,
+                mcp_servers=wire_servers,
                 budget=budget,
                 stub_token=stub_token,
                 denied_tools=denied_tools,
                 mirrored_snapshot=mirrored_snapshot,
+                ref_spec=ref_spec,
                 active_agent=active_agent,
                 session_work_dir=session_work_dir,
                 projected_sources=projected_sources,
@@ -4986,11 +5114,12 @@ class AcpRuntime:
             agent=agent,
             crew_agent=crew_agent,
             kas_agents=kas_agents,
-            mcp_servers=mcp_servers,
+            mcp_servers=wire_servers,
             budget=budget,
             stub_token=stub_token,
             denied_tools=denied_tools,
             mirrored_snapshot=mirrored_snapshot,
+            ref_spec=ref_spec,
             active_agent=active_agent,
             session_work_dir=session_work_dir,
             projected_sources=projected_sources,
@@ -5010,6 +5139,7 @@ class AcpRuntime:
         stub_token: str,
         denied_tools: frozenset[tuple[str, str]],
         mirrored_snapshot: Any,
+        ref_spec: Any,
         active_agent: str,
         session_work_dir: str | Path,
         projected_sources: dict[str, str],
@@ -5070,6 +5200,7 @@ class AcpRuntime:
                     stub_token=stub_token,
                     denied_tools=denied_tools,
                     mirrored_snapshot=mirrored_snapshot,
+                    ref_spec=ref_spec,
                     active_agent=active_agent,
                     session_work_dir=session_work_dir,
                     projected_sources=projected_sources,
@@ -5105,6 +5236,49 @@ class AcpRuntime:
         """Live collectors, for diagnostics and tests."""
         return list(self._start_collectors.values())
 
+    def _guard_unresolved_mcp_refs(
+        self,
+        handle: AcpSessionHandle,
+        spec: Any,
+        agent: str | None,
+        wire_servers: Any,
+    ) -> None:
+        """Warn when the spec's ``@server`` refs name nothing this session gets.
+
+        The runtime-path twin of ``AcpClient._guard_unresolved_mcp_refs``, and it
+        exists because a host served here rather than by the client would otherwise
+        be the one host whose unresolved refs are never reported -- which for a host
+        that reads no agent file of Crew's is the normal case the guard was written
+        for, not a corner.
+
+        *wire_servers* is the FINAL array -- harness-filtered projection plus broker
+        stubs -- so this is the last point at which "which servers does this session
+        actually get" can be known. Judging the pre-filter roster would report a ref
+        as satisfied by a server the wire never carried.
+
+        Synchronous, in-memory and non-raising, in that order of importance (H13).
+        *spec* was read in the same off-loop hop that resolved the array, so this
+        adds no scheduling point to any host's session start; ``None`` -- no hop
+        (a caller-supplied array) or an unreadable spec -- means nothing to say.
+        Every failure resolves to silence rather than a failed session, because a
+        diagnostic that can fail a session is a worse defect than the one it
+        detects. It changes nothing: not the array, not the session's fate.
+        """
+        if spec is None:
+            return
+        try:
+            unresolved = warn_unresolved_server_refs(
+                spec,
+                wire_servers,
+                backend=self.acp_backend,
+                agent=agent or "",
+                gateway_enabled=self._mcp_gateway_overlay is not None,
+            )
+            if unresolved:
+                handle.mcp_session_report().record_unresolved_refs(unresolved)
+        except Exception:
+            logger.debug("unresolved-ref guard: evaluation failed", exc_info=True)
+
     async def _finish_create_session(
         self,
         session_id: str,
@@ -5119,6 +5293,7 @@ class AcpRuntime:
         stub_token: str,
         denied_tools: frozenset[tuple[str, str]],
         mirrored_snapshot: Any,
+        ref_spec: Any,
         active_agent: str,
         session_work_dir: str | Path,
         projected_sources: dict[str, str],
@@ -5186,6 +5361,7 @@ class AcpRuntime:
         # report can be read as "of the N we sent, these reported" rather than
         # as a bare list of names.
         handle.mcp_session_report().begin_session(mcp_servers)
+        self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers)
 
         mode_switched = False
         staged_before_switch = 0
@@ -5437,6 +5613,7 @@ class AcpRuntime:
         session_work_dir = str(await self._session_work_dir(cwd))
         denied_tools: frozenset[tuple[str, str]] = frozenset()
         mirrored_snapshot: Any = None
+        ref_spec: Any = None
         # A mirrored host re-declares the array its projection built, not the raw
         # pooled one: session/load re-initializes the session's servers, so an
         # unprojected array here does not merely fail to withhold a stub -- it MOUNTS
@@ -5460,14 +5637,16 @@ class AcpRuntime:
             stub_token = mirrored.stub_token
             denied_tools = mirrored.denied_tools
             mirrored_snapshot = mirrored.derived_spec_snapshot
+            ref_spec = mirrored.ref_spec
         else:
-            mcp_servers = await asyncio.to_thread(
-                pooled_session_servers,
+            pooled, ref_spec = await asyncio.to_thread(
+                _pooled_session_servers_and_ref_spec,
                 self._mcp_gateway_overlay,
                 active_agent,
-                **overlay_project_scope(self.acp_backend, session_work_dir),
+                self.acp_backend,
+                session_work_dir,
             )
-            mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+            mcp_servers, stub_token = await self._own_stub_session(pooled, session_key)
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time, same as create_session().
@@ -5490,12 +5669,14 @@ class AcpRuntime:
         # MORE here: session/load re-initializes the session's servers, so a
         # rejected array does not just fail to add tools -- it takes them away from
         # a conversation that already had them.
+        # Bound once, for the same consumers as session/new: see the note there.
+        wire_servers = self._harness.session_mcp_servers(
+            mcp_servers, agent_capabilities=self._agent_capabilities
+        )
         load_params: dict[str, Any] = {
             "sessionId": resume_sid,
             "cwd": session_work_dir,
-            "mcpServers": self._harness.session_mcp_servers(
-                mcp_servers, agent_capabilities=self._agent_capabilities
-            ),
+            "mcpServers": wire_servers,
         }
         if session_file:
             # The CALLER decides, because the caller is what knows whether a
@@ -5541,9 +5722,14 @@ class AcpRuntime:
             # its servers, and the managed ones must win the same-name contest
             # on load exactly as they did on new.
             kas_agents, mcp_servers = hoist_managed_servers(kas_agents, active_agent, mcp_servers)
-            load_params["mcpServers"] = self._harness.session_mcp_servers(
+            # REBIND, not just re-assign the param: the hoist changes the array, and
+            # wire_servers is what the stall diagnostic and the session report read.
+            # Setting only load_params would leave both describing the pre-hoist roster
+            # -- naming servers this resume did not send.
+            wire_servers = self._harness.session_mcp_servers(
                 mcp_servers, agent_capabilities=self._agent_capabilities
             )
+            load_params["mcpServers"] = wire_servers
             attach_kas_custom_agents(load_params, kas_agents)
         budget = await self._session_start_budget()
         self._session_inits_in_flight += 1
@@ -5565,7 +5751,7 @@ class AcpRuntime:
             loaded_session_id = resume_sid
         except AcpRequestTimeout as exc:
             # Read the staged MCP reports before the finally below clears them.
-            raise self._session_start_stalled(exc, METHOD_SESSION_LOAD, mcp_servers) from exc
+            raise self._session_start_stalled(exc, METHOD_SESSION_LOAD, wire_servers) from exc
         finally:
             buffered_init = self._finish_session_init(loaded_session_id)
 
@@ -5618,7 +5804,8 @@ class AcpRuntime:
             raise
         # session/load re-initializes this session's servers, so the resumed
         # session gets its own report against the roster load re-declared.
-        handle.mcp_session_report().begin_session(mcp_servers)
+        handle.mcp_session_report().begin_session(wire_servers)
+        self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers)
 
         mode_switched = False
         staged_before_switch = 0

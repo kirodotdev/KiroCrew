@@ -39,6 +39,8 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     effort_config_option_id,
 )
@@ -437,22 +439,33 @@ class TestPersistedPairAndSlotEffortAgree:
         """Driven through ``AcpProvider.start``, so the ORDER under test is the
         production statement rather than one this test performs itself. A start
         path that applied the slot effort before the model would land ``max``
-        last and fail here."""
+        last and fail here.
+
+        codex is a member of ACP_BACKENDS_ACP_RUNTIME, so ``start`` reaches the
+        shared-runtime step and only then the effort push. The double therefore
+        stands in for that step -- doing exactly what it does with a persisted pin,
+        and nothing else this test needs -- which keeps the sequence the production
+        method's while leaving the adapter unspawned. Standing in for the per-session
+        client handshake instead would test an order codex does not take.
+        """
         client = _codex_client(tmp_path, model="openai.gpt-6-astra[max]")
         applied: list[tuple[str, str]] = []
         client.set_config_option = _codex_acp_1_11(applied)  # type: ignore[method-assign]
 
-        async def _ensure_ready() -> None:
-            # What the real handshake does with a persisted pin, and nothing else
-            # this test needs: the model half of the pair reaches the wire.
+        async def _start_runtime() -> None:
+            # The model half of the pair reaches the wire on the runtime start,
+            # which is what the real session/new + set_model sequence does with a
+            # persisted pin.
             await client._apply_startup_model()
 
-        client.ensure_ready = _ensure_ready  # type: ignore[method-assign]
         with patch("kiro_crew.providers.acp.AcpClient"):
             provider = AcpProvider(acp_backend=ACP_BACKEND_CODEX)
         provider._client = client
+        provider._start_kiro_runtime = _start_runtime  # type: ignore[method-assign]
         provider._effort_per_model = {"openai.gpt-6-astra[max]": "high"}
         provider._private_memory_prepared = True
+
+        assert provider.is_acp_runtime_backend is True
 
         await provider.start()
 
@@ -462,9 +475,17 @@ class TestPersistedPairAndSlotEffortAgree:
 
     @pytest.mark.asyncio
     async def test_the_startup_effort_push_is_not_skipped_on_codex(self, tmp_path) -> None:
-        """codex is served by ``AcpClient``, not ``AcpRuntime``, so the startup
-        push is live rather than an overlay -- it is the only channel that carries
-        the slot level onto a fresh codex session."""
+        """The push runs for codex even though codex is on the shared runtime.
+
+        Which harnesses take the push is decided by
+        ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION -- the set naming the CHANNEL -- and
+        not by the transport, and this test is where the two answers differ.
+        codex is a runtime member AND a channel member, so a gate that read the
+        transport would skip the one channel a fresh codex session has for its slot
+        level: it reads no cli.json overlay, so nothing else would carry it. The
+        kiro family is the mirror image, a runtime member outside the channel set,
+        and it still skips.
+        """
         client = _codex_client(tmp_path, model="openai.gpt-6-astra[max]")
         applied: list[tuple[str, str]] = []
         client.set_config_option = _codex_acp_1_11(applied)  # type: ignore[method-assign]
@@ -473,7 +494,10 @@ class TestPersistedPairAndSlotEffortAgree:
         provider._client = client
         provider._effort_per_model = {"openai.gpt-6-astra[max]": "high"}
 
-        assert provider.is_acp_runtime_backend is False
+        assert provider.is_acp_runtime_backend is True
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
         await provider._apply_initial_effort()
 
         assert applied == [(CODEX_EFFORT, "high")]

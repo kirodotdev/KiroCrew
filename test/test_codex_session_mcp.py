@@ -4,8 +4,9 @@
 its own. Both are properties of the ADAPTER rather than of Crew, so both are
 measured against a real ``codex-acp`` here and asserted as unit behaviour above:
 
-* an ``sse`` element is dropped, because codex-acp fails the WHOLE ``session/new``
-  on one -- so forwarding it costs the session every other server;
+* an ``sse`` element is dropped, because codex-acp ACCEPTS one silently and never
+  wires it -- so forwarding it buys a session whose tool is missing with no error
+  anywhere, and this filter is the only guard against that;
 * Crew's OWN servers carry ``KIROCREW_SESSION_KEY`` on the element, because
   ``codex-rs`` launches a stdio MCP server with ``env_clear()`` plus a fixed
   allowlist and inherits nothing else -- and which servers those are is decided by
@@ -38,6 +39,7 @@ from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp._dispatch import identified_mcp_call
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.harness.codex import CodexHarness
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import JsonRpcMessage
@@ -121,6 +123,43 @@ def _element(name: str, **over) -> dict:
     return element
 
 
+def _codex_session_array(
+    *,
+    session_key: str = "",
+    channel_id: str = "",
+    caps: dict | None = None,
+    stub_names: tuple[str, ...] = (),
+    stubs: list[dict] | None = None,
+) -> tuple:
+    """The array a codex ``session/new`` carries, assembled the way a session is.
+
+    Two owners, in the order the runtime asks them. The MIRROR turns the agent spec
+    into elements, places the pooled broker stubs beside them and withholds what it
+    must; the HARNESS then narrows the result against the ``mcpCapabilities`` THIS
+    session's ``initialize`` answered. The split is the point -- the transport rule
+    cannot read a live advertisement from the spawn path, where the adapter process
+    does not exist yet -- so a test that means "what reaches the adapter" runs both.
+
+    ``caps`` is that advertisement. ``None`` stands for a session whose adapter said
+    nothing, which the harness passes through untouched rather than emptying.
+
+    Returns the projection beside the narrowed array, because the deny set and the
+    array are two halves of one answer and a caller usually wants both.
+    """
+    projection = codex_projection(
+        "kirocrew",
+        session_key=session_key,
+        channel_id=channel_id,
+        stub_server_names=stub_names,
+        stub_elements=list(stubs or []),
+    )
+    agent_capabilities = {} if caps is None else {"mcpCapabilities": dict(caps)}
+    kept = CodexHarness().session_mcp_servers(
+        list(projection.params["mcpServers"]), agent_capabilities=agent_capabilities
+    )
+    return projection, kept
+
+
 # ── the transport filter ────────────────────────────────────────────────────
 
 
@@ -129,21 +168,43 @@ class TestTransportFilter:
 
     Keyed on ``initialize``'s ``mcpCapabilities`` rather than on a constant: an
     adapter release that gains ``sse`` or drops ``http`` would make a hardcoded set
-    silently wrong, and being wrong here is not "one server missing" -- codex
-    answers ``-32600`` for the whole ``session/new``.
+    silently wrong. Being wrong here is invisible rather than loud: codex-acp
+    ACCEPTS an element whose transport it declares unsupported, answering
+    ``session/new`` with an ordinary ``sessionId`` and never wiring that server, so
+    this filter is the only thing keeping the array Crew sends equal to the array
+    the adapter honours.
     """
 
-    def test_an_unadvertised_transport_is_dropped_and_the_rest_survive(self):
-        """One bad entry must not be allowed to cost the whole session.
+    def test_an_unadvertised_transport_is_dropped_before_it_is_sent(self):
+        """The element leaves the array here, which is the only place it can.
 
-        codex-acp answers ``session/new`` with ``-32600`` for the entire request
-        when it meets an ``sse`` element, so dropping it is what keeps the other
-        servers. Withholding the whole array instead would be the same loss by
-        another route.
+        codex-acp does NOT refuse an ``sse`` element it declares unsupported: it
+        answers ``session/new`` normally and leaves that server unwired, so nothing
+        downstream reports the mismatch. Dropping it here is what keeps the array
+        Crew sends equal to the array the adapter honours, and the advertised
+        elements beside it are untouched.
         """
         kept = drop_unadvertised_transports(
             [
                 {"name": "remote", "type": "sse", "url": "https://x/sse", "headers": []},
+                {"name": "local", "type": "stdio", "command": "/bin/x", "args": [], "env": []},
+            ],
+            _CODEX_1_11_CAPS,
+        )
+        assert [e["name"] for e in kept] == ["local"]
+
+    def test_a_MEANINGLESS_transport_type_is_dropped_TOO(self):
+        """The adapter validates the ``type`` field at all, so the filter must.
+
+        A deliberately meaningless ``{"type": "nonsense-type"}`` element is accepted
+        by codex-acp exactly as an unadvertised ``sse`` one is: ``session/new``
+        answers with a ``sessionId`` and the server is never wired. Keeping only
+        transports that were POSITIVELY advertised is what covers both, where a
+        denylist of known-bad spellings would cover neither.
+        """
+        kept = drop_unadvertised_transports(
+            [
+                {"name": "junk", "type": "nonsense-type", "url": "https://x/j"},
                 {"name": "local", "type": "stdio", "command": "/bin/x", "args": [], "env": []},
             ],
             _CODEX_1_11_CAPS,
@@ -179,9 +240,9 @@ class TestTransportFilter:
     def test_an_unknown_advertisement_keeps_stdio_only(self):
         """Fail-safe, and not arbitrary: ACP requires every agent to support stdio.
 
-        Anything else with no positive claim behind it risks the whole request, so
-        a session whose handshake has not been read yet keeps the one transport that
-        cannot be refused.
+        Anything else with no positive claim behind it risks being accepted and
+        left unwired, so a session whose handshake has not been read yet keeps the
+        one transport that cannot be refused.
         """
         elements = [
             {"name": "local", "type": "stdio", "command": "/bin/x", "args": [], "env": []},
@@ -419,21 +480,29 @@ class TestCodexRulings:
         assert [e["name"] for e in params["mcpServers"]] == ["kirocrew-core"]
 
 
-# ── the client seam ─────────────────────────────────────────────────────────
+# ── the session array seam ──────────────────────────────────────────────────
 
 
-class TestClientSeam:
+class TestTheSessionArraySeam:
+    """What a codex ``session/new`` is handed, and who decides each part of it.
+
+    The array is the MIRROR's -- both halves of it, the spec translation and the
+    pooled broker stubs -- and the transport narrowing that follows is the
+    HARNESS's, reading the handshake this session captured. These drive that pair,
+    plus the source-level pins that keep the split where it is.
+    """
+
     def test_codex_is_in_the_array_set_and_NOT_in_member_dispatch(self):
         """One set this projection needs, and one it deliberately stays out of.
 
-        Without the array set the hook returns ``[]`` however good the mirror is.
+        Without the array set the session gets ``[]`` however good the mirror is.
         Member dispatch is a different capability -- session control in a DM thread
         -- and this PR does not add it, so the set is pinned in both directions.
         """
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_MCP_ARRAY
         assert ACP_BACKEND_CODEX not in ACP_BACKENDS_MEMBER_DISPATCH
 
-    def test_the_codex_hook_returns_the_projection(self, tmp_path, agents_dir):
+    def test_the_session_array_carries_the_spec_and_the_control_plane(self, agents_dir):
         """The one assertion the whole mirror exists to make true.
 
         An empty array on a selectable backend is a session with no Crew tools and
@@ -448,25 +517,12 @@ class TestClientSeam:
             # wants both has to name both.
             tools=["@foo", "@kirocrew-core"],
         )
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        names = set(_by_name(client._codex_session_mcp_servers()))
+        names = set(_by_name(_codex_session_array(caps=_CODEX_1_11_CAPS)[1]))
         assert "foo" in names
         assert "kirocrew-core" in names
 
-    def test_the_hook_carries_this_clients_session_key(self, tmp_path, agents_dir):
-        """The mirror cannot discover it; the client passes it down."""
-        _write_spec(agents_dir, servers={}, tools=["@kirocrew-core"])
-        client = AcpClient(
-            work_dir=tmp_path,
-            agent="kirocrew",
-            acp_backend=ACP_BACKEND_CODEX,
-            session_key="chat-9-42",
-        )
-        core = _by_name(client._codex_session_mcp_servers())["kirocrew-core"]
-        assert _env(core)["KIROCREW_SESSION_KEY"] == "chat-9-42"
-
-    def test_an_sse_spec_entry_never_reaches_a_codex_session(self, tmp_path, agents_dir):
-        """End to end through the client, against the advertisement it captured."""
+    def test_an_sse_spec_entry_never_reaches_a_codex_session(self, agents_dir):
+        """End to end through both owners, against the advertisement a session holds."""
         _write_spec(
             agents_dir,
             servers={
@@ -475,17 +531,41 @@ class TestClientSeam:
             },
             tools=["@remote", "@local"],
         )
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._agent_mcp_capabilities = dict(_CODEX_1_11_CAPS)
-        names = set(_by_name(client._codex_session_mcp_servers()))
+        names = set(_by_name(_codex_session_array(caps=_CODEX_1_11_CAPS)[1]))
         assert "remote" not in names
         assert "local" in names
 
-    def test_the_hook_reads_the_advertisement_rather_than_a_constant(self, tmp_path, agents_dir):
-        """The same client, the same spec, two advertisements, two answers.
+    def test_the_spec_parse_does_not_narrow_so_this_filter_is_the_only_guard(self, agents_dir):
+        """The fail-open consequence, pinned where the guard could be lost.
+
+        An element whose transport the adapter declares unsupported produces a
+        NORMAL session: ``session/new`` answers with a ``sessionId`` and the server
+        is simply never wired, so there is no error for a later stage to notice and
+        no later stage removes the element either. This asserts both halves -- the
+        spec parse carries the ``sse`` server through untouched, and the narrowing
+        at the ``session/new`` site is the single place it leaves the array. Losing
+        that call does not break a session; it buys one that silently holds a server
+        with no tools.
+        """
+        _write_spec(
+            agents_dir,
+            servers={
+                "remote": {"url": "https://x/sse", "type": "sse"},
+                "local": {"command": "/bin/foo"},
+            },
+            tools=["@remote", "@local"],
+        )
+        unnarrowed = codex_projection("kirocrew").params["mcpServers"]
+        assert "remote" in _by_name(unnarrowed)
+        kept = _by_name(drop_unadvertised_transports(unnarrowed, _CODEX_1_11_CAPS))
+        assert "remote" not in kept
+        assert "local" in kept
+
+    def test_the_narrowing_reads_the_advertisement_rather_than_a_constant(self, agents_dir):
+        """The same spec, two advertisements, two answers.
 
         This is what a hardcoded unsupported-transport set could not do, and the
-        reason the WATCH on that constant was legitimate: the code now follows the
+        reason the WATCH on that constant was legitimate: the code follows the
         adapter instead of following one measurement of it.
         """
         _write_spec(
@@ -493,13 +573,11 @@ class TestClientSeam:
             servers={"remote": {"url": "https://x/sse", "type": "sse"}},
             tools=["@remote"],
         )
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._agent_mcp_capabilities = dict(_CODEX_1_11_CAPS)
-        assert "remote" not in _by_name(client._codex_session_mcp_servers())
-        client._agent_mcp_capabilities = {"acp": False, "http": True, "sse": True}
-        assert "remote" in _by_name(client._codex_session_mcp_servers())
+        assert "remote" not in _by_name(_codex_session_array(caps=_CODEX_1_11_CAPS)[1])
+        advertised = {"acp": False, "http": True, "sse": True}
+        assert "remote" in _by_name(_codex_session_array(caps=advertised)[1])
 
-    def test_a_codex_session_needs_no_claude_settings_file(self, tmp_path, agents_dir):
+    def test_a_codex_session_needs_no_claude_settings_file(self, agents_dir):
         """Codex's array is not conditional on a file no codex session has.
 
         Claude withholds its whole array unless Crew authored
@@ -508,13 +586,21 @@ class TestClientSeam:
         condition here would withhold every Crew tool from every codex session on
         the strength of something that does not describe the backend: codex's
         asking is asserted per session and enforced, so there is no file to own.
+
+        ``False`` is the value a real session is built with -- the runtime authors no
+        native permission file and says so to every mirror -- and claude's answer to
+        the same argument is asserted beside it, so this is a decision rather than a
+        default nobody exercises.
         """
         _write_spec(agents_dir, servers={}, tools=["@kirocrew-core"])
-        codex = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        assert codex._claude_settings_authored is False
-        assert "kirocrew-core" in _by_name(codex._codex_session_mcp_servers())
+        codex = CodexMirror().session_projection("kirocrew", permission_surface_owned=False)
+        assert "kirocrew-core" in _by_name(codex.params["mcpServers"])
+        claude = mirror_for(ACP_BACKEND_CLAUDE)
+        assert claude is not None
+        withheld = claude.session_projection("kirocrew", permission_surface_owned=False)
+        assert withheld.params["mcpServers"] == []
 
-    def test_a_server_narrowed_per_tool_is_withheld_end_to_end(self, tmp_path, agents_dir):
+    def test_a_server_narrowed_per_tool_is_withheld_end_to_end(self, agents_dir):
         """The restriction reaches the array as an omission, through the real seam.
 
         ``disabledTools`` is stripped by ``acp_server_element`` like every other
@@ -531,13 +617,11 @@ class TestClientSeam:
             },
             tools=["@narrowed", "@open"],
         )
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._agent_mcp_capabilities = dict(_CODEX_1_11_CAPS)
-        names = set(_by_name(client._codex_session_mcp_servers()))
+        names = set(_by_name(_codex_session_array(caps=_CODEX_1_11_CAPS)[1]))
         assert "narrowed" not in names
         assert "open" in names
 
-    def test_an_empty_or_malformed_disabled_tools_withholds_nothing(self, tmp_path, agents_dir):
+    def test_an_empty_or_malformed_disabled_tools_withholds_nothing(self, agents_dir):
         """The dashboard writes an empty list when the last tool is re-enabled.
 
         Reading that as a restriction would unmount a server the user just turned
@@ -553,11 +637,10 @@ class TestClientSeam:
             tools=["@empty", "@bogus"],
         )
         assert session_mcp.session_mcp_projection("kirocrew").restricted == frozenset()
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._agent_mcp_capabilities = dict(_CODEX_1_11_CAPS)
-        assert {"empty", "bogus"} <= set(_by_name(client._codex_session_mcp_servers()))
+        names = set(_by_name(_codex_session_array(caps=_CODEX_1_11_CAPS)[1]))
+        assert {"empty", "bogus"} <= names
 
-    def test_an_identity_bound_crew_server_is_not_mounted_at_all(self, tmp_path, agents_dir):
+    def test_an_identity_bound_crew_server_is_not_mounted_at_all(self, agents_dir):
         """Present-but-unusable is the defect this folder exists to kill.
 
         A ``kirocrew-work`` that mounts with no session identity answers
@@ -571,15 +654,11 @@ class TestClientSeam:
             servers={"kirocrew-work": {"command": "/opt/kirocrew", "args": ["mcp-work"]}},
             tools=["@kirocrew-work", "@kirocrew-core"],
         )
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._agent_mcp_capabilities = dict(_CODEX_1_11_CAPS)
-        names = set(_by_name(client._codex_session_mcp_servers()))
+        names = set(_by_name(_codex_session_array(caps=_CODEX_1_11_CAPS)[1]))
         assert "kirocrew-work" not in names
         assert "kirocrew-core" in names
 
-    def test_the_control_plane_is_never_withheld_by_its_own_disabled_tools(
-        self, tmp_path, agents_dir
-    ):
+    def test_the_control_plane_is_never_withheld_by_its_own_disabled_tools(self, agents_dir):
         """Withholding the control plane would BE the defect, not a safe default.
 
         ``managed_mcp_spec_entry`` emits only command/args/env, so a ``disabledTools``
@@ -600,33 +679,46 @@ class TestClientSeam:
             tools=["@kirocrew-core"],
         )
         assert "kirocrew-core" not in session_mcp.session_mcp_projection("kirocrew").restricted
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._agent_mcp_capabilities = dict(_CODEX_1_11_CAPS)
-        assert "kirocrew-core" in _by_name(client._codex_session_mcp_servers())
+        assert "kirocrew-core" in _by_name(_codex_session_array(caps=_CODEX_1_11_CAPS)[1])
 
-    def test_a_pooled_stub_cannot_re_add_a_withheld_server(self, tmp_path, agents_dir):
+    def test_the_pooled_resolution_cannot_run_beside_the_projection(self):
         """A stub wraps the SAME name, so an unnarrowed append un-withholds it.
 
         The stub is the UNRESTRICTED server, which is the worse of the two, so the
-        pooled half of the array goes through the same withholding rules. The shared
-        append returns ``[]`` for codex precisely so it cannot bypass them.
+        pooled half of the array goes through the same withholding rules -- which is
+        why the projection places the stubs itself (asserted just below, and again on
+        the runtime path). What has to hold beside that is that the RAW pooled
+        resolution cannot also run: a session that took the projection and then
+        appended ``pooled_session_servers`` would re-add every name the projection
+        withheld.
+
+        Structural, because the two are one ``if``/``else`` on the shared session
+        construction path and a behavioural test only ever observes the branch it
+        took. Read from the tree rather than the text, so a mention in a comment or a
+        docstring is not mistaken for a call.
         """
-        _write_spec(
-            agents_dir,
-            servers={"narrowed": {"command": "/bin/foo", "disabledTools": ["dangerous_tool"]}},
-            tools=["@narrowed", "@unrelated"],
-        )
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._agent_mcp_capabilities = dict(_CODEX_1_11_CAPS)
-        client._pooled_broker_stubs = lambda: [  # type: ignore[method-assign]
-            {"name": "narrowed", "command": "/stub", "args": [], "env": [], "type": "stdio"},
-            {"name": "unrelated", "command": "/stub", "args": [], "env": [], "type": "stdio"},
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(AcpRuntime.create_session)))
+        branches = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If) and "mirrored is not None" in ast.unparse(node.test)
         ]
-        names = set(_by_name(client._codex_session_mcp_servers()))
-        assert "narrowed" not in names
-        assert "unrelated" in names
-        # And the shared append is inert for codex, so nothing re-adds it later.
-        assert client._pooled_mcp_servers() == []
+        assert len(branches) == 1, "the mirrored-array branch has moved or been duplicated"
+        taken = "".join(ast.unparse(stmt) for stmt in branches[0].body)
+        untaken = "".join(ast.unparse(stmt) for stmt in branches[0].orelse)
+        assert "pooled_session_servers" not in taken, (
+            "the raw pooled resolution runs on the branch that ALREADY has the "
+            "projection's array, so an unprojected broker stub reaches session/new "
+            "beside it and un-withholds the name the projection dropped"
+        )
+        assert "pooled_session_servers" in untaken, (
+            "the pooled resolution has left the else branch, so a host with no "
+            "mirror may reach session/new with no servers at all"
+        )
 
     def test_the_mirror_places_the_pooled_stubs_itself(self, agents_dir):
         """Both halves of the array are the MIRROR's, so one withhold rule covers both.
@@ -880,20 +972,64 @@ class TestClientSeam:
         # a mount whose own spec narrowed it.
         assert "narrowed" in _by_name(params["mcpServers"])
 
-    def test_the_spawn_path_warms_the_cache_off_the_loop(self):
-        """H13: the shared ``session/new`` site must stay a pure in-memory read.
+    def test_the_session_new_site_stays_a_pure_in_memory_read(self):
+        """H13: the shared ``session/new`` site must not put a disk read on the loop.
 
-        Pinned at the source, in this file's neighbour's idiom, because the warm
-        sits inside an async spawn path with no unit-level seam. The claude arm
-        already does this; a codex arm that skipped it would move the disk read
-        onto the loop for every codex session.
+        The blocking half is the agent-spec parse and the overlay read inside the
+        projection, plus the spec snapshot the unresolved-ref guard judges against,
+        and all of it runs in ONE thread: the mirrored path hands a single function
+        to ``asyncio.to_thread`` and every ``session_projection`` /
+        ``_ref_spec_snapshot`` call in the method sits inside that function's body.
+        Read from the tree, so a call that migrated out of the hop -- inline on the
+        loop, or into a second hop of its own -- is seen wherever it lands. The
+        narrowing that follows reads this session's captured handshake and nothing
+        else, so it stays synchronous and pure.
+
+        Pinned at the source because both sites sit inside an async construction path
+        with no unit-level seam, and one process hosts every session: a read landing
+        on the loop stalls all of them.
         """
+        import ast
         import inspect
+        import textwrap
 
-        source = inspect.getsource(AcpClient._spawn)
-        codex_arm = source.split("elif self._is_codex:", 1)
-        assert len(codex_arm) == 2, "the codex spawn arm has moved"
-        assert "self._session_mcp_cache = await asyncio.to_thread" in codex_arm[1]
+        tree = ast.parse(textwrap.dedent(inspect.getsource(AcpRuntime._mirrored_session_mcp)))
+        method = tree.body[0]
+        assert isinstance(method, ast.AsyncFunctionDef)
+
+        def _is_call_to(node: ast.AST, name: str) -> bool:
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, (ast.Attribute, ast.Name))
+                and (node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id)
+                == name
+            )
+
+        nested = {n.name: n for n in ast.walk(method) if isinstance(n, ast.FunctionDef)}
+        hops = [n for n in ast.walk(method) if _is_call_to(n, "to_thread")]
+        handed = [ast.unparse(h.args[0]) for h in hops]
+        assert "pooled_session_servers" in handed, "the stub hop has left the mirrored path"
+        # The one hop handed a nested def is the projection hop; the others hand a
+        # module function by reference, and a second nested hop would be the extra
+        # scheduling point this pin exists to refuse.
+        hop_fns = [name for name in handed if name in nested]
+        assert len(hop_fns) == 1, f"expected one nested-def hop on the mirrored path, got {hop_fns}"
+        inside = {id(n) for n in ast.walk(nested[hop_fns[0]])}
+        for blocking in ("session_projection", "_ref_spec_snapshot"):
+            calls = [n for n in ast.walk(method) if _is_call_to(n, blocking)]
+            assert calls, f"{blocking} is no longer read on the mirrored path"
+            for call in calls:
+                assert id(call) in inside, (
+                    f"{blocking} is called outside the off-loop hop; it parses the agent "
+                    "spec and reads the gateway overlay, so it belongs in that thread"
+                )
+
+        narrowing = inspect.getsource(CodexHarness.session_mcp_servers)
+        for blocking in ("async def", "await ", "to_thread", "open(", "read_text"):
+            assert blocking not in narrowing, (
+                f"{blocking!r} appears in the session/new narrowing, which runs on the "
+                "loop for every session this process hosts"
+            )
 
 
 # ── the per-tool restriction on the control plane ────────────────────────────
@@ -987,7 +1123,7 @@ class TestSpecDisabledToolRefusal:
         assert ("kirocrew-core", "spawn_run") in client._spec_denied_tools
         # And the server itself is still mounted: the restriction narrows a tool,
         # it does not cost the session its control plane.
-        assert "kirocrew-core" in _by_name(client._codex_session_mcp_servers())
+        assert "kirocrew-core" in _by_name(_codex_session_array(caps=_CODEX_1_11_CAPS)[1])
 
     @pytest.mark.asyncio
     async def test_a_switched_off_tool_is_refused_at_the_approval_request(
@@ -1169,11 +1305,9 @@ class TestSpecDisabledToolRefusal:
             json.dumps({"mcpServers": {"kirocrew-core": {"disabledTools": ["spawn_run"]}}}),
             encoding="utf-8",
         )
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._agent_mcp_capabilities = dict(_CODEX_1_11_CAPS)
-        client._session_mcp_cache = client._resolve_session_mcp_servers()
-        assert ("kirocrew-core", "spawn_run") in client._spec_denied_tools
-        assert "kirocrew-core" in _by_name(client._codex_session_mcp_servers())
+        projection, kept = _codex_session_array(caps=_CODEX_1_11_CAPS)
+        assert ("kirocrew-core", "spawn_run") in projection.denied_tools
+        assert "kirocrew-core" in _by_name(kept)
 
     def test_a_third_party_server_narrowed_only_in_the_global_file_is_withheld(
         self, tmp_path, agents_dir
@@ -1205,13 +1339,11 @@ class TestSpecDisabledToolRefusal:
             ),
             encoding="utf-8",
         )
-        client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._agent_mcp_capabilities = dict(_CODEX_1_11_CAPS)
-        client._session_mcp_cache = client._resolve_session_mcp_servers()
-        names = _by_name(client._codex_session_mcp_servers())
+        projection, kept = _codex_session_array(caps=_CODEX_1_11_CAPS)
+        names = _by_name(kept)
         assert "third" not in names
         assert "kirocrew-core" in names
-        assert ("kirocrew-core", "spawn_run") in client._spec_denied_tools
+        assert ("kirocrew-core", "spawn_run") in projection.denied_tools
 
     def test_a_switched_off_tool_that_ran_anyway_trips_the_wire(
         self, tmp_path, agents_dir, monkeypatch
@@ -1446,6 +1578,19 @@ _, sse = drive({"name": "remote", "type": "sse", "url": "http://127.0.0.1:1/sse"
                 "headers": []})
 out["sse_error"] = sse.get("error")
 out["sse_ok"] = bool(sse.get("result"))
+# The same transport WITHOUT the schema-required `headers` array. The adapter's
+# answer to an unadvertised transport depends on whether the element parses as
+# that transport at all: a complete sse element is named and refused, an
+# incomplete one falls to the untagged variant and is accepted unwired.
+_, sse_bare = drive({"name": "remote-bare", "type": "sse", "url": "http://127.0.0.1:1/sse"})
+out["sse_bare_error"] = sse_bare.get("error")
+out["sse_bare_ok"] = bool(sse_bare.get("result"))
+# The CONTROL for the line above: a type no schema can name. If the adapter answers
+# this one normally too, it is validating the transport tag not at all, which is what
+# makes client-side narrowing the only guard rather than a second opinion.
+_, junk = drive({"name": "junk", "type": "nonsense-type", "url": "http://127.0.0.1:1/j"})
+out["unknown_type_error"] = junk.get("error")
+out["unknown_type_ok"] = bool(junk.get("result"))
 _, bad = drive({"name": "no-command", "args": [], "env": []})
 out["malformed_error"] = bad.get("error")
 out["malformed_ok"] = bool(bad.get("result"))
@@ -1704,11 +1849,17 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
     3. The child inherits ALMOST NOTHING. ``codex-rs`` runs ``env_clear()`` and
        re-adds an allowlist, so ``KIROCREW_SESSION_KEY`` arrives only because the
        element carried it -- which is why ``codex_elements`` carries it.
-    4. ``sse`` fails the WHOLE ``session/new``, while a MALFORMED stdio element
-       does not. Both halves are load-bearing: the first is why ``codex_elements``
-       filters, and the second is why it filters rather than withholding the whole
-       array -- a wide reading (``-32602`` for anything unadvertised) argues for
-       projecting nothing, and the adapter answers ``-32600``, only for ``sse``.
+    4. The elements of the array decide whether ``session/new`` survives, and the
+       adapter is not consistent about which ones. A meaningless
+       ``{"type": "nonsense-type"}`` element is ACCEPTED -- an ordinary
+       ``sessionId``, that server silently unwired -- and so is a MALFORMED stdio
+       element, answered with the element dropped. An ``sse`` element is the one
+       the adapter may instead name and refuse, failing the whole session. Both
+       dispositions are measured rather than assumed, because each makes the
+       client-side narrowing load-bearing on its own: an accepted element is a
+       server no error reports missing, and a refused one is a whole session lost
+       over one spec entry. What is NOT admitted is a third answer, where the
+       adapter reports having wired a transport its own ``mcpCapabilities`` denies.
 
     A fabricated API key in a throwaway ``CODEX_HOME`` is what gets past the
     adapter's auth check, which fires BEFORE it looks at ``mcpServers`` (verified:
@@ -1737,12 +1888,12 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
                 str(stub),
                 shutil.which("node") or "node",
             ],
-            # A BACKSTOP, not the control. The driver bounds each of its three
+            # A BACKSTOP, not the control. The driver bounds each of its four
             # adapter runs itself and reaps in a finally, so its own worst case is
             # well inside this. Reaching it means the driver was killed before it
             # could reap -- which is why the runner kills the whole process group
             # rather than the driver alone.
-            timeout=420,
+            timeout=540,
         )
         context = (
             f"driver exit: {result.returncode}\n"
@@ -1773,17 +1924,42 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
         assert "PATH" in child["env"]
         assert "STUB_MCP_REPORT" in child["env"]
 
-        # 4: what actually costs a session, and what does not.
-        assert not measured["sse_ok"], (
-            "codex-acp now ACCEPTS an sse element. The drop in codex_elements is "
-            "no longer required and should be reconsidered rather than kept as "
-            "folklore.\n" + context
+        # 4: what the adapter does with a transport its own advertisement denies,
+        # and it is TWO measured answers keyed on the element's shape -- each pinned
+        # exactly, because a hedge admitting either would let the contract drift.
+        #
+        # A schema-complete sse element (with the required `headers` array, which
+        # is the shape Crew's own translation emits) is named and REFUSED, and the
+        # refusal fails the WHOLE session/new -- every server in the array lost over
+        # one entry. That is the cost the narrowing exists to avoid on Crew's array.
+        assert not measured["sse_ok"] and measured["sse_error"], (
+            "codex-acp accepted a schema-complete sse element it advertises it does not "
+            f"support: ok={measured['sse_ok']!r} error={measured['sse_error']!r}. "
+            "Re-measure before changing this assertion.\n" + context
         )
-        assert measured["sse_error"], "an sse element failed with no error\n" + context
+        assert "sse" in json.dumps(measured["sse_error"]).lower(), (
+            "codex-acp failed session/new over an sse element for a reason that does "
+            "not name the transport, so this measures something other than the "
+            f"transport check: {measured['sse_error']!r}\n" + context
+        )
+        # A schema-INCOMPLETE sse element (no `headers`) does not parse as sse at
+        # all; it falls to the untagged variant and is ACCEPTED, the server silently
+        # never wired. Nothing downstream reports it. Both dispositions make the
+        # client-side narrowing load-bearing, from opposite directions.
+        assert measured["sse_bare_ok"] and not measured["sse_bare_error"], (
+            "codex-acp no longer accepts a headerless sse element silently: "
+            f"ok={measured['sse_bare_ok']!r} error={measured['sse_bare_error']!r}. "
+            "Re-measure before changing this assertion.\n" + context
+        )
+        assert measured["unknown_type_ok"] and not measured["unknown_type_error"], (
+            "codex-acp refused a meaningless transport type. The filter keeps only "
+            "POSITIVELY advertised transports because the adapter validates the tag "
+            "not at all, and this is the control for the sse measurement above.\n" + context
+        )
         assert measured["malformed_ok"], (
-            "a malformed stdio element now fails the whole session/new. The "
-            "translator degrades on a bad spec entry rather than raising, so this "
-            "would turn one hand-edited spec line into a dead session.\n" + context
+            "a malformed stdio element fails the whole session/new. The translator "
+            "degrades on a bad spec entry rather than raising, so this would turn "
+            "one hand-edited spec line into a dead session.\n" + context
         )
         # The advertisement the client captures and the filter consumes, so this is
         # also the assertion that the two agree on a real adapter.
@@ -1813,6 +1989,188 @@ def test_real_codex_acp_accepts_the_crew_stdio_element():
             )
             == []
         )
+
+
+_CLOSE_DRIVER = r"""
+import json, os, queue, subprocess, sys, threading, time
+
+root, entry, node = sys.argv[1:4]
+work = os.path.join(root, "work")
+env = dict(os.environ)
+env["CODEX_HOME"] = os.path.join(root, "codex_home")
+env["NO_BROWSER"] = "1"
+
+
+def reap(p):
+    for step in (p.terminate, p.kill):
+        try:
+            step()
+            p.communicate(timeout=15)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+        except Exception:
+            return
+
+
+def pump(stream, q):
+    for line in stream:
+        q.put(line)
+    q.put(None)
+
+
+p = subprocess.Popen(
+    [node, entry], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL, cwd=work, env=env, text=True, bufsize=1,
+)
+q = queue.Queue()
+threading.Thread(target=pump, args=(p.stdout, q), daemon=True).start()
+next_id = [0]
+
+
+def send(method, params, notification=False):
+    msg = {"jsonrpc": "2.0", "method": method, "params": params}
+    if not notification:
+        next_id[0] += 1
+        msg["id"] = next_id[0]
+    p.stdin.write(json.dumps(msg) + "\n")
+    p.stdin.flush()
+    return None if notification else next_id[0]
+
+
+def wait(rid, timeout=60):
+    deadline = time.time() + timeout
+    while True:
+        budget = deadline - time.time()
+        if budget <= 0:
+            return {"_timeout": True}
+        try:
+            line = q.get(timeout=budget)
+        except queue.Empty:
+            return {"_timeout": True}
+        if line is None:
+            return {"_eof": True}
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if msg.get("id") == rid:
+            return msg
+
+
+def call(method, params):
+    return wait(send(method, params))
+
+
+def alive(sid):
+    # The liveness oracle: a live session answers with its refreshed configOptions;
+    # an evicted one answers an error frame.
+    r = call("session/set_config_option",
+             {"sessionId": sid, "configId": "mode", "value": "read-only"})
+    return {"ok": "result" in r, "error": r.get("error")}
+
+
+out = {}
+try:
+    call("initialize", {"protocolVersion": 1, "clientCapabilities": {"fs": {}}})
+    new1 = call("session/new", {"cwd": work, "mcpServers": []})
+    out["new_error"] = new1.get("error")
+    s1 = (new1.get("result") or {}).get("sessionId")
+    if s1:
+        out["before_close"] = alive(s1)
+        close = call("session/close", {"sessionId": s1})
+        out["close_reply"] = {"result": close.get("result"), "error": close.get("error")}
+        out["after_close"] = alive(s1)
+        out["close_again"] = {"result": call("session/close", {"sessionId": s1}).get("result")}
+        # The notification form, on a fresh session: must NOT evict, or the
+        # TeardownPolicy's notification=False stops being load-bearing.
+        s2 = (call("session/new", {"cwd": work, "mcpServers": []}).get("result") or {}).get("sessionId")
+        send("session/close", {"sessionId": s2}, notification=True)
+        time.sleep(1.0)
+        out["after_close_notification"] = alive(s2)
+        # The process is unharmed by the closes.
+        out["fresh_after"] = "result" in call("session/new", {"cwd": work, "mcpServers": []})
+finally:
+    reap(p)
+print(json.dumps(out))
+"""
+
+
+@pytest.mark.skipif(_ENTRY is None, reason="codex-acp not installed")
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_real_codex_acp_session_close_evicts():
+    """ANTI-DRIFT GUARD for ``CodexHarness.teardown`` and codex's membership in
+    ``ACP_BACKENDS_SESSION_EVICTION``.
+
+    Both rest on one measured fact about the installed adapter: ``session/close``,
+    sent as a REQUEST, makes the sessionId stop answering. If a codex-acp release
+    changed that -- close becoming a no-op, or silently turning into a notification
+    -- every path that creates and destroys codex sessions on the shared runtime
+    (background handles, warm pooled reuse, the entitlement probe) would leak one
+    resident session per call, with nothing red to say so. This is where it goes red.
+
+    Three claims, each one the harness docstring makes:
+
+    1. Before close the session is live; after close, as a request, it is not.
+       The oracle is ``session/set_config_option`` on the same id, which answers
+       ``configOptions`` on a live session and an error frame on an evicted one.
+    2. Close as a NOTIFICATION does not evict. This is why ``notification=False``
+       is load-bearing rather than a delivery detail: the wrong form fails silent.
+    3. Close is idempotent and leaves the process able to open fresh sessions, so
+       a double-terminate is safe and a teardown never costs the shared process.
+
+    Same credential arrangement as the sibling live test: a fabricated key in a
+    throwaway ``CODEX_HOME`` gets past the auth check that fires before
+    ``session/new``; nothing here performs a model call, so nothing leaves the box.
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as w:
+        root = Path(w)
+        (root / "work").mkdir()
+        (root / "codex_home").mkdir()
+        (root / "codex_home" / "auth.json").write_text(
+            json.dumps({"OPENAI_API_KEY": "sk-not-a-real-key-" + "0" * 24}), encoding="utf-8"
+        )
+        driver = root / "drive_close.py"
+        driver.write_text(_CLOSE_DRIVER, encoding="utf-8")
+        result = _run_driver_reaping_group(
+            [sys.executable, str(driver), str(root), str(_ENTRY), shutil.which("node") or "node"],
+            timeout=300,
+        )
+        context = (
+            f"driver exit: {result.returncode}\n"
+            f"stdout: {result.stdout[-3000:]}\nstderr: {result.stderr[-3000:]}"
+        )
+        try:
+            m = json.loads(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            pytest.fail("the codex-acp close driver produced no measurement\n" + context)
+
+        if (m.get("new_error") or {}).get("code") == -32000:
+            pytest.skip("codex-acp refused the fabricated credential; nothing to measure")
+        assert "before_close" in m, "session/new failed, so nothing was measured\n" + context
+
+        # 1. eviction.
+        assert m["before_close"]["ok"], "baseline session was not live\n" + context
+        assert m["close_reply"]["error"] is None, (
+            "session/close was refused; the harness's teardown verb is wrong for this "
+            f"adapter: {m['close_reply']['error']!r}\n" + context
+        )
+        assert not m["after_close"]["ok"], (
+            "session/close did NOT evict: the sessionId still answers, so codex must "
+            "leave ACP_BACKENDS_SESSION_EVICTION until a verb that evicts is found\n" + context
+        )
+
+        # 2. the notification form is the leak.
+        assert m["after_close_notification"]["ok"], (
+            "close as a notification now evicts too; TeardownPolicy.notification=False "
+            "is no longer what makes eviction happen -- re-measure before changing it\n" + context
+        )
+
+        # 3. idempotent, and the process survives.
+        assert m["close_again"]["result"] == {}, (
+            "a second close on the same id errored; a double-terminate would fault\n" + context
+        )
+        assert m["fresh_after"], "session/new failed after the closes\n" + context
 
 
 @pytest.mark.skipif(_ENTRY is None, reason="codex-acp not installed")

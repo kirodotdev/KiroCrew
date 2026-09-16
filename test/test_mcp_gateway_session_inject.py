@@ -591,7 +591,10 @@ def test_every_call_site_passes_the_session_checkout():
             sites += 1
             if not _scoped(node):
                 missing.append(f"{path.relative_to(src_root)}:{node.lineno}")
-    assert sites >= 7, f"the walk found only {sites} call sites; it stopped matching"
+    # Six, not seven: the runtime's two session-array paths resolve the overlay
+    # through ONE module-level hop (``_pooled_session_servers_and_ref_spec``), so
+    # the walk meets their call once, where the decider is splatted.
+    assert sites >= 6, f"the walk found only {sites} call sites; it stopped matching"
     assert missing == [], f"call sites resolving the overlay by name alone: {missing}"
 
 

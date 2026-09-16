@@ -44,7 +44,9 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_SHARING,
+    ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_STEER,
     model_registry_namespace,
 )
@@ -67,7 +69,9 @@ CAPABILITY_SETS = (
     "ACP_BACKENDS_COMPACT",
     "ACP_BACKENDS_INTERNAL_SANDBOX",
     "ACP_BACKENDS_SEED_LOCAL_SETTINGS",
+    "ACP_BACKENDS_SESSION_EVICTION",
     "ACP_BACKENDS_SESSION_SHARING",
+    "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE",
     "ACP_BACKENDS_STEER",
 )
 
@@ -159,11 +163,27 @@ def test_membership_is_unchanged_by_the_move() -> None:
     Opting a harness in is a deliberate edit with evidence (harness-parity H5/H6);
     a relocation is not the place for it.
     """
+    # codex is on the runtime and in eviction, and out of sharing; KAS is on the
+    # runtime and in eviction, and out of sharing; kiro is in all three. No two of
+    # these sets may be derived from another, and codex is the case that shows it
+    # from both directions: eviction is the harness's own property (its
+    # ``session/close`` evicts, measured live), while sharing is denied on Crew's
+    # side (the shared-subagent path persists a label the continuation lookup reads
+    # as kiro-cli). KAS is held out of sharing for a different reason again
+    # -- until a keep-aware teardown lands -- so the same shape has two causes.
     assert ACP_BACKENDS_SESSION_SHARING == frozenset({ACP_BACKEND_KIRO})
     assert ACP_BACKENDS_COMPACT == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO})
     assert ACP_BACKENDS_STEER == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
-    assert ACP_BACKENDS_ACP_RUNTIME == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+    assert ACP_BACKENDS_ACP_RUNTIME == frozenset(
+        {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+    )
+    assert ACP_BACKENDS_SESSION_EVICTION == frozenset(
+        {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+    )
+    # The spec's own servers reach kiro-cli from disk and KAS as a projected agent
+    # definition; codex mounts exactly the array it is sent, so it is judged by it.
+    assert ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     assert backends_retired_by_host_logout() == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     # The provider-advertised-model seams. claude for the spelling fold; codex
     # because its configOptions ``model`` select is the ONLY source of ids the
@@ -243,3 +263,14 @@ def test_acp_runtime_is_a_superset_of_session_sharing() -> None:
     assert ACP_BACKENDS_SESSION_SHARING <= ACP_BACKENDS_ACP_RUNTIME
     assert ACP_BACKEND_KAS in ACP_BACKENDS_ACP_RUNTIME
     assert ACP_BACKEND_KAS not in ACP_BACKENDS_SESSION_SHARING
+    # Sharing is a PROPER subset, and two members of the runtime demonstrate it for
+    # different reasons: KAS is held out pending keep-aware teardown, and codex is
+    # held out because a shared codex subagent's continuation cannot be resolved.
+    # Neither set can therefore be spelled as the other.
+    assert ACP_BACKENDS_SESSION_SHARING != ACP_BACKENDS_ACP_RUNTIME
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
+    assert ACP_BACKEND_CODEX not in ACP_BACKENDS_SESSION_SHARING
+    # But IN eviction: that is the harness's own property, and ``session/close``
+    # evicts (measured live). Sharing denied on Crew's side and eviction granted on
+    # the harness's is the clearest case for the two sets being two.
+    assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_EVICTION

@@ -37,6 +37,7 @@ from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import (
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_SESSION_EVICTION,
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -112,7 +113,35 @@ class AcpSessionProvider(LLMProvider):
         detects that via ``is_alive()``/``is_process_alive()`` and replaces the
         worker, so this raises rather than silently respawning a new process here
         (the runtime is owned by this provider's lifecycle, not recreated in place).
+
+        Reuse is only cheap where the old session actually GOES AWAY, so this is
+        gated on ``ACP_BACKENDS_SESSION_EVICTION``. The whole primitive rests on
+        the ``old.destroy()`` below reclaiming the previous session's context and
+        MCP children on the shared process; on a backend whose teardown does not
+        evict, that call returns having freed nothing and each reset leaves one
+        more resident session behind. Nothing downstream collects them: such a
+        backend is off the eviction path by construction, and a recycle rule that
+        measures a narrower scope than where the sessions live never sees the
+        growth, so only the age ceiling ever reaps it. Refusing BEFORE creating
+        anything is what makes this safe --
+        ``WorkerPool.reset`` already treats an exception here as "no cheap path"
+        and falls back to a hard ``SessionManager.reset``, which is slower but
+        correct for every backend.
         """
+        # A plain membership test, with no sentinel handling: kiro's own backend
+        # id IS the empty string (``ACP_BACKEND_KIRO = ""``), so an unset
+        # ``acp_backend`` is not a value awaiting resolution -- it already reads as
+        # the member this set admits. Every other value, including one no harness
+        # registered, is refused, which is the fail-closed direction.
+        if self.backend not in ACP_BACKENDS_SESSION_EVICTION:
+            # Raise before the fresh session/new: the caller's hard-reset
+            # fallback is the correct path, and creating a session first would
+            # leak the very session this refusal exists to prevent.
+            raise AcpError(
+                f"backend {self.backend!r} does not evict sessions on teardown, so "
+                "warm conversation reuse would accumulate resident sessions -- "
+                "use the hard-reset path instead"
+            )
         if not self._runtime.is_alive():
             raise AcpProcessDied("Runtime is not alive — cannot start a new conversation")
         old = self._handle

@@ -1,4 +1,4 @@
-"""CodexHarness, and the default-off switch that decides which transport codex takes.
+"""CodexHarness, and the three membership sets that decide what codex may do where.
 
 Two halves, and they are separate on purpose.
 
@@ -12,11 +12,15 @@ codex actually has. A real codex-acp cannot stand in for this here: ``session/ne
 answers ``-32000 Authentication required`` without an OpenAI login, so a live adapter
 can only be taken as far as ``initialize``.
 
-The second half pins the switch. ``KIROCREW_CODEX_ACP_RUNTIME`` is OFF by default,
-and off it must be as if it did not exist: codex stays on AcpClient, and the
-capability sets keep the members they shipped with. On, codex reads as a runtime
-backend at both gates. The default-off half is the one that would fail if this change
-altered product behaviour, which is the whole claim it makes.
+The second half pins the TRANSPORT and the three sets that answer differently about
+this host. codex is served by ``AcpRuntime``; it is in ``ACP_BACKENDS_SESSION_EVICTION``
+because its teardown is a ``session/close`` request that disposes the session
+(measured), which is what admits it to the high-churn background path and warm
+pooled reuse; and it is OUT of ``ACP_BACKENDS_SESSION_SHARING``, because that same
+disposing teardown would take a shared subagent session down with its parent and
+because the shared-subagent path cannot resolve a codex continuation. Three sets,
+three answers, each read from its own table, so the half exists to stop any one of
+them drifting on its own.
 
 The seam-level contract every harness answers is in
 ``test_acp_harness_contract.py``; codex is parametrised into it. What is here is what
@@ -55,18 +59,18 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
+    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
     METHOD_CANCEL,
+    METHOD_SESSION_CLOSE,
     METHOD_SESSION_NEW,
     METHOD_SESSION_UPDATE,
     METHOD_SET_CONFIG_OPTION,
     METHOD_SET_MODE,
 )
 from kiro_crew.agent_sdk.backends import (
-    ENV_CODEX_ACP_RUNTIME,
-    acp_runtime_backends,
-    codex_runs_on_acp_runtime,
+    ACP_BACKENDS_SESSION_EVICTION,
     effort_config_option_id,
 )
 from kiro_crew.providers.acp import AcpProvider
@@ -87,8 +91,10 @@ class FakeCodexPeer:
     * ``sessions`` is a map, like the adapter's own ``this.sessions``, so "two
       session/new on one process" is observable as two entries rather than two calls.
     * ``mcpCapabilities`` advertises ``http`` only, which is what the real adapter
-      advertises, and ``session/new`` REFUSES the whole request with ``-32600`` when
-      an ``sse`` element reaches it -- the failure the array narrowing prevents.
+      advertises, and ``session/new`` ACCEPTS an ``sse`` element anyway -- recording
+      it in the session verbatim. That is the measured behaviour and it is the
+      reason the narrowing exists: the adapter raises nothing, so an unnarrowed
+      element becomes a server that is silently never wired.
 
     Every frame is round-tripped through ``json.dumps``/``loads`` so a payload that
     is not JSON-serialisable fails here rather than at a real pipe.
@@ -117,6 +123,7 @@ class FakeCodexPeer:
             "session/new": self._session_new,
             "session/prompt": self._session_prompt,
             "session/set_config_option": self._set_config_option,
+            "session/close": self._session_close,
         }.get(method)
         if handler is None:
             raise AssertionError(f"codex-acp has no {method!r}: it would answer -32601")
@@ -124,6 +131,15 @@ class FakeCodexPeer:
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         params = json.loads(json.dumps(params))
+        if method == METHOD_SESSION_CLOSE:
+            # Measured: the real adapter IGNORES a close sent as a notification --
+            # the session stays addressable exactly as under ``cancel``. The peer
+            # refuses it outright so the regression fails loudly here instead of
+            # passing while leaking on the wire.
+            raise AssertionError(
+                "session/close sent as a NOTIFICATION: the adapter ignores it and the "
+                "session stays resident -- it must be an awaited request"
+            )
         if method != METHOD_CANCEL:
             raise AssertionError(f"unexpected notification {method!r}")
         self.notifications.append((method, params))
@@ -146,9 +162,10 @@ class FakeCodexPeer:
         assert self.initialized, "session/new before initialize"
         assert params["cwd"], "codex-acp requires a cwd"
         assert "_meta" not in params, "codex-acp reads none of Crew's _meta"
-        for element in params.get("mcpServers") or []:
-            if isinstance(element, dict) and element.get("type") == "sse":
-                raise CodexRpcError(-32600, "Invalid Request")
+        # No validation against the advertised transports, deliberately: the real
+        # adapter accepts an element it declared unsupported and answers normally.
+        # Modelling a refusal here would make the narrowing look like
+        # error-avoidance and let a test pass by catching an error nothing raises.
         self._next_id += 1
         sid = f"thread-{self._next_id}"
         self.sessions[sid] = {"cwd": params["cwd"], "mcpServers": params.get("mcpServers") or []}
@@ -168,6 +185,17 @@ class FakeCodexPeer:
             raise CodexRpcError(-32602, "Invalid params")
         self.config_options.append((sid, option, value))
         self.sessions[sid][option] = value
+        return {}
+
+    def _session_close(self, params: dict[str, Any]) -> dict[str, Any]:
+        """What codex-acp does with ``session/close``, as measured live.
+
+        Evicts: the id leaves the map, so the liveness oracle (set_config_option on
+        the same id) fails afterwards. Idempotent: a second close on the same id, or
+        a close on an id never opened, answers ``{}`` again rather than erroring.
+        The Codex thread's own record is untouched (evict, not delete).
+        """
+        self.sessions.pop(params["sessionId"], None)
         return {}
 
 
@@ -235,17 +263,17 @@ class TestRegistry:
         assert isinstance(resolved, CodexHarness)
         assert resolved.backend == ACP_BACKEND_CODEX
 
-    def test_registration_does_not_follow_the_switch(self, monkeypatch):
+    def test_registration_is_a_separate_question_from_routing(self):
         """Two different questions, and conflating them breaks both answers.
 
-        The registry answers "can the shared-process runtime drive this host?"; the
-        switch answers "does a codex session take that path today?". A registry gated
-        on the switch would make the harness unreachable to its own tests and to an
-        operator trying the preview.
+        The registry answers "can the shared-process runtime drive this host?";
+        ``ACP_BACKENDS_ACP_RUNTIME`` answers "does a session take that path?". They
+        agree for codex, and they are still separate: a harness is written and
+        tested before it is routed, so a registry gated on the set would make one
+        unreachable to its own tests.
         """
-        monkeypatch.delenv(ENV_CODEX_ACP_RUNTIME, raising=False)
         assert isinstance(harness_for(ACP_BACKEND_CODEX), CodexHarness)
-        assert codex_runs_on_acp_runtime() is False
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
 
 
 class TestHandshake:
@@ -326,27 +354,31 @@ class TestMcpArrayNarrowing:
         )
         assert [s["name"] for s in peer.sessions[sid]["mcpServers"]] == ["keep"]
 
-    def test_an_unnarrowed_sse_element_would_have_cost_the_whole_session(self, adapter):
-        """Why the narrowing is not cosmetic: -32600 is the WHOLE request, not one server.
+    def test_an_unnarrowed_sse_element_is_accepted_and_silently_unwired(self, adapter):
+        """Why the narrowing is not cosmetic: nothing else catches this.
 
-        Sent deliberately unnarrowed, so this fails if the peer ever stops modelling
-        the refusal and the test above starts passing vacuously.
+        The adapter advertises ``sse: false`` and then accepts an ``sse`` element,
+        answering ``session/new`` normally. So the cost of skipping the narrowing is
+        not a failed request anyone can see -- it is a session that runs with a
+        server the adapter never wired, which no downstream check can detect.
+
+        Sent deliberately unnarrowed, so this fails if the peer ever starts
+        modelling a refusal and the test above begins passing for the wrong reason.
         """
         peer = FakeCodexPeer()
         peer.request("initialize", _initialize_params(adapter))
-        with pytest.raises(CodexRpcError) as exc:
-            peer.request(
-                "session/new",
-                {
-                    "cwd": "/w",
-                    "mcpServers": [
-                        {"name": "keep", "url": "http://keep"},
-                        {"name": "drop", "type": "sse", "url": "http://drop"},
-                    ],
-                },
-            )
-        assert exc.value.code == -32600
-        assert peer.sessions == {}
+        result = peer.request(
+            "session/new",
+            {
+                "cwd": "/w",
+                "mcpServers": [
+                    {"name": "keep", "url": "http://keep"},
+                    {"name": "drop", "type": "sse", "url": "http://drop"},
+                ],
+            },
+        )
+        sid = result["sessionId"]
+        assert [s["name"] for s in peer.sessions[sid]["mcpServers"]] == ["keep", "drop"]
 
     def test_a_narrowed_list_is_not_aliased(self, adapter):
         """A session must not be able to mutate the caller's list after the fact."""
@@ -446,9 +478,14 @@ class TestPermissionRouting:
 
 
 class TestTeardown:
-    def test_the_verb_is_plain_session_cancel(self, adapter):
-        assert adapter.teardown.method == METHOD_CANCEL
-        assert adapter.teardown.method == "session/cancel"
+    def test_the_verb_is_the_standard_session_close(self, adapter):
+        assert adapter.teardown.method == METHOD_SESSION_CLOSE
+        assert adapter.teardown.method == "session/close"
+
+    def test_the_verb_is_not_cancel(self, adapter):
+        """``cancel`` interrupts a turn and leaves the session resident (measured);
+        a harness that sends it as its teardown leaks one session per teardown."""
+        assert adapter.teardown.method != METHOD_CANCEL
 
     def test_no_kiro_family_delete_verb_is_sent(self, adapter):
         """Either kiro-family verb would draw -32601 and leave the session on the process."""
@@ -456,69 +493,92 @@ class TestTeardown:
         assert adapter.teardown.method != "_kiro/session/delete"
 
     def test_the_policy_carries_the_verb_and_its_delivery(self, adapter):
-        """codex neither evicts nor deletes: the adapter keeps the Codex thread.
-
-        A dropped session is unreachable from Crew, not erased from Codex, so no
-        retention promise is made or broken here.
+        """codex evicts but does not delete: the adapter drops the session and keeps
+        the Codex thread's record, the same shape as kiro-cli's ``terminate``.
 
         The policy carries the DELIVERY beside the verb because the two are not
-        separable facts: ``session/cancel`` is a notification, and a caller that sent
-        it as a request would still evict the session, one whole teardown budget later.
+        separable facts, and here the wrong delivery is silent: measured live, a
+        ``session/close`` sent as a notification is ignored and the session stays
+        resident. ``notification=False`` is the load-bearing half.
         """
-        assert adapter.teardown == TeardownPolicy(method=METHOD_CANCEL, notification=True)
+        assert adapter.teardown == TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
 
-    def test_teardown_cancels_one_session_and_leaves_the_other_running(self, adapter):
+    def test_teardown_evicts_one_session_and_leaves_the_other_running(self, adapter):
+        """The property the eviction set is built on, against the peer's model of
+        the measured adapter: after close the id is gone, its sibling is untouched."""
         peer = FakeCodexPeer()
         first = _open_session(peer, cwd="/w/one", mcp_servers=[])
         second = _open_session(peer, cwd="/w/two", mcp_servers=[])
-        peer.notify(adapter.teardown.method, {"sessionId": first})
-        assert peer.notifications == [(METHOD_CANCEL, {"sessionId": first})]
+        assert peer.request(adapter.teardown.method, {"sessionId": first}) == {}
+        assert first not in peer.sessions, "close must evict the session"
+        with pytest.raises(AssertionError, match="unknown session"):
+            peer.request(
+                "session/set_config_option",
+                {"sessionId": first, "optionId": "mode", "value": "read-only"},
+            )
         peer.request("session/prompt", {"sessionId": second, "prompt": [{"text": "still here"}]})
 
+    def test_teardown_is_idempotent(self, adapter):
+        """A double-terminate (runtime cleanup racing a caller's own destroy) must
+        not fault; measured: the adapter answers ``{}`` for an already-closed id."""
+        peer = FakeCodexPeer()
+        sid = _open_session(peer, cwd="/w/one", mcp_servers=[])
+        assert peer.request(adapter.teardown.method, {"sessionId": sid}) == {}
+        assert peer.request(adapter.teardown.method, {"sessionId": sid}) == {}
+        assert peer.request(adapter.teardown.method, {"sessionId": "never-opened"}) == {}
 
-class TestTeardownDoesNotWaitForAReplyItWillNotGet:
-    """The teardown DELIVERY, pinned against a host that answers nothing.
 
-    ``session/cancel`` carries no id and codex sends nothing back. Sent as an awaited
-    request it still evicts the session -- one whole ``_TERMINATE_TIMEOUT`` later, with
-    a control-plane timeout logged against a healthy process. That is why the failure
-    is worth a test rather than a comment: nothing looks broken, the eviction happens,
-    and the cost lands on the frequent sessions (the throwaway entitlement probe, the
-    cleanup after a routing refusal) with the probe's single-flight lock held across it.
+class TestTeardownAwaitsTheReplyTheHostGives:
+    """The teardown DELIVERY, pinned against what the adapter actually does.
+
+    ``session/close`` is a request codex-acp answers with ``{}``. Sent as a notification
+    the adapter ignores it and the session stays resident -- silently, with nothing
+    logged. So the runtime must AWAIT it, on the same bounded path the kiro family's
+    verbs take, and a notification here is the leak this PR exists to close.
     """
 
     @pytest.mark.asyncio
-    async def test_a_peer_that_never_answers_does_not_delay_the_unregister(self):
-        """The load-bearing assertion: bounded far below the teardown budget.
+    async def test_codex_teardown_is_an_awaited_request_not_a_notification(self):
+        rt = _codex_runtime()
+        rt._session_queues["sid-codex"] = asyncio.Queue()
+        awaited: list[tuple[str, dict[str, Any]]] = []
+        notified: list[tuple[str, dict[str, Any]]] = []
 
-        A stand-in for the real adapter -- it accepts the write and replies to nothing.
-        Under the awaited shape this coroutine cannot return until
-        ``_TERMINATE_TIMEOUT`` elapses, so the wait_for below is what fails, and it
-        fails on the property rather than on a mock's call count.
-        """
+        async def _send_and_await(method, params, timeout=None):
+            awaited.append((method, params))
+            return {}
+
+        async def _notify(method, params):
+            notified.append((method, params))
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(rt, "_send_and_await", _send_and_await))
+            stack.enter_context(patch.object(rt, "send_notification", _notify))
+            await rt.terminate_session("sid-codex")
+
+        assert awaited == [(METHOD_SESSION_CLOSE, {"sessionId": "sid-codex"})]
+        assert notified == [], "a notification-form close is ignored by the adapter"
+        assert "sid-codex" not in rt._session_queues
+
+    @pytest.mark.asyncio
+    async def test_the_await_is_bounded_by_the_teardown_budget(self):
+        """The reply is awaited, but never past ``_TERMINATE_TIMEOUT``: a stalled
+        adapter costs one budget, then the local unregister still runs."""
         from kiro_crew.acp.runtime import _TERMINATE_TIMEOUT
 
         rt = _codex_runtime()
         rt._session_queues["sid-codex"] = asyncio.Queue()
-        sent: list[tuple[str, dict[str, Any]]] = []
+        seen_timeout: list[Any] = []
 
-        async def _never_answers(method, params, timeout=None):
-            # What an awaited request against this host really does: waits out its
-            # budget and raises. Reached only if the delivery regressed.
-            await asyncio.sleep(_TERMINATE_TIMEOUT)
+        async def _send_and_await(method, params, timeout=None):
+            seen_timeout.append(timeout)
             raise AcpError(f"Request {method} timed out")
 
-        async def _notify(method, params):
-            sent.append((method, params))
+        with patch.object(rt, "_send_and_await", _send_and_await):
+            await rt.terminate_session("sid-codex")  # must NOT raise
 
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(rt, "_send_and_await", _never_answers))
-            stack.enter_context(patch.object(rt, "send_notification", _notify))
-            await asyncio.wait_for(rt.terminate_session("sid-codex"), timeout=0.5)
-
-        assert sent == [(METHOD_CANCEL, {"sessionId": "sid-codex"})]
+        assert seen_timeout == [_TERMINATE_TIMEOUT]
         assert "sid-codex" not in rt._session_queues
-        assert 0.5 < _TERMINATE_TIMEOUT, "the bound above must be well inside the budget"
 
     @pytest.mark.asyncio
     async def test_the_kiro_family_still_awaits_its_teardown(self):
@@ -591,8 +651,15 @@ class TestWhatThisHarnessDoesNotHave:
         peer = FakeCodexPeer()
         sid = _open_session(peer, cwd="/w", mcp_servers=[])
         peer.request("session/prompt", {"sessionId": sid, "prompt": [{"text": "hi"}]})
-        peer.notify(adapter.teardown.method, {"sessionId": sid})
-        assert [m for m, _ in peer.requests] == ["initialize", "session/new", "session/prompt"]
+        # Teardown is a request the adapter answers, delivered on the request seam.
+        assert peer.request(adapter.teardown.method, {"sessionId": sid}) == {}
+        assert [m for m, _ in peer.requests] == [
+            "initialize",
+            "session/new",
+            "session/prompt",
+            "session/close",
+        ]
+        assert peer.notifications == []
 
 
 @pytest.fixture()
@@ -794,20 +861,53 @@ class TestSpawnMasks:
         assert not hasattr(harness_mod, "resolve_mask_only")
 
 
-class TestReclaimIsInheritedUnchanged:
-    def test_the_operator_configured_thresholds_pass_straight_through(self, adapter):
-        """No guessed constant: the codex profile has not been measured yet.
+class TestReclaimIsScopedToTheCore:
+    """The ceiling and the scope are one decision, so they are pinned together."""
 
-        Pinned so adding a number here is a visible edit rather than a quiet one,
-        and so a measurement that narrows the ceiling has to change a test that
-        states the pass-through answer outright.
+    def test_the_ceiling_is_the_measured_core_number_not_the_operators(self, adapter):
+        """A subtree budget cannot be applied to two processes.
+
+        ``rss_depth`` changes what is being counted, so the incoming ``max_rss_mb``
+        describes a quantity this policy does not measure. Pinned as a literal so
+        raising or lowering the ceiling is a visible edit.
         """
         policy = adapter.reclaim_policy(max_age_secs=3600.0, max_rss_mb=500.0)
-        assert (policy.max_age_secs, policy.max_rss_mb) == (3600.0, 500.0)
+        assert policy.max_rss_mb == 1024.0
+
+    @pytest.mark.asyncio
+    async def test_the_spawn_scope_includes_a_resident_launcher(self, adapter):
+        """The pid-relative depth reaches app-server through a resident launcher."""
+        from kiro_crew.acp import client as client_mod
+
+        with (
+            patch.object(
+                client_mod, "_resolve_codex_acp_bin", return_value=(["/n/node", "/p/i.js"], "/s")
+            ),
+            patch.object(harness_mod, "resolve_spawn_masks", new=AsyncMock(return_value=((), ()))),
+            patch.object(harness_mod, "_sandbox_wrapper_generations", return_value=1),
+        ):
+            plan = await adapter.resolve_spawn(_ctx())
+        assert plan.rss_depth == 2
+
+    def test_age_still_passes_straight_through(self, adapter):
+        """Nothing about age changes with the measurement scope."""
+        policy = adapter.reclaim_policy(max_age_secs=1234.0, max_rss_mb=500.0)
+        assert policy.max_age_secs == 1234.0
+
+    def test_the_ceiling_clears_the_measured_core_with_headroom(self, adapter):
+        """522 MB is the core at eight sessions in the worse of the two runs.
+
+        A ceiling at or under it would recycle a process that is merely busy, which
+        is the failure the default 500 produces. Asserted as an inequality against
+        the measurement rather than a second copy of the constant, so the two cannot
+        drift into agreeing with each other and disagreeing with the probe.
+        """
+        policy = adapter.reclaim_policy(max_age_secs=3600.0, max_rss_mb=500.0)
+        assert policy.max_rss_mb > 522.0
 
 
 # ---------------------------------------------------------------------------
-# Half two: the switch, and what it must not change while it is off
+# Half two: the transport, and the three sets that read one fact differently
 # ---------------------------------------------------------------------------
 
 
@@ -819,117 +919,141 @@ def _build_provider(backend: str) -> AcpProvider:
     return provider
 
 
-class TestTheSwitchIsOffByDefault:
-    def test_an_unset_variable_reads_as_off(self, monkeypatch):
-        monkeypatch.delenv(ENV_CODEX_ACP_RUNTIME, raising=False)
-        assert codex_runs_on_acp_runtime() is False
-
-    def test_off_the_gate_answers_the_shipped_set_verbatim(self, monkeypatch):
-        monkeypatch.delenv(ENV_CODEX_ACP_RUNTIME, raising=False)
-        assert acp_runtime_backends() == ACP_BACKENDS_ACP_RUNTIME
-
-    def test_off_codex_still_takes_the_acp_client_path(self, monkeypatch):
-        monkeypatch.delenv(ENV_CODEX_ACP_RUNTIME, raising=False)
-        assert _build_provider(ACP_BACKEND_CODEX).is_acp_runtime_backend is False
-
-    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "maybe", " "])
-    def test_a_falsey_or_unrecognised_value_reads_as_off(self, monkeypatch, value):
-        """An operator exporting ``=0`` to keep a preview off must not get it on.
-
-        The mistake would be silent: the session starts either way, just on the other
-        transport.
-        """
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, value)
-        assert codex_runs_on_acp_runtime() is False
-        assert acp_runtime_backends() == ACP_BACKENDS_ACP_RUNTIME
-
-    def test_the_other_harnesses_are_unaffected_either_way(self, monkeypatch):
-        for value in ("0", "1"):
-            monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, value)
-            assert _build_provider(ACP_BACKEND_KIRO).is_acp_runtime_backend is True
-            assert _build_provider(ACP_BACKEND_KAS).is_acp_runtime_backend is True
-            assert _build_provider(ACP_BACKEND_CLAUDE).is_acp_runtime_backend is False
-
-
-class TestTheSwitchOn:
-    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", " on "])
-    def test_a_truthy_value_reads_as_on(self, monkeypatch, value):
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, value)
-        assert codex_runs_on_acp_runtime() is True
-
-    def test_on_codex_joins_the_runtime_answer(self, monkeypatch):
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, "1")
-        assert acp_runtime_backends() == ACP_BACKENDS_ACP_RUNTIME | {ACP_BACKEND_CODEX}
-
-    def test_on_the_provider_reads_as_a_runtime_backend(self, monkeypatch):
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, "1")
+class TestCodexIsServedByTheSharedRuntime:
+    def test_the_provider_reads_as_a_runtime_backend(self):
         assert _build_provider(ACP_BACKEND_CODEX).is_acp_runtime_backend is True
 
-    def test_on_the_background_path_is_still_out_of_reach(self, monkeypatch):
-        """The switch is foreground-only, and that is the point of it.
+    def test_the_shipped_set_names_it(self):
+        """Pinned as a literal set, so gaining or losing a member is a visible edit."""
+        assert ACP_BACKENDS_ACP_RUNTIME == frozenset(
+            {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+        )
 
-        Background handles are the high-churn ones — title generation,
-        suggestions, folders and nav each take their own ephemeral sessionId,
-        many per conversation. codex's teardown verb is ``session/cancel``, which
-        ends the turn without evicting the session from the adapter's map, so a
-        shared process would grow at a rate the user never controls and nothing
-        Crew can send reclaims it. Foreground leaks the same way, at the rate a
-        person opens chats, where the age/RSS recycle eventually collects the
-        process.
+    def test_the_other_harnesses_keep_their_answers(self):
+        assert _build_provider(ACP_BACKEND_KIRO).is_acp_runtime_backend is True
+        assert _build_provider(ACP_BACKEND_KAS).is_acp_runtime_backend is True
+        assert _build_provider(ACP_BACKEND_CLAUDE).is_acp_runtime_backend is False
+
+    def test_membership_is_read_from_the_set_and_not_inferred(self):
+        """The property must not be spelled as "everything that is not claude".
+
+        With three members that inference happens to agree, which is exactly why it
+        is worth pinning: a harness added later would inherit the shared-runtime
+        path without anyone deciding it should.
         """
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, "1")
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(AcpProvider.is_acp_runtime_backend.fget))
+        )
+        # The docstring names the spelling it rejects, so strip it: a substring scan
+        # over the whole source passes or fails on the prose rather than the code.
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                if node.body and isinstance(node.body[0], ast.Expr):
+                    if isinstance(node.body[0].value, ast.Constant):
+                        node.body = node.body[1:]
+        body = ast.unparse(tree)
+        assert "ACP_BACKENDS_ACP_RUNTIME" in body
+        assert "is_claude_backend" not in body
+
+    def test_running_here_does_not_hand_it_the_kiro_family_conventions(self):
+        """The transport set is not the cli.json set, and codex proves it.
+
+        codex reads no ``cli.json`` overlay -- it takes effort over
+        ``session/set_config_option`` -- so a site that keyed overlay work off the
+        transport would write a file this host ignores and seed its effort map from
+        another harness's copy.
+        """
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
+        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+
+
+class TestOneFactReadThreeWays:
+    """The teardown Crew sends codex disposes the session. Three sets act on that."""
+
+    def test_it_does_not_share_sessions_though_it_multiplexes(self):
+        """Out on both halves, and pinned so neither half is mistaken for the whole.
+
+        One adapter process does serve N sessions, which is the half a reader would
+        add membership back on. The other two facts refuse it. The teardown is a
+        ``session/close`` request that EVICTS -- so a shared subagent session would
+        not survive the teardown of the conversation that spawned it, which is KAS's
+        position exactly (a disposing verb, no keep-aware variant). And the
+        continuation cannot resolve: the shared-subagent path persists a provider
+        label ``SessionMap`` reads as kiro-cli, so ``spawn_continue`` on a codex
+        subagent answers ``conversation_gone``. Membership would advertise exactly
+        the capability it exists to grant and break it on the ordinary path.
+        """
+        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_SESSION_SHARING
+        assert _build_provider(ACP_BACKEND_CODEX).is_session_sharing_eligible is False
+
+    def test_running_on_the_shared_runtime_did_not_grant_sharing(self):
+        """The superset relation must not be read as an implication.
+
+        ``ACP_BACKENDS_ACP_RUNTIME`` is a superset of the sharing set, so a harness
+        can be in the first and out of the second -- which is the whole point of
+        their being two sets. KAS is the standing precedent and codex is the second
+        instance, so the relation is asserted rather than assumed.
+        """
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_ACP_RUNTIME
+        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_SESSION_SHARING
+        assert ACP_BACKENDS_SESSION_SHARING < ACP_BACKENDS_ACP_RUNTIME
+
+    def test_it_is_in_the_eviction_set_because_its_teardown_evicts(self):
+        """Sharing and eviction are separate claims with separate owners.
+
+        Sharing is denied on Crew's side. Eviction is the harness's own
+        property, and ``session/close`` evicts -- measured -- so codex is a member.
+        The two sets answering differently is the point of having two.
+        """
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_SESSION_EVICTION
+        assert ACP_BACKENDS_SESSION_EVICTION == frozenset(
+            {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+        )
+
+    def test_the_background_path_is_now_reachable(self):
+        """Background handles are the high-churn ones -- title generation,
+        suggestions, folders, nav, each taking an ephemeral sessionId many times per
+        conversation. They are safe on this host exactly because every one of them
+        is evicted on teardown; the eviction term in ``_bg_runtime_backends`` is what
+        admits it, and would exclude it again the day the verb stopped evicting."""
         from kiro_crew.session import _bg_runtime_backends
 
-        assert ACP_BACKEND_CODEX not in _bg_runtime_backends()
+        assert ACP_BACKEND_CODEX in _bg_runtime_backends()
 
-    def test_off_the_background_path_may_not_either(self, monkeypatch):
-        monkeypatch.delenv(ENV_CODEX_ACP_RUNTIME, raising=False)
-        from kiro_crew.session import _bg_runtime_backends
+    def test_the_background_path_admits_it_by_eviction_not_by_name(self):
+        """Membership in the eviction set must be what lets it in, so the reason is
+        visible and the next non-evicting harness is not admitted by a name check
+        that happens to read the same from the outside."""
+        import inspect
 
-        assert ACP_BACKEND_CODEX not in _bg_runtime_backends()
+        from kiro_crew import session as session_mod
 
-    def test_on_a_codex_resume_is_attempted_without_a_local_transcript(self, monkeypatch):
+        source = inspect.getsource(session_mod._bg_runtime_backends)
+        assert "ACP_BACKENDS_SESSION_EVICTION" in source
+        assert "CODEX" not in source.upper()
+
+    def test_the_teardown_verb_is_the_one_the_sets_are_reasoning_about(self):
+        """Pinned here so the sets above cannot be justified by a verb that changed."""
+        adapter = harness_for(ACP_BACKEND_CODEX)
+        assert adapter.teardown.method == METHOD_SESSION_CLOSE
+        assert adapter.teardown.notification is False
+
+
+class TestResumeNeedsNoLocalTranscript:
+    def test_a_codex_resume_is_attempted_without_a_local_file(self):
         """codex keeps its own session records, so there is no file to pre-check.
 
         A resume path that stats ``<kiro home>/sessions/cli/<sid>.json`` can never
-        say yes for codex — that file is written only for the kiro family — so
+        say yes for codex -- that file is written only for the kiro family -- so
         gating the load on it drops the conversation on every reopen and starts a
-        fresh session instead. Membership in
-        ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS`` is what ``AcpClient`` reads for the
-        same decision, and it is what the runtime path reads too.
+        fresh session instead.
         """
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, "1")
         assert ACP_BACKEND_CODEX in ACP_BACKENDS_HARNESS_OWNED_SESSIONS
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_HARNESS_OWNED_SESSIONS
-
-    def test_the_switch_is_read_per_call_not_cached_at_import(self, monkeypatch):
-        """A value frozen at import answers for whichever ran first: gateway or test."""
-        monkeypatch.delenv(ENV_CODEX_ACP_RUNTIME, raising=False)
-        assert codex_runs_on_acp_runtime() is False
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, "1")
-        assert codex_runs_on_acp_runtime() is True
-        monkeypatch.delenv(ENV_CODEX_ACP_RUNTIME, raising=False)
-        assert codex_runs_on_acp_runtime() is False
-
-
-class TestTheCapabilitySetsKeepTheirMembers:
-    """The switch widens a derived ANSWER; it must not edit the vocabulary."""
-
-    def test_the_shipped_runtime_set_is_unchanged(self, monkeypatch):
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, "1")
-        assert ACP_BACKENDS_ACP_RUNTIME == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
-
-    def test_session_sharing_does_not_follow_the_switch(self, monkeypatch):
-        """Running on AcpRuntime is necessary for sharing, never sufficient.
-
-        KAS is the precedent: on the runtime, excluded from sharing until keep-aware
-        teardown lands. codex is in the same position, and a switch that granted
-        sharing as a side effect would hand multiplexed subagent sessions to a host
-        whose teardown verb cannot erase a transcript.
-        """
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, "1")
-        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_SESSION_SHARING
-        assert _build_provider(ACP_BACKEND_CODEX).is_session_sharing_eligible is False
 
 
 def _effort_provider(backend: str, model: str) -> AcpProvider:
@@ -946,21 +1070,20 @@ class TestTheEffortChannelIsReadFromItsOwnTable:
 
     ``_apply_initial_effort`` skips the live push for the kiro family because kiro
     reads effort from the spawn-time ``cli.json`` overlay instead. Spelling that
-    skip as "is this backend on AcpRuntime?" makes the two facts one, and the
-    switch then silently drops a codex session's configured effort: codex is a
-    member of ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` and
-    ``session/set_config_option`` is the only channel it has, so nothing else
-    would apply the level and only a manual ``change_effort`` recovers it.
-    Harness-parity H6 is the rule these assertions hold the gate to.
+    skip as "is this backend on AcpRuntime?" makes the two facts one, and a codex
+    session's configured effort is then dropped silently: codex is a member of
+    ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` and ``session/set_config_option`` is
+    the only channel it has, so nothing else would apply the level and only a
+    manual ``change_effort`` recovers it. Harness-parity H6 is the rule these
+    assertions hold the gate to.
     """
 
     @pytest.mark.asyncio
-    async def test_on_the_runtime_codex_still_gets_its_configured_effort(self, monkeypatch):
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, "1")
+    async def test_on_the_runtime_codex_still_gets_its_configured_effort(self):
         provider = _effort_provider(ACP_BACKEND_CODEX, "gpt-5.6-codex")
         provider._effort_per_model = {"gpt-5.6-codex": "high"}
-        # The premise of the assertion below: the switch does put codex on the
-        # runtime, so a runtime-membership gate would return here.
+        # The premise of the assertion below: codex IS on the shared runtime, so a
+        # runtime-membership gate would return here and apply nothing.
         assert provider.is_acp_runtime_backend is True
         await provider._apply_initial_effort()
         # The option ID is codex's own spelling, resolved through
@@ -973,9 +1096,8 @@ class TestTheEffortChannelIsReadFromItsOwnTable:
         )
 
     @pytest.mark.asyncio
-    async def test_the_kiro_family_still_takes_effort_from_its_overlay(self, monkeypatch):
-        """The skip the runtime gate was standing in for, held by the channel set."""
-        monkeypatch.setenv(ENV_CODEX_ACP_RUNTIME, "1")
+    async def test_the_kiro_family_still_takes_effort_from_its_overlay(self):
+        """The skip the runtime gate stands in for, held by the channel set instead."""
         for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
             provider = _effort_provider(backend, "claude-fable-5")
             provider._effort_per_model = {"claude-fable-5": "high"}
@@ -1158,7 +1280,9 @@ class _ControlPlane:
     THREE seams are recorded because the runtime uses three: handshake requests it
     awaits itself (``_send_and_await`` — session/new, set_mode), requests a session
     HANDLE sends (``send_request`` — set_config_option), and NOTIFICATIONS
-    (``send_notification`` — codex's teardown verb, which the host does not answer).
+    (``send_notification`` — ``session/cancel``, which the host does not answer).
+    codex's teardown ``session/close`` is a REQUEST and lands in ``methods``; a
+    test asserting it in ``notifications`` would be asserting the leak.
     A test that watched only the first would read a missing permission write as a
     passing session; one that watched only the first two would make an awaited
     teardown look correct, which is the shape that hid a full-budget stall on every
@@ -1279,8 +1403,8 @@ class TestTheRuntimeSendsCodexNoAgentMode:
         assert handle.session_id == "sid-codex"
         assert METHOD_SET_MODE not in plane.methods
         # The session survived: codex's teardown verb never went out, on either seam.
-        assert METHOD_CANCEL not in plane.methods
-        assert METHOD_CANCEL not in [m for m, _ in plane.notifications]
+        assert METHOD_SESSION_CLOSE not in plane.methods
+        assert METHOD_SESSION_CLOSE not in [m for m, _ in plane.notifications]
         assert "sid-codex" in rt._session_queues
 
     @pytest.mark.asyncio
@@ -1344,11 +1468,13 @@ class TestTheRuntimeArmsCodexPermissionRouting:
             with pytest.raises(AcpToolGateUnroutable):
                 await rt.create_session(cwd="/w", agent="kirocrew")
 
-        # As a NOTIFICATION, not an awaited request: the refusal path is the one a
-        # user waits on, so a teardown that spent the whole budget here would turn a
-        # fail-fast refusal into a five-second one.
-        assert plane.notifications == [(METHOD_CANCEL, {"sessionId": "sid-codex"})]
-        assert METHOD_CANCEL not in plane.methods
+        # As an awaited REQUEST: ``session/close`` is answered promptly, so the
+        # refusal path pays one round-trip -- and the session actually leaves the
+        # process, which a notification-form close (ignored by the adapter) would not
+        # achieve. The teardown is the last control-plane write.
+        assert plane.methods[-1] == METHOD_SESSION_CLOSE
+        assert plane.params[-1] == {"sessionId": "sid-codex"}
+        assert plane.notifications == []
         assert "sid-codex" not in rt._session_queues
 
     @pytest.mark.asyncio
@@ -1369,8 +1495,9 @@ class TestTheRuntimeArmsCodexPermissionRouting:
                 await rt.create_session(cwd="/w", agent="kirocrew")
 
         assert METHOD_SET_CONFIG_OPTION not in plane.methods
-        assert plane.notifications == [(METHOD_CANCEL, {"sessionId": "sid-codex"})]
-        assert METHOD_CANCEL not in plane.methods
+        assert plane.methods[-1] == METHOD_SESSION_CLOSE
+        assert plane.params[-1] == {"sessionId": "sid-codex"}
+        assert plane.notifications == []
 
     @pytest.mark.asyncio
     async def test_the_kiro_family_sends_no_extra_write(self):

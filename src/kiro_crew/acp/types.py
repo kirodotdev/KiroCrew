@@ -43,13 +43,14 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SESSION_SHARING,
+    ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
-    acp_runtime_backends,
     effort_config_option_id,
     model_registry_namespace,
     overlay_project_scope,
@@ -138,6 +139,17 @@ METHOD_SESSION_TERMINATE = "_kiro.dev/session/terminate"
 #: ``terminate`` exists for, and the record is what would otherwise accumulate.
 #: Takes the same ``{"sessionId": ...}`` params and is idempotent.
 METHOD_KAS_SESSION_DELETE = "_kiro/session/delete"
+#: The STANDARD ACP evict verb, for a host that implements it. codex-acp does: it
+#: drops the session from its local map and unsubscribes the Codex thread, so the
+#: sessionId stops answering while the thread's own record survives on the Codex
+#: side -- the same evict-not-delete shape as kiro-cli's ``terminate``. A REQUEST,
+#: answered with ``{}``; sent as a notification the adapter ignores it and the
+#: session stays resident, which is the leak this verb exists to close. Also
+#: idempotent: closing an already-closed id answers ``{}`` again. Measured live
+#: against codex-acp 1.11.0; the gated test
+#: ``test_codex_session_mcp.py::test_real_codex_acp_session_close_evicts`` re-runs
+#: that measurement on every install that has the adapter.
+METHOD_SESSION_CLOSE = "session/close"
 METHOD_COMPACTION_STATUS = "_kiro.dev/compaction/status"
 METHOD_CLEAR_STATUS = "_kiro.dev/clear/status"
 METHOD_AGENT_SWITCHED = "_kiro.dev/agent/switched"

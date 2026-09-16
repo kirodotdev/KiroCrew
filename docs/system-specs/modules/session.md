@@ -358,19 +358,43 @@ Callers: heartbeat callback, taskrunner lesson extraction.
 `get_bg_session()` acquires a `_bg` handle, dispatching by `agent.acp_backend`
 and returning `AcpSessionHandle | _ProviderBgSession`. Dispatch is via
 `_bg_backend_supports_runtime()` — positive membership in
-`_bg_runtime_backends()`, i.e. `ACP_BACKENDS_ACP_RUNTIME & selectable_backends()`,
-never an inequality (harness parity). The intersection is defense-in-depth: a
+`_bg_runtime_backends()` — the intersection of `ACP_BACKENDS_ACP_RUNTIME`,
+`ACP_BACKENDS_SESSION_EVICTION` and `selectable_backends()` — never an
+inequality (harness parity). The selectability term is defense-in-depth: a
 runtime-capable harness that is not operator-selectable must not be spawnable
 here from a config object that skipped the loader's normalisation.
 
-This path reads the frozenset and **not** `acp_runtime_backends()`, so the
-`KIROCREW_CODEX_ACP_RUNTIME` preview switch does not reach it. Background handles
-are the high-churn ones — title generation, suggestions, folders and nav each take
-their own ephemeral `sessionId` — and codex's teardown verb `session/cancel` ends
-the turn without evicting the session from the adapter's map, which on a shared
-process is unbounded growth at a rate the user never controls. The preview is
-scoped to the foreground, where the runtime's age/RSS recycle eventually collects
-the process; codex joins this set only once per-session eviction exists.
+The eviction term is what decides whether a harness that runs on the shared
+runtime may also serve this path. Background handles are the high-churn ones —
+title generation, suggestions, folders and nav each take their own ephemeral
+`sessionId`, many per conversation, at a rate the user never controls — so a
+teardown that does not evict is unbounded growth here. Membership in
+`ACP_BACKENDS_SESSION_EVICTION` is the claim that the teardown verb Crew sends
+actually frees one session, and it is earned by measurement. Codex is a member
+on that basis: its teardown is the standard `session/close` sent as a request,
+after which the same `sessionId` no longer answers `session/set_config_option`
+(measured live against codex-acp 1.11.0). It was excluded for as long as the
+verb Crew sent was `session/cancel`, after which the session kept answering and
+a further `session/prompt`'s `cachedReadTokens` showed the context resident —
+`cancel` interrupts a turn, it does not end a session. The delivery is part of
+the fact: the same `close` sent as a notification is ignored and evicts
+nothing, which is why the harness declares `notification=False` and why a gated
+live test re-measures both on every install with the adapter.
+
+The background path is not the only reader. `AcpSessionProvider.new_conversation`
+— the warm-reset primitive the workflow pool reaches for — reads the same set,
+because the whole reason that path is cheap is that `old.destroy()` reclaims the
+previous session on the already-running process. On a non-evicting harness that
+call frees nothing, so each pool reset would leave one more resident session, and
+here the "person opens chats" bound does not apply: a pooled workflow resets at
+whatever rate its steps run. Nor can a recycle rule be relied on to rescue it,
+because a rule that measures a narrower scope than where the sessions live
+never sees the growth, leaving the age ceiling as the only reaper. So a
+non-evicting backend is REFUSED there before any session is created, and
+`WorkerPool.reset` takes its existing hard-reset fallback — slower, and correct
+for every harness. Refusing before the `session/new` rather than after is the
+whole point: creating first would leak exactly the session the refusal exists to
+prevent.
 
 - **runtime-capable backend** (`_bg_runtime_backends()`) — each caller (title
   generation, suggestions, folders, nav) gets its **own** ephemeral `sessionId`

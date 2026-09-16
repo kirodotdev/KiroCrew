@@ -33,7 +33,6 @@ from kiro_crew.acp.harness import (
     HarnessAdapter,
     KasHarness,
     KiroHarness,
-    ReclaimPolicy,
     SessionExtras,
     SpawnContext,
     harness_for,
@@ -714,11 +713,52 @@ def test_no_host_is_left_unverified(backend):
 # ── Seam 9: reclaim ──
 
 
+_RECLAIM_PROBES = (
+    (123.0, 45.0),
+    (321.0, 4500.0),
+)
+
+
 @pytest.mark.parametrize("backend", ALL_BACKENDS)
 def test_reclaim_thresholds_pass_the_operator_configuration_through(backend):
-    """A harness narrows these for a leaky host; nothing in the kiro family does."""
-    policy = harness_for(backend).reclaim_policy(max_age_secs=123.0, max_rss_mb=45.0)
-    assert policy == ReclaimPolicy(max_age_secs=123.0, max_rss_mb=45.0)
+    """Every harness passes the operator's thresholds through, in their own unit.
+
+    Universal, and asserted for every harness alike. Age passes through unchanged:
+    nothing about age depends on what a harness measures. RSS passes through
+    unchanged too -- UNLESS the harness measures a different SET of processes, in
+    which case the incoming number is in a unit it does not measure and the harness
+    states its own. The two shapes are told apart by what the harness declares on
+    itself, never by its identity: a bounded scope (``CORE_RSS_DEPTH``) and the
+    ceiling for that scope (``CORE_RSS_CEILING_MB``) travel together, and a harness
+    declaring neither is held to pass-through. The second probe is what makes a
+    stated ceiling distinguishable from a reinterpreted one: the answer must be the
+    SAME for two different inputs, and must be the declared constant, so a harness
+    scaling or clamping the operator's number fails on one probe or the other.
+    Quietly reinterpreting an operator's configured ceiling for one host is the
+    failure this ratchet catches, whichever host it is.
+    """
+    harness = harness_for(backend)
+    depth = getattr(type(harness), "CORE_RSS_DEPTH", None)
+    ceiling = getattr(type(harness), "CORE_RSS_CEILING_MB", None)
+    assert (depth is None) == (ceiling is None), (
+        f"{backend!r} declares a bounded RSS scope and a ceiling for it together or not at "
+        f"all (CORE_RSS_DEPTH={depth!r}, CORE_RSS_CEILING_MB={ceiling!r})"
+    )
+    for age, rss in _RECLAIM_PROBES:
+        policy = harness.reclaim_policy(max_age_secs=age, max_rss_mb=rss)
+        assert policy.max_age_secs == age, f"{backend!r} changed the age ceiling"
+        if depth is None:
+            assert policy.max_rss_mb == rss, (
+                f"{backend!r} measures the whole subtree and must pass the operator's RSS "
+                f"ceiling through; got {policy.max_rss_mb!r} for {rss!r}"
+            )
+        else:
+            assert isinstance(depth, int) and depth >= 1
+            assert policy.max_rss_mb == ceiling, (
+                f"{backend!r} measures a bounded scope (depth {depth}) and must state its "
+                f"declared ceiling {ceiling!r} in that unit; got {policy.max_rss_mb!r} for "
+                f"input {rss!r}"
+            )
 
 
 # ── The Kiro path gains no failure mode (harness-parity H13) ──
@@ -884,9 +924,12 @@ def test_the_kiro_family_ignores_the_advertised_capabilities(backend):
 def test_codex_narrows_the_array_against_what_the_handshake_advertised():
     """The counterexample the two family assertions above must not swallow.
 
-    codex reads no agent spec, so this array IS the session's tool surface, and one
-    element whose transport the adapter never advertised fails the WHOLE
-    ``session/new`` with ``-32600``.
+    codex reads no agent spec, so this array IS the session's tool surface -- and an
+    element whose transport the adapter never advertised is ACCEPTED rather than
+    refused: ``session/new`` answers with a ``sessionId`` and that server is never
+    wired. The narrowing here is the only guard that the array Crew sends is the
+    array the adapter honours, because a session carrying an unwired server reports
+    nothing.
     """
     harness = harness_for(ACP_BACKEND_CODEX)
     requested = [{"name": "keep", "url": "http://keep"}, {"name": "drop", "type": "sse"}]
@@ -948,9 +991,9 @@ def test_the_mcp_seam_is_a_transform_not_an_addition():
     """The seam takes the caller's list IN, which is what lets a host narrow it.
 
     A host with no agent spec has nothing but this array describing its tool
-    surface, and one element whose transport it never advertised can cost the
-    whole session rather than that one server. A field on SessionExtras could
-    only ADD, so such a host could not be served at all.
+    surface, and it may ACCEPT an element whose transport it never advertised and
+    then wire nothing for it, so only the client can keep the two in step. A field
+    on SessionExtras could only ADD, so such a host could not be served at all.
     """
     sig = inspect.signature(HarnessAdapter.session_mcp_servers)
     assert list(sig.parameters) == ["self", "requested", "agent_capabilities"]

@@ -1000,6 +1000,12 @@ async def test_warm_reuse_claims_the_fresh_sessions_stubs(
         _work_dir = "/tmp/ws"
         _agent = "kirocrew"
         pid = 4242
+        # ``new_conversation`` refuses a backend whose teardown does not evict the
+        # old session, so it reads the backend before creating anything. ``""`` is
+        # not "unset" here -- it is kiro's own id (``ACP_BACKEND_KIRO``), the real
+        # runtime's default and a member of the eviction set. Warm reuse succeeding
+        # IS this test's subject, so the stub has to carry it.
+        acp_backend = ""
 
         def is_alive(self) -> bool:
             return True

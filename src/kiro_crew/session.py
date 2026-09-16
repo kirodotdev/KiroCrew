@@ -105,6 +105,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_SESSION_EVICTION,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
 )
@@ -537,19 +538,25 @@ BACKGROUND_AGENT = "kirocrew-lite"
 # module-level intersection would snapshot the baseline and permanently exclude
 # a backend the operator did register.
 #
-# The SET here, deliberately, and NOT ``acp_runtime_backends()``: the codex
-# preview switch does not reach the background path. Background handles are the
-# high-churn ones — title generation, suggestions, folders and nav each take their
-# own ephemeral sessionId, many per conversation — and codex's teardown verb is
-# ``session/cancel``, which ends the turn without evicting the session from the
-# adapter's own map. On a shared process that is unbounded growth in the adapter,
-# at a rate a user never controls, and nothing Crew can send reclaims it.
-# Foreground sessions leak the same way but at the rate a person opens chats, and
-# the runtime's age/RSS recycle eventually collects the process. So the preview is
-# scoped to the path whose exposure is bounded; making codex a member of this set
-# requires a real per-session eviction first.
+# Intersected with ``ACP_BACKENDS_SESSION_EVICTION`` as well, and that term is the
+# one carrying weight. Background handles are the high-churn ones — title
+# generation, suggestions, folders and nav each take their own ephemeral
+# sessionId, many per conversation, at a rate a user never controls. A harness
+# whose teardown verb does not dispose a session accumulates every one of them in
+# the adapter's own map, so a shared process serving this path grows without
+# bound. Foreground sessions accumulate the same way but at the rate a person
+# opens chats, and the runtime's age/RSS recycle eventually collects the process,
+# which is why the eviction term is required HERE and not there.
+#
+# The two terms are separate memberships, earned separately. codex holds both:
+# it runs on the shared runtime, and its teardown is a ``session/close`` request,
+# which the adapter answers by dropping the session from its map -- measured,
+# and re-measured by the gated live test on every install that has the adapter.
+# ``session/cancel`` would NOT have earned the second membership: it leaves the
+# session addressable with its context resident. A harness reaches this path by
+# demonstrating BOTH properties in ``backends.py``, never by an edit here.
 def _bg_runtime_backends() -> frozenset[str]:
-    return ACP_BACKENDS_ACP_RUNTIME & selectable_backends()
+    return ACP_BACKENDS_ACP_RUNTIME & ACP_BACKENDS_SESSION_EVICTION & selectable_backends()
 
 
 def _load_bg_runtime_types() -> tuple[Any, type[BaseException]]:

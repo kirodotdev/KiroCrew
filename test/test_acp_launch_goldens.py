@@ -25,6 +25,7 @@ from __future__ import annotations
 import inspect
 import os
 import sys
+from collections.abc import MutableMapping
 from pathlib import Path
 
 import acp_launch_capture as capture_mod
@@ -185,6 +186,80 @@ def test_the_fixed_parent_never_carries_a_variable_spawn_sets() -> None:
     }
     overlap = contributed & set(capture_mod._PASSTHROUGH_ENV_KEYS)
     assert not overlap, f"the pass-through list can mask a contributed key: {overlap}"
+
+
+class _WindowsLikeEnviron(MutableMapping):
+    """``os.environ`` as Windows presents it: variable names folded to upper case.
+
+    A plain ``dict`` subclass will not do -- ``dict.update`` and the ``{**d}`` splat
+    take a C-level fast path that never calls ``__setitem__``, so the fold would not
+    apply. A ``MutableMapping`` routes every write through ``__setitem__``, which is
+    what makes ``patch.dict(..., clear=True)`` and ``dict(os.environ)`` fold here the
+    way they do on a real Windows host.
+    """
+
+    def __init__(self, data=None) -> None:
+        self._data: dict[str, str] = {}
+        for key, value in dict(data or {}).items():
+            self[key] = value
+
+    def __setitem__(self, key, value) -> None:
+        self._data[key.upper()] = value
+
+    def __getitem__(self, key):
+        return self._data[key.upper()]
+
+    def __delitem__(self, key) -> None:
+        del self._data[key.upper()]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def copy(self) -> "_WindowsLikeEnviron":
+        return _WindowsLikeEnviron(self._data)
+
+
+def test_a_windows_case_fold_reports_no_phantom_removal(monkeypatch, tmp_path) -> None:
+    """A name the child inherits under a folded case is not recorded as removed.
+
+    On Windows ``os.environ`` folds every variable name to one case, so a name the
+    host exports as ``SystemRoot`` reaches the child as ``SYSTEMROOT``. Measuring the
+    delta against the pre-roundtrip parent -- which still holds the mixed-case
+    ``SystemRoot`` the pass-through allowlist read back -- reports that name as
+    removed, which is the Windows-only golden failure this pins. The fold is simulated
+    with a case-insensitive ``os.environ`` rather than by flipping ``os.name``, which
+    would turn ``pathlib`` into ``WindowsPath`` on this host.
+    """
+    folded = _WindowsLikeEnviron(os.environ)
+    # The host variable whose mixed case ``fixed_parent_env`` reads back, and which the
+    # fold then stores under a single name the child inherits.
+    folded["SystemRoot"] = r"C:\Windows"
+    monkeypatch.setattr(os, "environ", folded)
+
+    answer = capture_mod.capture(ACP_BACKEND_CODEX, tmp_path)
+
+    assert answer["env_removed"] == [], (
+        "a name the child inherited under a folded case was reported as removed: "
+        f"{answer['env_removed']}"
+    )
+
+
+def test_the_delta_still_reports_a_variable_the_launch_genuinely_dropped() -> None:
+    """The fold fix must not blanket-suppress removals -- a dropped name still shows.
+
+    Measuring against the inherited parent fixes the phantom Windows removal; it must
+    not hide a real one. A name present in the parent and absent from the child is
+    still reported, so the golden keeps catching a launch that strips the environment.
+    """
+    _env_delta = capture_mod._env_delta
+    _added, removed = _env_delta({"KEEP": "1", "DROPPED": "2"}, {"KEEP": "1"})
+    assert removed == ["DROPPED"]
+    # And a case-sensitive POSIX difference is a real removal, not folded away.
+    _added, removed = _env_delta({"Path": "x"}, {"PATH": "x"})
+    assert removed == ["Path"]
 
 
 def test_a_derived_stub_accepts_exactly_what_the_real_collaborator_accepts() -> None:

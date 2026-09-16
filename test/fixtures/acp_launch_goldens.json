@@ -21,13 +21,11 @@
     ],
     "env_added": {
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
-      "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
-      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
-    "spawn_label": "codex-acp via /opt/lib/codex-acp/index.js",
-    "stderr_label": "codex-acp via /opt/lib/codex-acp/index.js"
+    "env_removed": [],
+    "served_by": "AcpRuntime"
   },
   "deepseek": {
     "argv": [
