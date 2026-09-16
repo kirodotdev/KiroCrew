@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -43,9 +44,13 @@ from kiro_crew.dashboard.state import (
     append_and_surface,
     parse_cls_meta,
 )
-from kiro_crew.history import transcript_sort_key
+from kiro_crew.history import (
+    coexisting_transcript_stems,
+    transcript_sort_key,
+    transcript_stem,
+)
 from kiro_crew.hooks import safe_read_file
-from kiro_crew.messaging.link import canonical_key, is_channel_session_key
+from kiro_crew.messaging.link import canonical_key, is_channel_session_key, legacy_key
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
     oauth_url_contains_credential,
@@ -701,6 +706,162 @@ def subagent_event_slot(parent_session_key: str) -> str:
     external WS consumers and log lines).
     """
     return dashboard_slot_key(parent_session_key) or parent_session_key.removeprefix("dashboard:")
+
+
+#: The separator a LIVE session key is spelled with, per ``messaging.link``. Any other
+#: character where the transcript name holds ``_`` is a SUBSTITUTED separator.
+_LIVE_KEY_SEPARATOR = ":"
+
+
+def _is_separator_fold(candidate: str, stem: str) -> bool:
+    """True when *stem* is *candidate*'s fold and every folded slot held the live separator.
+
+    The fold is MANY-TO-ONE, so a bare ``fold(candidate) == stem`` adopts a foreign
+    session: ``slack:C123:<ts>`` and ``slack:C123_<ts>`` share one stem. The rule is
+    therefore positive rather than exclusionary -- every folded position must have
+    carried a colon -- which refuses both the literal-underscore impostor and one
+    that substitutes a different separator.
+
+    The cost is a real refusal: a conversation id spelled with any other folded
+    character hydrates unbound until its key is re-linked. Entries are held rather
+    than dropped, so the degradation is recoverable.
+    """
+    if not candidate or not stem:
+        return False
+    if transcript_stem(candidate) != stem:
+        return False
+    return all(c == _LIVE_KEY_SEPARATOR for c, s in zip(candidate, stem) if s == "_")
+
+
+def persisted_binding_is_adoptable(
+    candidate: str, transcript_key: str, *, sessions_dir: Path | None = None
+) -> bool:
+    """True when a PERSISTED ``linked_session_key`` may be adopted on hydration.
+
+    The metadata line is agent-writable, and adopting a value from it rebinds where
+    the slot ROUTES, not merely what it restores -- so a shape check is not a trust
+    check. The safe rule is to adopt only a candidate naming the transcript being
+    hydrated, which is what a genuine binding looks like.
+
+    Accepted: identity, the candidate's exact LEGACY alias, or the transcript key
+    being this candidate's SEPARATOR-ONLY fold. Never a folded-vs-folded compare and
+    never a bare fold, both of which are many-to-one and admit a foreign session.
+    The mirror direction is absent deliberately, for the same reason.
+
+    On mismatch the caller leaves the slot UNBOUND, which is a visible, recoverable
+    degradation. There is no fallback and no log-and-adopt.
+    """
+    if not candidate or not transcript_key:
+        return False
+    if candidate == transcript_key:
+        return True
+    # EXACT LEGACY ALIASES FIRST, unfolded so they cannot collide: a thread key has
+    # two legitimate filenames, and without this the legacy one refused the binding.
+    if transcript_key == legacy_key(candidate):
+        # Both files existing makes these two live sessions rather than one under two
+        # names, and _path would then route this slot's saves at the canonical one.
+        return not coexisting_transcript_stems(candidate, sessions_dir)
+    # The last legitimate shape is the transcript key BEING this candidate's fold; a
+    # bare fold would admit a foreign key, so every folded slot must have held a colon.
+    if _is_separator_fold(candidate, transcript_key):
+        return True
+    # ONE DIRECTION ONLY, an exact fold rather than a fold-vs-fold compare: the
+    # reverse admits a distinct alias sharing one transcript file.
+    return False
+
+
+def audit_persisted_binding(slot_key: str, candidate: str, *, adopted: bool) -> bool:
+    """Record a persisted-binding adoption decision in the Security Event Log.
+
+    Returns whether the record LANDED, and callers must refuse the adoption when it
+    did not: this gates agent-writable metadata that retargets where a slot routes,
+    so the permission decision may not be taken without a record. A logger line
+    cannot substitute, being rotated, unsigned and outside the verifiable chain.
+
+    Emitted for BOTH outcomes: a refusal is the security-relevant event, but
+    recording only refusals leaves the adoption that changes routing with no trail.
+    """
+    try:
+        sel().log_governance_decision(
+            session_key=slot_key,
+            tool_name="chat:adopt_persisted_binding",
+            scope="chat.linked_session_key",
+            item=candidate,
+            outcome="allowed" if adopted else "denied",
+            rule="persisted_binding_is_adoptable",
+            layer="hydration",
+            reason=f"transcript {slot_key}",
+            critical=True,
+        )
+    except Exception:
+        # No record landed, so no adoption may proceed on this decision.
+        logger.warning("persisted-binding adoption audit failed; refusing", exc_info=True)
+        return False
+    return True
+
+
+def persisted_binding_candidate(meta: object) -> str:
+    """The persisted ``linked_session_key`` in *meta*, or ``""`` when it carries none."""
+    if not isinstance(meta, dict):
+        return ""
+    return str(meta.get("linked_session_key") or "")
+
+
+def decide_persisted_binding(meta: object, transcript_key: str) -> bool | None:
+    """Audit-or-deny verdict for a persisted binding, decided INLINE.
+
+    Returns True to adopt, False to refuse (unadoptable OR the audit did not land), and
+    None when the metadata carries no binding, which is not a decision at all.
+
+    Both the adoptability test and the SEL write touch the filesystem, so a caller
+    already on the event loop should prefer :func:`preaudit_persisted_binding`, which
+    resolves the same verdict in a worker thread. This form exists for the synchronous
+    hydration entry points, which have no await to hand: deciding here costs an
+    event loop nothing when they are driven off it, and refusing to decide at all
+    would leave those paths adopting agent-written metadata unaudited.
+    """
+    candidate = persisted_binding_candidate(meta)
+    if not candidate:
+        return None
+    adoptable = persisted_binding_is_adoptable(candidate, transcript_key)
+    if not audit_persisted_binding(transcript_key, candidate, adopted=adoptable):
+        return False
+    return adoptable
+
+
+async def preaudit_persisted_binding(meta: object, transcript_key: str) -> bool | None:
+    """Off-loop audit-or-deny verdict for a persisted binding, or None when there is none.
+
+    The SEL write for a ``critical=True`` audit is INLINE -- the writer itself tunes
+    its own rotation probes because a critical audit is written inline, sometimes on the
+    event loop. Inline is what audit-or-deny needs: the row must land before the decision
+    is acted on, so it cannot be enqueued to the background writer.
+
+    That leaves ONE place the write can go: before the synchronous slot build, not inside
+    it. The build is deliberately await-free -- an await between the deletion probe and
+    the build reopens the window that probe closes -- so the async hydration paths resolve
+    the verdict HERE, in a worker thread, and hand the build a decision rather than I/O.
+
+    Same return values as :func:`decide_persisted_binding`, whose decision this wraps.
+    """
+    candidate = persisted_binding_candidate(meta)
+    if not candidate:
+        return None
+    verdict = await asyncio.to_thread(decide_persisted_binding, meta, transcript_key)
+    if verdict is not True:
+        return verdict
+    if not persisted_binding_is_adoptable(candidate, transcript_key):
+        # RE-DECIDED AFTER THE AWAIT and audited as denied: the row above recorded an
+        # ALLOW, so without a second row the trail names a verdict nothing acted on.
+        await asyncio.to_thread(audit_persisted_binding, transcript_key, candidate, adopted=False)
+        logger.warning(
+            "refusing persisted binding %r for %s: a coexisting transcript appeared during the "
+            "audit, so the pre-audit verdict no longer holds",
+            candidate,
+            transcript_key,
+        )
+        return False
+    return True
 
 
 def slot_transcript_key(slot_key: str) -> str:

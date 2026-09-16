@@ -38,7 +38,10 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     _redact_meta_for_role,
     _sync_dashboard_slots,
+    decide_persisted_binding,
     effective_session_key,
+    persisted_binding_candidate,
+    preaudit_persisted_binding,
     slot_history_key,
     slot_transcript_key,
 )
@@ -101,6 +104,10 @@ _SKIP_MEMBER_RESTORE: tuple[str, str] = ("", "__skip__")
 #: non-member key) — defaulting to ``None`` would silently unpin every member
 #: slot restored by a caller that forgot to prefetch.
 _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
+
+#: Distinct from ``None``, the pre-audit's answer for metadata carrying NO binding:
+#: defaulting to that would skip the gate on any caller that passes no verdict.
+_BINDING_UNAUDITED: str = "__unaudited__"
 
 
 # Recognized title-origin values (mirrors chat_title._TITLE_ORIGINS; duplicated
@@ -718,6 +725,7 @@ def _apply_restored_open_slot(
     agent: str | None = None,
     conv_log: ConversationLog | None = None,
     started: float | None = None,
+    persisted_binding_verdict: bool | None | str = _BINDING_UNAUDITED,
 ) -> int:
     """Turn one prefetched open-tab read into a slot; return 1 if it restored.
 
@@ -781,6 +789,7 @@ def _apply_restored_open_slot(
         _prefetched_messages=messages,
         _prefetched_member_identity=member_identity,
         _prefetched_agent=agent,
+        _persisted_binding_verdict=persisted_binding_verdict,
     )
     return 1 if slot is not None else 0
 
@@ -875,6 +884,9 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                         with_status=True,
                     )
                 )
+                # Before the applier: the audit write is inline, and the applier's
+                # deletion probe must not be separated from the build by an await.
+                binding_verdict = await preaudit_persisted_binding(meta, slot_transcript_key(key))
                 restored += _apply_restored_open_slot(
                     state,
                     key,
@@ -890,6 +902,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                     # its answers can have gone stale.
                     conv_log=conv_log,
                     started=started,
+                    persisted_binding_verdict=binding_verdict,
                 )
             except Exception:
                 logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
@@ -1154,6 +1167,7 @@ def _rehydrate_slot_from_history(
     _prefetched_messages: list[dict] | None = None,
     _prefetched_member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     _prefetched_agent: str | None = None,
+    _persisted_binding_verdict: bool | None | str = _BINDING_UNAUDITED,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
 
@@ -1450,10 +1464,20 @@ def _rehydrate_slot_from_history(
         if meta.get("forked_from") is not None:
             slot.forked_from = meta["forked_from"]
         if meta.get("linked_session_key"):
-            # Rebind the slot to the session its conversation actually runs on.
-            # Skipped, the slot would answer from a dashboard-only session and the
-            # channel thread would stop seeing its replies.
-            slot.linked_session_key = str(meta["linked_session_key"])
+            # This value is agent-writable and decides where the slot ROUTES, so a
+            # candidate not naming this transcript leaves the slot unbound instead.
+            verdict = _persisted_binding_verdict
+            if verdict is _BINDING_UNAUDITED:
+                verdict = decide_persisted_binding(meta, history_key)
+            if verdict:
+                slot.linked_session_key = str(meta["linked_session_key"])
+            else:
+                logger.warning(
+                    "Leaving slot %s unbound: its persisted linked_session_key %r does not "
+                    "name this transcript, or the adoption could not be audited",
+                    slot_name,
+                    persisted_binding_candidate(meta),
+                )
         # Re-seed the live compaction threshold. The SessionManager's override
         # map is process-local, so a rehydrated slot must push its persisted
         # value back or the session silently compacts at the global threshold.
@@ -1718,6 +1742,9 @@ async def rehydrate_slot_from_history_async(
             slot_name,
         )
         return None
+    # Before the deletion probe below: the audit write is inline, and no await may
+    # separate that probe from the build it gates.
+    binding_verdict = await preaudit_persisted_binding(meta, history_key)
     # DELETION race, the same window and the same remedy the two bulk restore
     # drivers apply. This wrapper's read is offloaded too, so it carries the same
     # window — the guard is folded in here rather than left as the one uncovered
@@ -1749,6 +1776,7 @@ async def rehydrate_slot_from_history_async(
         _prefetched_messages=messages,
         _prefetched_member_identity=_member_id,
         _prefetched_agent=agent,
+        _persisted_binding_verdict=binding_verdict,
     )
 
 
@@ -1839,6 +1867,7 @@ def _apply_recent_session(
     restore_cfg: "KiroCrewConfig | None",
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     agent: str | None = None,
+    persisted_binding_verdict: bool | None | str = _BINDING_UNAUDITED,
 ) -> None:
     """Build the slot for one prefetched recent session.
 
@@ -2018,7 +2047,20 @@ def _apply_recent_session(
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
     if meta.get("linked_session_key"):
-        slot.linked_session_key = str(meta["linked_session_key"])
+        # Mirror of the gate in _rehydrate_slot_from_history; a gate in only one of
+        # the two builders leaves the other adopting unchecked.
+        verdict = persisted_binding_verdict
+        if verdict is _BINDING_UNAUDITED:
+            verdict = decide_persisted_binding(meta, key)
+        if verdict:
+            slot.linked_session_key = str(meta["linked_session_key"])
+        else:
+            logger.warning(
+                "Leaving slot %s unbound: its persisted linked_session_key %r does not name "
+                "this transcript, or the adoption could not be audited",
+                slot_name,
+                persisted_binding_candidate(meta),
+            )
     elif is_channel_session_key(key) and state.sessions:
         # First time this thread is surfaced: bind it to the session the
         # channel itself runs. Resolved from the session map, never derived
@@ -2225,6 +2267,9 @@ async def restore_recent_sessions_async(
                     slot_name,
                 )
                 continue
+            # Before the deletion probe: the audit write is inline, and that probe
+            # must stay adjacent to the build it gates.
+            binding_verdict = await preaudit_persisted_binding(meta, key)
             # Third window: the session may have been permanently DELETED (or
             # deleted and recreated) during the read. Synchronous and last, so no
             # await separates it from the build it gates.
@@ -2250,6 +2295,7 @@ async def restore_recent_sessions_async(
                 restore_cfg=_restore_cfg,
                 member_identity=_member_id,
                 agent=agent,
+                persisted_binding_verdict=binding_verdict,
             )
             restored += 1
             await asyncio.sleep(0)
