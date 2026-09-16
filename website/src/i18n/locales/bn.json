@@ -6370,6 +6370,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (ইনস্টল করা নেই)",
+      "agent_not_in_project": "{{agent}} (এই প্রজেক্টে নেই)",
       "browse": "ব্রাউজ করুন",
       "cancel": "বাতিল",
       "color": "রং",
@@ -6399,7 +6400,9 @@
       "tags_loading_hint": "ট্যাগ লোড হচ্ছে…",
       "tags_error_hint": "ট্যাগ লোড করা যায়নি।",
       "tags_retry": "আবার চেষ্টা করুন",
-      "top_level": "সর্বোচ্চ স্তর"
+      "top_level": "সর্বোচ্চ স্তর",
+      "agent_roster_error": "এই ডিরেক্টরির এজেন্ট পড়া যায়নি।",
+      "agent_roster_retry": "আবার চেষ্টা করুন"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "ফোল্ডার প্রস্তাব",

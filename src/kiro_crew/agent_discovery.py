@@ -12,6 +12,7 @@ Each agent is identified by its ``modeId`` — the value passed to
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import logging
@@ -19,7 +20,7 @@ import os
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from kiro_crew import agent_state
 from kiro_crew.agent_files import (
@@ -29,7 +30,13 @@ from kiro_crew.agent_files import (
 )
 from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir, project_kiro_dir
 from kiro_crew.executors import discovery_executor
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+from kiro_crew.hooks import (
+    FileTooLargeError,
+    is_unc_shape,
+    safe_read_file_bytes,
+    unc_probe_allowed,
+)
+from kiro_crew.platform_compat import IS_WINDOWS, pin_directory, verify_ancestors_not_swapped
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel as _sel
 
@@ -70,6 +77,20 @@ SCOPE_PROJECT = "project"
 # entry. The signature is the pair of per-directory signatures, so an edit in
 # either scope invalidates.
 _ListAgentsSig = tuple[tuple[str, int], ...]
+
+# Sentinel signature for a subdir _pinned_scan_dir flags as sensitive.
+# MUST differ from the empty-dir signature `()`: a signature computed while a
+# subdir is sensitive would otherwise be indistinguishable from one computed
+# while it is genuinely empty/missing, so a cache warmed on a legitimately
+# empty `.kiro/agents` would match a LATER signature computed after an
+# attacker swaps that dir to a symlink into a credential home -- the cache hit
+# at `project_agent_names` would then serve the stale (empty) result and skip
+# `project_agent_files`, whose call is what emits the required SEL denial
+# audit. The name below contains a NUL, which no real filesystem entry can
+# produce (`os.scandir`/`stat` can never yield it), so this can never collide
+# with a genuine signature entry and a transition into "sensitive" is always
+# a cache miss.
+_SENSITIVE_DIR_SIG: _ListAgentsSig = (("\0sensitive", -1),)
 _LIST_AGENTS_KEY = tuple[str, str]
 _LIST_AGENTS_CACHE: dict[_LIST_AGENTS_KEY, tuple[tuple[_ListAgentsSig, ...], list[AgentInfo]]] = {}
 
@@ -402,9 +423,117 @@ def _warn_on_systematic_scan_failure(directory: Path, candidates: int, parsed: i
         )
 
 
+@contextlib.contextmanager
+def _pinned_scan_dir(d: Path) -> Iterator[bool]:
+    """Yield whether *d* is safe to enumerate, holding any Windows pin OPEN
+    for the caller's own ``is_dir``/``glob`` calls made inside the ``with``
+    block.
+
+    ``project_agent_files`` sensitivity-checks the project ROOT, but the
+    directories it actually enumerates/globs are the ``<project>/.kiro`` and
+    ``<project>/.kiro/agents`` SUBDIRS. A checkout whose ``.kiro`` or
+    ``.kiro/agents`` is a symlink into a credential home has a non-sensitive
+    root yet a sensitive scan target, so the root check alone lets
+    ``glob``/``scandir``+``stat`` touch the protected directory (per-file
+    reads are still blocked by :func:`_read_agent_spec`, but the probe itself
+    should not happen). Resolving the subdir and checking that closes the
+    window at the enumeration layer for every caller. Never raises: an
+    unresolvable path is treated as safe-to-skip (it is not a directory to
+    scan), matching the "no agents rather than fail the caller" contract.
+
+    On Windows, a naive ``is_link_or_junction`` CHECK followed by a separate
+    ``os.path.realpath`` OPEN is a check-to-resolve window: an attacker who
+    can swap the leaf between the two calls (a caller-supplied path retried
+    against the roster endpoint, timing widened with e.g. an oplock) still
+    gets ``realpath`` to follow a UNC junction planted after the check
+    passed, sending SMB/NTLM credentials to an attacker-chosen host.
+    :func:`platform_compat.pin_directory` closes this atomically: it OPENS
+    *d* with ``FILE_FLAG_OPEN_REPARSE_POINT`` and inspects the resulting
+    HANDLE's own attributes, so a reparse point at *d* is refused by the open
+    itself rather than detected by a check a later open can outrace.
+
+    Yielding while the pin is still open (rather than returning a bare bool
+    and closing immediately) closes a SECOND window: a race-free sensitivity
+    check is worthless if the caller's own ``is_dir``/``glob`` then runs
+    after the pin has already been released, since the same UNC-junction
+    swap can land in that gap and get followed by the caller's own unpinned
+    resolution instead. The caller MUST do all of its enumeration inside
+    this ``with`` block; nothing after it exits is protected.
+    """
+    if IS_WINDOWS:
+        d_str = os.fspath(d)
+        try:
+            if is_unc_shape(d_str) and not unc_probe_allowed(d_str):
+                yield False
+                return
+        except (OSError, ValueError):
+            yield False
+            return
+        # pin_directory's OPEN_REPARSE_POINT guards only d's own LEAF
+        # component: Windows still follows a reparse point on any ANCESTOR
+        # while resolving the path to d, so a junction planted somewhere
+        # above d (including the project root itself, which this function
+        # never independently verifies) is silently traversed by the pin's
+        # own open. verify_ancestors_not_swapped HOLDS each ancestor open (no
+        # FILE_SHARE_DELETE) while checking it, root to leaf, so the very
+        # rename-to-a-junction a swap needs cannot happen mid-walk -- the
+        # same pattern project_scan.py's _scandir_pinned already uses for a
+        # tree walk, generalized here to one caller-supplied path.
+        if not verify_ancestors_not_swapped(d_str):
+            yield False
+            return
+        try:
+            fd = pin_directory(d)
+        except NotADirectoryError:
+            # The name opened, but what is there is a reparse point (or not a
+            # real directory) -- the same probe vector as a UNC-shaped path,
+            # just discovered by the open rather than the lexical screen
+            # above. Auditable owner-directed DENY: a directory linked into a
+            # credential home is a security-relevant finding, not an ordinary
+            # "nothing here".
+            yield False
+            return
+        except OSError:
+            # Could not even be opened at all (does not exist, permission
+            # denied opening an ancestor, etc.): an ordinary "nothing here" --
+            # the common case for a checkout with no `.kiro`/`.kiro/agents`
+            # yet, and NOT a security event. Yield True (SAFE) rather than
+            # False: False routes the caller into its deny+SEL-audit branch,
+            # but a merely-absent directory is not a security finding. Safe
+            # lets the caller's own `elif d.is_dir():` fall through to a
+            # no-op skip (is_dir() is False for a missing path), which is the
+            # correct "no project agents" outcome. A reparse point that IS
+            # there raises NotADirectoryError above and still denies.
+            yield True
+            return
+        try:
+            # The sensitivity check, and everything the caller does inside
+            # this `with` block, must run WHILE the pin is still held: the
+            # pin's whole point is that its OPEN is proof d names a real,
+            # non-link directory at this instant, and releasing it before
+            # the caller's is_dir/glob run reopens the exact check-to-resolve
+            # window pin_directory exists to close -- an attacker who can
+            # swap the leaf for a UNC junction between the close and the
+            # caller's own enumeration gets that enumeration's resolution to
+            # follow it and send SMB/NTLM credentials outbound.
+            yield not is_sensitive_path(d_str)
+        finally:
+            os.close(fd)
+        return
+    try:
+        resolved = os.path.realpath(d)
+    except (OSError, ValueError):
+        yield False
+        return
+    yield not is_sensitive_path(resolved)
+
+
 def project_agent_files(
     project_dir: str | Path | None,
     include_legacy: bool = False,
+    *,
+    operation: str = "list_agents",
+    source: str = "list_agents",
 ) -> list[Path]:
     """Agent config files declared by a project checkout, sorted by stem.
 
@@ -423,23 +552,54 @@ def project_agent_files(
     unreadable checkout yields no agents rather than failing the caller's scan.
 
     The sensitive-path check is on the project root because that value arrives from
-    a caller-supplied session field; the per-file resolved-target check that
-    catches a planted symlink stays with the reader (:func:`_read_agent_spec`).
+    a caller-supplied session field; the ``.kiro``/``.kiro/agents`` subdirs are
+    additionally resolved and sensitivity-checked (:func:`_pinned_scan_dir`)
+    so a symlinked scope is not even enumerated, and the per-file resolved-target
+    check that catches a planted spec symlink stays with the reader
+    (:func:`_read_agent_spec`).
     """
     if not project_dir:
         return []
     if is_sensitive_path(str(project_dir)):
         logger.debug("Skipping sensitive project dir for agent discovery: %s", project_dir)
+        _audit_denied(
+            operation=operation,
+            source=source,
+            resources=str(project_dir),
+            error="sensitive project dir rejected",
+        )
         return []
     specs: list[Path] = []
     try:
         if include_legacy:
             kiro_dir = project_kiro_dir(project_dir)
-            if kiro_dir.is_dir():
-                specs.extend(kiro_dir.glob(f"*{AGENT_SPEC_SUFFIX}"))
+            with _pinned_scan_dir(kiro_dir) as safe:
+                if not safe:
+                    logger.debug("Skipping sensitive .kiro scan dir: %s", kiro_dir)
+                    _audit_denied(
+                        operation=operation,
+                        source=source,
+                        resources=str(kiro_dir),
+                        error="sensitive scan dir rejected",
+                    )
+                elif kiro_dir.is_dir():
+                    # Enumerated while the pin is still held (see
+                    # _pinned_scan_dir): a UNC-junction swap landing between
+                    # the sensitivity check and this glob would otherwise get
+                    # followed by glob's own unpinned resolution.
+                    specs.extend(kiro_dir.glob(f"*{AGENT_SPEC_SUFFIX}"))
         agents_dir = project_agents_dir(project_dir)
-        if agents_dir.is_dir():
-            specs.extend(agents_dir.glob("*.json"))
+        with _pinned_scan_dir(agents_dir) as safe:
+            if not safe:
+                logger.debug("Skipping sensitive .kiro/agents scan dir: %s", agents_dir)
+                _audit_denied(
+                    operation=operation,
+                    source=source,
+                    resources=str(agents_dir),
+                    error="sensitive scan dir rejected",
+                )
+            elif agents_dir.is_dir():
+                specs.extend(agents_dir.glob("*.json"))
     except OSError:
         return []
     return sorted(specs, key=lambda f: f.stem)
@@ -485,12 +645,27 @@ def _project_signature(project_dir: str | Path) -> tuple[_ListAgentsSig, ...]:
 
     Covers both ``<project>/.kiro`` (legacy specs) and ``<project>/.kiro/agents``, so
     an add, removal, or in-place edit in either invalidates. Stats only — no file is
-    opened — which is what makes revalidating a warm cache cheap.
+    opened — which is what makes revalidating a warm cache cheap. Each subdir whose
+    RESOLVED target is sensitive contributes :data:`_SENSITIVE_DIR_SIG` rather than
+    a real ``_dir_signature`` — never ``scandir``+``stat``'d, matching
+    :func:`project_agent_files` so a symlinked ``.kiro``/``.kiro/agents`` scope is
+    never probed even for cache validation. The sentinel must differ from the
+    empty-dir signature ``()`` so a transition from empty-and-cached to
+    sensitive is a cache MISS, not a hit that skips the denial audit — see
+    :data:`_SENSITIVE_DIR_SIG`.
     """
-    return (
-        _dir_signature(project_kiro_dir(project_dir)),
-        _dir_signature(project_agents_dir(project_dir)),
-    )
+    kiro_dir = project_kiro_dir(project_dir)
+    agents_dir = project_agents_dir(project_dir)
+    with _pinned_scan_dir(kiro_dir) as kiro_safe:
+        # _dir_signature's own os.scandir(d) call runs INSIDE this with
+        # block, while any Windows pin from _pinned_scan_dir is still held --
+        # the same protection project_agent_files' glob calls get, closing
+        # the identical window a signature-only stat pass would otherwise
+        # reopen right after the sensitivity check released its pin.
+        kiro_sig = _SENSITIVE_DIR_SIG if not kiro_safe else _dir_signature(kiro_dir)
+    with _pinned_scan_dir(agents_dir) as agents_safe:
+        agents_sig = _SENSITIVE_DIR_SIG if not agents_safe else _dir_signature(agents_dir)
+    return (kiro_sig, agents_sig)
 
 
 def project_agent_names(
@@ -547,7 +722,7 @@ def project_agent_names(
         return cached[1]
     candidates = 0
     declared: list[str] = []
-    for f in project_agent_files(project_dir):
+    for f in project_agent_files(project_dir, operation=operation, source=source):
         # AppleDouble sidecars are rejected by design, not by failure — a
         # directory holding only sidecars is empty of specs, not broken.
         if not f.name.startswith("._"):

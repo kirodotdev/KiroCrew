@@ -1145,6 +1145,155 @@ class TestPinDirectory:
         assert (tmp_path / "swapped").is_dir()
 
 
+class TestVerifyAncestorsNotSwapped:
+    """``verify_ancestors_not_swapped``: take the hold FIRST, then run
+    first_linked_ancestor's root-first ancestor screen plus a leaf check --
+    both pieces already-shipped machinery, no new traversal.
+
+    ``_winapi`` (the plumbing the hold uses) does not exist as an importable
+    module off real Windows, so these tests mock the two low-level helpers
+    (`_win_hold_directory_no_share_delete` / `_win_close_handle`) and the two
+    existing detectors, and assert the composition: hold before inspect, fail
+    closed on every error class, and never a ``realpath`` (which would resolve
+    THROUGH an ancestor junction and fire the SMB probe this guard prevents).
+    """
+
+    def test_a_clean_chain_returns_true(self, monkeypatch) -> None:
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_hold_directory_no_share_delete", lambda _p: 77)
+        monkeypatch.setattr(pc, "_win_close_handle", lambda _h: None)
+        monkeypatch.setattr(pc, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(pc, "is_link_or_junction", lambda _p: False)
+
+        assert pc.verify_ancestors_not_swapped(r"C:\Users\me\repo\.kiro\agents") is True
+
+    def test_a_linked_ancestor_denies(self, monkeypatch) -> None:
+        """The ancestor case GPT flagged: a junction ABOVE the leaf. Caught by
+        first_linked_ancestor's root-first screen, which uses no ``realpath``
+        -- a realpath comparison cannot catch this, because both sides resolve
+        THROUGH the same ancestor junction and therefore match while the SMB
+        probe has already fired.
+        """
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_hold_directory_no_share_delete", lambda _p: 77)
+        closed: list[int] = []
+        monkeypatch.setattr(pc, "_win_close_handle", lambda h: closed.append(h))
+        monkeypatch.setattr(pc, "first_linked_ancestor", lambda _p: r"C:\Users\me\junctioned")
+        monkeypatch.setattr(pc, "is_link_or_junction", lambda _p: False)
+
+        assert pc.verify_ancestors_not_swapped(r"C:\Users\me\junctioned\repo\.kiro") is False
+        assert closed == [77], "the hold must be released even on denial"
+
+    def test_a_linked_leaf_denies(self, monkeypatch) -> None:
+        """first_linked_ancestor excludes the leaf by contract, so the leaf
+        needs its own is_link_or_junction check.
+        """
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_hold_directory_no_share_delete", lambda _p: 77)
+        monkeypatch.setattr(pc, "_win_close_handle", lambda _h: None)
+        monkeypatch.setattr(pc, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(pc, "is_link_or_junction", lambda _p: True)
+
+        assert pc.verify_ancestors_not_swapped(r"C:\Users\me\repo\.kiro") is False
+
+    def test_the_hold_is_taken_before_any_inspection(self, monkeypatch) -> None:
+        """The hold is what closes the check-then-open race, so it must be
+        taken BEFORE the ancestor screen runs -- otherwise the chain can be
+        swapped between the screen passing and the caller's own open.
+        """
+        events: list[str] = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc,
+            "_win_hold_directory_no_share_delete",
+            lambda _p: (events.append("hold"), 77)[1],
+        )
+        monkeypatch.setattr(pc, "_win_close_handle", lambda _h: None)
+        monkeypatch.setattr(
+            pc, "first_linked_ancestor", lambda _p: (events.append("ancestor_screen"), None)[1]
+        )
+        monkeypatch.setattr(
+            pc, "is_link_or_junction", lambda _p: (events.append("leaf_check"), False)[1]
+        )
+
+        assert pc.verify_ancestors_not_swapped(r"C:\Users\me\repo") is True
+        assert events == ["hold", "ancestor_screen", "leaf_check"]
+
+    def test_realpath_is_never_called(self, monkeypatch) -> None:
+        """``os.path.realpath`` resolves THROUGH an ancestor junction, firing
+        the outbound SMB/NTLM authentication this guard exists to prevent, and
+        a comparison built on it matches anyway. This guard must never call it.
+        """
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_hold_directory_no_share_delete", lambda _p: 77)
+        monkeypatch.setattr(pc, "_win_close_handle", lambda _h: None)
+        monkeypatch.setattr(pc, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(pc, "is_link_or_junction", lambda _p: False)
+
+        def _boom(*_a, **_k):  # pragma: no cover - only hit on regression
+            raise AssertionError("realpath ran — it resolves through an ancestor junction")
+
+        monkeypatch.setattr(pc.os.path, "realpath", _boom)
+
+        assert pc.verify_ancestors_not_swapped(r"C:\Users\me\repo\.kiro\agents") is True
+
+    def test_a_missing_path_is_safe_not_a_denial(self, monkeypatch) -> None:
+        """A path that does not exist is the ordinary "no .kiro/agents yet"
+        case: it cannot be a junction and cannot leak credentials, so this
+        returns ``True`` and the caller's own pin/is_dir skips it -- rather
+        than a security denial writing a false SEL row.
+        """
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _absent(_p):
+            raise FileNotFoundError("absent (simulated)")
+
+        monkeypatch.setattr(pc, "_win_hold_directory_no_share_delete", _absent)
+
+        assert pc.verify_ancestors_not_swapped(r"C:\Users\me\repo\.kiro") is True
+
+    def test_a_hold_that_cannot_be_taken_denies(self, monkeypatch) -> None:
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _refuse(_p):
+            raise OSError("cannot open (simulated)")
+
+        monkeypatch.setattr(pc, "_win_hold_directory_no_share_delete", _refuse)
+
+        assert pc.verify_ancestors_not_swapped(r"C:\Users\me\repo") is False
+
+    def test_an_embedded_nul_fails_closed_not_a_500(self, monkeypatch) -> None:
+        """``_winapi.CreateFile`` raises ``ValueError`` -- NOT ``OSError`` --
+        for an embedded NUL, so a ``%00`` in the owner-supplied project_path
+        must fail closed here instead of escaping as an HTTP 500.
+        """
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _nul(_p):
+            raise ValueError("embedded null character (simulated)")
+
+        monkeypatch.setattr(pc, "_win_hold_directory_no_share_delete", _nul)
+
+        assert pc.verify_ancestors_not_swapped("C:\\Users\\me\\re\x00po") is False
+
+    def test_a_detector_error_fails_closed(self, monkeypatch) -> None:
+        """An unreadable component makes the chain unverifiable, which is not a
+        verified chain -- deny, and still release the hold.
+        """
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_hold_directory_no_share_delete", lambda _p: 77)
+        closed: list[int] = []
+        monkeypatch.setattr(pc, "_win_close_handle", lambda h: closed.append(h))
+
+        def _explode(_p):
+            raise OSError("cannot stat (simulated)")
+
+        monkeypatch.setattr(pc, "first_linked_ancestor", _explode)
+
+        assert pc.verify_ancestors_not_swapped(r"C:\Users\me\repo") is False
+        assert closed == [77]
+
+
 # ---------------------------------------------------------------------------
 # POSIX-branch coverage for the new platform_compat helpers. The
 # tests below deliberately exercise the ``if IS_POSIX:`` / Linux ``/proc`` paths

@@ -148,9 +148,19 @@ class TestProjectScopeDiscovery:
             "kiro_crew.agent_discovery.is_sensitive_path",
             lambda p: str(p) == str(tmp_path / "secret"),
         )
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.agent_discovery._sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
         proj = tmp_path / "secret"
         (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
         assert project_agent_files(str(proj)) == []
+        # The refused scan must leave a denial trail, not just a debug line.
+        assert any(e.get("outcome") == "denied" for e in sel_events), (
+            f"sensitive project-dir rejection in project_agent_files must emit a "
+            f"SEL denial: {sel_events}"
+        )
 
     def test_missing_project_kiro_dir_is_not_an_error(self, tmp_path):
         """A checkout with no ``.kiro`` yields no agents rather than raising."""
@@ -183,6 +193,51 @@ class TestProjectScopeDiscovery:
         finally:
             ad.is_sensitive_path = original
         assert names == []
+
+    @requires_symlinks
+    def test_project_agents_dir_symlinked_into_sensitive_tree_is_not_scanned(
+        self, fake_home, tmp_path
+    ):
+        """A ``.kiro/agents`` that RESOLVES into a sensitive tree is not enumerated.
+
+        Distinct from the per-file guard: here the SCAN DIRECTORY itself is a
+        symlink into a credential home, so a root-only sensitivity check passes
+        but ``glob``/``scandir`` would still probe the protected directory. The
+        dir-level guard (``_pinned_scan_dir``) must skip it entirely.
+        """
+        secret_tree = tmp_path / "creds_home"
+        secret_tree.mkdir()
+        (secret_tree / "leaked.json").write_text(json.dumps({"name": "leaked"}))
+        proj = tmp_path / "repo"
+        (proj / ".kiro").mkdir(parents=True)
+        # <repo>/.kiro/agents -> the credential tree; the repo root is NOT sensitive.
+        os.symlink(secret_tree, proj / ".kiro" / "agents")
+
+        import kiro_crew.agent_discovery as ad
+
+        original = ad.is_sensitive_path
+        # Only the resolved credential tree is sensitive; the repo root is not.
+        ad.is_sensitive_path = lambda p: os.path.realpath(str(p)) == os.path.realpath(
+            str(secret_tree)
+        )
+        sel_events: list[dict] = []
+        original_sel = ad._sel
+        ad._sel = lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw))
+        try:
+            clear_list_agents_cache()
+            # The glob site must not enumerate the symlinked dir.
+            assert project_agent_files(str(proj)) == []
+            # The leaked name must never surface through the cached names path.
+            assert "leaked" not in project_agent_names(str(proj))
+            # And the sensitive SUBDIR skip must leave a denial trail — the root
+            # is not sensitive, so this row can only come from the scan-dir guard.
+            assert any(
+                e.get("outcome") == "denied" for e in sel_events
+            ), f"sensitive scan-dir skip must emit a SEL denial: {sel_events}"
+        finally:
+            ad.is_sensitive_path = original
+            ad._sel = original_sel
+            clear_list_agents_cache()
 
     def test_cache_does_not_leak_between_projects(self, fake_home, tmp_path):
         """Two checkouts must not serve each other's agents from one cache entry."""
@@ -239,9 +294,9 @@ class TestProjectAgentNameCache:
         clear_project_agent_cache()
 
         assert project_agent_names(str(secret)) == frozenset()
-        assert sel_events and sel_events[0]["outcome"] == "denied", (
-            f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
-        )
+        assert (
+            sel_events and sel_events[0]["outcome"] == "denied"
+        ), f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
 
     def test_malformed_spec_is_not_dispatchable(self, tmp_path):
         """A file that does not parse must not contribute its filename fallback.
@@ -532,8 +587,11 @@ class TestSpecModelCoercion:
         # are excluded by NAME, not skipped silently: the lists render as chips
         # (one element each) and `kirocrew_owned` is the bool provenance flag —
         # everything else must be a plain string or React error #31 returns.
-        assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers", "kirocrew_owned"))
+        assert all(
+            isinstance(v, str)
+            for k, v in info.to_dict().items()
+            if k not in ("skills", "mcp_servers", "kirocrew_owned")
+        )
         assert isinstance(info.to_dict()["kirocrew_owned"], bool)
 
     def test_list_fields_drop_only_the_unusable_elements(self) -> None:
@@ -790,14 +848,10 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a"}
 
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
     def test_cache_invalidates_on_remove(self, tmp_path: Path) -> None:
@@ -805,12 +859,8 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
         (d / "b.json").unlink()
@@ -829,9 +879,9 @@ class TestListAgentsCache:
         # Bump mtime forward deterministically so the signature is guaranteed newer.
         st = f.stat()
         os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-        assert [a.name for a in list_agents(agents_dir=d)] == ["v2"], (
-            "an in-place edit must invalidate the cache"
-        )
+        assert [a.name for a in list_agents(agents_dir=d)] == [
+            "v2"
+        ], "an in-place edit must invalidate the cache"
 
     def test_clear_cache_forces_rescan(self, tmp_path: Path) -> None:
         """clear_list_agents_cache() forces a fresh scan even when the signature
@@ -1094,3 +1144,275 @@ class TestSpecByDeclaredName:
         # The refusal still names every duplicate: paths are kept, parses are not.
         for stem in ("Alpha", "Beta", "Gamma", "Delta"):
             assert f"{stem}-kirocrew.json" in str(exc.value)
+
+
+class TestScanDirIsSensitiveUncGate:
+    r"""On Windows, ``_pinned_scan_dir`` denies a UNC-shaped or reparse-
+    point leaf ATOMICALLY, never via a check-then-``realpath`` two-step.
+
+    A lexical link CHECK followed by a separate ``os.path.realpath`` OPEN is
+    itself a check-to-resolve race: an attacker who can swap the leaf between
+    the two calls still gets ``realpath`` to follow a UNC junction planted
+    after the check passed, sending SMB/NTLM credentials to an attacker-chosen
+    host. The fix uses ``platform_compat.pin_directory``, which OPENS *d* with
+    ``FILE_FLAG_OPEN_REPARSE_POINT`` and inspects the resulting handle — a
+    reparse point at *d* is refused by the open itself, atomically, with no
+    separate ``realpath`` call on Windows at all.
+
+    ``_pinned_scan_dir`` is a context manager yielding whether *d* is SAFE to
+    enumerate (the inverse of "is sensitive"), holding the pin open for the
+    caller's own reads. These tests read that yielded value through the small
+    ``_dir_is_sensitive`` helper below, which restores the original
+    boolean-returning semantics for assertion.
+    """
+
+    @staticmethod
+    def _dir_is_sensitive(d: Path) -> bool:
+        """True when ``_pinned_scan_dir`` reports *d* is NOT safe to enumerate.
+
+        The context manager yields ``safe``; "sensitive/denied" is ``not
+        safe``. Reading it here keeps every assertion below in the same terms
+        the security findings are written in.
+        """
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        with _pinned_scan_dir(d) as safe:
+            return not safe
+
+    def test_unc_shaped_leaf_denied_lexically_before_any_open(self, monkeypatch) -> None:
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(discovery_mod, "unc_probe_allowed", lambda _p: False)
+
+        def _boom(*_a, **_k):  # pragma: no cover - only hit on regression
+            raise AssertionError("pin_directory ran on a UNC-shaped path — probe not prevented")
+
+        monkeypatch.setattr(discovery_mod, "pin_directory", _boom)
+
+        assert self._dir_is_sensitive(Path(r"\\attacker\share\repo\.kiro")) is True
+
+    def test_reparse_point_leaf_denied_by_the_pin_itself(self, monkeypatch) -> None:
+        r"""A leaf that is ITSELF a symlink/junction (e.g. to ``\\host\share``)
+        is not UNC-shaped lexically, so only the ``pin_directory`` open — which
+        refuses to follow a reparse point at the name — catches it. The refusal
+        must come from the open failing, not from a separate check.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(discovery_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(discovery_mod, "verify_ancestors_not_swapped", lambda _p: True)
+
+        def _refuse_reparse_point(_p):
+            raise NotADirectoryError("reparse point at the final component (simulated)")
+
+        monkeypatch.setattr(discovery_mod, "pin_directory", _refuse_reparse_point)
+
+        assert self._dir_is_sensitive(Path(r"C:\Users\me\repo\.kiro")) is True
+
+    def test_missing_directory_is_not_treated_as_sensitive(self, monkeypatch) -> None:
+        """A merely-absent ``.kiro``/``.kiro/agents`` (the common case for a
+        checkout that has neither yet) must NOT be treated as sensitive.
+
+        The pin refuses to open a name that does not exist with a plain
+        ``OSError`` (distinct from ``NotADirectoryError``, which means a
+        reparse point IS there). Treating both refusals as "sensitive" made
+        every ordinary missing-directory case emit a false ``_audit_denied``
+        SEL row -- absence is not a security event.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(discovery_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(discovery_mod, "verify_ancestors_not_swapped", lambda _p: True)
+
+        def _not_found(_p):
+            raise OSError("file not found (simulated)")
+
+        monkeypatch.setattr(discovery_mod, "pin_directory", _not_found)
+
+        assert self._dir_is_sensitive(Path(r"C:\Users\me\repo\.kiro")) is False
+
+    def test_linked_ancestor_denied_before_the_pin_ever_opens(self, monkeypatch) -> None:
+        r"""A junction on an ANCESTOR of *d* (not *d* itself) must be refused
+        BEFORE ``pin_directory`` runs.
+
+        ``pin_directory``'s ``FILE_FLAG_OPEN_REPARSE_POINT`` guards only the
+        LEAF component -- Windows' own ``CreateFileW`` still follows a reparse
+        point on any ancestor while resolving the path to that leaf. A
+        junction planted above ``d`` (e.g. targeting ``\\attacker\share``) is
+        silently traversed by the pin's own open, which is exactly the
+        outbound SMB/NTLM probe this whole module exists to prevent.
+        ``verify_ancestors_not_swapped`` must catch this before the pin ever
+        opens anything.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(discovery_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(discovery_mod, "verify_ancestors_not_swapped", lambda _p: False)
+
+        def _boom(*_a, **_k):  # pragma: no cover - only hit on regression
+            raise AssertionError("pin_directory ran past a linked ancestor — probe not prevented")
+
+        monkeypatch.setattr(discovery_mod, "pin_directory", _boom)
+
+        assert self._dir_is_sensitive(Path(r"C:\Users\me\repo\.kiro")) is True
+
+    def test_pinned_directory_is_checked_for_sensitivity_and_closed(self, monkeypatch) -> None:
+        """A successful pin proves *d* is a real, non-link directory. The
+        function must then run ``is_sensitive_path`` on it and release the
+        descriptor either way (sensitive or not).
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(discovery_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(discovery_mod, "verify_ancestors_not_swapped", lambda _p: True)
+        closed: list[int] = []
+        monkeypatch.setattr(discovery_mod, "pin_directory", lambda _p: 99)
+        monkeypatch.setattr(discovery_mod.os, "close", lambda fd: closed.append(fd))
+        monkeypatch.setattr(discovery_mod, "is_sensitive_path", lambda p: True)
+
+        assert self._dir_is_sensitive(Path(r"C:\Users\me\repo\.kiro")) is True
+        assert closed == [99], "the pinned descriptor must be closed"
+
+    def test_pin_stays_held_through_the_sensitivity_check(self, monkeypatch) -> None:
+        """The pin must be released AFTER ``is_sensitive_path`` runs, not
+        before -- releasing early reopens the exact check-to-resolve window
+        ``pin_directory`` exists to close (a leaf swapped for a UNC junction
+        between an early close and a later resolution still gets followed,
+        sending SMB/NTLM credentials outbound).
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(discovery_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(discovery_mod, "verify_ancestors_not_swapped", lambda _p: True)
+        order: list[str] = []
+        monkeypatch.setattr(discovery_mod, "pin_directory", lambda _p: 99)
+        monkeypatch.setattr(discovery_mod.os, "close", lambda _fd: order.append("close"))
+
+        def _is_sensitive(_p):
+            order.append("is_sensitive_path")
+            return True
+
+        monkeypatch.setattr(discovery_mod, "is_sensitive_path", _is_sensitive)
+
+        assert self._dir_is_sensitive(Path(r"C:\Users\me\repo\.kiro")) is True
+        assert order == [
+            "is_sensitive_path",
+            "close",
+        ], "is_sensitive_path must run while the pin is still held, before close()"
+
+    def test_benign_local_path_is_pinned_and_passes_on_windows(self, tmp_path, monkeypatch) -> None:
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(discovery_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(discovery_mod, "verify_ancestors_not_swapped", lambda _p: True)
+        monkeypatch.setattr(discovery_mod, "is_sensitive_path", lambda p: False)
+        kiro_dir = tmp_path / "repo" / ".kiro"
+        kiro_dir.mkdir(parents=True)
+        # pin_directory itself is POSIX/Windows-dispatching, and this suite runs
+        # on both platforms in CI — an actual OS-level directory open (whether
+        # POSIX O_DIRECTORY or Windows CreateFileW) is not what this test is
+        # checking. Stub with a fake sentinel fd and a mocked os.close so the
+        # close() path is exercised without depending on either platform's real
+        # open semantics for a directory.
+        closed: list[int] = []
+        monkeypatch.setattr(discovery_mod, "pin_directory", lambda _p: 77)
+        monkeypatch.setattr(discovery_mod.os, "close", lambda fd: closed.append(fd))
+
+        assert self._dir_is_sensitive(kiro_dir) is False
+        assert closed == [77]
+
+    def test_not_windows_uses_realpath_not_the_pin(self, tmp_path, monkeypatch) -> None:
+        """Off Windows, resolving through a symlink is harmless (the OS never
+        sends network credentials for it), and the ``is_sensitive_path`` fence
+        on the ``realpath``-resolved value is the real guard — the Windows-only
+        pin path must not run here at all.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(discovery_mod, "is_sensitive_path", lambda p: False)
+
+        def _boom(*_a, **_k):  # pragma: no cover - only hit on regression
+            raise AssertionError("pin_directory ran on POSIX — the Windows-only path leaked")
+
+        monkeypatch.setattr(discovery_mod, "pin_directory", _boom)
+        kiro_dir = tmp_path / "repo" / ".kiro"
+        kiro_dir.mkdir(parents=True)
+
+        assert self._dir_is_sensitive(kiro_dir) is False
+
+
+class TestProjectSignatureSensitiveDirSentinel:
+    """A sensitive subdir's cache signature must differ from an empty dir's.
+
+    GPT flagged that ``_project_signature`` returning ``()`` for BOTH "empty"
+    and "sensitive, skipped" lets a cache warmed on a legitimately empty
+    ``.kiro/agents`` survive an attacker later swapping that dir to a symlink
+    into a credential home: the next call's signature is still ``()``, so
+    ``project_agent_names`` treats it as an unchanged cache hit and never calls
+    ``project_agent_files`` -- whose call is what emits the required SEL denial
+    audit for the sensitive dir. The fix is a sentinel that cannot collide with
+    any real ``_dir_signature`` output.
+    """
+
+    def test_sensitive_signature_differs_from_empty_signature(self, tmp_path, monkeypatch) -> None:
+        import contextlib
+
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _dir_signature, _project_signature
+
+        proj = tmp_path / "repo"
+        proj.mkdir()
+        empty_sig = _dir_signature(proj / "does-not-exist")
+        assert empty_sig == ()
+
+        @contextlib.contextmanager
+        def _sensitive(_d):
+            yield False  # not safe == sensitive
+
+        monkeypatch.setattr(discovery_mod, "_pinned_scan_dir", _sensitive)
+        sensitive_sig = _project_signature(proj)
+
+        assert sensitive_sig != ((), ())
+        assert all(part != () for part in sensitive_sig)
+
+    def test_transition_from_empty_to_sensitive_is_a_cache_miss(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The exact regression: a cache entry keyed on the once-empty
+        signature must NOT be reused once the same directory is sensitive.
+        """
+        import contextlib
+
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _project_signature
+
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+
+        @contextlib.contextmanager
+        def _safe(_d):
+            yield True  # safe == not sensitive
+
+        @contextlib.contextmanager
+        def _sensitive(_d):
+            yield False  # not safe == sensitive
+
+        monkeypatch.setattr(discovery_mod, "_pinned_scan_dir", _safe)
+        warm_signature = _project_signature(proj)
+
+        monkeypatch.setattr(discovery_mod, "_pinned_scan_dir", _sensitive)
+        later_signature = _project_signature(proj)
+
+        assert warm_signature != later_signature, (
+            "a signature computed while the dir is sensitive must not match "
+            "a signature cached from when it was not -- a match here is "
+            "exactly the cache-poisoning collision this sentinel prevents"
+        )

@@ -78,7 +78,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
     write_config_atomically,
 )
-from kiro_crew.config.paths import data_home
+from kiro_crew.config.paths import data_home, project_agents_dir, project_kiro_dir
 from kiro_crew.config.schema import SCHEMA_REGISTRY, config_entry_to_dict
 from kiro_crew.config.sections import (
     _AVATAR_FILE_PIN_RE,
@@ -114,6 +114,7 @@ from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
+from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.member_memory_auth import require_member_memory_creation
 from kiro_crew.memory_stores import (
@@ -130,6 +131,7 @@ from kiro_crew.memory_stores import (
     rollback_member_memory_archive_if_active,
 )
 from kiro_crew.platform.governance import sanitize_agent_config_governance
+from kiro_crew.platform_compat import IS_WINDOWS, pin_directory, verify_ancestors_not_swapped
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -138,6 +140,7 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
 )
+from kiro_crew.security import is_sensitive_path
 from kiro_crew.validation import _AGENT_NAME_RE
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
@@ -3864,6 +3867,202 @@ def _agent_roster_row(
     }
 
 
+def _resolve_roster_project_path(raw: str) -> tuple[str, bool]:
+    """Resolve+validate a ``?project_path=`` query value for roster scoping.
+
+    Returns ``(resolved_path, denied)``:
+
+    * ``denied=True`` — the realpath'd target is sensitive (a protected tree
+      such as a credential home). ``resolved_path`` is ``""``; the CALLER logs
+      the SEL denial, because this runs in a worker thread and must not touch
+      ``sel()`` there.
+    * ``resolved_path=""`` with ``denied=False`` — the path is neither sensitive
+      nor an existing directory (a half-typed draft, a typo). The caller ships
+      GLOBAL rows only rather than scanning a non-directory or falling back to
+      a different project's roster.
+    * ``resolved_path=<dir>`` — a safe, existing directory to scan.
+
+    Blocking (realpath + stat), so callers run it off the event loop. The
+    ``is_sensitive_path`` check is on the RESOLVED path so a symlink into a
+    protected tree cannot slip past — and, because the value actually scanned is
+    the ``.kiro``/``.kiro/agents`` SUBDIR rather than the root, those subdirs are
+    resolved and sensitivity-checked too, so a non-sensitive root whose
+    ``.kiro/agents`` is symlinked into a credential tree is denied here rather
+    than scanned. ``~`` is expanded first, because the folder
+    project-dir field accepts ``~/repo``-style paths (as the chat project picker
+    does) and ``realpath`` does NOT expand a leading ``~`` — without this an
+    existing ``~/repo`` resolves to a bogus literal-tilde path, fails the isdir
+    check, and the folder's project agents silently never appear. Deliberately
+    no ``~``/absolute-path bar beyond expansion: a read-only roster scan of an
+    existing directory is not held to the cron create-time write bar, and the
+    sensitivity gate is the real protection.
+
+    On Windows, a UNC-shaped path is DENIED LEXICALLY before any open, on the
+    root and on the ``.kiro``/``.kiro/agents`` subdirs alike — ``realpath`` on
+    such a target IS the outbound SMB credential probe, so there is no open to
+    perform. A non-UNC path is instead PINNED (:func:`platform_compat.pin_directory`)
+    before ``realpath`` runs on it: the pin opens the name with
+    ``FILE_FLAG_OPEN_REPARSE_POINT`` and inspects the resulting handle, so a
+    reparse point AT THAT NAME is refused by the open itself, atomically — not
+    by a separate lexical check a later open can outrace. A plain
+    check-then-``realpath`` two-step (screen for a link, then resolve
+    separately) leaves exactly that race: an attacker who can retry this
+    owner-honored, caller-supplied path can swap the leaf between the check and
+    the resolve (timing widened with e.g. a Windows oplock) and still get
+    ``realpath`` to follow a UNC junction planted after the check passed. The
+    pin closes the window because refusing and resolving are the same
+    operation.
+    """
+    try:
+        expanded = os.path.expanduser(raw)
+    except (OSError, ValueError):
+        return "", False
+    if IS_WINDOWS:
+        # UNC screen BEFORE any open — on Windows, ``os.path.realpath`` on a
+        # UNC target (``\\host\share``) IS the outbound SMB probe: it opens a
+        # connection to a caller-chosen host and hands over this gateway's
+        # NTLM credentials, and ``is_sensitive_path`` below cannot help because
+        # the harm is the resolution itself, not the resolved value. The value
+        # is owner-honored, so a crafted link/CSRF can supply the path; deny
+        # (auditable) rather than probe. Both the raw text and the
+        # ``~``-expanded form are screened, since expansion can surface a UNC
+        # shape the raw text lacked (a roaming profile home). Windows-only on
+        # purpose: on POSIX resolving through a symlink is harmless and the
+        # ``is_sensitive_path`` fence on the resolved path is the real guard
+        # (an unconditional walk would refuse a symlinked ``/home``).
+        for candidate in (raw, expanded):
+            if is_unc_shape(candidate) and not unc_probe_allowed(candidate):
+                return "", True
+        # ``pin_directory``'s ``FILE_FLAG_OPEN_REPARSE_POINT`` guards only the
+        # LEAF component: Windows still follows a reparse point on any
+        # ANCESTOR while resolving the path to that leaf, so a junction
+        # planted above ``expanded`` (e.g. pointing at ``\\attacker\share``)
+        # is silently traversed by the pin's own open, sending SMB/NTLM
+        # credentials outbound before the leaf is ever inspected (GPT
+        # finding). A purely lexical ancestor screen (``first_linked_ancestor``)
+        # is itself still a check-then-open race -- GPT correctly found that
+        # gap too. ``verify_ancestors_not_swapped`` instead HOLDS each
+        # ancestor open (no ``FILE_SHARE_DELETE``) while checking it, root to
+        # leaf, so the very rename-to-a-junction a swap needs cannot happen
+        # mid-walk -- the same pattern ``project_scan.py``'s
+        # ``_scandir_pinned`` already uses for a tree walk, generalized here
+        # to one caller-supplied path.
+        if IS_WINDOWS and not verify_ancestors_not_swapped(expanded):
+            return "", True
+        try:
+            fd = pin_directory(expanded)
+        except NotADirectoryError:
+            # The name opened, but what is there is a reparse point (or not a
+            # real directory) -- the same probe vector as a UNC-shaped path,
+            # just discovered by the open rather than the lexical screen
+            # above. Auditable owner-directed DENY: a directory linked into a
+            # credential home is a security-relevant finding, not an ordinary
+            # "nothing here".
+            return "", True
+        except OSError:
+            # Could not even be opened at all (does not exist, permission
+            # denied opening an ancestor, etc.): an ordinary "nothing here" --
+            # not a directory to scan, and not a security event by itself.
+            return "", False
+        try:
+            # The pin must stay held through realpath, is_sensitive_path, AND
+            # the isdir probe: the pin's whole point is that its OPEN is proof
+            # `expanded` names a real, non-link directory at this instant, and
+            # releasing it before ANY subsequent probe on the string reopens
+            # the exact check-to-resolve window pin_directory exists to close
+            # -- an attacker who can swap the leaf for a UNC junction between
+            # the close and a later probe gets that probe's own resolution to
+            # follow it and send SMB/NTLM credentials outbound. Closed in
+            # `finally` below so it always releases, but never before every
+            # probe it is guarding has run.
+            try:
+                resolved = os.path.realpath(expanded)
+            except (OSError, ValueError):
+                # A malformed path (e.g. an embedded NUL makes realpath
+                # raise) is not a directory to scan; treat it as "nothing
+                # here", not a denial.
+                return "", False
+            if is_sensitive_path(resolved):
+                return "", True
+            if not os.path.isdir(resolved):
+                return "", False
+        finally:
+            os.close(fd)
+    else:
+        try:
+            resolved = os.path.realpath(expanded)
+        except (OSError, ValueError):
+            return "", False
+        if is_sensitive_path(resolved):
+            return "", True
+        if not os.path.isdir(resolved):
+            return "", False
+    # The value scanned is not ``resolved`` itself but its ``.kiro/agents`` subdir
+    # (see ``project_agent_files``). A non-sensitive root whose ``.kiro`` or
+    # ``.kiro/agents`` is symlinked into a protected tree would otherwise pass this
+    # gate, so resolve those subdirs and DENY (auditable owner-directed outcome)
+    # when either target is sensitive. ``project_agent_files``/``_project_signature``
+    # independently refuse to enumerate them; denying here keeps the roster endpoint
+    # from reporting a scan it will not perform.
+    for sub in (project_kiro_dir(resolved), project_agents_dir(resolved)):
+        if IS_WINDOWS:
+            # Same probe vector as the root, and the same atomic-pin fix: a
+            # leaf linked to ``\\host\share`` must be refused by the OPEN
+            # itself, not by a lexical check a later ``realpath`` can outrace.
+            # ``sub`` is a ``Path``; ``is_unc_shape`` takes ``str``, so
+            # stringify first.
+            sub_str = os.fspath(sub)
+            if is_unc_shape(sub_str) and not unc_probe_allowed(sub_str):
+                return "", True
+            # Same ancestor gap as the root pin above, and the same fix:
+            # verify_ancestors_not_swapped holds each component open while
+            # checking it, root to leaf, so the whole chain from the drive
+            # root through ``.kiro``/``.kiro/agents`` is proven unswapped --
+            # not just the segment below ``resolved``, since a full re-walk
+            # costs nothing extra and re-deriving "only check what's new" is
+            # exactly the kind of narrowing that has already needed
+            # correction twice on this path.
+            if not verify_ancestors_not_swapped(sub_str):
+                return "", True
+            try:
+                sub_fd = pin_directory(sub)
+            except NotADirectoryError:
+                # The name opened, but what is there is a reparse point (or
+                # not a real directory) -- the SAME probe vector as a UNC-
+                # shaped leaf, just discovered by the open rather than the
+                # lexical screen above. Auditable owner-directed DENY, exactly
+                # as the UNC/sensitive-target cases above -- a linked
+                # `.kiro`/`.kiro/agents` is a security-relevant finding, not
+                # an ordinary "no project agents" absence.
+                return "", True
+            except OSError:
+                # Could not even be opened (does not exist, permission
+                # denied opening the parent, etc.) -- an ordinary "nothing
+                # here for this sub", not a security event. Skip this sub
+                # rather than deny; a missing `.kiro/agents` is the ordinary
+                # "no project agents" case.
+                continue
+            # Same rule as the root pin above: hold sub_fd through the
+            # resolution it is guarding, release only in `finally`.
+            try:
+                try:
+                    sub_resolved = os.path.realpath(sub)
+                except (OSError, ValueError):
+                    continue
+                if is_sensitive_path(sub_resolved):
+                    return "", True
+            finally:
+                os.close(sub_fd)
+            continue
+        try:
+            sub_resolved = os.path.realpath(sub)
+        except (OSError, ValueError):
+            continue
+        if is_sensitive_path(sub_resolved):
+            return "", True
+    return resolved, False
+
+
 async def api_kirocrew_agents(request: web.Request) -> web.Response:
     """GET /api/agents — list all Kiro Crew agent definitions, most-used first.
 
@@ -3905,7 +4104,108 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     # Project rows come from a directory scan, so it runs on the discovery
     # pool — same rule as every other agent listing: no filesystem I/O on the
     # event loop. Failure costs only the project rows, never the roster.
-    project_dir = active_project_dir(state, _read_session_key(request)) if state else ""
+    #
+    # An explicit ``?project_path=`` overrides the slot-derived project. It is
+    # the ONLY way a surface with no chat slot yet — the folder create/settings
+    # modal, whose project directory is a draft the user is still typing — can
+    # scope the roster to that directory. Without it that modal falls back to
+    # the cross-slot ``active_project_dir``, which is never the folder's own
+    # directory, so its "default agent" picker can never list project agents.
+    # Validation (realpath + sensitivity + isdir) runs off the loop; a sensitive
+    # path is denied (SEL-logged here, on the loop) and a non-existent one
+    # resolves to "" — either way we fall back to the slot's project rather than
+    # failing the whole roster.
+    raw_project_path = request.query.get("project_path", "").strip()
+    project_dir: str | Path | None = ""
+    # ``?project_path=`` lets the caller point the scan at an ARBITRARY directory,
+    # so it is owner-only. `redact` is already True for any non-owner caller
+    # (app token, or an allow-listed messaging user holding a dashboard token);
+    # honoring the param for them would let a non-owner enumerate agent names
+    # under any readable directory.
+    owner_supplied_path = bool(raw_project_path) and not redact
+    if owner_supplied_path:
+        resolved_path, denied = await asyncio.to_thread(
+            _resolve_roster_project_path, raw_project_path
+        )
+        # An owner directing the scan at an arbitrary directory is a
+        # security-relevant action, audited on its TRUE outcome:
+        #   - denied  -> a sensitive path was refused;
+        #   - allowed -> a real directory was resolved and will be scanned.
+        # A non-existent / non-directory path resolves to ("", False): nothing
+        # is scanned, so it is neither an allowed scan nor a refusal and emits no
+        # event — logging "allowed" there would record a scan that never ran.
+        outcome = "denied" if denied else ("allowed" if resolved_path else None)
+        if outcome is not None:
+            try:
+                # A synchronous critical write does filesystem I/O AND `_sel()`
+                # itself may initialise SEL (also filesystem I/O) on first use, so
+                # BOTH the lookup and the write run OFF the event loop inside one
+                # to_thread lambda. to_thread re-raises in the awaiting task, so
+                # the fail-closed branch still fires. `critical=True` makes the
+                # write synchronous/re-raising (the queued form swallows failures,
+                # leaving fail-closed unreachable); `resources` records WHICH dir
+                # was scanned/refused. A denied event stays best-effort.
+                _outcome = outcome
+                _res = raw_project_path
+                _caller = request.get("user", "dashboard")
+                await asyncio.to_thread(
+                    lambda: _sel().log_api_access(
+                        caller=_caller,
+                        operation="api_kirocrew_agents",
+                        outcome=_outcome,
+                        source="dashboard",
+                        resources=_res,
+                        critical=(_outcome == "allowed"),
+                    )
+                )
+            except Exception:
+                logger.warning("SEL logging failed for owner project_path scan", exc_info=True)
+                if outcome == "allowed":
+                    # FAIL CLOSED: an "allowed" event means the scan is about to
+                    # READ a caller-supplied directory — a security-relevant act
+                    # whose whole point is that it leaves an audit trail. The
+                    # critical write above re-raises on failure, so we land here
+                    # and drop the resolved path: the scan does not happen, and
+                    # (owner_supplied_path) we ship global rows only rather than
+                    # falling back to the slot scope.
+                    resolved_path = ""
+        project_dir = resolved_path
+    elif raw_project_path:
+        # A NON-OWNER (redact) carrying ?project_path= is refused: the param is
+        # ignored and the scan falls through to the slot scope. That refusal is
+        # itself a security-relevant event — a non-owner attempting to point the
+        # roster scan at an arbitrary directory — so it is audited too. Without
+        # this, the audit trail records owner scans (allowed/denied) but stays
+        # silent on every non-owner attempt, which is the exact gap the anchor
+        # backend-security-controls protects.
+        try:
+            _caller_no = request.get("user", "dashboard")
+            _res_no = raw_project_path
+            await asyncio.to_thread(
+                lambda: _sel().log_api_access(
+                    caller=_caller_no,
+                    operation="api_kirocrew_agents",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=_res_no,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "SEL logging failed for non-owner project_path attempt",
+                exc_info=True,
+            )
+    # Fall back to the active chat slot's project ONLY when NO ?project_path=
+    # was supplied at all. When one WAS supplied — whether honored (owner) or
+    # refused (non-owner, audited above as "denied") — that request asked for
+    # a specific directory's roster, so an unresolved/refused path ships
+    # GLOBAL rows only rather than silently substituting the active slot's
+    # project agents. A non-owner's `?project_path=B` request (refused,
+    # project_dir stays "") therefore takes this same GLOBAL-only path rather
+    # than the active-slot fallback below, so chat slot A's project roster is
+    # never leaked to a caller who asked about an unrelated project B.
+    if not project_dir and not raw_project_path:
+        project_dir = active_project_dir(state, _read_session_key(request)) if state else ""
     if project_dir:
         try:
             project_names = await asyncio.get_running_loop().run_in_executor(

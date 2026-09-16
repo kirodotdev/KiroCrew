@@ -4575,6 +4575,141 @@ def pin_directory(path: str | os.PathLike) -> int:
     return fd
 
 
+def verify_ancestors_not_swapped(path: str | os.PathLike) -> bool:
+    r"""True when no ANCESTOR of *path*, and not *path* itself, is a symlink or
+    junction -- checked under a held handle so the answer cannot go stale.
+    Windows only.
+
+    ``pin_directory``'s ``FILE_FLAG_OPEN_REPARSE_POINT`` guards only the FINAL
+    path component: Windows' ``CreateFileW`` still resolves and follows a
+    reparse point on any ANCESTOR while getting there, so a junction planted
+    above *path* (e.g. targeting ``\\attacker\share``) is silently traversed
+    by the pin's own open before the leaf is ever inspected -- an outbound
+    SMB/NTLM credential exposure that a lexical UNC screen cannot catch,
+    because the probed path is not itself UNC-shaped, only the link's target.
+
+    Built from two pieces of already-shipped machinery, not a new traversal:
+    the ``FILE_SHARE_DELETE``-omitting hold that :mod:`project_scan`'s
+    ``_hold_directory`` uses, and :func:`first_linked_ancestor`'s root-first
+    ancestor screen. The hold is what closes the check-then-open race -- NTFS
+    refuses to rename a directory while anything beneath it is open, so
+    holding the leaf pins the whole ancestor chain against the
+    rename-to-a-junction a swap needs -- and it is taken BEFORE any
+    inspection. :func:`first_linked_ancestor` then walks ancestors ROOT-FIRST
+    via :func:`is_link_or_junction` (which recognises junctions, where
+    ``os.path.islink`` alone does not) and calls no ``realpath`` at all, so
+    the screen itself never resolves through a link and never authenticates
+    outbound. It excludes the leaf by contract, so the leaf gets its own
+    :func:`is_link_or_junction` check here.
+
+    Returns ``False`` when an ancestor or the leaf is a link/junction, or on
+    any failure to hold or inspect (fail closed -- including the ``ValueError``
+    ``_winapi.CreateFile`` raises for an embedded NUL, which must not escape
+    as a 500). A path that simply does not exist (``FileNotFoundError``)
+    returns ``True``: it cannot be a junction and cannot leak credentials, so
+    the caller treats the absent leaf as an ordinary "nothing here" skip.
+    POSIX has no reparse points to run this ancestor race and this is never
+    called there.
+    """
+    # Single-level check, mirroring project_scan.py's _scandir_pinned Windows
+    # branch EXACTLY: hold *path* itself, then require its real path to equal
+    # its immediate parent's real path joined with its own leaf name -- i.e.
+    # this final component does not redirect. It deliberately does NOT walk
+    # and realpath the whole drive-root ancestor chain: doing so broke
+    # legitimate deep Windows paths (a CI runner's
+    # C:\Users\...\AppData\Local\Temp\pytest-... tree resolves through
+    # components whose per-level realpath induction does not hold), and it is
+    # also stricter than the shipped, gate-approved precedent. Anchoring to
+    # the immediate parent keeps the check local and inductive: every caller
+    # validates the parent it hands in (the project root is sensitivity-
+    # checked, and _pinned_scan_dir's .kiro is validated before .kiro/agents),
+    # exactly as a scan's root is the caller's to validate before the first
+    # _scandir_pinned call. The hold is taken BEFORE the realpath so *path*
+    # cannot be swapped to a junction between resolve and comparison; a
+    # redirecting junction (the \\host\share credential-leak case) resolves
+    # elsewhere and fails the comparison, while a benign local junction
+    # resolves back under its parent and passes.
+    # This composes two pieces of EXISTING, shipped machinery rather than a new
+    # traversal: the hold from project_scan.py's _hold_directory pattern, and
+    # first_linked_ancestor's root-first ancestor screen. Neither is invented
+    # here, and that is deliberate -- a hand-rolled per-level realpath walk was
+    # tried and rejected: realpath resolves THROUGH an ancestor junction, so
+    # both sides of any such comparison resolve identically and match while the
+    # SMB probe has already fired, and requiring per-level realpath equality
+    # additionally denied legitimate deep Windows paths.
+    #
+    # * The HOLD closes the check-then-open race. An open handle without
+    #   FILE_SHARE_DELETE refuses every rename/delete of the object, and NTFS
+    #   refuses to rename a directory while anything beneath it is open -- so
+    #   holding the leaf pins the ENTIRE ancestor chain against the
+    #   rename-to-a-junction every swap attack needs first. Taken BEFORE any
+    #   inspection, so nothing can change under the checks that follow.
+    # * first_linked_ancestor does the ancestor detection, ROOT-FIRST, using
+    #   is_link_or_junction (which catches junctions -- os.path.islink alone
+    #   does not) and NO realpath at all. Root-first order is the safety
+    #   property: each lstat runs only after every ancestor above it is known
+    #   link-free, so the probe itself never traverses one and never
+    #   authenticates outbound. It excludes the leaf by contract, so the leaf
+    #   gets its own is_link_or_junction check here.
+    try:
+        raw = os.fspath(path)
+    except TypeError:
+        return False
+    try:
+        handle = _win_hold_directory_no_share_delete(raw)
+    except FileNotFoundError:
+        # *path* does not exist -- the ordinary "no .kiro/.kiro/agents yet"
+        # case. A path that is not there cannot be a junction and cannot leak
+        # credentials, so this is safe; the caller's own pin_directory/is_dir
+        # then treats the absent leaf as a plain "nothing here" skip.
+        return True
+    except (OSError, ValueError):
+        # ValueError as well as OSError: _winapi.CreateFile raises ValueError
+        # (not OSError) on an embedded NUL, so a path carrying one must fail
+        # CLOSED here rather than propagate out of this guard as a 500.
+        return False
+    try:
+        try:
+            if first_linked_ancestor(raw) is not None:
+                return False
+            return not is_link_or_junction(raw)
+        except (OSError, ValueError):
+            return False
+    finally:
+        _win_close_handle(handle)
+
+
+def _win_hold_directory_no_share_delete(directory: str) -> int:
+    """Open *directory* WITHOUT ``FILE_SHARE_DELETE``, refusing nothing else.
+
+    Shared plumbing for :func:`verify_ancestors_not_swapped`. Uses the stdlib
+    ``_winapi`` module -- the same CPython-maintained binding
+    ``project_scan.py``'s ``_hold_directory`` already uses for this identical
+    problem -- rather than a hand-rolled ``ctypes`` structure. Holding the
+    handle (not the reparse-point refusal ``pin_directory`` uses) is the
+    whole point here: this is checking ANCESTORS, which must be traversable
+    normally, only refusing that they be swappable WHILE the check is live.
+    """
+    import _winapi  # type: ignore[import-not-found]
+
+    return _winapi.CreateFile(  # type: ignore[attr-defined]
+        directory,
+        0x0080,  # FILE_READ_ATTRIBUTES
+        0x00000001 | 0x00000002,  # FILE_SHARE_READ | FILE_SHARE_WRITE
+        _winapi.NULL,  # type: ignore[attr-defined]
+        _WIN_OPEN_EXISTING,
+        _WIN_FILE_FLAG_BACKUP_SEMANTICS | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
+        _winapi.NULL,  # type: ignore[attr-defined]
+    )
+
+
+def _win_close_handle(handle: int) -> None:
+    """Release a handle opened by :func:`_win_hold_directory_no_share_delete`."""
+    import _winapi  # type: ignore[import-not-found]
+
+    _winapi.CloseHandle(handle)  # type: ignore[attr-defined]
+
+
 def _win_open_without_following(path: str | os.PathLike) -> int:
     """``CreateFileW`` *path* for reading, opening a reparse point INSTEAD of following it.
 

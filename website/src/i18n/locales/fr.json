@@ -6470,6 +6470,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (non installé)",
+      "agent_not_in_project": "{{agent}} (absent de ce projet)",
       "browse": "Parcourir",
       "cancel": "Annuler",
       "color": "Couleur",
@@ -6499,7 +6500,9 @@
       "tags_loading_hint": "Chargement des étiquettes…",
       "tags_error_hint": "Impossible de charger les étiquettes.",
       "tags_retry": "Réessayer",
-      "top_level": "Niveau supérieur"
+      "top_level": "Niveau supérieur",
+      "agent_roster_error": "Impossible de lire les agents de ce répertoire.",
+      "agent_roster_retry": "Réessayer"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggestion de dossier",

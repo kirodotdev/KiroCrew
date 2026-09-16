@@ -6470,6 +6470,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (non installato)",
+      "agent_not_in_project": "{{agent}} (non presente in questo progetto)",
       "browse": "Sfoglia",
       "cancel": "Annulla",
       "color": "Colore",
@@ -6499,7 +6500,9 @@
       "tags_loading_hint": "Caricamento dei tag…",
       "tags_error_hint": "Impossibile caricare i tag.",
       "tags_retry": "Riprova",
-      "top_level": "Livello principale"
+      "top_level": "Livello principale",
+      "agent_roster_error": "Impossibile leggere gli agenti di questa directory.",
+      "agent_roster_retry": "Riprova"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggerimento cartella",

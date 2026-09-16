@@ -1992,6 +1992,9 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (not installed)",
+      "agent_not_in_project": "{{agent}} (not in this project)",
+      "agent_roster_error": "Couldn't read this directory's agents.",
+      "agent_roster_retry": "Retry",
       "browse": "Browse",
       "cancel": "Cancel",
       "color": "Color",

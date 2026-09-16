@@ -6370,6 +6370,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (nicht installiert)",
+      "agent_not_in_project": "{{agent}} (nicht in diesem Projekt)",
       "browse": "Durchsuchen",
       "cancel": "Abbrechen",
       "color": "Farbe",
@@ -6399,7 +6400,9 @@
       "tags_loading_hint": "Tags werden geladen…",
       "tags_error_hint": "Tags konnten nicht geladen werden.",
       "tags_retry": "Erneut versuchen",
-      "top_level": "Oberste Ebene"
+      "top_level": "Oberste Ebene",
+      "agent_roster_error": "Agenten dieses Verzeichnisses konnten nicht gelesen werden.",
+      "agent_roster_retry": "Wiederholen"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Ordnervorschlag",
