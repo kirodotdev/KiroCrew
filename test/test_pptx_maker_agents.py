@@ -1,15 +1,19 @@
-"""The chat-mode agent names the frontend sends must be the ones registered.
+"""The chat-mode agent names the frontend sends must be DECLARED agent names.
 
 Lives in the repo-level ``test/`` tree (not the app's in-package ``tests/``)
 because ``setup.cfg`` sets ``testpaths = test transfer``.
 
 This guards a failure that is invisible at runtime: the value the page hands to
-``createChatSlot`` reaches ``kiro-cli --agent``, which resolves it against the
-filename ``bridges._safe_link_name`` wrote — and an unknown name makes ``--agent``
-FALL BACK to the default agent instead of erroring. So a wrong string here opens a
-plain chat with none of this app's MCP tools or prompt, while looking like it
-worked. Derived from ``_safe_link_name`` rather than hard-coded, so the two cannot
-drift apart.
+``createChatSlot`` is stored on the slot verbatim, and dispatch resolves it via
+``config.loader.resolve_agent_bindings`` -> ``_materialized_kiro_agent``, whose
+snapshot is keyed on each registered config's ``name`` field
+(``_scan_materialized_agents``). An unknown value matches nothing there and
+resolution FALLS BACK to the default agent instead of erroring — so a wrong
+string opens a plain chat with none of this app's MCP tools or prompt, while
+looking like it worked. The ``{app}--{agent}`` stem the registrar writes is only
+the on-disk FILENAME, never a dispatchable identifier, and the slash form is a
+display namespace; both are pinned rejected below because each has shipped as
+this exact silent bug once already.
 """
 
 from __future__ import annotations
@@ -19,8 +23,6 @@ import re
 from pathlib import Path
 
 import pytest
-
-from kiro_crew.apps.bridges import _namespace, _safe_link_name
 
 # Anchored on the REPO ROOT, derived from this file, never on the CWD. A
 # CWD-relative path resolves differently under `pytest -n auto` (each xdist worker
@@ -32,11 +34,25 @@ _PAGE = _REPO_ROOT / "website" / "src" / "apps" / "pptx-maker" / "PptxMakerPage.
 
 
 def _declared_agent_names() -> list[str]:
-    """The ``name`` of every agent the manifest declares, in manifest order."""
+    """The ``name`` of every agent the manifest declares, in manifest order.
+
+    Every shipped config must declare a ``name``: it is framework-owned
+    (``bridges._FRAMEWORK_OWNED_AGENT_KEYS``) and refreshed from the template on
+    every registration. Asserted here rather than subscripted so a nameless
+    config fails with the reason — for such a config the registered filename
+    STEM becomes the dispatchable identifier (``_scan_materialized_agents``'s
+    fallback), and the negative guards below would need re-gating.
+    """
     manifest = json.loads((_APP_DIR / "app.json").read_text(encoding="utf-8"))
     names = []
     for rel in manifest.get("agents") or []:
-        names.append(json.loads((_APP_DIR / rel).read_text(encoding="utf-8"))["name"])
+        data = json.loads((_APP_DIR / rel).read_text(encoding="utf-8"))
+        name = data.get("name")
+        assert isinstance(name, str) and name, (
+            f"{rel} declares no `name`; its registered filename stem would be the "
+            "dispatchable identifier — update this test's guards before shipping that"
+        )
+        names.append(name)
     return names
 
 
@@ -54,26 +70,41 @@ def _page_chat_agents() -> list[str]:
 
 
 class TestChatAgentNamesResolve:
-    def test_every_chat_agent_is_a_registered_link_name(self) -> None:
-        """`{app}--{agent}`, which is what `--agent` looks up."""
-        registered = {
-            _safe_link_name(_namespace("pptx-maker", name)) for name in _declared_agent_names()
-        }
-        assert registered, "the manifest declares no agents — this guard is vacuous"
+    def test_every_chat_agent_is_a_declared_name(self) -> None:
+        """The `name` field is what `_scan_materialized_agents` makes dispatchable."""
+        declared = set(_declared_agent_names())
+        assert declared, "the manifest declares no agents — this guard is vacuous"
         for agent in _page_chat_agents():
-            assert agent in registered, (
-                f"{agent!r} is not a registered agent link name; `--agent` would fall "
-                f"back to the default agent silently. Registered: {sorted(registered)}"
+            assert agent in declared, (
+                f"{agent!r} is not the declared `name` of any shipped agent; dispatch "
+                f"would fall back to the default agent silently. Declared: "
+                f"{sorted(declared)}"
             )
 
     def test_the_page_does_not_use_the_slash_namespace(self) -> None:
-        """The slash form is the namespace, NOT the filename — it matches nothing.
+        """The slash form is a display namespace, not a dispatchable name.
 
-        Pinned separately because it is the exact mistake this fixed, and it fails
-        soundlessly: a `pptx-maker/...` value opens a working chat with the wrong agent.
+        Pinned separately because it fails soundlessly: a `pptx-maker/...` value
+        opens a working chat with the wrong agent.
         """
         for agent in _page_chat_agents():
-            assert "/" not in agent, f"{agent!r} uses the namespace form, not the link name"
+            assert "/" not in agent, f"{agent!r} uses the namespace form, not the declared name"
+
+    def test_the_page_does_not_use_the_filename_stem(self) -> None:
+        """The `{app}--{agent}` stem is the registered FILENAME, not a name.
+
+        `_scan_materialized_agents` trusts each config's declared `name` and uses
+        the stem only when a config declares none — a state `_declared_agent_names`
+        asserts against for this app — so the double-hyphen spelling matches
+        nothing and dispatch falls back to the default agent silently. Pinned
+        separately so a reintroduction fails with the reason, not just "not found
+        in the set".
+        """
+        for agent in _page_chat_agents():
+            assert "--" not in agent, (
+                f"{agent!r} is the on-disk filename stem, which dispatch cannot "
+                "resolve — use the agent's declared `name`"
+            )
 
     def test_all_three_chat_modes_are_present(self) -> None:
         """Spec, vibe and style are the three the UI offers; a dropped one would leave

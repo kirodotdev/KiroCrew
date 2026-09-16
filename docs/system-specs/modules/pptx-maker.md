@@ -409,8 +409,10 @@ as the wire name the dashboard already reads; what it now reports is
 ## Agents
 
 Four agent templates ship with the app, rendered at provision time
-(`{ENGINE_ROOT}` / `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` placeholders) and
-namespaced by the platform as `pptx-maker/<name>`:
+(`{ENGINE_ROOT}` / `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` placeholders). Each
+config's declared `name` is the dispatchable identifier; the platform writes the
+FILE under a namespaced `pptx-maker--<name>.json` filename, but that stem (like
+the `pptx-maker/<name>` display namespace) is not a name dispatch can resolve:
 
 Every substituted value is **JSON-escaped** (`provision._json_escape`) because the
 placeholders sit inside JSON string literals. This is not cosmetic: each value is
@@ -423,10 +425,10 @@ path (and a quote) on every platform rather than only on Windows.
 
 | Agent | Role |
 |-------|------|
-| `sdpm-spec` | Briefing → outline → art direction with the user, then delegates composition |
-| `sdpm-vibe` | Fast deck from a URL / pasted text / short brief |
-| `sdpm-composer` | Autonomous slide composition; a sub-agent of the two above |
-| `sdpm-style` | Creates a reusable style guide through conversation |
+| `pptx-maker-spec` | Briefing → outline → art direction with the user, then delegates composition |
+| `pptx-maker-vibe` | Fast deck from a URL / pasted text / short brief |
+| `pptx-maker-composer` | Autonomous slide composition; a sub-agent of the two above |
+| `pptx-maker-style` | Creates a reusable style guide through conversation |
 
 **App-owned prompt guidance lives in `prompts/spec-studio.md`**, loaded as an
 agent `resource`. The upstream app patched the vendored engine prompt in place on

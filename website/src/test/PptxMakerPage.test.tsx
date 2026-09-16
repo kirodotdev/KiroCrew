@@ -571,13 +571,14 @@ describe('PptxMakerPage', () => {
     await renderPage()
     await userEvent.click(await screen.findByText('Spec mode'))
     await waitFor(() =>
-      // DOUBLE hyphen: `bridges._safe_link_name` registers the agent as
-      // `pptx-maker--pptx-maker-spec.json`, and that filename is what
-      // `kiro-cli --agent` resolves against. The slash form matches nothing and
-      // `--agent` falls back to the default agent instead of failing, so pinning
-      // the wrong spelling here would let a silently agent-less chat pass.
+      // The DECLARED agent name: dispatch resolves the value against each
+      // registered config's `name` field (`_scan_materialized_agents`), not the
+      // `pptx-maker--pptx-maker-spec.json` filename stem the registrar writes.
+      // The stem (and the slash namespace form) match nothing in that set, and
+      // resolution falls back to the default agent instead of failing, so
+      // pinning a wrong spelling here would let a silently agent-less chat pass.
       expect(api.createChatSlot).toHaveBeenCalledWith(
-        undefined, 'pptx-maker--pptx-maker-spec', undefined, undefined, 'persistent',
+        undefined, 'pptx-maker-spec', undefined, undefined, 'persistent',
       ),
     )
   })

@@ -5468,11 +5468,14 @@ _MATERIALIZED_AGENTS_LOCK = threading.Lock()
 def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
     """Every agent name declared by the kiro agent configs in *agents_dir*.
 
-    Both spellings are emitted: the config's ``name`` field and the filename stem
-    (mirroring :meth:`_resolve_named_agent_model`), since an app's agent is
-    registered under a namespaced filename while its config keeps the app's bare
-    name. Unreadable or non-object entries are skipped. Performs the glob and the
-    per-file reads, so callers must invoke it OFF the event loop.
+    Each config contributes its DECLARED ``name`` field; the filename stem is
+    used only as a fallback when a config declares no name, since it is then the
+    only identifier available. An app's agent is registered under a namespaced
+    filename (``<app>--<agent>.json``) while its config keeps the app's bare
+    name, so the stem of a named config is deliberately NOT emitted — kiro-cli
+    enumerates agents by declared name and would not resolve it (see the inline
+    comment below). Unreadable or non-object entries are skipped. Performs the
+    glob and the per-file reads, so callers must invoke it OFF the event loop.
     """
     names: set[str] = set()
     # Deferred import: `hooks` reaches back into this module for config paths, so
