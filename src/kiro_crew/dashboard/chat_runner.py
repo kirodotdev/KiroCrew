@@ -9,6 +9,7 @@ import logging
 import re
 import stat as stat_module
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -310,13 +311,13 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     _EMPTY_AUTO_CONTINUE_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
-    _SYNTHETIC_RECOVERY_MSGS,
     AUTH_REQUIRED_KIND,
     CRON_NOTIFICATION_KIND,
     EMPTY_RUNG_CONTINUE,
     EMPTY_RUNG_GIVE_UP,
     EMPTY_RUNG_REPLAY,
     MODEL_UNENTITLED_KIND,
+    RECOVERY_PROVENANCE_META_KEY,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
     TRANSIENT_GIVE_UP_TEXT,
@@ -329,7 +330,9 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     TRANSIENT_RETRYING_TEXT,
     EmptyTurnActivity,
     RecoveryPayload,
+    RecoveryProvenance,
     classify_empty_turn,
+    has_recovery_provenance,
     has_unfinished_progress_claim,
     is_promise_only_terminal,
     is_synthetic_payload_item,
@@ -414,6 +417,77 @@ def _empty_max_auto_continues() -> int:
         return int(KiroCrewConfig.load().session.empty_response_max_continues)
     except Exception:  # pragma: no cover — config load must not break recovery
         return 1
+
+
+# Some model backends occasionally emit their private context-budget reminder as
+# answer text at the end of a long turn. Keep recognition deliberately exact and
+# suppression conservative: ordinary discussion of tokens and quoted/code text
+# survives without provenance. Interactive prompts that name capacity fail open
+# regardless of request verb, while host-owned stage/spec and synthetic recovery
+# text is classified structurally.
+# The final alternative covers the observed chunk-concatenation shape where the
+# banner and the real answer arrive with no separator (``...leftDone...``).
+_PROVIDER_BUDGET_BANNER_RE = re.compile(
+    r"\A[ \t]*You have [0-9][0-9,]* weighted tokens left(?:[.!])?"
+    r"(?:[ \t]*(?:\r?\n)+[ \t]*|[ \t]*\Z|(?=[A-Z]))"
+)
+_STOP_REASON_PROVIDER_BUDGET_ARTIFACT = RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT.value
+_PROVIDER_BUDGET_TOPIC_RE = re.compile(
+    r"\b(?:weighted tokens?|token budget|model capacity|context window (?:capacity|usage))\b"
+    r"|\bhow many tokens? (?:remain|are (?:left|available))\b"
+    r"|\bhow much budget (?:remains|is (?:left|available))\b"
+    r"|\b(?:remaining|available) (?:weighted )?tokens?\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_provider_budget_banner(text: str) -> tuple[str, bool]:
+    """Remove one leading provider-only weighted-token banner.
+
+    Returns ``(clean_text, removed)``. A leading-only rule is intentional: the
+    provider artifact arrives before answer prose, while the same words later in
+    an answer can be legitimate user-facing discussion.
+    """
+    match = _PROVIDER_BUDGET_BANNER_RE.match(text or "")
+    if match is None:
+        return text, False
+    return text[match.end() :], True
+
+
+def _mentions_provider_budget(message: str) -> bool:
+    """Return whether an interactive prompt names model-capacity output.
+
+    A finite request-verb list would miss ``print``, ``quote``, ``return``, and
+    future wording, so explicit provider-capacity terms fail open regardless of
+    verb. The unqualified shorthand is limited to remaining-budget questions
+    such as "how much budget remains"; project and financial budget phrases do
+    not disable suppression. Stage specs and fixed synthetic recovery text stay
+    structurally host-owned and never consult this wording gate.
+    """
+    return _PROVIDER_BUDGET_TOPIC_RE.search(message) is not None
+
+
+def _should_strip_provider_budget_banner(
+    message: str,
+    *,
+    has_file_changes: bool,
+    in_stage_execution: bool,
+    is_provider_recovery: bool,
+) -> bool:
+    """Return whether this turn has safe provenance for banner suppression.
+
+    Suppression requires provenance (a file-changing turn, a stage turn, or a
+    provider-recovery continuation). Stage and recovery turns are host-owned
+    execution, so their spec text cannot opt out merely by mentioning a capacity
+    topic. An interactive file-changing prompt that names capacity fails open,
+    because its requested answer can be byte-identical to the provider artifact
+    regardless of which request verb the user chose.
+    """
+    if is_provider_recovery or in_stage_execution:
+        return True
+    if not has_file_changes:
+        return False
+    return not _mentions_provider_budget(message)
 
 
 # Consumption contract carried inside every pending-context frame, between the
@@ -1676,8 +1750,58 @@ def _snapshot_write_target(
     return {"path": path, "content": content}
 
 
-def _flush_file_changes(slot: "_ChatSlot") -> None:
-    """Attach accumulated file changes to the last assistant message.
+def _active_variant(message: dict[str, Any]) -> dict[str, Any] | None:
+    variants = message.get("variants")
+    variant_idx = message.get("variant_idx")
+    if (
+        isinstance(variants, list)
+        and isinstance(variant_idx, int)
+        and 0 <= variant_idx < len(variants)
+        and isinstance(variants[variant_idx], dict)
+    ):
+        return variants[variant_idx]
+    return None
+
+
+def _merge_file_change_entries(
+    existing: list[dict[str, str]],
+    current: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Keep the first before-image and latest after-image for each path."""
+    merged: dict[str, dict[str, str]] = {}
+    for entry in [*existing, *current]:
+        path = entry.get("path", "")
+        if not path:
+            continue
+        if path not in merged:
+            merged[path] = dict(entry)
+        else:
+            merged[path]["after"] = entry.get("after", "")
+    return list(merged.values())
+
+
+def _set_active_variant_file_changes(
+    message: dict[str, Any],
+    file_changes: list[dict[str, str]],
+) -> None:
+    """Snapshot active-answer attribution beside its selector content."""
+    variant = _active_variant(message)
+    if variant is None:
+        return
+    variant_meta = variant.setdefault("meta", {})
+    if isinstance(variant_meta, dict):
+        variant_meta["file_changes"] = [dict(entry) for entry in file_changes]
+
+
+def _flush_file_changes(slot: "_ChatSlot", turn_boundary: int = 0) -> None:
+    """Attach accumulated file changes to this turn's assistant answer.
+
+    ``turn_boundary`` is ``len(slot.messages)`` captured at turn start. Only an
+    assistant row created at or after that boundary may receive ordinary-turn
+    attribution. A pending recovery owner is the sole exception: its target is
+    an older selector row intentionally being completed by this turn. If an
+    error-only turn created no owned assistant row, append a synthetic stopped
+    row instead of walking backward into an earlier answer.
 
     Dedups by path (first before, last after), reads the AFTER content from
     disk, and writes the list to message meta as ``file_changes``. Called on
@@ -1728,13 +1852,33 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     # would silently discard real changes past the snapshot limit or inside
     # redacted spans.
     fc_list = list(deduped.values())
-    # Attach to the most recent assistant message; if none exists (turn
-    # aborted before any text), create a synthetic message so the chips
-    # still surface.
-    for m in reversed(slot.messages):
-        if m.get("role") == "assistant":
-            m.setdefault("meta", {})["file_changes"] = fc_list
-            break
+    # Attach to the answer this turn owns. A recovery owner may intentionally
+    # target a selector row that predates the turn boundary; ordinary turns may
+    # only use assistant rows created during this turn.
+    recovery_owner = _variant_recovery_owner(slot)
+    owned_message: dict[str, Any] | None = None
+    if recovery_owner is not None and any(
+        message is recovery_owner.target for message in slot.messages
+    ):
+        owned_message = recovery_owner.target
+    else:
+        boundary = min(max(0, turn_boundary), len(slot.messages))
+        owned_message = next(
+            (
+                message
+                for message in reversed(slot.messages[boundary:])
+                if message.get("role") == "assistant"
+            ),
+            None,
+        )
+
+    if owned_message is not None:
+        if recovery_owner is not None and recovery_owner.target is owned_message:
+            existing = owned_message.get("meta", {}).get("file_changes", [])
+            if isinstance(existing, list):
+                fc_list = _merge_file_change_entries(existing, fc_list)
+        owned_message.setdefault("meta", {})["file_changes"] = fc_list
+        _set_active_variant_file_changes(owned_message, fc_list)
     else:
         # broadcast=False: the synthetic message reaches the UI via the same
         # SSE/WS path the dashboard already drains for this slot. Default
@@ -2771,6 +2915,17 @@ def _slot_is_trusted(slot: Any) -> bool:
     return bool(safety_override().is_scope_active(scope))
 
 
+def _provider_recovery_is_authorized(state: Any, slot: Any) -> bool:
+    """Allow model-triggered recovery only while tool approval stays interactive.
+
+    A host controller may authorize its own synchronous recovery separately (the
+    stage loop does so before model output). Ordinary answer text carries no such
+    provenance, so YOLO, session trust, and scoped unattended trust all fail
+    closed. This verdict is re-read at dispatch to cover a grant racing enqueue.
+    """
+    return not (state.is_yolo_active() or _slot_is_trusted(slot))
+
+
 def _auto_approve_reason(slot: Any, yolo_active: bool) -> str:
     """SEL provenance for an auto-approval: yolo, session trust, or a scoped grant.
 
@@ -3485,6 +3640,140 @@ def _append_redaction_notice(slot: _ChatSlot, redacted: str) -> None:
         slot.append("notice", _redaction_notice(cred_count, url_count), "msg msg-info")
 
 
+@dataclass
+class _VariantRecoveryOwner:
+    """Own one regenerated selector answer until its turn fully tears down.
+
+    ``committed_text is None`` is the sole unsettled state. Once a terminal
+    flush or cancellation commits it, every later settlement path observes the
+    same value and becomes a no-op. Keeping target, buffered parts, and commit
+    state in this one owner prevents a cleared target from making late
+    cancellation mistake an already-persisted answer for ordinary chat text.
+    """
+
+    target: dict[str, Any]
+    parts: list[str] = field(default_factory=list)
+    committed_text: str | None = None
+
+    @property
+    def committed(self) -> bool:
+        return self.committed_text is not None
+
+    def append(self, text: str) -> None:
+        if text and not self.committed:
+            self.parts.append(text)
+
+    def preview(self, tail: str = "") -> str:
+        if self.committed_text is not None:
+            return self.committed_text
+        return "\n\n".join([*self.parts, *([tail] if tail else [])])
+
+
+def _variant_recovery_owner(slot: _ChatSlot) -> _VariantRecoveryOwner | None:
+    owner = getattr(slot, "_pending_variant_recovery", None)
+    return owner if isinstance(owner, _VariantRecoveryOwner) else None
+
+
+def _clear_pending_variant_recovery(slot: _ChatSlot) -> None:
+    """Retire the one regeneration owner after commit or explicit purge."""
+    slot._pending_variant_recovery = None
+
+
+def _commit_pending_variant_recovery(
+    state: DashboardState,
+    slot: _ChatSlot,
+) -> str | None:
+    """Commit a recovery owner's buffered answer exactly once.
+
+    Tool-boundary prose was already streamed to the user. Prefer replacing the
+    owned selector variant; if a concurrent window rewrite removed that target,
+    preserve all text as one ordinary assistant row. The owner remains attached
+    until turn teardown so a late ``CancelledError`` can observe the committed
+    state instead of appending the same answer again.
+    """
+    owner = _variant_recovery_owner(slot)
+    if owner is None:
+        return None
+    if owner.committed:
+        return owner.committed_text
+
+    recovered = owner.preview()
+    target = owner.target
+    target_ts = ""
+    variants = target.get("variants")
+    variant_idx = target.get("variant_idx")
+    if (
+        recovered
+        and any(message is target for message in slot.messages)
+        and isinstance(variants, list)
+        and isinstance(variant_idx, int)
+        and 0 <= variant_idx < len(variants)
+        and isinstance(variants[variant_idx], dict)
+    ):
+        target["content"] = recovered
+        variants[variant_idx] = {
+            **variants[variant_idx],
+            "content": recovered,
+            "ts": target.get("ts", ""),
+        }
+        target_ts = str(target.get("ts", ""))
+    elif recovered:
+        persisted = slot.append("assistant", recovered, "msg msg-a", broadcast=False)
+        owner.target = persisted
+        target_ts = str(persisted.get("ts", ""))
+
+    # This assignment is the commit point. It precedes notices and detached
+    # artifact registration so a secondary side-effect failure cannot make a
+    # retry append or replace the recovered answer a second time.
+    owner.committed_text = recovered
+    owner.parts.clear()
+    if not recovered:
+        return recovered
+
+    slot._dirty = True
+    _append_redaction_notice(slot, recovered)
+    _schedule_widget_registration(state, slot, recovered, target_ts)
+    return recovered
+
+
+def _settle_pending_variant_recovery(
+    state: DashboardState,
+    slot: _ChatSlot,
+    tail: str = "",
+    *,
+    tail_is_redacted: bool = False,
+    purge_chunks: bool = False,
+) -> bool:
+    """Settle one owned selector answer on every terminal path.
+
+    Success passes the already-redacted final segment. Cancellation and provider
+    errors pass the live raw tail and purge its streaming chunks. In either mode,
+    buffered tool-boundary prose and the tail reach the owned selector exactly
+    once; if that selector vanished, ``_commit_pending_variant_recovery`` writes
+    one fallback assistant row. The committed owner stays attached until teardown
+    so a later terminal cannot duplicate or overwrite the answer.
+
+    Return ``True`` when an owner handled the tail. Callers use that result to
+    keep recovery text out of the ordinary-chat persistence path.
+    """
+    owner = _variant_recovery_owner(slot)
+    if owner is None:
+        return False
+    if purge_chunks:
+        slot.purge_chunks()
+    if tail and not owner.committed:
+        recovery_tail = tail
+        if not tail_is_redacted:
+            recovery_tail, _ = redact_exfiltration_urls(recovery_tail)
+            recovery_tail, _ = redact_credentials(recovery_tail)
+        recovery_tail, removed_banner = _strip_provider_budget_banner(recovery_tail)
+        if removed_banner:
+            logger.warning("Suppressed provider budget banner for slot %s", slot.key)
+        owner.append(recovery_tail)
+    _commit_pending_variant_recovery(state, slot)
+    return True
+
+
 def _flush_segment(
     state: DashboardState,
     slot: _ChatSlot,
@@ -3492,7 +3781,9 @@ def _flush_segment(
     *,
     broadcast: bool = True,
     quiet_persist: bool = False,
-) -> None:
+    strip_provider_banner: bool = False,
+    complete_pending_variant_recovery: bool = False,
+) -> str | None:
     """Finalize current text block as a segment and persist it.
 
     ``quiet_persist`` additionally suppresses the per-message ``chat_message``
@@ -3539,6 +3830,11 @@ def _flush_segment(
     # turn normally takes — so skipping it leaks the whole stream on any slot
     # that is not asked for another turn.
     slot.release_pending_chunks()
+    stripped_budget_banner = False
+    if strip_provider_banner:
+        assistant_text, stripped_budget_banner = _strip_provider_budget_banner(assistant_text)
+        if stripped_budget_banner:
+            logger.warning("Suppressed provider budget banner for slot %s", slot.key)
     # Redact the accumulated text
     redacted, exfil_warnings = redact_exfiltration_urls(assistant_text)
     for w in exfil_warnings:
@@ -3546,6 +3842,52 @@ def _flush_segment(
     redacted, cred_warnings = redact_credentials(redacted)
     for w in cred_warnings:
         logger.warning("Credential redacted in chat segment: %s", w)
+    owner = _variant_recovery_owner(slot)
+    if owner is not None:
+        # A banner-only regeneration owns one selector row for the whole
+        # continuation. Tool boundaries may flush several assistant segments;
+        # buffer them instead of creating detached rows, then commit the active
+        # variant once when the continuation reaches its terminal flush.
+        recovery_text, removed_recovery_banner = _strip_provider_budget_banner(redacted)
+        if removed_recovery_banner:
+            logger.warning("Suppressed provider budget banner for slot %s", slot.key)
+        if not complete_pending_variant_recovery:
+            owner.append(recovery_text)
+            for ev in trailing_stop_events:
+                slot.messages.append(ev)
+            if broadcast:
+                state.broadcast_ws("chat_segment", {"slot": slot.key})
+            return None
+
+        _settle_pending_variant_recovery(
+            state,
+            slot,
+            recovery_text,
+            tail_is_redacted=True,
+        )
+        recovered = owner.committed_text
+        for ev in trailing_stop_events:
+            slot.messages.append(ev)
+        if broadcast:
+            state.broadcast_ws("chat_segment", {"slot": slot.key})
+        return recovered
+    # A banner-only segment (opted-in strip removed the whole text) has no
+    # user-facing text to persist. Gated on an actual strip so ordinary empty
+    # flushes keep their existing behaviour. Regeneration is different: fall
+    # through so the normal assistant-message path consumes and attaches pending
+    # variants; returning here would let its done callback discard prior answers.
+    if stripped_budget_banner and not redacted and not slot._pending_variants:
+        file_changes = getattr(slot, "_file_changes", None)
+        if isinstance(file_changes, list) and file_changes:
+            # Keep turn-local stats/file chips off the preceding assistant row.
+            # Non-broadcast: the live streaming banner is reconciled separately
+            # by the authoritative empty frame at turn completion.
+            slot.append("assistant", "", "msg msg-a", broadcast=False)
+        for ev in trailing_stop_events:
+            slot.messages.append(ev)
+        if broadcast:
+            state.broadcast_ws("chat_segment", {"slot": slot.key})
+        return None
     # Persist as assistant message. Broadcast is kept enabled so that
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
@@ -3562,7 +3904,13 @@ def _flush_segment(
             for v in slot._pending_variants
             if isinstance(v, dict)
         ]
-        pending_list.append({"content": redacted, "ts": last_msg.get("ts", "")})
+        pending_list.append(
+            {
+                "content": redacted,
+                "ts": last_msg.get("ts", ""),
+                "meta": {"file_changes": []},
+            }
+        )
         last_msg["variants"] = pending_list
         last_msg["variant_idx"] = len(pending_list) - 1
         slot._pending_variants = []
@@ -3598,6 +3946,7 @@ def _flush_segment(
     # dashboard-surfaced copy of the widget, so it must not persist a credential
     # the segment redaction just stripped out of chat.
     _schedule_widget_registration(state, slot, redacted, str(last_msg.get("ts", "")))
+    return None
 
 
 def _schedule_widget_registration(
@@ -5817,31 +6166,47 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # atomic on the single event loop.
     #
     # Identity is STRUCTURAL (`is_synthetic_payload_item`), never content alone: a
-    # user who pastes the transcript-visible continuation text verbatim carries no
-    # synthetic payload, so it is never purged; the content check only narrows AMONG
-    # synthetic items to the promise-only one, leaving sibling recovery
-    # continuations (reset/refusal/stall) untouched.
+    # user who pastes transcript-visible continuation text carries no synthetic
+    # payload and is never purged. Promise-only and compaction continuations still
+    # have distinct fixed texts. Post-token provider and transient recoveries share
+    # one text, so their own provenance tags identify them independently and both
+    # remain fenced by the same Stop-generation/user-intervention queue boundary.
     #
     # A Stop pressed AND resolved back to idle in the post-turn awaits (between the
     # continuation's enqueue and this drain) is invisible to `_should_suppress_requeue`
     # / `_stopping` (both snap back to idle), so compare the monotonic stop counter
-    # against its value AT ENQUEUE (`_promise_only_stop_gen`): any increment means a
-    # Stop happened while the continuation waited, and the announced action must not
-    # be dispatched.
+    # against its value AT ENQUEUE (`_synthetic_continue_stop_gen`): any increment means
+    # a Stop happened while the continuation waited, and the announced/queued action
+    # must not be dispatched.
     _cur_stop_gen = getattr(slot, "_stop_generation", 0)
-    _stop_since_enqueue = _cur_stop_gen != getattr(slot, "_promise_only_stop_gen", _cur_stop_gen)
+    _stop_since_enqueue = _cur_stop_gen != getattr(
+        slot, "_synthetic_continue_stop_gen", _cur_stop_gen
+    )
     _user_input = bool(getattr(slot, "_pending_steers", None)) or _has_user_queued_followup(slot)
     if _should_suppress_requeue(slot) or slot._stopping or _stop_since_enqueue or _user_input:
-        # Both auto-continuations carry the same hazard and the same fix: the
-        # post-compaction resume would re-drive a request the user has since
-        # stopped or replaced. Purge either one, and reset whichever one-shot
-        # budget was spent (both resets are idempotent, so no need to tell them
-        # apart per item).
-        _purgeable = (_PROMISE_ONLY_CONTINUE_MSG, _COMPACTION_CONTINUE_MSG)
+        # All three head-inserted continuations carry the same hazard and the
+        # same fix: a queued resume would re-drive a request the user has since
+        # stopped or replaced — and the post-token recovery re-drives
+        # auto-approved, file-changing work, so an orphaned dispatch is
+        # destructive-after-cancellation. Purge whichever one is queued, and
+        # reset every one-shot budget that could have been spent (all resets are
+        # idempotent, so no need to tell them apart per item).
+        _purgeable_text = (
+            _PROMISE_ONLY_CONTINUE_MSG,
+            _COMPACTION_CONTINUE_MSG,
+        )
+        _purgeable_posttoken_owners = (
+            RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT,
+            RecoveryProvenance.TRANSIENT_RETRY,
+        )
         superseded = [
             q
             for q in slot._queue
-            if is_synthetic_payload_item(q) and q.get("content") in _purgeable
+            if is_synthetic_payload_item(q)
+            and (
+                q.get("content") in _purgeable_text
+                or any(has_recovery_provenance(q, owner) for owner in _purgeable_posttoken_owners)
+            )
         ]
         if superseded:
             for q in superseded:
@@ -5856,7 +6221,15 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
             # value cannot re-trigger this block on a later drain.
             slot._promise_only_retries = 0
             slot._compaction_continue_retries = 0
-            slot._promise_only_stop_gen = _cur_stop_gen
+            slot._posttoken_retry_used = False
+            slot._synthetic_continue_stop_gen = _cur_stop_gen
+            # A post-token banner recovery also parks a variant-recovery target for
+            # its continuation to complete. That continuation is now purged, so the
+            # target is orphaned: clear it here so a later unrelated turn's flush
+            # cannot overwrite some other answer into the stale variant. (`_run_chat`
+            # start clears it too, but only once a NEXT turn runs; do it at the purge
+            # so the invariant holds even when a bare Stop starts no successor turn.)
+            _clear_pending_variant_recovery(slot)
             # The earlier "auto-continuing once" notice and the card's "continuing
             # automatically" detail now stand uncorrected; append a one-line
             # correction so the transcript matches what actually ran.
@@ -5870,12 +6243,55 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
             )
             slot.append("notice", _correction, "msg msg-info")
             logger.info(
-                "Purged %d superseded promise-only continuation(s) before dispatch "
+                "Purged %d superseded synthetic continuation(s) before dispatch "
                 "for slot %s (user_input=%s stop_since_enqueue=%s)",
                 len(superseded),
                 slot.key,
                 _user_input,
                 _stop_since_enqueue,
+            )
+        if not slot._queue:
+            return False
+
+    # Banner text can request an ordinary continuation but cannot authorize one.
+    # Re-read the approval boundary at dispatch: trust/YOLO may have been granted
+    # after enqueue, and dispatching then would execute model-triggered work with
+    # no fresh checkpoint. Only the host-minted provider-budget provenance is
+    # eligible; another recovery may carry byte-identical continuation text and
+    # must retain its own retry semantics and queue position.
+    if not _provider_recovery_is_authorized(state, slot):
+        unsafe_provider_recoveries = [
+            q
+            for q in slot._queue
+            if has_recovery_provenance(q, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT)
+        ]
+        if unsafe_provider_recoveries:
+            for q in unsafe_provider_recoveries:
+                slot.queue_remove_by_id(q["id"])
+                if _remove_queued_by_id(slot.messages, q["id"]):
+                    state.broadcast_ws(
+                        "queue_pop", {"slot": slot.key, "content": "", "queue_id": q["id"]}
+                    )
+            surviving_posttoken_owner = any(
+                has_recovery_provenance(q, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT)
+                or has_recovery_provenance(q, RecoveryProvenance.TRANSIENT_RETRY)
+                for q in slot._queue
+            )
+            if not surviving_posttoken_owner:
+                slot._posttoken_retry_used = False
+                slot._synthetic_continue_stop_gen = _cur_stop_gen
+            _clear_pending_variant_recovery(slot)
+            slot.append(
+                "notice",
+                "ℹ️ Auto-continue skipped because auto-approve became active — "
+                "press Continue to finish the request.",
+                "msg msg-info",
+            )
+            logger.info(
+                "Purged %d provider-banner recovery continuation(s) before "
+                "auto-approved dispatch for slot %s",
+                len(unsafe_provider_recoveries),
+                slot.key,
             )
         if not slot._queue:
             return False
@@ -6389,6 +6805,10 @@ async def _run_chat(
     _prompt_depth: int = 0,
     _synthetic_payload: bool = False,
     _directive_user_origin: bool = False,
+    # Minted only by the Python stage controller before model output. It lets a
+    # host-owned stage classify a provider banner without inferring ownership
+    # from model text or from the mutable transcript.
+    _host_authorized_provider_recovery: bool = False,
     # This turn is the delivered wake of a nudge/monitor loop bound to THIS slot
     # (set only by ``GatewayOrchestrator._fire_dashboard_nudge``). It is the
     # second producer the session-directive consumer admits as "the session's
@@ -6405,6 +6825,10 @@ async def _run_chat(
     _current_message: dict | None = None,
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
+
+    # The stage controller reads one current-turn predicate. Reset it before
+    # any return path so a failed runner entry cannot reuse the prior turn.
+    slot._last_turn_stage_answer = False
 
     # Chokepoint invariant: a crew-bound slot NEVER executes locally. Its turns go
     # through ``relay_remote_turn``; ``_run_chat`` is the LOCAL runner. Every
@@ -6454,6 +6878,27 @@ async def _run_chat(
             and _current_replay_message.get("content") != message
         ):
             _current_replay_message = None
+
+    # One recovery owner may act only on turns carrying its host-minted queue
+    # provenance. The continuation text is deliberately shared with the ordinary
+    # post-token transient ladder, so text equality cannot confer provider-banner
+    # stripping, selector ownership, or provider-specific queue policy.
+    _provider_budget_recovery_owned = bool(
+        _synthetic_payload
+        and _current_replay_message is not None
+        and has_recovery_provenance(
+            _current_replay_message,
+            RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT,
+        )
+    )
+    _transient_recovery_owned = bool(
+        _synthetic_payload
+        and _current_replay_message is not None
+        and has_recovery_provenance(
+            _current_replay_message,
+            RecoveryProvenance.TRANSIENT_RETRY,
+        )
+    )
 
     def _stop_pressed() -> bool:
         """The user's Stop signal for this turn, read LIVE at the call site.
@@ -6702,7 +7147,26 @@ async def _run_chat(
         # accumulates the full segment independently of the wire buffer, and
         # _flush_segment persists (and re-redacts) that full text.
         _wsred.reset()
-        if assistant_text.strip():
+        recovery_owner = _variant_recovery_owner(slot)
+        if recovery_owner is not None:
+            # A selector recovery owns a row that predates this turn. Its
+            # buffered pre-steer output belongs above the steer user row, so
+            # settle it now, flush its accumulated attribution, and retire that
+            # ownership before the handler persists the steer. Subsequent model
+            # output is ordinary post-steer output and must not target the older
+            # selector or inherit its file changes.
+            recovered = _flush_segment(
+                state,
+                slot,
+                assistant_text,
+                broadcast=False,
+                quiet_persist=True,
+                complete_pending_variant_recovery=True,
+            )
+            _flush_file_changes(slot, turn_boundary=_turn_msg_boundary)
+            _clear_pending_variant_recovery(slot)
+            _produced_visible_output = _produced_visible_output or bool(recovered)
+        elif assistant_text.strip():
             # quiet_persist: the clients already hold this text in their
             # frozen (pre-steer) message; the append's chat_message broadcast
             # would render a duplicate copy below the steer bubble.
@@ -6801,6 +7265,7 @@ async def _run_chat(
         *,
         kind: str,
         payload: str = "",
+        provenance: RecoveryProvenance | None = None,
     ) -> str:
         """Queue a retry without losing a producer's consumption settlement.
 
@@ -6815,12 +7280,16 @@ async def _run_chat(
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
+        queue_meta = containment_meta(state, slot)
+        if provenance is not None:
+            queue_meta[RECOVERY_PROVENANCE_META_KEY] = provenance.value
+
         return slot.queue_insert(
             index,
             content,
             kind=kind,
             payload=payload,
-            meta=containment_meta(state, slot),
+            meta=queue_meta,
             on_consumed=_on_consumed if not _consumed_reported else None,
             on_irreversibly_consumed=(
                 _on_irreversibly_consumed if not _irreversible_consumption_reported else None
@@ -6845,7 +7314,7 @@ async def _run_chat(
     # refresh the allowance and inherits the True flag set when recovery was
     # enqueued. Suppressed/nested recoveries never set the flag, so
     # this reset is a no-op for them and a later real turn can still recover.
-    if message not in _SYNTHETIC_RECOVERY_MSGS:
+    if not _synthetic_payload:
         slot._posttoken_retry_used = False
     # tool_call_id -> DISPLAY TITLE (LLM-authored prose for shell tools; used
     # only for PostToolUse hook name-matching — NOT trustworthy for security).
@@ -6973,6 +7442,13 @@ async def _run_chat(
     # _recovering_promise: the turn announced work it never did, so it must not
     # be recorded as a success or reset the retry budgets.
     _noticed_leak = False
+    # Set when a provider leaked its private weighted-token budget reminder as
+    # answer text (see the completion block below). ``_recovering_provider_artifact``
+    # is the banner-only subcase — no answer was given, so like _recovering_promise
+    # it must not record success, consolidate, or reset the retry budgets.
+    _provider_budget_banner = False
+    _recovering_provider_artifact = False
+    _regeneration_variant_target: dict | None = None
     # Whether THIS turn consumed the one-shot post-compaction re-injection flag.
     # Bound at turn scope, not at the consume site: the consume lives inside the
     # context-builder leg, and the probe/base legs skip it entirely — reading an
@@ -6984,6 +7460,17 @@ async def _run_chat(
     # re-queue), every `except` arm, and a hard CancelledError — not just the
     # graceful-cancel and empty-re-queue paths that reach the success check.
     _turn_landed = False
+    # Terminal reason for the current turn. Initialized before session/context
+    # preparation because those paths can fail before provider dispatch, while
+    # the finally block still publishes a total structural answer outcome.
+    _stop_reason = ""
+    # Set only from `_answer_text`, the runner's model-output verdict after
+    # provider banners and control notices are removed. Host rows appended later
+    # (errors, notices, synthetic file cards) cannot change this provenance.
+    _turn_had_semantic_answer = False
+    # Safe fallback for setup failures that exit before the dispatch-time
+    # boundary is refined below. It still forbids attribution to prior rows.
+    _turn_msg_boundary = len(slot.messages)
     # Replay settlement also lives in ``finally``. Bind at turn scope because
     # config, binding and session-start failures can reach teardown before the
     # acquisition block determines whether replay is pending.
@@ -7001,6 +7488,11 @@ async def _run_chat(
     # its reason steered in-band (see _refusal_notices); this ledger is what the
     # FALLBACK continuation carries when that could not be delivered.
     _refusal_reasons: list[tuple[str, str]] = []
+    # True after any permission request is rejected in this turn. Host-side
+    # blocks also populate ``_refusal_reasons``; this bit covers interactive
+    # reject and its batch cascade, which intentionally do not enter recovery.
+    # Stage accounting reads the combined structural provenance in finally.
+    _turn_permission_denied = False
     # In-band policy notices steered into THIS turn (see _steer_policy_notice).
     # The list holds only those still unconfirmed: the `steering_consumed` echo
     # settles entries out of it and counts them here instead, so the total ever
@@ -7101,6 +7593,7 @@ async def _run_chat(
                     expanded,
                     _prompt_depth=1,
                     _directive_user_origin=_directive_user_origin,
+                    _host_authorized_provider_recovery=(_host_authorized_provider_recovery),
                     _directive_self_wake=_directive_self_wake,
                     _directive_channel_origin=_directive_channel_origin,
                 )
@@ -8305,7 +8798,7 @@ async def _run_chat(
         if (
             slot._active_fallback_model
             and slot._fallback_candidate_idx == 0
-            and message not in _SYNTHETIC_RECOVERY_MSGS
+            and not _synthetic_payload
         ):
             await _probe_fallback_restore_for_slot(slot, client)
 
@@ -8357,6 +8850,14 @@ async def _run_chat(
         # stale "end_turn" from the last successful turn would make the failed
         # turn look cleanly finished (e.g. to the session-summary gate).
         slot._last_stop_reason = ""
+        # A pending variant-recovery target belongs ONLY to the synthetic
+        # continuation queued immediately after a banner-only regeneration. If
+        # another turn starts, that recovery failed or was dropped. Preserve any
+        # tool-boundary text the user already saw before retiring the target, so
+        # the unrelated turn cannot erase it or overwrite the old selector row.
+        if slot._pending_variant_recovery is not None and not _provider_budget_recovery_owned:
+            _commit_pending_variant_recovery(state, slot)
+            _clear_pending_variant_recovery(slot)
         # Tool-stall metadata forwarded by the ACP watchdog on its terminal
         # event (title / redacted command / evidence) — feeds the dedicated
         # tool-stall recovery nudge below.
@@ -9458,6 +9959,7 @@ async def _run_chat(
                             client, _deny_title, _deny_msg, _refusal_notices, slot, state
                         )
                         await client.reject_tool(event.request_id)
+                        _turn_permission_denied = True
                         slot.append(
                             "tool",
                             f"🚫 {_deny_title} — {_deny_msg}",
@@ -10052,6 +10554,7 @@ async def _run_chat(
                     # Host-caused cascades are corrected by the
                     # provenance-gated steer above.
                     await client.reject_tool(event.request_id)
+                    _turn_permission_denied = True
                     slot.append(
                         "tool", f"🚫 {_title} (rejected)", "msg msg-tool", meta=_tool_meta(event)
                     )
@@ -10559,6 +11062,7 @@ async def _run_chat(
                     # exactly the branch it covers; the host auto-declines are
                     # that steer's job, not this marker's.
                     await client.reject_tool(event.request_id)
+                    _turn_permission_denied = True
                     if _safety_reason:
                         _reject_label = f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"
                     elif outcome == "rejected_once":
@@ -11510,12 +12014,85 @@ async def _run_chat(
                 # valid, so the same call re-sends the real counts as-is.
                 state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
 
+        # A model backend may leak its private weighted-token budget reminder as
+        # answer text. Strip it before answer detection, persistence, Stop hooks,
+        # and cross-surface delivery. If it was the whole final segment, finalize
+        # away the already-streamed chunks and recover below with a CONTINUE
+        # instruction rather than replaying completed tools. Ordinary tool use is
+        # not provenance: the dashboard incident carried a file-change record, so
+        # Normal chat is eligible only when this turn actually mutated a file.
+        # A structurally owned ordinary transient continuation is not normal chat:
+        # it may legitimately answer the original capacity request with identical
+        # text, so only provider-budget ownership may strip it. Stage execution
+        # and provider-budget recovery remain explicit host state.
+        raw_assistant_text = assistant_text
+        _turn_file_changes = getattr(slot, "_file_changes", None)
+        # Stage ownership is an explicit runner argument minted by the Python
+        # controller before the model runs. `_in_stage_execution` alone is
+        # lifecycle state, not authorization, and model text cannot mint either
+        # this argument or synthetic recovery provenance.
+        _host_authorized_stage = bool(
+            slot._in_stage_execution and _host_authorized_provider_recovery
+        )
+        _provider_artifact_context = _should_strip_provider_budget_banner(
+            message,
+            has_file_changes=(
+                isinstance(_turn_file_changes, list)
+                and bool(_turn_file_changes)
+                and not _transient_recovery_owned
+            ),
+            in_stage_execution=_host_authorized_stage,
+            is_provider_recovery=_provider_budget_recovery_owned,
+        )
+        if _provider_artifact_context:
+            assistant_text, _provider_budget_banner = _strip_provider_budget_banner(assistant_text)
+        _recovering_provider_artifact = bool(_provider_budget_banner and not assistant_text)
+        if _provider_budget_banner:
+            _wsred.reset()
+            if assistant_text:
+                logger.warning("Suppressed provider budget banner for slot %s", slot.key)
+            else:
+                had_pending_variants = bool(slot._pending_variants)
+                _flush_segment(
+                    state,
+                    slot,
+                    raw_assistant_text,
+                    broadcast=False,
+                    strip_provider_banner=True,
+                )
+                if had_pending_variants:
+                    candidate = slot.messages[-1] if slot.messages else None
+                    if (
+                        isinstance(candidate, dict)
+                        and candidate.get("role") == "assistant"
+                        and not candidate.get("content")
+                        and isinstance(candidate.get("variants"), list)
+                    ):
+                        _regeneration_variant_target = candidate
+                else:
+                    # The live client may already hold the streamed banner. An
+                    # authoritative empty assistant frame replaces that streaming
+                    # row before the queue boundary's chat_segment can finalize or
+                    # speak it; the continuation's chat_done refresh removes the
+                    # temporary empty row because no such row is persisted server-side.
+                    state.broadcast_ws(
+                        "chat_message",
+                        {"slot": slot.key, "role": "assistant", "content": ""},
+                    )
+
         # What the turn produced OF ITS OWN: `assistant_text` minus any backend
         # control notice that arrived as assistant text (the claude adapter's
         # "Compacting..."). The notice stays in `assistant_text` — it is real
         # output and must stream, flush and persist — but it is not an answer,
         # and the branch below is what decides whether one was given.
-        _answer_text = _answer_text_only(assistant_text, _compaction_notice_chunks)
+        recovery_owner = _variant_recovery_owner(slot)
+        answer_candidate = (
+            recovery_owner.preview(assistant_text) if recovery_owner is not None else assistant_text
+        )
+        _answer_text = _answer_text_only(answer_candidate, _compaction_notice_chunks)
+        _turn_had_semantic_answer = bool(_answer_text)
+        if not _answer_text and recovery_owner is not None and _provider_budget_recovery_owned:
+            _settle_pending_variant_recovery(state, slot)
 
         # A turn whose ONLY assistant text was such a notice still has to reach
         # the wire and the transcript, but it must not take the answer branch:
@@ -11584,7 +12161,15 @@ async def _run_chat(
                         _extract_and_redact_plan_metadata(assistant_text)
                     )
             _flush_text_stream()
-            _flush_segment(state, slot, assistant_text, broadcast=False)
+            committed_recovery = _flush_segment(
+                state,
+                slot,
+                assistant_text,
+                broadcast=False,
+                complete_pending_variant_recovery=_provider_budget_recovery_owned,
+            )
+            if committed_recovery is not None:
+                assistant_text = committed_recovery
             if _stop_reason == STOP_REASON_REFUSAL:
                 # The Kiro service's content filter STREAMS its canned
                 # explanation as assistant text and then ends the turn, so the
@@ -11633,6 +12218,64 @@ async def _run_chat(
                 refusal_card_text(_turn_refusal),
                 "msg msg-err",
             )
+        elif _provider_budget_banner:
+            # The banner is provider metadata, not a user-facing answer. Publish
+            # a structural stop reason so stage execution can retry synchronously
+            # before result capture; ordinary chat resumes exactly once on the
+            # SAME live conversation using the established post-token continuation.
+            slot._last_stop_reason = _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
+            _can_recover_budget_banner = (
+                _stop_reason == STOP_REASON_END_TURN
+                and _prompt_depth == 0
+                and not slot._in_stage_execution
+                and not _refusal_reasons
+                and not _should_suppress_requeue(slot)
+                and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+                and not _has_user_queued_followup(slot)
+                and not getattr(slot, "_pending_steers", None)
+                and not slot._posttoken_retry_used
+            )
+            if _can_recover_budget_banner and _provider_recovery_is_authorized(state, slot):
+                slot._posttoken_retry_used = True
+                if _regeneration_variant_target is not None:
+                    slot._pending_variant_recovery = _VariantRecoveryOwner(
+                        _regeneration_variant_target
+                    )
+                _queue_recovery(
+                    0,
+                    _POSTTOKEN_RECOVER_MSG,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=RecoveryPayload.CONTINUATION,
+                    provenance=RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT,
+                )
+                # Snapshot for the dispatch-point purge, same as the promise-only
+                # and compaction arms: a Stop or a queued user message arriving
+                # before the drain must purge it (see `_start_next_queued_turn`).
+                # The drain also re-checks interactive authorization, so a late
+                # trust/YOLO grant cannot turn this queued recovery unattended.
+                slot._synthetic_continue_stop_gen = getattr(slot, "_stop_generation", 0)
+            elif _can_recover_budget_banner:
+                slot.append(
+                    "notice",
+                    "ℹ️ The model returned an internal status instead of an answer. "
+                    "Auto-continue is skipped under auto-approve mode — press "
+                    "Continue to finish the request.",
+                    "msg msg-info",
+                )
+            elif (
+                not slot._in_stage_execution
+                and _stop_reason != STOP_REASON_CANCELLED
+                and not _should_suppress_requeue(slot)
+            ):
+                # One retry is the hard bound. If the recovery itself produces
+                # the same artifact, do not loop; make the missing answer explicit.
+                slot.append(
+                    "notice",
+                    "ℹ️ The model returned an internal status instead of an answer. "
+                    "The automatic continuation is unavailable or already spent — "
+                    "press Continue to finish the request.",
+                    "msg msg-info",
+                )
         elif not _armed_final and should_continue_after_compaction(
             # The context window filled mid-turn, the backend summarized, and the
             # turn then ended without finishing the request — the "hangs after
@@ -11699,7 +12342,7 @@ async def _run_chat(
             # Snapshot for the dispatch-point purge, same as the promise-only arm:
             # catches a Stop that pressed AND resolved back to idle while the
             # continuation sat in the queue.
-            slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
+            slot._synthetic_continue_stop_gen = getattr(slot, "_stop_generation", 0)
             _recovering_compaction = True
         elif (
             _stop_reason != STOP_REASON_CANCELLED
@@ -12126,7 +12769,7 @@ async def _run_chat(
                 # detect a Stop that pressed AND resolved to idle while the continuation
                 # waited in the queue (invisible to _should_suppress_requeue) — see the
                 # purge block in `_start_next_queued_turn`.
-                slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
+                slot._synthetic_continue_stop_gen = getattr(slot, "_stop_generation", 0)
                 _recovering_promise = True
         elif (
             not _armed_final
@@ -12218,8 +12861,8 @@ async def _run_chat(
                 turn_boundary=_turn_msg_boundary,
                 model=_turn_model,
             )
-            # Attach accumulated file changes to last assistant message before persist
-            _flush_file_changes(slot)
+            # Attach accumulated file changes only to this turn's owned answer.
+            _flush_file_changes(slot, turn_boundary=_turn_msg_boundary)
             # Save to history and trigger memory consolidation
             await save_slot_off_loop(state, slot)
         # Reset ALL retry budgets once the cycle completes (success OR the
@@ -12232,6 +12875,7 @@ async def _run_chat(
             not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _recovering_provider_artifact
             and not _noticed_leak
         ):
             # A non-zero stall budget reaching this reset on an OK turn is a
@@ -12315,6 +12959,7 @@ async def _run_chat(
             not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _recovering_provider_artifact
             and not _noticed_leak
             and not _is_monitor_wake
         ):
@@ -12324,9 +12969,11 @@ async def _run_chat(
         state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
         if (
             _stop_reason != STOP_REASON_CANCELLED
+            and not _had_empty_response_verdict
             and not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _recovering_provider_artifact
             and not _noticed_leak
         ):
             # An unacted turn (promise-only, or a tool call leaked as text) is
@@ -12432,11 +13079,26 @@ async def _run_chat(
                 if not _nudge_cap
                 else max(0, _nudge_cap - slot._hook_continuation_depth - _pending)
             )
-            # queue_insert(0, …) prepends, so insert in reverse to keep several
-            # hooks' instructions in firing order.
+            # A banner-only regeneration may already have queued its post-token
+            # recovery at the head and parked a variant target. That recovery owns
+            # the target: a Stop-hook continuation starting first would clear it as
+            # unrelated input and make the recovered answer miss the selector.
+            # Keep the recovery first, then prepend hook reasons immediately after
+            # it (the reversed insertion below still preserves hook firing order).
+            _hook_insert_index = 0
+            if slot._pending_variant_recovery is not None:
+                for _index, _item in enumerate(slot._queue):
+                    if has_recovery_provenance(
+                        _item,
+                        RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT,
+                    ):
+                        _hook_insert_index = _index + 1
+                        break
+            # queue_insert at one fixed position prepends, so insert in reverse to
+            # keep several hooks' instructions in firing order.
             for _reason in reversed(_hook_reasons[:_room]):
                 _queue_recovery(
-                    0,
+                    _hook_insert_index,
                     f"{HOOK_CONTINUATION_RECOVERY_PREFIX}\n{_reason}",
                     kind=SYNTHETIC_RECOVERY_KIND,
                 )
@@ -12626,12 +13288,26 @@ async def _run_chat(
         if not is_slash:
             await _deliver_cross_surface_reply(state, session_key, assistant_text)
     except asyncio.CancelledError:
-        if assistant_text:
+        if (
+            not _settle_pending_variant_recovery(
+                state,
+                slot,
+                assistant_text,
+                purge_chunks=True,
+            )
+            and assistant_text
+        ):
             slot.purge_chunks()
             _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
             slot.append("assistant", _redacted, "msg msg-a")
             _append_redaction_notice(slot, _redacted)
     except AcpAuthRequired as exc:
+        _recovery_settled = _settle_pending_variant_recovery(
+            state,
+            slot,
+            assistant_text,
+            purge_chunks=True,
+        )
         # The signed-out CLI is discovered HERE, not by a probe: this is the
         # authoritative logout signal now that readiness is latched at boot.
         # Non-retryable — respawning hits the same wall — so never re-queue, and
@@ -12643,7 +13319,7 @@ async def _run_chat(
         # resume after the user signs in — so hold the queue intact instead.
         _auth_required = True
         needs_session_reset = True
-        if assistant_text:
+        if assistant_text and not _recovery_settled:
             slot.purge_chunks()
             _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
             slot.append("assistant", _redacted, "msg msg-a")
@@ -12659,9 +13335,15 @@ async def _run_chat(
         _mark_kiro_signed_out(state)
         await _deliver_auth_error_to_slack(state, slot, sessions, session_key, _auth_msg)
     except AcpProcessDied as exc:
+        _recovery_settled = _settle_pending_variant_recovery(
+            state,
+            slot,
+            assistant_text,
+            purge_chunks=True,
+        )
         logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)
         needs_session_reset = True
-        if assistant_text:
+        if assistant_text and not _recovery_settled:
             slot.purge_chunks()
             _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
             slot.append("assistant", _redacted, "msg msg-a")
@@ -12695,11 +13377,17 @@ async def _run_chat(
         else:
             slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
     except PromptBusyExhaustedError:
+        _recovery_settled = _settle_pending_variant_recovery(
+            state,
+            slot,
+            assistant_text,
+            purge_chunks=True,
+        )
         # Provider was killed after prompt-busy retries exhausted — reset (and
         # re-queue only when retry-eligible; see per-branch handling below).
         logger.info("Prompt busy exhausted in slot %s — resetting session", slot.key)
         needs_session_reset = True  # checked in finally block
-        if assistant_text:
+        if assistant_text and not _recovery_settled:
             slot.purge_chunks()
             _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
             slot.append("assistant", _redacted, "msg msg-a")
@@ -12732,6 +13420,12 @@ async def _run_chat(
             # but still surface feedback so the nested turn doesn't fail silently.
             slot.append("error", "⟳ Session busy — please retry.", "msg msg-err")
     except AcpError as exc:
+        _recovery_settled = _settle_pending_variant_recovery(
+            state,
+            slot,
+            assistant_text,
+            purge_chunks=True,
+        )
         # The exception CLASS is logged alongside the message because the
         # session-health scanner keys its prompt_stuck signal off this line, and
         # the message text is not a reliable carrier: _format_acp_error
@@ -12773,7 +13467,7 @@ async def _run_chat(
             # the generic else: no reset (the next turn hits the dead process)
             # and the failure never counting toward the exhaustion threshold.
             needs_session_reset = True  # checked in finally block
-            if assistant_text:
+            if assistant_text and not _recovery_settled:
                 _safe, _ = redact_exfiltration_urls(assistant_text)
                 _safe, _ = redact_credentials(_safe)
                 slot.purge_chunks()
@@ -13053,22 +13747,23 @@ async def _run_chat(
             # Persist the streamed partial as a real assistant message (copy of
             # the terminal else: persist pattern): redact, strip the live chunk
             # messages, then append the finalized assistant bubble.
-            if assistant_text:
+            if assistant_text and not _recovery_settled:
                 _safe, _ = redact_exfiltration_urls(assistant_text)
                 _safe, _ = redact_credentials(_safe)
                 slot.purge_chunks()
                 slot.append("assistant", _safe, "msg msg-a")
                 _append_redaction_notice(slot, _safe)
-            # Surface a brief recovery notice (one append). Only when the requeue
-            # below will actually happen is the row a PENDING one (retry kind +
-            # resuming token); otherwise nothing resumes — Stop is active or this
-            # is a nested turn — so the row is terminal and says so, with the
-            # give-up token so the dashboard keeps it on the ErrorCard (whose
-            # Continue affordance is the way forward) instead of a soft notice
-            # reading "resuming…" forever.
-            _will_recover = not _should_suppress_requeue(slot) and _prompt_depth == 0
+            # Surface one recovery notice. A Stop can still land during the
+            # backoff, so the pending row is converted to the terminal shape if
+            # the monotonic generation changes before enqueue.
+            _will_recover = (
+                not _should_suppress_requeue(slot)
+                and _prompt_depth == 0
+                and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+            )
+            _recovery_notice: dict | None = None
             if _will_recover:
-                slot.append(
+                _recovery_notice = slot.append(
                     "error",
                     TRANSIENT_RESUMING_TEXT,
                     "msg msg-err",
@@ -13093,25 +13788,44 @@ async def _run_chat(
                     _delay,
                     _msg[:80],
                 )
-                # Back off, then re-queue the CONTINUE instruction onto the SAME
-                # live session (no reset). The partial + notice are already shown;
-                # the model resumes from the preserved context and appends the
-                # continued answer as a new message below. Consume the one-shot
-                # allowance HERE — only a real enqueue burns it.
+                # Back off, then re-check the same turn-start generation that
+                # owns this retry. Stop can resolve back to idle while no prompt
+                # is active, so live suppression alone cannot close this window.
                 await asyncio.sleep(_delay)
-                slot._posttoken_retry_used = True
-                _queue_recovery(
-                    0,
-                    _POSTTOKEN_RECOVER_MSG,
-                    kind=SYNTHETIC_RECOVERY_KIND,
-                    payload=RecoveryPayload.CONTINUATION,
+                _stopped_during_backoff = (
+                    _should_suppress_requeue(slot)
+                    or getattr(slot, "_stop_generation", _stop_gen_turn_start)
+                    != _stop_gen_turn_start
                 )
-            # else: Stop active (_should_suppress_requeue) or nested turn
-            # (_prompt_depth != 0) — do NOT requeue; partial + notice already
-            # shown, so the streamed answer survives in the transcript. The
-            # allowance is left UNconsumed so a later turn can still recover once.
+                if _stopped_during_backoff:
+                    if _recovery_notice is not None:
+                        _recovery_notice["content"] = TRANSIENT_GIVE_UP_TEXT
+                        _recovery_notice["meta"] = {
+                            TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP
+                        }
+                        slot._dirty = True
+                    logger.info(
+                        "provider response recovery: dropping re-queue on slot %s — "
+                        "user stopped during backoff",
+                        slot.key,
+                    )
+                else:
+                    # Consume the one-shot only when a real enqueue occurs.
+                    slot._posttoken_retry_used = True
+                    _queue_recovery(
+                        0,
+                        _POSTTOKEN_RECOVER_MSG,
+                        kind=SYNTHETIC_RECOVERY_KIND,
+                        payload=RecoveryPayload.CONTINUATION,
+                        provenance=RecoveryProvenance.TRANSIENT_RETRY,
+                    )
+                    # Snapshot for the dispatch-point purge, same as the banner-
+                    # recovery arm: later Stop/user input owns the queue boundary.
+                    slot._synthetic_continue_stop_gen = getattr(slot, "_stop_generation", 0)
+            # else: Stop active/generation changed or nested turn — do not
+            # requeue. The partial survives and the allowance stays unconsumed.
         else:
-            if assistant_text:
+            if assistant_text and not _recovery_settled:
                 _safe, _ = redact_exfiltration_urls(assistant_text)
                 _safe, _ = redact_credentials(_safe)
                 slot.purge_chunks()
@@ -13336,6 +14050,12 @@ async def _run_chat(
                 slot._fallback_candidate_idx = 0
                 slot._fallback_walked = []
     except _AppAgentNotLoaded as exc:
+        _settle_pending_variant_recovery(
+            state,
+            slot,
+            assistant_text,
+            purge_chunks=True,
+        )
         # An app-owned slot whose agent never materialized, even after the
         # self-heal warm. Deliberately terminal: running the default agent here is
         # the exact silent substitution this guards against. Surface the naming
@@ -13357,6 +14077,12 @@ async def _run_chat(
         # exiting, and the user's next send lands on the restarted process.
         logger.info("Aborting turn for %s — gateway is shutting down", slot.key)
     except Exception as exc:
+        _settle_pending_variant_recovery(
+            state,
+            slot,
+            assistant_text,
+            purge_chunks=True,
+        )
         logger.exception("Dashboard chat error in slot %s", slot.key)
         _err_text, _ = redact_exfiltration_urls(str(exc))
         _err_text, _ = redact_credentials(_err_text)
@@ -13370,6 +14096,16 @@ async def _run_chat(
         if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
             await state.sessions.record_failure(session_key)
     finally:
+        # Publish the stage predicate before teardown awaits. Only a landed,
+        # non-synthetic end_turn with normalized model text can complete a stage;
+        # visible refusal and permission-denial prose remains non-completing.
+        slot._last_turn_stage_answer = bool(
+            _turn_landed
+            and _turn_had_semantic_answer
+            and _stop_reason == STOP_REASON_END_TURN
+            and not _terminal_synthetic
+            and not (_turn_permission_denied or bool(_refusal_reasons))
+        )
         # Poisoned-conversation streak break — in the FINALLY on purpose (fork
         # GPT review): several recovery paths (stale-turn, tool-stall,
         # pipe-death) `return` before the main completion block, and a turn
@@ -13426,9 +14162,12 @@ async def _run_chat(
         # a raise here cannot skip the re-arm below and re-introduce the orphan
         # bug this fix prevents.
         try:
-            _flush_file_changes(slot)
+            _flush_file_changes(slot, turn_boundary=_turn_msg_boundary)
         except Exception:
             logger.debug("_flush_file_changes failed", exc_info=True)
+        recovery_owner = _variant_recovery_owner(slot)
+        if recovery_owner is not None and recovery_owner.committed:
+            _clear_pending_variant_recovery(slot)
         # Replay settlement belongs on the one path every turn exit crosses.
         # A clean, non-synthetic landed end_turn is the only ordinary terminal
         # whose fresh native transcript is durable enough to replace the prior

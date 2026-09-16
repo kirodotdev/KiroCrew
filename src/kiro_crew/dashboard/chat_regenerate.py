@@ -110,8 +110,73 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         ai_msg = msgs[ai_idx]
         _rv = ai_msg.get("variants")
         variants: list[dict] = list(_rv) if isinstance(_rv, list) else []  # type: ignore[arg-type]
-        current_entry = {"content": ai_msg.get("content", ""), "ts": ai_msg.get("ts", "")}
-        if not any(v.get("content") == current_entry["content"] for v in variants):
+        current_entry: dict = {
+            "content": ai_msg.get("content", ""),
+            "ts": ai_msg.get("ts", ""),
+        }
+        current_meta = ai_msg.get("meta")
+        current_file_changes = (
+            current_meta.get("file_changes") if isinstance(current_meta, dict) else None
+        )
+        if isinstance(current_file_changes, list):
+            # Tri-state attribution: an observed empty list is known-empty, while
+            # a missing legacy snapshot is unknown and must remain absent.
+            current_entry["meta"] = {
+                "file_changes": copy.deepcopy(current_file_changes),
+            }
+        active_variant_idx = ai_msg.get("variant_idx")
+        valid_active_idx = (
+            active_variant_idx
+            if isinstance(active_variant_idx, int)
+            and 0 <= active_variant_idx < len(variants)
+            and isinstance(variants[active_variant_idx], dict)
+            else None
+        )
+        if (
+            valid_active_idx is None
+            and variants
+            and all(
+                not (
+                    isinstance(variant, dict)
+                    and isinstance(variant.get("meta"), dict)
+                    and isinstance(variant["meta"].get("file_changes"), list)
+                )
+                for variant in variants
+            )
+        ):
+            # Pre-upgrade histories have selector variants but neither
+            # variant_idx nor per-variant file snapshots. The old implementation
+            # deduplicated by content, so exactly one matching entry is a safe one-time identity backfill. Multiple
+            # equal matches remain ambiguous and therefore append distinctly.
+            legacy_matches = [
+                index
+                for index, variant in enumerate(variants)
+                if isinstance(variant, dict)
+                and variant.get("content", "") == current_entry["content"]
+            ]
+            if len(legacy_matches) == 1:
+                valid_active_idx = legacy_matches[0]
+
+        if valid_active_idx is not None:
+            # Selector index, not answer text, is the modern variant identity.
+            # Two model runs may produce byte-identical text while owning
+            # different timestamps, provenance, and file-change snapshots.
+            active_variant = variants[valid_active_idx]
+            active_variant["content"] = current_entry["content"]
+            active_variant["ts"] = current_entry["ts"]
+            current_entry_meta = current_entry.get("meta")
+            if isinstance(current_entry_meta, dict):
+                active_meta = active_variant.get("meta")
+                if isinstance(active_meta, dict):
+                    next_meta = copy.deepcopy(active_meta)
+                else:
+                    next_meta = {}
+                next_meta["file_changes"] = copy.deepcopy(current_entry_meta["file_changes"])
+                active_variant["meta"] = next_meta
+        else:
+            # No selector identity and no unique legacy match: this is a distinct
+            # regeneration event. Keep it even when its text matches an older
+            # answer; the bounded cap below constrains storage growth.
             variants.append(current_entry)
         if len(variants) > _MAX_VARIANTS:
             variants = variants[-_MAX_VARIANTS:]
@@ -223,6 +288,16 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         slot.invalidate_source_links()
         target_dict["ts"] = chosen.get("ts", target_dict.get("ts", ""))
         target_dict["variant_idx"] = idx
+        target_meta = target_dict.setdefault("meta", {})
+        chosen_meta = chosen.get("meta")
+        chosen_file_changes = (
+            chosen_meta.get("file_changes") if isinstance(chosen_meta, dict) else None
+        )
+        if isinstance(target_meta, dict) and isinstance(chosen_file_changes, list):
+            # New variants always carry a list, including [] for a known
+            # no-file answer. A missing legacy snapshot is UNKNOWN, so leave the
+            # top-level attribution intact instead of erasing chips permanently.
+            target_meta["file_changes"] = copy.deepcopy(chosen_file_changes)
         slot._dirty = True
         slot._resumed_count = 0
         try:

@@ -481,10 +481,14 @@ def test_the_answer_branch_tests_the_answer_not_the_raw_segment() -> None:
     """
     src = _runner_source()
     assert re.search(
-        r"\n\s*_answer_text = _answer_text_only\(\s*\n?"
-        r"\s*assistant_text, _compaction_notice_chunks\s*\n?\s*\)\n",
+        r"\n\s*recovery_owner = _variant_recovery_owner\(slot\)\n"
+        r"\s*answer_candidate = \(\n"
+        r"\s*recovery_owner\.preview\(assistant_text\)\s*"
+        r"if recovery_owner is not None else assistant_text\n"
+        r"\s*\)\n"
+        r"\s*_answer_text = _answer_text_only\(answer_candidate, _compaction_notice_chunks\)\n",
         src,
-    ), "the answer text must be derived once, before the terminal chain"
+    ), "the recovery-aware answer text must be derived once before the terminal chain"
     chain_head = src.index("\n        if _answer_text:\n")
     continuation_branch = src.index("should_continue_after_compaction(")
     assert chain_head < continuation_branch, (

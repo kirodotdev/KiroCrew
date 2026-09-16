@@ -245,8 +245,35 @@ entry.
    (completed / execute-now / pending), previous stage results, the current
    stage's title and bullets, and an explicit "execute Stage N of M now"
    instruction. It is appended as a hidden user message (`auto-go` class) and
-   passed to `_run_chat`. An exception from `_run_chat` clears `_auto_run`,
-   posts a stage-error notice, logs `auto_run_stage_error`, and breaks.
+   passed to `_run_chat` with an explicit host-owned recovery authorization.
+   A provider-only weighted-token banner gets one bounded synchronous
+   continuation under the same absolute stage deadline. The authorization is
+   minted by the stage controller before model output; banner-shaped model text
+   cannot classify itself as host-owned or create an unattended auto-approved
+   continuation. That authorization is leased to the current slot object,
+   tracker object, stage number, and monotonic Stop generation. The controller
+   snapshots the lease before the stage awaits, revalidates it after each turn,
+   and checks it once more inside the bounded child task with no suspension before
+   `_run_chat`. A Stop that presses and resolves back to idle while the stage is
+   responding, after its terminal banner, or in the parent-to-child scheduling
+   gap therefore fences recovery before dispatch. The recovery budget is spent
+   only after that final check, so a fenced attempt does not consume it.
+   Replacing the slot, tracker, or stage likewise revokes the old controller's
+   authorization.
+   A second banner, or a continuation without a completed stage answer, stops
+   auto-run before result capture. The runner publishes one boolean
+   `_last_turn_stage_answer`: it requires a raw ACP `end_turn` with model answer
+   text, with no provider refusal, runner-recorded tool-permission denial, or
+   synthetic terminal. Refusal/deny prose still appears in ordinary chat, but
+   cannot complete the stage. This uses terminal and permission provenance rather
+   than interpreting sentiment, so concise answers and answers after successful
+   tools remain valid. Host errors, notices, and synthetic file-change rows
+   likewise cannot complete a stage. Provider/auth/process recovery and
+   cancellation remain available because the stage stays
+   unrecorded. Other empty or partial initial stage turns keep the existing
+   depth-0 recovery and result-capture behavior; the banner fix does not
+   redefine when an ordinary stage is complete. An exception from `_run_chat` clears `_auto_run`, posts a stage-error notice,
+   logs `auto_run_stage_error`, and breaks.
 7. **Wait for the stage's sub-agents.** Polls
    `state.subagents.running_agents_for("dashboard:<slot>")` every 2s, up to 150
    rounds (5 minutes), broadcasting a `chat_status` count every 10 polls. This

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -13983,6 +13984,7 @@ class TestRegenerateAndVariants:
         slot = state.get_or_create_slot("s1")
         slot.append("user", "hi")
         slot.append("assistant", "hello v1")
+        slot.messages[-1]["meta"] = {"file_changes": [{"path": "hello.py"}]}
         slot.drain()
         captured = []
 
@@ -13997,6 +13999,7 @@ class TestRegenerateAndVariants:
         assert [m["role"] for m in slot.messages] == ["user"]
         assert len(captured) == 1
         assert captured[0]["content"] == "hello v1"
+        assert captured[0]["meta"]["file_changes"] == [{"path": "hello.py"}]
 
     @pytest.mark.asyncio
     async def test_regenerate_rejects_when_running(self, tmp_path, monkeypatch):
@@ -14036,15 +14039,75 @@ class TestRegenerateAndVariants:
         slot.append("user", "hi")
         slot.append("assistant", "v2")
         slot.messages[-1]["variants"] = [
-            {"content": "v1", "ts": "t1"},
-            {"content": "v2", "ts": "t2"},
+            {
+                "content": "v1",
+                "ts": "t1",
+                "meta": {"file_changes": [{"path": "v1.py"}]},
+            },
+            {
+                "content": "v2",
+                "ts": "t2",
+                "meta": {"file_changes": [{"path": "v2.py"}]},
+            },
         ]
         slot.messages[-1]["variant_idx"] = 1
+        slot.messages[-1]["meta"] = {"file_changes": [{"path": "v2.py"}]}
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
             assert resp.status == 200
             assert slot.messages[-1]["content"] == "v1"
             assert slot.messages[-1]["variant_idx"] == 0
+            assert slot.messages[-1]["meta"]["file_changes"] == [{"path": "v1.py"}]
+
+    @pytest.mark.asyncio
+    async def test_switch_legacy_variant_preserves_unknown_file_snapshot(
+        self, tmp_path, monkeypatch
+    ):
+        """Missing legacy meta is unknown and must not erase visible chips."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("assistant", "legacy v2")
+        slot.messages[-1]["variants"] = [
+            {"content": "legacy v1", "ts": "t1"},
+            {"content": "legacy v2", "ts": "t2"},
+        ]
+        slot.messages[-1]["variant_idx"] = 1
+        current_changes = [{"path": "legacy-visible.py"}]
+        slot.messages[-1]["meta"] = {"file_changes": current_changes}
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+
+        assert response.status == 200
+        assert slot.messages[-1]["content"] == "legacy v1"
+        assert slot.messages[-1]["meta"]["file_changes"] == current_changes
+
+    @pytest.mark.asyncio
+    async def test_switch_known_no_file_variant_clears_visible_snapshot(
+        self, tmp_path, monkeypatch
+    ):
+        """Modern [] means known-empty, unlike a legacy missing snapshot."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("assistant", "with files")
+        slot.messages[-1]["variants"] = [
+            {"content": "without files", "ts": "t1", "meta": {"file_changes": []}},
+            {
+                "content": "with files",
+                "ts": "t2",
+                "meta": {"file_changes": [{"path": "changed.py"}]},
+            },
+        ]
+        slot.messages[-1]["variant_idx"] = 1
+        slot.messages[-1]["meta"] = {"file_changes": [{"path": "changed.py"}]}
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+
+        assert response.status == 200
+        assert slot.messages[-1]["meta"]["file_changes"] == []
 
     @pytest.mark.asyncio
     async def test_switch_variant_index_out_of_range(self, tmp_path, monkeypatch):
@@ -14104,57 +14167,275 @@ class TestRegenerateAndVariants:
         assert [v["content"] for v in captured] == ["v1", "v2"]
 
     @pytest.mark.asyncio
-    async def test_regenerate_when_active_is_old_variant_no_dup(self, tmp_path, monkeypatch):
-        """If user switched back to v1 then regenerates, v1 should not be appended twice."""
+    async def test_regenerate_backfills_unique_legacy_visible_variant(self, tmp_path, monkeypatch):
+        """A unique content match migrates legacy identity without duplication."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
         slot.append("user", "hi")
-        slot.append("assistant", "v1")
+        slot.append("assistant", "legacy v2")
+        slot.messages[-1]["ts"] = "t2-live"
+        slot.messages[-1]["meta"] = {"file_changes": [{"path": "live.py"}]}
         slot.messages[-1]["variants"] = [
-            {"content": "v1", "ts": "t1"},
-            {"content": "v2", "ts": "t2"},
+            {"content": "legacy v1", "ts": "t1"},
+            {"content": "legacy v2", "ts": "t2-stale"},
+        ]
+        slot.drain()
+        captured = []
+
+        async def _capture(*_args, **_kwargs):
+            captured.extend(copy.deepcopy(slot._pending_variants))
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                response = await client.post("/api/chat/slots/s1/regenerate")
+                assert response.status == 200
+                await asyncio.sleep(0)
+
+        assert [variant["content"] for variant in captured] == ["legacy v1", "legacy v2"]
+        assert captured[1]["ts"] == "t2-live"
+        assert captured[1]["meta"]["file_changes"] == [{"path": "live.py"}]
+        assert len(captured) == 2
+
+    @pytest.mark.asyncio
+    async def test_regenerate_preserves_legacy_unknown_file_snapshot(self, tmp_path, monkeypatch):
+        """A missing legacy snapshot stays unknown when its active variant is captured."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "legacy v2")
+        slot.messages[-1]["ts"] = "t2-live"
+        slot.messages[-1]["variants"] = [
+            {"content": "legacy v1", "ts": "t1"},
+            {"content": "legacy v2", "ts": "t2-stale"},
+        ]
+        slot.messages[-1]["variant_idx"] = 1
+        slot.drain()
+        captured = []
+
+        async def _capture(*_args, **_kwargs):
+            captured.extend(copy.deepcopy(slot._pending_variants))
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                response = await client.post("/api/chat/slots/s1/regenerate")
+                assert response.status == 200
+                await asyncio.sleep(0)
+
+        assert captured[1] == {"content": "legacy v2", "ts": "t2-live"}
+        assert "meta" not in captured[1]
+
+    @pytest.mark.asyncio
+    async def test_regenerate_preserves_explicit_known_empty_file_snapshot(
+        self, tmp_path, monkeypatch
+    ):
+        """An observed no-file result remains known-empty instead of unknown."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "modern v2")
+        slot.messages[-1]["ts"] = "t2-live"
+        slot.messages[-1]["variants"] = [
+            {"content": "modern v1", "ts": "t1", "meta": {"file_changes": []}},
+            {"content": "modern v2", "ts": "t2-stale", "meta": {"file_changes": []}},
+        ]
+        slot.messages[-1]["variant_idx"] = 1
+        slot.messages[-1]["meta"] = {"file_changes": []}
+        slot.drain()
+        captured = []
+
+        async def _capture(*_args, **_kwargs):
+            captured.extend(copy.deepcopy(slot._pending_variants))
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                response = await client.post("/api/chat/slots/s1/regenerate")
+                assert response.status == 200
+                await asyncio.sleep(0)
+
+        assert captured[1]["meta"]["file_changes"] == []
+
+    @pytest.mark.asyncio
+    async def test_regenerate_when_active_is_old_variant_no_dup(self, tmp_path, monkeypatch):
+        """A repeated active selector event updates that identity without appending."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "Done.")
+        slot.messages[-1]["ts"] = "t1-live"
+        slot.messages[-1]["variants"] = [
+            {
+                "content": "Done.",
+                "ts": "t1",
+                "source": "same-run",
+                "meta": {"file_changes": [{"path": "same.py"}]},
+            },
+            {"content": "different answer", "ts": "t2"},
         ]
         slot.messages[-1]["variant_idx"] = 0
+        slot.messages[-1]["meta"] = {"file_changes": [{"path": "same.py"}]}
         slot.drain()
         captured = []
 
         async def _capture(*a, **kw):
-            captured.extend(list(slot._pending_variants))
+            captured.extend(copy.deepcopy(slot._pending_variants))
 
         with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/s1/regenerate")
                 assert resp.status == 200
                 await asyncio.sleep(0)
-        assert [v["content"] for v in captured] == ["v1", "v2"]
+        assert captured == [
+            {
+                "content": "Done.",
+                "ts": "t1-live",
+                "source": "same-run",
+                "meta": {"file_changes": [{"path": "same.py"}]},
+            },
+            {"content": "different answer", "ts": "t2"},
+        ]
 
     @pytest.mark.asyncio
     async def test_regenerate_caps_variants(self, tmp_path, monkeypatch):
-        """Variant list is capped; oldest entries drop when over _MAX_VARIANTS."""
+        """Identity-less equal text appends distinctly, then evicts the oldest entry."""
         from kiro_crew.dashboard.chat import _MAX_VARIANTS
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
         slot.append("user", "hi")
-        slot.append("assistant", "newest")
-        existing = [{"content": f"v{i}", "ts": f"t{i}"} for i in range(_MAX_VARIANTS)]
-        slot.messages[-1]["variants"] = existing
-        slot.messages[-1]["variant_idx"] = len(existing) - 1
+        slot.append("assistant", "Done.")
+        slot.messages[-1]["ts"] = "new-ts"
+        slot.messages[-1]["meta"] = {"file_changes": [{"path": "new.py"}]}
+        slot.messages[-1]["variants"] = [
+            {"content": "drop-me", "ts": "oldest"},
+            {
+                "content": "Done.",
+                "ts": "old-ts",
+                "meta": {"file_changes": [{"path": "old.py"}]},
+            },
+            *[
+                {"content": f"filler-{index}", "ts": f"filler-ts-{index}"}
+                for index in range(_MAX_VARIANTS - 2)
+            ],
+        ]
         slot.drain()
         captured = []
 
         async def _capture(*a, **kw):
-            captured.extend(list(slot._pending_variants))
+            captured.extend(copy.deepcopy(slot._pending_variants))
 
         with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/s1/regenerate")
                 assert resp.status == 200
                 await asyncio.sleep(0)
-        assert len(captured) <= _MAX_VARIANTS
-        assert captured[-1]["content"] == "newest"
+        assert len(captured) == _MAX_VARIANTS
+        assert all(variant["content"] != "drop-me" for variant in captured)
+        assert [variant for variant in captured if variant["content"] == "Done."] == [
+            {
+                "content": "Done.",
+                "ts": "old-ts",
+                "meta": {"file_changes": [{"path": "old.py"}]},
+            },
+            {
+                "content": "Done.",
+                "ts": "new-ts",
+                "meta": {"file_changes": [{"path": "new.py"}]},
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_regenerate_equal_content_updates_only_active_variant(
+        self, tmp_path, monkeypatch
+    ):
+        """Equal text does not make two selector answers the same variant."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "make the change")
+        slot.append("assistant", "Done.")
+        slot.messages[-1]["ts"] = "t2-live"
+        slot.messages[-1]["variants"] = [
+            {
+                "content": "Done.",
+                "ts": "t1",
+                "source": "first-run",
+                "meta": {"file_changes": [{"path": "first.py"}]},
+            },
+            {
+                "content": "Done.",
+                "ts": "t2-stale",
+                "source": "second-run",
+                "meta": {"file_changes": [{"path": "second.py"}]},
+            },
+        ]
+        slot.messages[-1]["variant_idx"] = 1
+        slot.messages[-1]["meta"] = {"file_changes": [{"path": "second-live.py"}]}
+        slot.drain()
+        captured = []
+
+        async def _capture(*args, **kwargs):
+            captured.extend(copy.deepcopy(slot._pending_variants))
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=_capture):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                assert resp.status == 200
+                await asyncio.sleep(0)
+
+        assert captured == [
+            {
+                "content": "Done.",
+                "ts": "t1",
+                "source": "first-run",
+                "meta": {"file_changes": [{"path": "first.py"}]},
+            },
+            {
+                "content": "Done.",
+                "ts": "t2-live",
+                "source": "second-run",
+                "meta": {"file_changes": [{"path": "second-live.py"}]},
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_switch_equal_content_variants_restores_each_file_snapshot(
+        self, tmp_path, monkeypatch
+    ):
+        """Selector index restores attribution even when the visible text is equal."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("assistant", "Done.")
+        slot.messages[-1]["variants"] = [
+            {
+                "content": "Done.",
+                "ts": "t1",
+                "meta": {"file_changes": [{"path": "first.py"}]},
+            },
+            {
+                "content": "Done.",
+                "ts": "t2",
+                "meta": {"file_changes": [{"path": "second.py"}]},
+            },
+        ]
+        slot.messages[-1]["variant_idx"] = 1
+        slot.messages[-1]["meta"] = {"file_changes": [{"path": "second.py"}]}
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            first = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+            assert first.status == 200
+            assert slot.messages[-1]["ts"] == "t1"
+            assert slot.messages[-1]["meta"]["file_changes"] == [{"path": "first.py"}]
+
+            second = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 1})
+            assert second.status == 200
+            assert slot.messages[-1]["ts"] == "t2"
+            assert slot.messages[-1]["meta"]["file_changes"] == [{"path": "second.py"}]
 
     @pytest.mark.asyncio
     async def test_regenerate_rejects_missing_slot(self, tmp_path, monkeypatch):
@@ -17485,6 +17766,8 @@ class TestEmptyResponseRetry:
         assert any("without a closing reply" in m.get("content", "") for m in notice_msgs)
         # The card reassures rather than inviting a redo: completed steps stay done.
         assert any("will not re-run" in m.get("content", "") for m in notice_msgs)
+        assert slot._last_turn_stage_answer is False
+        state.sessions.record_success.assert_not_called()
         # Terminal rung still resets the budget for the next genuine user turn.
         assert slot._empty_response_retries == 0
 
@@ -18561,6 +18844,43 @@ class TestRunChatTransientRetry:
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_stop_during_posttoken_backoff_drops_recovery(self, tmp_path, monkeypatch):
+        """A Stop that starts and resolves during retry sleep still owns the turn."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_runner import _POSTTOKEN_RECOVER_MSG
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        captured: list[str] = []
+
+        async def _stream(message):
+            captured.append(message)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            raise AcpError(self._TRANSIENT)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        initial_generation = slot._stop_generation
+
+        async def _stop_during_backoff(_delay):
+            slot._stop_generation += 1
+
+        monkeypatch.setattr(chat_runner.asyncio, "sleep", _stop_during_backoff)
+        await _run_chat(state, slot, "hello")
+        await self._drain_bg(state)
+
+        assert slot._stop_generation == initial_generation + 1
+        assert captured == ["hello"]
+        assert all(item["content"] != _POSTTOKEN_RECOVER_MSG for item in slot._queue)
+        assert slot._posttoken_retry_used is False
+        assert any("partial answer" in text for text in self._assistant_texts(slot))
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_transient_post_toolcall_recovers(self, tmp_path, monkeypatch):
         """A transient 5xx AFTER a TOOL CALL fired RECOVERS instead of failing
         fast. Because the retry re-queues a CONTINUE instruction onto the
@@ -18730,8 +19050,15 @@ class TestRunChatTransientRetry:
         slot._posttoken_retry_used = True
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            # Drive the recovery turn directly with the continue instruction.
-            await _run_chat(state, slot, _POSTTOKEN_RECOVER_MSG)
+            # Drive the recovery turn directly with the same structural marker
+            # the queue drain derives from its synthetic entry. The fixed text
+            # alone is not authority: a user may paste it verbatim.
+            await _run_chat(
+                state,
+                slot,
+                _POSTTOKEN_RECOVER_MSG,
+                _synthetic_payload=True,
+            )
             await self._drain_bg(state)
 
         # Ran exactly once — no second recovery was enqueued (no loop).
@@ -18744,6 +19071,43 @@ class TestRunChatTransientRetry:
         assert any(t.startswith("❌") for t in self._err_texts(slot))
         # The partial from the recovery turn is still preserved (append-only).
         assert any("still-failing" in t for t in self._assistant_texts(slot))
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_user_pasted_recovery_text_gets_a_fresh_allowance(self, tmp_path, monkeypatch):
+        """Recovery ownership is structural, never inferred from fixed text."""
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_runner import _POSTTOKEN_RECOVER_MSG
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        captured: list[str] = []
+
+        async def _stream(msg):
+            captured.append(msg)
+            if len(captured) == 1:
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial-user-turn")
+                raise AcpError(self._TRANSIENT)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="completed-user-turn")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot._posttoken_retry_used = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            # Default _synthetic_payload=False is the load-bearing opposite:
+            # byte-identical text typed by the user starts a genuine new turn.
+            await _run_chat(state, slot, _POSTTOKEN_RECOVER_MSG)
+            await self._drain_bg(state)
+
+        assert len(captured) == 2
+        assert slot._posttoken_retry_used is True
+        assert any("completed-user-turn" in text for text in self._assistant_texts(slot))
+        assert not any(text.startswith("❌") for text in self._err_texts(slot))
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
