@@ -170,14 +170,14 @@ class TestOffLoop:
         loop_ident = threading.get_ident()
         probe_target = "kirocrew-offload-probe.md"
         seen: list[int] = []
-        real = llm_helpers.is_sensitive_path
+        real = llm_helpers.sensitive_path_refusal
 
         def _probe(s: str, *a, **kw):
             if s == probe_target:
                 seen.append(threading.get_ident())
             return real(s, *a, **kw)
 
-        with patch.object(llm_helpers, "is_sensitive_path", _probe):
+        with patch.object(llm_helpers, "sensitive_path_refusal", _probe):
             approved, _provider, _rows = await _resolve(json.dumps({"path": probe_target}))
 
         assert approved is True
@@ -193,14 +193,14 @@ class TestOffLoop:
         loop_ident = threading.get_ident()
         strings = [f"offload-file-{i}.txt" for i in range(25)]
         seen: list[int] = []
-        real = llm_helpers.is_sensitive_path
+        real = llm_helpers.sensitive_path_refusal
 
         def _probe(s: str, *a, **kw):
             if s.startswith("offload-file-"):
                 seen.append(threading.get_ident())
             return real(s, *a, **kw)
 
-        with patch.object(llm_helpers, "is_sensitive_path", _probe):
+        with patch.object(llm_helpers, "sensitive_path_refusal", _probe):
             await _resolve(json.dumps(strings))
 
         assert len(seen) == 25, seen
@@ -377,7 +377,7 @@ class TestTitleTierOffLoop:
         input_target = "offload-input-probe.md"
         seen: dict[str, int] = {}
         real_bash = llm_helpers.is_sensitive_bash_command
-        real_path = llm_helpers.is_sensitive_path
+        real_path = llm_helpers.sensitive_path_refusal
 
         def _bash_probe(s: str, *a, **kw):
             if s == title:
@@ -391,7 +391,7 @@ class TestTitleTierOffLoop:
 
         with (
             patch.object(llm_helpers, "is_sensitive_bash_command", _bash_probe),
-            patch.object(llm_helpers, "is_sensitive_path", _path_probe),
+            patch.object(llm_helpers, "sensitive_path_refusal", _path_probe),
         ):
             approved, _provider, _rows = await _resolve(
                 json.dumps({"path": input_target}), title=title
@@ -414,3 +414,67 @@ class TestTitleTierOffLoop:
         _outcome, error, mechanism = _decision(rows)
         assert error == "Blocked: missing tool title"
         assert mechanism == "always_deny"
+
+
+class TestTitleTierPathCheck:
+    """The path tier reads a PATH. A shell title is command text, so the funnel
+    makes the same exemption ``hooks.on_tool_call`` does: no resolver round-trip,
+    and no stall refusal naming a command as an unverifiable path."""
+
+    def test_a_shell_title_never_reaches_the_path_tier(self) -> None:
+        def never(*_a, **_k):
+            raise AssertionError("the path tier ran on shell text")
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", never):
+            assert llm_helpers._title_denial("cd /x && grep -r TODO .", None, is_shell=True) is None
+
+    def test_a_non_shell_title_still_pays_the_path_tier(self) -> None:
+        seen: list[str] = []
+
+        def record(path, *_a, **_k):
+            seen.append(path)
+            return None
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", record):
+            assert llm_helpers._title_denial("notes/todo.md", None) is None
+        assert seen == ["notes/todo.md"]
+
+    def test_a_stalled_path_title_is_refused_as_unverifiable_not_as_sensitive(self) -> None:
+        stalled = (
+            f"Blocked: 'notes/todo.md' {llm_helpers.UNVERIFIABLE_PATH_ANCHOR} within the budget"
+        )
+        with patch.object(llm_helpers, "sensitive_path_refusal", lambda *_a, **_k: stalled):
+            hit = llm_helpers._title_denial("notes/todo.md", None)
+        assert hit == ("path", stalled)
+
+    def test_a_matched_path_title_keeps_this_producers_wording(self) -> None:
+        with patch.object(
+            llm_helpers,
+            "sensitive_path_refusal",
+            lambda p, *_a, **_k: f"Blocked: access to sensitive path: {p}",
+        ):
+            hit = llm_helpers._title_denial("~/.ssh/id_rsa", None)
+        assert hit == ("path", "Blocked: sensitive path: ~/.ssh/id_rsa")
+
+    def test_shell_payload_strings_never_reach_the_path_tier(self) -> None:
+        def never(*_a, **_k):
+            raise AssertionError("the path tier ran on shell payload text")
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", never):
+            assert (
+                llm_helpers._first_tool_input_denial(
+                    ["cd /x && grep -r TODO .", "ls -la"], None, is_shell=True
+                )
+                is None
+            )
+
+    def test_non_shell_payload_strings_still_pay_the_path_tier(self) -> None:
+        seen: list[str] = []
+
+        def record(path, *_a, **_k):
+            seen.append(path)
+            return None
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", record):
+            assert llm_helpers._first_tool_input_denial(["notes/todo.md"], None) is None
+        assert seen == ["notes/todo.md"]

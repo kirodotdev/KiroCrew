@@ -93,19 +93,19 @@ here, and it is what decides how each kind is treated:
     Classified by the tool gate's deny composite, never run. The claim a shell row
     makes is "the gate must not refuse this", so classification answers it exactly
     and running the command would answer a different question. "Refused" means
-    refused by ANY of the four checks ``hooks.on_tool_call`` applies to a shell
-    command, in its order -- the path fence, the sensitive-command tier, the
+    refused by ANY of the three checks ``hooks.on_tool_call`` applies to a shell
+    command, in its order -- the sensitive-command tier, the
     exfiltration auditor, and the deny-rule catalog (:data:`TIERS`, the same table
     ``scripts/deny_diff.py`` declares). Measuring the catalog alone would go green
-    on a fix that tightened any of the other three, which is the specific way this
+    on a fix that tightened either of the other two, which is the specific way this
     gate could ship a meaningless pass. The verdict names the tier that refused,
-    because "the path fence refused it" and "a catalog rule matched it" need
+    because "the sensitive-command tier refused it" and "a catalog rule matched it" need
     different fixes. The composite is called in a CHILD process with the worktree's own ``src`` ahead of
     everything on ``PYTHONPATH``, because the point is to classify against the
     FIXED code: importing it in this process would bind whatever copy of the
     package the interpreter already loaded, which for a test runner inside the
     repository is the unfixed one. When the import fails, or the tree lacks one of
-    the four checks, every shell row is ``unverifiable`` and the verdict is 20 -- a
+    the three checks, every shell row is ``unverifiable`` and the verdict is 20 -- a
     fence that cannot be read is not a fence that agreed, and a tier that is missing
     is coverage silently lost, not a tier that permitted. The probe's argv is FIXED -- this script re-entered with
     ``--classify-stdin`` -- and there is deliberately no flag to substitute another
@@ -492,16 +492,13 @@ def run_verifier(
 #: composite. A check the tree does not carry is coverage lost, and the probe
 #: reports it as unavailable rather than skipping it.
 TIERS: tuple[tuple[str, str], ...] = (
-    ("sensitive-path", "is_sensitive_path"),
+    # No path tier: a shell command is command text, which the gate deliberately does
+    # not match paths in; see the matching note on ``deny_diff._TIERS``.
     ("sensitive-bash", "is_sensitive_bash_command"),
     ("exfil", "audit_bash_exfiltration"),
     ("deny-rules", "is_denied"),
 )
 
-#: Reason reported for a tier whose check answers True/False rather than a string.
-#: The path fence is the one such check, and a bare ``True`` would otherwise render
-#: as an empty refusal.
-BOOL_TIER_REASON = "Blocked: access to sensitive path"
 
 #: This script re-entered in probe mode. The probe imports the product's fence, so
 #: it is spelled as a re-entry rather than as an inline ``-c`` program: the same
@@ -683,7 +680,7 @@ def classify_stdin(stream: Any, out: Any) -> int:
         if check is None:
             # A missing tier is coverage lost, not a tier that permitted. Reporting
             # the composite as unavailable keeps the shell rows out of the passing
-            # set instead of certifying them against three checks out of four.
+            # set instead of certifying them against two checks out of three.
             json.dump({"available": False, "error": f"kiro_crew.security has no {attribute}"}, out)
             out.write("\n")
             return 0
@@ -700,10 +697,8 @@ def classify_stdin(stream: Any, out: Any) -> int:
                 return 0
             if not outcome:
                 continue
-            # The path fence answers True/False; the others answer a reason or None.
-            # Both mean refused, and the tier is named so the reviewer knows which
-            # fix to reach for.
-            text = BOOL_TIER_REASON if outcome is True else str(outcome)
+            # The tier is named so the reviewer knows which fix to reach for.
+            text = str(outcome)
             reason = f"[{name}] {text}"
             break
         results.append({"command": command, "reason": reason})

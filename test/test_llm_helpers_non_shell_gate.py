@@ -170,9 +170,9 @@ class TestABodyIsNotACommandLine:
         seen: list[list[str]] = []
         real = llm_helpers._first_tool_input_denial
 
-        def _spy(strings, denied):
+        def _spy(strings, denied, **kwargs):
             seen.append(list(strings))
-            return real(strings, denied)
+            return real(strings, denied, **kwargs)
 
         params = {"command": "create", "path": "/tmp/proj/a.md", "content": _PROSE}
         with patch.object(llm_helpers, "_first_tool_input_denial", side_effect=_spy):
