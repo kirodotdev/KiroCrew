@@ -149,6 +149,98 @@ def _query_items(store, principal, resolver, item_ids, term):
 
 
 @pytest.mark.asyncio
+async def test_handler_injected_runner_drives_real_chain(store, monkeypatch):
+    """The shared handler's registration seam constructs a connector WITH an
+    injected runner (the real vendor construction contract), and the SAME
+    registered instance drives the real SyncScheduler -> fetch_rows ->
+    ingest_rows -> store -> ACL query chain.
+
+    This is the end-to-end proof that the injection wiring produces a working
+    connector, not just an app[] presence flag. The live-transport leaf (W01
+    controlled TLS) is the injected runner's job; here it is a scripted runner
+    (the connectors' own documented offline verification path), because the real
+    W01 executor (PR #11286) and the vendor transport modules are not on this
+    tree yet.
+    """
+    import sys
+    import types
+
+    from kiro_crew.dashboard.handlers.knowledge import _register_optional_connector
+
+    # A connector whose ctor takes the injected runner_factory and whose
+    # fetch_rows uses it to produce rows -- the shape of the real vendors.
+    class _InjectedConnector(BaseConnector):
+        def __init__(self, operations_factory):
+            assert operations_factory is not None  # refuses without a runner
+            self._ops = operations_factory
+
+        def source_type(self):
+            return "teststruct"
+
+        def supports_rows(self):
+            return True
+
+        async def detect_changes(self, source):
+            return True
+
+        async def fetch(self, source):
+            raise NotImplementedError
+
+        def validate_config(self, config):
+            return True, None
+
+        async def fetch_rows(self, source):
+            # Drive the injected runner exactly as a real connector would:
+            # operations_factory(source) -> ops; ops() -> the raw records.
+            ops = self._ops(source)
+            rows = [
+                SourceRow(key=k, text=t, tenant="acme", subjects=(subj,),
+                          resource_ref=_ref("sharepoint", "tenA", k))
+                for (k, t, subj) in ops()
+            ]
+            return rows, True, {"cursor": "c1"}
+
+    mod = types.ModuleType("kiro_crew._injected_vendor_mod")
+    mod._InjectedConnector = _InjectedConnector  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kiro_crew._injected_vendor_mod", mod)
+
+    # The host-installed runner factory: given a source, returns a scripted
+    # "ops" that yields two records (stands in for the W01-backed DriveOperations
+    # whose calls run through the control-plane executor's controlled TLS).
+    def _runner_factory(source):
+        return lambda: [("k1", "alpha one", "sp-alice"),
+                        ("k2", "alpha two", "sp-bob")]
+
+    connectors: dict = {}
+    ok = _register_optional_connector(
+        connectors, "kiro_crew._injected_vendor_mod", "_InjectedConnector",
+        runner_factory=_runner_factory,
+    )
+    assert ok is True
+    conn = connectors["teststruct"]
+
+    # Drive the REGISTERED instance through the real scheduler -> store chain.
+    src = store.add_source("Struct", "teststruct", "teststruct://inj")
+    out = await _sync(store, conn, src)
+    assert out["synced"] is True and out["items_created"] == 2
+
+    state = store.get_connector_row_state(src)
+    assert set(state.keys()) == {"k1", "k2"}
+    k1 = state["k1"]["item_ids"][0]
+    k2 = state["k2"]["item_ids"][0]
+    g1 = store.get_item_grants([k1])[k1]
+    assert g1["managed"] is True
+    assert ProviderResourceRef.from_json(g1["resource_ref"]).resource_id == "k1"
+
+    # ACL query: alice (bound to sharepoint/tenA) sees k1, not k2 (bob's).
+    resolver = _Resolver({("sharepoint", "tenA"):
+                          AccessContext(subject="sp-alice", tenant="acme")})
+    res = _query_items(store, QueryPrincipal("alice"), resolver, [k1, k2], "alpha")
+    assert k1 in _ids(res)
+    assert k2 not in _ids(res)
+
+
+@pytest.mark.asyncio
 async def test_incremental_keeps_unchanged_rows(store):
     src = store.add_source("Struct", "teststruct", "teststruct://inc")
     r1 = SourceRow(key="r1", text="one body", tenant="t", subjects=("u1",),

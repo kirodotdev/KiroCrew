@@ -1916,34 +1916,49 @@ def _register_optional_connector(
     connectors: "dict[str, BaseConnector]",
     module_path: str,
     class_name: str,
+    runner_factory=None,
 ) -> bool:
-    """Register a vendor connector into *connectors* IFF its module is present.
+    """Register a structured vendor connector, INJECTING its live-read runner.
 
     The structured vendor connectors (GitHub / Google Drive / Salesforce) each
-    live in their OWN package and land on ``main`` through their OWN PR, on their
-    own schedule. This shared handler is their single registration site, but it
-    must not hard-``import`` a module that has not landed yet: a top-level import
-    of an absent module would break this handler's own import on a tree where the
-    vendor PR is not merged.
+    live in their OWN package and land on ``main`` through their OWN PR. This
+    shared handler is their single registration site, but it must not
+    hard-``import`` a module that has not landed yet: a top-level import of an
+    absent module would break this handler's own import on a tree where the
+    vendor PR is not merged. So the import is guarded.
 
-    So the registration is import-guarded. When the module is importable, its
-    connector is instantiated and keyed by its own ``source_type()`` (the class
-    is the authority on the string, not this call site). When it is absent, the
-    source_type is simply NOT registered — which is fail-closed: ``add_source``
-    rejects an unregistered ``source_type`` and the retrieval gate never sees
-    such a source, so a not-yet-landed vendor is unreachable, never public.
+    Critically, these connectors are NOT constructed no-arg. Each takes an
+    INJECTED runner/factory (Google ``operations_factory``, Salesforce
+    ``call_runner``, ...) that composes the W01 control-plane executor with the
+    per-source trusted handle + credential custody + real transport (controlled
+    TLS). Constructed WITHOUT it, the connector's own ``validate_config`` /
+    ``fetch`` refuse fail-closed ("no runner wired") — so registering a no-arg
+    instance would be a dead, misleading registration that only ever rejects.
 
-    This is real registration, not an ``app[...]`` presence flag: the connector
-    object is constructed and wired into the ``SyncScheduler``'s map here. It is
-    NOT a copy of the vendor implementation — the implementation stays in the
-    vendor's module; only the import + instantiation live here.
+    Therefore a vendor is registered ONLY when BOTH its module is importable AND
+    a real ``runner_factory`` is supplied (the host installs it once the W01
+    executor — PR #11286 — is available). When the module is absent OR no runner
+    factory is installed, the source_type is simply NOT registered — fail-closed:
+    ``add_source`` rejects an unregistered source_type and the retrieval gate
+    never sees it, so a not-yet-wired vendor is unreachable, never public. This
+    is real construction+injection (not an ``app[...]`` presence flag), and it
+    copies no vendor code — only the import + injected instantiation live here.
 
-    Returns True when the connector was registered, False when its module was
-    absent (logged at debug, not an error — absence is the expected state until
-    the vendor PR merges).
+    ``runner_factory`` is the callable this call passes as the connector's
+    injected dependency (its exact keyword is per-connector; the caller maps it).
+    Returns True only when the connector was constructed with its runner and
+    registered.
     """
     import importlib
 
+    if runner_factory is None:
+        logger.debug(
+            "knowledge connector %s: no W01 runner factory installed; not "
+            "registered (fail-closed; needs the control-plane executor, PR "
+            "#11286, and the host to install its runner)",
+            module_path,
+        )
+        return False
     try:
         module = importlib.import_module(module_path)
     except ImportError:
@@ -1955,7 +1970,7 @@ def _register_optional_connector(
         return False
     try:
         connector_cls = getattr(module, class_name)
-        connector = connector_cls()
+        connector = connector_cls(runner_factory)
         connectors[connector.source_type()] = connector
     except Exception:  # pragma: no cover - defensive; a broken vendor module
         logger.exception(
@@ -3086,22 +3101,33 @@ def setup_knowledge_routes(app: web.Application) -> None:
         connectors["obsidian_vault"] = LocalFolderConnector()
         # Structured vendor connectors (GitHub / Google Drive / Salesforce).
         # Each lives in its own module that lands on main through its own PR;
-        # this is their single registration site. The registration is
-        # import-guarded (see _register_optional_connector): a connector is wired
-        # in only when its module is present, and the source_type it answers to
-        # is taken from the connector itself. Absent module → source_type not
-        # registered → add_source rejects it and the retrieval gate never sees
-        # it (fail-closed, never public). No vendor implementation is copied
-        # here; only the import + instantiation live in this shared handler.
-        for _mod, _cls in (
-            ("kiro_crew.knowledge.connectors.github_structured",
+        # this is their single registration site. Each is constructed with an
+        # INJECTED W01-backed runner/factory (controlled TLS + credential
+        # custody + real transport) that the host installs on the app under
+        # ``knowledge_connector_runners`` — a {source_type: runner_factory} map —
+        # once the control-plane executor (PR #11286) is available. A connector
+        # is registered ONLY when BOTH its module is importable AND its runner
+        # factory is installed; otherwise it is not registered (fail-closed:
+        # add_source rejects the source_type and the retrieval gate never sees
+        # it, never public). No vendor implementation is copied here — only the
+        # import + injected instantiation live in this shared handler. See
+        # _register_optional_connector.
+        _runner_factories = app.get("knowledge_connector_runners") or {}
+        for _stype, _mod, _cls in (
+            ("github",
+             "kiro_crew.knowledge.connectors.github_structured",
              "GithubStructuredConnector"),
-            ("kiro_crew.knowledge.connectors.google_drive",
+            ("google_drive",
+             "kiro_crew.knowledge.connectors.google_drive",
              "GoogleDriveConnector"),
-            ("kiro_crew.knowledge.connectors.salesforce_structured",
+            ("salesforce",
+             "kiro_crew.knowledge.connectors.salesforce_structured",
              "SalesforceStructuredConnector"),
         ):
-            _register_optional_connector(connectors, _mod, _cls)
+            _register_optional_connector(
+                connectors, _mod, _cls,
+                runner_factory=_runner_factories.get(_stype),
+            )
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
         # ever needs to, override a built-in. The Default returns {} → standalone
