@@ -64,7 +64,10 @@ from kiro_crew.messaging.dispatch import (
     admit_inbound_callback,
     build_auto_approve,
     build_directive_consumer,
+    consume_reinjection,
     delivery_is_muted,
+    driver_turn_landed,
+    rearm_reinjection,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
@@ -966,6 +969,10 @@ class TelegramDispatcher:
         _acquired = False
         failure_reason: str | None = None
         attachment_temp_paths: list[str] = []
+        # Post-compaction re-injection bookkeeping for the finally: whether this
+        # turn consumed the one-shot flag, and whether it landed (recorded success).
+        _needs_reinjection = False
+        _turn_landed = False
         try:
             # Ack placeholder first (before the potentially slow cold-start);
             # on_turn_start is idempotent so the driver's later call no-ops.
@@ -1023,6 +1030,10 @@ class TelegramDispatcher:
             # disjoint from ``cfg.agents``, so a store derived from it resolves to
             # ``default`` for exactly the crew that configured otherwise. Private
             # memory was prepared before provider acquisition and fails closed.
+            # A compaction drops session-start context. Read-and-clear the
+            # one-shot flag so this turn re-injects that context exactly once;
+            # the finally re-arms it if this turn never lands.
+            _needs_reinjection = consume_reinjection(self.sessions, session_key)
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message,
@@ -1033,6 +1044,7 @@ class TelegramDispatcher:
                 agent=agent,
                 memory_store=_memory_store,
                 resumed=resumed,
+                needs_reinjection=_needs_reinjection,
                 runtime_source="telegram",
                 context_provider=provider,
                 # Temporary mode reads NO memory, which is the half the transcript
@@ -1110,6 +1122,10 @@ class TelegramDispatcher:
             # ── Post-turn bookkeeping (each guarded so a failure here can't
             # fall through to the except and re-record the successful turn). ──
             self.sessions.record_success(session_key)
+            # The prompt (with any re-injected context) reached the model and
+            # the turn completed, so the finally must NOT restore the flag --
+            # unless the user cancelled it, which discards that prompt.
+            _turn_landed = driver_turn_landed(driver)
             Stats().inc_message_success()
             if accumulated and not muted and self._voice_enabled(route):
                 # Its own bookkeeping step, and last-effort by design: the text
@@ -1277,6 +1293,12 @@ class TelegramDispatcher:
                 await self.sessions.record_failure(session_key)
                 Stats().inc_message_failed()
         finally:
+            # A turn that consumed the post-compaction flag but never landed
+            # discarded the prompt carrying the re-injected context; put the
+            # flag back so the next turn re-injects it.
+            rearm_reinjection(
+                self.sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed
+            )
             # Always finalize the placeholder (no perma-"🤔 …"), even if
             # get_or_create raised before the semaphore was held. Only release
             # the semaphore if we actually acquired it.

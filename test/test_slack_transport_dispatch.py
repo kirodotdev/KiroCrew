@@ -24,6 +24,7 @@ from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
+    STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
 from kiro_crew.messaging.link import canonical_key
@@ -688,6 +689,130 @@ class TestTransportNativeParity:
             )
         )
         assert cb.captured.get("user_display_name") == "Alice"
+
+
+def _arm_reinjection(sessions) -> dict:
+    """Give the session stand-in the real manager's one-shot flag surface."""
+    ledger: dict = {"consumed": [], "marks": 0, "armed": True}
+
+    def _consume(key):
+        ledger["consumed"].append(key)
+        was = ledger["armed"]
+        ledger["armed"] = False
+        return was
+
+    def _mark(key):
+        ledger["marks"] += 1
+        ledger["armed"] = True
+
+    sessions.consume_needs_reinjection = _consume
+    sessions.mark_needs_reinjection = _mark
+    return ledger
+
+
+class TestTransportCompactionReinjection:
+    """The transport turn loop is its own copy, so it must consume the flag itself.
+
+    ``session_compaction`` marks ``needs_reinjection`` after an in-place compaction
+    dropped the session-start context. A turn loop that does not read it runs
+    every turn after ``/compact`` without the skills index or the response-preferences
+    block.
+    """
+
+    def _prep(self, monkeypatch):
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+
+    def _run(self, sessions, cb):
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=RecordingSlackClient(),
+                sessions=sessions,
+                channel="C1",
+                text="hi",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=cb,
+                conversation_log=None,
+            )
+        )
+
+    def _provider(self):
+        return ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+
+    def test_a_compacted_session_forwards_the_flag_to_build_message(self, monkeypatch):
+        self._prep(monkeypatch)
+        cb = _CapturingCtxBuilder()
+        sessions = _CapturingSessions(self._provider())
+        ledger = _arm_reinjection(sessions)
+        self._run(sessions, cb)
+        assert ledger["consumed"] == [canonical_key(_MSG_TS)]
+        assert cb.captured.get("needs_reinjection") is True
+        # Landed: consumed exactly once, and NOT put back.
+        assert ledger["marks"] == 0 and ledger["armed"] is False
+
+    def test_a_session_stand_in_without_the_flag_gets_the_false_default(self, monkeypatch):
+        self._prep(monkeypatch)
+        cb = _CapturingCtxBuilder()
+        sessions = _CapturingSessions(self._provider())
+        assert not hasattr(sessions, "consume_needs_reinjection")
+        self._run(sessions, cb)
+        assert cb.captured.get("needs_reinjection") is False
+
+    def test_a_cancelled_consuming_turn_puts_the_flag_back(self, monkeypatch):
+        # A /stop completes the turn normally with stop_reason "cancelled", and
+        # the backend drops that turn from its transcript -- the re-injected
+        # context goes with it, so the flag must come back like a raised turn.
+        self._prep(monkeypatch)
+        cb = _CapturingCtxBuilder()
+        sessions = _CapturingSessions(
+            ScriptedProvider([make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED)])
+        )
+        ledger = _arm_reinjection(sessions)
+        self._run(sessions, cb)
+        assert cb.captured.get("needs_reinjection") is True
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    def test_a_failed_consuming_turn_puts_the_flag_back(self, monkeypatch):
+        # The flag is cleared BEFORE build_message; a driver fault on that very
+        # turn discards the prompt carrying the re-injected context. Without the
+        # re-arm the session runs without it until the NEXT compaction -- the
+        # contract the dashboard runner keeps in its finally, applied here.
+        self._prep(monkeypatch)
+
+        class _DyingDriver:
+            def __init__(self, *a, **k):
+                pass
+
+            async def run(self, message):
+                raise RuntimeError("backend died before streaming")
+
+        monkeypatch.setattr(transport_dispatch, "TurnDriver", _DyingDriver)
+        cb = _CapturingCtxBuilder()
+        sessions = _CapturingSessions(self._provider())
+        ledger = _arm_reinjection(sessions)
+        failures: list = []
+
+        async def _record_failure(key):
+            failures.append(key)
+
+        sessions.record_failure = _record_failure
+        self._run(sessions, cb)
+        assert cb.captured.get("needs_reinjection") is True
+        assert failures == [canonical_key(_MSG_TS)]
+        assert ledger["marks"] == 1 and ledger["armed"] is True
 
 
 class TestTransportTemporaryBlocksMemoryReads:

@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
 from kiro_crew.messaging.renderer import SilentRenderer
@@ -799,6 +800,99 @@ def test_missing_reinjection_consumer_keeps_turn_running(monkeypatch) -> None:
 
     assert ctx.calls[0]["needs_reinjection"] is False
     assert sessions.successes == 1
+
+
+class _RearmSessions(_Sessions):
+    """Records the one-shot flag's consume/mark traffic, like the real manager."""
+
+    def __init__(self, *, armed: bool = True) -> None:
+        super().__init__()
+        self.armed = armed
+        self.marks = 0
+
+    def consume_needs_reinjection(self, key: str) -> bool:
+        was = self.armed
+        self.armed = False
+        return was
+
+    def mark_needs_reinjection(self, key: str) -> None:
+        self.marks += 1
+        self.armed = True
+
+
+class _FailingDriver(_Driver):
+    async def run(self, message):
+        raise RuntimeError("provider fell over")
+
+
+def test_failed_consuming_turn_rearms_reinjection(monkeypatch) -> None:
+    """The turn cleared the flag, then died before landing: the flag comes back.
+
+    Without the re-arm the compacted session runs without its skills index (and
+    a member DM without its rules) until the NEXT compaction. Same rule as the
+    dashboard runner's finally.
+    """
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _FailingDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True, "the flag was consumed by this turn"
+    assert sessions.failures == 1
+    assert (
+        sessions.marks == 1 and sessions.armed is True
+    ), "a consuming turn that never landed must put the one-shot flag back"
+
+
+def test_landed_consuming_turn_does_not_rearm(monkeypatch) -> None:
+    """Non-vacuity: a turn that landed keeps the flag consumed (exactly once)."""
+    _patch_pipeline(monkeypatch)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.successes == 1
+    assert sessions.marks == 0 and sessions.armed is False
+
+
+class _CancelledDriver(_Driver):
+    """``run`` returns normally, as it does on ``/stop``, with the cancel stop reason."""
+
+    last_stop_reason = STOP_REASON_CANCELLED
+
+
+def test_cancelled_consuming_turn_rearms_reinjection(monkeypatch) -> None:
+    """A user cancel completes the turn normally, yet the backend drops that turn
+    from its transcript -- the re-injected context goes with it, so the flag
+    must come back exactly as for a raised turn."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _CancelledDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.successes == 1, "the pipeline still records the cancelled turn as it did"
+    assert sessions.marks == 1 and sessions.armed is True
+
+
+def test_failed_turn_without_a_consumed_flag_does_not_arm_one(monkeypatch) -> None:
+    """A plain failure on a never-compacted session must not invent a re-injection."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _FailingDriver)
+    sessions = _RearmSessions(armed=False)
+
+    asyncio.run(
+        drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_RecordingCtxBuilder())
+    )
+
+    assert sessions.failures == 1
+    assert sessions.marks == 0 and sessions.armed is False
 
 
 class _GovernanceStub:

@@ -14,10 +14,12 @@ from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import git_coord, name_grant, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpProcessDied
+from kiro_crew.agent_sdk import TURN_STOP_REASON_CANCELLED
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, fire_tool_hooks, get_global_hook_store
 from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
+from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -319,6 +321,10 @@ async def execute_task(
         logger.info("Task %d/%d (attempt %d): %s", task.index, len(run.tasks), attempt, task.title)
 
         _acquired = False
+        # Post-compaction re-injection bookkeeping for the finally: whether this
+        # turn consumed the one-shot flag, and whether it landed (recorded success).
+        _needs_reinjection = False
+        _turn_landed = False
         try:
             from kiro_crew.context import inherit_session_memory
 
@@ -336,6 +342,12 @@ async def execute_task(
 
             task_prompt = await build_task_prompt(run, task, attempt, work_dir)
             if ctx:
+                # The check_context above (and the post-turn usage check) can
+                # compact this session in place, which drops its session-start
+                # context. Read-and-clear the one-shot flag so this turn
+                # re-injects that context exactly once; the finally re-arms it
+                # if the turn never lands.
+                _needs_reinjection = consume_reinjection(sessions, session_key)
                 # Off-loop: build_message embeds the episodic query (blocking urllib).
                 full_prompt, _ = await run_in_embed_pool(
                     ctx.build_message,
@@ -348,6 +360,7 @@ async def execute_task(
                     memory_store=memory_store,
                     context_provider=client,
                     resumed=_resumed,
+                    needs_reinjection=_needs_reinjection,
                 )
             else:
                 full_prompt = task_prompt
@@ -570,6 +583,12 @@ async def execute_task(
             final_result = result_prefix + result_text
             task.result = redact_credentials(redact_exfiltration_urls(final_result)[0])[0]
             sessions.record_success(session_key)
+            # The prompt (with any re-injected context) reached the model and
+            # the turn completed, so the finally must NOT restore the flag --
+            # unless the turn was cancelled, which discards that prompt.
+            _turn_landed = (
+                getattr(_complete_event, "stop_reason", "") or ""
+            ) != TURN_STOP_REASON_CANCELLED
             sessions.check_context_usage(session_key, client)
 
             # ── Per-turn usage row: attribute task-runner spend. ──
@@ -705,6 +724,12 @@ async def execute_task(
             task.status = TaskStatus.FAILED
             return False
         finally:
+            # A turn that consumed the post-compaction flag but never landed
+            # discarded the prompt carrying the re-injected context; put the
+            # flag back so the next attempt re-injects it.
+            rearm_reinjection(
+                sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed
+            )
             if _acquired:
                 sessions.release(session_key)
 

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
+from kiro_crew.agent_sdk import TURN_STOP_REASON_CANCELLED
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, event_is_spawn_run
@@ -579,6 +580,70 @@ def conversation_is_muted(sessions: Any, turn: ChannelTurn) -> bool:
     return delivery_is_muted(sessions, turn.session_key, turn.channel_type)
 
 
+def consume_reinjection(sessions: Any, session_key: str) -> bool:
+    """Read-and-clear the one-shot post-compaction re-injection flag.
+
+    ``session_compaction`` marks it after a successful in-place compaction,
+    because compaction drops the session-start context (skills index, member
+    section, response preferences). The turn that consumes it passes the value
+    to ``build_message`` as ``needs_reinjection`` so that context comes back
+    exactly once. Every channel turn loop reads it through this one helper: a
+    per-channel copy of the turn loop that skips it re-injects nothing after
+    ``/compact``.
+
+    Defensive on the accessor: a session stand-in that predates the flag gets
+    the safe ``False``, never an AttributeError on a real inbound message.
+    """
+    consume = getattr(sessions, "consume_needs_reinjection", None)
+    return bool(consume(session_key)) if callable(consume) else False
+
+
+def driver_turn_landed(driver: Any) -> bool:
+    """Whether a completed ``TurnDriver.run`` counts as landed for re-injection.
+
+    ``run`` returns normally on a user cancel too: the backend answers ``/stop``
+    with a completion whose stop reason is ``cancelled`` and then drops the
+    cancelled turn from its own transcript, so the prompt (and any re-injected
+    context it carried) is gone exactly as if the turn had raised. Only a turn
+    that ended for any other reason keeps that context in the conversation.
+    Defensive on the attribute, like every other read on the driver seam: a
+    stand-in without ``last_stop_reason`` counts as landed.
+    """
+    return getattr(driver, "last_stop_reason", "") != TURN_STOP_REASON_CANCELLED
+
+
+def rearm_reinjection(sessions: Any, session_key: str, *, consumed: bool, landed: bool) -> None:
+    """Put the one-shot flag back when this turn consumed it but never landed.
+
+    The flag is cleared BEFORE ``build_message``, so a turn that then dies -- a
+    provider error, a driver fault, a cancel -- has discarded the prompt that
+    carried the re-injected context, and without this the session runs without
+    its skills index (and a member DM without its rules) until the next
+    compaction. This is the contract the dashboard runner already keeps in its
+    own ``finally`` (``chat_runner``: re-arm when consumed and not landed); the
+    channel loops share it so the two paths cannot disagree.
+
+    ``landed`` means the turn was recorded a success. A cancelled turn is NOT
+    landed: the backend drops a cancelled turn from its own transcript, so the
+    context it carried is gone with it. Call from the turn's ``finally`` so every
+    exit path is covered. Never raises: a failure to re-arm is logged and the
+    turn's own outcome stands.
+    """
+    if not consumed or landed:
+        return
+    mark = getattr(sessions, "mark_needs_reinjection", None)
+    if not callable(mark):
+        return
+    try:
+        mark(session_key)
+    except Exception:
+        logger.debug(
+            "re-arming post-compaction re-injection failed session=%s",
+            session_key,
+            exc_info=True,
+        )
+
+
 def hook_auto_reply(ctx_builder: Any, text: str) -> str | None:
     """The canned answer a user-defined ``on_message`` hook gives *text*, else None.
 
@@ -625,6 +690,10 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
     renderer = turn.renderer
     session_key = turn.session_key
     _acquired = False
+    # Post-compaction re-injection bookkeeping for the finally: whether this
+    # turn consumed the one-shot flag, and whether it landed (recorded success).
+    needs_reinjection = False
+    _turn_landed = False
     # Enforced governance backstop. Channels SHOULD gate earlier (before any
     # side effect such as a command ack or a generation bump — see the weixin
     # dispatcher, which checks before parse_command), but the pipeline rechecks
@@ -774,9 +843,9 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # The member tier was prepared before provider acquisition; unavailable
         # private memory refuses the turn instead of substituting global memory.
         # A compaction drops session-start context. Read-and-clear the one-shot
-        # flag so this turn re-injects that context exactly once.
-        consume = getattr(sessions, "consume_needs_reinjection", None)
-        needs_reinjection = bool(consume(session_key)) if callable(consume) else False
+        # flag so this turn re-injects that context exactly once. The finally
+        # re-arms it if this turn never lands.
+        needs_reinjection = consume_reinjection(sessions, session_key)
 
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
@@ -844,6 +913,10 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 session_key,
                 exc_info=True,
             )
+        # The prompt (with any re-injected context) reached the model and the
+        # turn completed, so the finally must NOT restore the one-shot flag --
+        # unless the user cancelled it, which discards that prompt.
+        _turn_landed = driver_turn_landed(driver)
         if turn.persist is not None:
             try:
                 await asyncio.to_thread(turn.persist, turn.user_text, accumulated, is_new)
@@ -928,6 +1001,11 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         if _acquired:
             await sessions.record_failure(session_key)
     finally:
+        # A turn that consumed the post-compaction flag but never landed
+        # discarded the prompt carrying the re-injected context; put the flag
+        # back so the next turn re-injects it. First, because nothing below
+        # depends on it and it must run on every exit path.
+        rearm_reinjection(sessions, session_key, consumed=needs_reinjection, landed=_turn_landed)
         # Always finalize the turn, even if get_or_create raised before the
         # semaphore was held. Only release if we actually acquired it.
         #

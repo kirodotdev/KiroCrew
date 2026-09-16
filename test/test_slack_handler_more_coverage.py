@@ -967,6 +967,88 @@ class _Hooks:
         return self._tool_result
 
 
+class _RecordingBuilder(_Builder):
+    """``_Builder`` that also keeps every ``build_message`` kwarg."""
+
+    def __init__(self):
+        super().__init__(ToolHookResult(action=TOOL_ALLOW))
+        self.build_calls: list[dict] = []
+
+    def build_message(self, text, is_new, session_key, **kw):
+        self.build_calls.append({"key": session_key, **kw})
+        return text, None
+
+
+def _arm_reinjection(sessions) -> dict:
+    """Give the session stand-in the real manager's one-shot flag surface."""
+    ledger: dict = {"consumed": [], "marks": 0, "armed": True}
+
+    def _consume(key):
+        ledger["consumed"].append(key)
+        was = ledger["armed"]
+        ledger["armed"] = False
+        return was
+
+    def _mark(key):
+        ledger["marks"] += 1
+        ledger["armed"] = True
+
+    sessions.consume_needs_reinjection = _consume
+    sessions.mark_needs_reinjection = _mark
+    return ledger
+
+
+class TestCompactionReinjection:
+    """The native Slack turn loop is its own copy, so it must consume the flag itself.
+
+    ``session_compaction`` marks ``needs_reinjection`` after an in-place compaction
+    dropped the session-start context. A turn loop that does not read it runs
+    every turn after ``/compact`` without the skills index or the response-preferences
+    block.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_compacted_session_forwards_the_flag_to_build_message(self):
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]))
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        call = builder.build_calls[-1]
+        assert ledger["consumed"] == [call["key"]], "consumed under the key the turn runs as"
+        assert call["needs_reinjection"] is True
+        # Landed: consumed exactly once, and NOT put back.
+        assert ledger["marks"] == 0 and ledger["armed"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_session_stand_in_without_the_flag_gets_the_false_default(self):
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]))
+        assert not hasattr(sessions, "consume_needs_reinjection")
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is False
+        assert sessions.failures == [], "the turn still ran"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_consuming_turn_puts_the_flag_back(self):
+        # The flag is cleared BEFORE build_message; a provider error on that very
+        # turn discards the prompt carrying the re-injected context. Without the
+        # re-arm the session runs without it until the NEXT compaction -- the
+        # contract the dashboard runner keeps in its finally, applied here.
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(FakeProvider(raises=AcpProcessDied("agent died")))
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is True
+        assert sessions.failures, "the turn was recorded a failure"
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+
 class TestToolHookVerdicts:
     @pytest.mark.asyncio
     async def test_tool_call_deny_is_surfaced_as_unenforceable_warning(self):

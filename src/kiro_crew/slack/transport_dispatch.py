@@ -34,7 +34,13 @@ from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.llm_helpers import save_conversation_turn_off_loop
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title
-from kiro_crew.messaging.dispatch import admit_inbound_callback, build_directive_consumer
+from kiro_crew.messaging.dispatch import (
+    admit_inbound_callback,
+    build_directive_consumer,
+    consume_reinjection,
+    driver_turn_landed,
+    rearm_reinjection,
+)
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
@@ -386,6 +392,10 @@ async def handle_message_transport(
     # handling the original error.
     _logged_user_turn = False
     _stamped_turn = False
+    # Post-compaction re-injection bookkeeping for the finally: whether this
+    # turn consumed the one-shot flag, and whether it landed (recorded success).
+    _needs_reinjection = False
+    _turn_landed = False
 
     try:
         # ── Fire the ack reaction + working status IMMEDIATELY, before the
@@ -574,6 +584,10 @@ async def handle_message_transport(
             # resolves to ``default`` for exactly the crew that configured
             # otherwise. Its private tier was validated and prepared before
             # provider acquisition; an unavailable member store refuses the turn.
+            # A compaction drops session-start context. Read-and-clear the
+            # one-shot flag so this turn re-injects that context exactly once;
+            # the finally re-arms it if this turn never lands.
+            _needs_reinjection = consume_reinjection(sessions, session_key)
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
                 context_builder.build_message,
@@ -585,6 +599,7 @@ async def handle_message_transport(
                 agent=_agent,
                 memory_store=_memory_store,
                 resumed=resumed,
+                needs_reinjection=_needs_reinjection,
                 user_display_name=user_display_name,
                 # Temporary mode reads NO memory, and that is the half the
                 # write-side ``_is_slack_restricted`` gates cannot cover:
@@ -733,6 +748,10 @@ async def handle_message_transport(
         # context-usage accounting or conversation logging must NOT fall through
         # to the outer except and double-record the turn as a failure.
         sessions.record_success(session_key)
+        # The prompt (with any re-injected context) reached the model and the
+        # turn completed, so the finally must NOT restore the one-shot flag --
+        # unless the user cancelled it, which discards that prompt.
+        _turn_landed = driver_turn_landed(driver)
         Stats().inc_message_success()
 
         # Remember this turn's OPTIONS control, if it posted one, so the next
@@ -1043,6 +1062,10 @@ async def handle_message_transport(
         except Exception:
             pass
     finally:
+        # A turn that consumed the post-compaction flag but never landed
+        # discarded the prompt carrying the re-injected context; put the flag
+        # back so the next turn re-injects it.
+        rearm_reinjection(sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed)
         # Guarantee renderer teardown even if TurnDriver.run() raised before
         # on_done: cancels the 30s tool-elapsed timer so it can't survive the
         # turn and keep hitting append_task against a dead stream.
