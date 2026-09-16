@@ -151,6 +151,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'chat.background-effort': ['background reasoning effort', 'effort for background tasks', 'helper model effort'],
   'chat.background-model': ['model for titles and summaries', 'helper model', 'cheap model for background work', 'background tasks model'],
   'chat.compact-empty-folders': ['collapse empty folders', 'shrink empty folders', 'empty folder rows'],
+  'chat.compaction-method': ['soft compaction', 'faster compaction', 'compaction mode', 'compact without summarizing', 'rotate the session'],
   'chat.compaction-time-limit-seconds': ['compaction timeout', 'compact timeout', 'how long compaction may take'],
   'chat.completion-event-characters': ['subagent result length', 'completion message length', 'worker report length'],
   'chat.completion-event-truncation': ['cut off subagent results', 'truncate completion events', 'worker report truncation'],
