@@ -96,14 +96,21 @@ async def test_events_stream_into_handle_live() -> None:
 async def test_on_done_fires_once_with_terminal_snapshot() -> None:
     reg = RunRegistry()
     done: list[dict] = []
-    reg.set_on_done(lambda rid, snap: done.append({"rid": rid, **snap}))
+    notified = asyncio.Event()
+
+    def on_done(rid: str, snap: dict) -> None:
+        done.append({"rid": rid, **snap})
+        notified.set()
+
+    reg.set_on_done(on_done)
     runner = WorkflowRunner(agent_fn=_echo, audit=lambda *a, **k: None)
 
     rid = await runner.run_background(
         GOOD, registry=reg, run_id="wf_bg3", now=NOW, name="demo", session_key="slot:main"
     )
     await _wait_terminal(reg, rid)
-    await asyncio.sleep(0.02)  # let the terminal callback settle
+    # Terminal state precedes the durable flush and the on_done callback.
+    await asyncio.wait_for(notified.wait(), timeout=3.0)
 
     assert len(done) == 1
     assert done[0]["rid"] == rid
@@ -156,7 +163,13 @@ async def test_list_is_compact_no_result_payload() -> None:
     """
     reg = RunRegistry()
     done_snapshots: list[dict] = []
-    reg.set_on_done(lambda _rid, snap: done_snapshots.append(snap))
+    notified = asyncio.Event()
+
+    def on_done(_rid: str, snap: dict) -> None:
+        done_snapshots.append(snap)
+        notified.set()
+
+    reg.set_on_done(on_done)
     runner = WorkflowRunner(agent_fn=_echo, audit=lambda *a, **k: None)
     rid = await runner.run_background(GOOD, registry=reg, run_id="wf_c1", now=NOW, name="d")
     await _wait_terminal(reg, rid)
@@ -167,7 +180,9 @@ async def test_list_is_compact_no_result_payload() -> None:
     # The detail snapshot (compact-or-full) still carries the payload …
     assert reg.status(rid)["result"] == {"done": True}
     assert reg.status(rid, include_events=True)["result"] == {"done": True}
-    # … and so does the completion-injection snapshot.
+    # … and so does the completion-injection snapshot, which lands after the
+    # terminal transition the poll above returned on.
+    await asyncio.wait_for(notified.wait(), timeout=3.0)
     assert done_snapshots and done_snapshots[0]["result"] == {"done": True}
 
 
