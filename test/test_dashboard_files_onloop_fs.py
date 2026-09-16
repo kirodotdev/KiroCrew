@@ -80,9 +80,15 @@ _GUARDED_PREFIXES = ("api_file_", "api_browse_", "api_reveal_")
 #: same-named method on some other object, which fails safe (a spurious
 #: offload), and it is the only shape a static check can see without whole-program
 #: type inference.
+#:
+#: ``which`` is here for a reason the ``os``-shaped names do not make obvious:
+#: ``shutil.which`` stats every ``$PATH`` entry, so a ``$PATH`` entry on an
+#: unresponsive mount parks the loop exactly as ``isfile`` on that mount would.
+#: It is filesystem work whose name does not look like it.
 _FS_NAMES = frozenset(
     {
         "realpath",
+        "which",
         "isfile",
         "isdir",
         "exists",
@@ -220,6 +226,7 @@ class TestStaticRatchet:
             "    path = _validate_dashboard_path(request.query['path'])\n"
             "    if not os.path.isfile(path):\n"
             "        return None\n"
+            "    engine = shutil.which('rg')\n"
             "    probe = await asyncio.to_thread(_probe_request_path, path)\n"
             "    ok = await asyncio.to_thread(os.path.isdir, path)\n"
             "    with open(path) as fh:\n"
@@ -228,9 +235,10 @@ class TestStaticRatchet:
         node = bad.body[0]
         assert isinstance(node, ast.AsyncFunctionDef)
         found = _scan_own_body(node)
-        assert len(found) == 5, found
+        assert len(found) == 6, found
         assert any("_validate_dashboard_path" in v for v in found)
         assert any("isfile" in v for v in found)
+        assert any("which" in v for v in found)
         assert any("open" in v for v in found)
         assert any("hands _probe_request_path to asyncio.to_thread" in v for v in found)
         assert any("hands .isdir to asyncio.to_thread" in v for v in found)
@@ -257,6 +265,16 @@ def _req(path: str, query: str = "", method: str = "GET") -> web.Request:
 
 def _body(resp: web.Response) -> Any:
     return json.loads(resp.text or "")
+
+
+async def _grep_req(query: str, root: Path | str) -> web.Response:
+    """One ``POST /api/file-grep`` with the body the handler reads."""
+    req = make_mocked_request("POST", "/api/file-grep", app=_app())
+    req["user"] = "test-user"
+    with mock.patch.object(
+        f, "read_bounded_json", mock.AsyncMock(return_value=({"q": query, "root": str(root)}, None))
+    ):
+        return await f.api_file_grep(req)
 
 
 class _ThreadSpy:
@@ -555,6 +573,55 @@ class TestFileSearch:
 
         assert resp.status == 200
         assert "beta.txt" in [r["name"] for r in _body(resp)["results"]]
+
+
+class TestFileGrep:
+    @pytest.mark.asyncio
+    async def test_root_validation_and_the_search_run_off_the_event_loop(
+        self, tmp_path: Path, spy: _ThreadSpy
+    ):
+        """Content search takes the path twice -- once to validate the root, once
+        for the walk that reads every candidate file -- so both have to be off
+        the loop, and the search must still answer."""
+        (tmp_path / "alpha.txt").write_text("a needle here\n", encoding="utf-8")
+        spy.watch(tmp_path)
+
+        resp = await _grep_req("needle", tmp_path)
+
+        assert resp.status == 200
+        assert [r["line"] for r in _body(resp)["results"]] == [1]
+        spy.assert_off_loop()
+
+    @pytest.mark.asyncio
+    async def test_the_walk_runs_on_the_transfer_pool_not_the_probe_pool(self, tmp_path: Path):
+        """The search holds its worker for the length of the walk, so it must
+        queue behind transfers rather than in front of millisecond validation."""
+        (tmp_path / "alpha.txt").write_text("a needle here\n", encoding="utf-8")
+        threads: list[str] = []
+        original = f._grep_python
+
+        def record(*args, **kwargs):
+            threads.append(threading.current_thread().name)
+            return original(*args, **kwargs)
+
+        with (
+            mock.patch.object(f, "_grep_python", record),
+            mock.patch.object(f, "_grep_rg_executable", lambda: None),
+        ):
+            resp = await _grep_req("needle", tmp_path)
+
+        assert resp.status == 200
+        assert threads and all(t.startswith(_TRANSFER_THREAD_PREFIX) for t in threads), threads
+
+    @pytest.mark.asyncio
+    async def test_a_file_root_is_still_a_404(self, tmp_path: Path):
+        """Control: the offload did not turn a bad root into a search."""
+        target = tmp_path / "alpha.txt"
+        target.write_text("a needle here\n", encoding="utf-8")
+
+        resp = await _grep_req("needle", target)
+
+        assert resp.status == 404
 
 
 class TestOfficePreview:
@@ -892,6 +959,7 @@ class TestBoundedProbePool:
             "file_search": await f.api_file_search(
                 _req("/api/file-search", f"q=note&project={tmp_path}")
             ),
+            "file_grep": await _grep_req("note", tmp_path),
             "browse_dirs": await f.api_browse_dirs(_req("/api/browse-dirs", f"path={tmp_path}")),
             "browse_files": await f.api_browse_files(_req("/api/browse-files", f"path={tmp_path}")),
             "file_write": await post(f.api_file_write, {"path": str(a_file), "content": "x"}),
