@@ -9,9 +9,14 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.autonudge import binding_key_for
+from kiro_crew.autonudge import (
+    binding_key_for,
+)
 from kiro_crew.autonudge import get_instance as _autonudge_get
-from kiro_crew.autonudge import is_structured_monitor_loop
+from kiro_crew.autonudge import (
+    is_structured_monitor_loop,
+    runtime_budget_exceeded,
+)
 
 # The security chokepoint lives in the transport-agnostic module (see its
 # docstring); re-exported here so existing importers keep working. This file
@@ -117,6 +122,7 @@ def _redact_monitor_value(value: Any) -> Any:
 
 def _serialize(loop: Any) -> dict[str, Any]:
     payload = asdict(loop)
+    payload["runtime_budget_spent"] = runtime_budget_exceeded(loop)
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
         payload.pop("monitor", None)

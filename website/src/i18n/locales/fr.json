@@ -5908,6 +5908,11 @@
       "clear_stopped_goal": "Supprimer l’objectif arrêté",
       "loop_stopped": "Arrêté",
       "stopped_help": "Démarrer la boucle reprend cet objectif. Supprimer l’objectif arrêté l’efface définitivement.",
+      "stopped_help_cycle_cap": "Augmentez Cycles max. pour reprendre cet objectif. Supprimer l’objectif arrêté l’efface définitivement.",
+      "stopped_help_runtime_budget": "Cet objectif a atteint son budget d’exécution. Sélectionnez « Supprimer l’objectif arrêté », puis démarrez un nouvel objectif.",
+      "stopped_reason_cycle_cap": "Nombre maximal de cycles atteint.",
+      "stopped_reason_runtime_budget": "Budget d’exécution atteint.",
+      "stopped_reason_approval_stalled": "En attente de l’approbation d’un outil dans cette conversation.",
       "clear_goal_for_good": "Supprimer définitivement l’objectif",
       "cancel": "Annuler",
       "clear_goal_question": "Supprimer définitivement cet objectif ?"

@@ -948,6 +948,36 @@ class TestSession(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(_effectively_trusted(revived))
         self.assertTrue(svc.get_by_slot(slot_key).active)
 
+    async def test_watchdog_contains_a_terminal_bound_conflict_and_keeps_sweeping(self):
+        """A legacy bounded crew row cannot starve later crews in the same pass."""
+        first = _crew(self.root, name="Bounded", unattended=True)
+        second = _crew(self.root, name="Healthy", unattended=True)
+        first_key = f"crew-{first['id']}"
+        second_key = f"crew-{second['id']}"
+        state = _FakeState()
+        first_slot = _FakeSlot(first_key)
+        second_slot = _FakeSlot(second_key)
+        state.slots.update({first_key: first_slot, second_key: second_slot})
+
+        class _ConflictNudge(_FakeNudge):
+            async def update(self, loop_id: str, **kw: Any) -> None:
+                if loop_id == "bounded":
+                    raise cr.MonitorUpdateConflict("cycle cap spent")
+                await super().update(loop_id, **kw)
+
+        svc = _ConflictNudge(
+            [
+                _FakeLoop("bounded", first_key, active=False),
+                _FakeLoop("healthy", second_key, active=False),
+            ]
+        )
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.watchdog_cycle(state, OWNER, REPO, [first, second], self.root)
+
+        self.assertFalse(svc.get_by_slot(first_key).active)
+        self.assertTrue(svc.get_by_slot(second_key).active)
+        self.assertTrue(_effectively_trusted(second_slot))
+
     async def test_watchdog_does_not_rehydrate_a_crew_that_is_not_live(self):
         """A retired or paused crew must not be brought back into memory — the
         rehydrate exists to keep an armed loop trusted, and a dead crew has no

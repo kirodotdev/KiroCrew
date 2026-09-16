@@ -7265,9 +7265,11 @@ class GatewayOrchestrator:
                     "idle_secs": loop.idle_secs,
                     "max_cycles": loop.max_cycles,
                     "max_runtime_secs": loop.max_runtime_secs,
+                    "runtime_budget_spent": runtime_budget_exceeded(loop),
                     "cycle_count": loop.cycle_count,
                     "active": loop.active,
                     "last_fire_ts": loop.last_fire_ts,
+                    "stopped_reason": loop.stopped_reason,
                 }
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
@@ -7275,7 +7277,6 @@ class GatewayOrchestrator:
                         monitor_state_public_dict(loop.monitor)
                     )
                     loop_payload["next_due_ts"] = loop.next_due_ts
-                    loop_payload["stopped_reason"] = loop.stopped_reason
                 broadcast = (
                     self.dashboard_state.broadcast_ws_owners
                     if is_structured_monitor_loop(loop)
@@ -10508,7 +10509,17 @@ class GatewayOrchestrator:
         if self._handler_tasks:
             await asyncio.gather(*self._handler_tasks, return_exceptions=True)
 
-        # Stop services
+        # Stop services. AutoNudge deliberately re-raises cancellation only
+        # AFTER its shielded persistence drain has reached durability. Record
+        # that outer cancellation here, continue the remaining teardown in
+        # order, then propagate it at the end so the gateway's bounded wait
+        # keeps its cancellation/timeout contract without skipping cleanup.
+        autonudge_shutdown_interrupted = False
+        if self.autonudge_svc:
+            try:
+                await self.autonudge_svc.shutdown()
+            except asyncio.CancelledError:
+                autonudge_shutdown_interrupted = True
         if self.cron_svc:
             await self.cron_svc.stop()
         if self.heartbeat_svc:
@@ -10559,6 +10570,8 @@ class GatewayOrchestrator:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
 
         await asyncio.to_thread(self._stop_memory_startup)
+        if autonudge_shutdown_interrupted:
+            raise asyncio.CancelledError()
 
     # ------------------------------------------------------------------
     # Auto-update

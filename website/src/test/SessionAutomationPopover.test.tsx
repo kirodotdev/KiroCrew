@@ -43,7 +43,8 @@ const activeMonitor: StructuredMonitor = {
 const activeLegacyLoop: LegacyGoalLoop = {
   kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1', message: 'Keep checking.',
   idleSecs: 300, maxCycles: 24, cycleCount: 2, active: true, lastFireAt: 0,
-  nextDueAt: 1_900_000_000, maxRuntimeSecs: 14_400, stoppedReason: '',
+  nextDueAt: 1_900_000_000, maxRuntimeSecs: 14_400, runtimeBudgetSpent: false,
+  stoppedReason: '',
 }
 
 /* The popover opens on the goal loop, so a test about the BOUNDED form has to
@@ -194,6 +195,44 @@ describe('SessionAutomationPopover', () => {
 
     expect(screen.queryByText('Next cycle not yet scheduled')).toBeNull()
     expect(screen.getByText(/Next cycle in/)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['spent runtime budget', true, 'cycle_cap'],
+    ['manual stop', false, 'manual'],
+  ])('keeps a legacy %s stopped through the compatibility bridge', async (
+    _case,
+    runtimeBudgetSpent,
+    stoppedReason,
+  ) => {
+    const wire = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep checking.', idle_secs: 300,
+      max_cycles: 4, cycle_count: 3, active: false, last_fire_ts: 0,
+      next_due_ts: 0, runtime_budget_spent: runtimeBudgetSpent,
+      stopped_reason: stoppedReason,
+    }
+    const record = normalizeAutomationRecord(wire)
+    expect(record).toMatchObject({ runtimeBudgetSpent, stoppedReason })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ loop: wire }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderPopover(record, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+
+    if (runtimeBudgetSpent) {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+      const patch = fetchMock.mock.calls.find(call => call[1]?.method === 'PATCH')
+      expect(patch).toBeTruthy()
+      expect(JSON.parse(patch![1]!.body as string)).not.toHaveProperty('active')
+    } else {
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+      expect(screen.getByRole('button', { name: 'Start loop' })).toBeEnabled()
+      expect(screen.getByText('Stopped')).toBeInTheDocument()
+      expect(fetchMock).not.toHaveBeenCalled()
+    }
   })
 
   it('centres the radar glyph and its count in the composer trigger', () => {
@@ -710,7 +749,7 @@ describe('SessionAutomationPopover', () => {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: 'Keep checking.', idle_secs: 300, max_cycles: 24, active: true,
+        message: 'Keep checking.', idle_secs: 300, max_cycles: 24,
       }),
     }))
   })

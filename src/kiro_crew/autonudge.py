@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import math
@@ -490,6 +491,27 @@ async def _cancel_and_drain_tasks(*tasks: asyncio.Task[Any]) -> bool:
     return interrupted
 
 
+async def _drain_tasks_without_cancel(*tasks: asyncio.Future[Any]) -> bool:
+    """Wait for owned work to settle without cancelling it.
+
+    Returns whether this waiter was cancelled while draining. Repeated
+    cancellation is absorbed until every future has reached its durable
+    boundary; the caller then re-raises cancellation.
+    """
+    pending = [task for task in tasks if not task.done()]
+    if not pending:
+        return False
+    drain = asyncio.ensure_future(asyncio.gather(*pending, return_exceptions=True))
+    interrupted = False
+    while not drain.done():
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError:
+            interrupted = True
+    drain.result()
+    return interrupted
+
+
 def get_instance() -> "AutoNudgeService | None":
     return _INSTANCE
 
@@ -663,7 +685,17 @@ def terminal_notification_delivery_matches(
 
 
 class MonitorUpdateConflict(ValueError):
-    """A structured mutation would break active action correlation."""
+    """An automation mutation conflicts with retained lifecycle state."""
+
+
+@dataclass
+class _MutationAdmission:
+    """One service-generation lease for durable mutation writes."""
+
+    generation: int
+    owner_task: asyncio.Task[Any] | None = None
+    allow_multiple_persistence: bool = False
+    persistence_submitted: bool = False
 
 
 def _is_torn_deactivation(loop: NudgeLoop) -> bool:
@@ -725,18 +757,52 @@ def _repair_number(
     return clamped, clamped != num
 
 
-def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool:
+def runtime_budget_exceeded(
+    loop: "NudgeLoop",
+    now: float | None = None,
+    *,
+    max_runtime_secs: int | None = None,
+) -> bool:
     """True when *loop* has a wall-clock budget and it is spent.
 
-    Single source of truth shared by ``_timer`` (enforcement) and the expiry
-    notifier (wording), so the two can never disagree on WHY a loop stopped.
-    A loop with no ``created_ts`` (a malformed/legacy store entry) never
-    trips the budget — there is no anchor to measure from, and guessing one
-    could kill a healthy loop on its first cycle after an upgrade.
+    Single source of truth shared by ``_timer`` (enforcement), the expiry
+    notifier (wording), and the update path's pre-revival check. A proposed
+    ``max_runtime_secs`` lets an update prove that the same request lifts the
+    old bound before it reactivates the loop. A loop with no ``created_ts`` (a
+    malformed/legacy store entry) never trips the budget — there is no anchor
+    to measure from, and guessing one could kill a healthy loop on its first
+    cycle after an upgrade.
     """
-    if not loop.max_runtime_secs or not loop.created_ts:
+    budget = loop.max_runtime_secs if max_runtime_secs is None else max(0, int(max_runtime_secs))
+    if not budget or not loop.created_ts:
         return False
-    return (now if now is not None else time.time()) - loop.created_ts >= loop.max_runtime_secs
+    return (now if now is not None else time.time()) - loop.created_ts >= budget
+
+
+def _revival_blocker(
+    loop: "NudgeLoop",
+    *,
+    max_cycles: int | None = None,
+    max_runtime_secs: int | None = None,
+    now: float | None = None,
+) -> str:
+    """Return the terminal bound a proposed revival still violates.
+
+    The timer checks the cycle cap before the wall-clock budget; revival uses
+    the same order so a caller cannot observe a different terminal reason by
+    entering through ``update(active=True)``. Proposed bound values are folded
+    into the decision, allowing one request to raise/clear a bound and resume.
+    """
+    cycle_cap = loop.max_cycles if max_cycles is None else max(0, int(max_cycles))
+    if cycle_cap and loop.cycle_count >= cycle_cap:
+        return "cycle_cap"
+    if runtime_budget_exceeded(
+        loop,
+        now=now,
+        max_runtime_secs=max_runtime_secs,
+    ):
+        return "runtime_budget"
+    return ""
 
 
 @contextmanager
@@ -854,10 +920,28 @@ class AutoNudgeService:
         # backoff + once-per-streak failure logging). Not persisted; resets on
         # a delivered fire, on removal, and on restart.
         self._rearm_fail_count: dict[str, int] = {}
-        # Strong refs to in-flight shielded add() tasks: keeps a detached
-        # mutation supervised (no GC, failures logged) even when every awaiting
-        # caller was cancelled. Discarded on completion.
-        self._inflight_adds: set = set()
+        # Closed synchronously at shutdown entry, before any drain awaits. New
+        # callers are refused after closure; a lease captured before closure
+        # remains valid for one persistence submission in this generation.
+        self._accepting_mutations = True
+        self._mutation_generation = 0
+        # A timer callback admitted before closure keeps using the same
+        # generation lease through awaited/nested bookkeeping. Context is local
+        # to that task tree; ordinary public mutations still receive a
+        # single-persistence lease from `_admit_mutation`.
+        self._mutation_admission: contextvars.ContextVar[_MutationAdmission | None] = (
+            contextvars.ContextVar(
+                f"autonudge_mutation_admission_{id(self)}",
+                default=None,
+            )
+        )
+        # Strong refs to in-flight mutation owners and background persistence
+        # tasks. Shutdown drains this registry before releasing the store path.
+        self._inflight_adds: set[asyncio.Task[Any]] = set()
+        # Executor-backed writes outlive cancellation of their asyncio waiter.
+        # Track the raw futures separately so shutdown can prove the durable
+        # boundary before the store path is released.
+        self._inflight_persistence: set[asyncio.Future[Any]] = set()
         # Structured replacements whose prior row must keep its protected trust
         # until the caller completes a second durable authorization step. The
         # monitor snapshot and the protected trust record are separate files, so
@@ -885,6 +969,68 @@ class AutoNudgeService:
         self._lock = asyncio.Lock()
 
     # ── Persistence ──
+
+    def _admit_mutation(
+        self,
+        *,
+        allow_multiple_persistence: bool = False,
+    ) -> _MutationAdmission:
+        """Capture mutation authority before the caller reaches its first await."""
+        current = _current_task_or_none()
+        inherited = self._mutation_admission.get()
+        if inherited is not None and inherited.owner_task is current:
+            return inherited
+        if not self._accepting_mutations:
+            raise NudgeAdmissionRefused("AutoNudge service is shutting down")
+        return _MutationAdmission(
+            self._mutation_generation,
+            owner_task=current,
+            allow_multiple_persistence=allow_multiple_persistence,
+        )
+
+    def _effective_admission(
+        self,
+        admission: _MutationAdmission | None,
+    ) -> _MutationAdmission | None:
+        if admission is not None:
+            return admission
+        inherited = self._mutation_admission.get()
+        if inherited is None or inherited.owner_task is not _current_task_or_none():
+            return None
+        return inherited
+
+    def _mutation_allowed(self, admission: _MutationAdmission | None) -> bool:
+        effective = self._effective_admission(admission)
+        if effective is None:
+            return self._accepting_mutations
+        return effective.generation == self._mutation_generation
+
+    def _start_persistence(
+        self,
+        payload: dict,
+        *,
+        admission: _MutationAdmission | None = None,
+    ) -> asyncio.Future[None]:
+        """Start one off-loop write under live or already-admitted authority."""
+        effective = self._effective_admission(admission)
+        if not self._mutation_allowed(effective):
+            raise NudgeAdmissionRefused("AutoNudge service is shutting down")
+        if (
+            effective is not None
+            and effective.persistence_submitted
+            and not effective.allow_multiple_persistence
+        ):
+            raise NudgeAdmissionRefused("mutation persistence lease is already consumed")
+        future = asyncio.get_running_loop().run_in_executor(
+            None,
+            self._write_state,
+            payload,
+        )
+        if effective is not None:
+            effective.persistence_submitted = True
+        self._inflight_persistence.add(future)
+        future.add_done_callback(self._inflight_persistence.discard)
+        return future
 
     def _load(self) -> None:
         """Read the store and repair each entry. BLOCKING — see ``start()``.
@@ -1340,6 +1486,9 @@ class AutoNudgeService:
         if not enabled():
             logger.info("AutoNudge disabled (KIROCREW_AUTONUDGE not set)")
             return
+        if not self._accepting_mutations:
+            self._mutation_generation += 1
+        self._accepting_mutations = True
         # This lock spans load, repair, timer arming and singleton publication.
         # Disabled-mode maintenance that got here first finishes its whole
         # read/modify/write transaction before startup loads; maintenance that
@@ -1378,7 +1527,7 @@ class AutoNudgeService:
             self._reconciler = asyncio.create_task(self._reconcile_forever())
         logger.info("AutoNudge started")
 
-    def stop(self) -> None:
+    def stop(self, *, preserve_admitted: bool = False) -> None:
         # Retire the reconciler first so a pass cannot re-arm a timer this
         # method is about to cancel. Same closed-loop guard as _cancel_timer:
         # stop() runs from synchronous shutdown paths where the task's loop
@@ -1390,10 +1539,18 @@ class AutoNudgeService:
         # Through _cancel_timer, not a bare t.cancel() loop: shutdown is the likeliest
         # moment for a timer's loop to be closing already, and one cancellation policy
         # means this path inherits both of its guards instead of restating neither.
-        # It pops as it goes, so iterate over a snapshot of the keys.
+        # A timer that crossed its callback admission boundary is already-owned
+        # mutation work. Async shutdown detaches and drains that task; synchronous
+        # stop keeps its historical cancel-all behavior.
         for loop_id in list(self._timers):
+            timer = self._timers.get(loop_id)
+            if preserve_admitted and timer in self._inflight_adds:
+                self._timers.pop(loop_id, None)
+                continue
             self._cancel_timer(loop_id)
         self._timers.clear()
+        if preserve_admitted:
+            return
         self._reconcile_candidates.clear()
         self._accepted_monitor_turns.clear()
         self._maintenance_quiescing.clear()
@@ -1401,6 +1558,47 @@ class AutoNudgeService:
         global _INSTANCE
         if _INSTANCE is self:
             _INSTANCE = None
+
+    async def shutdown(self) -> None:
+        """Close admission, cancel dormant timers, and drain owned work."""
+        self._accepting_mutations = False
+        current = _current_task_or_none()
+        controls = {
+            task
+            for task in (self._reconciler, *self._timers.values())
+            if isinstance(task, asyncio.Task)
+            and task is not current
+            and not task.done()
+            and not task.get_loop().is_closed()
+        }
+        self.stop(preserve_admitted=True)
+        interrupted = await _drain_tasks_without_cancel(*controls)
+
+        # Public mutations and timer callbacks share the same owner registry.
+        # Re-snapshot until no task/future remains: an admitted owner may start
+        # its raw executor write after shutdown takes the first snapshot.
+        while True:
+            mutations = {
+                task for task in self._inflight_adds if task is not current and not task.done()
+            }
+            writes = {future for future in self._inflight_persistence if not future.done()}
+            pending: set[asyncio.Future[Any]] = {*mutations, *writes}
+            if not pending:
+                break
+            interrupted = await _drain_tasks_without_cancel(*pending) or interrupted
+
+        self._inflight_adds = {
+            task for task in self._inflight_adds if task is current and not task.done()
+        }
+        self._inflight_persistence = {
+            future for future in self._inflight_persistence if not future.done()
+        }
+        # Callback bookkeeping may release the runtime claim sets only after
+        # every admitted owner and write has settled. Finalize here, before
+        # callers close the stores and sessions those callbacks use.
+        self.stop()
+        if interrupted:
+            raise asyncio.CancelledError()
 
     # ── Loop CRUD ──
 
@@ -1412,8 +1610,15 @@ class AutoNudgeService:
         self._maintenance_quiescing.discard(loop_id)
         self._maintenance_quiesce_events.pop(loop_id, None)
 
-    async def _acquire_mutation_lock(self, loop_id: str) -> asyncio.Lock | None:
-        """Acquire the store mutex unless cleanup claims this loop first."""
+    async def _acquire_mutation_lock(
+        self,
+        loop_id: str,
+        *,
+        admission: _MutationAdmission | None = None,
+    ) -> asyncio.Lock | None:
+        """Acquire the store mutex unless cleanup or admission closure wins."""
+        if not self._mutation_allowed(admission):
+            return None
         if loop_id in self._maintenance_quiescing:
             return None
         lock = _maintenance_lock(self._base_dir)
@@ -1434,6 +1639,9 @@ class AutoNudgeService:
             if interrupted:
                 lock.release()
                 raise asyncio.CancelledError()
+            if not self._mutation_allowed(admission):
+                lock.release()
+                return None
             if loop_id not in self._maintenance_quiescing:
                 return lock
             lock.release()
@@ -1468,6 +1676,7 @@ class AutoNudgeService:
         loop_id: str | None = None,
         creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     ) -> NudgeLoop:
+        admission = self._admit_mutation()
         # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
         # the awaiting caller is cancelled mid-write, a bare await would release
         # ``_lock`` while the executor write is still running — a subsequent
@@ -1496,6 +1705,7 @@ class AutoNudgeService:
                 self_armed=self_armed,
                 loop_id=loop_id,
                 creation_surface=creation_surface,
+                admission=admission,
             )
         )
         self._inflight_adds.add(inner)
@@ -1530,6 +1740,7 @@ class AutoNudgeService:
         creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     ) -> NudgeLoop:
         """Create one durable structured record without legacy prompt routing."""
+        admission = self._admit_mutation()
         inner: "asyncio.Task[NudgeLoop]" = asyncio.ensure_future(
             self._add_monitor_locked(
                 slot_key=slot_key,
@@ -1549,6 +1760,7 @@ class AutoNudgeService:
                 loop_id=loop_id,
                 defer_replaced_trust_revocation=defer_replaced_trust_revocation,
                 creation_surface=creation_surface,
+                admission=admission,
             )
         )
         self._inflight_adds.add(inner)
@@ -1581,11 +1793,14 @@ class AutoNudgeService:
         loop_id: str | None = None,
         defer_replaced_trust_revocation: bool = False,
         creation_surface: MonitorCreationSurface,
+        admission: _MutationAdmission,
     ) -> NudgeLoop:
         created = time.time() if now is None else now
         cadence = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(cadence_secs)))
         async with _maintenance_lock(self._base_dir):
             async with self._lock:
+                if not self._mutation_allowed(admission):
+                    raise NudgeAdmissionRefused("AutoNudge service is shutting down")
                 if admission_check is not None and not admission_check():
                     raise NudgeAdmissionRefused("session changed before monitor arm committed")
                 existing = self._find_by_slot(slot_key)
@@ -1691,7 +1906,10 @@ class AutoNudgeService:
                     + [self._serialize_loop(loop)],
                 }
                 try:
-                    await self._write_monitor_snapshot_locked(replacement_payload)
+                    await self._write_monitor_snapshot_locked(
+                        replacement_payload,
+                        admission=admission,
+                    )
                 except BaseException:
                     if restore_prior_provider_credentials:
                         assert existing is not None
@@ -1819,6 +2037,7 @@ class AutoNudgeService:
         self_armed: bool = False,
         loop_id: str | None = None,
         creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
+        admission: _MutationAdmission,
     ) -> NudgeLoop:
         async with _maintenance_lock(self._base_dir):
             return await self._add_unserialized(
@@ -1836,6 +2055,7 @@ class AutoNudgeService:
                 self_armed=self_armed,
                 loop_id=loop_id,
                 creation_surface=creation_surface,
+                admission=admission,
             )
 
     async def _add_unserialized(
@@ -1855,9 +2075,12 @@ class AutoNudgeService:
         self_armed: bool = False,
         loop_id: str | None = None,
         creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
+        admission: _MutationAdmission,
     ) -> NudgeLoop:
         idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
         async with self._lock:
+            if not self._mutation_allowed(admission):
+                raise NudgeAdmissionRefused("AutoNudge service is shutting down")
             if admission_check is not None and not admission_check():
                 raise NudgeAdmissionRefused("session changed before nudge arm committed")
             # One loop per slot — replace any existing loop on this slot.
@@ -1980,7 +2203,7 @@ class AutoNudgeService:
             # propagates to the caller before the loop is reported armed.
             payload = self._serialize_state()
             try:
-                await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+                await asyncio.shield(self._start_persistence(payload, admission=admission))
             except BaseException:
                 self._loops.pop(loop.id, None)
                 if existing is not None:
@@ -2000,7 +2223,11 @@ class AutoNudgeService:
         logger.info("AutoNudge: added loop %s on slot %s (idle=%ds)", loop.id, slot_key, idle_secs)
         return loop
 
-    async def _persist_locked(self) -> None:
+    async def _persist_locked(
+        self,
+        *,
+        admission: _MutationAdmission | None = None,
+    ) -> None:
         """Snapshot under the service lock and write on a worker thread.
 
         The SINGLE async persistence path for post-arm mutations. Two properties
@@ -2017,7 +2244,7 @@ class AutoNudgeService:
         """
         async with self._lock:
             payload = self._serialize_state()
-            await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            await asyncio.shield(self._start_persistence(payload, admission=admission))
 
     async def update(
         self,
@@ -2031,6 +2258,7 @@ class AutoNudgeService:
         stopped_reason: str | None = None,
         banner: str | None = None,
     ) -> NudgeLoop | None:
+        admission = self._admit_mutation()
         # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
         # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
         # release ``_lock`` while the executor write is still in flight — which
@@ -2046,6 +2274,7 @@ class AutoNudgeService:
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
                 banner=banner,
+                admission=admission,
             )
         )
         self._inflight_adds.add(inner)
@@ -2121,8 +2350,9 @@ class AutoNudgeService:
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
         banner: str | None = None,
+        admission: _MutationAdmission,
     ) -> NudgeLoop | None:
-        lock = await self._acquire_mutation_lock(loop_id)
+        lock = await self._acquire_mutation_lock(loop_id, admission=admission)
         if lock is None:
             return None
         try:
@@ -2135,6 +2365,7 @@ class AutoNudgeService:
                 max_runtime_secs=max_runtime_secs,
                 stopped_reason=stopped_reason,
                 banner=banner,
+                admission=admission,
             )
         finally:
             lock.release()
@@ -2150,6 +2381,7 @@ class AutoNudgeService:
         max_runtime_secs: int | None = None,
         stopped_reason: str | None = None,
         banner: str | None = None,
+        admission: _MutationAdmission | None = None,
     ) -> NudgeLoop | None:
         async with self._lock:
             loop = self._loops.get(loop_id)
@@ -2160,6 +2392,22 @@ class AutoNudgeService:
                 # touching even one shared scheduling field so a non-HTTP
                 # caller cannot bypass structured policy.
                 return loop
+            if active is True and not loop.active:
+                blocker = _revival_blocker(
+                    loop,
+                    max_cycles=max_cycles,
+                    max_runtime_secs=max_runtime_secs,
+                )
+                if blocker == "cycle_cap":
+                    raise MonitorUpdateConflict(
+                        "Goal cannot restart because it reached Max cycles. "
+                        "Increase Max cycles or set it to 0."
+                    )
+                if blocker == "runtime_budget":
+                    raise MonitorUpdateConflict(
+                        "Goal cannot restart because it reached its runtime budget. "
+                        "Clear stopped goal, then start a new goal."
+                    )
             # Keep typed nested values intact. ``asdict`` recursively converts
             # MonitorState to a plain dict, which is not a valid rollback value.
             previous = {item.name: getattr(loop, item.name) for item in fields(loop)}
@@ -2336,14 +2584,13 @@ class AutoNudgeService:
                     if loop.active:
                         loop.stopped_reason = ""
                         # Spent only by an actual REVIVAL, hence ``not
-                        # was_active``. A still-active loop also receives
-                        # ``active=True`` from an ordinary settings save (the
-                        # goal popover sends it on every edit), and treating
-                        # that as an answer would erase evidence recorded
-                        # moments earlier and let one more doomed cycle fire.
-                        # Keeping it costs at most a resumable stop the operator
-                        # can undo; dropping it costs a wasted cycle and the
-                        # silence this stop exists to end.
+                        # was_active``. A still-active loop may still receive
+                        # an idempotent ``active=True`` from API or app callers,
+                        # and treating that as an answer would erase evidence
+                        # recorded moments earlier and let one more doomed cycle
+                        # fire. Keeping it costs at most a resumable stop the
+                        # operator can undo; dropping it costs a wasted cycle and
+                        # the silence this stop exists to end.
                         if not was_active:
                             loop.approval_stalled = False
                     else:
@@ -2374,7 +2621,7 @@ class AutoNudgeService:
             payload = self._serialize_state()
             claim_was_held = claim_discarded_for_retarget
             try:
-                await asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+                await asyncio.shield(self._start_persistence(payload, admission=admission))
             except BaseException:
                 for field_name, value in previous.items():
                     setattr(loop, field_name, value)
@@ -2507,13 +2754,24 @@ class AutoNudgeService:
         fut.add_done_callback(_log)
 
     async def remove(self, loop_id: str) -> None:
-        lock = await self._acquire_mutation_lock(loop_id)
-        if lock is None:
-            return
+        admission = self._admit_mutation()
+        owner = _current_task_or_none()
+        registered_here = owner is not None and owner not in self._inflight_adds
+        if registered_here:
+            assert owner is not None
+            self._inflight_adds.add(owner)
         try:
-            await self._remove_unserialized(loop_id)
+            lock = await self._acquire_mutation_lock(loop_id, admission=admission)
+            if lock is None:
+                return
+            try:
+                await self._remove_unserialized(loop_id, admission=admission)
+            finally:
+                lock.release()
         finally:
-            lock.release()
+            if registered_here:
+                assert owner is not None
+                self._inflight_adds.discard(owner)
 
     async def remove_by_slot(self, slot_key: str) -> NudgeLoop | None:
         """Retire the current slot generation inside one maintenance transaction."""
@@ -2564,6 +2822,7 @@ class AutoNudgeService:
         loop_id: str,
         *,
         precondition: Callable[[NudgeLoop], bool] | None = None,
+        admission: _MutationAdmission | None = None,
     ) -> bool:
         """Remove one loop. Returns whether the removal happened.
 
@@ -2608,7 +2867,7 @@ class AutoNudgeService:
                 removed_loop = self.remove_sync(loop_id, persist=False, emit=False)
                 self._pending_removals.add(loop_id)
             payload = self._serialize_state()
-            fut = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+            fut = self._start_persistence(payload, admission=admission)
 
             async def _restore_failed_removal() -> None:
                 self._pending_removals.discard(loop_id)
@@ -2754,11 +3013,13 @@ class AutoNudgeService:
         self,
         loop: NudgeLoop,
         staged: NudgeLoop,
+        *,
+        admission: _MutationAdmission | None = None,
     ) -> None:
         """Persist a complete replacement before publishing it to live readers."""
         payload = self._monitor_snapshot_with_replacement(loop, staged)
         try:
-            await self._write_monitor_snapshot_locked(payload)
+            await self._write_monitor_snapshot_locked(payload, admission=admission)
         except asyncio.CancelledError:
             # The snapshot writer propagates cancellation only after draining
             # the executor write. Publish the state that is already durable
@@ -2899,6 +3160,32 @@ class AutoNudgeService:
         now: float | None = None,
         user_reason: str = "",
     ) -> NudgeLoop | None:
+        admission = self._admit_mutation()
+        owner = _current_task_or_none()
+        registered_here = owner is not None and owner not in self._inflight_adds
+        if registered_here:
+            assert owner is not None
+            self._inflight_adds.add(owner)
+        try:
+            return await self._stop_monitor_admitted(
+                monitor_id,
+                now=now,
+                user_reason=user_reason,
+                admission=admission,
+            )
+        finally:
+            if registered_here:
+                assert owner is not None
+                self._inflight_adds.discard(owner)
+
+    async def _stop_monitor_admitted(
+        self,
+        monitor_id: str,
+        *,
+        now: float | None,
+        user_reason: str,
+        admission: _MutationAdmission,
+    ) -> NudgeLoop | None:
         """Retain a structured record with a durable user-stop outcome."""
         stopped_at = time.time() if now is None else now
         async with self._lock:
@@ -2916,7 +3203,11 @@ class AutoNudgeService:
             # snapshot is durable. A failed write must leave memory matching
             # the still-active record on disk so restart cannot resurrect work
             # the current process already considers stopped.
-            await self._persist_staged_monitor_locked(loop, stopped)
+            await self._persist_staged_monitor_locked(
+                loop,
+                stopped,
+                admission=admission,
+            )
             self._sync_terminal_completion_timer(loop)
         self._emit("updated", loop)
         return loop
@@ -3032,6 +3323,44 @@ class AutoNudgeService:
         creation_surface: MonitorCreationSurface | None = None,
         _prior_snapshot_out: list[NudgeLoop] | None = None,
     ) -> NudgeLoop | None:
+        admission = self._admit_mutation()
+        owner = _current_task_or_none()
+        registered_here = owner is not None and owner not in self._inflight_adds
+        if registered_here:
+            assert owner is not None
+            self._inflight_adds.add(owner)
+        try:
+            return await self._update_monitor_admitted(
+                monitor_id,
+                target=target,
+                objective=objective,
+                cadence_secs=cadence_secs,
+                budgets=budgets,
+                budget_patch=budget_patch,
+                wake_instructions=wake_instructions,
+                creation_surface=creation_surface,
+                _prior_snapshot_out=_prior_snapshot_out,
+                admission=admission,
+            )
+        finally:
+            if registered_here:
+                assert owner is not None
+                self._inflight_adds.discard(owner)
+
+    async def _update_monitor_admitted(
+        self,
+        monitor_id: str,
+        *,
+        target: str | None = None,
+        objective: str | None = None,
+        cadence_secs: int | None = None,
+        budgets: MonitorBudgets | None = None,
+        budget_patch: dict[str, int] | None = None,
+        wake_instructions: str | None = None,
+        creation_surface: MonitorCreationSurface | None = None,
+        _prior_snapshot_out: list[NudgeLoop] | None = None,
+        admission: _MutationAdmission,
+    ) -> NudgeLoop | None:
         """Patch an active structured record without implicit revival."""
         if budgets is not None and budget_patch is not None:
             raise ValueError("budgets and budget_patch are mutually exclusive")
@@ -3112,7 +3441,11 @@ class AutoNudgeService:
                 staged_state.coalesce_fingerprint = ""
                 staged_state.coalesce_opened_at = 0.0
                 staged_state.coalesce_alerted = {}
-            await self._persist_staged_monitor_locked(loop, staged)
+            await self._persist_staged_monitor_locked(
+                loop,
+                staged,
+                admission=admission,
+            )
             if loop.active and not state.wake_in_flight and loop.id not in self._firing:
                 self._arm_from_deadline(loop)
         self._emit("updated", loop)
@@ -3195,7 +3528,46 @@ class AutoNudgeService:
         self,
         completion: MonitorActionCompletion,
     ) -> None:
-        """Charge one correlated, completed action turn exactly once."""
+        """Charge one correlated action turn through the mutation drain.
+
+        Completion can start on a dashboard turn task outside the timer task
+        tree. Capture admission before the first suspension and supervise the
+        whole accounting transaction so shutdown drains it before sessions and
+        their storage close. Caller cancellation is remembered, but reaches the
+        caller only after the durable transaction settles.
+        """
+        admission = self._admit_mutation()
+        inner = asyncio.create_task(
+            self._record_monitor_turn_completion_admitted(
+                completion,
+                admission=admission,
+            )
+        )
+        self._inflight_adds.add(inner)
+
+        def _finish(t: "asyncio.Task[None]") -> None:
+            self._inflight_adds.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning(
+                    "detached monitor completion accounting failed",
+                    exc_info=t.exception(),
+                )
+
+        inner.add_done_callback(_finish)
+        try:
+            await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            await _drain_tasks_without_cancel(inner)
+            inner.result()
+            raise
+
+    async def _record_monitor_turn_completion_admitted(
+        self,
+        completion: MonitorActionCompletion,
+        *,
+        admission: _MutationAdmission,
+    ) -> None:
+        """Persist one admitted completion before publishing live accounting."""
         async with self._lock:
             if self._accepted_monitor_turns.get(completion.monitor_id) == completion.fingerprint:
                 self._accepted_monitor_turns.pop(completion.monitor_id, None)
@@ -3254,7 +3626,11 @@ class AutoNudgeService:
                     staged,
                     completion.completed_ts + staged_state.cadence_secs,
                 )
-            await self._persist_staged_monitor_locked(loop, staged)
+            await self._persist_staged_monitor_locked(
+                loop,
+                staged,
+                admission=admission,
+            )
             if not loop.active:
                 self._sync_terminal_completion_timer(loop)
             if loop.active and state.outcome is None:
@@ -3344,11 +3720,16 @@ class AutoNudgeService:
             return
         self._cancel_timer(loop.id)
 
-    async def _write_monitor_snapshot_locked(self, payload: dict | None = None) -> None:
+    async def _write_monitor_snapshot_locked(
+        self,
+        payload: dict | None = None,
+        *,
+        admission: _MutationAdmission | None = None,
+    ) -> None:
         """Persist a monitor transition without releasing ``_lock`` mid-write."""
         if payload is None:
             payload = self._serialize_state()
-        future = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+        future = self._start_persistence(payload, admission=admission)
         cancelled = False
         while not future.done():
             try:
@@ -3733,6 +4114,8 @@ class AutoNudgeService:
         self._pending_floor_tick.discard(loop_id)
 
     def _arm_timer(self, loop: NudgeLoop, delay: float | None = None) -> None:
+        if not self._accepting_mutations:
+            return
         self._cancel_timer(loop.id, drop_claims=False)
         self._timers[loop.id] = asyncio.create_task(self._timer(loop, delay))
 
@@ -3790,6 +4173,8 @@ class AutoNudgeService:
         wrote it and must survive the downgrade so an upgrade resumes the watch.
         Inertness is the local consequence, not a change of intent.
         """
+        if not self._accepting_mutations:
+            return
         monitor = loop.monitor
         if monitor is not None and monitor.version != MONITOR_STATE_VERSION:
             logger.info(
@@ -3823,7 +4208,10 @@ class AutoNudgeService:
         countdown. A lost write degrades to a fresh full countdown after
         restart, never a premature or dropped fire.
         """
-        task = asyncio.create_task(self._persist_locked())
+        admission = self._effective_admission(None)
+        if not self._accepting_mutations and admission is None:
+            return
+        task = asyncio.create_task(self._persist_locked(admission=admission))
         self._inflight_adds.add(task)
 
         def _finish(t: "asyncio.Task[None]") -> None:
@@ -4457,6 +4845,26 @@ class AutoNudgeService:
             return
         if shutdown_event.is_set():
             return
+        try:
+            admission = self._admit_mutation(allow_multiple_persistence=True)
+        except NudgeAdmissionRefused:
+            return
+        owner = _current_task_or_none()
+        registered_here = owner is not None and owner not in self._inflight_adds
+        if registered_here:
+            assert owner is not None
+            self._inflight_adds.add(owner)
+        token = self._mutation_admission.set(admission)
+        try:
+            await self._run_timer_callback(loop)
+        finally:
+            self._mutation_admission.reset(token)
+            if registered_here:
+                assert owner is not None
+                self._inflight_adds.discard(owner)
+
+    async def _run_timer_callback(self, loop: NudgeLoop) -> None:
+        """Run one admitted post-sleep callback through durable bookkeeping."""
         if is_structured_monitor_loop(loop):
             assert loop.monitor is not None
             waiting_for_terminal_completion = self._waits_for_terminal_completion(loop)

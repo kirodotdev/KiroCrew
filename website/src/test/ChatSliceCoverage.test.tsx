@@ -85,7 +85,8 @@ const goalLoop = (
   { active = true, cycleCount = 1, maxCycles = 5 }: Partial<LegacyGoalLoop> = {},
 ): LegacyGoalLoop => ({
   kind: 'legacy_goal_loop', id: `loop-${slotKey}`, slotKey, message: '', idleSecs: 60,
-  maxCycles, cycleCount, active, lastFireAt: 0, stoppedReason: '',
+  maxCycles, cycleCount, active, lastFireAt: 0, runtimeBudgetSpent: false,
+  stoppedReason: '',
 })
 import dashboardReducer, { fetchSlots, sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'

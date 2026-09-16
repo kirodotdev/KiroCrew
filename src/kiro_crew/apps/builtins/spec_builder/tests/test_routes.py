@@ -3886,19 +3886,20 @@ async def test_nudge_loop_removal_keeps_the_fsync_off_the_loop(tmp_path, monkeyp
 
     # Assert the PROPERTY, not one implementation of it. This app needs
     # remove() to keep the fsync off the event loop (a Pause click or a spec
-    # delete must not block chat on a wedged disk). Upstream now provides that
-    # inline in remove() itself or in the transaction-owned helper it delegates
-    # to. Either shape satisfies the app, so inspect the complete call path.
-    src = inspect.getsource(an.AutoNudgeService.remove) + inspect.getsource(
+    # delete must not block chat on a wedged disk). Follow the complete call
+    # path through the transaction-owned persistence helper.
+    remove_src = inspect.getsource(an.AutoNudgeService.remove) + inspect.getsource(
         an.AutoNudgeService._remove_unserialized
     )
-    assert "persist=False" in src, "remove() still fsyncs inline"
-    assert "run_in_executor" in src, "remove() does not offload the write"
-    assert "CancelledError" in src, "remove() does not drain the write on cancel"
+    persist_src = inspect.getsource(an.AutoNudgeService._start_persistence)
+    assert "persist=False" in remove_src, "remove() still fsyncs inline"
+    assert "_start_persistence" in remove_src, "remove() bypasses shared persistence"
+    assert "run_in_executor" in persist_src, "removal persistence is not offloaded"
+    assert "CancelledError" in remove_src, "remove() does not drain the write on cancel"
     # The drain must not be time-bounded: giving up after N seconds releases the
     # lock while the worker is still fsyncing, so a later mutation can write
     # first and the abandoned older payload lands last.
-    assert "wait_for" not in src, "the drain is time-bounded and can still be overtaken"
+    assert "wait_for" not in remove_src, "the drain is time-bounded and can still be overtaken"
 
     # Behavioural: the loop really is gone and the state file really was written.
     svc = an.AutoNudgeService(base_dir=tmp_path)

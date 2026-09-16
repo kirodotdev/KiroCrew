@@ -18,6 +18,13 @@ reopen, merge or arm the provider's own auto-merge, and cancel or re-run CI, per
 or in bulk across a selection (see Pull-Request Actions). A background watcher
 optionally notifies on new issues.
 
+The crew watchdog reactivates app-disable pauses through the shared AutoNudge
+service. That service rejects `active=true` for a retained loop whose cycle cap or
+runtime budget is still spent; the HTTP form of the same conflict is 409. Canonical
+Issue Radar crew loops are unbounded, but a legacy or out-of-band bounded row may
+still appear. The watchdog retains that inactive row, logs the conflict, and
+continues sweeping later crews so one incompatible record cannot starve the fleet.
+
 ## Providers
 
 Three providers are supported, and each is a plain MODULE that mirrors the others

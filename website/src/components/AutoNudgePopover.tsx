@@ -106,6 +106,32 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
   const parseIdle = (s: string) => parseInt(s, 10) || 60
   const parseCycles = (s: string) => parseInt(s, 10) || 0
+  const parsedMaxCycles = parseCycles(maxCyclesInput)
+  const capAllowsAnotherCycle = parsedMaxCycles === 0 || parsedMaxCycles > (loop?.cycle_count ?? 0)
+  // Restart is an explicit submit action, never a side effect of a button that
+  // still reads Save. The service owns revival admission and rejects the two
+  // terminal bounds; this client mirrors only those facts it can read. Manual,
+  // approval-stalled, and legacy reasonless stops stay explicitly restartable.
+  const restartOnSubmit = !!loop
+    && !loop.active
+    && capAllowsAnotherCycle
+    && !loop.runtime_budget_spent
+  const stoppedReason = !loop || loop.active
+    ? ''
+    : loop.runtime_budget_spent
+      ? i18nT('components.autoNudgePopover.stopped_reason_runtime_budget')
+      : loop.stopped_reason === 'cycle_cap'
+        ? i18nT('components.autoNudgePopover.stopped_reason_cycle_cap')
+        : loop.stopped_reason === 'approval_stalled'
+          ? i18nT('components.autoNudgePopover.stopped_reason_approval_stalled')
+          : ''
+  const stoppedHelp = restartOnSubmit
+    ? i18nT('components.autoNudgePopover.stopped_help')
+    : loop?.runtime_budget_spent
+      ? i18nT('components.autoNudgePopover.stopped_help_runtime_budget')
+      : !capAllowsAnotherCycle
+        ? i18nT('components.autoNudgePopover.stopped_help_cycle_cap')
+        : i18nT('components.autoNudgePopover.stopped_help')
 
   // Only a genuine user edit should persist a draft. Seeding from the live loop
   // or restoring a remembered draft on open must NOT re-write the store (doing
@@ -205,7 +231,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
       const max_cycles = parseCycles(maxCyclesInput)
       const body = JSON.stringify({ slot_key: slotKey, message, idle_secs, max_cycles })
       const resp = loop
-        ? await fetch(`/api/autonudge/${loop.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, idle_secs, max_cycles, active: true }) })
+        ? await fetch(`/api/autonudge/${loop.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message, idle_secs, max_cycles, ...(restartOnSubmit ? { active: true } : {}) }),
+          })
         : await fetch('/api/autonudge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
@@ -582,16 +612,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                   className="text-muted text-[11px] shrink-0"
                 >
                   {i18nT('components.autoNudgePopover.loop_stopped')}
+                  {stoppedReason && <span> · {stoppedReason}</span>}
                 </span>
                 {/* While confirming, this line must not keep naming the two
                     buttons that just left the row -- a blind reader looked for
                     the "Start loop" it describes and could not find it -- and
                     the confirmation row itself renders no question. So the help
-                    line BECOMES the question for that state. */}
+                    line BECOMES the question for that state. Outside confirmation,
+                    it names only controls that are actually present and gives a
+                    capped goal the field edit that reveals Start loop. */}
                 <span data-testid="auto-nudge-stopped-help" className="text-muted text-[11px]">
                   {confirmClear
                     ? i18nT('components.autoNudgePopover.clear_goal_question')
-                    : i18nT('components.autoNudgePopover.stopped_help')}
+                    : stoppedHelp}
                 </span>
               </div>
             )}
@@ -662,9 +695,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                   "Stop loop" risky as a result. Gated on `active`, not on existence,
                   which is the bug -- and it reuses the `start_loop` key the no-loop
                   case already uses, so no catalogue gains a string. */}
-              {loop?.active
-                ? i18nT('components.autoNudgePopover.save')
-                : i18nT('components.autoNudgePopover.start_loop')}
+              {!loop || restartOnSubmit
+                ? i18nT('components.autoNudgePopover.start_loop')
+                : i18nT('components.autoNudgePopover.save')}
             </button>
           )}
         </div>

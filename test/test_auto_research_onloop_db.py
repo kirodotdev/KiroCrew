@@ -22,6 +22,7 @@ import ast
 import asyncio
 import inspect
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -128,11 +129,32 @@ _DB_TOUCHING_FNS = frozenset(
         "_campaign_execution_mode",
         "_campaign_run_has_status",
         "_campaign_run_is_current",
+        "_cycle_cap_generation_complete",
         "_persist_new_cycle_bookkeeping",
+        "_restore_campaign_after_failed_launch",
+        "_recover_campaign_after_failed_launch",
+        "_persisted_campaign_status",
+        "_force_failed_after_rollback_storage_error",
+        "_run_finding_snapshot",
+        "_stalled_campaign_verdict",
         "_should_finalize",
         "_ingest_emergent_questions",
         "_activate_emergent",
         "_advance_exploration",
+    }
+)
+
+# Any synchronous helper that reaches one of these primitives performs campaign
+# descriptor, pathname, or content-identity work. The test below derives the
+# complete transitive closure from the AST so a new sibling helper cannot escape
+# the off-loop rule by being omitted from a hand-maintained list.
+_CAMPAIGN_FS_ROOTS = frozenset(
+    {
+        "_campaign_identity",
+        "_pin_campaign",
+        "_campaign_dir",
+        "_read_campaign_file_bytes",
+        "_finding_content_identity",
     }
 )
 
@@ -237,6 +259,92 @@ class TestStaticRatchet:
             "asyncio.to_thread / run_in_executor):\n" + "\n".join(violations)
         )
 
+    def test_no_async_def_calls_campaign_filesystem_functions_directly(self):
+        """Every sync campaign filesystem closure must cross an offload call."""
+        tree = _module_tree()
+        sync_calls: dict[str, set[str]] = {}
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef):
+                sync_calls[node.name] = {
+                    child.func.id
+                    for child in ast.walk(node)
+                    if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                }
+        filesystem = set(_CAMPAIGN_FS_ROOTS)
+        changed = True
+        while changed:
+            changed = False
+            for name, called in sync_calls.items():
+                if name not in filesystem and called & filesystem:
+                    filesystem.add(name)
+                    changed = True
+
+        violations: list[str] = []
+
+        def _sync_closure_touches_fs(fn: ast.FunctionDef) -> bool:
+            return any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id in filesystem
+                for child in ast.walk(fn)
+            )
+
+        def _is_offload_call(call: ast.Call) -> bool:
+            return isinstance(call.func, ast.Attribute) and call.func.attr in (
+                "to_thread",
+                "run_in_executor",
+            )
+
+        def scan(node: ast.AsyncFunctionDef) -> None:
+            fs_closures = {
+                child.name
+                for child in ast.walk(node)
+                if isinstance(child, ast.FunctionDef) and _sync_closure_touches_fs(child)
+            }
+            flagged = filesystem | fs_closures
+            offloaded: set[str] = set()
+            stack = list(ast.iter_child_nodes(node))
+            while stack:
+                child = stack.pop()
+                if isinstance(child, ast.FunctionDef):
+                    continue
+                if isinstance(child, ast.Call):
+                    if _is_offload_call(child):
+                        offloaded.update(
+                            arg.id
+                            for arg in child.args
+                            if isinstance(arg, ast.Name) and arg.id in flagged
+                        )
+                    elif (
+                        isinstance(child.func, ast.Name)
+                        and child.func.id == "_guarded_transition"
+                    ):
+                        offloaded.update(
+                            keyword.value.id
+                            for keyword in child.keywords
+                            if keyword.arg == "on_commit"
+                            and isinstance(keyword.value, ast.Name)
+                            and keyword.value.id in flagged
+                        )
+                    elif isinstance(child.func, ast.Name) and child.func.id in flagged:
+                        violations.append(
+                            f"{node.name}:{child.lineno} calls {child.func.id}() on the loop"
+                        )
+                stack.extend(ast.iter_child_nodes(child))
+            for name in sorted(fs_closures - offloaded):
+                violations.append(
+                    f"{node.name}: nested campaign-filesystem helper {name}() is "
+                    "defined but never offloaded"
+                )
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AsyncFunctionDef):
+                scan(node)
+        assert not violations, (
+            "campaign descriptor/hash call(s) on the event loop (offload the "
+            "whole ownership operation):\n" + "\n".join(violations)
+        )
+
 
 class TestContention:
     @pytest.fixture
@@ -249,6 +357,32 @@ class TestContention:
         a = web.Application(middlewares=[_inject_user])
         register_routes(a)
         return a
+
+    @pytest.mark.asyncio
+    async def test_campaign_identity_probe_stalls_worker_not_heartbeat(self, monkeypatch):
+        """A slow open/fstat/close sequence cannot stall other loop work."""
+        started = threading.Event()
+        release = threading.Event()
+        real_identity = h._campaign_identity
+
+        def _blocked_identity(campaign_id: str):
+            started.set()
+            assert release.wait(2)
+            return real_identity(campaign_id)
+
+        monkeypatch.setattr(h, "_campaign_identity", _blocked_identity)
+        probe = asyncio.create_task(h._campaign_identity_off_loop("a1b2c3d4"))
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            ticks = 0
+            for _ in range(5):
+                await asyncio.sleep(0)
+                ticks += 1
+            assert ticks == 5
+            assert not probe.done()
+        finally:
+            release.set()
+        await probe
 
     @pytest.mark.asyncio
     async def test_held_write_lock_stalls_handler_not_heartbeat(self, app, tmp_path: Path):
