@@ -6,6 +6,8 @@ wiring helpers, and the set-time entitlement validator.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from kiro_crew.config.loader import (
@@ -232,7 +234,7 @@ class TestValidateRoleModel:
     def test_rejects_provider_display_only_key(self, monkeypatch) -> None:
         from kiro_crew.dashboard.handlers import core
 
-        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: None)
+        monkeypatch.setattr(core, "_active_advertised_ids", lambda req, **kwargs: None)
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: "display-only key" if m == "fable-5-1m" else None,
@@ -246,7 +248,7 @@ class TestValidateRoleModel:
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: None,
         )
-        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: None)
+        monkeypatch.setattr(core, "_active_advertised_ids", lambda req, **kwargs: None)
         # No advertised set -> don't accuse on no evidence.
         assert core._validate_role_model("opus-4.8-1m", self._req()) is None
 
@@ -257,7 +259,7 @@ class TestValidateRoleModel:
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: None,
         )
-        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"])
+        monkeypatch.setattr(core, "_active_advertised_ids", lambda req, **kwargs: ["sonnet-4.6-1m"])
         reason = core._validate_role_model("opus-4.8-1m", self._req())
         assert reason is not None and "not available" in reason
 
@@ -268,8 +270,51 @@ class TestValidateRoleModel:
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
             lambda m, provider=None: None,
         )
-        monkeypatch.setattr(core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"])
+        monkeypatch.setattr(core, "_active_advertised_ids", lambda req, **kwargs: ["sonnet-4.6-1m"])
         assert core._validate_role_model("sonnet-4.6-1m", self._req()) is None
+
+    @pytest.mark.parametrize("namespace", [None, "acp", "codex", "unadvertised"])
+    @pytest.mark.parametrize(
+        "model", ["older-model", "newer-model", "foreign-model", "unknown-model"]
+    )
+    def test_namespace_filter_keeps_selection_and_unfiltered_behavior(
+        self, namespace, model, monkeypatch
+    ) -> None:
+        from kiro_crew.acp_backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+        from kiro_crew.dashboard.handlers import core
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
+            lambda value, provider=None: None,
+        )
+        providers = [
+            SimpleNamespace(
+                capabilities=capabilities_for(backend),
+                available_models=lambda model=model: [{"modelId": model}],
+            )
+            for backend, model in (
+                (ACP_BACKEND_KIRO, "older-model"),
+                (ACP_BACKEND_KIRO, "newer-model"),
+                (ACP_BACKEND_CODEX, "foreign-model"),
+            )
+        ]
+        request = SimpleNamespace(
+            app={
+                "state": SimpleNamespace(
+                    sessions=SimpleNamespace(active_providers=lambda: providers)
+                )
+            }
+        )
+        expected = {
+            None: ["older-model"],
+            "acp": ["newer-model"],
+            "codex": ["foreign-model"],
+            "unadvertised": None,
+        }[namespace]
+        assert core._active_advertised_ids(request, namespace=namespace) == expected
+        reason = core._validate_role_model(model, request, provider="acp", namespace=namespace)
+        assert (reason is None) == (expected is None or model in expected)
 
 
 if __name__ == "__main__":  # pragma: no cover

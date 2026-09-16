@@ -933,6 +933,31 @@ def _codex_mcp_approval(request_id: int, call_id: str) -> JsonRpcMessage:
     )
 
 
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE, ""])
+@pytest.mark.parametrize("proof", ["complete", "no_marker", "no_notification"])
+def test_codex_mcp_permission_uses_verified_identity_not_shell_kind(tmp_path, backend, proof):
+    client = AcpClient(work_dir=tmp_path, acp_backend=backend)
+    if proof != "no_notification":
+        client._extract_tool_event(
+            _codex_mcp_tool_call("memory-call", "kirocrew-core", "learn_add")
+        )
+    request = _codex_mcp_approval(71, "memory-call")
+    if proof == "no_marker":
+        request.params.pop("_meta")
+    event = client._build_permission_event(request)
+    if backend == ACP_BACKEND_CODEX and proof == "complete":
+        assert not event.is_shell
+        assert event.shell_classified
+        assert event.mcp_identity_trusted
+        assert (event.mcp_server_name, event.tool_name) == ("kirocrew-core", "learn_add")
+        assert event.title == "mcp__kirocrew-core__learn_add"
+        assert event.raw_tool_params["arguments"] == {"a": 1}
+    else:
+        assert not event.mcp_identity_trusted or not event.mcp_server_name
+        if proof != "no_notification":
+            assert event.is_shell
+
+
 class TestSpecDisabledToolRefusal:
     """``disabledTools`` on the control plane is HONOURED on codex, not dropped.
 

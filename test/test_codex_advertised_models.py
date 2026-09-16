@@ -298,7 +298,9 @@ def _names(rows: list[dict]) -> list[str]:
 
 
 def test_codex_picker_lists_the_live_session_advertised_ids(tmp_path) -> None:
-    rows = agents._codex_models(_request(_codex_provider(tmp_path)))
+    rows = agents._advertised_backend_models(
+        _request(_codex_provider(tmp_path)), backend=ACP_BACKEND_CODEX
+    )
 
     assert _names(rows) == ["auto", "gpt-5.4", "gpt-5.4-codex", "gpt-5.5"]
     assert rows[1]["display_name"] == "gpt-5.4"
@@ -310,7 +312,7 @@ def test_codex_picker_reads_the_cross_session_cache_when_no_session_is_live() ->
     """A dashboard restarted after a codex session still offers the real list."""
     model_registry.refresh_advertised_models("codex", ["gpt-5.4", "gpt-5.5"])
 
-    rows = agents._codex_models(_request())
+    rows = agents._advertised_backend_models(_request(), backend=ACP_BACKEND_CODEX)
 
     assert _names(rows) == ["auto", "gpt-5.4", "gpt-5.5"]
 
@@ -318,7 +320,7 @@ def test_codex_picker_reads_the_cross_session_cache_when_no_session_is_live() ->
 def test_codex_picker_never_reads_the_kiro_bucket() -> None:
     model_registry.refresh_advertised_models("acp", ["claude-opus-5", "gpt-5.6-sol"])
 
-    rows = agents._codex_models(_request())
+    rows = agents._advertised_backend_models(_request(), backend=ACP_BACKEND_CODEX)
 
     assert _names(rows) == ["auto"]
 
@@ -326,16 +328,22 @@ def test_codex_picker_never_reads_the_kiro_bucket() -> None:
 def test_codex_picker_cold_offers_auto_alone() -> None:
     """No session yet and nothing cached: ``auto`` (inherit codex's default) only.
     The frontend refetches on the first session spawn."""
-    assert _names(agents._codex_models(_request())) == ["auto"]
+    assert _names(agents._advertised_backend_models(_request(), backend=ACP_BACKEND_CODEX)) == [
+        "auto"
+    ]
 
 
 def test_codex_picker_resurrects_the_configured_default_only_when_nothing_is_known() -> None:
-    cold = agents._codex_models(_request(), configured_default="gpt-5.4-codex")
+    cold = agents._advertised_backend_models(
+        _request(), configured_default="gpt-5.4-codex", backend=ACP_BACKEND_CODEX
+    )
     assert _names(cold) == ["auto", "gpt-5.4-codex"]
     assert cold[1]["description"] == "Configured default"
 
     model_registry.refresh_advertised_models("codex", ["gpt-5.4"])
-    known = agents._codex_models(_request(), configured_default="gpt-5.6-sol")
+    known = agents._advertised_backend_models(
+        _request(), configured_default="gpt-5.6-sol", backend=ACP_BACKEND_CODEX
+    )
     # The stale kiro pin is exactly the row that kills the session: not offered.
     assert _names(known) == ["auto", "gpt-5.4"]
 
@@ -343,7 +351,9 @@ def test_codex_picker_resurrects_the_configured_default_only_when_nothing_is_kno
 def test_codex_picker_does_not_duplicate_auto_or_a_configured_advertised_id() -> None:
     model_registry.refresh_advertised_models("codex", ["auto", "gpt-5.4", "gpt-5.4"])
 
-    rows = agents._codex_models(_request(), configured_default="gpt-5.4")
+    rows = agents._advertised_backend_models(
+        _request(), configured_default="gpt-5.4", backend=ACP_BACKEND_CODEX
+    )
 
     assert _names(rows) == ["auto", "gpt-5.4"]
 
@@ -354,7 +364,9 @@ def test_codex_picker_ignores_a_provider_without_the_capability(tmp_path) -> Non
     kiro.capabilities = capabilities_for(ACP_BACKEND_KIRO)
     kiro.available_models = MagicMock(return_value=[{"modelId": "claude-opus-5"}])
 
-    assert _names(agents._codex_models(_request(kiro))) == ["auto"]
+    assert _names(agents._advertised_backend_models(_request(kiro), backend=ACP_BACKEND_CODEX)) == [
+        "auto"
+    ]
 
 
 def test_codex_picker_ignores_a_claude_session_that_holds_the_same_capability() -> None:
@@ -371,7 +383,9 @@ def test_codex_picker_ignores_a_claude_session_that_holds_the_same_capability() 
         return_value=[{"modelId": "claude-opus-5", "name": "Opus 5", "description": ""}]
     )
 
-    assert _names(agents._codex_models(_request(claude))) == ["auto"]
+    assert _names(
+        agents._advertised_backend_models(_request(claude), backend=ACP_BACKEND_CODEX)
+    ) == ["auto"]
 
 
 def test_codex_picker_prefers_the_newest_codex_session(tmp_path) -> None:
@@ -387,7 +401,9 @@ def test_codex_picker_prefers_the_newest_codex_session(tmp_path) -> None:
         return_value=[{"modelId": "gpt-5.3", "name": "gpt-5.3", "description": ""}]
     )
 
-    rows = agents._codex_models(_request(older, _codex_provider(tmp_path)))
+    rows = agents._advertised_backend_models(
+        _request(older, _codex_provider(tmp_path)), backend=ACP_BACKEND_CODEX
+    )
 
     assert _names(rows) == ["auto", "gpt-5.4", "gpt-5.4-codex", "gpt-5.5"]
 

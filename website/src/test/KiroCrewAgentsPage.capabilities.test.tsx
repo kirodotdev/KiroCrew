@@ -1,6 +1,6 @@
 import { cloneElement } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import SidePanelLayout from '../components/SidePanelLayout'
 
@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
     kirocrewAgents: vi.fn(), agentsInstalled: vi.fn(), workspaces: vi.fn(), kirocrewConfig: vi.fn(),
     agentResolvedModel: vi.fn(), models: vi.fn(), crons: vi.fn(), webhooks: vi.fn(),
     agentDetail: vi.fn(), agentPatch: vi.fn(), skills: vi.fn(), updateKirocrewAgent: vi.fn(),
+    acpBackends: vi.fn(), agentFork: vi.fn(),
   },
   capabilities: { get: vi.fn(), preview: vi.fn(), save: vi.fn() },
 }))
@@ -31,6 +32,10 @@ beforeEach(() => {
   mocks.api.kirocrewConfig.mockResolvedValue({ memory_stores: { default: {} } })
   mocks.api.agentResolvedModel.mockResolvedValue({ model: '' })
   mocks.api.models.mockResolvedValue([])
+  mocks.api.acpBackends.mockResolvedValue({ backends: [
+    { id: '', policy_id: 'kiro', selectable: true },
+    { id: 'codex', policy_id: 'codex', selectable: true },
+  ] })
   mocks.api.crons.mockResolvedValue({ jobs: [] })
   mocks.api.webhooks.mockResolvedValue({ tokens: [] })
   mocks.api.agentDetail.mockResolvedValue({ name: 'atlas', model: 'auto', skills: ['review'], tools: ['read'] })
@@ -179,5 +184,85 @@ describe('capability pane inside the crew dialog', () => {
     fireEvent.click(within(sheet).getByTestId('crew-rail-model'))
     expect(await screen.findByRole('combobox', { name: 'Edit default model' })).not.toBeDisabled()
     expect(mocks.api.agentPatch).not.toHaveBeenCalled()
+  })
+
+  it.each(['template first', 'member first'])('keeps the editable template catalog installation-scoped (%s)', async responseOrder => {
+    // The installation default is not Kiro: an explicit backend:'' query would
+    // be just as wrong for this template as the member's Codex catalog.
+    mocks.api.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'claude' }, memory_stores: { default: {} } })
+    const worker = {
+      name: 'oncall', kiro_agent: 'atlas', workspace: 'default', memory_store: 'default',
+      acp_backend: 'codex', inherited_acp_backend: 'claude', model: '', crewmate: false,
+    }
+    mocks.api.kirocrewAgents.mockResolvedValue({ agents: [worker], default_agent: 'oncall' })
+    mocks.capabilities.get.mockResolvedValue({
+      schema_version: 1, member: 'oncall', mode: 'legacy_snapshot', revision: 'r1',
+      template: { name: 'atlas', source: 'custom', scope: 'global', available: true },
+      rows: [], connections: [], skills: [], parent_changes: [],
+      runtime: { status: 'unverified', saved_revision: 'r1', sessions: [] },
+    })
+    let templateModel = ''
+    mocks.api.agentDetail.mockImplementation(async (name: string) => ({
+      name, model: name === 'atlas-oncall' ? templateModel : '', skills: [], tools: [],
+    }))
+    mocks.api.agentFork.mockImplementation(async () => {
+      mocks.api.agentsInstalled.mockResolvedValue([
+        { name: 'atlas' },
+        { name: 'atlas-oncall', private_to: 'oncall', forked_from: 'atlas' },
+      ])
+      mocks.api.kirocrewAgents.mockResolvedValue({
+        agents: [{ ...worker, kiro_agent: 'atlas-oncall' }], default_agent: 'oncall',
+      })
+      return { template: 'atlas-oncall' }
+    })
+    mocks.api.agentPatch.mockImplementation(async (_name: string, patch: { model: string }) => {
+      templateModel = patch.model
+      return {}
+    })
+    let finishTemplate!: (rows: { model_name: string }[]) => void
+    let finishMember!: (rows: { model_name: string }[]) => void
+    const templateCatalog = new Promise(resolve => { finishTemplate = resolve })
+    const memberCatalog = new Promise(resolve => { finishMember = resolve })
+    mocks.api.models.mockImplementation((backend?: string) => backend === undefined
+      ? templateCatalog
+      : backend === 'codex' ? memberCatalog : Promise.resolve([{ model_name: 'kiro-member-model' }]))
+
+    renderWithProviders(<KiroCrewAgentsPage />)
+    fireEvent.click(await screen.findByTestId('crew-card'))
+    const sheet = await screen.findByRole('dialog', { name: 'Edit agent oncall' })
+    fireEvent.click(within(sheet).getByTestId('crew-rail-template'))
+    await waitFor(() => expect(within(sheet).getByRole('combobox', { name: 'Model' })).not.toBeDisabled())
+    const resolveTemplate = () => finishTemplate([{ model_name: 'installation-model' }, { model_name: 'installation-alternate' }])
+    const resolveMember = () => finishMember([{ model_name: 'codex-member-model' }])
+    for (const resolve of responseOrder === 'template first' ? [resolveTemplate, resolveMember] : [resolveMember, resolveTemplate]) {
+      await act(async () => { resolve() })
+    }
+
+    fireEvent.click(within(sheet).getByRole('combobox', { name: 'Model' }))
+    await screen.findByRole('option', { name: 'installation-alternate' })
+    expect(screen.queryByRole('option', { name: 'codex-member-model' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: 'installation-model' }))
+    await waitFor(() => expect(mocks.api.agentPatch).toHaveBeenCalledWith('atlas-oncall', { model: 'installation-model' }))
+    expect(mocks.api.agentFork).toHaveBeenCalledWith('atlas', 'oncall')
+    expect(mocks.api.agentPatch).not.toHaveBeenCalledWith('atlas', expect.anything())
+    await waitFor(() => expect(within(sheet).getByRole('combobox', { name: 'Model' })).toHaveTextContent('installation-model'))
+
+    fireEvent.click(within(sheet).getByTestId('crew-rail-model'))
+    fireEvent.click(within(sheet).getByRole('combobox', { name: 'Edit default model' }))
+    await screen.findByRole('option', { name: 'codex-member-model' })
+    expect(screen.queryByRole('option', { name: 'installation-alternate' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: 'codex-member-model' }))
+    fireEvent.click(within(sheet).getByRole('combobox', { name: 'AI app' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Kiro CLI' }))
+    await waitFor(() => expect(mocks.api.models).toHaveBeenCalledWith(''))
+    fireEvent.click(within(sheet).getByRole('combobox', { name: 'Edit default model' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'kiro-member-model' }))
+    fireEvent.click(within(sheet).getByTestId('crew-rail-template'))
+    fireEvent.click(await within(sheet).findByRole('combobox', { name: 'Model' }))
+    await screen.findByRole('option', { name: 'installation-alternate' })
+    expect(screen.queryByRole('option', { name: 'kiro-member-model' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: 'codex-member-model' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: 'installation-model' }))
+    expect(mocks.api.models).toHaveBeenCalledWith()
   })
 })

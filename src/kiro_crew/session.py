@@ -736,6 +736,8 @@ def _session_model(cfg: "KiroCrewConfig", agent: str | None) -> "str | None":
         crew_model = normalize_agent_model(crew.model)
         if crew_model:
             return crew_model
+        if cfg.resolve_session_backend(agent=agent) != cfg.agent.acp_backend:
+            return None
         # The crew defers, so continue down the chain on the template it binds.
         agent = crew.kiro_agent or agent
 
@@ -1795,7 +1797,11 @@ class SessionManager:
         """
         if change.new.degraded_sections.intersection(self._CONFIG_SECTIONS):
             raise live.ConfigDeferred(change.changed)
-        if change.touched(*self._FACTORY_CONFIG_PATHS):
+        member_execution_changed = any(
+            path.rsplit(".", 1)[-1] in {"acp_backend", "model", "reasoning_effort", "kiro_agent"}
+            for path in change.under("agents")
+        )
+        if change.touched(*self._FACTORY_CONFIG_PATHS) or member_execution_changed:
             await self.refresh_defaults(cfg=change.new)
         else:
             async with self._lock:

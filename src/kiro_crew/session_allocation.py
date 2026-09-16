@@ -1425,7 +1425,7 @@ class SessionAllocationService:
 
             def resolve_model() -> str | None:
                 cfg = self._deps.load_config() if preparation.revision else owner._cfg
-                selected = preparation.member if preparation.revision else agent
+                selected = preparation.member or agent
                 return self._deps.session_model(cfg, selected)
 
             model = await asyncio.to_thread(resolve_model)
@@ -1444,6 +1444,7 @@ class SessionAllocationService:
         )
         provider_switched = False
         cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
+        member_config = owner._cfg.agents.get(preparation.member) if preparation.member else None
         if not owner._pool_size:
             pool_decision = "disabled"
         elif preparation.revision:
@@ -1454,6 +1455,10 @@ class SessionAllocationService:
             pool_decision = "bypass_resume"
         elif is_stateless:
             pool_decision = "bypass_stateless"
+        elif extra_factory_kwargs.get("acp_backend_override") is not None or (
+            member_config is not None and member_config.acp_backend is not None
+        ):
+            pool_decision = "bypass_worker_backend"
         elif self._is_member_key(key):
             # A pooled child was spawned with no session key, so it runs the
             # factory's DEFAULT backend and none of the member construction

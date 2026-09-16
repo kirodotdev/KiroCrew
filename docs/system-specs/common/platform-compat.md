@@ -22,6 +22,17 @@ produces exactly those silent failures, which is why the helper is named per cal
 
 ## The helper for each call
 
+The POSIX descendant snapshot passes each `ps` output column with its own `-o`
+argument. This avoids a header assignment consuming the rest of a comma-separated
+format on hosts with a different `ps` personality.
+
+`rename_noreplace` uses the native atomic no-replace rename. On Linux x86_64 and
+aarch64, a libc without the `renameat2` symbol uses the same kernel syscall
+directly. An unsupported kernel or filesystem still refuses; no check-then-rename
+fallback is permitted. The native regression hides the libc symbol in a separate
+process and verifies publication, collision refusal, and refusal on an unknown
+ABI. The process-snapshot regression checks the test process's actual parent PID.
+
 | Need | Use (`platform_compat`) | NOT |
 |------|--------------------------|-----|
 | Tail a rotating log | `open_log_file_for_tail(path)` returns a binary read descriptor (caller closes); Windows permits read/write/delete sharing so the writer can rename during a read. Only for log readers, never security pinning. | plain `open` held while a Windows writer rolls over |

@@ -712,10 +712,12 @@ class TestSavingAPinRefreshesSessionDefaults:
 
         assert _effort_inputs(None) is None
         base = Crew(kiro_agent="kirocrew", reasoning_effort="high")
-        assert _effort_inputs(base) == ("kirocrew", "high")
+        assert _effort_inputs(base) == ("kirocrew", "high", None, "")
         # A junk stored level normalizes, so a no-op save of junk is not a change.
         assert _effort_inputs(Crew(kiro_agent="kirocrew", reasoning_effort="ultra")) == (
             "kirocrew",
+            "",
+            None,
             "",
         )
         # A field the chain does NOT read must not trigger a pool drain.

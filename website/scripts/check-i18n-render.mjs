@@ -343,7 +343,25 @@ const FIXTURE_OVERRIDES = async (language, path, route) => {
   // English mid-boot and turns a localised pass into an English one.
   if (path === '/api/theme/boot') return done({ mode: 'dark', theme: '', language })
   if (path === '/api/auth/me') return done({ user: '0000', app: '' })
-  if (path === '/api/agents' || path === '/api/chat/agents') {
+  if (path === '/api/acp-backends') {
+    return done({
+      backends: [
+        { id: '', policy_id: '0001', selectable: true },
+        { id: 'claude', policy_id: '0002', selectable: true },
+        { id: 'codex', policy_id: '0003', selectable: true },
+      ],
+    })
+  }
+  if (path === '/api/agents') {
+    return done({
+      agents: [{
+        name: '0001', source: 'builtin', kiro_agent: '0001',
+        workspace: 'default', memory_store: 'default', inherited_acp_backend: '',
+      }],
+      default_agent: '0001',
+    })
+  }
+  if (path === '/api/chat/agents') {
     return done([{ name: '0001', source: 'builtin' }])
   }
   if (path === '/api/memory/stores') {

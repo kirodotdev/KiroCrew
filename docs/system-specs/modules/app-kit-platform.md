@@ -370,6 +370,12 @@ deliberately not done. Granularity is per-server for the same reason (a grant is
 per-server); tools a per-tool ceiling rule denies are still denied at the gate on
 every non-auto-approved path.
 
+The direct Spawn SDK verifies ownership of the app's named agent off-loop, then
+prepares any member execution settings off-loop before entering synchronous spawn
+admission. Admission retains the calling app's governance profile and the existing
+prevalidated-agent queue refusal; model discovery grants no additional authority.
+Backend, model and effort are captured together for the admitted run.
+
 ## 3. App agent JSONs are materialized copies, refreshed field-wise
 
 App agents are written to `<kiro agents dir>/<app>--<agent>.json` as a **copy**,

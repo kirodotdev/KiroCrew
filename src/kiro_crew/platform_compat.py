@@ -114,6 +114,28 @@ if IS_LINUX or IS_MACOS:
     except (AttributeError, OSError):
         _RENAME_NOREPLACE_FN = None
 
+# Older Linux libc builds omit renameat2 even when the kernel implements it.
+# Call that same atomic operation directly on the supported 64-bit ABIs.
+_LINUX_RENAMEAT2_SYSCALL = {"x86_64": 316, "aarch64": 276}
+if IS_LINUX and _RENAME_NOREPLACE_FN is None and struct.calcsize("P") == 8:
+    _rename_syscall_number = _LINUX_RENAMEAT2_SYSCALL.get(platform.machine().casefold())
+    if _rename_syscall_number is not None:
+        try:
+            _rename_syscall = ctypes.CDLL(None, use_errno=True).syscall
+            _rename_syscall.argtypes = [
+                ctypes.c_long,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            _rename_syscall.restype = ctypes.c_long
+            _RENAME_NOREPLACE_FN = functools.partial(_rename_syscall, _rename_syscall_number)
+            _RENAME_NOREPLACE_FLAG = 1
+        except (AttributeError, OSError):
+            _RENAME_NOREPLACE_FN = None
+
 RENAME_NOREPLACE_AVAILABLE: bool = _RENAME_NOREPLACE_FN is not None
 
 #: ARM machine strings as ``platform.machine()`` spells them on Windows.
@@ -2216,7 +2238,9 @@ def _posix_process_parent_map() -> dict[int, int]:
         return {}
     try:
         out = subprocess.check_output(
-            [ps_bin, "-Ao", "pid=,ppid="], timeout=5, stderr=subprocess.DEVNULL
+            [ps_bin, "-A", "-o", "pid=", "-o", "ppid="],
+            timeout=5,
+            stderr=subprocess.DEVNULL,
         ).decode(errors="replace")
     except (OSError, subprocess.SubprocessError):
         return {}

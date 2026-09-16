@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 
+import { api } from '../api/client'
 import { useProvider } from '../providers'
 import { modelListRefetchInterval, useModelsDegraded } from '../providers/modelListHealth'
-import { withAutoFirst } from '../providers/modelList'
+import { isPricedMultiplier, withAutoFirst } from '../providers/modelList'
 import type { ModelInfo } from '../providers/types'
 
 /** Auto-only list used before the first fetch resolves.
@@ -37,24 +38,42 @@ const PLACEHOLDER: ModelInfo[] = [{ name: 'auto', description: '' }]
  * One key with one fetcher makes that class of bug unrepresentable: a caller
  * cannot supply a shape, only read one.
  *
- * `enabled` is the one option callers still control, because it is per-observer
- * and cannot corrupt the cached value: ChatSidebar's bulk switcher passes
+ * `backend` selects a separate catalog and cache for a member's harness.
+ * `enabled` controls fetching per observer and cannot corrupt the cached value:
+ * ChatSidebar's bulk switcher passes
  * `false` until its panel opens so merely rendering the sidebar does not spawn
  * kiro-cli. Other mounted observers still fetch normally — `enabled` gates who
  * *triggers* a fetch, not what lands in the cache.
  */
-type AvailableModelsOptions = { enabled?: boolean }
+type AvailableModelsOptions = { enabled?: boolean; backend?: string }
 
-export function useAvailableModelsQuery({ enabled }: AvailableModelsOptions = {}) {
+export function useAvailableModelsQuery({ enabled, backend }: AvailableModelsOptions = {}) {
   const provider = useProvider()
   const isDegraded = useModelsDegraded(provider.id)
   const query = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => withAutoFirst(await provider.fetchAvailableModels()),
-    refetchInterval: modelListRefetchInterval,
+    queryKey: backend === undefined ? ['available-models', provider.id] : ['available-models', provider.id, backend],
+    queryFn: async () => {
+      if (backend === undefined) return withAutoFirst(await provider.fetchAvailableModels())
+      const models = await api.models(backend)
+      return withAutoFirst(models.map((m: {
+        model_name: string
+        description?: string
+        context_window?: number
+        context_window_tokens?: number
+        rate_multiplier?: number
+      }) => ({
+        name: m.model_name,
+        description: m.description || '',
+        contextWindow: [m.context_window, m.context_window_tokens]
+          .find(value => typeof value === 'number' && Number.isFinite(value) && value > 0),
+        rateMultiplier: isPricedMultiplier(m.rate_multiplier) ? m.rate_multiplier : undefined,
+      })))
+    },
+    refetchInterval: backend === undefined ? modelListRefetchInterval : query =>
+      query.state.error || !query.state.data?.some(model => model.name !== 'auto') ? 8_000 : false,
     ...(enabled === undefined ? {} : { enabled }),
   })
-  return { ...query, data: query.data ?? PLACEHOLDER, isDegraded }
+  return { ...query, data: query.data ?? PLACEHOLDER, isDegraded: backend === undefined ? isDegraded : query.isError }
 }
 
 export function useAvailableModels(options: AvailableModelsOptions = {}): ModelInfo[] {

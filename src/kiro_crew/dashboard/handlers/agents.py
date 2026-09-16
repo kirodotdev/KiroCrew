@@ -25,7 +25,6 @@ from kiro_crew import agent_state, model_registry
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
-    ACP_BACKEND_CODEX,
     model_registry_namespace,
     selectable_backend_values,
 )
@@ -53,7 +52,11 @@ from kiro_crew.agent_discovery import (
     spec_model,
     spec_str,
 )
-from kiro_crew.agent_sdk.capabilities import capabilities_of
+from kiro_crew.agent_sdk.capabilities import (
+    MODEL_NAMESPACE_ACP,
+    MODEL_NAMESPACE_CLAUDE_CODE,
+    capabilities_of,
+)
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.apps.bridges import _mcp_lock as _agent_file_lock
@@ -128,7 +131,11 @@ from kiro_crew.member_identity import (
     mint_member_id,
     normalize_display_name,
 )
-from kiro_crew.member_memory_auth import require_member_memory_creation
+from kiro_crew.member_memory_auth import (
+    require_member_memory_creation,
+    require_private_memory_mcp_backend,
+)
+from kiro_crew.members import member_thread_session_alias, slug_for_name
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     MemberAdmissionRefused,
@@ -2159,8 +2166,12 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     return merged
 
 
-def _codex_models(request: web.Request, configured_default: str = "") -> list[dict]:
-    """Assemble the codex model dropdown from what codex-acp itself advertises.
+def _advertised_backend_models(
+    request: web.Request,
+    backend: str,
+    configured_default: str = "",
+) -> list[dict]:
+    """Assemble an advertised catalog for Codex and other non-Kiro namespaces.
 
     codex-acp has no static catalog on our side: the registry carries no codex
     namespace, and kiro-cli's ``--list-models`` names models codex refuses with a
@@ -2182,7 +2193,7 @@ def _codex_models(request: web.Request, configured_default: str = "") -> list[di
     is known -- force-including a pin the adapter did not advertise would put back
     the exact row that kills the session.
     """
-    codex_namespace = model_registry_namespace(ACP_BACKEND_CODEX)
+    codex_namespace = model_registry_namespace(backend)
     advertised = _advertised_cc_models(request, codex_namespace)
     if not advertised:
         cached = model_registry.advertised_models(codex_namespace)
@@ -2250,10 +2261,29 @@ async def api_models(request: web.Request) -> web.Response:
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
+    if "backend" in request.query:
+        from kiro_crew.acp_backends import selectable_backends
+
+        backend = request.query["backend"]
+        if backend not in selectable_backends():
+            return web.json_response(
+                {"error": "Backend is not selectable", "code": "invalid_acp_backend"}, status=400
+            )
     if backend == ACP_BACKEND_CLAUDE:
-        return web.json_response(_cc_models(request, configured_default=cfg.agent.model))
-    if backend == ACP_BACKEND_CODEX:
-        return web.json_response(_codex_models(request, configured_default=cfg.agent.model))
+        return web.json_response(
+            _cc_models(
+                request,
+                configured_default=cfg.agent.model if backend == cfg.agent.acp_backend else "",
+            )
+        )
+    if model_registry_namespace(backend) != MODEL_NAMESPACE_ACP:
+        return web.json_response(
+            _advertised_backend_models(
+                request,
+                backend,
+                configured_default=cfg.agent.model if backend == cfg.agent.acp_backend else "",
+            )
+        )
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
@@ -3964,6 +3994,7 @@ def _agent_roster_row(
     *,
     redact: bool,
     crewmate: bool = False,
+    inherited_acp_backend: str = "",
 ) -> dict[str, object]:
     """Serialize ONE ``GET /api/agents`` roster row.
 
@@ -3978,6 +4009,9 @@ def _agent_roster_row(
     deliberately. Both row sources go through this one function, so the
     ``cfg.agents`` rows and the project-scope rows cannot drift into different
     key sets.
+
+    ``inherited_acp_backend`` is resolved by the caller without the row's pin;
+    this serializer applies the same string mask as it does to record values.
 
     **Value half.** Every record value goes through ``_roster_mask``, for every
     caller, uniformly -- see there for why they are all untrusted and why the
@@ -4046,6 +4080,10 @@ def _agent_roster_row(
         "workspace": _roster_mask(agent_cfg.workspace),
         "memory_store": _roster_mask(agent_cfg.memory_store),
         "model": _roster_mask(agent_cfg.model),
+        "acp_backend": (
+            _roster_mask(agent_cfg.acp_backend) if agent_cfg.acp_backend is not None else None
+        ),
+        "inherited_acp_backend": _roster_mask(inherited_acp_backend),
         "reasoning_effort": _roster_mask(agent_cfg.reasoning_effort),
         "description": _roster_mask(agent_cfg.description),
         "triggers": _roster_mask(agent_cfg.triggers),
@@ -4105,7 +4143,18 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
 
     enrolled = set(await asyncio.to_thread(enrolled_member_ids, cfg))
     agents = [
-        _agent_roster_row(name, "global", agent_cfg, redact=redact, crewmate=name in enrolled)
+        _agent_roster_row(
+            name,
+            "global",
+            agent_cfg,
+            redact=redact,
+            crewmate=name in enrolled,
+            inherited_acp_backend=cfg.resolve_session_backend(
+                session_key=(
+                    member_thread_session_alias(slug_for_name(name)) if name in enrolled else None
+                ),
+            ),
+        )
         for name, agent_cfg in cfg.agents.items()
     ]
 
@@ -4133,8 +4182,15 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
         # per-agent config of their own (nothing on disk to read without a
         # second scan), so the row is the default record under a project tag.
         project_default = KiroCrewAgentConfig()
+        project_inherited_backend = cfg.resolve_session_backend()
         agents.extend(
-            _agent_roster_row(name, "project", project_default, redact=redact)
+            _agent_roster_row(
+                name,
+                "project",
+                project_default,
+                redact=redact,
+                inherited_acp_backend=project_inherited_backend,
+            )
             for name in sorted(project_names - set(cfg.agents.keys()))
         )
 
@@ -4706,23 +4762,17 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
     )
 
 
-def _effort_inputs(crew: KiroCrewAgentConfig | None) -> tuple[str, str] | None:
-    """The crew fields `resolve_session_effort` reads, or ``None`` for no crew.
+def _effort_inputs(crew: KiroCrewAgentConfig | None) -> tuple[str, str, str | None, str] | None:
+    """The execution defaults a new member session reads, or ``None`` for no crew.
 
-    Derived from the resolver's inputs rather than enumerated per call site. The
-    chain reads two things off the record -- the pin itself, and the bound
-    ``kiro_agent`` the role default keys on -- and the factory answers from the
-    config it captured, so ANY change to either (including a crew appearing or
-    disappearing) must invalidate that capture. Three rounds of review found the
-    per-condition version incomplete one case at a time (an unpinned crew whose
-    binding makes it a background worker; a re-bound `kiro_agent`); comparing this
-    tuple before and after a write is the invariant those cases are instances of,
-    and a future field the chain starts reading is added here once instead of at
-    every handler.
+    The factory captures the member's template binding, backend, model and
+    effort. Comparing the tuple before and after a write invalidates that
+    capture when any execution default changes, including when the member
+    appears or disappears.
     """
     if crew is None:
         return None
-    return (crew.kiro_agent, coerce_effort(crew.reasoning_effort))
+    return (crew.kiro_agent, coerce_effort(crew.reasoning_effort), crew.acp_backend, crew.model)
 
 
 async def _refresh_session_defaults(request: web.Request, crew: str) -> None:
@@ -4754,6 +4804,14 @@ async def _refresh_session_defaults(request: web.Request, crew: str) -> None:
             crew,
             exc_info=True,
         )
+
+
+def _crew_backend_rejected(raw: object) -> str | None:
+    from kiro_crew.acp_backends import selectable_backends
+
+    if raw is None or isinstance(raw, str) and raw in selectable_backends():
+        return None
+    return "acp_backend must be null or a selectable backend"
 
 
 def _crew_effort_rejected(raw: object) -> str | None:
@@ -4801,7 +4859,9 @@ def _crew_memory_store_rejected(raw: object) -> str | None:
     )
 
 
-def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str | None:
+def _model_pin_rejected(
+    model: str, request: web.Request, provider: str, *, backend: str | None = None
+) -> str | None:
     """Reason a crew's model pin is unusable, or ``None`` to allow it.
 
     An agent's ``model`` is read by kiro-cli when the child starts, so a pin the
@@ -4818,11 +4878,11 @@ def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str 
 
     A known wrong-flavour registry spelling is reported before entitlement: a
     live advertised set would otherwise replace the actionable ACP-id mapping
-    with a generic "not available" error. All other values delegate to the
-    per-role validator so the crew form, the role pins and the session-init
-    withhold apply one predicate. ``""``/``"auto"`` mean inherit and always
-    pass; an unknown advertised set means entitlement is unknowable, and the
-    validator accepts rather than accusing on no evidence.
+    with a generic "not available" error. Entitlement uses the session-init
+    predicate against the selected backend's namespace. Without a supplied
+    backend, the per-role validator retains its existing routing.
+    ``""``/``"auto"`` mean inherit and always pass; an unknown advertised set
+    means entitlement is unknowable, and the validator accepts on no evidence.
     """
     # The retained claude_code seam accepts canonical and registered Bedrock
     # wire ids that the ACP correction and advertised-id comparison below
@@ -4830,6 +4890,20 @@ def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str 
     # provider path, where full configured ids and bare advertised ids can be
     # canonicalized before comparison.
     if is_claude_code(provider):
+        return None
+    if backend is not None and model_registry_namespace(backend) != MODEL_NAMESPACE_ACP:
+        namespace = model_registry_namespace(backend)
+        rows = _advertised_cc_models(request, namespace)
+        ids = [row["model_name"] for row in rows] or model_registry.advertised_models(namespace)
+        if namespace == MODEL_NAMESPACE_CLAUDE_CODE:
+            # Claude's catalog accepts canonical aliases for provider-prefixed
+            # wire ids; use the picker’s own equivalence rule when validating.
+            wanted = _normalize_model_key(model)
+            ids = [_normalize_model_key(value) for value in ids]
+        else:
+            wanted = model
+        if model and model != "auto" and model_is_unusable(wanted, ids):
+            return f"{model!r} is not advertised by the selected backend"
         return None
 
     # The registry knows each model under several spellings and only one is what
@@ -4852,11 +4926,15 @@ def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str 
             f"spelling to {correction!r} — confirm that is the model you want, or "
             f"pick one of: {served}, or 'auto'."
         )
-    # circular import: handlers.core resolves _get_config_lock from this module,
-    # so importing it at module scope would close the cycle.
+    # circular import: handlers.core resolves _get_config_lock from this module.
     from kiro_crew.dashboard.handlers.core import _validate_role_model
 
-    return _validate_role_model(model, request, provider=provider)
+    return _validate_role_model(
+        model,
+        request,
+        provider=provider,
+        namespace=MODEL_NAMESPACE_ACP if backend is not None else None,
+    )
 
 
 def _member_exists_message(
@@ -5153,6 +5231,11 @@ async def _create_crew(
             {"error": "session_color must be #rrggbb or empty", "code": "invalid_color_hex"},
             status=400,
         )
+    backend_reason = _crew_backend_rejected(body.get("acp_backend"))
+    if backend_reason:
+        return web.json_response(
+            {"error": backend_reason, "code": "invalid_acp_backend"}, status=400
+        )
     _raw_effort = body.get("reasoning_effort", "")
     effort_reason = _crew_effort_rejected(_raw_effort)
     if effort_reason:
@@ -5270,7 +5353,20 @@ async def _create_crew(
                     code=str(payload.get("code") or "admission_refused"),
                 )
 
-        model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
+        proposed_backend = cfg.resolve_session_backend(
+            session_key=(
+                member_thread_session_alias(slug_for_name(name))
+                if copy_source is not None or enroll is not None
+                else None
+            ),
+            backend_override=body.get("acp_backend"),
+        )
+        model_reason = _model_pin_rejected(
+            model,
+            request,
+            cfg.agent.provider,
+            backend=proposed_backend,
+        )
         if model_reason:
             return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
         # Checked INSIDE the config lock, immediately before the binding is
@@ -5367,6 +5463,7 @@ async def _create_crew(
                 )
             kiro_agent = copied[0]
         new_agent = KiroCrewAgentConfig(
+            acp_backend=body.get("acp_backend"),
             kiro_agent=kiro_agent,
             workspace=body.get("workspace", "default"),
             memory_store=memory_store,
@@ -5408,7 +5505,11 @@ async def _create_crew(
 
         try:
             try:
-                await _drained_to_thread(require_member_memory_creation, name)
+                await _drained_to_thread(
+                    functools.partial(
+                        require_member_memory_creation, name, acp_backend=proposed_backend
+                    )
+                )
                 await _drained_to_thread(provision_member_memory, cfg, name)
                 await _drained_to_thread(
                     lambda: persist_member_config(
@@ -5686,8 +5787,13 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             resources=name,
         )
         return web.json_response({"ok": True, "name": name})
-    if "model" in body:
-        pending_model = normalize_agent_model(body["model"])
+    pending_model = normalize_agent_model(body.get("model"))
+    if "acp_backend" in body:
+        backend_reason = _crew_backend_rejected(body["acp_backend"])
+        if backend_reason:
+            return web.json_response(
+                {"error": backend_reason, "code": "invalid_acp_backend"}, status=400
+            )
     # Rejected before the config is even loaded: the check is pure, and every
     # validation must land before the first field assignment below so a bad value
     # cannot leave the in-memory record half-updated.
@@ -5782,21 +5888,52 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:
             return web.json_response({"error": f"Agent '{name}' not found"}, status=404)
+        agent = cfg.agents[name]
+        prior_memory_store = agent.memory_store
+        prior_record = cfg.memory_stores.get(prior_memory_store)
+        has_private_memory = prior_record is not None and prior_record.memory_version == 2
+        provision_memory = body.get("provision_memory") and not has_private_memory
+        backend_changed = "acp_backend" in body and body["acp_backend"] != agent.acp_backend
+        backend_pin = body.get("acp_backend", agent.acp_backend)
+        session_key = None
+        if backend_pin is None and (
+            pending_model or (backend_changed and has_private_memory) or provision_memory
+        ):
+            # Provisioning follows existing enrollment; it does not enroll a worker.
+            # Read once for both model validation and private-memory admission.
+            try:
+                record = await asyncio.to_thread(agent_state.get_crewmate_record, name, strict=True)
+            except (OSError, ValueError):
+                return web.json_response(
+                    {
+                        "error": "the crewmate record could not be read; the save was refused",
+                        "code": "members_unavailable",
+                    },
+                    status=503,
+                )
+            if agent_state.record_covers_store(record, prior_memory_store):
+                session_key = member_thread_session_alias(slug_for_name(name))
+        # Resolve the proposed pin without letting null reuse the stored pin.
+        proposed_backend = cfg.resolve_session_backend(
+            session_key=session_key,
+            backend_override=backend_pin,
+        )
         if "model" in body:
-            # Validated before the write, reusing the config loaded just above so
-            # this costs no extra read.
-            model_reason = _model_pin_rejected(pending_model, request, cfg.agent.provider)
+            model_reason = _model_pin_rejected(
+                pending_model,
+                request,
+                cfg.agent.provider,
+                backend=proposed_backend,
+            )
             if model_reason:
                 return web.json_response(
                     {"error": model_reason, "code": "invalid_model"}, status=400
                 )
-        agent = cfg.agents[name]
         if "kiro_agent" in body and body["kiro_agent"] != agent.kiro_agent:
             try:
                 await asyncio.to_thread(require_unmanaged_template, agent.kiro_agent)
             except CapabilityError as exc:
                 return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
-        prior_memory_store = agent.memory_store
         if "memory_store" in body and body["memory_store"] != prior_memory_store:
             return web.json_response(
                 {
@@ -5805,19 +5942,41 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-        prior_record = cfg.memory_stores.get(prior_memory_store)
-        if body.get("provision_memory") and (
-            prior_record is None or prior_record.memory_version != 2
-        ):
+        if backend_changed and has_private_memory:
             try:
-                await _drained_to_thread(require_member_memory_creation, name)
+                require_private_memory_mcp_backend(proposed_backend)
             except UnknownMemoryStore as exc:
                 return web.json_response(
                     {"error": str(exc), "code": "member_memory_unavailable"}, status=409
                 )
+        if provision_memory:
+            try:
+                await _drained_to_thread(
+                    functools.partial(
+                        require_member_memory_creation,
+                        name,
+                        acp_backend=proposed_backend,
+                    )
+                )
+            except UnknownMemoryStore as exc:
+                return web.json_response(
+                    {"error": str(exc), "code": "member_memory_unavailable"}, status=409
+                )
+        if backend_changed and ("model" not in body or "reasoning_effort" not in body):
+            # The caller must choose pins for the new route before any mutation.
+            return web.json_response(
+                {
+                    "error": "Changing acp_backend requires explicit model and reasoning_effort choices",
+                    "code": "backend_choices_required",
+                },
+                status=400,
+            )
         # Captured BEFORE any mutation: what the effort chain reads today.
         effort_inputs_before = _effort_inputs(agent)
         changed: list[str] = []
+        if "acp_backend" in body:
+            agent.acp_backend = body["acp_backend"]
+            changed.append("acp_backend")
         if "kiro_agent" in body:
             try:
                 owner = await asyncio.to_thread(

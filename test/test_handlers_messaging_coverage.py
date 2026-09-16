@@ -32,6 +32,8 @@ import kiro_crew.dashboard.handlers.messaging as mod
 from conftest import forget_env_at_teardown
 from kiro_crew.subagent import AGENT_NOT_FOUND_CODE
 
+pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+
 
 class _Req:
     """Request double: state, JSON body, route/query fields and headers."""
@@ -123,6 +125,8 @@ def _info(**kw: Any) -> Any:
         "max_turns": 0,
         "cwd": "",
         "model": "",
+        "crew_agent": None,
+        "acp_backend": None,
         "reasoning_effort": "",
         "approval_mode": "",
         "silent": False,
@@ -317,6 +321,173 @@ class TestApiSpawn:
 
 
 # ── api_spawn_continue ──
+
+
+class TestSpawnExecutionPreparation:
+    @pytest.fixture
+    def execution_setup(self, monkeypatch, tmp_path):
+        from kiro_crew import subagent
+        from kiro_crew.memory_stores import provision_member_memory
+
+        cfg = loader.KiroCrewConfig()
+        cfg.agent.model = "global-test-model"
+        cfg.agents["worker"] = loader.KiroCrewAgentConfig(
+            kiro_agent="worker", acp_backend="", reasoning_effort="high", triggers="work"
+        )
+        store = provision_member_memory(cfg, "worker")
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", lambda: cfg)
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "worker.json").write_text(
+            json.dumps({"name": "worker", "model": "template-test-model"}), encoding="utf-8"
+        )
+        monkeypatch.setattr(loader, "kiro_agents_dir", lambda: agents)
+        monkeypatch.setattr(subagent, "list_agents", lambda: [SimpleNamespace(name="worker")])
+        sessions = MagicMock(admission_closed=False, _pool_cwd="")
+        sessions.get_approval_policy.return_value = "auto"
+        manager = subagent.SubagentManager(sessions=sessions, ctx_builder=None, max_concurrent=1)
+        monkeypatch.setattr(manager, "_should_stagger_queue", lambda _: (True, False))
+        monkeypatch.setattr(manager, "_emit_queue_depth", lambda *_: None)
+        monkeypatch.setattr(manager, "_run", AsyncMock())
+        state = _state(subagents=manager, sessions=sessions, conversation_log=None)
+        return cfg, store, manager, state
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["crew", "agent", "legacy_retry"])
+    async def test_discovery_yields_and_capture_survives_queue_and_continuation(
+        self, monkeypatch, execution_setup, source
+    ):
+        from kiro_crew.subagent import SubagentInfo
+        from kiro_crew.subagent_persistence import read_run_execution
+
+        cfg, store, manager, state = execution_setup
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        entered = asyncio.Event()
+        release = threading.Event()
+        reads = []
+        real_read = loader._read_hardened_agent_spec
+
+        def read_spec(path):
+            assert threading.get_ident() != loop_thread, "model discovery ran on the loop"
+            reads.append(path)
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5), "test did not release model discovery"
+            return real_read(path)
+
+        monkeypatch.setattr(loader, "_read_hardened_agent_spec", read_spec)
+        original_spawn = manager.spawn
+
+        def spawn_after_config_change(*args, **kwargs):
+            assert threading.get_ident() == loop_thread, "admission moved off the loop"
+            cfg.agents["worker"].acp_backend = "claude"
+            cfg.agents["worker"].model = "changed-test-model"
+            cfg.agents["worker"].reasoning_effort = "low"
+            return original_spawn(*args, **kwargs)
+
+        monkeypatch.setattr(manager, "spawn", spawn_after_config_change)
+        if source == "legacy_retry":
+            manager._agents["old"] = SubagentInfo(
+                id="old",
+                task="work",
+                agent="worker",
+                done=True,
+                error="failed",
+                memory_store=store,
+                approval_mode="auto",
+                include_project=False,
+            )
+            request = _Req(state, match_info={"agent_id": "old"})
+            handler = mod.api_spawn_retry
+        else:
+            request = _Req(
+                state,
+                {
+                    "task": "work",
+                    source: "worker",
+                    "approval_mode": "auto",
+                    "include_project": False,
+                },
+            )
+            handler = mod.api_spawn
+        pending = asyncio.create_task(handler(request))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            # The loop reaches this while discovery is still held in its worker.
+            assert not pending.done()
+            release.set()
+            response = await asyncio.wait_for(pending, 5)
+            assert response.status == 200, _payload(response)
+            queued = manager._queue[0]
+            expected = {
+                "crew_agent": "worker",
+                "acp_backend": "",
+                "model": "template-test-model",
+                "reasoning_effort": "high",
+            }
+            assert {key: queued[key] for key in expected} == expected
+            assert queued["memory_store"] == ("" if source == "agent" else store)
+            assert queued["include_project"] is False
+            monkeypatch.setattr(manager, "_should_stagger_queue", lambda _: (False, True))
+            manager._drain_queue()
+            await asyncio.wait_for(asyncio.gather(*manager._tasks.values()), 5)
+            started = manager._agents[_payload(response)["id"]]
+            assert not started.error
+            assert {key: getattr(started, key) for key in expected} == expected
+            assert started.memory_store == queued["memory_store"]
+            assert started.memory_mode == queued["_memory_mode"]
+            execution = await asyncio.to_thread(read_run_execution, started.id)
+            assert {key: execution[key] for key in expected} == expected
+            # Captured continuations must not rediscover settings after a reload.
+            started.done = True
+            manager._tasks.pop(started.id)
+            manager._running_count = 0
+            monkeypatch.setattr(manager, "_promote_conversation", lambda *_: None)
+            resumed = manager.continue_conversation(
+                started.id, "continue", agent="worker", parent_session_key="dashboard:parent"
+            )
+            assert resumed is not None and not resumed.error
+            assert {key: getattr(resumed, key) for key in expected} == expected
+            assert resumed.memory_store == started.memory_store
+            assert len(reads) == 1
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await asyncio.gather(*manager._tasks.values(), return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_preparation_failure_keeps_admission_rejection_accounting(
+        self, monkeypatch, execution_setup
+    ):
+        cfg, _, manager, state = execution_setup
+        loop_thread = threading.get_ident()
+        rejected = []
+
+        def failed_model(*args, **kwargs):
+            assert threading.get_ident() != loop_thread
+            raise OSError("agent specs unavailable")
+
+        monkeypatch.setattr(cfg, "acp_effective_model", failed_model)
+        monkeypatch.setattr(
+            manager, "_announce_rejection", lambda info: rejected.append(info) or info
+        )
+        response = await mod.api_spawn(
+            _Req(
+                state,
+                {
+                    "task": "work",
+                    "crew": "worker",
+                    "batch_id": "wave1",
+                    "batch_total": 1,
+                },
+            )
+        )
+        assert response.status == 400
+        assert _payload(response)["counted"] is True
+        assert "agent specs unavailable" in _payload(response)["error"]
+        assert manager._batch_submitted["wave1"] == [1, 1]
+        assert len(rejected) == 1 and rejected[0].batch_id == "wave1"
+        assert not manager._queue and not manager._tasks
 
 
 class TestApiSpawnContinue:
@@ -780,7 +951,7 @@ class TestApiSpawnRetry:
         _run(mod.api_spawn_retry, self._req(mgr))
         assert mgr.spawn.call_args.args[0] == "shown"
 
-    def test_retry_reuses_the_failed_run_context_scope(self) -> None:
+    def test_retry_reuses_the_failed_run_context_scope(self, monkeypatch) -> None:
         """A retry must be the same experiment — not a wider-context rerun."""
         mgr = _mgr()
         mgr.get.return_value = _info(
@@ -789,13 +960,31 @@ class TestApiSpawnRetry:
             _raw_task="t",
             include_memory=False,
             include_project=False,
+            crew_agent="reviewer",
+            acp_backend="codex",
+            model="captured-test-model",
+            reasoning_effort="",
         )
         mgr.spawn.return_value = _info(id="new")
+        monkeypatch.setattr(mod, "warm_project_agents_for_spawn", AsyncMock())
+
+        def no_rediscovery():
+            pytest.fail("a captured retry must not load execution settings again")
+
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", no_rediscovery)
         _run(mod.api_spawn_retry, self._req(mgr))
         kwargs = mgr.spawn.call_args.kwargs
         assert kwargs["include_memory"] is False
         assert kwargs["include_lessons"] is True
         assert kwargs["include_project"] is False
+        assert kwargs["crew_agent"] == "reviewer"
+        assert kwargs["acp_backend"] == "codex"
+        execution = kwargs["_execution"]
+        assert execution.crew_agent == "reviewer"
+        assert execution.acp_backend == "codex"
+        assert execution.model == "captured-test-model"
+        assert execution.reasoning_effort == ""
+        assert not execution.error
 
 
 class TestApiSpawnDelete:

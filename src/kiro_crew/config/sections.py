@@ -3537,6 +3537,15 @@ class KiroCrewAgentConfig:
         ),
     )
 
+    acp_backend: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Agent Backend",
+            "Backend for this member's conversations and tasks. Null inherits the "
+            "session default; an empty string selects Kiro explicitly.",
+        ),
+    )
+
 
 @dataclass
 class WorkspaceConfig:

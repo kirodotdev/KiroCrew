@@ -24,6 +24,7 @@ import kiro_crew
 import kiro_crew.config.resolution as _resolution
 from kiro_crew import beacon, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values
+from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
@@ -1728,13 +1729,17 @@ def _agent_values() -> set[str]:
     return {"", *KiroCrewConfig.load().agents}
 
 
-def _active_advertised_ids(request: web.Request) -> list[str] | None:
-    """Advertised model ids from the first active provider, or None if unknown.
+def _active_advertised_ids(
+    request: web.Request, *, namespace: str | None = None
+) -> list[str] | None:
+    """Advertised model ids from an active provider, or None if unknown.
 
     Uses the shared :func:`advertised_model_ids` shape parser so this
     validation sees exactly what the session-init withhold check sees. Returns
     ``None`` when no session has initialized / nothing was advertised, so callers
     treat entitlement as UNKNOWN rather than denying on no evidence.
+    With a namespace filter, use the newest matching provider; without one,
+    preserve the existing first-provider selection.
     """
     from kiro_crew.acp.client import advertised_model_ids
 
@@ -1742,7 +1747,9 @@ def _active_advertised_ids(request: web.Request) -> list[str] | None:
         providers = request.app["state"].sessions.active_providers()
     except (KeyError, AttributeError):
         return None
-    for provider in providers:
+    for provider in reversed(providers) if namespace is not None else providers:
+        if namespace is not None and capabilities_of(provider).model_id_namespace != namespace:
+            continue
         getter = getattr(provider, "available_models", None)
         if not callable(getter):
             continue
@@ -1756,7 +1763,11 @@ def _active_advertised_ids(request: web.Request) -> list[str] | None:
 
 
 def _validate_role_model(
-    value: str, request: web.Request, provider: str | None = None
+    value: str,
+    request: web.Request,
+    provider: str | None = None,
+    *,
+    namespace: str | None = None,
 ) -> str | None:
     """Reject a per-role model pin the account cannot use; ``None`` = allow.
 
@@ -1771,6 +1782,7 @@ def _validate_role_model(
     *provider* is forwarded to :func:`_model_rejected_reason` so a caller holding
     an already-loaded config does not pay a second synchronous config read; the
     remaining work is in-memory. Omit it and the provider is resolved there.
+    *namespace* limits advertised ids to the selected backend's model vocabulary.
     """
     if not value or value == "auto":
         return None
@@ -1780,7 +1792,7 @@ def _validate_role_model(
     reason = _model_rejected_reason(value, provider=provider)
     if reason:
         return reason
-    advertised = _active_advertised_ids(request)
+    advertised = _active_advertised_ids(request, namespace=namespace)
     if advertised is None:
         return None
     if model_is_unusable(value, advertised):

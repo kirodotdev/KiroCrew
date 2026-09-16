@@ -8,6 +8,78 @@ in [theming-contract](theming-contract.md); user-facing strings are in
 
 ## The stack
 
+Member model selectors use `useAvailableModelsQuery({backend})` with the editor's
+resolved backend; queries have separate cache keys and read
+`/api/models?backend=<id>`. Inherited uses the roster's `inherited_acp_backend`,
+resolved by the API without the member's own pin and with verified enrollment.
+The editor captures this route when it opens; it does not derive precedence from
+configuration or the roster's `crewmate` display flag. An absent route remains
+unknown and withholds the inherited query and cached models. Explicit `""`
+selects Kiro. Other callers that omit the backend retain the shared
+installation-default model list.
+
+The Agent Template pane uses a separate `useAvailableModelsQuery` with no
+`backend` argument, enabled while that pane is open. Its immediate model edits
+fork the worker's own copy when needed and retain the installation-default
+catalog regardless of the member's backend selection. Explicit `backend: ""`
+would select Kiro, not the installation default. Only the member's Model pane
+and draft-pin validation use the backend-scoped catalog.
+
+Reselecting the current backend preserves draft pins; returning to the opening
+selection restores its saved model and effort. Switching between inherited and
+explicit selection of the same effective backend preserves pins. A different
+backend retains compatible choices and clears incompatible pins only after its
+model query succeeds with advertised concrete models. An exact advertised pin
+wins; otherwise both IDs must resolve to the same known `canonicalKey` in the
+shared model registry. An equivalent pin adopts the target catalog's advertised
+spelling, keeping its model identity and compatible effort. Distinct context
+variants stay separate, and unregistered IDs match only exactly: the display
+normalizer's fallback dot/hyphen folding is not evidence for a persisted pin.
+Returning to the opening selection restores its original spelling.
+Loading, failed and degraded catalogs cannot disprove a pin.
+A successful auto-only catalog keeps a concrete draft pin
+pending validation across subsequent polls until concrete models arrive. A draft
+already inheriting its model needs no catalog compatibility check.
+Its execution baseline is captured when the editor opens
+and stays stable across roster refreshes. A backend edit sends all three execution
+fields; unrelated edits omit them.
+
+The selector is labelled **AI app**. Its helper explains that this software runs
+the member's tasks, then distinguishes new sessions from sessions already open.
+App names reuse Developer settings' translations; unknown apps retain the server's
+policy name. The current selection remains labelled even when the app catalog
+fails, including the empty-string explicit Kiro selection; Retry does not alter it.
+The inherited option names the API-resolved app when known. This
+route does not verify which inherited model will be served.
+
+The saved model/effort resolution readout is unavailable while the Model pane has
+unsaved app, model, or effort changes. Returning to the opening values restores
+it; unrelated pane edits leave it visible. Saving closes the editor, and reopening
+reads the saved resolution again.
+While this readout is withheld, a draft with neither effort capability nor an
+effort pin shows the existing explanation: the known model takes no effort, or
+a model must be chosen. This line does not duplicate a visible effort control,
+stored-pin warning, or the clean pane's saved readout.
+
+For an inherited model, effort capability uses the saved resolution only while
+the backend selection exactly matches the opening selection and no opening model
+pin is pending clear. Switching between inherited and explicit leaves that
+capability unknown even when both select the same app: model inheritance can
+change. The editor does not reproduce the factory's inheritance rules or infer
+the inherited model from a catalog. Effort-only edits keep the resolution
+applicable, including on older rosters whose inherited backend is unknown.
+Returning to the opening selection restores its context and saved pins. Existing
+effort pins remain clearable while capability is unknown.
+
+When a concrete catalog invalidates a model pin, a polite inline status names
+the old model and target app and explains that model and effort now inherit.
+Changing apps, returning to the opening selection, choosing a model, or reopening
+the editor clears the notice; a later invalidation names its own target. Compatible
+pins and incomplete catalogs produce no reset notice. App-list and model-list
+failures name their subject through translated `ErrorNotice` text, with an
+in-place Retry for the failed query. Retry preserves the draft; no agent hand-off
+navigates away from unsaved execution settings.
+
 React 18, Redux Toolkit, React Query (`@tanstack/react-query`), React Router v7,
 Framer Motion, Tailwind CSS 3, Lucide React, DOMPurify, highlight.js, Monaco,
 TypeScript, Vite 8. Read the pins from `website/package.json` rather than this list.

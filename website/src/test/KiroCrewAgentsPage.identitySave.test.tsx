@@ -11,7 +11,7 @@
  * '' for that, which is a real rename, not an echo).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
 
@@ -81,6 +81,27 @@ async function savedBody(sheet: HTMLElement): Promise<Record<string, unknown>> {
 }
 
 describe('crew editor — identity fields ride only when edited', () => {
+  it('does not overwrite refreshed execution settings during an unrelated save', async () => {
+    const { queryClient } = renderWithProviders(<KiroCrewAgentsPage />)
+    fireEvent.click(await screen.findByTestId('crew-card'))
+    const sheet = await screen.findByRole('dialog', { name: /Edit agent oncall/ })
+    fireEvent.click(within(sheet).getByTestId('crew-rail-routing'))
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), {
+      target: { value: 'sev1, sev2' },
+    })
+    await act(async () => {
+      queryClient.setQueryData(['kirocrew-agents'], {
+        agents: [{ ...ONCALL, acp_backend: 'codex', model: 'updated-model', reasoning_effort: 'high' }],
+        default_agent: 'kirocrew',
+      })
+    })
+    const body = await savedBody(sheet)
+    expect(body.triggers).toBe('sev1, sev2')
+    for (const key of ['acp_backend', 'model', 'reasoning_effort']) {
+      expect(body).not.toHaveProperty(key)
+    }
+  })
+
   it('a save that touched another field does not echo the name or role back', async () => {
     const sheet = await openEditor()
     fireEvent.click(within(sheet).getByTestId('crew-rail-routing'))

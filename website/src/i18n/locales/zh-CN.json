@@ -10926,7 +10926,13 @@
       "uses_global_memory_v1": "使用全局记忆 V1",
       "memory_binding_mismatch": "为此成员配置的记忆存储属于另一位成员，无法在此使用。",
       "memory_binding_diagnostic": "在网关上检查原因：{{command}}",
-      "open_crew_manager": "打开团队管理页"
+      "open_crew_manager": "打开团队管理页",
+      "ai_app": "AI 应用",
+      "ai_app_hint": "运行此成员任务的软件。新会话使用所选应用；已打开的会话继续使用启动时的应用。",
+      "inherited_ai_app": "继承（{{backend}}）",
+      "ai_apps_load_failed": "无法加载 AI 应用列表。",
+      "models_load_failed": "无法加载 {{backend}} 的模型列表。",
+      "model_reset_for_ai_app": "“{{model}}”在 {{backend}} 中不可用。模型和推理强度现已改为继承默认设置。"
     },
     "knowledge": {
       "detailView": {

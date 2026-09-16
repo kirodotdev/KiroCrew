@@ -10926,7 +10926,13 @@
       "uses_global_memory_v1": "グローバル記憶 V1 を使用",
       "memory_binding_mismatch": "このメンバーに設定されたメモリストアは別のメンバーに属しています。ここでは利用できません。",
       "memory_binding_diagnostic": "ゲートウェイで原因を確認してください：{{command}}",
-      "open_crew_manager": "クルー管理ページを開く"
+      "open_crew_manager": "クルー管理ページを開く",
+      "ai_app": "AIアプリ",
+      "ai_app_hint": "このメンバーのタスクを実行するソフトウェアです。新しいセッションでは選択したアプリを使用し、すでに開いているセッションでは開始時のアプリを引き続き使用します。",
+      "inherited_ai_app": "継承済み（{{backend}}）",
+      "ai_apps_load_failed": "AIアプリを読み込めませんでした。",
+      "models_load_failed": "{{backend}} のモデルを読み込めませんでした。",
+      "model_reset_for_ai_app": "「{{model}}」は {{backend}} では利用できません。モデルと推論エフォートはデフォルト設定を継承する状態に変更されました。"
     },
     "knowledge": {
       "detailView": {

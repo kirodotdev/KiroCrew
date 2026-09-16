@@ -27,6 +27,18 @@ V2 revision history has no automatic purge.
 Private provider startup requires `ACP_BACKENDS_PRIVATE_MEMORY_MCP` membership.
 Kiro, Claude Code and KAS qualify; unknown or merely selectable backends do not.
 This direct-tool capability and the OS sandbox checks are both required.
+The check uses the member's selected backend, including an explicit choice
+submitted at creation. Changing a private member to an unsupported backend is
+refused before saving any fields; selecting Codex never downgrades the member
+to Global V1.
+Dashboard creation, backend changes and V1-to-V2 setup share their proposed
+route with model validation. Clearing a verified enrolled member's pin checks
+its inherited DM backend (`agent.member_acp_backend`); an unenrolled worker,
+including one with V2 memory, inherits `agent.acp_backend`. An explicit `""`
+still selects Kiro. A hire uses the member route and a plain create the worker
+route. Provisioning preserves enrollment, rather than enrolling a worker.
+An inherited private backend change or new allocation requires a readable
+enrollment record before fields change, memory is allocated or V1 contexts retire.
 
 Private internal HTTP recall, lesson operations and explicit consolidation use
 the protected process/session binding under `member-memory-bindings/pids/`, or
@@ -62,7 +74,7 @@ missing or damaged. Such failures require recovery and cannot initialize a
 replacement or silently change the conversation's authority.
 
 Dashboard creation, discovery sync and explicit V1-to-V2 setup, plus CLI creation
-and `--provision-memory`, check the member DM's effective backend and OS sandbox
+and `--provision-memory`, check backend capability and the OS sandbox
 before allocating private files or publishing its binding. Unsupported execution
 returns an actionable refusal (`409 member_memory_unavailable` on HTTP, exit 1
 on CLI); it cannot create a new V1 member instead. The check also precedes
@@ -70,6 +82,8 @@ retirement of existing V1 providers. Ordinary V1 edits and management of an
 already-owned V2 store remain available. Runtime admission repeats the check,
 since configuration and OS capabilities can change after creation; Crew tasks
 and consolidation separately require their configured default backend to support V2.
+Dashboard create/update supply the verified route above; discovery sync and CLI
+creation retain the creation guard's member-DM default when no backend is supplied.
 
 `memory.private_provisioning_enabled` defaults to true and controls admission
 of new private allocations through the same creation guard. During a provisioning

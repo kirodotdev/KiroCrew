@@ -88,7 +88,7 @@ from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exf
 from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
-from kiro_crew.subagent import effort_applied_note, effort_drop_reason
+from kiro_crew.subagent import effort_applied_note, effort_drop_reason, prepare_spawn_execution
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
@@ -397,6 +397,9 @@ async def api_spawn(request: web.Request) -> web.Response:
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
     reasoning_effort = cleaned.get("reasoning_effort") or ""
+    worker_kwargs: dict[str, Any] = {}
+    if crew:
+        worker_kwargs["crew_agent"] = crew
     # Batch/wave identity (transport-layer params from spawn_run MCP, like
     # approval_mode/silent above): validated inline, bounded, never LLM-schema.
     batch_id = str(body.get("batch_id", "") or "")[:32]
@@ -410,6 +413,13 @@ async def api_spawn(request: web.Request) -> web.Response:
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
         await warm_project_agents_for_spawn(state, cwd)
+    execution = await asyncio.to_thread(
+        prepare_spawn_execution,
+        agent=agent,
+        crew_agent=crew or None,
+        model=model or None,
+        reasoning_effort=reasoning_effort,
+    )
     info = state.subagents.spawn(
         task,
         parent_session_key=parent_session,
@@ -428,6 +438,8 @@ async def api_spawn(request: web.Request) -> web.Response:
         include_project=cleaned.get("include_project", True) is not False,
         memory_store=child_memory_store,
         _memory_mode=admitted_mode,
+        _execution=execution,
+        **worker_kwargs,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -983,6 +995,14 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
     # current config before any discovery read.
     if old.agent:
         await warm_project_agents_for_spawn(state, old.cwd or "")
+    execution = await asyncio.to_thread(
+        prepare_spawn_execution,
+        agent=old.agent,
+        crew_agent=old.crew_agent,
+        acp_backend=old.acp_backend,
+        model=old.model or None,
+        reasoning_effort=old.reasoning_effort,
+    )
     info = state.subagents.spawn(
         old._raw_task or old.task,
         parent_session_key=old.parent_session_key,
@@ -993,6 +1013,9 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         # Like model and the context groups: a retry must run at the SAME
         # effort as the run it replaces, or it is a different experiment.
         reasoning_effort=old.reasoning_effort,
+        crew_agent=old.crew_agent,
+        acp_backend=old.acp_backend,
+        _execution=execution,
         approval_mode=old.approval_mode or None,
         silent=old.silent,
         # A retry must see the SAME context scope as the run it replaces —

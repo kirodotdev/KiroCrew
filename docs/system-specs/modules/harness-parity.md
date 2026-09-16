@@ -114,6 +114,11 @@ test still passes.
 | H11 | The provider label is a closed mapping and an absent label means Kiro. It indexes resume compatibility, session-map persistence, and session-file cleanup routing, so a harness with no `PROVIDER_LABEL_*` of its own persists as a Kiro session and its transcript is pruned for want of a Kiro session file. | `test_harness_parity.py::test_every_known_backend_has_a_label`, `::test_codex_carries_its_own_provider_label` | `acp/types.py` (`PROVIDER_LABEL_*`), `providers/acp.py` (`provider_label`, `cleanup_session`), `session.py` (`detect_provider_switch`) |
 | H12 | Model pre-flight keeps "empty or unknown advertised set means allow", and never compares ids across harness namespaces. Harnesses advertise ids in their own spelling; one shared membership test across two namespaces calls every legitimate model unusable and withholds the model. | `test_harness_parity.py::test_model_preflight_allows_unknown_advertised_set` | `acp/client.py` (`model_is_unusable`, `advertised_model_ids`) |
 
+For H12, `MODEL_NAMESPACE_ACP` and `MODEL_NAMESPACE_CLAUDE_CODE` in
+`agent_sdk.capabilities` name registry model-ID spelling and alias semantics.
+Namespace comparisons may select those spelling rules; they must not decide
+harness capabilities or security policy.
+
 ## Group D: review-only invariants
 
 Deterministically un-pinnable — they are properties of a change, not of a tree,

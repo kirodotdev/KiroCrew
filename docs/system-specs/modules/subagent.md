@@ -6,6 +6,34 @@ The subagent module (`kiro_crew/subagent.py`) spawns isolated background agents 
 
 Supports `on_tool_approval` callback for interactive tool approval (routed through gateway's approval system in Normal/Trust modes).
 
+Admission resolves the provider factory's crew identity, including its existing
+agent-name convention, and captures `crew_agent` and `acp_backend` alongside the
+model and reasoning effort. Explicit member dispatch uses that same path.
+For each field, the caller override wins over an explicit member pin, then a
+subagent role pin from the same backend, then the existing session default.
+Role values come from admission's loaded config snapshot; another backend
+does not inherit them. A caller's explicit model `"auto"` selects the served
+default, while an empty model or effort inherits. Captured empty effort remains
+empty even if role or member settings change later.
+These settings survive the admission queue and
+retry paths. Member-bound and backend-pinned runs use dedicated processes, so a
+worker cannot inherit its parent's harness from a shared runtime. The protected
+run record stores execution settings for continuation; editable `state.json`
+fields are display hints and cannot change the resumed backend.
+
+The primary HTTP spawn, retry, and direct app SDK boundaries run
+`prepare_spawn_execution` off-loop before calling synchronous `spawn`. Named-agent
+model discovery can scan and read agent files; admission consumes the prepared
+settings without repeating that discovery. Preparation failures still pass through
+admission's rejection and batch-accounting path. Captured retries and continuations
+retain their backend (including explicit Kiro), model and effort without discovery.
+Direct synchronous callers retain the synchronous preparation fallback.
+Continuations forward their protected record as already prepared execution;
+legacy records without execution fields retain their factory defaults and never
+trigger fresh member discovery during synchronous admission. Queue entries retain
+the prepared record even when its backend is unset, so draining a legacy
+continuation preserves that behavior.
+
 Private member memory is a durable run identity. `spawn_run(crew=...)` resolves
 the target member's template and V2 store together; an ordinary spawn inherits
 the calling session's recorded store. Admission and provider allocation both
@@ -416,10 +444,10 @@ The slow-command record (`record_slow_command`, `subagent_persistence.py`) is ap
 
 Every subagent card names the model the run actually ran on, so a model-pinned
 review's real model is auditable. `SubagentInfo` carries two fields: `requested_model`
-— the EFFECTIVE pin, i.e. the per-spawn `model` OR, when empty, the
-`agent.role_models['subagent']` config pin ([model-selection](../common/model-selection.md) is the documented way to pin a
-subagent model), resolved once at spawn; `"auto"` when completely unpinned (no
-per-spawn model, no role pin) — and `resolved_model`, the id the live
+— the EFFECTIVE pin, including a member's captured model or an unassigned
+worker's per-spawn/`agent.role_models['subagent']` pin
+([model-selection](../common/model-selection.md) owns the precedence);
+`"auto"` when no tier selects a concrete model — and `resolved_model`, the id the live
 session actually served, read via the provider's public `served_model` accessor
 (`_resolved_model_of`, which normalizes the `DEFAULT_MODEL` "auto" sentinel to `""`
 = unknown). `resolved_model` is captured at spawn (ACP reports it immediately) and
@@ -613,7 +641,7 @@ Parameters:
 - `cwd` (str, optional): absolute path to launch subagent in. Must be under a configured `subagent_cwd_allowed_roots` entry (default: `~/workspace`, `~/workspaces`, `~/workplace`, `~/workplaces`). Validated via realpath + prefix match. Pool skipped when cwd is set. These roots are a least-privilege allowlist and are never widened automatically: a persisted list whose roots all fail to exist on the host rejects every cwd, and the operator must edit `agent.subagent_cwd_allowed_roots` (or delete the key to take the shipped default). Neither the loader nor the guard stats the configured roots.
 - `max_turns` (int, optional): override tool-call budget for this spawn (default: config or 100)
 - `agent` (str, optional): agent name for the subagent
-- `reasoning_effort` (str, optional): per-call reasoning-effort override (`low`/`medium`/`high`/`xhigh`/`max`), batch-wide like `model`. Precedence: per-call value → `agent.role_efforts['subagent']` pin → provider default; `""`/absent changes nothing. Like a model/effort role pin, a non-empty value forces the dedicated-process path (the parent's shared runtime cannot switch effort per session), so a wide fan-out pays a full process per subagent — and that cost is paid even when the resolved model turns out not to support effort (the level is then dropped at the provider factory). Carried through the stagger queue and the retry endpoint like the context-group flags. NOT inherited by `spawn_continue` — a continuation resolves effort fresh (role pin, else default), the same parity as `model`. When the requested effort cannot take effect, the gateway says so: `/api/spawn` resolves the model the factory's effort gate will see (per-call value, else the subagent role pin, else the session chain for the effective agent — a crew's own model pin, else a non-sentinel global `agent.model`; a named kiro agent's own pin resolves downstream and cannot carry the overlay) and returns an `effort_dropped` reason on the success response, which the tool renders as one attributed line per distinct verdict — subagents sharing an identical verdict (the usual case, since the value is batch-wide) are collapsed into a single line naming all of them, while differing verdicts keep their own attributed lines — including the default case where nothing is pinned and the model resolves to "auto". When the effort WILL apply, the response instead carries an `effort_applied` note naming the resolved model and the family-specific settings key (`reasoning` for GPT, `output_config` for Claude) it is delivered under, rendered the same way — so both outcomes of a requested effort are visible in the tool result. A role-pinned effort that will be dropped (no per-call effort involved) still surfaces in the gateway log at warning level, since the tool caller never asked for it — that warning is emitted by the provider factory's effort gate itself (`config/loader.py`), the single authority that drops the level, so one log line covers every surface that funnels through it (spawn, dashboard slot, cron) and cannot drift from the decision it reports on. The provider factory remains the single dropping authority; the report never rejects or alters a spawn. Per-TASK variation inside one call is deliberately not supported (see issue #2140).
+- `reasoning_effort` (str, optional): per-call reasoning-effort override (`low`/`medium`/`high`/`xhigh`/`max`), batch-wide like `model`. For member-assigned runs, admission captures per-call value → explicit member pin → same-backend `agent.role_efforts['subagent']` pin → session default. Unassigned runs retain per-call value → subagent role pin → session default. An empty/absent value inherits at admission. Like a model/effort role pin, a non-empty value forces the dedicated-process path (the parent's shared runtime cannot switch effort per session), so a wide fan-out pays a full process per subagent — and that cost is paid even when the resolved model turns out not to support effort (the level is then dropped at the provider factory). Carried through the stagger queue and the retry endpoint like the context-group flags. Member-assigned `spawn_continue` replays the protected model and effort, including captured empty effort; later config edits cannot replace them. Legacy records without execution fields retain their existing factory defaults. When the requested effort cannot take effect, the gateway says so: `/api/spawn` resolves the model the factory's effort gate will see (per-call value, else the subagent role pin, else the session chain for the effective agent — a crew's own model pin, else a non-sentinel global `agent.model`; a named kiro agent's own pin resolves downstream and cannot carry the overlay) and returns an `effort_dropped` reason on the success response, which the tool renders as one attributed line per distinct verdict — subagents sharing an identical verdict (the usual case, since the value is batch-wide) are collapsed into a single line naming all of them, while differing verdicts keep their own attributed lines — including the default case where nothing is pinned and the model resolves to "auto". When the effort WILL apply, the response instead carries an `effort_applied` note naming the resolved model and the family-specific settings key (`reasoning` for GPT, `output_config` for Claude) it is delivered under, rendered the same way — so both outcomes of a requested effort are visible in the tool result. A role-pinned effort that will be dropped (no per-call effort involved) still surfaces in the gateway log at warning level, since the tool caller never asked for it — that warning is emitted by the provider factory's effort gate itself (`config/loader.py`), the single authority that drops the level, so one log line covers every surface that funnels through it (spawn, dashboard slot, cron) and cannot drift from the decision it reports on. The provider factory remains the single dropping authority; the report never rejects or alters a spawn. Per-TASK variation inside one call is deliberately not supported (see issue #2140).
 - `include_memory` / `include_lessons` / `include_project` (bool, optional, default `true`): which switchable context groups the subagent inherits, applied to every task in a batch spawn. All-on is byte-identical to the injection a normal session gets, so a caller that omits them changes nothing. `include_memory=false` drops preferences, projects, daily history, semantic and episodic memory, and prior-session provenance — the normal choice for fan-out whose task text is self-contained. `include_lessons=false` additionally drops the user's learned corrections and profile, so keep it on for any subagent that writes code, edits files, or runs git. `include_project=false` drops the docs pointer and the project-directory line. It also drops the injected steering block, but ONLY on the Claude Code backend: on the ACP/kiro backend `kiro-cli --agent` loads the agent's `resources` (including steering globs) itself, which Kiro Crew cannot suppress from here, so steering still reaches an ACP sub-agent regardless of this flag. The conduct group — critical output-format rules, date, agent identity, runtime, workspace identity, and the skills index — is never switchable, because a subagent without it cannot discover its own capabilities or format what it reports back. A subagent is told by name which groups were withheld (`[CONTEXT SCOPE]`) so it reports the gap rather than guessing. Resolved once at spawn, carried through the capacity-queue round-trip and `POST /api/spawn/{id}/retry` like `approval_mode`/`silent`/`keep`. `spawn_continue` does not take the flags but does **inherit** them from the run it continues: a continuation rebuilds session context (`get_or_create` reports `is_new=True` even when it restores the session via `session/load`), so without inheritance a scoped-down run would regain a group on its follow-up turn. See `memory-skills-hooks.md` § Switchable context groups for the section-by-section mapping.
 
 Response semantics:

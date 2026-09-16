@@ -18,6 +18,9 @@ export interface KiroCrewAgent {
   /** This agent's own default model. '' means inherit (kiro template pin, then
    *  the global fallback). Optional: older payloads predate the field. */
   model?: string
+  acp_backend?: string | null
+  /** Server-resolved route without this member's pin. Absent on older rosters. */
+  inherited_acp_backend?: string
   /** This agent's own default reasoning effort. '' means inherit the global
    *  default. Optional: older payloads predate the field. */
   reasoning_effort?: string

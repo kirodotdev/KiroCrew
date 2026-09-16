@@ -55,6 +55,15 @@ tests have moved off the corresponding legacy seam.
 
 ## Private member session ownership
 
+Member execution settings are resolved from the canonical crew identity.
+Allocation bypasses the global warm pool for per-member backend pins and explicit
+backend overrides. Inherited member backends retain the existing pool eligibility
+checks. A backend change affects newly allocated sessions, with the
+existing provider-switch/history-replay machinery handling incompatible native
+session IDs; live sessions are not interrupted by a member-settings save.
+An absent effort override inherits the current member default. An explicitly
+empty override preserves the delegated run's captured absence of an effort pin.
+
 Private essential-context receipts live on the serving provider, not the logical
 session key or shared ContextBuilder. Their identity includes the inner client,
 native session ID and existing `process_instance` token. Replacing a client or

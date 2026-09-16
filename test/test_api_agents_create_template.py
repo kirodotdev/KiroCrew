@@ -60,6 +60,7 @@ def _fake_config():
     saved: list[bool] = []
     return SimpleNamespace(
         agent=SimpleNamespace(provider="acp"),
+        resolve_session_backend=lambda **kwargs: kwargs.get("backend_override") or "",
         memory=MemoryConfig(),
         degraded_sections=frozenset(),
         agents={},

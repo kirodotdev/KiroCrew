@@ -345,6 +345,89 @@ class TestFileLock:
 
 class TestRenameNoReplace:
     @pytest.mark.skipif(
+        not pc.IS_LINUX
+        or pc.platform.machine().casefold() not in {"x86_64", "aarch64"}
+        or pc.struct.calcsize("P") != 8,
+        reason="native Linux syscall fallback requires a supported 64-bit ABI",
+    )
+    @pytest.mark.parametrize("supported_arch", [True, False])
+    def test_missing_libc_symbol_preserves_atomic_publication(self, tmp_path, supported_arch):
+        script = """
+import ctypes
+import os
+import platform
+import sys
+from pathlib import Path
+
+real_cdll = ctypes.CDLL
+
+class LibcWithoutRenameat2:
+    def __init__(self, *args, **kwargs):
+        self.library = real_cdll(*args, **kwargs)
+
+    def __getattr__(self, name):
+        if name == "renameat2":
+            raise AttributeError(name)
+        return getattr(self.library, name)
+
+ctypes.CDLL = LibcWithoutRenameat2
+supported_arch = sys.argv[2] == "supported"
+if not supported_arch:
+    platform.machine = lambda: "unsupported-test-cpu"
+
+from kiro_crew import platform_compat as pc
+
+root = Path(sys.argv[1])
+source = root / "source"
+source.mkdir()
+(source / "payload").write_text("original", encoding="utf-8")
+fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    if not supported_arch:
+        assert not pc.RENAME_NOREPLACE_AVAILABLE
+        try:
+            pc.rename_noreplace("source", "published", src_dir_fd=fd, dst_dir_fd=fd)
+        except NotImplementedError:
+            pass
+        else:
+            raise AssertionError("unsupported ABI did not refuse publication")
+        assert source.is_dir() and not (root / "published").exists()
+    else:
+        assert pc.RENAME_NOREPLACE_AVAILABLE
+        pc.rename_noreplace("source", "published", src_dir_fd=fd, dst_dir_fd=fd)
+        destination = root / "published"
+        before = destination.stat()
+        source.mkdir()
+        (source / "payload").write_text("replacement", encoding="utf-8")
+        try:
+            pc.rename_noreplace("source", "published", src_dir_fd=fd, dst_dir_fd=fd)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("occupied destination was replaced")
+        after = destination.stat()
+        assert (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+        assert (destination / "payload").read_text(encoding="utf-8") == "original"
+        assert (source / "payload").read_text(encoding="utf-8") == "replacement"
+finally:
+    os.close(fd)
+"""
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(tmp_path),
+                "supported" if supported_arch else "unsupported",
+            ],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=20,
+        )
+
+    @pytest.mark.skipif(
         not pc.RENAME_NOREPLACE_AVAILABLE,
         reason="native atomic no-replace rename is unavailable",
     )
@@ -3964,6 +4047,7 @@ def test_parent_map_ignores_a_planted_ps_earlier_on_path(tmp_path, monkeypatch):
     assert unreachable_pid not in parent_map, "planted PATH shim was executed"
     # A real snapshot still came back, so this is not passing by returning {}.
     assert os.getpid() in parent_map
+    assert parent_map[os.getpid()] == os.getppid()
 
 
 def test_trusted_system_bin_rejects_a_name_not_in_system_dirs(tmp_path, monkeypatch):

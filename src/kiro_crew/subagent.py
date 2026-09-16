@@ -1172,6 +1172,76 @@ _SYSTEM_PREFIX = (
 )
 
 
+@dataclass(frozen=True)
+class SpawnExecution:
+    """Execution settings prepared before admission, or a refusal to announce."""
+
+    crew_agent: str | None
+    acp_backend: str | None
+    model: str | None
+    reasoning_effort: str
+    error: str = ""
+
+
+def prepare_spawn_execution(
+    *,
+    agent: str = "",
+    crew_agent: str | None = None,
+    acp_backend: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str = "",
+    _config: KiroCrewConfig | None = None,
+) -> SpawnExecution:
+    """Capture member settings; async callers must run this off the event loop.
+
+    Named-agent model resolution scans and reads agent specs. Keep its result
+    with this submission instead of rediscovering it when admission drains.
+    Same-backend role pins fill fields left unset by the caller and member,
+    using this admission's config snapshot rather than a later live default.
+    Captured runs (including an explicit Kiro backend, ``""``) retain all fields.
+    Failures travel to admission so batch accounting and rejection delivery run.
+    """
+    if acp_backend is not None or not (agent or crew_agent):
+        return SpawnExecution(crew_agent, acp_backend, model, reasoning_effort)
+    if _config is None:
+        try:
+            _config = KiroCrewConfig.load()
+        except Exception:
+            return SpawnExecution(
+                crew_agent,
+                acp_backend,
+                model,
+                reasoning_effort,
+                error="member execution settings are unavailable",
+            )
+    from kiro_crew.config.loader import normalize_agent_model, resolve_crew_identity
+
+    try:
+        selected_crew = resolve_crew_identity(_config, agent, crew_agent)
+        if selected_crew:
+            crew_agent = selected_crew
+            acp_backend = _config.resolve_session_backend(agent=agent, crew_agent=crew_agent)
+            if acp_backend == _config.agent.acp_backend:
+                crew = _config.agents.get(crew_agent)
+                if not model and not (crew and normalize_agent_model(crew.model)):
+                    model = normalize_agent_model(_config.agent.role_models.get("subagent", ""))
+                reasoning_effort = (
+                    reasoning_effort
+                    or _config.crew_pinned_effort(agent, crew_agent)
+                    or _config.agent.resolve_effort("subagent")
+                )
+            model = (
+                _config.acp_effective_model(
+                    agent, model, acp_backend=acp_backend, crew_agent=crew_agent
+                )
+                or DEFAULT_MODEL
+            )
+            reasoning_effort = reasoning_effort or _config.resolve_session_effort(agent, crew_agent)
+    except (OSError, ValueError) as exc:
+        return SpawnExecution(crew_agent, acp_backend, model, reasoning_effort, error=str(exc))
+    return SpawnExecution(crew_agent, acp_backend, model, reasoning_effort)
+
+
 @dataclass
 class SubagentInfo:
     """Metadata for a running subagent."""
@@ -1323,8 +1393,10 @@ class SubagentInfo:
     streaming_text: str = ""
     elapsed: float = 0.0
     _raw_task: str = ""  # unredacted task for kiro-cli execution prompt
-    # CC-specific overrides (ignored for ACP)
+    # Per-run execution settings, including member and role defaults captured at admission.
     model: str = ""
+    crew_agent: str | None = field(default=None, kw_only=True)
+    acp_backend: str | None = field(default=None, kw_only=True)
     # The model id the live session ACTUALLY resolved to serve, read back from
     # the provider's public ``served_model`` accessor. Distinct from ``model``,
     # which is only the REQUESTED pin (often "" ⇒ provider default): the ACP
@@ -1335,10 +1407,8 @@ class SubagentInfo:
     # completion too. Surfaced on the subagent WS frames and completion meta so a
     # model-pinned review's actual model is auditable.
     resolved_model: str = ""
-    # The EFFECTIVE requested model — the per-spawn pin (``model``) OR, when that
-    # is empty, the ``agent.role_models['subagent']`` config pin
-    # (docs/system-specs/common/model-selection.md names
-    # the config pin as *the* way to pin a subagent model). This is the side the
+    # The EFFECTIVE requested model after per-spawn, member and role resolution.
+    # Unassigned workers defer to ``agent.role_models['subagent']``. This is the side the
     # downgrade comparison must use: a config-pinned run served a different model
     # is exactly the "unverifiable pin" this feature exists to catch, and keying
     # off the bare per-spawn ``model`` would miss it.
@@ -1346,7 +1416,7 @@ class SubagentInfo:
     # the model). Resolved once at spawn.
     requested_model: str = ""
     # Per-call reasoning-effort override (spawn_run ``reasoning_effort``).
-    # Wins over the ``role_efforts['subagent']`` pin; ``""`` defers to it.
+    # Wins over member pins, eligible role pins, and session defaults.
     # Like ``model``, a non-empty value forces the dedicated-process path.
     reasoning_effort: str = ""
     allowed_tools: list[str] = field(default_factory=list)
@@ -2319,6 +2389,9 @@ class SubagentManager:
         _from_queue: bool = False,
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
+        crew_agent: str | None = None,
+        acp_backend: str | None = None,
+        _execution: SpawnExecution | None = None,
     ) -> SubagentInfo | None:
         return self._admission.spawn_impl(
             task,
@@ -2345,6 +2418,9 @@ class SubagentManager:
             _from_queue,
             _preassigned_id,
             _memory_mode=_memory_mode,
+            crew_agent=crew_agent,
+            acp_backend=acp_backend,
+            _execution=_execution,
         )
 
     async def _safe_announce(self, info: SubagentInfo) -> None:

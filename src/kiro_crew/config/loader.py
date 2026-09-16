@@ -4946,6 +4946,11 @@ class KiroCrewConfig:
                     # not survive load — select_crew's roster calls .strip() on it.
                     raw_triggers = entry.get("triggers", "")
                     agents[name] = KiroCrewAgentConfig(
+                        acp_backend=(
+                            _normalize_acp_backend(entry["acp_backend"])
+                            if entry.get("acp_backend") is not None
+                            else None
+                        ),
                         kiro_agent=entry.get("kiro_agent", ""),
                         workspace=entry.get("workspace", "default"),
                         memory_store=entry.get("memory_store", "default"),
@@ -5736,6 +5741,9 @@ class KiroCrewConfig:
         agent: str | None,
         model_override: str | None,
         global_model: str | None = None,
+        *,
+        acp_backend: str | None = None,
+        crew_agent: str | None = None,
     ) -> str:
         """The model id the ACP factory selects — what its effort gate keys on.
 
@@ -5745,7 +5753,8 @@ class KiroCrewConfig:
         ``effort_applied``/``effort_dropped`` receipt, worse than silence.
 
         Precedence: ``model_override`` (an explicit caller model or the value
-        the session layer resolved) > a named agent's own kiro ``model`` pin
+        the session layer resolved) > the normalized crew model pin >
+        a named agent's own kiro ``model`` pin
         (``kirocrew`` itself and the no-agent case use the global directly) >
         the collapsed global. ``global_model`` lets the factory pass its
         build-time collapsed ``agent.model``; when omitted it is recomputed
@@ -5777,22 +5786,57 @@ class KiroCrewConfig:
         docstring. ``""`` means nothing is pinned anywhere: the backend resolves
         the model itself and the effort overlay cannot be keyed.
         """
+        backend = (
+            self.resolve_session_backend(agent=agent, crew_agent=crew_agent)
+            if acp_backend is None
+            else acp_backend
+        )
+        crew = self._crew_record(agent, crew_agent)
         if global_model is None:
             global_model = self.agent.model
             if global_model == DEFAULT_MODEL:
                 global_model = self._resolve_agent_model()
         if model_override:
             m: str = model_override
+        elif crew is not None and (crew_model := normalize_agent_model(crew.model)):
+            m = crew_model
+        elif (
+            crew is not None and crew.acp_backend is not None and backend != self.agent.acp_backend
+        ):
+            # A different harness owns a different model catalog. Inheriting its
+            # served default avoids sending a global or template pin from another host.
+            m = ""
         elif not agent or agent == "kirocrew":
             m = global_model
         else:
             m = self._resolve_named_agent_model(agent) or global_model
         if not m:
             return ""
-        namespace = capabilities_for(self.agent.acp_backend).model_id_namespace
+        namespace = capabilities_for(backend).model_id_namespace
         if namespace != MODEL_NAMESPACE_ACP:
             return model_registry.to_provider_id(m, namespace)
         return model_registry.to_acp_id(m)
+
+    def resolve_session_backend(
+        self,
+        session_key: str | None = None,
+        agent: str | None = None,
+        crew_agent: str | None = None,
+        backend_override: str | None = None,
+    ) -> str:
+        """Select a session's harness without changing its provider contract."""
+        from kiro_crew.members import select_provider_backend
+
+        crew = self._crew_record(agent, crew_agent)
+        worker_backend = backend_override
+        if worker_backend is None and crew is not None:
+            worker_backend = crew.acp_backend
+        return select_provider_backend(
+            session_key,
+            self.agent.member_acp_backend,
+            self.agent.acp_backend,
+            worker_backend=worker_backend,
+        )
 
     def crew_pinned_effort(self, agent: str | None, crew_agent: str | None = None) -> str:
         """The reasoning effort THIS CREW pins, or ``""`` when it pins none.
@@ -6009,6 +6053,7 @@ class KiroCrewConfig:
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
             crew_agent: str | None = None,
+            acp_backend_override: str | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -6016,6 +6061,9 @@ class KiroCrewConfig:
             # windows on the handle) — one shared resolution rule, see
             # resolve_crew_identity.
             crew_agent = resolve_crew_identity(self, agent, crew_agent)
+            _backend = self.resolve_session_backend(
+                session_key, agent, crew_agent, acp_backend_override
+            )
             # Resolve the model, highest tier first:
             #   1. model_override — the caller's explicit pick. The dashboard
             #      passes the slot's own model, else the KiroCrew agent's
@@ -6039,7 +6087,13 @@ class KiroCrewConfig:
             # gate actually keys on. (Why the translation is keyed on the
             # backend, and why to_acp_id is the non-claude choice, is documented
             # on that method.)
-            m = self.acp_effective_model(agent, model_override, global_model=model)
+            m = self.acp_effective_model(
+                agent,
+                model_override,
+                global_model=model,
+                acp_backend=_backend,
+                crew_agent=crew_agent,
+            )
             # Thread the slot's effort into a per-model override so the kiro
             # cli.json overlay is written from it at spawn — without this, a
             # kiro cold start (or the handler's reset-then-respawn) would only
@@ -6051,7 +6105,11 @@ class KiroCrewConfig:
             # crews API also serves its readout from. An explicit override (the
             # dashboard slot's effort, or a sub-agent's resolved "subagent"
             # effort) still wins over all of it.
-            _eff = reasoning_effort_override or self.resolve_session_effort(agent, crew_agent)
+            _eff = (
+                reasoning_effort_override
+                if reasoning_effort_override is not None
+                else self.resolve_session_effort(agent, crew_agent)
+            )
             if m and _eff and is_valid_effort(_eff) and model_supports_effort(m):
                 _eff_per_model[m] = _eff
             elif _eff and is_valid_effort(_eff):
@@ -6086,23 +6144,6 @@ class KiroCrewConfig:
                         session_key or "?",
                         m or "auto",
                     )
-            # Per-session backend selection — ONE call to the selection gate's
-            # per-session half (members.select_provider_backend: member-DM
-            # auto-route > configured default). The factory body carries no
-            # branching of its own, so the kiro construction path gains no
-            # second check (harness-parity H3/H13); resolve_selected_backend
-            # inside the helper applies the same governance/selectability gate
-            # as the persisted field, so a denied or unknown value degrades to
-            # kiro — the member thread then runs as plain chat and the mount
-            # step logs why.
-            # circular import: members sits above config in the layering.
-            from kiro_crew.members import select_provider_backend
-
-            _backend = select_provider_backend(
-                session_key,
-                self.agent.member_acp_backend,
-                self.agent.acp_backend,
-            )
             return AcpProvider(
                 work_dir=wdir,
                 model=m,
@@ -6995,6 +7036,8 @@ def resolve_effective_model(
     _, kiro_agent, model_pin = resolve_agent_identity(config, agent_name)
     if model_pin:
         return model_pin
+    if config.resolve_session_backend(agent=agent_name) != config.agent.acp_backend:
+        return ""
     if kiro_agent and kiro_agent != "kirocrew":
         pinned = normalize_agent_model(config._resolve_named_agent_model(kiro_agent))
         if pinned:

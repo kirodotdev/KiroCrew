@@ -372,6 +372,10 @@ def create_agent_folder(
     context_groups: str = "",
     memory_store: str = "",
     memory_mode: str = "persistent",
+    crew_agent: str | None = None,
+    acp_backend: str | None = None,
+    model: str = "",
+    reasoning_effort: str = "",
 ) -> Path:
     """Create ``~/.kiro/crew/subagents/{id}/`` with ``state.json``.
 
@@ -400,7 +404,15 @@ def create_agent_folder(
             platform_compat.restrict_dir_to_owner(directory)
         _atomic_write(
             memory_path,
-            {"memory_store": memory_store, "memory_mode": memory_mode, "version": 2},
+            {
+                "memory_store": memory_store,
+                "memory_mode": memory_mode,
+                "version": 2,
+                "crew_agent": crew_agent,
+                "acp_backend": acp_backend,
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+            },
         )
         platform_compat.restrict_to_owner(memory_path)
     d = _agent_dir(agent_id)
@@ -409,6 +421,10 @@ def create_agent_folder(
         "id": agent_id,
         "task": task,
         "agent": agent,
+        "crew_agent": crew_agent,
+        "acp_backend": acp_backend,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
         "parent_session": parent_session,
         "started": time.time(),
         "max_turns": max_turns,
@@ -423,6 +439,28 @@ def create_agent_folder(
     }
     _atomic_write(d / "state.json", state)
     return d
+
+
+def read_run_execution(agent_id: str) -> dict[str, str | None]:
+    """Restore execution settings only from the gateway-owned run record."""
+    path = _run_memory_identity_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # This also rejects a missing protected record on a non-legacy run.
+        read_run_memory_store(agent_id, validate_memory_files=False)
+        return {}
+    if not isinstance(payload, dict) or payload.get("version") != 2:
+        raise ValueError("run execution settings are unavailable")
+    result: dict[str, str | None] = {}
+    for key in ("crew_agent", "acp_backend", "model", "reasoning_effort"):
+        if key not in payload:
+            continue
+        value = payload[key]
+        if value is not None and not isinstance(value, str):
+            raise ValueError("run execution settings are invalid")
+        result[key] = value
+    return result
 
 
 def read_run_memory_mode(agent_id: str) -> str:

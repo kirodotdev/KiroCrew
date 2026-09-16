@@ -897,6 +897,13 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     ): "KAS emits its own notification discriminants. The positive gate restores those "
     "displays without touching the kiro parser, and returns None for anything not "
     "KAS-specific so shared frames still fall through (H5).",
+    (
+        "src/kiro_crew/acp/session_handle.py",
+        "_build_permission_event",
+    ): "Codex alone marks MCP approvals with is_mcp_tool_approval while using execute "
+    "as their kind. Its adapter translates a correlated server/tool pair after the "
+    "shared parser; applying that wire convention to another harness could misclassify "
+    "a shell call as MCP (H5/H6).",
 }
 
 

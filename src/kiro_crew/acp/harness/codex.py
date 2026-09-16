@@ -101,6 +101,8 @@ from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
     METHOD_CANCEL,
     METHOD_SESSION_UPDATE,
+    AcpEvent,
+    JsonRpcMessage,
 )
 from kiro_crew.providers.mirrors.codex import drop_unadvertised_transports
 
@@ -111,6 +113,32 @@ __all__ = ["PROTOCOL_VERSION_CODEX", "CodexHarness"]
 #: claude's today: a divergence should be a one-line edit here rather than a silent
 #: downgrade of whichever harness moved first.
 PROTOCOL_VERSION_CODEX = 1
+
+
+def adapt_mcp_permission(event: AcpEvent, message: JsonRpcMessage) -> None:
+    """Translate Codex's verified MCP approval into Crew's tool identity.
+
+    Codex uses ``execute`` for both shell and MCP calls. Its MCP approval marker
+    plus the correlated tool notification's cached server/tool pair distinguish
+    the latter; titles and inline permission arguments are never evidence.
+    """
+    params = message.params if isinstance(message.params, dict) else {}
+    meta = params.get("_meta")
+    if not isinstance(meta, dict) or meta.get("is_mcp_tool_approval") is not True:
+        return
+    if not event.raw_params_trusted or not isinstance(event.raw_tool_params, dict):
+        return
+    server = event.raw_tool_params.get("server")
+    tool = event.raw_tool_params.get("tool")
+    if not (isinstance(server, str) and server and isinstance(tool, str) and tool):
+        return
+    event.mcp_server_name = server
+    event.tool_name = tool
+    event.mcp_identity_trusted = True
+    event.title = f"mcp__{server}__{tool}"
+    event.is_shell = False
+    event.shell_classified = True
+    event.tool_kind = "other"
 
 
 async def resolve_spawn_masks(sandbox_mode: str) -> tuple[tuple[str, ...], tuple[str, ...]]:

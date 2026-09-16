@@ -774,11 +774,15 @@ class RunEventCoordinator(ManagerComponent):
                 resources=f"subagent_id={info.id},inherited_agent={agent}",
             )
         extra_kwargs: dict[str, Any] = {}
+        if info.crew_agent is not None:
+            extra_kwargs["crew_agent"] = info.crew_agent
+        if info.acp_backend is not None:
+            extra_kwargs["acp_backend_override"] = info.acp_backend
         # An explicit per-spawn model wins; otherwise fall back to the
         # configured sub-agent role model (agent.role_models['subagent']). When
         # that role is unpinned the helper returns "" so we omit the kwarg and
         # keep deferring to the provider's configured default, exactly as before.
-        eff_model = info.model or _subagent_default_model()
+        eff_model = info.model or ("" if info.crew_agent else _subagent_default_model())
         # Record the EFFECTIVE pin (per-spawn OR the role_models['subagent']
         # config pin, via ``_subagent_default_model()``) as the requested side of
         # the downgrade comparison — keying off the bare per-spawn ``model`` would
@@ -791,9 +795,11 @@ class RunEventCoordinator(ManagerComponent):
             extra_kwargs["model"] = eff_model
         # Sub-agent reasoning effort (per-call override -> role_efforts['subagent']
         # -> chat default). Passed as an override so it wins over the factory's
-        # agent-derived default; "" leaves it to that default.
-        eff_effort = info.reasoning_effort or _subagent_default_effort()
-        if eff_effort:
+        # agent-derived default. A member's captured "" explicitly keeps no pin.
+        eff_effort = info.reasoning_effort or (
+            "" if info.crew_agent else _subagent_default_effort()
+        )
+        if eff_effort or info.crew_agent is not None:
             extra_kwargs["reasoning_effort_override"] = eff_effort
         if info.bare:
             extra_kwargs["bare"] = True
@@ -1842,7 +1848,7 @@ class RunEventCoordinator(ManagerComponent):
         """
         # The trusted run preparation has validated this immutable target.
         # A global parent must never lend its process to a private Crew member.
-        if info.memory_store:
+        if info.memory_store or info.crew_agent or info.acp_backend is not None:
             return False
         try:
             cfg = KiroCrewConfig.load()

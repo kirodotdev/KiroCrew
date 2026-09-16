@@ -350,6 +350,11 @@ in [agent-host-contract.md](agent-host-contract.md).
 
 ### Config (`config/loader.py`)
 
+`agents.<name>.acp_backend` is an optional member-specific harness choice. It
+overrides member-DM and installation defaults while `agent.provider` remains
+`"acp"`. The provider factory resolves backend before model, using the canonical
+crew identity even when the caller passes a resolved template name.
+
 ```json
 {
   "agent": {

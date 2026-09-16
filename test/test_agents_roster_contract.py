@@ -16,6 +16,7 @@ becomes "nothing unless someone adds it".
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import types
@@ -27,6 +28,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import KiroCrewAgentConfig, _safe_avatar
 from kiro_crew.dashboard.handlers.agents import (
     _agent_roster_row,
@@ -36,8 +39,8 @@ from kiro_crew.dashboard.handlers.agents import (
 )
 
 # The EXACT key set every row carries, from BOTH sources (the ``cfg.agents``
-# rows and the project-scope rows). ``name`` and ``scope`` are handler-added;
-# the rest are allowlisted record fields. Changing this set is a
+# rows and the project-scope rows). Derived handler fields are noted below;
+# the remaining fields are allowlisted record values. Changing this set is a
 # network-boundary contract change: check the frontend consumers first
 # (``website/src/components/AgentSelector.tsx`` declares the ``KiroCrewAgent``
 # interface the dashboard reads).
@@ -49,6 +52,9 @@ ROSTER_ROW_KEYS = frozenset(
         "workspace",
         "memory_store",
         "model",
+        "acp_backend",
+        # Handler-resolved route after clearing the pin, not a record field.
+        "inherited_acp_backend",
         "reasoning_effort",
         "description",
         "triggers",
@@ -113,6 +119,7 @@ def _seed_config_with_every_field_set() -> dict:
                 "workspace": "probe-ws",
                 "memory_store": "probe-ms",
                 "model": "claude-opus-5",
+                "acp_backend": "",
                 "reasoning_effort": "high",
                 "description": "probe description",
                 "triggers": "probe triggers",
@@ -153,6 +160,8 @@ class TestRosterRowKeySet:
         assert row["workspace"] == "probe-ws"
         assert row["memory_store"] == "probe-ms"
         assert row["model"] == "claude-opus-5"
+        assert row["acp_backend"] == ""
+        assert row["inherited_acp_backend"] == ""
         assert row["reasoning_effort"] == "high"
         assert row["description"] == "probe description"
         assert row["triggers"] == "probe triggers"
@@ -179,7 +188,9 @@ class TestRosterRowKeySet:
             lambda project_dir, **kw: frozenset({"project-only-agent"}),
         )
         tmp = tmp_path / "config.json"
-        tmp.write_text(json.dumps(_seed_config_with_every_field_set()), encoding="utf-8")
+        seed = _seed_config_with_every_field_set()
+        seed["agent"] = {"acp_backend": ACP_BACKEND_CODEX, "member_acp_backend": ACP_BACKEND_CLAUDE}
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
         with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
             app = _make_app()
             # Truthy state with no conversation log: the handler then takes
@@ -195,7 +206,86 @@ class TestRosterRowKeySet:
         assert set(project_row) == ROSTER_ROW_KEYS
         assert set(project_row) == set(rows["roster-probe"])
         assert project_row["scope"] == "project"
+        assert project_row["inherited_acp_backend"] == ACP_BACKEND_CODEX
+        assert rows["roster-probe"]["inherited_acp_backend"] == ACP_BACKEND_CODEX
         assert not (set(project_row) & WITHHELD_RECORD_FIELDS)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "global_backend,member_backend",
+        [
+            (ACP_BACKEND_CODEX, ACP_BACKEND_KIRO),
+            (ACP_BACKEND_KIRO, ACP_BACKEND_CODEX),
+            (ACP_BACKEND_CODEX, ACP_BACKEND_CLAUDE),
+        ],
+    )
+    @pytest.mark.parametrize("pin", [None, ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE])
+    async def test_inherited_route_uses_enrollment_and_ignores_all_pins(
+        self, monkeypatch, global_backend, member_backend, pin
+    ) -> None:
+        from kiro_crew import agent_state
+        from kiro_crew.dashboard.handlers.agents import api_kirocrew_agent_update
+        from kiro_crew.memory_stores import provision_member_memory
+
+        cfg = KiroCrewConfig()
+        cfg.agent.acp_backend = global_backend
+        cfg.agent.member_acp_backend = member_backend
+        cfg.agents = {
+            name: KiroCrewAgentConfig(acp_backend=pin)
+            for name in ("enrolled", "member-worker", "stale")
+        }
+        cfg.agents["default-worker"] = KiroCrewAgentConfig(acp_backend=ACP_BACKEND_CLAUDE)
+        cfg.default_agent = "default-worker"
+        await asyncio.to_thread(provision_member_memory, cfg, "member-worker")
+        await asyncio.to_thread(cfg.save)
+        for name, generation in (
+            ("enrolled", cfg.agents["enrolled"].memory_store),
+            ("stale", "retired-store"),
+        ):
+            await asyncio.to_thread(
+                agent_state.set_crewmate_record,
+                name,
+                generation=generation,
+                template="kirocrew",
+                hired_at="",
+            )
+        read_records = unittest.mock.Mock(wraps=agent_state.all_crewmate_records)
+        monkeypatch.setattr(agent_state, "all_crewmate_records", read_records)
+        monkeypatch.setattr(
+            agent_state,
+            "get_crewmate_record",
+            unittest.mock.Mock(side_effect=AssertionError("roster must reuse its enrollment read")),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda _: True,
+        )
+        app = _make_app()
+        app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get("/api/agents")
+            assert response.status == 200
+            rows = {row["name"]: row for row in (await response.json())["agents"]}
+            read_records.assert_called_once_with(strict=False)
+            for name, row in rows.items():
+                enrolled = name == "enrolled"
+                assert row["crewmate"] is enrolled
+                assert row["inherited_acp_backend"] == (
+                    member_backend if enrolled else global_backend
+                )
+                assert row["acp_backend"] == (
+                    ACP_BACKEND_CLAUDE if name == "default-worker" else pin
+                )
+            # A client cannot turn the derived response field into a saved pin.
+            response = await client.put(
+                "/api/agents/enrolled",
+                json={"inherited_acp_backend": ACP_BACKEND_CODEX, "description": "Edited"},
+            )
+            assert response.status == 200, await response.text()
+        saved = await asyncio.to_thread(KiroCrewConfig.load)
+        assert saved.agents["enrolled"].acp_backend == pin
+        assert saved.agents["enrolled"].description == "Edited"
+        assert "inherited_acp_backend" not in dataclasses.asdict(saved.agents["enrolled"])
 
     @pytest.mark.asyncio
     async def test_app_token_caller_gets_the_same_keys_with_scrubbed_values(
@@ -256,7 +346,10 @@ class TestRosterRowIsAnAllowlistNotASpread:
         # stop classifying anything and let the next added field through.
         assert WITHHELD_RECORD_FIELDS <= record_fields
         # And the allowlist must not claim a record field that does not exist.
-        assert ROSTER_ROW_KEYS - {"name", "scope", "crewmate"} <= record_fields
+        assert (
+            ROSTER_ROW_KEYS - {"name", "scope", "crewmate", "inherited_acp_backend"}
+            <= record_fields
+        )
 
     def test_an_attribute_the_allowlist_does_not_name_is_dropped(self) -> None:
         """Behavioral proof, not just a literal comparison.
@@ -315,6 +408,7 @@ class TestUnshowableValuesAreMasked:
             memory_store=f"ms-{self.PROBE}",
             triggers=f"use when {self.PROBE}",
             model=self.PROBE,
+            acp_backend=self.PROBE,
             reasoning_effort=self.PROBE,
             session_color=self.PROBE,
             description=f"see {self.PROBE}",
@@ -328,7 +422,9 @@ class TestUnshowableValuesAreMasked:
         """Uniform across callers: an earlier revision exempted the fields the
         agents page writes back, which encoded a claim about the CLIENT that this
         side could not enforce (the PUT accepts `description` and `source` too)."""
-        row = _agent_roster_row("probe", "global", self._full(), redact=redact)
+        row = _agent_roster_row(
+            "probe", "global", self._full(), redact=redact, inherited_acp_backend=self.PROBE
+        )
         for field in self.RECORD_FIELDS_SHIPPED:
             assert self.PROBE not in row[field], f"{field} shipped unmasked"
             assert _carries_mask(row[field]), f"{field} should be the sentinel"
@@ -348,22 +444,26 @@ class TestUnshowableValuesAreMasked:
         assert _carries_mask(row[field])
         assert "nested" not in json.dumps(row)
 
-    def test_every_value_is_a_string_except_the_one_structured_field(self) -> None:
-        """`dict[str, object]` is honest about exactly one field, not a loophole.
+    def test_only_declared_structured_roster_fields_are_not_strings(self) -> None:
+        """Avatar, enrollment and backend inheritance keep their declared types.
 
-        Every value is a `str` but `avatar` (a `dict` the dashboard needs) and `crewmate` (a bool); the former
-        verbatim. Asserting the exception BY NAME means a second structured field
-        cannot appear without this test failing.
+        Naming the exceptions keeps new structured fields from silently widening
+        the response contract.
         """
         cfg = KiroCrewAgentConfig()
         object.__setattr__(cfg, "description", {"nested": "object"})
         for redact in (False, True):
             row = _agent_roster_row("probe", "global", cfg, redact=redact)
             assert isinstance(row["avatar"], dict)
+            assert row["acp_backend"] is None
             non_str = {k for k, v in row.items() if not isinstance(v, str)}
             # ``crewmate`` is the one handler-added bool (enrollment, never record text).
             assert isinstance(row["crewmate"], bool)
-            assert non_str == {"avatar", "crewmate"}, f"unexpected structured value(s): {non_str}"
+            assert non_str == {
+                "avatar",
+                "crewmate",
+                "acp_backend",
+            }, f"unexpected structured value(s): {non_str}"
 
     def test_owner_keeps_name_addressable_but_app_token_does_not_need_it(self) -> None:
         """``name`` survives only where something can actually address it.

@@ -183,6 +183,11 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
             )
             _audit_spawn_denied(app, agent, reason)
             raise SpawnError(reason)
+        from kiro_crew.subagent import prepare_spawn_execution
+
+        execution = await asyncio.to_thread(
+            prepare_spawn_execution, agent=agent, model=model or None
+        )
         # ``app`` is forwarded so SubagentManager.spawn can resolve the calling
         # app's per-app governance profile — a profile that denies
         # ``capabilities.spawn`` for this app must win even when the policy
@@ -197,6 +202,7 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
             # Already confirmed to exist via the off-loop list_agents() above;
             # skip the manager's synchronous re-scan on the event loop.
             _agent_prevalidated=True,
+            _execution=execution,
         )
         if info is None:
             return ""

@@ -429,6 +429,8 @@ class TestRecordAndRetry:
             max_turns=0,
             cwd="",
             model="",
+            crew_agent=None,
+            acp_backend=None,
             reasoning_effort="xhigh",
             approval_mode="",
             silent=False,
@@ -458,7 +460,7 @@ class TestResolutionPrecedence:
     and a per-call effort forces the dedicated (non-shared) session path
     exactly as a role pin already does."""
 
-    def _run(self, *, info_effort: str = "", role_efforts=None):
+    def _run(self, *, info_effort: str = "", role_efforts=None, member=False):
         from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
         from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -495,14 +497,20 @@ class TestResolutionPrecedence:
             task="test",
             parent_session_key="parent-key",
             reasoning_effort=info_effort,
+            crew_agent="review" if member else None,
         )
         with (
             patch.object(runner, "_create_shared_session", shared),
-            patch.object(runner, "_should_use_session_sharing", return_value=True),
+            patch.object(runner, "_should_use_session_sharing", return_value=not member),
             patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
         ):
             asyncio.run(runner._run_inner(info, "subagent:sub1"))
         return captured, shared
+
+    def test_member_forwards_captured_empty_effort(self):
+        captured, shared = self._run(member=True, role_efforts={"subagent": "high"})
+        shared.assert_not_called()
+        assert captured["reasoning_effort_override"] == ""
 
     def test_per_call_value_beats_the_role_pin(self):
         captured, shared = self._run(info_effort="max", role_efforts={"subagent": "low"})

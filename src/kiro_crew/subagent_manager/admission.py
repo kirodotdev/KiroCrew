@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from ..subagent import (
         KiroCrewConfig,
         SpawnApprovalUnreachable,
+        SpawnExecution,
         Stats,
         SubagentInfo,
         _context_groups_field,
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
         create_agent_folder,
         logger,
         platform_compat,
+        prepare_spawn_execution,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
@@ -61,6 +63,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         _from_queue: bool = False,
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
+        crew_agent: str | None = None,
+        acp_backend: str | None = None,
+        _execution: SpawnExecution | None = None,
     ) -> SubagentInfo | None:
         """Spawn a subagent for *task*.
 
@@ -92,9 +97,10 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             task (str): The prompt/task description for the subagent.
             parent_session_key (str): Session key of the caller.
             agent (str): Agent name override (default: "kirocrew").
-            model (str): Model override for CC provider (ignored for ACP).
+            model (str): Per-spawn model override; otherwise use the assigned
+                member's default or the subagent role default.
             reasoning_effort (str): Per-call reasoning-effort override; wins
-                over the ``role_efforts['subagent']`` pin. ``""`` defers to it.
+                over member defaults and the ``role_efforts['subagent']`` pin.
             allowed_tools (list): Tool allowlist for CC provider (ignored for ACP).
             bare (bool): Launch CC in bare mode (ignored for ACP).
             cwd (str): Optional absolute path where the subagent subprocess
@@ -238,8 +244,10 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             )
 
         # --- Memory guard: refuse to spawn if system memory is critically low ---
+        spawn_cfg = None
         try:
-            min_mem = KiroCrewConfig.load().agent.spawn_min_memory_gb
+            spawn_cfg = KiroCrewConfig.load()
+            min_mem = spawn_cfg.agent.spawn_min_memory_gb
         except Exception:
             min_mem = 4.0
         mem_ok, avail_gb = check_memory_available(min_gb=min_mem)
@@ -402,6 +410,44 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 )
             )
 
+        # Async entry points prepare discovery off-loop. Keep the synchronous
+        # fallback for direct callers, and preserve captured settings on drain.
+        if _execution is None:
+            if spawn_cfg is None and acp_backend is None and (agent or crew_agent):
+                _execution = SpawnExecution(
+                    crew_agent,
+                    acp_backend,
+                    model,
+                    reasoning_effort,
+                    error="member execution settings are unavailable",
+                )
+            else:
+                _execution = prepare_spawn_execution(
+                    agent=agent,
+                    crew_agent=crew_agent,
+                    acp_backend=acp_backend,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    _config=spawn_cfg,
+                )
+        if _execution.error:
+            return self._manager._announce_rejection(
+                SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=f"spawn refused: {_execution.error}",
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+            )
+        crew_agent = _execution.crew_agent
+        acp_backend = _execution.acp_backend
+        model = _execution.model
+        reasoning_effort = _execution.reasoning_effort
+
         now = time.monotonic()
         should_queue, slot_free = self._manager._should_stagger_queue(now)
         if should_queue:
@@ -456,6 +502,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     "max_turns": max_turns,
                     "model": model,
                     "reasoning_effort": reasoning_effort,
+                    "crew_agent": crew_agent,
+                    "acp_backend": acp_backend,
+                    "_execution": _execution,
                     "allowed_tools": allowed_tools,
                     "bare": bare,
                     "cwd": resolved_cwd,
@@ -508,6 +557,10 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 agent=agent,
                 app=app,
                 queued=True,
+                crew_agent=crew_agent,
+                acp_backend=acp_backend,
+                model=model or "",
+                reasoning_effort=reasoning_effort,
                 parent_session_key=parent_session_key,
                 memory_mode=_memory_mode,
                 batch_id=batch_id,
@@ -558,6 +611,8 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             silent=silent,
             max_turns=max_turns,
             model=model or "",
+            crew_agent=crew_agent,
+            acp_backend=acp_backend,
             reasoning_effort=reasoning_effort or "",
             allowed_tools=list(allowed_tools) if allowed_tools else [],
             bare=bare,
@@ -991,6 +1046,10 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 context_groups=_context_groups_field(info),
                 memory_store=info.memory_store,
                 memory_mode=info.memory_mode,
+                crew_agent=info.crew_agent,
+                acp_backend=info.acp_backend,
+                model=info.model,
+                reasoning_effort=info.reasoning_effort,
             )
         except Exception:
             logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)

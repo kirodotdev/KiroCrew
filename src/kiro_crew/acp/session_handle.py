@@ -85,6 +85,7 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -3798,6 +3799,10 @@ class AcpSessionHandle:
             # operation, while same-origin repeat frames still resolve.
             cache_scope=str(_perm_params.get("sessionId") or self._session_id),
         )
+        if self._runtime.acp_backend == ACP_BACKEND_CODEX:
+            from kiro_crew.acp.harness.codex import adapt_mcp_permission
+
+            adapt_mcp_permission(event, msg)
         if recorded is not None and event.request_id != "":
             self._permission_options[event.request_id] = recorded
         # A frame the runtime routed here for a backend-internal subagent

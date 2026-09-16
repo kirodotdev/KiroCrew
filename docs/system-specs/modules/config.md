@@ -1132,8 +1132,23 @@ Known follow-up (#1429): the snapshot makes this module a second home for agent
 discovery beside `apps/registry`.
 
 ### `KiroCrewConfig.create_provider_factory() -> Callable`
-Returns a factory for LLMProvider instances. Resolves `"auto"` model
-before creating the provider.
+Returns a factory for LLMProvider instances. Selects the session backend before
+resolving its model and translating the model into that backend's namespace.
+`resolve_session_backend` applies a run override, then `agents.<name>.acp_backend`,
+then the existing member-DM/default routing. A member backend of `null` inherits;
+an empty string explicitly selects Kiro. Model pins are resolved from the
+explicit session choice and member record before template/global defaults.
+Members that explicitly pin another backend without a model use its served
+default. Members without a backend pin retain their existing model inheritance.
+For effort, `None` inherits the current defaults, while an explicitly empty
+override preserves a delegated run's captured absence of a pin.
+
+The config watcher rebuilds the factory when a member's backend, model, effort,
+or template changes. Existing sessions finish on their current provider; newly
+allocated sessions use the saved selection.
+The member update API requires explicit `model` and `reasoning_effort` choices
+when changing the stored backend pin. It never synthesizes clears for omitted
+fields; an unchanged backend retains the partial-update contract.
 
 ### `KiroCrewConfig.to_dict() -> dict`
 Serializes config to the JSON structure used by `config.json`. Uses `_configured_port`
@@ -1884,7 +1899,7 @@ one (see `crew-mode.md`, Hire). `member_identity.py` is a leaf module (no
 - **Rename** (`PUT /api/agents/{id}` with `display_name`) mutates the label only.
   There is no key rewrite anywhere. The crew editor (`KiroCrewAgentsPage.tsx`,
   `saveEdit`) sends EVERY field -- `display_name`, `role`, `kiro_agent`,
-  `workspace`, `memory_store`, `triggers`, `model`, `reasoning_effort`,
+  `workspace`, `memory_store`, `triggers`, `acp_backend`, `model`, `reasoning_effort`,
   `session_color` -- ONLY when that editor changed it, compared against the record
   the sheet loaded (normalized the way the inputs were seeded): the server writes
   the keys the body carries, so an unrelated save that echoed a loaded value would
@@ -2665,6 +2680,12 @@ into persistent config. Clients read it via `port_resolution.resolve_client_port
 one precedence step below the operator override.
 
 ## Model Resolution Chain
+
+Stored `agents.<name>.model` strings are normalized by `normalize_agent_model`
+before binding, admission and `acp_effective_model` precedence checks. Empty,
+whitespace-only and `"auto"` values inherit the next eligible tier, including
+role, template or global defaults. An explicit caller `model_override="auto"`
+still selects the served backend default and outranks those stored settings.
 
 When `agent.model` is `"auto"` (default):
 

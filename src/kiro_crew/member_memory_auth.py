@@ -292,8 +292,7 @@ def _private_memory_mcp_failure(backend: str) -> str:
         label = {ACP_BACKEND_CODEX: "Codex ACP"}.get(backend, "The selected ACP backend")
         return (
             f"{label} cannot run private member MCP tools directly. Use Kiro, Claude Code or KAS: "
-            "set the member backend for private chat, and the default backend for Crew tasks, "
-            "schedules and memory consolidation."
+            "select a supported backend for this member or its inherited default."
         )
     return ""
 
@@ -307,12 +306,16 @@ def require_private_memory_mcp_backend(backend: str) -> None:
         raise UnknownMemoryStore(reason + " Global Memory V1 was not used.")
 
 
-def private_memory_execution_supported(*, session_key: str = "") -> bool:
+def private_memory_execution_supported(
+    *, session_key: str = "", acp_backend: str | None = None
+) -> bool:
     """Use the spawn layer's mode/floor/backend decisions, excluding delegation."""
-    return not _private_memory_execution_failure(session_key=session_key)
+    return not _private_memory_execution_failure(session_key=session_key, acp_backend=acp_backend)
 
 
-def _private_memory_execution_failure(*, session_key: str = "") -> str:
+def _private_memory_execution_failure(
+    *, session_key: str = "", acp_backend: str | None = None
+) -> str:
     if sys.platform == "win32":
         return "Native Windows cannot enforce private member filesystem isolation. Use the WSL/Linux gateway."
     from kiro_crew import sandbox
@@ -322,8 +325,22 @@ def _private_memory_execution_failure(*, session_key: str = "") -> str:
 
     try:
         config = KiroCrewConfig.load()
+        member = None
+        store = read_private_session_store(session_key) if session_key else None
+        if store:
+            from kiro_crew.memory_stores import member_memory_identity
+
+            member, _generation = member_memory_identity(store)
+        crew = getattr(config, "agents", {}).get(member)
         backend = select_provider_backend(
-            session_key, config.agent.member_acp_backend, config.agent.acp_backend
+            session_key,
+            config.agent.member_acp_backend,
+            config.agent.acp_backend,
+            worker_backend=(
+                acp_backend
+                if acp_backend is not None
+                else crew.acp_backend if crew is not None else None
+            ),
         )
         mcp_failure = _private_memory_mcp_failure(backend)
         if mcp_failure:
@@ -346,19 +363,22 @@ def _private_memory_execution_failure(*, session_key: str = "") -> str:
         return f"Private member sandbox configuration could not be verified ({type(exc).__name__}). Check the gateway's sandbox configuration and restart."
 
 
-def require_private_memory_execution(*, session_key: str = "") -> None:
+def require_private_memory_execution(
+    *, session_key: str = "", acp_backend: str | None = None
+) -> None:
     """Fail before provider startup when private files cannot be OS-isolated."""
-    if not private_memory_execution_supported(session_key=session_key):
+    backend_args = {"acp_backend": acp_backend} if acp_backend is not None else {}
+    if not private_memory_execution_supported(session_key=session_key, **backend_args):
         from kiro_crew.memory_stores import UnknownMemoryStore
 
-        reason = _private_memory_execution_failure(session_key=session_key)
+        reason = _private_memory_execution_failure(session_key=session_key, **backend_args)
         raise UnknownMemoryStore(
             (reason or "Private member OS filesystem isolation could not be verified.")
             + " Member management remains available; Global Memory V1 was not used."
         )
 
 
-def require_member_memory_creation(member: str) -> None:
+def require_member_memory_creation(member: str, *, acp_backend: str | None = None) -> None:
     """Admit new private allocation under the operator setting and execution route."""
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
@@ -376,7 +396,13 @@ def require_member_memory_creation(member: str) -> None:
             "New private memory creation is paused by memory.private_provisioning_enabled. "
             "Set it to true to allow new members or V1-to-V2 setup. Existing memory remains available."
         )
-    require_private_memory_execution(session_key=member_thread_session_alias(slug_for_name(member)))
+    crew = cfg.agents.get(member)
+    if acp_backend is None and crew is not None:
+        acp_backend = crew.acp_backend
+    backend_args = {"acp_backend": acp_backend} if acp_backend is not None else {}
+    require_private_memory_execution(
+        session_key=member_thread_session_alias(slug_for_name(member)), **backend_args
+    )
 
 
 def verified_member_session_for_pid(peer_pid: int, *, home: Path | None = None) -> str:

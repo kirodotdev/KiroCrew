@@ -7778,6 +7778,21 @@
       "defaultValue": {}
     },
     {
+      "path": "agents.*.acp_backend",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Agent Backend",
+      "help": "Backend for this member's conversations and tasks. Null inherits the session default; an empty string selects Kiro explicitly.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
       "path": "default_agent",
       "kind": "core",
       "type": "string",

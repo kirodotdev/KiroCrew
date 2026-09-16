@@ -10926,7 +10926,13 @@
       "uses_global_memory_v1": "전역 기억 V1 사용",
       "memory_binding_mismatch": "이 멤버에 구성된 메모리 스토어는 다른 멤버의 소유입니다. 여기서는 사용할 수 없습니다.",
       "memory_binding_diagnostic": "게이트웨이에서 원인을 확인하세요: {{command}}",
-      "open_crew_manager": "크루 관리 페이지 열기"
+      "open_crew_manager": "크루 관리 페이지 열기",
+      "ai_app": "AI 앱",
+      "ai_app_hint": "이 멤버의 작업을 실행하는 소프트웨어입니다. 새 세션은 선택한 앱을 사용하며, 이미 열린 세션은 시작할 때 사용한 앱을 계속 사용합니다.",
+      "inherited_ai_app": "상속됨 ({{backend}})",
+      "ai_apps_load_failed": "AI 앱을 불러오지 못했습니다.",
+      "models_load_failed": "{{backend}}의 모델을 불러오지 못했습니다.",
+      "model_reset_for_ai_app": "“{{model}}” 모델은 {{backend}}에서 사용할 수 없습니다. 모델과 추론 강도는 이제 기본 설정을 상속합니다."
     },
     "knowledge": {
       "detailView": {

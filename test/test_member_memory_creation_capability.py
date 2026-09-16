@@ -38,7 +38,7 @@ _UNSUPPORTED = [
 
 def _environment(monkeypatch, platform, backend, mode, mechanism, delegates):
     cfg = KiroCrewConfig.load()
-    cfg.agent.acp_backend = "kas"
+    cfg.agent.acp_backend = backend
     cfg.agent.member_acp_backend = backend
     cfg.agent.sandbox = mode
     cfg.agents["reviewer"] = KiroCrewAgentConfig()
@@ -86,11 +86,11 @@ async def test_dashboard_refuses_unsupported_allocation_without_side_effects(
     checked = []
     supported = auth.private_memory_execution_supported
 
-    def check(*, session_key):
+    def check(*, session_key, acp_backend=None):
         with pytest.raises(RuntimeError, match="no running event loop"):
             asyncio.get_running_loop()
         checked.append(session_key)
-        return supported(session_key=session_key)
+        return supported(session_key=session_key, acp_backend=acp_backend)
 
     monkeypatch.setattr(auth, "private_memory_execution_supported", check)
     if entrypoint == "sync":
@@ -158,15 +158,28 @@ def test_cli_refuses_unsupported_allocation_before_persisting(
 async def test_supported_member_backend_can_allocate_with_a_different_default_backend(
     monkeypatch, entrypoint
 ):
+    from kiro_crew import agent_state
+
     cfg = await asyncio.to_thread(
         _environment, monkeypatch, "linux", "kas", "auto", "namespace", False
     )
     cfg.agent.acp_backend = "codex"
     await asyncio.to_thread(cfg.save)
-    async with TestClient(TestServer(_app(monkeypatch))) as client:
+    app = _app(monkeypatch)
+
+    def enroll(name, store):
+        agent_state.set_crewmate_record(name, generation=store, template="kirocrew", hired_at="")
+
+    async def hire(request):
+        return await handlers._create_crew(request, await request.json(), enroll=enroll)
+
+    app.router.add_post("/create-hired", hire)
+    if entrypoint == "opt_in":
+        await asyncio.to_thread(enroll, "reviewer", cfg.agents["reviewer"].memory_store)
+    async with TestClient(TestServer(app)) as client:
         if entrypoint == "create":
             response = await client.post(
-                "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
+                "/create-hired", json={"name": "new-member", "kiro_agent": "kirocrew"}
             )
             name = "new-member"
         else:
@@ -290,8 +303,8 @@ async def test_pause_after_admission_keeps_admitted_creation_and_preserves_pause
     await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
     admitted = []
 
-    def admit_then_pause(member):
-        auth.require_member_memory_creation(member)
+    def admit_then_pause(member, *, acp_backend=None):
+        auth.require_member_memory_creation(member, acp_backend=acp_backend)
         admitted.append(member)
         cfg = KiroCrewConfig.load()
         cfg.memory.private_provisioning_enabled = False

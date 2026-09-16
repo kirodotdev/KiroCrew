@@ -5,6 +5,66 @@ agent template plus a workspace, a memory store, a model and a reasoning effort,
 and it carries free-text `triggers` that decide whether the orchestrator may
 route work to it. The selection path is the `select_crew` MCP tool.
 
+Each member can pin `acp_backend` for its conversations and delegated tasks.
+`null` or an absent field inherits the existing session routing; `""` explicitly
+selects Kiro, including when the installation default is another backend.
+Backend values use the live selectable registry and retain the `agent.provider`
+contract of `"acp"`. The editor's Model pane lists selectable backends and reads
+models from `/api/models?backend=<id>`, with a separate cache for each backend.
+An enrolled crewmate's inherited catalog follows the member-DM validation route
+through `agent.member_acp_backend`, falling back to `agent.acp_backend` when
+absent; a plain worker's catalog follows `agent.acp_backend`. Explicit `""`
+selects Kiro. `GET /api/agents` supplies the read-only `inherited_acp_backend`
+string on every global and project row, masked like the other roster strings.
+It describes the route after clearing the row's pin, including an explicit Kiro
+pin, and excludes the default agent's pin. The handler uses the existing
+session-backend resolver and the roster's already-verified enrollment set;
+project rows use the global worker route. The editor captures this field with
+its opening snapshot instead of reconstructing config precedence.
+Reselecting the current backend preserves draft pins,
+and returning to the opening selection restores its saved model and effort.
+A different effective backend retains compatible choices and clears incompatible
+pins only after that backend advertises concrete models. An API update that
+changes the stored backend pin must explicitly supply both `model` and
+`reasoning_effort`, including empty strings when clearing them. Missing choices
+are refused before mutation with `backend_choices_required`; unchanged backend
+values still allow partial updates. Private-memory refusals retain precedence.
+The editor compares execution fields with the snapshot captured when it opened,
+so a roster refresh cannot turn an unrelated edit into an execution overwrite.
+When the backend changes, the save includes the current draft model and effort,
+including a pin reselected to the same value it held before the backend change.
+
+An explicit session model outranks the member's model. A member using a different
+backend from the installation default and carrying no model pin uses that
+backend's served default. New sessions adopt saved execution settings; an
+already-running session retains its provider until its normal reset or expiry.
+Delegated runs retain a captured empty effort as well as an explicit level;
+changing member or role defaults while a run is queued does not supply a new effort.
+
+Private-memory capability remains a separate requirement. Kiro, Claude Code and
+KAS support private members. Codex can be selected for existing workers without
+private memory. New members receive private memory, so creating a Codex member
+or switching a private member to Codex is refused. Codex's credential sandbox
+hides the shared gateway secret, and private runtimes cannot use the shared MCP
+broker. No separate scoped authentication path is provided for private Codex
+members, and selecting Codex never downgrades a member to Global V1.
+
+Dashboard model validation and private-memory admission share the proposed
+route. An explicit pin, including `""` for Kiro, overrides inheritance. With
+`null`, an enrolled member uses the DM default `agent.member_acp_backend`;
+an unenrolled worker uses `agent.acp_backend`, even when it owns V2 memory.
+The update verifies enrollment against the row's store generation once for
+both checks. Unreadable enrollment refuses an inherited model pin, private
+backend change or new private allocation before mutation. Unchanged backend
+values do not block ordinary management edits.
+
+A plain create remains a worker, while a hire uses the member route. V1-to-V2
+setup preserves existing enrollment; allocating private memory does not enroll
+a worker. Admission precedes saving fields, allocating memory or retiring V1
+contexts. Model pins are checked in the selected backend's namespace; retained
+sessions from another namespace cannot admit or refuse them. Worker sessions
+retain their own routing: the explicit member pin, otherwise `agent.acp_backend`.
+
 This spec used to own a second thing spelled *crew*: **Crew Mode**, the
 `"crew"` chat-slot mode whose control plane (`crew_chat.py`) fanned one
 session's topics out to sub-sessions. It is retired — see
@@ -1720,6 +1780,18 @@ Explicit member delegation uses `spawn_run(crew=<member>)`. The member alias
 resolves its provider template and private memory together. The separate
 `agent=` argument identifies a provider template, not a durable member identity;
 it must not be used to infer access to a member's private memory.
+
+Model and effort resolve independently at admission: caller override, then an
+explicit member pin, then the subagent role pin if the selected backend equals
+the installation backend, then the existing session default. This keeps an
+unpinned member on the installation's subagent role settings without sending
+those settings to a foreign backend. An explicit caller model of `"auto"` selects
+the served default; empty caller model and effort values inherit.
+
+The delegated run carries the member alias, selected backend, model and effort
+through admission and queueing. Its execution settings are saved in the protected
+run record for continuation, alongside its memory identity. A continuation does
+not select a new backend from the member's current configuration.
 
 A private member's own sub-tasks and schedules retain its store. It cannot select
 Global V1 or a peer through `spawn_run` or `cron_add`. The trusted owner or Crew

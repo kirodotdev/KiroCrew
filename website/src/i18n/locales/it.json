@@ -11242,7 +11242,13 @@
       "uses_global_memory_v1": "Usa la memoria globale V1",
       "memory_binding_mismatch": "L’archivio di memoria configurato per questo membro appartiene a un altro membro. Non può essere usato qui.",
       "memory_binding_diagnostic": "Verifica la causa sul gateway: {{command}}",
-      "open_crew_manager": "Apri il gestore delle crew"
+      "open_crew_manager": "Apri il gestore delle crew",
+      "ai_app": "Applicazione IA",
+      "ai_app_hint": "Il software che esegue le attività di questo membro. Le nuove sessioni usano l’applicazione selezionata; quelle già aperte mantengono l’applicazione con cui sono state avviate.",
+      "inherited_ai_app": "Ereditato ({{backend}})",
+      "ai_apps_load_failed": "Impossibile caricare le applicazioni IA.",
+      "models_load_failed": "Impossibile caricare i modelli di {{backend}}.",
+      "model_reset_for_ai_app": "«{{model}}» non è disponibile in {{backend}}. Il modello e il livello di ragionamento ora ereditano i valori predefiniti."
     },
     "knowledge": {
       "detailView": {

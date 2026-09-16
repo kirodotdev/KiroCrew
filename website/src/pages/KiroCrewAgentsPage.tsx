@@ -9,7 +9,8 @@ import { createSlot } from '../store/chatSlice'
 import { api, type WebhookTokenEntry } from '../api/client'
 import { memberLabel } from './members/rosterFilter'
 import { useProvider } from '../providers'
-import { useAvailableModels } from '../hooks/useAvailableModels'
+import { canonicalKey } from '../providers/modelRegistry'
+import { useAvailableModelsQuery } from '../hooks/useAvailableModels'
 import { FOLDER_COLOR_PALETTE } from '../components/folderColorCatalog'
 import { Btn, SendBtn, Input, Badge, SearchInput, PageHeader, EmptyState } from '../components/ui'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
@@ -89,6 +90,7 @@ interface AgentUpdatePayload {
   triggers?: string
   /** '' = inherit (the kiro template's pin, then the global fallback). */
   model?: string
+  acp_backend?: string | null
   /** '' = inherit the global default effort. Otherwise one of the levels the
    *  backend accepts (low..max); a level is only honoured on a model that
    *  supports effort at all. */
@@ -922,10 +924,49 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // as though those were the only choices. One notice, first failure wins.
   const editorOptionsError = installedError ?? workspacesError ?? cfgError
 
-  // Model list for the per-agent default. Same query key as every other model
-  // picker so the list is fetched once. INHERIT_MODEL leads so "no pin" is the
-  // obvious choice rather than an absent option.
-  const availableModels = useAvailableModels()
+  // Model catalogs share a cache within each backend. INHERIT_MODEL leads so
+  // clearing the member's pin remains an explicit choice.
+  const [editBackend, setEditBackend] = useState<string | null>(null)
+  const [validateBackendPins, setValidateBackendPins] = useState(false)
+  const [modelResetNotice, setModelResetNotice] = useState<{ model: string; backend: string } | null>(null)
+  const [loadedExecution, setLoadedExecution] = useState({
+    backend: null as string | null,
+    model: INHERIT_MODEL,
+    effort: '',
+    inheritedBackend: undefined as string | undefined,
+  })
+  const { data: backendData, error: backendError, refetch: refetchBackends, isFetching: backendsFetching } = useQuery({
+    queryKey: ['acpBackends'],
+    queryFn: () => api.acpBackends(),
+  })
+  // The roster resolves inheritance using verified enrollment. An absent value
+  // is unknown; an explicit empty string still selects Kiro.
+  const inheritedBackend = loadedExecution.inheritedBackend
+  const modelBackend = editBackend ?? inheritedBackend
+  const {
+    data: catalogModels, error: memberModelsError, refetch: refetchMemberModels,
+    isSuccess: memberModelsReady, isFetching: memberModelsFetching, isDegraded: memberModelsDegraded,
+  } = useAvailableModelsQuery({ backend: modelBackend, enabled: modelBackend !== undefined })
+  // A disabled query may still hold cached worker models; wait for the roster route.
+  const availableModels = modelBackend === undefined ? undefined : catalogModels
+  // Unlike other fields, '' is a real selection: explicit Kiro, even on error.
+  const backendOptions = [...new Set([
+    'inherit',
+    ...(backendData?.backends.filter(b => b.selectable).map(b => b.id) ?? []),
+    editBackend ?? 'inherit',
+  ])]
+  // Reuse Developer > Agent Backend's names; server-registered backends keep
+  // their policy name when this frontend has no translated display name.
+  const backendLabels = new Map([
+    ['', i18nT('pages.developer.agentBackendTab.kiro_cli')],
+    ['claude', i18nT('pages.developer.agentBackendTab.claude_code')],
+    ['kas', i18nT('pages.developer.agentBackendTab.kas_kiro_agent')],
+  ])
+  const backendLabel = (id: string) =>
+    backendLabels.get(id) ?? backendData?.backends.find(b => b.id === id)?.policy_id ?? id
+  const inheritedBackendLabel = inheritedBackend === undefined
+    ? i18nT('pages.kiroCrewAgentsPage.inherited')
+    : i18nT('pages.kiroCrewAgentsPage.inherited_ai_app', { backend: backendLabel(inheritedBackend) })
   const modelOptions = [
     INHERIT_MODEL,
     ...(availableModels || []).map((m: { name: string }) => m.name).filter((n: string) => n && n !== INHERIT_MODEL),
@@ -957,6 +998,46 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [role, setRole] = useState('')
   const [editModel, setEditModel] = useState(INHERIT_MODEL)
   const [editEffort, setEditEffort] = useState('')
+  const changeBackend = (value: string) => {
+    const backend = value === 'inherit' ? null : value
+    if (backend === editBackend) return
+    setModelResetNotice(null)
+    setEditBackend(backend)
+    if (backend === loadedExecution.backend) {
+      setEditModel(loadedExecution.model)
+      setEditEffort(loadedExecution.effort)
+      setValidateBackendPins(false)
+      return
+    }
+    if ((backend ?? inheritedBackend) !== (editBackend ?? inheritedBackend)) {
+      setValidateBackendPins(true)
+    }
+  }
+  useEffect(() => {
+    // The query now belongs to editBackend. Neither its loading placeholder nor
+    // a failed/degraded catalog can establish that a pin is incompatible.
+    if (modelBackend === undefined || !availableModels || !validateBackendPins || !memberModelsReady || memberModelsFetching || memberModelsDegraded) return
+    if (editModel !== INHERIT_MODEL) {
+      // Auto-only success keeps polling; validate this pin when concrete models arrive.
+      if (!availableModels.some(model => model.name !== INHERIT_MODEL)) return
+      let compatible = availableModels.find(model => model.name === editModel)
+      if (!compatible) {
+        // Only registered aliases establish equivalence; arbitrary dots and
+        // hyphens can name different models. Persist the target's spelling.
+        const key = canonicalKey(editModel)
+        if (key !== null) compatible = availableModels.find(model => canonicalKey(model.name) === key)
+      }
+      if (!compatible) {
+        setModelResetNotice({ model: editModel, backend: modelBackend })
+        setEditModel(INHERIT_MODEL)
+        setEditEffort('')
+      } else {
+        if (compatible.name !== editModel) setEditModel(compatible.name)
+        if (!modelSupportsEffort(compatible.name)) setEditEffort('')
+      }
+    }
+    setValidateBackendPins(false)
+  }, [validateBackendPins, memberModelsReady, memberModelsFetching, memberModelsDegraded, availableModels, editModel, modelBackend])
   /** Draft avatar override. null = the name-derived face (no override). */
   const [editAvatar, setEditAvatar] = useState<CrewAvatarOverride | null>(null)
   /**
@@ -1037,11 +1118,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  would keep offering an effort control on the strength of a model the crew is
    *  about to stop using, and the level would then be dropped at spawn. Nothing
    *  here can know what the inherit chain lands on until the write happens, so
-   *  that state reports unresolved and says so. */
-  const modelPinPendingClear = editModel === INHERIT_MODEL && !!editingAgent?.model
+   *  that state reports unresolved and says so. A backend selection change also
+   *  invalidates the saved resolution: inherited and explicit selections can
+   *  inherit different models even on the same backend. Effort-only edits do not. */
+  const modelPinPendingClear = editModel === INHERIT_MODEL && loadedExecution.model !== INHERIT_MODEL
+  const resolvedSelectionMatches = editBackend === loadedExecution.backend
   const effortModel = editModel !== INHERIT_MODEL
     ? editModel
-    : modelPinPendingClear ? '' : (resolved?.model || '')
+    : modelPinPendingClear || !resolvedSelectionMatches ? '' : (resolved?.model || '')
   const effortCapable = modelSupportsEffort(effortModel)
 
   const openCreateFrom = useCallback((origin?: 'members') => {
@@ -1069,7 +1153,16 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setDisplayName(a.display_name || a.name)
     setRole(a.role || '')
     setEditModel(a.model || INHERIT_MODEL)
+    setEditBackend(a.acp_backend ?? null)
+    setValidateBackendPins(false)
+    setModelResetNotice(null)
     setEditEffort(a.reasoning_effort || '')
+    setLoadedExecution({
+      backend: a.acp_backend ?? null,
+      model: a.model || INHERIT_MODEL,
+      effort: a.reasoning_effort || '',
+      inheritedBackend: a.inherited_acp_backend,
+    })
     // Normalized through the same coercion the renderer applies, so the dirty
     // check compares like with like (a junk stored value reads as "no
     // override" everywhere).
@@ -1492,6 +1585,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     const changed = <T,>(next: T, loaded: T | undefined): boolean => !saved || next !== loaded
     const displayNameEdited = changed(nextDisplayName, saved && (saved.display_name || saved.name))
     const roleEdited = changed(role.trim(), saved && (saved.role || ''))
+    // Execution fields use the opening snapshot, not a refreshed roster row.
+    // A backend change sends both pins, including values the user reselected.
+    const backendEdited = editBackend !== loadedExecution.backend
     const data = {
       ...(displayNameEdited ? { display_name: nextDisplayName } : {}),
       ...(roleEdited ? { role: role.trim() } : {}),
@@ -1499,8 +1595,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       ...(changed(workspace, saved?.workspace) ? { workspace } : {}),
       ...(changed(memoryStore, saved?.memory_store) ? { memory_store: memoryStore } : {}),
       ...(changed(triggers, saved && (saved.triggers || '')) ? { triggers } : {}),
-      ...(changed(editModel, saved && (saved.model || INHERIT_MODEL)) ? { model: editModel } : {}),
-      ...(changed(editEffort, saved && (saved.reasoning_effort || ''))
+      ...(backendEdited ? { acp_backend: editBackend } : {}),
+      ...(backendEdited || editModel !== loadedExecution.model ? { model: editModel } : {}),
+      ...(backendEdited || editEffort !== loadedExecution.effort
         ? { reasoning_effort: editEffort }
         : {}),
       ...(changed(sessionColor, saved && (saved.session_color || ''))
@@ -1686,6 +1783,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  pointed somewhere else, so a crew never opens on the pane the previous one
    *  happened to be left on. */
   const [pane, setPane] = useState<CrewPaneKey>('overview')
+  // Template edits write an agent definition independently of the member's
+  // backend. Omitting backend reads the installation-default catalog.
+  const { data: templateModels } = useAvailableModelsQuery({ enabled: !!editing && pane === 'template' })
   const [schedDraft, setSchedDraft] = useState(false)
   /** True while the schedule draft's create request is in flight. Discarding
    *  then would unmount the form WITHOUT cancelling the POST, so the schedule
@@ -1729,8 +1829,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (workspace !== (editingAgent.workspace || '') || memoryStore !== (editingAgent.memory_store || '')) {
       out.add('place')
     }
-    if (editModel !== (editingAgent.model || INHERIT_MODEL)) out.add('model')
-    if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
+    if (editModel !== loadedExecution.model) out.add('model')
+    if (editBackend !== loadedExecution.backend) out.add('model')
+    if (editEffort !== loadedExecution.effort) out.add('model')
     if (triggers !== (editingAgent.triggers || '')) out.add('routing')
     if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
     if ((displayName.trim() || editingAgent.name) !== (editingAgent.display_name || editingAgent.name)) out.add('overview')
@@ -1780,7 +1881,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (schedDraft) out.add('schedules')
     if (capabilityDirty) out.add('capabilities')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, displayName, role, schedDraft, editAvatar, capabilityDirty])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editBackend, editEffort, loadedExecution, triggers, sessionColor, displayName, role, schedDraft, editAvatar, capabilityDirty])
 
   /** Rail-driven pane changes route through here: leaving the schedules pane
    *  while a schedule draft is open asks before destroying the typed work
@@ -2445,7 +2546,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                           readOnly={capabilityManaged || capabilityDirty || capabilityBusy || capabilityQuery.isLoading || capabilityReadFailed}
                           onCapabilities={() => requestPane('capabilities')}
                           template={kiroAgent}
-                          models={(availableModels || []).map((m: { name: string }) => m.name).filter(Boolean)}
+                          models={templateModels.map(m => m.name).filter(Boolean)}
                           crew={editing || undefined}
                           onForked={setKiroAgent}
                           options={kiroAgentOptions}
@@ -2461,7 +2562,51 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
                   {pane === 'model' && (
                     <>
-                      <ModelField options={modelOptions} value={editModel} onChange={setEditModel} />
+                      <Field
+                        label={i18nT('pages.kiroCrewAgentsPage.ai_app')}
+                        hint={i18nT('pages.kiroCrewAgentsPage.ai_app_hint')}
+                      >
+                        <SimpleSelect
+                          value={editBackend ?? 'inherit'}
+                          options={backendOptions}
+                          optionLabels={backendOptions.map(id =>
+                            id === 'inherit' ? inheritedBackendLabel : backendLabel(id))}
+                          onChange={changeBackend}
+                          aria-label={i18nT('pages.kiroCrewAgentsPage.ai_app')}
+                        />
+                      </Field>
+                      {backendError && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {/* No hand-off: keep the member's unsaved execution settings in this editor. */}
+                          <ErrorNotice message={i18nT('pages.kiroCrewAgentsPage.ai_apps_load_failed')} variant="inline" />
+                          <Btn onClick={() => void refetchBackends()} disabled={backendsFetching}>
+                            {i18nT('pages.developer.agentBackendTab.retry')}
+                          </Btn>
+                        </div>
+                      )}
+                      <ModelField options={modelOptions} value={editModel} onChange={value => {
+                        setModelResetNotice(null)
+                        setEditModel(value)
+                      }} />
+                      <div role="status" aria-live="polite" aria-atomic="true" className={modelResetNotice ? undefined : 'sr-only'}>
+                        {modelResetNotice && (
+                          <p className="text-[12px] leading-relaxed text-muted break-words">
+                            {i18nT('pages.kiroCrewAgentsPage.model_reset_for_ai_app', {
+                              model: modelResetNotice.model,
+                              backend: backendLabel(modelResetNotice.backend),
+                            })}
+                          </p>
+                        )}
+                      </div>
+                      {modelBackend !== undefined && memberModelsError && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {/* No hand-off: keep the member's unsaved model choice in this editor. */}
+                          <ErrorNotice message={i18nT('pages.kiroCrewAgentsPage.models_load_failed', { backend: backendLabel(modelBackend) })} variant="inline" />
+                          <Btn onClick={() => void refetchMemberModels()} disabled={memberModelsFetching}>
+                            {i18nT('pages.developer.agentBackendTab.retry')}
+                          </Btn>
+                        </div>
+                      )}
                       {/* Offered when the model the crew will actually run on
                           accepts effort — OR when a pin is already stored on a
                           model that does not, so the only way to clear a
@@ -2482,6 +2627,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                             : i18nT('pages.kiroCrewAgentsPage.effort_pin_needs_a_model')}
                         </div>
                       )}
+                      {dirtyPanes.has('model') && !effortCapable && !editEffort && (
+                        <p className="text-[11.5px] leading-relaxed text-muted">
+                          {effortModel
+                            ? i18nT('pages.kiroCrewAgentsPage.effort_unavailable_on_this_model', { model: effortModel })
+                            : i18nT('pages.kiroCrewAgentsPage.effort_needs_a_model')}
+                        </p>
+                      )}
                       {/* No hand-off: the crew sheet's unsaved pane edits
                           (dirtyPanes). Without this a failed resolve just left the
                           readout below absent, as if the crew had no model. */}
@@ -2489,7 +2641,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                         message={resolvedError ? errorText(resolvedError) : null}
                         testId="crew-resolved-model-error"
                       />
-                      {resolved && (
+                      {/* The saved resolution cannot describe unsaved execution settings. */}
+                      {resolved && !dirtyPanes.has('model') && (
                         <div className="flex flex-col gap-1 rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
                           <div>
                             <span className="text-text">

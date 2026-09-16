@@ -115,6 +115,14 @@ flags. A shell-cache hit whose value is `False` sets `shell_classified=True` —
 it is a resolved non-shell call, not a cache miss — and a structured-params
 cache hit sets `raw_params_trusted=True`.
 
+Codex's adapter reports MCP calls with `kind: "execute"`. Its harness translates
+a permission into a non-shell MCP identity only when the adapter's
+`_meta.is_mcp_tool_approval` marker accompanies a correlated, trusted
+server/tool pair from the preceding notification. Missing provenance leaves the
+original shell classification intact. Both transports apply this Codex-only
+translation before the normal tool gate; a title or inline argument cannot
+grant it.
+
 The shell cache is written **only** from a usable backend `kind` string. A
 `tool_call` frame that omits `kind` writes nothing — even when its
 `_meta.kiro.mcpServerName` proves the call MCP-served — because a cached `False`
@@ -632,16 +640,16 @@ validation. Private execution cannot reach that endpoint or its aliases. A
 configured endpoint outside the reserved broker namespaces refuses private
 startup rather than hiding an arbitrary project directory.
 
-The current public Codex ACP backend has no direct MCP projection. Private V2
-execution with that backend therefore refuses before allocation and names the
-remedy: choose a member backend that supports direct MCP. Ordinary V1 Codex
-sessions retain their existing behavior.
+Codex has a direct control-plane MCP projection, but its credential mask hides
+the shared gateway secret those children need. Private V2 execution therefore
+remains unsupported and refuses before allocation. Private members never regain
+the shared broker or fall back to Global V1. Ordinary V1 Codex sessions retain
+their existing behavior.
 
-The public provider factory uses `agent.member_acp_backend` for member private
-chat and the configured default backend for Crew work and private background
-consolidation. Each effective backend must support direct MCP. Selecting a
-supported member-chat backend alone does not change a Codex default used by
-background work.
+The public provider factory first honors a member's optional `acp_backend`.
+Without a member pin it retains `agent.member_acp_backend` for member private
+chat and the configured default backend for other sessions. Each effective
+backend must support direct MCP.
 
 ### Cold-start admission and startup telemetry
 

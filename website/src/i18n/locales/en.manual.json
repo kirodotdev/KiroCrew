@@ -4521,7 +4521,13 @@
       "memory_binding_mismatch": "This member’s configured memory store belongs to another member. It cannot be used here.",
       "memory_binding_diagnostic": "Inspect the cause on the gateway: {{command}}",
       "open_crew_manager": "Open crew manager",
-      "uses_global_memory_v1": "Uses Global Memory V1"
+      "uses_global_memory_v1": "Uses Global Memory V1",
+      "ai_app": "AI app",
+      "ai_app_hint": "The software that runs this member’s tasks. New sessions use the selected app; sessions already open keep the app they started with.",
+      "inherited_ai_app": "Inherited ({{backend}})",
+      "ai_apps_load_failed": "Could not load AI apps.",
+      "models_load_failed": "Could not load models for {{backend}}.",
+      "model_reset_for_ai_app": "“{{model}}” is not available in {{backend}}. Model and reasoning effort now inherit their defaults."
     },
     "knowledge": {
       "detailView": {

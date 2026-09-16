@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         CONTEXT_GROUP_PROJECT,
         PROVIDER_LABEL_DEFAULT,
         Any,
+        SpawnExecution,
         SubagentInfo,
         _cleanup_session_files_sync,
         _redact,
@@ -281,6 +282,7 @@ class ContinuationCoordinator(ManagerComponent):
         conv_key = f"subagent:{conv_id}"
         try:
             memory_store = self._manager._inherited_memory_store(conv_id)
+            execution = self._persistence.read_run_execution(conv_id)
         except (OSError, ValueError) as exc:
             return SubagentInfo(
                 id=_preassigned_id or uuid.uuid4().hex[:8],
@@ -392,12 +394,25 @@ class ContinuationCoordinator(ManagerComponent):
         # network mount takes to answer. Async callers resolve it off-loop instead:
         # crew passes its slot project, and `recorded_cwd()` gives the others the
         # run's own recorded path to hand back in.
+        # A continuation uses only its protected execution record. An older
+        # record without these fields retains legacy factory defaults; it must
+        # not discover fresh member settings on this synchronous path.
+        prepared_execution = SpawnExecution(
+            crew_agent=execution.get("crew_agent"),
+            acp_backend=execution.get("acp_backend"),
+            model=model if model is not None else execution.get("model"),
+            reasoning_effort=execution.get("reasoning_effort") or "",
+        )
         return self._manager.spawn(
             task,
             _preassigned_id=_preassigned_id,
             parent_session_key=parent_session_key,
             agent=agent,
-            model=model,
+            model=prepared_execution.model,
+            reasoning_effort=prepared_execution.reasoning_effort,
+            crew_agent=prepared_execution.crew_agent,
+            acp_backend=prepared_execution.acp_backend,
+            _execution=prepared_execution,
             max_turns=max_turns,
             keep=True,
             cwd=cwd,

@@ -11084,7 +11084,13 @@
       "uses_global_memory_v1": "Verwendet das globale Gedächtnis V1",
       "memory_binding_mismatch": "Der konfigurierte Speicher dieses Mitglieds gehört einem anderen Mitglied. Er kann hier nicht verwendet werden.",
       "memory_binding_diagnostic": "Prüfe die Ursache auf dem Gateway: {{command}}",
-      "open_crew_manager": "Crew-Verwaltung öffnen"
+      "open_crew_manager": "Crew-Verwaltung öffnen",
+      "ai_app": "KI-App",
+      "ai_app_hint": "Die Software, die die Aufgaben dieses Mitglieds ausführt. Neue Sitzungen verwenden die ausgewählte App; bereits geöffnete Sitzungen behalten die App, mit der sie gestartet wurden.",
+      "inherited_ai_app": "Geerbt ({{backend}})",
+      "ai_apps_load_failed": "KI-Apps konnten nicht geladen werden.",
+      "models_load_failed": "Modelle für {{backend}} konnten nicht geladen werden.",
+      "model_reset_for_ai_app": "„{{model}}“ ist in {{backend}} nicht verfügbar. Modell und Denkaufwand übernehmen jetzt ihre Standardwerte."
     },
     "knowledge": {
       "detailView": {

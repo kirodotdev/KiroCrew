@@ -64,6 +64,10 @@ from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_
 #: "is this the native namespace?" without spelling the literal.
 MODEL_NAMESPACE_ACP = "acp"
 
+#: The registry namespace for Claude model-id spellings and aliases.
+#: This names model semantics, not the backend or provider serving the model.
+MODEL_NAMESPACE_CLAUDE_CODE = "claude_code"
+
 
 @dataclass(frozen=True)
 class SessionCapabilities:
@@ -191,6 +195,7 @@ def capabilities_of(provider: object) -> SessionCapabilities:
 
 __all__ = [
     "MODEL_NAMESPACE_ACP",
+    "MODEL_NAMESPACE_CLAUDE_CODE",
     "SessionCapabilities",
     "UNKNOWN_BACKEND_CAPABILITIES",
     "capabilities_for",

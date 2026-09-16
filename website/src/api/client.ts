@@ -3316,7 +3316,7 @@ export const api = {
       body: form,
     }).then(j) as Promise<{ ok?: boolean; staged?: boolean; token?: string; error?: string }>
   },
-  models: () => fetch('/api/models').then(j),
+  models: (backend?: string) => fetch(`/api/models${backend === undefined ? '' : `?backend=${encodeURIComponent(backend)}`}`).then(j),
   effortLevels: (slot?: string) =>
     fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
   // Bounded HERE, not per initiator: react-query dedupes on the key, so the

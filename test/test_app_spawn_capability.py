@@ -11,13 +11,17 @@ from __future__ import annotations
 import ast
 import asyncio
 import textwrap
+import threading
 import types
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from kiro_crew.apps.context import build_app_context
 from kiro_crew.apps.manifest import Permissions
 from kiro_crew.apps.spawn_sdk import SpawnError, SpawnSDK, build_spawn_impl
+
+pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
 class _FakeManager:
@@ -136,6 +140,52 @@ class TestSpawnSDK:
     def test_missing_manager_raises_rather_than_declining_silently(self):
         with pytest.raises(SpawnError, match="no subagent manager"):
             asyncio.run(build_spawn_impl(None)("t", "a", False, "", "probe"))
+
+    @pytest.mark.asyncio
+    async def test_member_execution_discovery_is_off_loop_before_admission(self, monkeypatch):
+        from kiro_crew import subagent
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.sections import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig()
+        cfg.agent.model = "global-test-model"
+        cfg.agents["probe-bg"] = KiroCrewAgentConfig(
+            kiro_agent="probe-bg", acp_backend="", reasoning_effort="high"
+        )
+        monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
+        loop_thread = threading.get_ident()
+        reads = []
+
+        def discover(agent):
+            assert threading.get_ident() != loop_thread, "app discovery ran on the loop"
+            reads.append(agent)
+            return "app-test-model"
+
+        monkeypatch.setattr(cfg, "_resolve_named_agent_model", discover)
+        manager = subagent.SubagentManager(
+            sessions=MagicMock(admission_closed=False, _pool_cwd=""),
+            ctx_builder=None,
+            max_concurrent=1,
+        )
+        monkeypatch.setattr(manager, "_should_stagger_queue", lambda _: (False, True))
+        monkeypatch.setattr(manager, "_run", AsyncMock())
+        sdk = SpawnSDK("probe", build_spawn_impl(manager))
+        try:
+            spawn_id = await asyncio.wait_for(sdk.run("work", "probe-bg"), 5)
+            info = manager._agents[spawn_id]
+            assert not info.error
+            assert reads == ["probe-bg"]
+            assert (info.crew_agent, info.acp_backend, info.model, info.reasoning_effort) == (
+                "probe-bg",
+                "",
+                "app-test-model",
+                "high",
+            )
+            assert info.app == "probe"
+            assert info.approval_mode == "auto"
+            assert info.memory_store == ""
+        finally:
+            await asyncio.gather(*manager._tasks.values(), return_exceptions=True)
 
 
 class TestSpawnGateConsultsTheAppProfile:

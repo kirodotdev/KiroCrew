@@ -447,7 +447,8 @@ class TestGetOrCreatePoolIntegration:
         factory.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_claim_forwards_canonical_crew_identity_to_rekey(self):
+    @pytest.mark.parametrize("backend", [None, "", "codex", "claude"])
+    async def test_claim_forwards_canonical_crew_identity_to_rekey(self, backend):
         """The claiming session's crew_agent kwarg reaches rekey so the pooled
         handle's watchdog windows rebind to the claiming crew — the identity
         travels with the session, not the pool key."""
@@ -458,7 +459,7 @@ class TestGetOrCreatePoolIntegration:
             cfg = KiroCrewConfig.load()
             # This tests a legacy pooled runtime, not private V2 allocation.
             cfg.agents["pr-reviewer"] = KiroCrewAgentConfig(
-                kiro_agent="kirocrew", memory_store="default"
+                kiro_agent="kirocrew", memory_store="default", acp_backend=backend
             )
             cfg.save()
             return cfg.agents
@@ -478,6 +479,11 @@ class TestGetOrCreatePoolIntegration:
             "test-key", agent="kirocrew", channel_id="ch-1", crew_agent="pr-reviewer"
         )
 
+        if backend is not None:
+            assert provider is not pooled
+            mgr._drain_and_claim.assert_not_awaited()
+            assert factory.call_args.kwargs["crew_agent"] == "pr-reviewer"
+            return
         assert provider is pooled
         args, kwargs = pooled.client.rekey.call_args
         assert args == ("test-key", "ch-1")

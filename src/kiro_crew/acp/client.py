@@ -11017,6 +11017,10 @@ class AcpClient:
             # ``__init__`` has no nonce, and no nonce means no envelope is trusted.
             gate_envelope_nonce=_gate_nonce or None,
         )
+        if self._is_codex:
+            from kiro_crew.acp.harness.codex import adapt_mcp_permission
+
+            adapt_mcp_permission(event, msg)
         if recorded is not None:
             self._permission_options[event.request_id] = recorded
         self._note_pi_gate_asked(msg)
