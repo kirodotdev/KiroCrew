@@ -6272,6 +6272,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}}（未安装）",
+      "agent_not_in_project": "{{agent}}（不在此项目中）",
       "browse": "浏览",
       "cancel": "取消",
       "color": "颜色",
@@ -6301,7 +6302,9 @@
       "tags_loading_hint": "正在加载标签…",
       "tags_error_hint": "无法加载标签。",
       "tags_retry": "重试",
-      "top_level": "顶层"
+      "top_level": "顶层",
+      "agent_roster_error": "无法读取此目录的智能体。",
+      "agent_roster_retry": "重试"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "文件夹建议",

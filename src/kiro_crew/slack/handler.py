@@ -67,7 +67,7 @@ from kiro_crew.dashboard.chat_utils import (
     run_config_write,
 )
 from kiro_crew.dashboard.state import append_and_surface
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import discovery_executor, run_in_embed_pool
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import (
     HOOK_REPLY,
@@ -1058,6 +1058,26 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
         return match.stem
 
 
+async def _resolve_agent_name_off_loop(name: str, project_dir: str | None = None) -> str | None:
+    """Async wrapper: runs :func:`_resolve_agent_name` on the discovery executor.
+
+    ``_resolve_agent_name`` walks and stats ``.kiro``/``.kiro/agents`` (via
+    :func:`agent_discovery.project_agent_files`), which on Windows now also
+    calls :func:`platform_compat.pin_directory` — a synchronous ``CreateFileW``
+    open plus ``os.close`` — to close a TOCTOU in the sensitivity check. Every
+    call site here is inside an ``async def`` Slack handler; running that
+    filesystem I/O directly on the event loop is exactly what the
+    ``no-blocking-call-on-event-loop`` anchor forbids (AUTOSDE.yaml), and stalls
+    every other in-flight Slack conversation and the gateway loop itself for as
+    long as the scan (or a slow/hung remote FS) takes. Every caller must use
+    this wrapper instead of calling ``_resolve_agent_name`` directly from async
+    code; the synchronous name stays available for the rare non-loop caller.
+    """
+    return await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _resolve_agent_name, name, project_dir
+    )
+
+
 # Frontmatter ``name:`` matcher for cc-plugins agent specs. Pre-compiled at
 # module level rather than per-iteration inside the agent-file walk below.
 _CC_AGENT_NAME_RE = re.compile(r'^name:\s*["\']?([^"\'\n]+)', re.MULTILINE)
@@ -1913,7 +1933,7 @@ async def _handle_slash_command(
             await slack.post_message(channel, "🔄 Reset to default agent.", reply_ts)
             await _add_phase_reaction(slack, channel, msg_ts, "done")
             return ""
-        resolved = _resolve_agent_name(agent_name, _thread_projects.get(session_key))
+        resolved = await _resolve_agent_name_off_loop(agent_name, _thread_projects.get(session_key))
         if not resolved:
             names = _list_all_agent_names()
             await slack.post_message(
@@ -2080,7 +2100,7 @@ async def _handle_slash_command(
             await slack.post_message(channel, "🔄 Thread agent reset.", reply_ts)
             await _add_phase_reaction(slack, channel, msg_ts, "done")
             return ""
-        resolved = _resolve_agent_name(agent_name, _thread_projects.get(session_key))
+        resolved = await _resolve_agent_name_off_loop(agent_name, _thread_projects.get(session_key))
         if not resolved:
             names = _list_all_agent_names()
             await slack.post_message(
@@ -2255,7 +2275,9 @@ async def _handle_slash_command(
             if agent_name.lower() == "off":
                 agent_name = ""
             else:
-                resolved = _resolve_agent_name(agent_name, _thread_projects.get(session_key))
+                resolved = await _resolve_agent_name_off_loop(
+                    agent_name, _thread_projects.get(session_key)
+                )
                 if not resolved:
                     names = _list_all_agent_names()
                     await slack.post_message(

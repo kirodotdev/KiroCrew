@@ -6572,6 +6572,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (не установлен)",
+      "agent_not_in_project": "{{agent}} (нет в этом проекте)",
       "browse": "Обзор",
       "cancel": "Отмена",
       "color": "Цвет",
@@ -6601,7 +6602,9 @@
       "tags_loading_hint": "Загрузка тегов…",
       "tags_error_hint": "Не удалось загрузить теги.",
       "tags_retry": "Повторить",
-      "top_level": "Верхний уровень"
+      "top_level": "Верхний уровень",
+      "agent_roster_error": "Не удалось прочитать агентов этого каталога.",
+      "agent_roster_retry": "Повторить"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Предложение папки",

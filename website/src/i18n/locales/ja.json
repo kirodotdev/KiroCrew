@@ -6272,6 +6272,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}}（インストールされていません）",
+      "agent_not_in_project": "{{agent}}（このプロジェクトにはありません）",
       "browse": "参照",
       "cancel": "キャンセル",
       "color": "色",
@@ -6301,7 +6302,9 @@
       "tags_loading_hint": "タグを読み込んでいます…",
       "tags_error_hint": "タグを読み込めませんでした。",
       "tags_retry": "再試行",
-      "top_level": "トップレベル"
+      "top_level": "トップレベル",
+      "agent_roster_error": "このディレクトリのエージェントを読み取れませんでした。",
+      "agent_roster_retry": "再試行"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "フォルダーの提案",

@@ -6272,6 +6272,7 @@
     },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (설치되지 않음)",
+      "agent_not_in_project": "{{agent}} (이 프로젝트에 없음)",
       "browse": "찾아보기",
       "cancel": "취소",
       "color": "색상",
@@ -6301,7 +6302,9 @@
       "tags_loading_hint": "태그를 불러오는 중…",
       "tags_error_hint": "태그를 불러오지 못했습니다.",
       "tags_retry": "다시 시도",
-      "top_level": "최상위"
+      "top_level": "최상위",
+      "agent_roster_error": "이 디렉터리의 에이전트를 읽지 못했습니다.",
+      "agent_roster_retry": "다시 시도"
     },
     "folderSuggestionCard": {
       "folder_suggestion": "폴더 제안",

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import tempfile
 import types
 import unittest.mock
 from pathlib import Path
@@ -180,6 +181,66 @@ class TestRosterRowKeySet:
         assert not (set(project_row) & WITHHELD_RECORD_FIELDS)
 
     @pytest.mark.asyncio
+    async def test_project_path_query_scopes_discovery_with_no_slot(self, monkeypatch) -> None:
+        """``?project_path=<dir>`` drives project-agent discovery even when the
+        session has NO active project.
+
+        This is the folder create/settings modal's case: there is no chat slot
+        yet, so ``active_project_dir`` answers ``None``, and the ONLY signal of
+        which directory to scan is the query param. Regression guard for the
+        bug where the folder modal's agent picker never listed project agents
+        because the handler read only the slot's project.
+        """
+        seen: dict[str, str] = {}
+
+        def _fake_resolve(raw: str) -> tuple[str, bool]:
+            # Stand in for the realpath/sensitivity/isdir core so the test needs
+            # no real directory: echo the raw path back as a valid, non-sensitive
+            # directory.
+            return raw, False
+
+        def _fake_names(project_dir, **kw):
+            seen["dir"] = str(project_dir)
+            return frozenset({"project-only-agent"})
+
+        # No slot -> no active project. The query param is the only source.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: None,
+        )
+        # ?project_path= is owner-only; this caller is the owner.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._resolve_roster_project_path",
+            _fake_resolve,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            _fake_names,
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/draft/folder/dir")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # The query-param directory reached discovery, not the (None) slot.
+            assert seen.get("dir") == "/draft/folder/dir"
+            assert "project-only-agent" in rows
+            assert rows["project-only-agent"]["scope"] == "project"
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
     async def test_app_token_caller_gets_the_same_keys_with_scrubbed_values(
         self, tmp_path: Path
     ) -> None:
@@ -214,6 +275,346 @@ class TestRosterRowKeySet:
 
         assert set(row) == ROSTER_ROW_KEYS, "key set must not depend on caller class"
         assert probe not in json.dumps(row), "app token received an unscrubbed value"
+
+    @pytest.mark.asyncio
+    async def test_sensitive_project_path_is_denied_and_scans_nothing(self, monkeypatch) -> None:
+        """A sensitive ``?project_path=`` is refused: no scan, no project rows,
+        and the global roster still ships (the whole response never fails).
+        """
+        scanned: list[str] = []
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: None,
+        )
+        # Owner caller — reaches the sensitivity gate (a non-owner would be
+        # refused earlier by the owner gate; that is a separate test).
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        # Denied: resolved path empty, denied flag true.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._resolve_roster_project_path",
+            lambda raw: ("", True),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            lambda project_dir, **kw: scanned.append(str(project_dir)) or frozenset(),
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/home/u/.aws")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # No scan happened, no project rows, but the global roster survived.
+            assert scanned == []
+            assert all(r["scope"] == "global" for r in rows.values())
+            assert "roster-probe" in rows
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_project_path_is_ignored_for_a_non_owner_caller(self, monkeypatch) -> None:
+        """``?project_path=`` is owner-only. A non-owner caller's param is
+        ignored — the scan is NEVER pointed at the caller-supplied directory,
+        so a non-owner cannot enumerate agent names under an arbitrary path.
+        Falls back to the slot-derived project exactly as before the param.
+        """
+        scanned: list[str] = []
+        events: list[dict] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents._sel", lambda: _FakeSel())
+        # NOT the owner -> the query param must be ignored.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: False,
+        )
+        # Slot-derived project is None, so with the param ignored there is no
+        # scan at all.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: None,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            lambda project_dir, **kw: scanned.append(str(project_dir)) or frozenset({"leaked"}),
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/some/other/dir")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # The caller-supplied dir was NEVER scanned, and no project row leaked.
+            assert scanned == []
+            assert "leaked" not in rows
+            assert all(r["scope"] == "global" for r in rows.values())
+            # F1: the non-owner attempt to point the scan at an arbitrary dir is
+            # itself audited as a denied event, not silently ignored.
+            audits = [e for e in events if e.get("operation") == "api_kirocrew_agents"]
+            assert audits, "non-owner project_path attempt emitted no SEL event"
+            assert audits[0]["outcome"] == "denied"
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_non_owner_project_path_does_not_leak_the_active_slots_project(
+        self, monkeypatch
+    ) -> None:
+        """A non-owner's ``?project_path=B`` is refused (per the test above),
+        but when the caller's chat SLOT is on an unrelated project A, the
+        refusal must NOT fall through to serving A's roster. A request that
+        named a directory asked for that directory's scope; an unresolved or
+        refused path ships global-only rows, never a silent substitution of a
+        different project's agents. The active-slot fallback fires only when
+        no ``project_path`` was supplied at all, so a non-owner's B request
+        cannot fall into the same branch as no-path-at-all and leak slot
+        project A's agents to a caller who asked about B.
+        """
+        scanned: list[str] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kw):
+                pass
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents._sel", lambda: _FakeSel())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: False,
+        )
+        # The active chat slot IS on a different, real project (A) — this is
+        # the condition the mocked-to-None test above cannot exercise.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: "/slot/project-A",
+        )
+
+        def _fake_project_agent_names(project_dir, **kw):
+            scanned.append(str(project_dir))
+            if project_dir == "/slot/project-A":
+                return frozenset({"leaked-from-A"})
+            return frozenset()
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            _fake_project_agent_names,
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/some/other/dir-B")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # Neither the caller-supplied dir B nor the slot's project A was
+            # scanned: a refused/unresolved supplied path ships global-only.
+            assert scanned == []
+            assert "leaked-from-A" not in rows
+            assert all(r["scope"] == "global" for r in rows.values())
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_owner_directed_scan_is_sel_audited(self, monkeypatch) -> None:
+        """An owner directing the roster scan at an arbitrary ``?project_path=``
+        directory is a security-relevant action, so the honored (non-denied)
+        scan emits a SEL audit event with ``outcome="allowed"`` — not only the
+        denied path. Without it the audit trail would record refusals but never
+        the scans that succeeded.
+        """
+        events: list[dict] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents._sel", lambda: _FakeSel())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: None,
+        )
+        # A valid, non-sensitive directory (denied=False) -> the honored branch.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._resolve_roster_project_path",
+            lambda raw: (raw, False),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            lambda project_dir, **kw: frozenset(),
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/draft/dir")
+                    assert resp.status == 200
+
+            audits = [e for e in events if e.get("operation") == "api_kirocrew_agents"]
+            assert audits, "the honored owner scan emitted no SEL audit event"
+            assert audits[0]["outcome"] == "allowed"
+            assert audits[0]["source"] == "dashboard"
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_allowed_scan_fails_closed_when_audit_write_fails(self, monkeypatch) -> None:
+        """If the SEL audit write FAILS on an allowed owner scan, the scan is
+        REFUSED (fail-closed): the caller-supplied directory is never read, and
+        only global rows ship. An unaudited read of a security-relevant scan is
+        not permitted — the audit trail is the point of gating it.
+        """
+        scanned: list[str] = []
+        audit_calls: list[dict] = []
+
+        class _FailingSel:
+            def log_api_access(self, **kw):
+                audit_calls.append(kw)
+                # Model the REAL component: only a critical write raises; a
+                # queued (non-critical) write swallows the failure. If the
+                # handler did not pass critical=True, this would not raise and
+                # the fail-closed branch would be unreachable (the bug GPT/Opus
+                # flagged).
+                if kw.get("critical"):
+                    raise RuntimeError("audit sink down")
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents._sel", lambda: _FailingSel())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: None,
+        )
+        # A valid, non-sensitive directory -> would be the "allowed" scan path.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._resolve_roster_project_path",
+            lambda raw: (raw, False),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            lambda project_dir, **kw: scanned.append(str(project_dir))
+            or frozenset({"project-only-agent"}),
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/draft/dir")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # Audit failed -> scan refused: the dir was never read, its agent
+            # never shipped, only global rows remain.
+            assert scanned == []
+            assert "project-only-agent" not in rows
+            assert all(r["scope"] == "global" for r in rows.values())
+            # The allowed-scan audit MUST be critical (synchronous/raising), or
+            # the fail-closed branch is unreachable against the real SEL writer.
+            allowed = [
+                c
+                for c in audit_calls
+                if c.get("operation") == "api_kirocrew_agents" and c.get("outcome") == "allowed"
+            ]
+            assert allowed, "no allowed-scan audit attempted"
+            assert allowed[0].get("critical") is True
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_owner_empty_path_is_not_allowed_audited_and_no_slot_fallback(
+        self, monkeypatch
+    ) -> None:
+        """An owner ``?project_path=`` that resolves EMPTY (a typo / nonexistent
+        dir: ``("", False)`` — not denied, just no directory) must NOT record an
+        ``allowed`` audit event (no scan ran), and must NOT fall back to the
+        active chat slot's project (which would present an unrelated project's
+        agents as this folder's roster). Global rows only.
+        """
+        events: list[dict] = []
+        slot_scanned: list[str] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents._sel", lambda: _FakeSel())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        # A slot project EXISTS — the test proves it is NOT used when the owner
+        # supplied a (honored) path that happened to resolve empty.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: "/slot/project",
+        )
+        # Nonexistent path: honored (not denied) but resolves to "".
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._resolve_roster_project_path",
+            lambda raw: ("", False),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            lambda project_dir, **kw: slot_scanned.append(str(project_dir))
+            or frozenset({"slot-agent"}),
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/does/not/exist")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # No scan of the slot project, and its agent never leaks in.
+            assert slot_scanned == []
+            assert "slot-agent" not in rows
+            assert all(r["scope"] == "global" for r in rows.values())
+            # No "allowed" event for a scan that never ran.
+            audits = [e for e in events if e.get("operation") == "api_kirocrew_agents"]
+            assert not any(e["outcome"] == "allowed" for e in audits)
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 class TestRosterRowIsAnAllowlistNotASpread:
@@ -999,3 +1400,406 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
                 assert put.status == 200, await put.text()
             stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
             assert stored["triggers"] == "an actual new value"
+
+
+class TestResolveRosterProjectPathSubdirSensitivity:
+    """The roster path resolver denies a root whose ``.kiro/agents`` subdir
+    RESOLVES into a sensitive tree, not only a sensitive root itself.
+
+    GPT flagged that ``_resolve_roster_project_path`` sensitivity-checked the
+    project ROOT while the value actually scanned is ``<root>/.kiro/agents`` —
+    a symlinked subdir under a benign root slipped the gate. The resolver must
+    resolve the subdirs and return ``denied=True``.
+    """
+
+    def test_symlinked_kiro_agents_subdir_is_denied(self, tmp_path, monkeypatch) -> None:
+        import os
+
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        secret_tree = tmp_path / "creds_home"
+        secret_tree.mkdir()
+        proj = tmp_path / "repo"
+        (proj / ".kiro").mkdir(parents=True)
+        try:
+            os.symlink(secret_tree, proj / ".kiro" / "agents")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        # Only the resolved credential tree is sensitive; the repo root is NOT.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.is_sensitive_path",
+            lambda p: os.path.realpath(str(p)) == os.path.realpath(str(secret_tree)),
+        )
+
+        resolved, denied = _resolve_roster_project_path(str(proj))
+        assert (resolved, denied) == ("", True)
+
+    def test_benign_project_dir_still_resolves(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.is_sensitive_path",
+            lambda p: False,
+        )
+        resolved, denied = _resolve_roster_project_path(str(proj))
+        import os
+
+        assert denied is False
+        assert resolved == os.path.realpath(str(proj))
+
+
+class TestResolveRosterProjectPathUncGate:
+    r"""On Windows a UNC-shaped or reparse-point ``?project_path=`` is denied
+    ATOMICALLY, never via a check-then-``realpath`` two-step.
+
+    GPT flagged that a lexical link CHECK followed by a separate
+    ``os.path.realpath`` OPEN is a check-to-resolve race: an attacker who can
+    retry this owner-honored, caller-supplied path can swap the leaf between
+    the check and the resolve (timing widened with e.g. a Windows oplock) and
+    still get ``realpath`` to follow a UNC junction planted after the check
+    passed, sending SMB/NTLM credentials to an attacker-chosen host. The fix
+    uses ``platform_compat.pin_directory``, which opens the path with
+    ``FILE_FLAG_OPEN_REPARSE_POINT`` and inspects the resulting handle — a
+    reparse point is refused by the open itself, atomically.
+    """
+
+    def test_unc_path_denied_without_any_open(self, monkeypatch) -> None:
+        import kiro_crew.dashboard.handlers.agents as agents_mod
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        # Force the Windows branch on any host running the suite.
+        monkeypatch.setattr(agents_mod, "IS_WINDOWS", True)
+        # Neutralize the unc_probe_allowed carve-out too. It legitimately resolves
+        # the LOCAL data/agents home (``data_home()`` -> ``Path.resolve()``, which
+        # internally calls ``os.path.realpath`` on the local scratch home) to check
+        # whether the candidate sits under a gateway-written UNC root. That local
+        # resolution is NOT the outbound SMB probe this test guards against, but the
+        # boobytrapped ``realpath`` below cannot tell them apart — so stub the
+        # carve-out to deny, isolating the assertion to the resolver's OWN direct
+        # ``realpath`` on the UNC target, which the lexical screen must prevent.
+        monkeypatch.setattr(agents_mod, "unc_probe_allowed", lambda _p: False)
+
+        # Neither pin_directory NOR the direct realpath must ever be reached for
+        # a UNC input — reaching either IS (or leads to) the SMB probe.
+        def _boom(*_a, **_k):  # pragma: no cover - only hit on regression
+            raise AssertionError("an open/resolve ran on a UNC path — SMB probe not prevented")
+
+        monkeypatch.setattr(agents_mod, "pin_directory", _boom)
+        monkeypatch.setattr(agents_mod.os.path, "realpath", _boom)
+
+        resolved, denied = _resolve_roster_project_path(r"\\attacker\share\repo")
+        assert (resolved, denied) == ("", True)
+
+    def test_linked_ancestor_denied_before_the_pin_ever_opens(self, monkeypatch) -> None:
+        r"""A junction on an ANCESTOR of the root path (not the root itself)
+        must be refused BEFORE ``pin_directory`` runs.
+
+        GPT finding: ``pin_directory``'s ``FILE_FLAG_OPEN_REPARSE_POINT``
+        guards only the LEAF component -- Windows' own ``CreateFileW`` still
+        follows a reparse point on any ancestor while resolving the path to
+        that leaf, e.g. a junction planted above ``expanded`` pointing at
+        ``\\attacker\share``, silently traversed by the pin's own open before
+        the leaf is ever inspected. ``verify_ancestors_not_swapped`` must
+        catch this before the pin ever opens anything.
+        """
+        import kiro_crew.dashboard.handlers.agents as agents_mod
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        monkeypatch.setattr(agents_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(agents_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(agents_mod, "verify_ancestors_not_swapped", lambda _p: False)
+
+        def _boom(*_a, **_k):  # pragma: no cover - only hit on regression
+            raise AssertionError("pin_directory ran past a linked ancestor — probe not prevented")
+
+        monkeypatch.setattr(agents_mod, "pin_directory", _boom)
+        monkeypatch.setattr(agents_mod.os.path, "realpath", _boom)
+
+        resolved, denied = _resolve_roster_project_path(r"C:\Users\me\junctioned\repo")
+        assert (resolved, denied) == ("", True)
+
+    def test_benign_local_path_still_resolves_on_windows(self, tmp_path, monkeypatch) -> None:
+        import os
+
+        import kiro_crew.dashboard.handlers.agents as agents_mod
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        monkeypatch.setattr(agents_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(agents_mod, "verify_ancestors_not_swapped", lambda _p: True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.is_sensitive_path",
+            lambda p: False,
+        )
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+        # pin_directory itself is POSIX/Windows-dispatching, and this suite
+        # runs on both platforms in CI. The fd it returns is only ever passed
+        # to os.close() — the resolved path used while the pin is held comes
+        # from a separate os.path.realpath(expanded) call on the string, never
+        # through the fd — so a fake sentinel int, with os.close mocked to a
+        # no-op, exercises the real contract without depending on either
+        # platform's actual directory-open semantics.
+        monkeypatch.setattr(agents_mod, "pin_directory", lambda _p: 77)
+        monkeypatch.setattr(agents_mod.os, "close", lambda _fd: None)
+
+        resolved, denied = _resolve_roster_project_path(str(proj))
+        assert denied is False
+        assert resolved == os.path.realpath(str(proj))
+
+    def test_root_pin_stays_held_through_realpath_and_sensitivity_check(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The ROOT pin must be released AFTER ``os.path.realpath``,
+        ``is_sensitive_path``, AND ``os.path.isdir`` all run, not before —
+        releasing early reopens the exact check-to-resolve window
+        ``pin_directory`` exists to close (GPT finding: a leaf swapped for a
+        UNC junction between an early close and a later probe still gets that
+        probe's own resolution to follow it, sending SMB/NTLM credentials
+        outbound). The ``isdir`` probe was the specific gap GPT found: it ran
+        after ``finally: os.close(fd)`` on the first round of this fix.
+        """
+        import kiro_crew.dashboard.handlers.agents as agents_mod
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        monkeypatch.setattr(agents_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(agents_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(agents_mod, "verify_ancestors_not_swapped", lambda _p: True)
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+
+        order: list[str] = []
+        real_realpath = agents_mod.os.path.realpath
+        real_isdir = agents_mod.os.path.isdir
+
+        monkeypatch.setattr(agents_mod, "pin_directory", lambda _p: 77)
+        monkeypatch.setattr(agents_mod.os, "close", lambda _fd: order.append("close"))
+
+        def _realpath(path, *a, **k):
+            order.append("realpath")
+            return real_realpath(path, *a, **k)
+
+        monkeypatch.setattr(agents_mod.os.path, "realpath", _realpath)
+
+        def _is_sensitive(_p):
+            order.append("is_sensitive_path")
+            return False
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents.is_sensitive_path", _is_sensitive)
+
+        def _isdir(path, *a, **k):
+            order.append("isdir")
+            return real_isdir(path, *a, **k)
+
+        monkeypatch.setattr(agents_mod.os.path, "isdir", _isdir)
+
+        _resolve_roster_project_path(str(proj))
+        # The root pin's close must not appear before any of the three checks.
+        assert order.index("close") > order.index("realpath")
+        assert order.index("close") > order.index("is_sensitive_path")
+        assert order.index("close") > order.index("isdir")
+
+    def test_reparse_point_leaf_denied_by_the_pin_itself(self, monkeypatch) -> None:
+        r"""A leaf that is ITSELF a symlink/junction (e.g. to ``\\host\share``)
+        is not UNC-shaped lexically, so only the ``pin_directory`` open — which
+        refuses to follow a reparse point at the name — catches it. The open
+        distinguishes "reparse point" (``NotADirectoryError``, DENY) from
+        "does not exist at all" (a plain ``OSError``, "nothing here").
+        """
+        import kiro_crew.dashboard.handlers.agents as agents_mod
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        monkeypatch.setattr(agents_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(agents_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(agents_mod, "verify_ancestors_not_swapped", lambda _p: True)
+
+        def _refuse_reparse_point(_p):
+            raise NotADirectoryError("reparse point at the final component (simulated)")
+
+        monkeypatch.setattr(agents_mod, "pin_directory", _refuse_reparse_point)
+
+        def _boom(*_a, **_k):  # pragma: no cover - only hit on regression
+            raise AssertionError("realpath ran on a linked leaf — SMB probe not prevented")
+
+        monkeypatch.setattr(agents_mod.os.path, "realpath", _boom)
+
+        resolved, denied = _resolve_roster_project_path(r"C:\Users\me\repo")
+        assert (resolved, denied) == ("", True)
+
+    def test_missing_root_is_nothing_here_not_a_denial(self, monkeypatch) -> None:
+        """A root that simply does not exist (pin cannot even open it) is the
+        ordinary "nothing here" outcome, distinct from a reparse-point denial.
+        """
+        import kiro_crew.dashboard.handlers.agents as agents_mod
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        monkeypatch.setattr(agents_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(agents_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(agents_mod, "verify_ancestors_not_swapped", lambda _p: True)
+
+        def _not_found(_p):
+            raise OSError("file not found (simulated)")
+
+        monkeypatch.setattr(agents_mod, "pin_directory", _not_found)
+
+        resolved, denied = _resolve_roster_project_path(r"C:\Users\me\does-not-exist")
+        assert (resolved, denied) == ("", False)
+
+    def test_linked_kiro_subdir_denied_by_the_pin_itself(self, tmp_path, monkeypatch) -> None:
+        r"""A linked ``.kiro``/``.kiro/agents`` SUBDIR is denied by the pin on
+        that subdir (a ``NotADirectoryError``, not a plain ``OSError``), not
+        by a separate check before its ``realpath``.
+
+        The root resolves fine (non-sensitive, existing dir, pinned
+        successfully), but a ``.kiro``/``.kiro/agents`` leaf linked to
+        ``\\host\share`` must be refused by ``pin_directory`` on THAT leaf
+        before any ``realpath`` on it, and DENY the whole scan -- a linked
+        subdir is a security-relevant finding, which a plain missing subdir
+        does not share.
+        """
+        import os
+
+        import kiro_crew.dashboard.handlers.agents as agents_mod
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        monkeypatch.setattr(agents_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(agents_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(agents_mod, "verify_ancestors_not_swapped", lambda _p: True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.is_sensitive_path", lambda _p: False
+        )
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+        root_resolved = os.path.realpath(str(proj))
+
+        # The ROOT pins fine; a SUB (``.kiro`` / ``.kiro/agents``) refuses --
+        # simulating a reparse point at that leaf (NotADirectoryError, not a
+        # plain OSError -- the distinction the fix depends on). pin_directory
+        # itself is POSIX/Windows-dispatching and this suite runs on both
+        # platforms in CI, so a successful pin returns a fake sentinel fd
+        # rather than a real OS-level directory descriptor -- the fd is only
+        # ever passed to os.close(), never read from.
+        def _pin(p):
+            if str(p) in (str(proj), root_resolved):
+                return 77
+            raise NotADirectoryError("reparse point at the final component (simulated)")
+
+        monkeypatch.setattr(agents_mod, "pin_directory", _pin)
+        monkeypatch.setattr(agents_mod.os, "close", lambda _fd: None)
+
+        real_realpath = agents_mod.os.path.realpath
+
+        def _guarded_realpath(path, *a, **k):
+            # The root realpath is legitimate; a realpath on a linked sub
+            # would be the probe -- it must never be reached because the pin
+            # on that sub already refused.
+            if str(path) not in (str(proj), root_resolved):
+                raise AssertionError("realpath ran on a linked subdir — SMB probe not prevented")
+            return real_realpath(path, *a, **k)
+
+        monkeypatch.setattr(agents_mod.os.path, "realpath", _guarded_realpath)
+
+        resolved, denied = _resolve_roster_project_path(str(proj))
+        assert (resolved, denied) == ("", True)
+
+    def test_subdir_pin_stays_held_through_realpath_and_sensitivity_check(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The SUBDIR pin (``.kiro``/``.kiro/agents``) must be released AFTER
+        ``os.path.realpath`` and ``is_sensitive_path`` run on it, not before —
+        the same check-to-resolve window as the root pin, just one level
+        deeper (GPT finding).
+        """
+        import kiro_crew.dashboard.handlers.agents as agents_mod
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        monkeypatch.setattr(agents_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(agents_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(agents_mod, "verify_ancestors_not_swapped", lambda _p: True)
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+        root_resolved = agents_mod.os.path.realpath(str(proj))
+
+        order: list[str] = []
+        real_realpath = agents_mod.os.path.realpath
+
+        def _pin(p):
+            return 77
+
+        monkeypatch.setattr(agents_mod, "pin_directory", _pin)
+
+        def _close(_fd):
+            order.append("close")
+
+        monkeypatch.setattr(agents_mod.os, "close", _close)
+
+        def _realpath(path, *a, **k):
+            if str(path) not in (str(proj), root_resolved):
+                order.append("realpath(sub)")
+            return real_realpath(path, *a, **k)
+
+        monkeypatch.setattr(agents_mod.os.path, "realpath", _realpath)
+
+        def _is_sensitive(p):
+            if p != root_resolved:
+                order.append("is_sensitive_path(sub)")
+            return False
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents.is_sensitive_path", _is_sensitive)
+
+        _resolve_roster_project_path(str(proj))
+        # For each subdir the sequence must be realpath -> is_sensitive_path
+        # -> close, in that order -- proving the pin stayed held through both
+        # checks before being released. The leading "close" belongs to the
+        # ROOT pin (its own realpath/is_sensitive_path calls are on the root
+        # path, not appended to `order`) and is expected before any subdir
+        # entry; strip it before pairing up the per-subdir triples.
+        assert order and order[0] == "close", f"expected the root pin's close first: {order}"
+        subdir_order = order[1:]
+        assert subdir_order, "expected at least one subdir to be checked"
+        assert len(subdir_order) % 3 == 0, f"expected realpath/is_sensitive/close triples: {order}"
+        for i in range(0, len(subdir_order), 3):
+            triple = subdir_order[i : i + 3]
+            assert triple == [
+                "realpath(sub)",
+                "is_sensitive_path(sub)",
+                "close",
+            ], f"subdir pin released out of order: {order}"
+
+    def test_missing_kiro_subdir_is_skipped_not_denied(self, tmp_path, monkeypatch) -> None:
+        """A ``.kiro``/``.kiro/agents`` subdir that simply does not exist (the
+        ordinary "no project agents yet" case) must NOT deny the scan -- only
+        a reparse point at that leaf denies.
+        """
+        import os
+
+        import kiro_crew.dashboard.handlers.agents as agents_mod
+        from kiro_crew.dashboard.handlers.agents import _resolve_roster_project_path
+
+        monkeypatch.setattr(agents_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(agents_mod, "is_unc_shape", lambda _p: False)
+        monkeypatch.setattr(agents_mod, "verify_ancestors_not_swapped", lambda _p: True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.is_sensitive_path", lambda _p: False
+        )
+        proj = tmp_path / "repo"
+        proj.mkdir()
+        root_resolved = os.path.realpath(str(proj))
+
+        # pin_directory itself is POSIX/Windows-dispatching and this suite runs
+        # on both platforms in CI, so a successful pin returns a fake sentinel
+        # fd rather than a real OS-level directory descriptor -- the fd is
+        # only ever passed to os.close(), never read from.
+        def _pin(p):
+            if str(p) in (str(proj), root_resolved):
+                return 77
+            raise OSError("file not found (simulated) -- .kiro/agents does not exist")
+
+        monkeypatch.setattr(agents_mod, "pin_directory", _pin)
+        monkeypatch.setattr(agents_mod.os, "close", lambda _fd: None)
+
+        resolved, denied = _resolve_roster_project_path(str(proj))
+        assert denied is False
+        assert resolved == root_resolved
