@@ -34,6 +34,17 @@ def _payload(resp):
     return json.loads(resp.body.decode())
 
 
+@pytest.fixture(autouse=True)
+def _owner(monkeypatch):
+    """Run as the dashboard owner: these tests cover handler business logic.
+
+    The owner gate on the mutating skill handlers has its own dedicated
+    coverage in ``test_skill_write_guard.py``; here it would only stand
+    between the test and the behavior under test.
+    """
+    monkeypatch.setattr(H, "is_owner_dashboard_request", lambda _request: True, raising=False)
+
+
 @pytest.fixture()
 def loader(tmp_path):
     ld = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
