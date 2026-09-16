@@ -7,12 +7,22 @@ gateway.py and dashboard.handlers.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.state import DashboardState, SlotOrigin, row_mid
+from kiro_crew.cron_session_target import dashboard_slot_of, is_dashboard_target
+from kiro_crew.dashboard.state import (
+    DashboardState,
+    SlotOrigin,
+    append_and_surface,
+    row_mid,
+)
 from kiro_crew.history import append_rows_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+logger = logging.getLogger(__name__)
+
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronJob
@@ -414,6 +424,106 @@ def _bind_cron_slot(
     return slot
 
 
+def _mirror_result_to_target_session(
+    state: DashboardState,
+    job: "CronJob",
+    content: str,
+) -> None:
+    """Also deliver the result row into the dashboard session the job TARGETS.
+
+    The dashboard leg of cron delivery routes by job id alone: every result lands
+    in ``cron-{job.id}``, whoever the job was created for. The channel leg already
+    routes by ORIGIN — ``_deliver_cron_to_channel`` resolves the creating session
+    off ``job.session_key`` and posts there — so a job created from a chat that
+    happens to be a dashboard one is the only origin whose output never reaches it.
+    This is that missing rung, and ``inject_workflow_result`` is the same shape: a
+    terminal result belongs in the chat it was launched from.
+
+    A MIRROR, deliberately, not a move. The job keeps its own tab and keeps
+    running under ``cron:{job.id}``: rebinding the target slot would set its
+    ``linked_session_key`` to the cron and hydrate the cron's prior runs into a
+    person's live conversation, so their next turn would run AS the job. That is
+    exactly the pairing ``_bind_cron_slot`` holds together, and it is why nothing
+    here touches identity or hydration — only the assistant row is copied, never
+    the prompt row, which in someone else's transcript would read as a turn they
+    typed. Same choice the channel leg makes: it posts the output, it does not
+    relocate the session.
+
+    Scoped to the ``dashboard:`` namespace on purpose. A channel-origin job
+    already has a delivery rung of its own, and a channel-born tab's session key
+    is the channel's, so mirroring on a resolved-tab match would double-deliver
+    what the channel leg posted.
+
+    Best-effort, like every other delivery leg: the job's own tab already carries
+    the result, so a deleted target or a tab since relinked costs a copy, not a run.
+    Persistence is deliberately NOT this function's business — see the append.
+    """
+    # Type BEFORE `.strip()`, or the isinstance check below it is dead code and a
+    # truthy non-string raises `AttributeError` on the way to it. The field round
+    # trips through `crons.json` without coercion, so a hand-edited or corrupt
+    # store can hand back an int — and here that would crash the injection of a
+    # run that had already succeeded. Same degrade-rather-than-raise contract
+    # `_cron_origin_key` states for the very same field.
+    raw_key = getattr(job, "session_key", "")
+    if not isinstance(raw_key, str):
+        return
+    session_key = raw_key.strip()
+    if not is_dashboard_target(session_key):
+        return
+    slot_name = dashboard_slot_of(session_key)
+    # Never the job's own tab: the caller already wrote the row there, and a
+    # second append under a different door would render it twice.
+    if not slot_name or slot_name == f"cron-{job.id}":
+        return
+    slot = state.get_slot(slot_name)
+    if slot is None:
+        # Nothing live to mirror into. A target whose tab is merely CLOSED is made
+        # live before this runs, by `ensure_target_session_slot` on the delivering
+        # caller's own await point; reaching here means that rehydrate declined the
+        # session (deleted, deleted-and-recreated mid-read, or never persisted) or
+        # the tab closed in the window after it. Either way the live-slot mirror is
+        # the only writer, so there is nothing to do but skip the copy.
+        return
+    # A tab whose conversation belongs to a DIFFERENT session is not this key's
+    # chat — a channel-born tab keeps the channel's key, a cron tab carries
+    # `cron:<id>` — so delivering there would put the result in front of someone
+    # the job was not created for. The create path refuses to record such a
+    # target; `cron adopt` does not, so the delivery side checks too.
+    linked = getattr(slot, "linked_session_key", "") or ""
+    if linked and linked != session_key:
+        return
+    # Dedup on content, matching `_reflect`: a re-fire of an identical result must
+    # not stack copies in someone's conversation.
+    if any(msg.get("content") == content for msg in getattr(slot, "messages", [])):
+        return
+    # One identity-carrying door (`append_and_surface`), so the live copy arrives
+    # with a `meta.mid` and an explicit frame beside append's own broadcast cannot
+    # render the result twice.
+    #
+    # And that is the WHOLE write. The mirror makes no durable write of its own:
+    # `slot.append` marks the slot dirty, so the periodic slot save persists this
+    # row with the rest of the conversation's window, exactly as it does every
+    # other message in that chat. Writing the transcript straight from here — a
+    # deferred, off-loop append aimed at a session this job does not own — faces
+    # two opposed failures with no local fix: create the file and a conversation
+    # the user deleted in the meantime comes back holding one orphaned result;
+    # refuse to create it and the row is dropped for a session with nothing on
+    # disk yet. Neither is reachable while persistence belongs to the slot that
+    # owns the conversation, which is why a target whose tab is merely closed is
+    # made live by `ensure_target_session_slot` instead of written to from here.
+    # The residual is the ordinary one every dashboard message carries — a crash
+    # before the next flush loses the tail — and that is the platform's durability
+    # contract rather than something this path may weaken on its own.
+    append_and_surface(
+        state,
+        slot,
+        "assistant",
+        content,
+        "msg msg-a",
+        extra={"kind": "cron_result"},
+    )
+
+
 def inject_cron_result_to_dashboard(
     state: DashboardState,
     job: "CronJob",
@@ -572,13 +682,25 @@ def inject_cron_result_to_dashboard(
             )
         safe_result, _ = redact_exfiltration_urls(result_text)
         safe_result, _ = redact_credentials(safe_result)
-        _reflect(
-            "assistant",
-            f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",
-            "msg msg-a",
-        )
+        result_row = f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}"
+        _reflect("assistant", result_row, "msg msg-a")
         # After BOTH rows are queued, so the pair lands as one write.
         _flush_durable_rows()
+        # Then the same result into the session the job targets, if it named one.
+        #
+        # FRESH delivery only. `include_prompt` is False exactly when a caller is
+        # RE-SURFACING an older result rather than delivering a new one (`/to-chat`),
+        # and a replay must not re-deliver into someone's conversation: the
+        # in-memory dedup below only sees the target slot's bounded buffer, so a
+        # result older than that window — or a restart that rebuilt the buffer —
+        # reads as absent and appends the same run a second time.
+        #
+        # Scheduled after the flush above, not guaranteed to land after it: both
+        # writes are offloaded, so this orders the dispatch and nothing more. They
+        # address different keys (`cron:{id}` and the target's), so no interleaving
+        # of the two can corrupt either transcript.
+        if include_prompt:
+            _mirror_result_to_target_session(state, job, result_row)
     if context_reading:
         # Same frame shape as chat_runner._context_usage_payload. `reset` when
         # the counts are unknown is load-bearing: the frontend stores pct and
@@ -651,6 +773,59 @@ async def ensure_cron_slot(state: DashboardState, job: "CronJob") -> None:
         return
     history = await prefetch_cron_history(state, job.id)
     _bind_cron_slot(state, job, history)
+
+
+async def ensure_target_session_slot(state: DashboardState, job: "CronJob") -> None:
+    """Make a job's TARGET conversation live, so the mirror has a slot to write to.
+
+    Closing a tab archives it: the slot is popped while the transcript stays on
+    disk. That is the ordinary state of the case a target is most often named for
+    -- schedule something for later, close the tab, come back to it -- and it
+    leaves :func:`_mirror_result_to_target_session` with nothing live to write to,
+    so the job would report a destination it never delivered to.
+
+    Rehydrating the slot is what fixes that, rather than the mirror writing the
+    transcript itself. The two are not equivalent. A direct write is a deferred,
+    off-loop append aimed at a conversation this job does not own, and it has to
+    re-derive from scratch every precondition that owning the slot gives for free:
+    that the session was not deleted (or deleted and RECREATED) while the read was
+    in flight, that a ``✕`` during that window is honoured, and that a session
+    whose memory writes are disabled is not quietly persisted to.
+    :func:`rehydrate_slot_from_history_async` already establishes all of them --
+    ``_deletion_during_read`` covers the delete-and-recreate race that
+    ``delete_session`` leaves no tombstone for, and the restore re-adds a
+    non-persistent session to ``state._restricted_keys``, which a tab close
+    discards. So the mode the user chose keeps binding without this path parsing a
+    header to guess it. This is also the mechanism the script-cron leg already
+    uses in ``gateway.py``, so both legs reach a closed session the same way.
+
+    ``adopt_closed=True`` is the point of the call: the default declines a session
+    archived with ``closed``, which is precisely the target being delivered to
+    here. Everything else the contract refuses stays refused, and a ``None``
+    return is left to the mirror's own absent-slot branch -- a target that is
+    genuinely gone costs a copy, not a run.
+
+    Awaited by the DELIVERING caller rather than at run start, because the window
+    that matters is the one before the append: a tab open when the run began can
+    be closed by the time it finishes.
+    """
+    from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+
+    raw_key = getattr(job, "session_key", "")
+    if not isinstance(raw_key, str):
+        return
+    session_key = raw_key.strip()
+    if not is_dashboard_target(session_key):
+        return
+    slot_name = dashboard_slot_of(session_key)
+    # Same two exclusions the mirror applies, for the same reasons, and they must
+    # agree: rehydrating a slot the mirror then declines would reopen a tab for
+    # nothing -- a visible side effect from a delivery that never happens.
+    if not slot_name or slot_name == f"cron-{job.id}":
+        return
+    if state.get_slot(slot_name) is not None:
+        return
+    await rehydrate_slot_from_history_async(state, slot_name, adopt_closed=True)
 
 
 def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None:

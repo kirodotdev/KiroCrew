@@ -125,6 +125,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.cron_inject import (
     context_meter_reading,
     ensure_cron_slot,
+    ensure_target_session_slot,
     inject_cron_result_to_dashboard,
     prefetch_cron_history,
 )
@@ -5397,6 +5398,9 @@ class GatewayOrchestrator:
                             and not job.hide_in_chat
                             and self.dashboard_state.has_slot(f"cron-{job.id}")
                         ):
+                            # Make a named target's conversation live first: a closed tab has no slot
+                            # for the mirror inside the injection to write to.
+                            await ensure_target_session_slot(self.dashboard_state, job)
                             inject_cron_result_to_dashboard(
                                 self.dashboard_state,
                                 job,
@@ -5422,6 +5426,9 @@ class GatewayOrchestrator:
                         and not job.hide_in_chat
                         and self.dashboard_state.has_slot(f"cron-{job.id}")
                     ):
+                        # Make a named target's conversation live first: a closed tab has no slot
+                        # for the mirror inside the injection to write to.
+                        await ensure_target_session_slot(self.dashboard_state, job)
                         inject_cron_result_to_dashboard(
                             self.dashboard_state,
                             job,
@@ -5454,6 +5461,9 @@ class GatewayOrchestrator:
                             if self.dashboard_state.conversation_log
                             else []
                         )
+                        # Make a named target's conversation live first: a closed tab has no slot
+                        # for the mirror inside the injection to write to.
+                        await ensure_target_session_slot(self.dashboard_state, job)
                         inject_cron_result_to_dashboard(
                             self.dashboard_state,
                             job,
