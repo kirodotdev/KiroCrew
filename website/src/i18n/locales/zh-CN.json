@@ -14915,6 +14915,7 @@
       "session_open_error_named": "无法打开“{{name}}”。",
       "session_open_error": "无法打开该会话。",
       "session_gone_open_failed_named": "“{{name}}”已被删除，无法打开。",
+      "truncated_chars": "…（已截断 {{count}} 个字符 —— 重新加载可查看完整输出）",
       "truncated": "…（已截断）"
     }
   },

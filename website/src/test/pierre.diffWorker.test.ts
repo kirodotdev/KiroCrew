@@ -157,6 +157,76 @@ describe('diffOffThread computePairPatch', () => {
     ).rejects.toMatchObject({ name: 'AbortError' })
     expect(StubWorker.instances).toHaveLength(0)
   })
+
+  /** The key carries both file bodies, so the char budget is what bounds the
+   *  cache's footprint — the entry cap alone lets eight large-file diffs pin
+   *  hundreds of MB. */
+  describe('char budget', () => {
+    it('evicts the oldest entries until the footprint fits the budget', async () => {
+      const mod = await import('../pierre/diffOffThread')
+      const { computePairPatch, CACHE_MAX_CHARS, _diffCacheChars } = mod
+      // An entry costs key (both bodies) + patch, and the patch carries `big`
+      // again as a context line, so each pair is ~36% of the budget: two fit,
+      // the third must evict the first.
+      const big = 'x'.repeat(Math.floor(CACHE_MAX_CHARS * 0.12))
+      const oldA = file('a.ts', big + '\nold-a\n')
+      const newA = file('a.ts', big + '\nnew-a\n')
+      await computePairPatch(oldA, newA)
+      await computePairPatch(file('b.ts', big + '\nold-b\n'), file('b.ts', big + '\nnew-b\n'))
+      const twoEntries = _diffCacheChars()
+      expect(twoEntries).toBeLessThanOrEqual(CACHE_MAX_CHARS)
+      expect(twoEntries).toBeGreaterThan(CACHE_MAX_CHARS / 2)
+      await computePairPatch(file('c.ts', big + '\nold-c\n'), file('c.ts', big + '\nnew-c\n'))
+      expect(_diffCacheChars()).toBeLessThanOrEqual(CACHE_MAX_CHARS)
+      // Pair A was the oldest and had to go: asking again recomputes.
+      const postSpy = vi.spyOn(StubWorker.instances[0], 'postMessage')
+      await computePairPatch(oldA, newA)
+      expect(postSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('a pair larger than the whole budget is served but never cached', async () => {
+      const { computePairPatch, CACHE_MAX_CHARS, _diffCacheChars } = await import('../pierre/diffOffThread')
+      const huge = 'y'.repeat(CACHE_MAX_CHARS)
+      const oldF = file('h.ts', huge + '\nold\n')
+      const newF = file('h.ts', huge + '\nnew\n')
+      const patch = await computePairPatch(oldF, newF)
+      expect(patch).toContain('+new')
+      expect(_diffCacheChars()).toBe(0)
+      const postSpy = vi.spyOn(StubWorker.instances[0], 'postMessage')
+      await computePairPatch(oldF, newF)
+      expect(postSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('a cache hit refreshes recency without changing the footprint', async () => {
+      const { computePairPatch, _diffCacheChars } = await import('../pierre/diffOffThread')
+      const oldF = file('r.ts', 'a\n')
+      const newF = file('r.ts', 'b\n')
+      await computePairPatch(oldF, newF)
+      const before = _diffCacheChars()
+      expect(before).toBeGreaterThan(0)
+      await computePairPatch(oldF, newF)
+      expect(_diffCacheChars()).toBe(before)
+    })
+
+    it('two concurrent misses for one pair count its footprint once', async () => {
+      const { computePairPatch, _diffCacheChars } = await import('../pierre/diffOffThread')
+      const oldF = file('c.ts', 'a\n')
+      const newF = file('c.ts', 'b\n')
+      // Both issued before either resolves, so both miss and both store.
+      const [p1, p2] = await Promise.all([computePairPatch(oldF, newF), computePairPatch(oldF, newF)])
+      expect(p1).toBe(p2)
+      const once = _diffCacheChars()
+      expect(once).toBeGreaterThan(0)
+      // A sequential re-request is a hit: the footprint is the single-entry cost.
+      await computePairPatch(oldF, newF)
+      expect(_diffCacheChars()).toBe(once)
+      // A fresh module holding exactly one such entry reports the same cost.
+      vi.resetModules()
+      const fresh = await import('../pierre/diffOffThread')
+      await fresh.computePairPatch(oldF, newF)
+      expect(fresh._diffCacheChars()).toBe(once)
+    })
+  })
 })
 
 describe('diffWorker attachPairDiffHandler', () => {

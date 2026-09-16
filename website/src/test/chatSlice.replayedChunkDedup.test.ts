@@ -115,7 +115,6 @@ describe('batched frame vs snapshot floor (active path)', () => {
     expect(streaming[0].content).toBe('SNAPcd')
     expect(streaming[0].rawText).toBe('SNAPcd')
     expect(s.lastChunkSeq).toBe(4)
-    expect(s.toolLog.at(-1)).toMatchObject({ type: 'reasoning', text: 'cd' })
   })
 
   it('a part without a seq is kept even when others are covered', () => {

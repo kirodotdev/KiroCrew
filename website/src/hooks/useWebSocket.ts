@@ -265,11 +265,19 @@ export function emitSlotFocused(slot: string | null): void {
  *  kept apart so the reducer can hold each part against the slot's replay
  *  floor and drop exactly the chunks a snapshot already covers. */
 type ChunkPart = { seq: number | undefined; text: string }
-type ChunkBufEntry = { parts: ChunkPart[]; lastSeq: number | undefined; gen: string | undefined; thinking: string }
+type ChunkBufEntry = { parts: ChunkPart[]; lastSeq: number | undefined; gen: string | undefined; thinking: string; chars: number }
 const newChunkBufEntry = (): ChunkBufEntry => {
-  return { parts: [], lastSeq: undefined, gen: undefined, thinking: '' }
+  return { parts: [], lastSeq: undefined, gen: undefined, thinking: '', chars: 0 }
 }
 const bufferedText = (entry: ChunkBufEntry): string => entry.parts.map((p) => p.text).join('')
+
+/** Buffered chars (content + thinking) per slot above which the chunk buffer
+ *  is flushed synchronously instead of waiting for the next animation frame.
+ *  requestAnimationFrame is suspended while the window is hidden, so a
+ *  backgrounded renderer streaming a long turn would otherwise buffer the
+ *  entire turn. The subagent buffer (bufferSubagentChunk) flushes at this
+ *  same 50 KB threshold for the same reason. */
+const CHUNK_BUF_FLUSH_CHARS = 50_000
 
 export function useWebSocket() {
   const dispatch = useAppDispatch()
@@ -818,6 +826,9 @@ export function useWebSocket() {
     const activeSlot = store.getState().chat.activeSlot
     let dispatchedActive = false
     for (const [slot, entry] of buf) {
+      // Everything buffered for this slot lands below, so the overflow counter
+      // restarts here regardless of which branches dispatch.
+      entry.chars = 0
       // Thinking first: within a turn the reasoning stream precedes the answer
       // stream, so a frame holding both must land them in that order.
       if (entry.thinking) {
@@ -878,13 +889,15 @@ export function useWebSocket() {
    *  CONTENT may be discarded — refreshSlot recovers it from the server — but
    *  reasoning is client-only (the backend never persists it), so anything
    *  still buffered when the buffer is cleared (reconnect) or the hook unmounts
-   *  would be permanently lost. A hidden tab makes that window unbounded:
+   *  would be permanently lost. A hidden tab widens that window:
    *  requestAnimationFrame is suspended there, so the scheduled flush never
-   *  runs while thinking keeps accumulating. */
+   *  runs; the overflow flush (CHUNK_BUF_FLUSH_CHARS) bounds how much can sit
+   *  here meanwhile, and this salvages the sub-threshold remainder. */
   const flushBufferedThinking = useCallback(() => {
     for (const [slot, entry] of chunkBufRef.current) {
       if (entry.thinking) {
         dispatch(sseThinkingChunk({ slot, content: entry.thinking }))
+        entry.chars -= entry.thinking.length
         entry.thinking = ''
       }
     }
@@ -1735,14 +1748,19 @@ export function useWebSocket() {
               // No gap marker here: the reducer derives markers from the seqs
               // of the parts it keeps, after filtering against the snapshot
               // floor, so a gap the snapshot filled in is not flagged.
-              entry.parts.push({ seq: data.seq, text: data.content ?? '' })
+              const chunkText = data.content ?? ''
+              entry.parts.push({ seq: data.seq, text: chunkText })
+              entry.chars += chunkText.length
               if (data.seq !== undefined) entry.lastSeq = data.seq
               // The gateway generation that numbered the seqs (see floorForGen).
               if (typeof data.gen === 'string') entry.gen = data.gen
               if (store.getState().chat.slotStatusDetail[cs]?.kind !== 'streaming') {
                 dispatch(setSlotStatusDetail({ slot: cs, kind: 'streaming', text: 'Streaming', ts: Date.now() }))
               }
-              scheduleChunkFlush()
+              // A hidden window never runs the scheduled frame; past the
+              // threshold, drain now so the buffer cannot hold a whole turn.
+              if (entry.chars > CHUNK_BUF_FLUSH_CHARS) flushChunks()
+              else scheduleChunkFlush()
             }
             break
           }
@@ -2068,7 +2086,11 @@ export function useWebSocket() {
               let entry = buf.get(thinkSlot)
               if (!entry) { entry = newChunkBufEntry(); buf.set(thinkSlot, entry) }
               entry.thinking += thinkText
-              scheduleChunkFlush()
+              entry.chars += thinkText.length
+              // Same hidden-window guard as chat_chunk; reasoning streams are
+              // the long ones, so this branch is the one that usually trips it.
+              if (entry.chars > CHUNK_BUF_FLUSH_CHARS) flushChunks()
+              else scheduleChunkFlush()
             }
             // Dispatch the status detail only on a genuine kind TRANSITION into
             // 'thinking'. Guarding merely on `!== 'streaming'` would not
