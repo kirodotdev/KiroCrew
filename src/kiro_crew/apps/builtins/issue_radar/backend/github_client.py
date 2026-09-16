@@ -896,12 +896,6 @@ def _batch_dependency_graph(
     )
 
 
-# Hard page ceiling for the batched walk: 100 issues/page × 40 = 4000 open
-# issues, far past any repo this app realistically triages. A repo beyond it
-# still gets a graph for its first 4000 — bounded, never unbounded pagination.
-_DEPS_GRAPHQL_MAX_PAGES = github_queries.DEPS_GRAPHQL_MAX_PAGES
-
-
 def fetch_dependency_edges(
     owner: str,
     repo: str,
@@ -1369,8 +1363,9 @@ _CHECK_RUN_JQ = (
 )
 
 # Commit statuses have no queued/in-progress distinction: the state itself
-# carries "pending", so status is reported as completed and the mapping below
-# routes "pending" into the running bucket.
+# carries "pending", so status is reported as completed and
+# ``github_normalization.CHECK_RUNNING_STATES`` routes "pending" into the
+# running bucket.
 _COMMIT_STATUS_JQ = (
     '.statuses[] | {name: .context, status: "completed", conclusion: .state, '
     "url: (.target_url // null), started_at: .created_at, completed_at: .updated_at, "
@@ -1378,22 +1373,16 @@ _COMMIT_STATUS_JQ = (
     'source: "status"}'
 )
 
-# GitHub conclusion / state -> coarse bucket. Anything unrecognized is treated as
-# "other" (informational), never silently as success.
-_CHECK_FAILURE_CONCLUSIONS = github_normalization.CHECK_FAILURE_CONCLUSIONS
-_CHECK_RUNNING_STATES = github_normalization.CHECK_RUNNING_STATES
-_CHECK_OTHER_CONCLUSIONS = github_normalization.CHECK_OTHER_CONCLUSIONS
-
 
 def _check_bucket(status: str | None, conclusion: str | None) -> str:
     """Coarse bucket for one check: ``failure`` | ``running`` | ``success`` |
     ``other``. Status is consulted first — an in-flight run has no conclusion
     yet — then the conclusion value.
 
-    This is the ONLY bucketing table in the module: the REST check rows, the
-    GraphQL per-context rows and the GraphQL aggregate rollup all funnel through
-    it (values are case-folded, so GraphQL's ``IN_PROGRESS`` and REST's
-    ``in_progress`` are the same input). Keeping one table is what actually makes
+    The table lives in ``github_normalization`` and is the ONLY one: the REST
+    check rows, the GraphQL per-context rows and the GraphQL aggregate rollup all
+    funnel through it (values are case-folded, so GraphQL's ``IN_PROGRESS`` and
+    REST's ``in_progress`` are the same input). Keeping one table makes
     "a card dot and the detail sidebar can never disagree about red" true —
     parallel tables would only be edit-locked by convention.
     """
@@ -1505,26 +1494,6 @@ def list_pr_checks(
 # rows un-enriched rather than failing the list, because the diff size and the
 # check dot are nice-to-have decoration on a card, not its reason to exist.
 
-# Our own lifecycle names -> GraphQL PullRequestState literals. The values are
-# interpolated into the query, so they come from THIS map only — never from
-# caller input — which keeps the query free of injection surface.
-_GRAPHQL_PR_STATES = github_queries.GRAPHQL_PR_STATES
-
-# The bucket keys every counts dict carries, so the frontend never has to guard a
-# missing key and the render order of the card's badges is fixed.
-_CHECK_BUCKETS = github_normalization.CHECK_BUCKETS
-
-# How many rollup contexts one GraphQL page carries. A PR with more than this has
-# a TRUNCATED tally, which the row reports so the card can fall back to the
-# aggregate rollup instead of presenting an incomplete count as complete.
-_ROLLUP_CONTEXT_PAGE = github_queries.ROLLUP_CONTEXT_PAGE
-
-# One PR's contexts, projected into the SAME row shape the REST check list uses
-# (name / source / status / conclusion / timestamps) so they can go through
-# _dedupe_checks and _check_bucket unchanged, so card and sidebar classification
-# remain structurally identical.
-_ROLLUP_CONTEXTS_JQ = github_queries.ROLLUP_CONTEXTS_JQ
-
 # The GraphQL selection for one PR's card enrichment, shared by both fetchers so
 # the two paths can never drift apart in what they ask for.
 _PR_SUMMARY_SELECTION = github_queries.PR_SUMMARY_SELECTION
@@ -1556,8 +1525,6 @@ _PR_SUMMARY_SELECTION = github_queries.PR_SUMMARY_SELECTION
 # independently failable, and a failure costs only the readiness field rather than the
 # whole card payload.
 _PR_READINESS_SELECTION = github_queries.PR_READINESS_SELECTION
-
-_PR_READINESS_JQ_BODY = github_queries.PR_READINESS_JQ_BODY
 
 # Smaller than `_SUMMARY_BATCH` (100) on purpose: this is the field GitHub COMPUTES, and
 # the by-number form asks for N of them in one query. 50 is the largest page measured
@@ -1886,18 +1853,6 @@ _PR_SEARCH_JQ = github_queries.PR_SEARCH_JQ
 # Public because the route reports it to the client: the UI has to be able to say
 # "newest 300" rather than implying completeness.
 PR_SEARCH_MAX = github_queries.PR_SEARCH_MAX
-
-# Hard stop on pages walked, so a pathological `per_page`/`limit` combination can
-# never turn one filter toggle into an unbounded request loop.
-_SEARCH_MAX_PAGES = github_queries.SEARCH_MAX_PAGES
-
-# GitHub logins: alphanumerics and hyphens only. Validated before a login can
-# reach the search query string, so it cannot inject extra qualifiers.
-_LOGIN_RE = github_queries.LOGIN_RE
-
-# PR lifecycle -> search qualifiers. ``closed`` means closed WITHOUT being
-# merged, matching the frontend's three-way split (open / merged / closed).
-_PR_STATE_QUALIFIERS = github_queries.PR_STATE_QUALIFIERS
 
 
 def build_pr_search_query(
@@ -2511,37 +2466,14 @@ def rerun_workflow_run(
 # the store because the rows are this module's shape and the marker's dependency on
 # a comment's ``id``/``updated_at`` is this module's contract.
 
-# The marker itself. ``\s+`` after the name is what keeps the brief sentinel
-# ``<!-- kirocrew-crew-brief v1 -->`` from matching: the next character there is a
-# hyphen, not whitespace. Lazy ``[^>]*?`` stops at the marker's own ``-->`` and
-# cannot run on into later prose.
-_CREW_CLAIM_MARKER_RE = github_normalization.CREW_CLAIM_MARKER_RE
-
-# ``key=value`` pairs inside the marker; values are whitespace-delimited. Unknown
-# keys are simply not read, so the marker can grow a field without this parser (or
-# an older crew reading a newer marker) breaking.
-_CREW_CLAIM_FIELD_RE = github_normalization.CREW_CLAIM_FIELD_RE
-
-# The ONLY accepted timestamp shape: ISO-8601 UTC with a trailing ``Z``.
-#
-# Deliberately stricter than ``_parse_gh_timestamp`` / ``datetime.fromisoformat``,
-# which also accept a space separator and an absent or offset timezone. Those forms
-# are hazardous here rather than merely lax: a space-separated, zoneless stamp
-# parses to a NAIVE datetime, and comparing that against the aware ``now`` a
-# freshness check uses raises TypeError — so a malformed stamp crashes the claim
-# reader instead of reading as stale. Refusing it up front makes "unparseable"
-# mean "not fresh",
-# which is the safe direction: a claim that cannot prove it is alive must not be
-# treated as alive.
-_CREW_CLAIM_ISO_Z_RE = github_normalization.CREW_CLAIM_ISO_Z_RE
-
 
 def _parse_crew_marker(body: str) -> dict | None:
     """The crew payload parsed out of ONE comment body, or ``None`` if it has none.
 
     Returns ``{crew_id, phase, pr, updated}``. ``pr`` is an int or ``None``;
     ``updated`` is the validated ISO-8601-``Z`` string or ``None`` (see
-    :data:`_CREW_CLAIM_ISO_Z_RE` — a malformed stamp is unparseable, NOT fresh).
+    :data:`github_normalization.CREW_CLAIM_ISO_Z_RE` — a malformed stamp is
+    unparseable, NOT fresh).
 
     The FIRST marker in a body wins. A body carrying two is malformed either way,
     and first-wins at least makes which one is honoured deterministic rather than

@@ -35,7 +35,13 @@ provider cannot be registered while the gate silently keeps comparing three.
 **Each client module is the stable composition façade for its provider.** The
 routes and tests continue to import `github_client`, `gitlab_client` and
 `azure_client`; those modules retain the protocol surface, exception aliases,
-constants and patchable I/O chokepoints. Provider-specific sibling modules keep
+the constants something actually binds, and patchable I/O chokepoints. A mirror
+NOTHING binds is not part of that surface: the sibling that owns the value reads
+its own module global, so a façade copy is never the seam it resembles and
+patching it changes nothing. Binding means the façade's own code, a test that
+asserts on the façade attribute, or a documented cross-surface pointer such as
+`_MEMBER_ASSOC_RANK`, which `website/src/apps/issue-radar/context.tsx` names as
+the anchor the frontend ranking tracks. Provider-specific sibling modules keep
 the implementation boundaries explicit: `*_transport.py` owns URL, environment,
 request and pagination mechanics; `*_normalization.py` converts provider payloads
 into the shared GitHub-shaped records; and `github_queries.py` owns GitHub's

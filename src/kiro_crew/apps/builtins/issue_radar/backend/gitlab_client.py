@@ -1257,9 +1257,6 @@ def list_pr_checks(
     return [_norm_job(job) for job in jobs]
 
 
-_CHECK_BUCKETS = _normalization._CHECK_BUCKETS
-
-
 def summarize_checks(checks: list[dict]) -> dict:
     return _normalization.summarize_checks(checks)
 
