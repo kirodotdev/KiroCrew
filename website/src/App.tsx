@@ -47,7 +47,7 @@ import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
-import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, PanelLeft, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -513,6 +513,40 @@ export function MobileNavGlyph({ avatar }: { avatar: string }) {
       )}
       {!!avatar && (
         <img src={avatar} alt="" aria-hidden="true" onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
+      )}
+    </>
+  )
+}
+
+/** Glyph inside the nav-rail header's expand/collapse button — the same
+ *  load-proof contract as MobileNavGlyph, with the rail's own geometry. When
+ *  the rail is collapsed the logo is the button's ONLY visible content (the
+ *  bot name is unmounted), so a 404 on the avatar asset, a blocked request or
+ *  a hung fetch used to leave an invisible control that still toggled the
+ *  rail when clicked. A PanelLeft glyph therefore fills the box by default,
+ *  the swap to the logo happens only on the img's own `load` event, and
+ *  `error` reverts it. `loadedSrc` records WHICH src loaded so a branding or
+ *  theme swap falls back until the new asset proves itself. `boxClass` is the
+ *  theme-overridable size (`branding.logoClass`, else w-10 collapsed / w-7
+ *  expanded) and is applied to BOTH the fallback and the img so the swap never
+ *  moves the button's geometry; the hover tilt and `transition-all` classes
+ *  live on the img exactly as before. The img stays mounted (display:none)
+ *  while hidden so the browser still fetches it. A sibling rather than a
+ *  generalisation of MobileNavGlyph: that component's literal `w-6 h-6` box is
+ *  pinned by narrowFirstBaseline.test.ts, while this box is a runtime
+ *  expression. */
+export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string; boxClass: string; iconSize: number }) {
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
+  const showLogo = !!avatar && loadedSrc === avatar
+  return (
+    <>
+      {!showLogo && (
+        <span data-testid="rail-header-fallback" className={`${boxClass} flex items-center justify-center shrink-0 transition-all duration-300 group-hover:rotate-[-8deg]`} aria-hidden="true">
+          <PanelLeft size={iconSize} />
+        </span>
+      )}
+      {!!avatar && (
+        <img src={avatar} alt="" aria-hidden="true" onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`${boxClass} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
       )}
     </>
   )
@@ -4077,7 +4111,7 @@ export default function App() {
               aria-expanded={!effectiveCollapsed}
             >
               <span className="flex items-center gap-2.5 min-w-0">
-                <img src={avatar} alt="" aria-hidden="true" className={`${branding?.logoClass ?? (effectiveCollapsed ? 'w-10 h-10' : 'w-7 h-7')} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg]`} />
+                <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-10 h-10' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
                 <AnimatePresence initial={false}>
                   {!effectiveCollapsed && (
                     <motion.span
