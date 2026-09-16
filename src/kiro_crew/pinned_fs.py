@@ -1398,7 +1398,13 @@ class TreeRemoval:
     staged_name: str | None = None
 
 
-def scan_tree_pinned(dir_fd: int, *, device: int) -> PinnedTree:
+def scan_tree_pinned(
+    dir_fd: int,
+    *,
+    device: int,
+    max_entries: int | None = None,
+    max_depth: int | None = None,
+) -> PinnedTree:
     """One pinned traversal of the tree under *dir_fd*: its directories, files and links.
 
     Records the inode of every entry, keyed by components relative to the scan root, plus
@@ -1440,18 +1446,32 @@ def scan_tree_pinned(dir_fd: int, *, device: int) -> PinnedTree:
 
     Raises rather than returning a short list: this feeds decisions about deleting the only
     copy of something, so an incomplete answer must not read as "nothing unaccounted for".
+
+    ``max_entries`` and ``max_depth`` are optional caller budgets. They are enforced while
+    consuming ``scandir`` and before a retained entry or child descriptor is added, so a
+    hostile tree cannot first allocate the unbounded listing that the budget exists to stop.
+    Existing callers that omit them retain the original unbounded traversal contract.
     """
     dirs: dict[tuple[str, ...], int] = {}
     files: dict[tuple[str, ...], int] = {}
     links: dict[tuple[str, ...], int] = {}
+    entry_count = 0
     # (key prefix, descriptor, whether this function opened it and must close it)
     stack: list[tuple[tuple[str, ...], int, bool]] = [((), dir_fd, False)]
     try:
         while stack:
             here, fd, owned = stack.pop()
             try:
+                listing: list[os.DirEntry[str]] = []
                 with os.scandir(fd) as entries:
-                    listing = list(entries)
+                    for entry in entries:
+                        key = here + (entry.name,)
+                        entry_count += 1
+                        if max_entries is not None and entry_count > max_entries:
+                            raise OSError("refusing a scanned tree over its entry limit")
+                        if max_depth is not None and len(key) > max_depth:
+                            raise OSError("refusing a scanned tree over its depth limit")
+                        listing.append(entry)
                 for entry in listing:
                     key = here + (entry.name,)
                     if entry.is_symlink():

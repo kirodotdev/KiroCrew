@@ -114,7 +114,48 @@ if IS_LINUX or IS_MACOS:
     except (AttributeError, OSError):
         _RENAME_NOREPLACE_FN = None
 
-RENAME_NOREPLACE_AVAILABLE: bool = _RENAME_NOREPLACE_FN is not None
+# glibc did not export the ``renameat2`` wrapper until 2.28, yet the syscall
+# itself has existed since Linux 3.15. On an old-glibc host with a new-enough
+# kernel (Ubuntu 18.04, Amazon Linux 2, ...) the wrapper above resolves to None
+# and the no-replace primitive would vanish entirely -- which fails EVERY
+# attended pending-skill approval and dismissal closed, not just unattended
+# promotion. Bridge that one gap with the raw syscall, but ONLY on architectures
+# whose ``renameat2`` number is fixed and independently verifiable; on any other
+# architecture, or any non-Linux platform, the seam stays closed and callers
+# fail closed exactly as before. RENAME_NOREPLACE is flag ``1`` on every Linux
+# architecture, so no per-arch flag table is needed.
+_RENAMEAT2_SYSCALL_NRS: dict[str, int] = {
+    "x86_64": 316,
+    "i686": 353,
+    "i386": 353,
+    "aarch64": 276,
+    "armv7l": 382,
+    "armv6l": 382,
+    "ppc64": 357,
+    "ppc64le": 357,
+    "s390x": 347,
+    "riscv64": 276,
+}
+_RENAMEAT2_SYSCALL_FN: Any = None
+_RENAMEAT2_SYSCALL_NR = 0
+_RENAMEAT2_RENAME_NOREPLACE = 1
+if IS_LINUX and _RENAME_NOREPLACE_FN is None:
+    _syscall_nr = _RENAMEAT2_SYSCALL_NRS.get(platform.machine())
+    if _syscall_nr is not None:
+        try:
+            _syscall_libc = ctypes.CDLL(None, use_errno=True)
+            _syscall_fn = _syscall_libc.syscall
+            _syscall_fn.restype = ctypes.c_long
+            _RENAMEAT2_SYSCALL_FN = _syscall_fn
+            _RENAMEAT2_SYSCALL_NR = _syscall_nr
+        except (AttributeError, OSError):
+            _RENAMEAT2_SYSCALL_FN = None
+
+#: True when SOME native no-replace primitive resolved: the libc wrapper, or --
+#: on old-glibc Linux with a supported architecture -- the raw renameat2 syscall.
+RENAME_NOREPLACE_AVAILABLE: bool = (
+    _RENAME_NOREPLACE_FN is not None or _RENAMEAT2_SYSCALL_FN is not None
+)
 
 #: ARM machine strings as ``platform.machine()`` spells them on Windows.
 #: ``ARM64`` is what a native arm64 interpreter reports; ``AARCH64`` is accepted
@@ -298,21 +339,32 @@ def rename_noreplace(
     those two operations.
     """
     fn = _RENAME_NOREPLACE_FN
-    if fn is None:
-        raise NotImplementedError("atomic no-replace rename is unavailable")
     src_bytes = os.fsencode(src)
     dst_bytes = os.fsencode(dst)
     ctypes.set_errno(0)
-    if (
-        fn(
+    if fn is not None:
+        result = fn(
             src_dir_fd,
             src_bytes,
             dst_dir_fd,
             dst_bytes,
             _RENAME_NOREPLACE_FLAG,
         )
-        == 0
-    ):
+    elif _RENAMEAT2_SYSCALL_FN is not None:
+        # Old-glibc Linux: the wrapper is absent but the kernel syscall exists.
+        # Arguments are wrapped in explicit ctypes types because ``syscall`` is
+        # variadic and so carries no argtypes to coerce them for us.
+        result = _RENAMEAT2_SYSCALL_FN(
+            ctypes.c_long(_RENAMEAT2_SYSCALL_NR),
+            ctypes.c_int(src_dir_fd),
+            ctypes.c_char_p(src_bytes),
+            ctypes.c_int(dst_dir_fd),
+            ctypes.c_char_p(dst_bytes),
+            ctypes.c_uint(_RENAMEAT2_RENAME_NOREPLACE),
+        )
+    else:
+        raise NotImplementedError("atomic no-replace rename is unavailable")
+    if result == 0:
         return
     error = ctypes.get_errno()
     if error in {errno.EEXIST, errno.ENOTEMPTY}:
@@ -548,6 +600,23 @@ _WIN_LOCK_POLL_SECS = 0.01
 _WIN_LOCK_TIMEOUT_SECS = 300.0
 
 
+def prepare_lock_file(fd: int) -> None:
+    """Make a dedicated lock-file descriptor usable by every platform.
+
+    ``msvcrt.locking`` locks a byte range and refuses an empty file. Dedicated
+    lock files opened with ``O_CREAT`` therefore need one inert byte before the
+    first Windows acquire. POSIX ``flock`` does not need or want a write, so
+    this helper is a no-op there. Callers must pass a writable descriptor for a
+    dedicated lock file, never an application-data file.
+    """
+    if not IS_WINDOWS:
+        return
+    if os.fstat(fd).st_size == 0:
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, b"\0")
+    os.lseek(fd, 0, os.SEEK_SET)
+
+
 def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -> bool:
     """Windows blocking lock acquire: spin on LK_NBLCK until free or timeout.
 
@@ -768,6 +837,30 @@ def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
         return False
 
 
+def rename_no_replace(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+    """Atomically rename *src* to *dst*, refusing an existing destination.
+
+    ``os.rename`` replaces an empty destination directory on POSIX, while
+    ``shutil.move`` nests inside an existing directory. Neither behavior is
+    safe for publish/restore paths whose destination may be occupied by a
+    concurrent writer. Path-taking adapter over :func:`rename_noreplace` for
+    callers that hold plain paths rather than pinned directory descriptors
+    (``AT_FDCWD`` gives the same cwd-relative semantics as ``os.rename``).
+    Fails closed with ``ENOTSUP`` when the host provides no native no-replace
+    primitive, so callers handle one exception family (``OSError``) for both
+    destination contention and platform unavailability.
+    """
+    if IS_WINDOWS:
+        # MoveFileW, which backs os.rename, fails when the destination exists.
+        os.rename(src, dst)
+        return
+    at_fdcwd = getattr(os, "AT_FDCWD", -100)
+    try:
+        rename_noreplace(src, dst, src_dir_fd=at_fdcwd, dst_dir_fd=at_fdcwd)
+    except NotImplementedError as exc:
+        raise OSError(errno.ENOTSUP, str(exc), os.fspath(dst)) from exc
+
+
 def probe_file_persistence(directory: Path) -> str | None:
     """Verify that *directory* supports every primitive the Kiro Crew
     persistence paths depend on: creating a new file (``tempfile.mkstemp``),
@@ -859,6 +952,38 @@ def probe_file_persistence(directory: Path) -> str | None:
 # ``wintypes`` supplies type aliases only, so these definitions import cleanly
 # on POSIX; the functions below still resolve the DLLs lazily, which is what
 # keeps them patchable from the non-Windows test fleet.
+
+
+class _FileId128(ctypes.Structure):
+    """Win32 ``FILE_ID_128`` — a filesystem object's stable 128-bit id."""
+
+    _fields_ = [("Identifier", ctypes.c_ubyte * 16)]
+
+
+class _FileIdInfo(ctypes.Structure):
+    """Win32 ``FILE_ID_INFO`` returned by ``GetFileInformationByHandleEx``."""
+
+    _fields_ = [
+        ("VolumeSerialNumber", ctypes.c_ulonglong),
+        ("FileId", _FileId128),
+    ]
+
+
+class _ByHandleFileInformation(ctypes.Structure):
+    """Win32 ``BY_HANDLE_FILE_INFORMATION`` native file-index fallback."""
+
+    _fields_ = [
+        ("dwFileAttributes", wintypes.DWORD),
+        ("ftCreationTime", wintypes.FILETIME),
+        ("ftLastAccessTime", wintypes.FILETIME),
+        ("ftLastWriteTime", wintypes.FILETIME),
+        ("dwVolumeSerialNumber", wintypes.DWORD),
+        ("nFileSizeHigh", wintypes.DWORD),
+        ("nFileSizeLow", wintypes.DWORD),
+        ("nNumberOfLinks", wintypes.DWORD),
+        ("nFileIndexHigh", wintypes.DWORD),
+        ("nFileIndexLow", wintypes.DWORD),
+    ]
 
 
 class _ProcessEntry32(ctypes.Structure):
@@ -4516,6 +4641,114 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
         return
     # Neither — let the caller's own logic handle a real file/dir.
     os.unlink(path)
+
+
+def _windows_handle_identity(handle: int, *, legacy_only: bool = False) -> tuple[int, bytes] | None:
+    """Return one native Windows identity from an already-open kernel handle.
+
+    ``FileIdInfo`` supplies the filesystem's full 128-bit identifier where the
+    volume supports it. Some Windows filesystems and hosted-runner volumes reject
+    that information class with ``ERROR_INVALID_PARAMETER``; the older
+    ``BY_HANDLE_FILE_INFORMATION`` API still supplies the volume serial and
+    native 64-bit file index. Both are handle-derived identities, never path
+    spellings. A prefix keeps the two formats disjoint. Callers comparing two
+    handles request ``legacy_only`` for both when their initial formats differ.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    native_handle = wintypes.HANDLE(handle)
+    if not native_handle.value:
+        return None
+
+    if not legacy_only:
+        kernel32.GetFileInformationByHandleEx.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        extended = _FileIdInfo()
+        if kernel32.GetFileInformationByHandleEx(
+            native_handle,
+            18,  # FILE_INFO_BY_HANDLE_CLASS.FileIdInfo
+            ctypes.byref(extended),
+            ctypes.sizeof(extended),
+        ):
+            return int(extended.VolumeSerialNumber), b"F128" + bytes(extended.FileId.Identifier)
+
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    legacy = _ByHandleFileInformation()
+    if not kernel32.GetFileInformationByHandle(native_handle, ctypes.byref(legacy)):
+        return None
+    file_index = (int(legacy.nFileIndexHigh) << 32) | int(legacy.nFileIndexLow)
+    return int(legacy.dwVolumeSerialNumber), b"F064" + file_index.to_bytes(8, "big")
+
+
+def _windows_file_identity(fd: int, *, legacy_only: bool = False) -> tuple[int, bytes] | None:
+    """Return the native identity of one open Windows CRT descriptor.
+
+    ``os.stat``/``os.path.samefile`` re-open path spellings and compare the
+    CRT's projected ``st_dev``/``st_ino`` values. Native handle identity makes
+    8.3 and long spellings equal without weakening reparse, hardlink, or opened
+    inode defenses.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        get_osfhandle = getattr(msvcrt, "get_osfhandle", None)  # type: ignore[name-defined]
+        if not callable(get_osfhandle):
+            return None
+        return _windows_handle_identity(get_osfhandle(fd), legacy_only=legacy_only)
+    except (AttributeError, OSError, OverflowError, ValueError):
+        return None
+
+
+def opened_path_identity_matches(fd: int, path: str | os.PathLike) -> bool:
+    """Whether open *fd* and the current *path* name the same Windows object.
+
+    The path side is opened with the same ``OPEN_REPARSE_POINT`` and
+    non-delete-sharing contract as :func:`pin_directory` and
+    :func:`open_file_no_reparse`.  A junction/symlink is therefore compared as
+    the reparse object itself and refused, never followed.  Comparing native
+    file IDs makes 8.3 and long spellings equal without weakening the caller's
+    regular-file, single-link, or before/after ``fstat`` checks.
+    """
+    if not IS_WINDOWS:
+        return False
+    probe_fd: int | None = None
+    try:
+        probe_fd = _win_open_without_following(path)
+        opened_attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
+        probe_attrs = getattr(os.fstat(probe_fd), "st_file_attributes", 0)
+        if (opened_attrs | probe_attrs) & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+            return False
+        opened_identity = _windows_file_identity(fd)
+        probe_identity = _windows_file_identity(probe_fd)
+        if opened_identity is None or probe_identity is None:
+            return False
+        if opened_identity == probe_identity:
+            return True
+        # A filesystem can support FileIdInfo for the descriptor we already
+        # hold but reject it for this probe handle (notably under a different
+        # share mode). F128 and F064 are not comparable representations, so
+        # re-read BOTH handles through BY_HANDLE_FILE_INFORMATION. Every other
+        # mismatch remains a refusal; this never turns a different object into
+        # a match.
+        if {opened_identity[1][:4], probe_identity[1][:4]} != {b"F128", b"F064"}:
+            return False
+        opened_legacy = _windows_file_identity(fd, legacy_only=True)
+        probe_legacy = _windows_file_identity(probe_fd, legacy_only=True)
+        return opened_legacy is not None and opened_legacy == probe_legacy
+    except (OSError, ValueError):
+        return False
+    finally:
+        if probe_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(probe_fd)
 
 
 #: ``CreateFileW`` arguments for :func:`pin_directory`. ``BACKUP_SEMANTICS`` is

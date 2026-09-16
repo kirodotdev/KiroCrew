@@ -11,11 +11,13 @@ output we can assert directly), and the process-helper return contracts.
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import json
 import logging
 import mmap
 import os
+import platform
 import re
 import shutil
 import socket
@@ -26,6 +28,7 @@ import tempfile
 import threading
 import time
 import types
+from ctypes import wintypes
 from pathlib import Path
 
 import pytest
@@ -104,6 +107,185 @@ def test_macos_tcp_peer_requires_an_exact_unique_connection(monkeypatch, host, s
     assert pc.get_tcp_peer_pid((host, 1000), (host, 2000)) == (
         2468 if scenario == "match" else None
     )
+
+
+class TestOpenedPathIdentityMatches:
+    def test_windows_accepts_alias_when_native_file_ids_match(self, monkeypatch):
+        closed: list[int] = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+        monkeypatch.setattr(
+            pc,
+            "_windows_file_identity",
+            lambda fd: (77, b"same-file-id") if fd in (101, 202) else None,
+        )
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda _fd: types.SimpleNamespace(st_file_attributes=0),
+        )
+        monkeypatch.setattr(pc.os, "close", closed.append)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\PROGRA~1\\skill") is True
+        assert closed == [202]
+
+    def test_windows_refuses_opposite_file_identity(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+        monkeypatch.setattr(
+            pc,
+            "_windows_file_identity",
+            lambda fd: (77, bytes([fd % 256])),
+        )
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda _fd: types.SimpleNamespace(st_file_attributes=0),
+        )
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\long\\skill") is False
+
+    def test_windows_accepts_mixed_fileidinfo_and_legacy_identity(self, monkeypatch):
+        """A FileIdInfo capability split must compare both handles as legacy IDs."""
+        calls: list[tuple[int, bool]] = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+
+        def identity(fd, *, legacy_only=False):
+            calls.append((fd, legacy_only))
+            if legacy_only:
+                return 77, b"F064" + b"same-legacy-id"
+            return (
+                (77, b"F128" + b"opened-128-id")
+                if fd == 101
+                else (
+                    77,
+                    b"F064" + b"probe-legacy-id",
+                )
+            )
+
+        monkeypatch.setattr(pc, "_windows_file_identity", identity)
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda _fd: types.SimpleNamespace(st_file_attributes=0),
+        )
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\mixed\\skill") is True
+        assert calls == [(101, False), (202, False), (101, True), (202, True)]
+
+    def test_windows_refuses_mixed_identity_when_legacy_ids_differ(self, monkeypatch):
+        """Mixed capability is not a grant unless the common legacy IDs agree."""
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+
+        def identity(fd, *, legacy_only=False):
+            if legacy_only:
+                return 77, b"F064" + bytes([fd])
+            return (
+                (77, b"F128" + b"opened-128-id")
+                if fd == 101
+                else (
+                    77,
+                    b"F064" + b"probe-legacy-id",
+                )
+            )
+
+        monkeypatch.setattr(pc, "_windows_file_identity", identity)
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda _fd: types.SimpleNamespace(st_file_attributes=0),
+        )
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\mixed\\other") is False
+
+    def test_windows_refuses_a_share_denied_probe_open(self, monkeypatch):
+        """A probe that cannot share-open remains unverifiable, never matching."""
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc,
+            "_win_open_without_following",
+            lambda _path: (_ for _ in ()).throw(PermissionError(errno.EACCES, "sharing violation")),
+        )
+        monkeypatch.setattr(
+            pc,
+            "_windows_file_identity",
+            lambda *_args, **_kwargs: pytest.fail("unopened probe has no identity"),
+        )
+
+        assert pc.opened_path_identity_matches(101, r"C:\\locked\\skill") is False
+
+    def test_windows_refuses_a_reparse_probe_even_with_matching_id(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+        monkeypatch.setattr(pc, "_windows_file_identity", lambda _fd: (77, b"same"))
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda fd: types.SimpleNamespace(
+                st_file_attributes=(pc._WIN_FILE_ATTRIBUTE_REPARSE_POINT if fd == 202 else 0)
+            ),
+        )
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\linked\\skill") is False
+
+    def test_non_windows_never_reopens_the_path(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            pc,
+            "_win_open_without_following",
+            lambda _path: pytest.fail("POSIX must keep descriptor-path checks"),
+        )
+
+        assert pc.opened_path_identity_matches(101, "/tmp/skill") is False
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="native Windows handle identity")
+    @pytest.mark.parametrize("entry_kind", ["file", "directory"])
+    def test_native_windows_same_path_shares_identity(self, tmp_path, entry_kind):
+        path = tmp_path / f"native-{entry_kind}-identity"
+        if entry_kind == "directory":
+            path.mkdir()
+            fd = pc.pin_directory(path)
+        else:
+            path.write_bytes(b"identity")
+            fd = pc.open_file_no_reparse(path)
+        try:
+            identity = pc._windows_file_identity(fd)
+            assert identity is not None
+            assert pc.opened_path_identity_matches(fd, path) is True
+        finally:
+            os.close(fd)
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="native Windows 8.3 path semantics")
+    def test_native_windows_short_and_long_paths_share_identity(self, tmp_path):
+        long_path = tmp_path / "skill identity directory"
+        long_path.mkdir()
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetShortPathNameW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+        ]
+        kernel32.GetShortPathNameW.restype = wintypes.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = kernel32.GetShortPathNameW(str(long_path), buffer, len(buffer))
+        if (
+            length == 0
+            or length >= len(buffer)
+            or buffer.value.casefold() == str(long_path).casefold()
+        ):
+            pytest.skip("8.3 aliases are disabled on this volume")
+        fd = pc.pin_directory(long_path)
+        try:
+            assert pc.opened_path_identity_matches(fd, long_path) is True
+            assert pc.opened_path_identity_matches(fd, buffer.value) is True
+        finally:
+            os.close(fd)
 
 
 #: The REAL same-group probe, bound at module import so this file can test it.
@@ -380,6 +562,111 @@ class TestRenameNoReplace:
         monkeypatch.setattr(pc, "_RENAME_NOREPLACE_FN", None)
         with pytest.raises(NotImplementedError):
             pc.rename_noreplace("source", "target", src_dir_fd=-1, dst_dir_fd=-1)
+
+    @pytest.mark.skipif(
+        not pc.IS_LINUX or platform.machine() not in pc._RENAMEAT2_SYSCALL_NRS,
+        reason="raw renameat2 syscall fallback is Linux-and-architecture specific",
+    )
+    def test_old_glibc_falls_back_to_the_raw_renameat2_syscall(self, tmp_path, monkeypatch):
+        """glibc < 2.28 does not export the ``renameat2`` wrapper, but the kernel
+        syscall exists since 3.15. Simulate that host by forcing the wrapper off
+        and resolving the raw syscall the module would have resolved there. The
+        syscall must still honor RENAME_NOREPLACE -- publish an ABSENT
+        destination and REFUSE an occupied one -- so attended approval/dismissal
+        is not bricked on old-glibc hosts, without weakening no-replace.
+        """
+        monkeypatch.setattr(pc, "_RENAME_NOREPLACE_FN", None)
+        libc = ctypes.CDLL(None, use_errno=True)
+        syscall_fn = libc.syscall
+        syscall_fn.restype = ctypes.c_long
+        monkeypatch.setattr(pc, "_RENAMEAT2_SYSCALL_FN", syscall_fn)
+        monkeypatch.setattr(
+            pc, "_RENAMEAT2_SYSCALL_NR", pc._RENAMEAT2_SYSCALL_NRS[platform.machine()]
+        )
+
+        parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            (tmp_path / "cand").mkdir()
+            (tmp_path / "cand" / "payload").write_text("staged", encoding="utf-8")
+            # Absent destination -> published atomically via the raw syscall.
+            pc.rename_noreplace("cand", "live", src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            assert not (tmp_path / "cand").exists()
+            assert (tmp_path / "live" / "payload").read_text(encoding="utf-8") == "staged"
+            # Occupied EMPTY destination -> refused. An empty dir is what a
+            # plain rename WOULD silently replace, so this isolates
+            # RENAME_NOREPLACE from the ENOTEMPTY a non-empty dir raises anyway.
+            (tmp_path / "again").mkdir()
+            (tmp_path / "occupied").mkdir()
+            occupied = tmp_path / "occupied"
+            before = occupied.stat()
+            with pytest.raises(FileExistsError):
+                pc.rename_noreplace("again", "occupied", src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            after = occupied.stat()
+            assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+            assert (tmp_path / "again").is_dir()
+        finally:
+            os.close(parent_fd)
+
+
+def test_prepare_lock_file_seeds_windows_byte_range(tmp_path, monkeypatch):
+    lock = tmp_path / "prepared.lock"
+    fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        pc.prepare_lock_file(fd)
+        assert os.fstat(fd).st_size == 1
+        assert os.read(fd, 1) == b"\0"
+    finally:
+        os.close(fd)
+
+
+class TestRenameNoReplaceAdapter:
+    """Path-taking ``rename_no_replace`` built on the native no-replace seam."""
+
+    def test_unavailable_native_seam_fails_closed_as_enotsup(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "_RENAME_NOREPLACE_FN", None)
+        with pytest.raises(OSError) as exc_info:
+            pc.rename_no_replace("source", "destination")
+        assert exc_info.value.errno == errno.ENOTSUP
+
+    @pytest.mark.skipif(
+        not (pc.IS_WINDOWS or pc.RENAME_NOREPLACE_AVAILABLE),
+        reason="no native atomic no-replace rename on this host",
+    )
+    def test_renames_directory_when_destination_is_absent(self, tmp_path):
+        source = tmp_path / "source"
+        destination = tmp_path / "destination"
+        source.mkdir()
+        (source / "payload").write_text("original", encoding="utf-8")
+
+        pc.rename_no_replace(source, destination)
+
+        assert not source.exists()
+        assert (destination / "payload").read_text(encoding="utf-8") == "original"
+
+    @pytest.mark.skipif(
+        not (pc.IS_WINDOWS or pc.RENAME_NOREPLACE_AVAILABLE),
+        reason="no native atomic no-replace rename on this host",
+    )
+    @pytest.mark.parametrize("occupied", [False, True])
+    def test_refuses_existing_directory_without_nesting_or_replacing(self, tmp_path, occupied):
+        source = tmp_path / "source"
+        destination = tmp_path / "destination"
+        source.mkdir()
+        destination.mkdir()
+        (source / "payload").write_text("candidate", encoding="utf-8")
+        if occupied:
+            (destination / "live").write_text("existing", encoding="utf-8")
+
+        with pytest.raises(OSError) as exc_info:
+            pc.rename_no_replace(source, destination)
+
+        assert exc_info.value.errno in (errno.EEXIST, errno.ENOTEMPTY)
+        assert (source / "payload").read_text(encoding="utf-8") == "candidate"
+        assert not (destination / "source").exists()
+        if occupied:
+            assert (destination / "live").read_text(encoding="utf-8") == "existing"
 
 
 class TestProcessHelpers:

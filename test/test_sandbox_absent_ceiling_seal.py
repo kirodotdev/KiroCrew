@@ -118,6 +118,117 @@ def test_private_memory_root_is_maskable_before_the_first_member_exists(crew_hom
 
 
 @_POSIX_ONLY
+class TestPrivateClaimRootIsMaskedFromTheFirstSpawn:
+    def test_fresh_home_materializes_every_component_owner_only(self, crew_home):
+        target = crew_home / "skills" / "auto" / ".private"
+
+        created = sandbox._materialize_nested_maskable_dirs()
+
+        assert created == [str(target)]
+        assert target.is_dir()
+        for component in (crew_home / "skills", crew_home / "skills" / "auto", target):
+            assert stat.S_IMODE(component.stat().st_mode) == 0o700
+        script = sandbox._build_launcher_script("standard")
+        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
+        assert match and str(target) in json.loads(match.group(1))
+
+    def test_namespace_materializes_before_building_the_launcher(self, crew_home):
+        target = crew_home / "skills" / "auto" / ".private"
+
+        sandbox.namespace_argv(["/bin/true"])
+
+        assert target.is_dir()
+
+    def test_symlinked_data_home_materializes_under_its_canonical_root(self, tmp_path, monkeypatch):
+        canonical = tmp_path / "canonical-home"
+        canonical.mkdir()
+        configured = tmp_path / "configured-home"
+        configured.symlink_to(canonical, target_is_directory=True)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: configured)
+
+        created = sandbox._materialize_nested_maskable_dirs()
+
+        target = canonical / "skills" / "auto" / ".private"
+        assert created == [str(target)]
+        assert target.is_dir()
+        assert (configured / "skills" / "auto" / ".private").samefile(target)
+
+    def test_nested_symlink_below_canonical_root_is_refused(self, tmp_path, monkeypatch):
+        canonical = tmp_path / "canonical-home"
+        canonical.mkdir()
+        configured = tmp_path / "configured-home"
+        configured.symlink_to(canonical, target_is_directory=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (canonical / "skills").symlink_to(outside, target_is_directory=True)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: configured)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_nested_maskable_dirs()
+
+        assert not (outside / "auto").exists()
+
+    def test_agent_writable_component_link_refuses_without_touching_target(
+        self, crew_home, tmp_path
+    ):
+        skills = crew_home / "skills"
+        skills.mkdir(mode=0o700)
+        outside = tmp_path / "agent-controlled"
+        outside.mkdir()
+        (skills / "auto").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_nested_maskable_dirs()
+
+        assert not (outside / ".private").exists()
+
+    def test_swapped_ancestor_does_not_redirect_nested_mask_creation(
+        self, crew_home, tmp_path, monkeypatch
+    ):
+        skills = crew_home / "skills"
+        skills.mkdir(mode=0o700)
+        detached = crew_home / "detached-skills"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        real_mkdir = sandbox.os.mkdir
+        swapped = False
+
+        def swap_before_auto(path, mode=0o777, *, dir_fd=None):
+            nonlocal swapped
+            is_auto = path == "auto" or os.fspath(path) == os.fspath(skills / "auto")
+            if is_auto and not swapped:
+                swapped = True
+                skills.rename(detached)
+                skills.symlink_to(outside, target_is_directory=True)
+            return real_mkdir(path, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(sandbox.os, "mkdir", swap_before_auto)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable, match="ancestor changed"):
+            sandbox._materialize_nested_maskable_dirs()
+
+        assert swapped is True
+        assert not (outside / "auto").exists()
+        assert (detached / "auto").is_dir()
+        assert not (detached / "auto" / ".private").exists()
+
+    def test_component_creation_permission_failure_refuses_spawn(self, crew_home, monkeypatch):
+        denied = crew_home / "skills" / "auto"
+        real_mkdir = sandbox.os.mkdir
+
+        def deny_auto(path, *args, **kwargs):
+            if path == "auto" or os.fspath(path) == os.fspath(denied):
+                raise PermissionError(errno.EACCES, "injected permission denial", os.fspath(path))
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(sandbox.os, "mkdir", deny_auto)
+        with pytest.raises(sandbox.SandboxCeilingUnsealable, match="nested masked directory"):
+            sandbox._materialize_nested_maskable_dirs()
+
+        assert not (crew_home / "skills" / "auto" / ".private").exists()
+
+
+@_POSIX_ONLY
 class TestSealAppliesToAPreviouslyAbsentCeiling:
     def test_bind_and_remount_pair_is_emitted(self, crew_home):
         """The seal reaches a ceiling that did not exist when the spawn started.
