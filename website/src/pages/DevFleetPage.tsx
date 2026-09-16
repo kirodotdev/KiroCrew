@@ -118,7 +118,10 @@ function filterStepMarkers(lines: string[]): string[] {
 }
 
 /**
- * The failure text for a finished sync run, from its output alone.
+ * The failure text for a finished sync OR provision run, from its output alone.
+ *
+ * Both runners emit the same `::steperr::` markers for the step that failed, so
+ * the two failure notices are named by one rule rather than two.
  *
  * Prefers the failing step's stderr tail (`::steperr::`) over the last output
  * line. The last line is only a good guess when the failing process wrote
@@ -219,9 +222,15 @@ async function awaitGatewayBackGlobal(capturedId: string | null): Promise<'reloa
 
 /* ─── Provision progress model ─── */
 // The last non-blank output line — the "current activity" shown inline.
+// `::steperr::` markers are protocol, not activity: they are skipped so the
+// poll that observes them while the run is still `running` does not promote a
+// raw marker as the current step.
 function lastLine(lines: string[] | undefined): string {
   if (!lines) return ''
-  for (let i = lines.length - 1; i >= 0; i--) { if (lines[i]?.trim()) return lines[i] }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i]
+    if (l?.trim() && !STEPERR_MARKER_RE.test(l)) return l
+  }
   return ''
 }
 
@@ -343,7 +352,7 @@ function ProvLogPre({ lines, streaming }: { lines: string[]; streaming: boolean 
     if (streaming && ref.current) ref.current.scrollTop = ref.current.scrollHeight
   }, [lines, streaming])
   return (
-    <pre ref={ref} style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all', minWidth: 640 } as CSSProperties}>{lines.join('\n') || '(no output yet)'}</pre>
+    <pre ref={ref} style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all', minWidth: 640 } as CSSProperties}>{filterStepMarkers(lines).join('\n') || '(no output yet)'}</pre>
   )
 }
 
@@ -2065,15 +2074,21 @@ export default function DevFleetPage() {
       <Clickable aria-label={i18nT('pages.devFleetPage.toggle_provision_log')} onClick={() => toggleProvLog(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{open ? i18nT('pages.devFleetPage.log') : i18nT('pages.devFleetPage.log_2')}</Clickable>
     )
     if (pr.failed) {
-      // Failed action, inputs all on disk (the worktree) — hand-off on. The log
-      // tail is the message; the full log stays one click away via `logToggle`,
-      // which sits on its own line under the notice: the notice already carries
-      // two controls (hand-off + dismiss), the row's cap (max-two-buttons-per-row).
+      // Failed action, inputs all on disk (the worktree) — hand-off on. The
+      // failing step's stderr tail is the message (or, from a gateway whose
+      // provision emits no `::steperr::` markers, the raw log tail — see
+      // `syncFailureTail` for why the last line alone names a progress line);
+      // the full log stays one click away via `logToggle`, which sits on its own
+      // line under the notice: the notice already carries two controls
+      // (hand-off + dismiss), the row's cap (max-two-buttons-per-row).
+      // `whitespace-pre-wrap` on the message only: a stderr tail is several
+      // lines, and collapsing them would run pip's headline into its remedy.
       return (
         <div style={{ gridColumn: '4 / -1', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8, minWidth: 0 } as CSSProperties}>
           <ErrorNotice
             title={pr.exit != null ? i18nT('pages.devFleetPage.provision_failed_exit_code', { code: pr.exit }) : i18nT('pages.devFleetPage.provision_failed')}
-            message={lastLine(pr.lines) || i18nT('pages.devFleetPage.provision_failed')}
+            message={syncFailureTail(pr.lines) || i18nT('pages.devFleetPage.provision_failed')}
+            messageClassName="whitespace-pre-wrap"
             variant="inline"
             askAgent
             onDismiss={() => { void dismissProv(w.name) }}
