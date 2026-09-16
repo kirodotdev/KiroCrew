@@ -21,54 +21,85 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .acl import PUBLIC_SUBJECT, ProviderResourceRef
+from .acl import ProviderResourceRef
 
 
 @dataclass(frozen=True)
 class SourceRow:
     """One fetched row of a structured source, with its own identity + ACL.
 
+    A ``SourceRow`` is ALWAYS a managed cloud/structured row -- that is the whole
+    point of the per-row contract (a plain-document connector uses the text
+    path, not this). So it is enforced + revalidated at query time, and it can
+    NEVER opt out of that. This also means the grant is never invented from a
+    missing field:
+
     * ``key``          -- the row's STABLE identity within its source (e.g. a
                           GitHub ``owner/repo#number``, a Salesforce record id).
-                          It keys the row's item group across syncs, so an update
-                          replaces exactly that row's items and an incremental
-                          sync never touches unchanged rows. Required, non-empty.
+                          It keys the row's item group across syncs. Required.
     * ``text``         -- the row's own extracted text (this row only -- never a
-                          concatenation of several rows, which would merge
-                          distinct permissions into one chunk).
-    * ``resource_ref`` -- the :class:`acl.ProviderResourceRef` naming WHICH
-                          provider object this row is, persisted on the row's
-                          grant so the query-time gate can resolve the binding
-                          and revalidate. Required for a managed row.
-    * ``subjects``     -- the subject ids allowed to see this row (or
-                          ``acl.PUBLIC_SUBJECT``); the row's per-user ACL.
-    * ``tenant``       -- the tenant the grant belongs to (or ``acl.PUBLIC_TENANT``).
-    * ``managed``      -- True for a cloud/structured row whose ACL is enforced +
-                          revalidated at query time (the normal case here).
+                          concatenation of several rows).
+    * ``subjects``     -- REQUIRED (no default): the subject ids allowed to see
+                          this row. An EMPTY set is a valid, explicit deny-all
+                          (nobody sees it) -- a MISSING grant must never become
+                          public. To make a row genuinely public the connector
+                          must PROVE it and pass ``acl.PUBLIC_SUBJECT`` on
+                          purpose; there is no implicit public default.
+    * ``tenant``       -- REQUIRED, non-empty: the tenant the grant belongs to
+                          (or ``acl.PUBLIC_TENANT`` when the connector has a basis
+                          for cross-tenant public). A managed cloud row with no
+                          tenant cannot be scoped to an identity, so a blank
+                          tenant is rejected rather than letting the row escape
+                          tenant enforcement.
+    * ``resource_ref`` -- REQUIRED: the :class:`acl.ProviderResourceRef` naming
+                          WHICH provider object this row is, persisted on the
+                          row's grant so the query-time gate can resolve the
+                          binding and revalidate.
     * ``title``        -- optional display title; defaults to ``key``.
     * ``item_type``    -- optional item type label (default 'document').
     """
 
     key: str
     text: str
+    subjects: tuple[str, ...]
+    tenant: str
     resource_ref: ProviderResourceRef | None = None
-    subjects: tuple[str, ...] = (PUBLIC_SUBJECT,)
-    tenant: str = ""
-    managed: bool = True
     title: str | None = None
     item_type: str = "document"
+
+    #: A SourceRow is always managed; exposed as a read-only property (not a
+    #: settable field) so a connector cannot pass managed=False to make a cloud
+    #: source bypass managed provenance/revalidation.
+    @property
+    def managed(self) -> bool:
+        return True
 
     def __post_init__(self) -> None:
         if not self.key:
             raise ValueError("SourceRow.key must be a non-empty stable row identity")
-        if self.managed and self.resource_ref is None:
+        if self.resource_ref is None:
             # A managed row with no resource_ref cannot be located to revalidate,
             # so the query-time gate would deny it forever. Fail loudly at
             # construction rather than silently ingesting an unqueryable row.
             raise ValueError(
-                f"SourceRow(key={self.key!r}) is managed but has no resource_ref; "
-                "a managed row must carry the ProviderResourceRef that locates it "
-                "for query-time revalidation."
+                f"SourceRow(key={self.key!r}) has no resource_ref; a managed row "
+                "must carry the ProviderResourceRef that locates it for "
+                "query-time revalidation."
+            )
+        if not self.tenant:
+            # A blank tenant would let a cloud row escape tenant scoping. Reject:
+            # the connector must supply the vendor tenant (or PUBLIC_TENANT with a
+            # basis), never leave it empty.
+            raise ValueError(
+                f"SourceRow(key={self.key!r}) has an empty tenant; a managed row "
+                "must name the tenant its grant belongs to (or acl.PUBLIC_TENANT "
+                "when the connector has a basis for cross-tenant public)."
+            )
+        if not isinstance(self.subjects, tuple):
+            raise ValueError(
+                f"SourceRow(key={self.key!r}).subjects must be a tuple of subject "
+                "ids (empty = explicit deny-all); a missing grant must not become "
+                "public."
             )
 
     @property

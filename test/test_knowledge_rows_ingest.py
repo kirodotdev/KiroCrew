@@ -253,3 +253,54 @@ async def test_local_principal_cannot_see_ingested_managed_rows(store):
     # Local library principal: managed rows denied.
     res = _query_items(store, LOCAL_PRINCIPAL, resolver, [item], "secret")
     assert item not in _ids(res)
+
+
+# --------------------------------------------------------------------------
+# SourceRow guards: a missing grant must never become public, a cloud row must
+# not escape managed provenance via a blank tenant or a managed=False opt-out.
+# --------------------------------------------------------------------------
+
+def test_sourcerow_subjects_required_no_public_default():
+    # subjects has NO default: a connector that omits the grant gets a
+    # constructor error, not a silently-public row.
+    with pytest.raises(TypeError):
+        SourceRow(key="r", text="t", tenant="acme",  # type: ignore[call-arg]
+                  resource_ref=_ref("sharepoint", "a", "r"))
+
+
+@pytest.mark.asyncio
+async def test_sourcerow_empty_subjects_is_deny_all_not_public(store):
+    # An EXPLICIT empty subject set is a valid deny-all; it must NOT read as
+    # public. Ingest it and confirm nobody -- not even a matching-tenant subject,
+    # not the local library -- can see it.
+    src = store.add_source("Struct", "teststruct", "teststruct://deny")
+    row = SourceRow(key="r", text="denied body", tenant="acme", subjects=(),
+                    resource_ref=_ref("sharepoint", "a", "r"))
+    conn = _RowsConnector([([row], True, {"c": 1})])
+    await _sync(store, conn, src)
+    item = store.get_connector_row_state(src)["r"]["item_ids"][0]
+    resolver = _Resolver({("sharepoint", "a"): AccessContext(subject="u1", tenant="acme")})
+    assert _query_items(store, QueryPrincipal("u1"), resolver, [item], "denied") == []
+    assert _query_items(store, LOCAL_PRINCIPAL, resolver, [item], "denied") == []
+
+
+def test_sourcerow_blank_tenant_rejected():
+    with pytest.raises(ValueError):
+        SourceRow(key="r", text="t", tenant="", subjects=("u1",),
+                  resource_ref=_ref("sharepoint", "a", "r"))
+
+
+def test_sourcerow_missing_resource_ref_rejected():
+    with pytest.raises(ValueError):
+        SourceRow(key="r", text="t", tenant="acme", subjects=("u1",))
+
+
+def test_sourcerow_managed_is_always_true_no_bypass():
+    row = SourceRow(key="r", text="t", tenant="acme", subjects=("u1",),
+                    resource_ref=_ref("sharepoint", "a", "r"))
+    assert row.managed is True
+    # managed is a read-only property, not a settable field: a connector cannot
+    # pass managed=False to make a cloud source bypass managed provenance.
+    with pytest.raises(TypeError):
+        SourceRow(key="r", text="t", tenant="acme", subjects=("u1",),  # type: ignore[call-arg]
+                  resource_ref=_ref("sharepoint", "a", "r"), managed=False)
