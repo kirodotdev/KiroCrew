@@ -182,12 +182,13 @@ _CLASS_MATCHERS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
 #: credential-READ answer their patterns attract by naming the credential
 #: environment variables.
 #:
-#: The other seven categories (``aws-destructive``, ``local-destructive``,
+#: The other categories (``aws-destructive``, ``local-destructive``,
 #: ``git-publish``, ``sql``, ``iac-teardown``, ``reverse-shell``,
-#: ``pipe-to-shell``) are deliberately absent, and a rule in them gets no
-#: guidance: a destructive ``rm`` explains itself, and prose invented for it would
-#: bury the classes where the agent genuinely cannot infer the next step. That
-#: silence is ANSWERED, not merely missing — see :func:`_rule_class`.
+#: ``pipe-to-shell``, ``network-exposure``) are deliberately absent, and a rule
+#: in them gets no guidance: a destructive ``rm`` explains itself, and prose
+#: invented for it would bury the classes where the agent genuinely cannot infer
+#: the next step. That silence is ANSWERED, not merely missing — see
+#: :func:`_rule_class`.
 _CATEGORY_CLASSES: dict[str, str] = {
     "credential-exfil": DENY_CLASS_EXFIL_SHAPE,
     "self-protection": DENY_CLASS_SELF_PROTECTION,
