@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import inspect
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -167,9 +168,12 @@ class TestResolverIsLoadedBeforeTheApply:
         The parametrized order check above names its three methods, so a new
         restart path added later would not be examined by it. The defect this
         PR fixes has a shape that can be found without knowing where it lives:
-        a ``reexec_python_module`` call with no ``executable=`` re-execs the
-        cached ``sys.executable``, which an update may have pruned. Walk every
-        such call in gateway.py instead of a list of known ones.
+        a re-exec with no ``executable=`` re-execs the cached
+        ``sys.executable``, which an update may have pruned. The gateway's
+        exec runs a literal ``reexec_python_module`` call inside
+        ``executors.reexec_lane_guard`` (the one owner of the
+        drain→exec→reopen pairing), so walk every such call in gateway.py
+        and require ``executable=`` on each.
         """
         tree = ast.parse(inspect.getsource(gw))
         calls = [
@@ -179,15 +183,82 @@ class TestResolverIsLoadedBeforeTheApply:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "reexec_python_module"
         ]
-        assert calls, "expected at least one reexec_python_module call in gateway.py"
+        assert calls, "expected at least one re-exec call in gateway.py"
         missing = [
             node.lineno for node in calls if not any(kw.arg == "executable" for kw in node.keywords)
         ]
         assert not missing, (
-            f"reexec_python_module at line(s) {missing} in gateway.py passes no "
+            f"re-exec call at line(s) {missing} in gateway.py passes no "
             "executable=; it would re-exec sys.executable, which an update can "
             "prune. Resolve the interpreter with wheel_engine.respawn_executable() "
             "(imported before the apply step) and pass it as executable=."
+        )
+
+    def test_the_updates_handler_reexec_passes_an_explicit_executable(self):
+        """The dashboard restart's exec site must forward executable=.
+
+        The gateway walk above covers gateway.py; this covers the other
+        production exec site, ``dashboard/handlers/updates.py``, whose
+        ``reexec_python_module`` call runs inside ``reexec_lane_guard``.
+        """
+        import kiro_crew.dashboard.handlers.updates as up_mod
+
+        tree = ast.parse(inspect.getsource(up_mod))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "reexec_python_module"
+        ]
+        assert calls, "expected a reexec_python_module call in the updates handler"
+        missing = [
+            node.lineno for node in calls if not any(kw.arg == "executable" for kw in node.keywords)
+        ]
+        assert not missing, f"reexec_python_module at line(s) {missing} passes no executable="
+
+    def test_every_reexec_call_site_sits_inside_the_lane_guard(self):
+        """Discovered over all of src/: no exec site may bypass the guard.
+
+        The admission gate fails silently — an exec path added outside
+        ``reexec_lane_guard`` leaves history persistence off for the
+        process's life with only a log warning. This walk pins the pairing
+        at the source level: every ``reexec_python_module`` CALL in
+        ``src/kiro_crew`` must sit lexically inside an
+        ``async with reexec_lane_guard():`` block (the definition site in
+        platform_compat is a FunctionDef, not a call, and is not matched).
+        """
+        src_root = Path(gw.__file__).resolve().parents[1]
+        offenders: list[str] = []
+        for py in sorted(src_root.rglob("*.py")):
+            tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+            guard_spans = [
+                (node.lineno, node.end_lineno or node.lineno)
+                for node in ast.walk(tree)
+                if isinstance(node, ast.AsyncWith)
+                and any(
+                    isinstance(item.context_expr, ast.Call)
+                    and (
+                        getattr(item.context_expr.func, "attr", None) == "reexec_lane_guard"
+                        or getattr(item.context_expr.func, "id", None) == "reexec_lane_guard"
+                    )
+                    for item in node.items
+                )
+            ]
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and (
+                        getattr(node.func, "attr", None) == "reexec_python_module"
+                        or getattr(node.func, "id", None) == "reexec_python_module"
+                    )
+                    and not any(a <= node.lineno <= b for a, b in guard_spans)
+                ):
+                    offenders.append(f"{py.relative_to(src_root)}:{node.lineno}")
+        assert not offenders, (
+            f"reexec_python_module called outside reexec_lane_guard at: {offenders}. "
+            "An exec outside the guard skips the history-lane drain and, on a "
+            "failed exec, leaves append admission closed for the process's life."
         )
 
 

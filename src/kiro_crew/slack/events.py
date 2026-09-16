@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import sys
 import tempfile
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
@@ -44,7 +45,7 @@ from kiro_crew.cron import format_schedule
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers import get_update_info
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import drain_channel_history_lane, subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.messaging.dispatch import admit_inbound_callback
@@ -842,6 +843,15 @@ async def _handle_restart(
     from kiro_crew.cli import drain_log_queue_before_hard_exit
 
     await drain_log_queue_before_hard_exit()
+    # Flush the channel-history disk lane LAST: os._exit runs no atexit, and
+    # the lane's atexit hook discards its queue (wait=False), so an observed
+    # message queued moments before the restart would be absent after it.
+    # This is the final await before the exit — any await after the drain
+    # keeps the loop live and can admit a new append the exit then kills.
+    try:
+        await asyncio.to_thread(drain_channel_history_lane, 2.0)
+    except Exception:
+        print("WARNING: channel-history drain before restart failed", file=sys.stderr)
     os._exit(1)
 
 

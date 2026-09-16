@@ -173,8 +173,10 @@ from kiro_crew.executors import (
     CronQueueTimeout,
     configure_default_executor,
     cron_gate_budget,
+    drain_channel_history_lane,
     embed_executor,
     maintenance_executor,
+    reexec_lane_guard,
     run_in_cron_gate_pool,
     run_in_cron_pool,
     run_in_embed_pool,
@@ -10797,6 +10799,9 @@ class GatewayOrchestrator:
             await asyncio.to_thread(flush_breadcrumb_writes, 2.0)
         except Exception:
             logger.debug("Breadcrumb flush before update restart failed", exc_info=True)
+        # os.execv replaces the process image without draining the history
+        # disk lane; reexec_lane_guard owns the drain→exec→reopen pairing
+        # (same contract as the SIGTERM path — see the shutdown block there).
         exe = await asyncio.to_thread(respawn)
 
         if not await self._drain_update_callback_work(timeout=30.0):
@@ -10828,7 +10833,13 @@ class GatewayOrchestrator:
         await self._drain_update_callback_work(timeout=None)
         logger.info("Update callback drain complete, restarting gateway")
         self._pending_update_respawn = None
-        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        # os.execv replaces the process image without draining the history
+        # disk lane; reexec_lane_guard owns the drain→exec→reopen pairing, so
+        # a failed exec lands here with admission already reopened. The exec
+        # itself stays a literal reexec_python_module call — the restart-fence
+        # contract pins this method's final statement to it.
+        async with reexec_lane_guard():
+            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
 
     async def _check_for_updates_legacy(self) -> None:
         """Legacy update check — the existing layout-aware logic."""
@@ -11792,6 +11803,8 @@ class GatewayOrchestrator:
             await self._restart_after_update(respawn_executable)
         except Exception:
             logger.warning("Auto-update failed", exc_info=True)
+            # The exec did not happen and this path deliberately keeps
+            # serving; reexec_lane_guard already reopened the admission gate.
             if self.dashboard_state:
                 # Surface the platform-correct manual restart command so a failed
                 # auto-restart doesn't leave the user guessing.
@@ -12586,6 +12599,11 @@ class GatewayOrchestrator:
                     _stop_log_queue_listener(timeout=2.0)
                 except Exception:
                     pass  # force exit must never be blocked by logging
+                # The history disk lane is NOT drained here: this handler runs
+                # on the event-loop thread, where a synchronous wait is
+                # forbidden (no-blocking-call-on-event-loop). A force exit
+                # abandons queued best-effort writes; the graceful path and
+                # the re-exec guard still drain them.
                 os._exit(0)
             _shutting_down = True
             shutdown_event.set()
@@ -12685,6 +12703,12 @@ class GatewayOrchestrator:
         # session by this point, so the sweep is not racing a mapping publisher --
         # the same position the sweep already held here before this change.
         await asyncio.to_thread(cleanup_orphaned_sessions)
+        # Drain the channel-history disk lane before the hard exit: os._exit
+        # skips atexit, and the atexit hook's shutdown(wait=False,
+        # cancel_futures=True) would discard queued history writes anyway.
+        # Bounded (same rationale as the log drain below) so a wedged disk
+        # cannot delay the exit; run off-loop so a slow write cannot stall
+        # the loop thread either.
         # This is a hard exit too: os._exit skips atexit, so the log queue's
         # drain hook never runs here either. Without this the whole shutdown
         # tail is lost -- including the "Graceful shutdown timed out" warning
@@ -12694,6 +12718,16 @@ class GatewayOrchestrator:
         from kiro_crew.cli import drain_log_queue_before_hard_exit
 
         await drain_log_queue_before_hard_exit()
+        # The history drain is the LAST await before the exit: any await
+        # after it (the log drain included) keeps the loop live and can admit
+        # a new append the exit then kills. Its own timeout warning would
+        # miss the already-drained log queue, so it goes to stderr directly.
+        drained = await asyncio.to_thread(drain_channel_history_lane, 2.0)
+        if not drained:
+            print(
+                "WARNING: channel-history disk lane did not drain before exit",
+                file=sys.stderr,
+            )
         os._exit(exit_code)
 
     # ── per-channel hoists ───────────────────────────────────────────────
