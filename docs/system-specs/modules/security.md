@@ -309,6 +309,34 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 
 ## Modules
 
+### Encrypted Secret Vault (`secrets/vault.py`)
+
+Stores MCP-server credentials encrypted on disk under `.vault` in the data
+home, keeping them out of the versioned `~/.kiro/mcp.json`. A `secret://NAME`
+reference in a server's `env` block is resolved to the real value by
+`mcp_gateway/secret_uri.py` **only at spawn time**, injected into that server's
+process environment alone — never the agent's. A reference to a missing name
+fails the server's spawn rather than launching it with an absent credential.
+
+Security properties:
+
+- **Write-only surface.** The vault is stored (`POST /api/secrets`), listed by
+  name (`GET /api/secrets` — names only, values never returned) and deleted
+  (`DELETE /api/secrets/{name}`) from the dashboard **Settings → Secrets** tab,
+  all behind `_owner_only`. There is deliberately **no** read-back path, on the
+  CLI or the API — a stored value cannot be retrieved, only replaced or
+  deleted, so a prompt-injected agent has no oracle to exfiltrate it through.
+- **Sandbox-hidden.** The `.vault` directory sits under the crew data home,
+  which the OS-level sandbox bind-mounts away from the agent subprocess tree,
+  so the agent cannot read the ciphertext off disk either.
+- **`.env` migration.** `kirocrew secrets import [--apply]` moves the
+  vault-aware Jira credential keys (`JIRA_API_TOKEN`, per-host
+  `JIRA_TOKEN_<HEX>`) out of the data-home `.env` and rewrites each line to a
+  `secret://KEY` reference; it reads only the data-home `.env` (no `--file`
+  option) so it cannot be pointed at an attacker-controlled file. See
+  [secrets-env.md](../../guides/secrets-env.md) and
+  [cli.md](cli.md#secrets-command).
+
 ### OS-Level Sandbox (`sandbox.py`)
 
 Hides credential paths from kiro-cli subprocess tree using platform-native isolation:
