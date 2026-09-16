@@ -3925,7 +3925,14 @@
       "failed_to_dismiss_agent": "Failed to dismiss agent",
       "failed_to_update_agent": "Failed to update agent",
       "failed_to_close_channel": "Failed to close channel",
-      "failed_to_clear_context": "Failed to clear context"
+      "failed_to_clear_context": "Failed to clear context",
+      "clear_context_busy_error": "Context kept for {{roles}} — still working. Try again when they finish.",
+      "clear_context_cleared_roles": "Cleared for {{roles}}.",
+      "clear_context_kept": "Context kept — still working",
+      "clear_context_messages_kept": "The channel's messages were kept.",
+      "clear_context_messages_deleted": "The channel's messages were deleted too.",
+      "clear_context_not_cleared_yet": "Context not cleared",
+      "clear_context_partially_cleared": "Context partially cleared"
     },
     "chat": {
       "workflowRunCard": {
