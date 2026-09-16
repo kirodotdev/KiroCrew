@@ -191,8 +191,25 @@ TELEGRAM_CHUNK_LIMIT = 4000
 #: table-bearing segments are budgeted against this cap, not the render cap.
 TELEGRAM_RICH_MAX_CHARS = 32768
 
-# Bot API base URL.
-_API_BASE = "https://api.telegram.org/bot{token}/{method}"
+# Bot API base URL. Override with TELEGRAM_API_BASE_URL for proxy/reverse-proxy
+# setups (e.g. a network that blocks api.telegram.org). Must be a full method
+# template containing {token} and {method}; unset falls back to the public host.
+_API_BASE = os.environ.get(
+    "TELEGRAM_API_BASE_URL",
+    "https://api.telegram.org/bot{token}/{method}",
+)
+
+
+def _file_base() -> str:
+    """Origin (scheme + host) for Telegram file downloads.
+
+    Derived from ``_API_BASE`` so that a configured proxy also serves
+    ``/file/bot<token>/<path>`` downloads; falls back to the public host when
+    ``TELEGRAM_API_BASE_URL`` is unset or unparseable.
+    """
+    m = re.match(r"^(https?://[^/]+)", _API_BASE)
+    return m.group(1) if m else "https://api.telegram.org"
+
 
 #: Consecutive polling failures before the status callback reports unhealthy.
 _STATUS_FAILURE_THRESHOLD = 3
@@ -1202,7 +1219,7 @@ class TelegramClient:
         if not file_path:
             raise ValueError(f"getFile returned empty file_path for file_id={file_id!r}")
 
-        url = f"https://api.telegram.org/file/bot{self._token}/{file_path}"
+        url = f"{_file_base()}/file/bot{self._token}/{file_path}"
 
         session = await self._ensure_session()
         try:
