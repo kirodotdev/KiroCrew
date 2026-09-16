@@ -363,10 +363,12 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "monitor_stop",
             "description": (
-                "Durably stop the monitor on your current session. A structured "
-                "monitor is retained with its terminal outcome for inspection; a "
-                "legacy timer loop is stopped and leaves no record behind, so a "
-                "later monitor_inspect reports it as not armed."
+                "Durably stop the monitor on your current session. An agent-issued stop "
+                "is refused while running, queued, or completing sub-agent work remains "
+                "attached; the user's direct Stop control remains available. A structured "
+                "monitor is retained with its terminal outcome for inspection; a legacy "
+                "timer loop is stopped and leaves no record behind, so a later "
+                "monitor_inspect reports it as not armed."
             ),
             "inputSchema": {
                 "type": "object",

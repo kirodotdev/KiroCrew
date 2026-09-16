@@ -148,6 +148,21 @@ class TerminalCoordinator(ManagerComponent):
         )
         if not self._manager._on_done:
             return
+
+        async def _retain_failure(reason: str) -> None:
+            retained = self._manager.notify_injection_failed(info, reason=reason)
+            if retained is None:
+                return
+            try:
+                await asyncio.shield(retained)
+            except Exception:
+                logger.debug(
+                    "%s: failed to retain completion fallback for %s",
+                    source,
+                    info.id,
+                    exc_info=True,
+                )
+
         try:
             await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)
             # The outcome has REACHED the parent. Recorded before any further
@@ -236,9 +251,10 @@ class TerminalCoordinator(ManagerComponent):
                     info.parent_session_key,
                     exc_info=True,
                 )
-            self._manager.notify_injection_failed(info, reason=injection_timeout_reason)
+            await _retain_failure(injection_timeout_reason)
         except Exception:
             logger.exception("%s: announce failed for %s", source, info.id)
+            await _retain_failure("completion delivery failed before acceptance")
 
     async def _run_terminal_report_impl(
         self,
@@ -314,6 +330,21 @@ class TerminalCoordinator(ManagerComponent):
 
         task.add_done_callback(_forget)
         return task
+
+    def terminal_delivery_inflight_for_impl(self, parent_session_key: str) -> bool:
+        """Whether *parent_session_key* owns an unfinished terminal report.
+
+        ``info.done`` becomes true before ``_on_done`` injects the completion,
+        so the running-agent registry alone cannot represent this interval.
+        Rejections that never enter ``_run`` are started through the same
+        terminal-report helper, so they also have an owner here. The map retains
+        the parent identity through callback acceptance or the awaited failure
+        fallback.
+        """
+        return any(
+            not task.done() and info.parent_session_key == parent_session_key
+            for task, info in self._manager._report_owners.items()
+        )
 
     def _release_slot_impl(self, info: SubagentInfo) -> bool:
         """Claim the exclusive right to free ``info``'s concurrency slot.
@@ -611,7 +642,7 @@ class TerminalCoordinator(ManagerComponent):
 
     def notify_injection_failed_impl(
         self, info: SubagentInfo, reason: str = "delivery timed out"
-    ) -> None:
+    ) -> "asyncio.Task | None":  # type: ignore[type-arg]
         """Notify UI and queue failure for LLM when injection times out.
 
         Appends a synthetic error to the dashboard slot (UI) and queues a
@@ -634,7 +665,7 @@ class TerminalCoordinator(ManagerComponent):
             # to and nothing to drain on the next turn.
             slot_name = dashboard_slot_key(info.parent_session_key)
             if not slot_name:
-                return
+                return None
 
             # Build failure message the LLM will see on next turn
             task_preview = _redact((info.task or "")[:100])
@@ -671,5 +702,7 @@ class TerminalCoordinator(ManagerComponent):
                     )
                 )
                 _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                return _task
         except Exception:
             logger.debug("notify_injection_failed failed for %s", info.id, exc_info=True)
+        return None

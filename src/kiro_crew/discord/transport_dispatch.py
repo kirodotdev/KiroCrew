@@ -251,6 +251,9 @@ class DiscordDispatcher:
         self.agent = agent
         self.conv_log = conv_log
         self.approval_mode = approval_mode
+        # Set by maybe_start_discord after construction, alongside client/transport.
+        # Needed when a channel turn has no attached dashboard state.
+        self.subagent_manager: Any = None
         self.client: "DiscordClient | None" = None
         # Set by maybe_start_discord after construction (same construction-cycle
         # reason as ``client``); the config applier pushes reloaded authorization
@@ -916,7 +919,10 @@ class DiscordDispatcher:
                 # turn's session key (dashboard-only directives stay refused
                 # for channel sessions).
                 directive_consumer=build_directive_consumer(
-                    session_key=session_key, sessions=self.sessions, dispatcher=self
+                    session_key=session_key,
+                    sessions=self.sessions,
+                    dispatcher=self,
+                    subagents=getattr(self, "subagent_manager", None),
                 ),
                 audit_session_key=session_key,
                 audit_agent=agent or "kirocrew",

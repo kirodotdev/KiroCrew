@@ -30,6 +30,7 @@ from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
+    LIFECYCLE_RECOVERY_KIND,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
     slot_history_key,
@@ -282,6 +283,29 @@ def test_unmarked_recovery_entry_fails_closed(tmp_path):
     cr._drop_stale_admissions(state, slot)
 
     assert slot._queue == []
+
+
+def test_lifecycle_owned_recovery_is_not_user_prompt_revalidated(tmp_path):
+    """A completion retry is internal delivery state, not replayed user speech.
+
+    Even with no admission snapshot and a new channel link, containment
+    revalidation must preserve the row and its one-shot discard callback. The
+    adjacent ordinary-recovery test is the opposite mutation guard.
+    """
+    state = _make_state(tmp_path)
+    slot = _link(state.get_or_create_slot("chat-1"))
+    discarded: list[str] = []
+    queued_id = slot.queue_insert(
+        0,
+        "[Subagent completion event] done",
+        kind=LIFECYCLE_RECOVERY_KIND,
+        on_discarded=lambda: discarded.append("completion"),
+    )
+
+    cr._drop_stale_admissions(state, slot)
+
+    assert [item["id"] for item in slot._queue] == [queued_id]
+    assert discarded == []
 
 
 def test_stamped_recovery_entry_follows_its_admission(tmp_path):

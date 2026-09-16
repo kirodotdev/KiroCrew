@@ -142,13 +142,7 @@ class WaveDigestCoordinator(ManagerComponent):
             batch_id=batch_id,
             batch_total=max(0, int(batch_total)),
         )
-        if self._manager._on_done:
-            try:
-                self._manager._tasks[f"lost-{info.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
-                )
-            except RuntimeError:
-                pass  # no running loop (sync/test context)
+        self._manager._start_rejection_delivery(info)
 
     def _sweep_stuck_waves_impl(self, now: float) -> None:
         """Reaper backstop: force-reconcile waves wedged by lost submissions.

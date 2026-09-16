@@ -174,7 +174,9 @@ class TestChatSlotContinue:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/s/continue")
             assert resp.status == 409
-            assert (await resp.json())["code"] == "slot_subagents_running"
+            body = await resp.json()
+            assert body["code"] == "slot_subagents_running"
+            assert "(running child work)" in body["error"]
         # Refused on the RUNNING child alone, with an empty queue.
         state.subagents.running_agents_for.assert_called_with("dashboard:s")
         assert not slot._queue

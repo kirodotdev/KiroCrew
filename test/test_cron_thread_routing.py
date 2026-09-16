@@ -422,7 +422,11 @@ class TestDashboardInjectionRoutesRunChat:
         ):
             await subagent_done(info)
 
-        slot.queue_append.assert_called_once()
+        slot.queue_insert.assert_called_once()
+        queued = slot.queue_insert.call_args
+        assert queued.args[0] == 0
+        assert callable(queued.kwargs["on_consumed"])
+        assert callable(queued.kwargs["on_discarded"])
 
     @pytest.mark.asyncio
     async def test_error_callback_notifies_with_redacted_reason(self) -> None:
@@ -456,6 +460,126 @@ class TestDashboardInjectionRoutesRunChat:
         gateway.subagent_mgr.notify_injection_failed.assert_called_once()
         call_kwargs = gateway.subagent_mgr.notify_injection_failed.call_args
         assert "provider crashed" in str(call_kwargs)
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_recovery_with_owned_row_suppresses_duplicate_failure_fallback(self) -> None:
+        """A timeout suppresses fallback only after a callback-owned row exists."""
+        from kiro_crew.dashboard.chat_utils import LIFECYCLE_RECOVERY_KIND
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        gateway = _make_gateway()
+        slot = _ChatSlot("chat-1-recovery")
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(id="recovery1", task="work", parent_session_key="dashboard:chat-1-recovery")
+        info.result = "done"
+        info.done = True
+
+        async def _retained_then_timeout(*_args, **kwargs) -> None:
+            slot.queue_insert(
+                0,
+                "recovery",
+                kind=LIFECYCLE_RECOVERY_KIND,
+                on_discarded=kwargs["_on_discarded"],
+            )
+            kwargs["_on_lifecycle_recovery_retained"]()
+            raise TimeoutError("turn deadline")
+
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway._run_chat", new=_retained_then_timeout),
+            patch("kiro_crew.slack.gateway._arm_queued_delivery_settlement"),
+            p1,
+            p2,
+        ):
+            await subagent_done(info)
+            tasks = tuple(gateway.dashboard_state._background_tasks)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert slot._queue[0]["kind"] == LIFECYCLE_RECOVERY_KIND
+        gateway.subagent_mgr.notify_injection_failed.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_signal_without_owned_row_uses_failure_fallback(self) -> None:
+        """A callback signal alone cannot suppress the sole recoverable owner."""
+        gateway = _make_gateway()
+        slot = MagicMock()
+        slot.running = False
+        slot.key = "chat-1-no-row"
+        slot.task = None
+        slot._queue = []
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(id="no-row", task="work", parent_session_key="dashboard:chat-1-no-row")
+        info.result = "done"
+        info.done = True
+
+        async def _signal_then_timeout(*_args, **kwargs) -> None:
+            kwargs["_on_lifecycle_recovery_retained"]()
+            raise TimeoutError("queue insertion failed")
+
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway._run_chat", new=_signal_then_timeout),
+            patch("kiro_crew.slack.gateway._arm_queued_delivery_settlement"),
+            p1,
+            p2,
+        ):
+            await subagent_done(info)
+            tasks = tuple(gateway.dashboard_state._background_tasks)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        gateway.subagent_mgr.notify_injection_failed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_runner_entry_retires_completion_once(self) -> None:
+        """Slot teardown before bounded-turn startup cannot strand ownership."""
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        gateway = _make_gateway()
+        slot = _ChatSlot("chat-1-pre-entry-close")
+        gateway.dashboard_state.get_slot = MagicMock(return_value=slot)
+        gateway.dashboard_state._background_tasks = set()
+        subagent_done = _capture_subagent_done(gateway)
+        info = SubagentInfo(
+            id="pre-entry-close",
+            task="work",
+            parent_session_key="dashboard:chat-1-pre-entry-close",
+        )
+        info.result = "done"
+        info.done = True
+        bounded_started = asyncio.Event()
+
+        async def _hold_before_runner(coro) -> None:
+            bounded_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                coro.close()
+
+        run_chat = AsyncMock()
+        p1, p2 = self._patches()
+        with (
+            patch("kiro_crew.slack.gateway.bounded_chat_turn", new=_hold_before_runner),
+            patch("kiro_crew.slack.gateway._run_chat", run_chat),
+            patch("kiro_crew.slack.gateway._arm_queued_delivery_settlement"),
+            p1,
+            p2,
+        ):
+            await subagent_done(info)
+            await asyncio.wait_for(bounded_started.wait(), timeout=1)
+            assert slot.task is not None
+            slot.task.cancel()
+            await asyncio.gather(slot.task, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        run_chat.assert_not_awaited()
+        assert slot._subagent_completion_pending == {}
+        gateway.subagent_mgr.notify_injection_failed.assert_not_called()
 
 
 # ── Tests: _cron_callback dashboard slot auto-inject ──

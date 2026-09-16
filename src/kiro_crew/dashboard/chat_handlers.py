@@ -3413,9 +3413,21 @@ def _subagents_attached_response(
     the probe block is how the two would diverge. This wrapper only shapes the
     refusal.
     """
-    if subagents_attached(state, slot, session_key, operation):
+    # Evaluate the shared fence exactly once so the diagnostic identifies the
+    # same attachment state that caused this refusal, rather than re-probing a
+    # completion that can settle between two reads.
+    from kiro_crew.dashboard.chat_utils import subagent_attachment_detail
+
+    attachment_detail = subagent_attachment_detail(state, slot, session_key, operation)
+    if attachment_detail is not None:
         return web.json_response(
-            {"error": "sub-agents are running", "code": "slot_subagents_running"},
+            {
+                "error": (
+                    f"sub-agent work is still attached ({attachment_detail}); wait for it to "
+                    "settle, or use the direct Stop control before retrying"
+                ),
+                "code": "slot_subagents_running",
+            },
             status=409,
         )
     return None
@@ -4101,7 +4113,7 @@ async def stop_slot_turn(
         # this hard kill a clean stop. Scoped to this card so it cannot defer
         # a later card's ack.
         slot._stop_escalated_card_id = slot._stop_event_id
-        slot._queue.clear()
+        slot.queue_discard_all()
         # Hard kill = "discard everything": drop unconsumed steers too, so the
         # end-of-turn requeue (chat_runner finally) has nothing to resurrect.
         # Mirrors the queue clear above; a soft stop preserves both.

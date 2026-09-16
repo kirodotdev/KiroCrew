@@ -814,27 +814,17 @@ async def test_user_stop_during_pending_recovery_is_not_recorded_as_failure():
 
 @pytest.mark.asyncio
 async def test_stop_during_pending_spawn_approval_reports_and_releases_once():
-    """The spawn-approval rejection path is a FIFTH terminal site.
+    """The spawn-approval rejection path shares all terminal ownership tokens.
 
-    It set `done`, decremented `_running_count` with a bare decrement and
-    announced via `_safe_announce` — outside both one-shot tokens. A user Stop
-    funnels into `_force_reap` and can land while the approval is still pending
-    (a human prompt has no deadline), so the reap released the slot and reported,
-    then the rejection path released and reported AGAIN: a negative concurrency
-    count and a duplicate completion.
+    A user Stop funnels into ``_force_reap`` and can land while approval is
+    pending. The reap must release the slot and own the report; the later
+    rejection sees both claims spent and may neither decrement nor announce.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False, started=time.time() - 5.0)
     mgr._agents["a1b2c3d4"] = info
     mgr._running_count = 1
     mgr._sessions.reset = _noop_reset
-
-    announced: list[str] = []
-
-    async def _safe_announce(_info):
-        announced.append(_info.id)
-
-    mgr._safe_announce = _safe_announce  # type: ignore[assignment]
 
     release_stop = asyncio.Event()
 
@@ -856,7 +846,7 @@ async def test_stop_during_pending_spawn_approval_reports_and_releases_once():
         f"slot released twice (_running_count={mgr._running_count}); a negative "
         "count permanently inflates apparent capacity"
     )
-    total_reports = len(_done_events(mgr)) + len(announced)
+    total_reports = len(_done_events(mgr))
     assert total_reports == 1, (
         f"terminal outcome delivered {total_reports} times, expected exactly once"
     )
