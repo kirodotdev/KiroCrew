@@ -11621,6 +11621,7 @@
         "running": "실행 중…",
         "save": "저장",
         "saved": "저장됨",
+        "scope": "범위",
         "semantic_memory_active_text_files_are_read_only": "의미 기억 활성 — 텍스트 파일은 읽기 전용입니다",
         "session_other": "{{count}}개 세션",
         "summarize_now": "지금 요약",

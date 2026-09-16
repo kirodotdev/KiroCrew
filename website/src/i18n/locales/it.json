@@ -11957,6 +11957,7 @@
         "running": "In esecuzione…",
         "save": "Salva",
         "saved": "Salvato",
+        "scope": "Ambito",
         "semantic_memory_active_text_files_are_read_only": "Memoria semantica attiva — i file di testo sono in sola lettura",
         "session_many": "{{count}} sessioni",
         "session_one": "{{count}} sessione",

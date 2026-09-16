@@ -12125,6 +12125,7 @@
         "running": "Выполнение…",
         "save": "Сохранить",
         "saved": "Сохранено",
+        "scope": "Область",
         "semantic_memory_active_text_files_are_read_only": "Семантическая память активна — текстовые файлы только для чтения",
         "session_few": "{{count}} сессии",
         "session_many": "{{count}} сессий",

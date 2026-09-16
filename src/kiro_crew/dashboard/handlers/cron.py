@@ -51,7 +51,11 @@ from kiro_crew.lesson_validation import contains_volatile_lesson_fact
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
-from kiro_crew.project_scope import scope_selector_is_inadmissible
+from kiro_crew.project_scope import (
+    canonical_scope,
+    scope_is_admissible,
+    scope_selector_is_inadmissible,
+)
 from kiro_crew.secrets import SecretVault
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
@@ -2906,6 +2910,41 @@ async def api_cron_folders_delete(request: web.Request) -> web.Response:
 LESSON_LIST_LIMIT = 50
 
 
+def _lesson_scope_selector(stored: object) -> str | None:
+    """The ``DELETE /api/lessons`` ``repo_scope`` selector that names ONE row.
+
+    A lesson's identity is the pair ``(rule, repo_scope)``, so a list that
+    omits the scope shows two same-rule rows in two scopes as indistinguishable
+    duplicates -- and a delete sent without the selector removes both. This
+    answers, per row, the selector the delete route defines:
+
+    * ``""`` for an unscoped (global) row -- the route's explicit-global
+      selector, so a delete of the global row leaves a same-rule scoped row.
+    * the canonical fragment for a scoped row -- the delete compares
+      canonically on both sides, so the folded form round-trips onto the row
+      and only that row.
+    * ``None`` for a row whose stored scope is PRESENT but unusable (an
+      imported ``/``, a blank string, a non-string). Both stores classify such
+      a row as scoped-but-broken and a scope-selective delete never claims it,
+      while the route refuses the raw value as a selector -- so echoing it
+      would make the row undeletable from the UI. ``None`` tells the client to
+      send no selector, which is the unselective path both stores keep open so
+      junk rows stay deletable.
+
+    The classification is the stores' own: ``None`` is global (``learn.py``
+    ``remove`` guards on ``is not None``; the vector store's
+    ``_lesson_scope_unusable`` answers False for a null), and anything else is
+    judged by :func:`scope_is_admissible`, the same predicate both stores use.
+    Not redacted: this value is a delete selector and must round-trip
+    byte-exact, and an admissible value is fragment-shaped by construction.
+    """
+    if stored is None:
+        return ""
+    if not scope_is_admissible(stored):
+        return None
+    return canonical_scope(stored)
+
+
 async def api_lessons(request: web.Request) -> web.Response:
     """GET /api/lessons — up to ``LESSON_LIST_LIMIT`` lessons, oldest-first.
 
@@ -2933,6 +2972,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         category: object,
         ts: object,
         negative: object = None,
+        repo_scope: object = None,
     ) -> dict:
         """One sanitization chokepoint for every branch of this endpoint.
 
@@ -2950,7 +2990,12 @@ async def api_lessons(request: web.Request) -> web.Response:
         normalized_category = normalize_lesson_category(category, strict=False)
         safe_rule = _redact_memory_field(rule)
         safe_category = _redact_memory_field(normalized_category)
-        result = {"rule": safe_rule, "category": safe_category, "ts": ts}
+        result = {
+            "rule": safe_rule,
+            "category": safe_category,
+            "ts": ts,
+            "repo_scope": _lesson_scope_selector(repo_scope),
+        }
         if contains_volatile_lesson_fact(rule, negative):
             result["withheld_reason"] = "volatile_session_fact"
         return result
@@ -3010,7 +3055,13 @@ async def api_lessons(request: web.Request) -> web.Response:
             fields = _lesson_fields_for_row(decoded, e["key"])
             negative = fields[1] if fields is not None else None
             raw_category = decoded.get("category") if isinstance(decoded, dict) else None
-            data.append(_safe_lesson(rule, raw_category, e.get("updated_at", ""), negative))
+            # The RAW stored value, key-present or not: a legacy string row has
+            # nowhere to carry a scope and reads as global, exactly as the
+            # store's own ``_lesson_scope`` / ``_lesson_scope_unusable`` read it.
+            raw_scope = decoded.get("repo_scope") if isinstance(decoded, dict) else None
+            data.append(
+                _safe_lesson(rule, raw_category, e.get("updated_at", ""), negative, raw_scope)
+            )
     else:
         # The JSONL tier of the store this caller is BOUND to, which for a silo is its
         # own file and never the operator's -- an empty silo answers "no lessons", not
@@ -3027,7 +3078,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                     if le.rule.lower().strip() not in seen:
                         rows.append(le)
         data = [
-            _safe_lesson(le.rule, le.category, le.ts, le.negative)
+            _safe_lesson(le.rule, le.category, le.ts, le.negative, le.repo_scope)
             for le in rows[-LESSON_LIST_LIMIT:]
         ]
     return web.json_response({"lessons": data})

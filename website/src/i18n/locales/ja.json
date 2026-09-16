@@ -11621,6 +11621,7 @@
         "running": "実行中…",
         "save": "保存",
         "saved": "保存済み",
+        "scope": "スコープ",
         "semantic_memory_active_text_files_are_read_only": "セマンティックメモリがアクティブ — テキストファイルは読み取り専用です",
         "session_other": "{{count}} セッション",
         "summarize_now": "今すぐ要約",

@@ -11789,6 +11789,7 @@
         "running": "চলছে…",
         "save": "সেভ করো",
         "saved": "সংরক্ষিত",
+        "scope": "স্কোপ",
         "semantic_memory_active_text_files_are_read_only": "সিমান্টিক মেমরি সক্রিয় — টেক্সট ফাইল শুধু-পঠনযোগ্য",
         "session_one": "{{count}}টি সেশন",
         "session_other": "{{count}}টি সেশন",

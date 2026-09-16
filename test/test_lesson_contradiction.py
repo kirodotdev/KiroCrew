@@ -1252,7 +1252,9 @@ class TestApiLessonsReturnsTheNewest:
 
         state = MagicMock()
         state.lessons.load_all.return_value = [
-            SimpleNamespace(rule=r, category="tool", ts=f"t{i}", negative=None)
+            # The double carries every field the handler reads off a Lesson row,
+            # repo_scope included: the list emits it as the row's delete selector.
+            SimpleNamespace(rule=r, category="tool", ts=f"t{i}", negative=None, repo_scope=None)
             for i, r in enumerate(rules)
         ]
         with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \

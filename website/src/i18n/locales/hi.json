@@ -11789,6 +11789,7 @@
         "running": "चल रहा है…",
         "save": "सहेजें",
         "saved": "सहेजा गया",
+        "scope": "स्कोप",
         "semantic_memory_active_text_files_are_read_only": "सिमैंटिक मेमोरी सक्रिय — टेक्स्ट फ़ाइलें केवल-पढ़ने योग्य हैं",
         "session_one": "{{count}} सत्र",
         "session_other": "{{count}} सत्र",

@@ -11621,6 +11621,7 @@
         "running": "运行中…",
         "save": "保存",
         "saved": "已保存",
+        "scope": "范围",
         "semantic_memory_active_text_files_are_read_only": "语义记忆已启用 — 文本文件为只读",
         "session_other": "{{count}} 个会话",
         "summarize_now": "立即总结",

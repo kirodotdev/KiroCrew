@@ -11789,6 +11789,7 @@
         "running": "Läuft…",
         "save": "Speichern",
         "saved": "Gespeichert",
+        "scope": "Bereich",
         "semantic_memory_active_text_files_are_read_only": "Semantische Erinnerung aktiv — Textdateien sind nur lesbar",
         "session_one": "{{count}} Sitzung",
         "session_other": "{{count}} Sitzungen",

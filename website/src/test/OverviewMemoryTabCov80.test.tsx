@@ -53,8 +53,8 @@ vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div da
 const MemoryTab = (await import('../pages/overview/MemoryTab')).default
 
 const LESSONS = [
-  { rule: 'zzq-rule-beta', category: 'tool', ts: '2026-01-02T00:00:00Z' },
-  { rule: 'zzq-rule-alpha', category: 'knowledge', ts: '2026-01-01T00:00:00Z' },
+  { rule: 'zzq-rule-beta', category: 'tool', ts: '2026-01-02T00:00:00Z', repo_scope: '' },
+  { rule: 'zzq-rule-alpha', category: 'knowledge', ts: '2026-01-01T00:00:00Z', repo_scope: '' },
 ]
 
 beforeEach(() => {
@@ -427,8 +427,43 @@ describe('MemoryTab — lessons', () => {
       .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
     await userEvent.click(del)
 
-    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-rule-beta'))
+    // The global row's own selector ("") rides along: a lesson's identity is
+    // (rule, repo_scope), so a bare rule would delete every scope's row.
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-rule-beta', ''))
     await waitFor(() => expect(api.lessons.mock.calls.length).toBeGreaterThan(reads))
+  })
+
+  it('tells two same-rule rows apart by scope and deletes only the clicked one (#10651)', async () => {
+    api.lessons.mockResolvedValue({
+      lessons: [
+        { rule: 'zzq-same-rule', category: 'tool', ts: '2026-01-02T00:00:00Z', repo_scope: '' },
+        { rule: 'zzq-same-rule', category: 'tool', ts: '2026-01-02T00:00:00Z', repo_scope: 'src/pkg' },
+        // Stored scope present but unusable: the list reports null, and the
+        // only delete that reaches such a row is the unselective one.
+        { rule: 'zzq-broken-rule', category: 'tool', ts: '2026-01-03T00:00:00Z', repo_scope: null },
+      ],
+    })
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('src/pkg')
+    // Two rows share the rule; the Scope column is what tells them apart.
+    const sameRule = screen.getAllByText('zzq-same-rule').map((td) => td.closest('tr') as HTMLElement)
+    expect(sameRule).toHaveLength(2)
+    expect(screen.getByRole('columnheader', { name: /Scope/ })).toBeInTheDocument()
+    const scoped = sameRule.find((tr) => tr.textContent?.includes('src/pkg')) as HTMLElement
+    const global = sameRule.find((tr) => !tr.textContent?.includes('src/pkg')) as HTMLElement
+    const deleteIn = (tr: HTMLElement) => Array.from(tr.querySelectorAll('button'))
+      .find((b) => /delete/i.test(b.textContent ?? '')) as HTMLButtonElement
+
+    await userEvent.click(deleteIn(scoped))
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-same-rule', 'src/pkg'))
+    expect(api.deleteLesson).not.toHaveBeenCalledWith('zzq-same-rule', '')
+
+    await userEvent.click(deleteIn(global))
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-same-rule', ''))
+
+    const broken = screen.getByText('zzq-broken-rule').closest('tr') as HTMLElement
+    await userEvent.click(deleteIn(broken))
+    await waitFor(() => expect(api.deleteLesson).toHaveBeenCalledWith('zzq-broken-rule', null))
   })
 
   it('shows an empty state rather than a bare table', async () => {

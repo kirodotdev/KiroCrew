@@ -149,6 +149,22 @@ describe('client transport', () => {
     expect(call(1).body).toEqual({ rule: 'never force push' })
   })
 
+  it('deleteLesson sends the repo_scope selector only when it is a string (#10651)', async () => {
+    // A lesson's identity is (rule, repo_scope). The route reads the selector by
+    // presence: "" names the global row, a fragment names that scope's row, and
+    // an ABSENT key deletes every scope's same-rule row.
+    await api.deleteLesson('never force push', 'src/pkg')
+    expect(call().body).toEqual({ rule: 'never force push', repo_scope: 'src/pkg' })
+    await api.deleteLesson('never force push', '')
+    expect(call(1).body).toEqual({ rule: 'never force push', repo_scope: '' })
+    // null marks a row whose stored scope is unusable: the route refuses a null
+    // selector (400), so the client must send none -- the unselective delete is
+    // the only path that reaches such a row.
+    await api.deleteLesson('never force push', null)
+    expect(call(2).body).toEqual({ rule: 'never force push' })
+    expect(call(2).body).not.toHaveProperty('repo_scope')
+  })
+
   it('POST omits the body entirely when none is given', async () => {
     await api.mcpProbe()
     expect(call().init?.body).toBeUndefined()

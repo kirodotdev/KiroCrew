@@ -7295,6 +7295,7 @@
         "rule_e_g_always_use_tabs_not_spaces": "Rule (e.g. always use tabs, not spaces)",
         "running": "Running…",
         "saved": "Saved",
+        "scope": "Scope",
         "semantic_memory_active_text_files_are_read_only": "Semantic memory active — text files are read-only",
         "session_one": "{{count}} session",
         "session_other": "{{count}} sessions",

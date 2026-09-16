@@ -11957,6 +11957,7 @@
         "running": "Exécution…",
         "save": "Enregistrer",
         "saved": "Enregistré",
+        "scope": "Portée",
         "semantic_memory_active_text_files_are_read_only": "Mémoire sémantique active — les fichiers texte sont en lecture seule",
         "session_many": "{{count}} sessions",
         "session_one": "{{count}} session",
