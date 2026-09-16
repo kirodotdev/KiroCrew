@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import errno
 import json
 import logging
 import math
@@ -24,10 +25,10 @@ from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from collections.abc import Set as AbstractSet
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Any, Literal, NamedTuple, overload
 
-from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.chat_attachments import persist_inline_images, same_text_modulo_images
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
@@ -1217,6 +1218,443 @@ def transcript_stems(key: str) -> tuple[str, ...]:
         if legacy not in stems:
             stems.append(legacy)
     return tuple(stems)
+
+
+CTX_OVERFLOW_DIR_NAME = "context-overflow"
+
+
+#: Yielded instead of a descriptor when the sidecar root exists but is not a plain directory, so a
+#: mutation refuses rather than resolving through whatever the name points at.
+_CTX_OVERFLOW_ROOT_UNSAFE = -1
+
+
+#: Whether the platform can address a mutation relative to a directory descriptor. Windows cannot,
+#: and there ``pin_directory``'s held handle is what stops the root moving under a path-based call.
+_CTX_RELATIVE_MUTATION = os.rename in os.supports_dir_fd and os.unlink in os.supports_dir_fd
+
+
+#: Whether a presence probe can be addressed relative to a directory descriptor. Same platform
+#: split as the mutation constant: Windows relies on the pin's held handle instead.
+_CTX_RELATIVE_PROBE = os.stat in os.supports_dir_fd
+
+
+# A contended unlink (a scanner holding the handle) usually clears on the next attempt.
+_CTX_CLEAR_ATTEMPTS = 3
+
+
+class CtxOverflowNotCleared(OSError):
+    """A sidecar holding RETIRED entries is still hydratable.
+
+    Committing an empty metadata line over one re-injects delivered context on the next
+    hydration, so this is raised rather than returned: the callers already guard the call, and a
+    returned failure left every one of those handlers dead.
+    """
+
+
+def _ctx_overflow_paths(key: str, base: Path | None = None) -> tuple[Path, ...]:
+    """Every stem *key*'s sidecar could occupy, canonical first.
+
+    Mirrors :func:`transcript_stems` rather than keying on ``_safe_key`` alone, because
+    ``ConversationLog._path`` resolves a pre-migration Slack thread to a DIFFERENT stem than its
+    canonical key. Keyed on one stem, a legacy thread carried two sidecars for one transcript and
+    a delete cleared only one -- orphaning a file that resurrects deleted context on key reuse.
+    """
+    root = (base or _sessions_dir()) / CTX_OVERFLOW_DIR_NAME
+    return tuple(root / f"{stem}.jsonl" for stem in transcript_stems(key))
+
+
+def _ctx_overflow_root(base: Path | None = None) -> Path:
+    """The directory every sidecar lives in."""
+    return (base or _sessions_dir()) / CTX_OVERFLOW_DIR_NAME
+
+
+def _node_present(path: Path, *, dir_fd: int | None = None) -> bool:
+    """Whether a node exists at *path*, WITHOUT traversing a link at the final component.
+
+    ``Path.exists()`` follows, so a planted reparse point aimed at a UNC share makes the probe
+    itself authenticate to that share -- the leak happens during the check, before any open.
+    ``os.lstat`` reports the link rather than its target.
+
+    ``dir_fd`` resolves the name against an ALREADY-PINNED directory. Declining to follow the last
+    component is not enough on its own: a junction planted at the agent-writable parent is
+    traversed while resolving the path to it, so the parent must be pinned too.
+
+    Reports a BROKEN link as present, which ``exists()`` calls absent. That direction is the safe
+    one here: the caller then attempts the no-follow open and is REFUSED, instead of treating a
+    planted name as free space.
+    """
+    try:
+        if dir_fd is not None and _CTX_RELATIVE_PROBE:
+            os.lstat(path.name, dir_fd=dir_fd)
+        else:
+            os.lstat(path)
+    except OSError:
+        return False
+    return True
+
+
+def _pin_ctx_overflow_root_by_name(root: Path, anchor: Path, *, create: bool) -> int:
+    """Refuse a link at either component below *anchor*, then pin the root by handle.
+
+    Windows has no ``openat``, so these two components cannot be opened relative to a held
+    descriptor and have to be named. Checking them by name is still worth doing, because the
+    finding is a link ALREADY sitting at ``sessions``: refusing that is the whole of it, and
+    ``pin_directory`` then holds a handle no rename can move the pinned root out from under.
+    Interleaved with the creates rather than run as a pass first, so a missing ``sessions`` is
+    never built through a link that appeared while the earlier component was being made.
+
+    What this arm cannot close is a swap BETWEEN the check and the open, which the POSIX walk has
+    no window for. That asymmetry is why the arm is selected by capability instead of offered as
+    an equal, and it is the reason the guard is spelled here rather than in :mod:`pinned_fs`,
+    which refuses to fall back to a by-name walk on its own behalf.
+    """
+    walked = anchor
+    for name in (root.parent.name, root.name):
+        walked = walked / name
+        if pinned_fs.is_reparse_point(walked):
+            raise NotADirectoryError(
+                f"refusing the pending-context sidecar root: {name!r} is a link or a junction, so "
+                "the root beneath it belongs to whatever that points at rather than to this "
+                "session"
+            )
+        if create:
+            try:
+                walked.mkdir(0o700)
+            except FileExistsError:
+                pass
+    return platform_compat.pin_directory(root)
+
+
+def _open_ctx_overflow_root(base: Path | None, *, create: bool) -> int:
+    """A descriptor for the sidecar root, refusing a link planted at any component below the home.
+
+    ``pin_directory`` and :func:`pinned_fs.open_dir_pinned` both resolve the root's PARENT by name
+    and leave ``O_NOFOLLOW`` guarding only the final component, so a link already sitting at the
+    agent-writable ``sessions`` directory is traversed while resolving the path to it -- the
+    descriptor then pins a foreign directory, and every rename and unlink addressed against it
+    lands there. Anchoring one level ABOVE ``sessions`` leaves both remaining components as names
+    opened relative to a held descriptor, so such a link fails the open instead of being followed.
+
+    Creating is the same hole pointed the other way: ``mkdir(parents=True)`` builds every missing
+    component by name, which WRITES through whatever an ancestor points at. It is folded in here
+    rather than left to a separate call so the create and the pin are one walk, with no window
+    between them for the root to be swapped for a link.
+
+    The anchor is still resolved by name, which is this module's deliberate residual, stated in
+    :func:`pinned_fs.pin_parent`: refusing every symlinked ancestor would also break a data home
+    under ``/tmp`` on macOS, where ``/tmp`` itself is a link. A platform without ``openat`` guards
+    the same two components by name instead -- see :func:`_pin_ctx_overflow_root_by_name` -- so the
+    refusal holds everywhere and only its race window differs.
+    """
+    root = _ctx_overflow_root(base)
+    anchor = root.parent.parent
+    if create:
+        anchor.mkdir(parents=True, exist_ok=True)
+    if not pinned_fs.supports_pinned_walk():
+        return _pin_ctx_overflow_root_by_name(root, anchor, create=create)
+    # NotADirectoryError rather than the default PinnedPathRefusal, which is not an OSError: both
+    # callers contain OSError, so a refusal outside that hierarchy escaped them as an unhandled
+    # error instead of the unsafe-root path they already have.
+    fds = [
+        pinned_fs.pin_parent(
+            os.path.realpath(anchor),
+            what="pending-context sidecar root",
+            refusal=NotADirectoryError,
+        )
+    ]
+    try:
+        for name in (root.parent.name, root.name):
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=fds[-1])
+                except FileExistsError:
+                    pass
+            fds.append(os.open(name, pinned_fs.dir_flags(), dir_fd=fds[-1]))
+        return fds.pop()
+    finally:
+        pinned_fs.close_all(fds)
+
+
+@contextlib.contextmanager
+def _ctx_overflow_dirfd(base: Path | None = None, *, create: bool = False) -> Iterator[int | None]:
+    """A descriptor pinning the sidecar root, refusing a symlinked or non-directory root.
+
+    The read side already refuses a planted node via ``open_regular_nofollow``; a mutation must
+    refuse the same way, because a symlinked ROOT redirects every path built under it and a rename
+    would then move a file the caller never named.
+
+    :func:`_open_ctx_overflow_root` closes that window on each platform: POSIX walks the chain
+    below the data home component by component and yields a descriptor mutations resolve against,
+    while Windows refuses a link at those same components by name and then holds a handle no
+    rename can move the directory out from under. So mutations pass ``dir_fd`` only where the
+    platform supports it.
+
+    Yields ``None`` when the root is absent, which is ordinary: there is nothing to clear.
+    """
+    try:
+        fd = _open_ctx_overflow_root(base, create=create)
+    except FileNotFoundError:
+        yield None
+        return
+    except OSError:
+        yield _CTX_OVERFLOW_ROOT_UNSAFE
+        return
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def coexisting_transcript_stems(key: str, base: Path | None = None) -> frozenset[str]:
+    """Stems among *key*'s aliases that a DIFFERENT surviving transcript backs.
+
+    :func:`transcript_stems` returns the canonical and legacy bare stem for one Slack key because
+    :meth:`ConversationLog._path` may resolve to either. That assumes only one is backed. When both
+    transcript files exist they are two live sessions, so the other stem's sidecar holds the OTHER
+    session's queue: clearing it destroys acknowledged context whose transcript is still resumable,
+    and reading it injects one session's context into the other.
+
+    Empty unless at least two stems are backed, so a lone legacy thread keeps resolving exactly as
+    before. The retained stem mirrors ``_path``: canonical when its transcript exists, else the
+    first legacy one whose transcript does.
+    """
+    sessions = base or _sessions_dir()
+    backed = [stem for stem in transcript_stems(key) if _node_present(sessions / f"{stem}.jsonl")]
+    if len(backed) < 2:
+        return frozenset()
+    return frozenset(backed[1:])
+
+
+def _ctx_overflow_path(key: str, base: Path | None = None, *, dir_fd: int | None = None) -> Path:
+    """The sidecar to read or write for *key*, paired with the transcript that actually exists.
+
+    Returning the canonical stem unconditionally wrote a legacy Slack thread's spill beside a
+    transcript living under the BARE ``thread_ts`` name, so History resumed the bare stem, found
+    no sidecar, and never restored acknowledged context. This mirrors
+    :meth:`ConversationLog._path`: canonical when its transcript is there, else the legacy stem
+    whose transcript is. An existing sidecar still wins over both, so a spill already written
+    stays findable wherever it landed.
+    """
+    paths = _ctx_overflow_paths(key, base)
+    stems = transcript_stems(key)
+    foreign = coexisting_transcript_stems(key, base)
+    for stem, candidate in zip(stems[1:], paths[1:]):
+        if stem not in foreign and _node_present(candidate, dir_fd=dir_fd):
+            return candidate
+    sessions = base or _sessions_dir()
+    if not _node_present(sessions / f"{stems[0]}.jsonl"):
+        for stem, sidecar in zip(stems[1:], paths[1:]):
+            if _node_present(sessions / f"{stem}.jsonl"):
+                return sidecar
+    return paths[0]
+
+
+def write_ctx_overflow(key: str, entries: list[dict], base: Path | None = None) -> Path:
+    """Persist *entries* that did not fit *key*'s metadata line, replacing any prior spill.
+
+    A SIDECAR rather than the archive, because the archive is a graveyard nothing reads: an
+    entry only reaches the agent through ``drain_pending_context``, which delivers the slot's
+    QUEUE, so a spill that cannot be read back is acknowledged content that is never injected.
+    This file is outside the transcript, so it does not count toward the rotation ceiling, and
+    :meth:`ConversationLog.get_metadata_with_overflow` folds it back for the readers that opt in.
+    """
+    root = _ctx_overflow_root(base)
+    payload = "".join(json.dumps(e, default=repr) + "\n" for e in entries)
+    # ONE FILE, so publishing is ONE atomic rename: a spill spread over continuation files had no
+    # atomic publish, and an interrupted rewrite left a mixed generation the next read recombined.
+    if len(entries) > _MAX_CTX_OVERFLOW_ENTRIES:
+        # THE SAME CEILING THE READER ENFORCES. Without it the writer published a spill every
+        # hydration then refused, so resume failed and the content became unreachable.
+        raise CtxOverflowTooLarge(
+            f"{len(entries)} entries exceeds {_MAX_CTX_OVERFLOW_ENTRIES} for {key}; NOT written"
+        )
+    size = len(payload.encode("utf-8"))
+    if size > _MAX_CTX_OVERFLOW_BYTES:
+        # REFUSED, NOT TRUNCATED: the caller still holds these entries, and a partial write is the
+        # silent loss this bound exists to prevent.
+        raise CtxOverflowTooLarge(
+            f"{size} bytes exceeds {_MAX_CTX_OVERFLOW_BYTES} for {key}; spill NOT written"
+        )
+    # OWNER-ONLY (0600). These entries are the same trusted-caller content the /note context half
+    # carries and are deliberately unredacted, so a default-umask 0644 spill is a local read.
+    with _ctx_overflow_dirfd(base, create=True) as _root_fd:
+        if _root_fd is None or _root_fd == _CTX_OVERFLOW_ROOT_UNSAFE:
+            raise OSError(
+                errno.ENOTDIR,
+                f"the sidecar root for {key} is not a plain directory; refusing to write through "
+                "whatever the name points at",
+                str(root),
+            )
+        # DERIVED INSIDE THE PIN: choosing which stem a spill occupies PROBES sibling candidates,
+        # and a probe with no descriptor lstats the full child path, resolving the root by name.
+        path = _ctx_overflow_path(key, base, dir_fd=_root_fd)
+        if _CTX_RELATIVE_MUTATION:
+            atomic_write_at(_root_fd, path.name, payload, mode=0o600)
+        else:
+            # Windows exposes no descriptor-relative write, so pin_directory's held handle is what
+            # stops the root moving under this path-based call; it is held across the whole write.
+            atomic_write(path, payload, restrict_to_owner=True)
+    return path
+
+
+class CtxOverflowClear(NamedTuple):
+    """What a sidecar clear actually achieved.
+
+    ``survivors`` is the load-bearing field: a non-empty list means a spill file is STILL
+    hydratable, so a caller about to remove the transcript must refuse instead.
+    """
+
+    survivors: list[Path]
+    quarantined: list[tuple[Path, Path]]
+
+
+def clear_ctx_overflow(
+    key: str, base: Path | None = None, *, quarantine: str = ""
+) -> CtxOverflowClear:
+    """Remove *key*'s spill under every alias its OWN transcript could occupy.
+
+    An alias a DIFFERENT surviving transcript backs is left alone; one nothing backs is still
+    cleared, since an orphaned sidecar resurrects deleted context when the key is reused. A
+    failed unlink is RETURNED, never suppressed.
+
+    *quarantine* renames a sidecar off the ``.jsonl`` stem -- unhydratable but recoverable.
+    ``"always"`` never unlinks, for a caller whose skip decision comes later and which unlinks
+    the holdings itself once the delete SUCCEEDED. ``"on_failure"`` unlinks and quarantines only
+    what will not unlink, for a caller whose entries are already retired.
+    """
+    survivors: list[Path] = []
+    quarantined: list[tuple[Path, Path]] = []
+
+    def _quarantine(path: Path, dirfd: int | None) -> bool:
+        holding = path.with_suffix(f".orphaned-{uuid.uuid4().hex}")
+        try:
+            if dirfd == _CTX_OVERFLOW_ROOT_UNSAFE:
+                return False
+            if dirfd is None:
+                return True
+            # RELATIVE to the vetted root where the platform allows it; elsewhere the pin's held
+            # handle is what stops the root being swapped under a path-based rename.
+            if _CTX_RELATIVE_MUTATION:
+                os.rename(path.name, holding.name, src_dir_fd=dirfd, dst_dir_fd=dirfd)
+            else:
+                path.rename(holding)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        quarantined.append((path, holding))
+        return True
+
+    with _ctx_overflow_dirfd(base) as _root_fd:
+        foreign = coexisting_transcript_stems(key, base)
+        for stem, path in zip(transcript_stems(key), _ctx_overflow_paths(key, base)):
+            if stem in foreign:
+                continue
+            if quarantine == "always":
+                if not _quarantine(path, _root_fd):
+                    logger.error(
+                        "could not quarantine the pending-context sidecar %s; it stays HYDRATABLE, "
+                        "so a session reusing this key would re-inject its context.",
+                        path,
+                    )
+                    survivors.append(path)
+                continue
+            last: OSError | None = None
+            for _ in range(_CTX_CLEAR_ATTEMPTS):
+                try:
+                    if _root_fd == _CTX_OVERFLOW_ROOT_UNSAFE:
+                        raise PermissionError(
+                            f"the pending-context sidecar root {_ctx_overflow_root(base)} is not a "
+                            "plain directory"
+                        )
+                    if _root_fd is None:
+                        raise FileNotFoundError(str(path))
+                    if _CTX_RELATIVE_MUTATION:
+                        os.unlink(path.name, dir_fd=_root_fd)
+                    else:
+                        path.unlink()
+                except FileNotFoundError:
+                    last = None
+                    break
+                except OSError as exc:
+                    last = exc
+                else:
+                    last = None
+                    break
+            if last is None:
+                continue
+            # The entries are already retired, so the file must stop being hydratable even when
+            # the filesystem refuses to remove it, or the next fold re-injects delivered context.
+            if quarantine == "on_failure" and _quarantine(path, _root_fd):
+                logger.warning(
+                    "pending-context sidecar %s could not be removed (%s); QUARANTINED off the "
+                    "hydration stem instead, so its retired entries cannot be re-injected.",
+                    path,
+                    last,
+                )
+                continue
+            logger.error(
+                "could not remove the pending-context sidecar %s (%s); it stays HYDRATABLE, so "
+                "a session reusing this key would re-inject already-delivered context.",
+                path,
+                last,
+            )
+            survivors.append(path)
+    return CtxOverflowClear(survivors, quarantined)
+
+
+def sync_ctx_overflow(key: str, entries: list[dict], base: Path | None = None) -> Path | None:
+    """Make *key*'s sidecar hold exactly *entries*, removing it when there are none.
+
+    THE INVARIANT IS "what is not on the metadata line", and it has to be re-established by
+    every save rather than only by one that spills. The fold dedups against the line alone, so
+    a sidecar left behind after the queue shrank re-injects entries already delivered -- and a
+    file left behind after the session is gone is inherited by the next session at that key.
+    """
+    if entries:
+        return write_ctx_overflow(key, entries, base)
+    cleared = clear_ctx_overflow(key, base, quarantine="on_failure")
+    if cleared.survivors:
+        # RAISED, not returned: the callers already guard this call, and a returned failure left
+        # those handlers dead -- the empty line committed while the stale file stayed hydratable.
+        raise CtxOverflowNotCleared(f"{len(cleared.survivors)} sidecar(s) survived for {key}")
+    return None
+
+
+class CtxOverflowUnreadable(OSError):
+    """The spill file EXISTS but could not be read.
+
+    Distinct from absence, which is the ordinary state and returns ``[]``. Collapsing the two
+    reported a read failure as "no spilled entries", so a hydration silently dropped
+    acknowledged context and a save then committed a line without it.
+
+    ``quarantined`` carries the moves the RAISER already made, because a handler that clears again
+    finds an empty stem: it would re-seat nothing and strand the undelivered half of a mixed spill.
+    """
+
+    def __init__(self, *args: object, quarantined: "list[tuple[Path, Path]] | None" = None) -> None:
+        super().__init__(*args)
+        self.quarantined: list[tuple[Path, Path]] = list(quarantined or [])
+
+
+class CtxOverflowTooLarge(CtxOverflowUnreadable):
+    """The spill file is too large to read into memory.
+
+    A SUBCLASS so every caller already handling an unreadable sidecar covers this too: the fold
+    reads through the same function, and a sibling type would escape handlers the old raise never
+    reached. Still distinguishable where a caller wants to tell a bounded refusal from I/O.
+
+    The file is quarantined off the hydration stem before this is raised: leaving it in place
+    would make every later hydration attempt the same oversized allocation.
+    """
+
+
+# A legitimate spill is bounded by the per-slot queue cap, but the union keeps the on-disk side
+# across unbounded distinct-slot rows-only saves onto one key, so the file has no natural bound.
+_MAX_CTX_OVERFLOW_BYTES = 8 * 1024 * 1024
+
+
+_MAX_CTX_OVERFLOW_ENTRIES = 5000
 
 
 def transcript_lock_stems(key: str) -> tuple[str, ...]:
@@ -2897,9 +3335,136 @@ class ConversationLog:
     def delete_session(self, key: str, *, skip_pinned: Literal[True]) -> bool | None: ...
 
     def delete_session(self, key: str, *, skip_pinned: bool = False) -> bool | None:
+        # ONE LOCK HOLD ACROSS BOTH: releasing between them lets a concurrent save write a
+        # REPLACEMENT sidecar that this cleanup then deletes. Reentrant, so the inner hold is fine.
+        try:
+            with self._locked(key):
+                return self._delete_session_locked(key, skip_pinned=skip_pinned)
+        except HistoryLockTimeout:
+            # The projection guarded its OWN acquisition and answered False; hoisting the hold up
+            # here put this one ahead of that guard, so the refusal has to be answered here too.
+            logger.warning("delete_session: lock timeout, not deleting key=%s", key)
+            return False
+
+    def _restore_quarantined(self, quarantined: list[tuple[Path, Path]]) -> list[tuple[Path, Path]]:
+        """Move holdings back onto the hydration stem, for every path where the transcript LIVES.
+
+        A holding file is off the stem `_ctx_overflow_path` resolves, so nothing reads it: it is
+        recoverable only by being renamed back. Both surviving-transcript exits therefore need this
+        — the refusal on unremovable survivors as much as the pinned/absent one — or a partial
+        rename leaves the entries it DID quarantine unreachable with the transcript still live.
+
+        Returns the pairs it could NOT restore. A logged-only failure left the caller reporting a
+        successful skip while the surviving transcript's context sat unreachable, so the callers
+        refuse on a nonempty return instead.
+        """
+        unrestored: list[tuple[Path, Path]] = []
+        if not quarantined:
+            return unrestored
+        # PINNED ACROSS THE RENAME: this runs after clear_ctx_overflow's own pin closed, and a bare
+        # rename resolves the agent-writable root by name again -- the window that pin exists to shut.
+        with _ctx_overflow_dirfd(self._dir) as root_fd:
+            if root_fd is None or root_fd == _CTX_OVERFLOW_ROOT_UNSAFE:
+                logger.error(
+                    "cannot restore %d quarantined sidecar(s): the root %s is not a plain "
+                    "directory, so a rename would resolve through whatever the name points at.",
+                    len(quarantined),
+                    _ctx_overflow_root(self._dir),
+                )
+                return list(quarantined)
+            for original, holding in quarantined:
+                last: OSError | None = None
+                for _ in range(_CTX_CLEAR_ATTEMPTS):
+                    try:
+                        if _CTX_RELATIVE_MUTATION:
+                            os.rename(
+                                holding.name, original.name, src_dir_fd=root_fd, dst_dir_fd=root_fd
+                            )
+                        else:
+                            holding.rename(original)
+                    except OSError as exc:
+                        last = exc
+                    else:
+                        last = None
+                        break
+                if last is None:
+                    continue
+                logger.error(
+                    "quarantined sidecar %s could not be restored to %s (%s); the "
+                    "transcript survives but its spilled context is now unreachable.",
+                    holding,
+                    original,
+                    last,
+                )
+                unrestored.append((original, holding))
+        return unrestored
+
+    def _delete_session_locked(self, key: str, *, skip_pinned: bool = False) -> bool | None:
+        # BEFORE the transcript, not after: the spill is keyed by transcript rather than
+        # owned by one, so a survivor is hydrated by any session later created at this key.
+        cleared = clear_ctx_overflow(key, self._dir, quarantine="always")
+        if cleared.survivors:
+            logger.error(
+                "refusing to delete %s: %d pending-context sidecar(s) could not be removed "
+                "or quarantined, and deleting the transcript would leave them hydratable.",
+                key,
+                len(cleared.survivors),
+            )
+            stranded = self._restore_quarantined(cleared.quarantined)
+            if stranded:
+                # Naming each holding is the whole remedy available here: it is off the stem
+                # `_ctx_overflow_path` resolves, so only a rename back makes it readable again.
+                logger.error(
+                    "delete of %s was refused and %d quarantined sidecar(s) could not be put "
+                    "back: %s. The transcript is live, so that acknowledged context is "
+                    "unreachable until a holding is renamed to its original path.",
+                    key,
+                    len(stranded),
+                    "; ".join(f"{holding} -> {original}" for original, holding in stranded),
+                )
+            return False
         if skip_pinned:
-            return self._metadata_projection.delete_session(key, skip_pinned=True)
-        return self._metadata_projection.delete_session(key, skip_pinned=False)
+            result = self._metadata_projection.delete_session(key, skip_pinned=True)
+        else:
+            result = self._metadata_projection.delete_session(key, skip_pinned=False)
+        # `delete_session` returns `existed`, so a False is EITHER a pinned skip -- transcript
+        # live, spill still owed to it -- OR nothing there, where no transcript can own the spill.
+        if not result and self._path(key).exists():
+            if self._restore_quarantined(cleared.quarantined):
+                # A FAILURE, not the ordinary skip: the transcript is live and its spilled context
+                # is off the hydration stem, so reporting the skip would hide unreachable content.
+                logger.error(
+                    "delete of %s was skipped but its quarantined context could not be restored; "
+                    "reporting failure so the caller does not treat this as a clean skip.",
+                    key,
+                )
+                return False
+            return result
+        # PINNED ACROSS THE UNLINK: clear_ctx_overflow's pin has closed, so a bare unlink would
+        # resolve the agent-writable root by name a second time.
+        with _ctx_overflow_dirfd(self._dir) as root_fd:
+            if cleared.quarantined and (root_fd is None or root_fd == _CTX_OVERFLOW_ROOT_UNSAFE):
+                logger.warning(
+                    "leaving %d quarantined sidecar(s) for %s in place: the root is not a plain "
+                    "directory, so an unlink would resolve through whatever it points at.",
+                    len(cleared.quarantined),
+                    key,
+                )
+                return result
+            for _, holding in cleared.quarantined:
+                try:
+                    if _CTX_RELATIVE_MUTATION:
+                        os.unlink(holding.name, dir_fd=root_fd)
+                    else:
+                        holding.unlink()
+                except OSError as exc:
+                    logger.warning(
+                        "quarantined sidecar %s outlived the deleted transcript (%s); it is off "
+                        "the hydration stem, so it is unreachable rather than re-injected.",
+                        holding,
+                        exc,
+                    )
+        return result
 
     def delete_memory_consolidation_session(self, key: str, expected_store: str) -> bool:
         """Delete every artifact of one retired generated consolidation turn."""
