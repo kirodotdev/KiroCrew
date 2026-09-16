@@ -37,6 +37,55 @@ class SyncScheduler:
         row = self.store.db.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
         return dict(row) if row else None
 
+    async def _sync_rows(self, connector, source: dict, source_id: str) -> dict:
+        """Drive the per-row ingest for a structured connector.
+
+        Fetches the connector's rows, ingests them via
+        :meth:`IngestionPipeline.ingest_rows` (each row -> its own item group +
+        ACL grant + ProviderResourceRef), and advances the source CHECKPOINT
+        (the connector-supplied resume token, persisted in properties) ONLY when
+        every row's data + ACL persisted. A partial/failed round leaves the
+        checkpoint where it was, so the next sync re-attempts the un-persisted
+        rows and no unchanged row is lost. Old managed grants are never erased on
+        an incremental round -- only a full snapshot deletes rows it dropped.
+        """
+        rows, snapshot, checkpoint = await connector.fetch_rows(source)
+        outcome = await self.pipeline.ingest_rows(
+            rows, source_id=source_id, snapshot=snapshot)
+        if outcome.fully_persisted:
+            # Data + ACL for every row landed: advance the checkpoint and mark
+            # synced. run_to_completion so a cancel cannot drop the advance.
+            await run_to_completion(
+                lambda: self._advance_checkpoint(source_id, checkpoint))
+        else:
+            # Do NOT advance the checkpoint; the source stays where it was so the
+            # next sync re-attempts. Surface the per-row errors.
+            logger.warning(
+                "Sync rows for source %s not fully persisted (%d/%d rows changed, "
+                "checkpoint NOT advanced)", source_id, outcome.rows_changed,
+                len(outcome.results))
+        return {
+            "synced": outcome.fully_persisted,
+            "items_created": outcome.rows_changed,
+            "rows_deleted": len(outcome.deleted_keys),
+            "checkpoint_advanced": outcome.fully_persisted,
+        }
+
+    def _advance_checkpoint(self, source_id: str, checkpoint) -> None:
+        """Persist the connector resume token + mark synced, under the outcome
+        lock (a read-modify-write of the properties blob, like _record_success)."""
+        with self._sync_outcome_lock:
+            source = self._get_source(source_id)
+            if not source:
+                return
+            props = json.loads(source.get("properties") or "{}")
+            props["consecutive_failures"] = 0
+            if checkpoint is not None:
+                props["checkpoint"] = checkpoint
+            self.store.update_source(
+                source_id, last_synced=datetime.now().isoformat(),
+                properties=props, sync_status="synced")
+
     def get_connector(self, source_type: str) -> BaseConnector | None:
         return self.connectors.get(source_type)
 
@@ -65,6 +114,10 @@ class SyncScheduler:
                     result["error"] = f"No connector for {source['source_type']}"
                     return result
                 if not await connector.detect_changes(source):
+                    return result
+                if connector.supports_rows() is True:
+                    rows_result = await self._sync_rows(connector, source, source_id)
+                    result.update(rows_result)
                     return result
                 text, meta = await connector.fetch(source)
                 job_id = await self.pipeline.ingest_text(text, source["name"], source["source_type"],

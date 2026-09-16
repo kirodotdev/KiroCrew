@@ -544,6 +544,7 @@ _DOC_STATE_TABLES: tuple[tuple[str, str], ...] = (
     ("folder_file_state", "done"),
     ("artifact_item_state", "active"),
     ("agent_item_state", "active"),
+    ("connector_row_state", "active"),
 )
 
 # Which column identifies ONE document within a doc-state table. Ownership has to
@@ -556,6 +557,7 @@ _DOC_STATE_KEY_COL: dict[str, str] = {
     "folder_file_state": "file_path",
     "artifact_item_state": "slug",
     "agent_item_state": "slug",
+    "connector_row_state": "row_key",
 }
 
 # Which column on each state table holds a hash in the SAME DOMAIN as
@@ -582,6 +584,7 @@ _OWNERSHIP_HASH_COL: dict[str, str] = {
     "folder_file_state": "COALESCE(text_hash, content_hash)",
     "artifact_item_state": "content_hash",
     "agent_item_state": "content_hash",
+    "connector_row_state": "content_hash",
 }
 # Folder rows COALESCE so a legacy row -- written before ``text_hash`` existed, and
 # deliberately never backfilled -- keeps behaving exactly as it does today: for the
@@ -877,6 +880,27 @@ class KnowledgeStore:
                 merged_into_source_id TEXT,
                 source_uri TEXT,
                 PRIMARY KEY (source_id, slug)
+            );
+
+            -- Per-ROW item-group tracking for a STRUCTURED connector source
+            -- (GitHub issues/PRs/commits/check-runs, Salesforce records, ...).
+            -- Same shape and role as artifact_item_state/agent_item_state: it is
+            -- what lets one connector source hold many independently-replaceable
+            -- ROWS, each keyed by its OWN stable row_key, and gives incremental
+            -- sync a per-row unit. content_hash short-circuits an unchanged row;
+            -- item_ids is the row's item group (replaced on update, deleted on a
+            -- full-snapshot removal). Each row's per-user ACL lives on its items'
+            -- item_acl rows (with the ProviderResourceRef), NOT here -- this
+            -- table is the identity/change ledger, item_acl is the grant.
+            CREATE TABLE IF NOT EXISTS connector_row_state (
+                source_id TEXT NOT NULL REFERENCES sources(id),
+                row_key TEXT NOT NULL,
+                content_hash TEXT,
+                item_ids TEXT DEFAULT '[]',
+                updated_at TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                merged_into_source_id TEXT,
+                PRIMARY KEY (source_id, row_key)
             );
 
             -- Tombstones for auto-discovered sources the user deleted. Keyed by
@@ -1762,6 +1786,50 @@ class KnowledgeStore:
             for row in rows:
                 out[row["id"]] = (row["source_id"] is not None, row["trust_class"])
         return out
+
+    def get_connector_row_state(self, source_id: str) -> dict:
+        """The per-row change ledger for a structured connector source.
+
+        Returns ``{row_key: {"content_hash": str|None, "item_ids": [str],
+        "status": str}}`` for the ACTIVE rows of *source_id*. The pipeline reads
+        this before ingest to short-circuit unchanged rows (matching
+        content_hash) and to find the prior item group a changed row replaces;
+        the sync scheduler reads it to compute which rows a full snapshot dropped.
+        """
+        out: dict[str, dict] = {}
+        for row in self.db.execute(
+            "SELECT row_key, content_hash, item_ids, status FROM connector_row_state "
+            "WHERE source_id = ? AND status = 'active'", (source_id,)
+        ).fetchall():
+            try:
+                ids = json.loads(row["item_ids"]) if row["item_ids"] else []
+            except (json.JSONDecodeError, TypeError):
+                ids = []
+            out[row["row_key"]] = {
+                "content_hash": row["content_hash"],
+                "item_ids": ids,
+                "status": row["status"],
+            }
+        return out
+
+    def set_connector_row_state(self, source_id: str, row_key: str, *,
+                                content_hash: str | None, item_ids: list[str]) -> None:
+        """Record (or overwrite) which items one connector row owns.
+
+        Written by the pipeline in the SAME durable step as the row's items +
+        ACL grant, so the ledger, the content and the grant advance together --
+        a crash between them cannot leave a row marked active with no items or an
+        item with no grant."""
+        self.db.execute(
+            "INSERT INTO connector_row_state "
+            "(source_id, row_key, content_hash, item_ids, updated_at, status) "
+            "VALUES (?, ?, ?, ?, ?, 'active') "
+            "ON CONFLICT(source_id, row_key) DO UPDATE SET "
+            "content_hash = excluded.content_hash, item_ids = excluded.item_ids, "
+            "updated_at = excluded.updated_at, status = 'active', "
+            "merged_into_source_id = NULL",
+            (source_id, row_key, content_hash, json.dumps(item_ids),
+             datetime.now().isoformat()))
 
     def _delete_item_cascade(self, item_id):
         """Delete item and its dependents without commit/graph reload (for batch use)."""
