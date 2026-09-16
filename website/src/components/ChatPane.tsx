@@ -38,6 +38,7 @@ import { useProvider } from '../providers'
 import type { ModelInfo } from '../providers/types'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
+import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { filterInteractiveModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
@@ -265,8 +266,6 @@ export default function ChatPane({
   // In-pane report of a title rename / regenerate that did not land (#9727):
   // the main header routes the same failure into its action banner.
   const [titleError, setTitleError] = useState<{ title: string; message: string } | null>(null)
-  const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
-  const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
   // The transcript is virtualized (chat-core P5-e): ChatMessageList owns the
   // scroller and the stick-to-bottom follow through VirtualTranscript. The pane
   // keeps the element ref for the pinned-prompt hook, a handle for the jump
@@ -483,6 +482,10 @@ export default function ChatPane({
     [effectiveModels, hiddenModelIds, paneSlot?.model, paneSlot?.served_model],
   )
   const modelDD = useFilteredDropdown(modelPickerModels)
+  // Picker anchors: keep each portaled menu glued to the ChatInput chip that
+  // opened it while the menu is open (#10616, same class as #10580).
+  const { rect: agentBtnRect, anchorTo: anchorAgentBtn } = useAnchoredTriggerRect(agentDD.open)
+  const { rect: modelBtnRect, anchorTo: anchorModelBtn } = useAnchoredTriggerRect(modelDD.open)
   // See ChatPage: display what will actually run, not a pin the account lost
   // access to. The slot's own `model_withheld` verdict answers that when the
   // backend has one; the degraded flag gates only the list-membership fallback —
@@ -1488,8 +1491,8 @@ export default function ChatPane({
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
-          onAgentClick={!agentLocked && provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); agentDD.setOpen(!agentDD.open) } : undefined}
-          onModelClick={(rect) => { setModelBtnRect(rect); modelDD.setOpen(!modelDD.open) }}
+          onAgentClick={!agentLocked && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
+          onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
           followUpOptions={followUpOptions}
           followUpPicked={followUpPicked}

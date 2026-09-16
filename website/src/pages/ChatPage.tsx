@@ -5,6 +5,7 @@ import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/rea
 import { useModelsDegraded } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useVisualViewport } from '../hooks/useVisualViewport'
+import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
@@ -996,7 +997,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Sending the literal 'auto' would NOT be equivalent: it is truthy, so it
   // short-circuits `slot.model or agent_model` and would override a template or
   // global pin the user did configure.
-  const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
+  // Composer-toolbar picker anchors: each hook keeps its portaled menu glued
+  // to the ChatInput chip that opened it while the menu is open (#10616).
+  const { rect: modelBtnRect, anchorTo: anchorModelBtn } = useAnchoredTriggerRect(modelDropdown)
   // One in-page slot for every failed action whose only report used to be a
   // notification-centre toast, a native alert() or a swallowed catch (fork,
   // plan-from-here, apply-plan, steer, rename, title generation, the agent
@@ -1769,9 +1772,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     window.addEventListener('beforeunload', h)
     return () => window.removeEventListener('beforeunload', h)
   }, [flushDrafts])
-  const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
+  const { rect: agentBtnRect, anchorTo: anchorAgentBtn } = useAnchoredTriggerRect(agentDropdown)
   const [projectPickerOpen, setProjectPickerOpen] = useState(false)
-  const [projectBtnRect, setProjectBtnRect] = useState<DOMRect | null>(null)
+  const { rect: projectBtnRect, anchorTo: anchorProjectBtn } = useAnchoredTriggerRect(projectPickerOpen)
 
   // Prevent Chrome from navigating to dropped files.
   // Must be on document to catch drops anywhere on the page.
@@ -2990,7 +2993,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { controls: sessionControls, error: sessionControlsError } = useSessionControls()
   const [openSessionControl, setOpenSessionControl] =
     useState<{ key: string; slot: string } | null>(null)
-  const [sessionControlRect, setSessionControlRect] = useState<DOMRect | null>(null)
+  const { rect: sessionControlRect, anchorTo: anchorSessionControl } = useAnchoredTriggerRect(
+    !!openSessionControl && openSessionControl.slot === activeSlot,
+  )
   // Re-poll a control's status when its popover closes: that is when the user
   // has most likely just changed the thing the chip reports. React Query owns
   // the cache, so this is an invalidation rather than a token the hook watches.
@@ -4028,9 +4033,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const chip = document.querySelector<HTMLElement>('[data-testid="composer-model-chip"]')
     const rect = chip?.getBoundingClientRect()
       ?? new DOMRect(16, Math.max(0, window.innerHeight - 96), 160, 28)
-    setModelBtnRect(rect)
+    anchorModelBtn(rect, chip)
     setModelDropdown(true)
-  }, [setModelDropdown])
+  }, [anchorModelBtn, setModelDropdown])
   // The Default Model setting lives only on the full dashboard's Settings →
   // Chat tab. /embed/settings is a different page (Display), and a popout has
   // no settings route at all, so on both surfaces the affordance is omitted
@@ -7463,10 +7468,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // The served default is shown exactly when the pin alone would
               // have read `auto`; that is the inherited case the marker names.
               modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
-              onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); setAgentDropdown(!agentDropdown) } : undefined}
-              onModelClick={(rect) => { setModelBtnRect(rect); setModelDropdown(!modelDropdown) }}
-              onProjectClick={(rect) => {
-                setProjectBtnRect(rect)
+              onAgentClick={provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
+              onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); setModelDropdown(!modelDropdown) }}
+              onProjectClick={(rect, trigger) => {
+                anchorProjectBtn(rect, trigger)
                 setProjectPickerOpen(o => !o)
               }}
               sessionControls={sessionControls.map(sc => ({
@@ -7477,8 +7482,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 state: sessionControlStatuses[sc.key]?.state,
                 statusTooltip: sessionControlStatuses[sc.key]?.tooltip,
               }))}
-              onSessionControlClick={(key, rect) => {
-                setSessionControlRect(rect)
+              onSessionControlClick={(key, rect, trigger) => {
+                anchorSessionControl(rect, trigger)
                 // Two independent setState calls, not one updater with a side
                 // effect: React may run an updater twice (StrictMode does in
                 // dev), which would bump the refresh token twice per toggle and

@@ -516,9 +516,18 @@ interface ChatInputProps {
    * inherited case, so a served model does not read as something the user
    * chose. A pinned chip has nothing to explain. */
   modelIsInheritedDefault?: boolean
-  onAgentClick?: (rect: DOMRect) => void
-  onModelClick?: (rect: DOMRect) => void
-  onProjectClick?: (rect: DOMRect) => void
+  /**
+   * Picker openers (agent, model, project, and `onSessionControlClick` below).
+   * Each hands the host the chip's click-time rect AND the chip element itself:
+   * the host owns the picker's portal and must keep it glued to the chip while
+   * it is open (the composer moves under an open menu when the mobile keyboard
+   * closes, the composer grows, or a container scrolls), which needs a live
+   * element to re-read, not a one-time snapshot (#10616). Hosts feed both into
+   * `useAnchoredTriggerRect`.
+   */
+  onAgentClick?: (rect: DOMRect, trigger?: HTMLElement) => void
+  onModelClick?: (rect: DOMRect, trigger?: HTMLElement) => void
+  onProjectClick?: (rect: DOMRect, trigger?: HTMLElement) => void
   /** App-contributed session controls (contributes.sessionControls in app.json). */
   sessionControls?: {
     key: string
@@ -535,7 +544,7 @@ interface ChatInputProps {
     /** Replaces the tooltip when the app explains its state. */
     statusTooltip?: string
   }[]
-  onSessionControlClick?: (key: string, rect: DOMRect) => void
+  onSessionControlClick?: (key: string, rect: DOMRect, trigger?: HTMLElement) => void
   contextPct?: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -4784,7 +4793,7 @@ function ChatInput({
                       ? 'text-warn'
                       : 'text-muted hover:text-text'
               }`}
-              onClick={e => onSessionControlClick?.(sc.key, e.currentTarget.getBoundingClientRect())}
+              onClick={e => onSessionControlClick?.(sc.key, e.currentTarget.getBoundingClientRect(), e.currentTarget)}
               // Marks the chip as part of its own popover for dismissal
               // purposes: mousedown fires before click, so without this the
               // host's outside-click closes the popover and the chip's toggle
@@ -4807,7 +4816,7 @@ function ChatInput({
                writes, so it would make the shelf ignore the user's typeface. */
             <button
               className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
-              onClick={e => onAgentClick(e.currentTarget.getBoundingClientRect())}
+              onClick={e => onAgentClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
               disabled={isRunning}
               // Inherited default: explain what the ` . default` marker means, on
               // hover (title) AND keyboard focus / screen readers (aria-label),
@@ -4838,7 +4847,7 @@ function ChatInput({
           <div className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted">
           <button
             className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
-            onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect())}
+            onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
             disabled={isRunning}
             title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : projectChipTitle}
             aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : projectChipTitle}
@@ -5009,7 +5018,7 @@ function ChatInput({
           {onModelClick && modelName && (
             <button
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
-              onClick={e => onModelClick(e.currentTarget.getBoundingClientRect())}
+              onClick={e => onModelClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
               disabled={isRunning}
               data-testid="composer-model-chip"
               // Inherited default: mirror the agent chip -- ` · default` marker on
