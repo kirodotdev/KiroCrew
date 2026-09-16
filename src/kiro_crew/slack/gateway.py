@@ -1319,6 +1319,16 @@ async def _cron_stream_with_posttoken_resume(
         except Exception as exc:
             partial = "".join(parts)
             if _resume_used or not partial or not acp_error_is_transient(exc):
+                # A death on the CONTINUATION prompt cannot be resubmit-safe,
+                # whatever its raise site claims. The raise site sees only that
+                # its own write never reached the child; that this write
+                # continues a turn which already streamed -- and may already
+                # have completed a tool -- is knowable only here. The caller's
+                # ACP-death retry re-runs the ORIGINAL message on a fresh
+                # session, so an inherited claim replays that tool. Withdrawn as
+                # a plain attribute, adding no ACP import.
+                if _resume_used and getattr(exc, "resubmit_safe", False):
+                    exc.resubmit_safe = False  # type: ignore[attr-defined]
                 raise
             _resume_used = True
             preserved = partial
@@ -5598,10 +5608,79 @@ class GatewayOrchestrator:
                     _defer_cron_before_dispatch(job, "gateway admission is closed")
                     return None
                 # Attempt one retry for ACP process death before any dedup / alert.
+                #
+                # A CLASSIFIED death decides this branch on its own verdict, wherever
+                # it is raised. A message test cannot, because the most common death
+                # is discovered as a broken pipe on the next write and reads "ACP
+                # process pipe broken: <cause>", matching neither substring below.
+                #
+                # `resubmit_safe` decides whether resubmitting is allowed: a death
+                # discovered with a turn IN FLIGHT may follow a tool that already
+                # completed its side effects, so re-running the prompt can repeat a
+                # mutation. The ACP layer states that per death rather than exporting
+                # its class hierarchy, so this branch reads one attribute and adds no
+                # ACP import (scripts/check_agent_sdk_boundary.py refuses a new one).
+                #
+                # The substring arm stays because it is what an UNCLASSIFIED death
+                # falls back to, and two populations need it: five sites spell process
+                # death as a plain AcpError, not AcpProcessDied ("ACP process not
+                # running" for a missing stdin, and "ACP process exited (code=...)"),
+                # and every shared-runtime death arrives as an AcpProcessDied with no
+                # verdict because `_translate_dead` rebuilds it from the message alone.
+                #
+                # It cannot out-vote an EXPLICIT verdict, which is why "Process exited
+                # during prompt" states `resubmit_safe=False` at its raise site: that
+                # message contains "process exited", so silence there would send a
+                # mid-turn death to this arm and retry it.
+                #
+                # WHAT THE INVARIANT DOES NOT REACH, stated so the coverage is not
+                # read as total. TWO populations, not one.
+                #
+                # (1) Those five plain-AcpError sites carry no verdict, so wording
+                # decides them, and four are reachable with a turn in flight -- the
+                # EOF read raises "ACP process exited (code=...)" from the prompt
+                # loop, and the "not running" checks guard the writes that answer a
+                # mid-turn child request.
+                #
+                # (2) On the shared runtime, AcpSessionHandle._died composes its
+                # message from runtime.death_summary(), which embeds _exit_reason's
+                # "process exited (rc=N)". All three of its call sites are mid-turn
+                # (compaction wait, response wait, prompt), and it passes no verdict,
+                # so those deaths reach this arm by wording and are resubmitted. This
+                # population is larger than (1) and sits on the default backend.
+                #
+                # A death in either population is still resubmitted here, exactly as
+                # it was before this attribute existed. Closing (1) means raising
+                # those sites as AcpProcessDied, which also changes the answer for
+                # the pre-turn callers that share the same message; closing (2) means
+                # _died stating a verdict from `is_turn_active`, which it can see.
+                # Both are behaviour decisions rather than relabellings, so neither
+                # is taken here.
+                #
+                # Two further resubmit paths -- dashboard/chat_runner.py and
+                # task_executor.py -- do not read the verdict at all. They answer a
+                # foreground turn with a user waiting, so what they should do instead
+                # is their own decision.
+                #
+                # An UNCLASSIFIED verdict falls through to the wording arm; only an
+                # explicit verdict overrides it. That asymmetry is the point: a
+                # death nobody has classified must keep whatever behaviour it had
+                # before this attribute existed. Reading `None` as "refuse" would
+                # delete retries instead of deciding them -- measured on the shared
+                # runtime, where `_translate_dead` rebuilds every death as
+                # `AcpProcessDied(str(exc))` and the five `runtime.py` "process not
+                # running" raises arrive with no verdict at all.
                 exc_msg = str(exc).lower()
+                verdict = exc.resubmit_safe if isinstance(exc, AcpProcessDied) else None
                 if (
-                    isinstance(exc, AcpError)
-                    and ("not running" in exc_msg or "process exited" in exc_msg)
+                    (
+                        verdict
+                        if verdict is not None
+                        else (
+                            isinstance(exc, AcpError)
+                            and ("not running" in exc_msg or "process exited" in exc_msg)
+                        )
+                    )
                     and not getattr(job, "_acp_retried", False)
                     and self.sessions is not None
                 ):

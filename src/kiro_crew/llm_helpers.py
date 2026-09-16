@@ -2210,6 +2210,19 @@ async def stream_and_collect(
                     continue
 
             # ── Case 3: fatal (auth, validation, exhausted retries) — propagate. ──
+            #
+            # Withdraw a resubmit-safety claim once a tool has fired in this
+            # call. A raise site that claims safety is claiming its own write
+            # never reached the child, which is all it can see; it is NOT
+            # claiming that nothing ran EARLIER in the same call, which only
+            # this loop can see. `_fb_tool_activity` is sticky across attempts,
+            # so a fired tool means a caller that resubmits the original prompt
+            # would run that tool a second time -- the same replay the fallback
+            # chain refuses just above, reaching the caller through the flag
+            # instead. Read as a plain attribute so no ACP symbol is imported
+            # for it, and left untouched when the flag is absent.
+            if _fb_tool_activity and getattr(exc, "resubmit_safe", False):
+                exc.resubmit_safe = False  # type: ignore[attr-defined]
             raise
         finally:
             # Runs before the value reaches the caller on success, and before the exception

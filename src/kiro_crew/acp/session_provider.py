@@ -112,7 +112,16 @@ class AcpSessionProvider(LLMProvider):
         (the runtime is owned by this provider's lifecycle, not recreated in place).
         """
         if not self._runtime.is_alive():
-            raise AcpProcessDied("Runtime is not alive — cannot start a new conversation")
+            # No turn can be in flight here: the pool calls this between tasks,
+            # holding no stream. A prior conversation on this warm worker may
+            # well have run tools, so the claim is specifically that THIS death
+            # is not a mid-turn one, not that nothing ever ran. Every other death
+            # here is left unclassified and falls back to the consumer's wording
+            # arm -- including _translate_dead's re-wraps, which is why the
+            # default is None rather than a refusal.
+            raise AcpProcessDied(
+                "Runtime is not alive — cannot start a new conversation", resubmit_safe=True
+            )
         old = self._handle
         # Create the fresh session BEFORE destroying the old one so a failure
         # leaves the provider still pointing at a usable handle (no window where
