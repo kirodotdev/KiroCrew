@@ -3188,6 +3188,12 @@
       "label": "changes need a restart",
       "tooltip": "This setting cannot change while {{productName}} is running. The saved value is kept and applies the next time {{productName}} restarts (Settings → About, or the terminal where you launched it).",
       "schema_unavailable": "Couldn't check whether this setting needs a restart."
+    },
+    "sessionColorSwatches": {
+      "color_change_failed": "The color change was undone."
+    },
+    "sendToInstanceSubmenu": {
+      "send_failed": "Couldn't send a copy to that instance."
     }
   },
   "hooks": {
@@ -3265,7 +3271,11 @@
     },
     "useSessionActions": {
       "close_this_session": "Close this session?",
+      "fork_failed": "Couldn't duplicate this session — nothing was created.",
+      "mode_change_failed": "The mode change was undone.",
+      "pin_change_failed": "The pin change was undone.",
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
+      "reload_failed_busy": "Session reload failed — the agent may be mid-turn. Try again when the session is idle.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
       "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
@@ -3306,6 +3316,9 @@
       "subagents": "Subagents",
       "summary": "Summary",
       "workflows": "Workflows"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "The move was undone."
     }
   },
   "nav": {
@@ -3985,6 +3998,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "Couldn’t update “{{name}}”",
       "turn_minimap": "Navigate conversation turns",
       "turn_minimap_active": "Turn {{current}} of {{count}}: {{prompt}}",
       "turn_minimap_active_windowed": "Turn {{current}} of {{count}} loaded: {{prompt}}",
@@ -6457,6 +6471,8 @@
     "offline": {
       "disabled_gateway_offline": "{{label}} disabled — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}",
+      "recolor_sessions": "recolor sessions",
+      "send_to_instances": "send to instances",
       "submit_comments": "submit comments"
     },
     "popoutController": {

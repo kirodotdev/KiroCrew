@@ -12,6 +12,7 @@ import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedS
 import { i18nT } from '../i18n/t'
 import type { ChatSlot } from '../types'
 import { compareBySort, readSessionSortKey } from '../pages/chat/sessionOrder'
+import { reportActionFailure } from '../utils/actionFailure'
 
 interface PinMutationEntry {
   key: string
@@ -205,6 +206,9 @@ export function useSessionActions(mode?: string): SessionActions {
         dispatch(switchSlot(data.key))
       }
     },
+    // A fork that fails switches to no session, so without this the click is
+    // indistinguishable from one that never registered.
+    onError: () => reportActionFailure(i18nT('hooks.useSessionActions.fork_failed')),
   })
 
   const pinMutation = useMutation({
@@ -240,10 +244,14 @@ export function useSessionActions(mode?: string): SessionActions {
     onSuccess: (_data, _vars, ctx) => ctx
       ? finishPinMutation(ctx.batch, ctx.entry, true)
       : undefined,
-    onError: (_err, _vars, ctx) => ctx
-      ? finishPinMutation(ctx.batch, ctx.entry, false)
-      : undefined,
+    onError: (_err, vars, ctx) => {
+      reportActionFailure(i18nT('hooks.useSessionActions.pin_change_failed'), slotTitle(vars.key))
+      return ctx ? finishPinMutation(ctx.batch, ctx.entry, false) : undefined
+    },
   })
+
+  const slotTitle = (key: string) =>
+    store.getState().dashboard.slots.find(s => s.key === key)?.title ?? ''
 
   // Orchestrator/Autopilot mode toggle (optimistic, server-persisted).
   const modeMutation = useMutation({
@@ -258,6 +266,7 @@ export function useSessionActions(mode?: string): SessionActions {
       // Guarded rollback: don't clobber a superseding mode toggle.
       const current = store.getState().dashboard.slots.find(s => s.key === ctx.key)?.mode ?? ''
       if (current === ctx.newMode) dispatch(updateSlot({ key: ctx.key, mode: ctx.prev }))
+      reportActionFailure(i18nT('hooks.useSessionActions.mode_change_failed'), slotTitle(ctx.key))
     },
   })
 
@@ -266,17 +275,20 @@ export function useSessionActions(mode?: string): SessionActions {
   // over the websocket (and lighting the row's unread indicator for a
   // non-active slot). Failure must NOT be silent -- the user would proceed
   // believing their stale MCP config was refreshed, the exact confusion the
-  // feature exists to fix. alert() is the always-available surface (the
-  // dashboard has no global toast); the copy branches on the backend's
+  // feature exists to fix. It reports to the shared in-page notice, which carries
+  // the agent hand-off a native alert() cannot. The copy branches on the backend's
   // machine-readable code, because "try again when the session is idle" is a
   // dead end for a slot that LOOKS idle but has sub-agents still working.
   const reloadMutation = useMutation({
     mutationFn: (slot: string) => api.chatSlotReload(slot),
     onError: (err) => {
-      const body = err instanceof ApiError ? err.body : ''
-      alert(i18nT(body.includes('slot_subagents_running')
+      const responded = err instanceof ApiError
+      const body = responded ? err.body : ''
+      reportActionFailure(i18nT(body.includes('slot_subagents_running')
         ? 'hooks.useSessionActions.reload_failed_subagents'
-        : 'hooks.useSessionActions.reload_failed'))
+        : responded
+          ? 'hooks.useSessionActions.reload_failed_busy'
+          : 'hooks.useSessionActions.reload_failed'))
     },
   })
 

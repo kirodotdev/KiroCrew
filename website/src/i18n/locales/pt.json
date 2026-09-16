@@ -7584,6 +7584,7 @@
       "failed": "Falhou",
       "not_connected": "não conectado",
       "send_a_copy_to": "Enviar uma cópia para",
+      "send_failed": "Não foi possível enviar uma cópia para essa instância.",
       "sent": "Enviado",
       "sent_transcript_only": "Enviado (apenas transcrição)",
       "transcript_only_hint": "Essa instância não conseguiu restaurar o contexto completo da conversa, então esta cópia retoma apenas a partir da transcrição.",
@@ -7597,6 +7598,7 @@
       "mark_as_read": "Marcar como lida",
       "mark_as_unread": "Marcar como não lida",
       "move_to_folder": "Mover para pasta…",
+      "offline_reason": "Gateway offline — as ações esmaecidas precisam de conexão",
       "open_in_new_tab": "Abrir em uma aba de sessão",
       "pin": "Fixar",
       "pop_out_to_window": "Destacar em uma janela",
@@ -7612,7 +7614,9 @@
       "unpin": "Desafixar"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "A alteração de cor foi desfeita.",
       "custom_color": "Cor personalizada",
+      "custom_color_picker": "Seletor de cor personalizada",
       "hex_color_code": "Código de cor hexadecimal",
       "no_color": "Sem cor"
     },
@@ -8734,7 +8738,11 @@
     },
     "useSessionActions": {
       "close_this_session": "Fechar esta sessão?",
+      "fork_failed": "Não foi possível duplicar esta sessão — nada foi criado.",
+      "mode_change_failed": "A alteração de modo foi desfeita.",
+      "pin_change_failed": "A alteração de fixação foi desfeita.",
       "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
+      "reload_failed_busy": "Falha ao recarregar a sessão: o agente pode estar no meio de um turno. Tente novamente quando a sessão estiver inativa.",
       "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
       "switch_to_autopilot_mode_future_messages_will_us": "Mudar para o modo Autopilot? As próximas mensagens usarão o comportamento do autopilot (planejar → aprovar → executar).",
       "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat."
@@ -8756,6 +8764,9 @@
       "approval_required": "Aprovação necessária",
       "tool_approval": "Aprovação de ferramenta: {{name}}",
       "unknown": "Desconhecido"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "A movimentação foi desfeita."
     }
   },
   "lib": {
@@ -10185,6 +10196,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "Não foi possível atualizar “{{name}}”",
       "turn_minimap": "Navegar pelos turnos da conversa",
       "turn_minimap_active": "Turno {{current}} de {{count}}: {{prompt}}",
       "turn_minimap_active_windowed": "Turno {{current}} de {{count}} carregados: {{prompt}}",
@@ -15327,6 +15339,8 @@
     "offline": {
       "disabled_gateway_offline": "{{label}} indisponível — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — reconecte para {{action}}",
+      "recolor_sessions": "recolorir sessões",
+      "send_to_instances": "enviar para instâncias",
       "submit_comments": "enviar comentários"
     },
     "popoutController": {

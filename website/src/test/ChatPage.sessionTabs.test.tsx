@@ -96,6 +96,7 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as never
 
 import ChatPage from '../pages/ChatPage'
+import { reportActionFailure, __resetActionFailureForTests } from '../utils/actionFailure'
 
 const SLOTS = [
   { key: 'chat-1', title: 'First', messages: 1, running: false, mode: '', created: '', last_ts: '' },
@@ -243,6 +244,31 @@ describe('ChatPage – session tab strip', () => {
     localStorage.setItem('mc-session-tabs-chat', JSON.stringify(['chat-1', 'chat-2']))
     renderChatPage({ embedded: true })
     expect(screen.queryByTestId('session-tab-strip')).toBeNull()
+  })
+
+  it('shows a rejected write without any sidebar, which some hosts do not mount', async () => {
+    // This suite stubs ChatSidebar, so a notice that lived only there renders
+    // nothing here — the same hole embedMode="chat" leaves in the real app.
+    renderChatPage()
+    act(() => { reportActionFailure('Session reload failed.') })
+    const notice = await screen.findByTestId('session-action-error')
+    expect(notice.textContent).toContain('Session reload failed.')
+  })
+
+  it('names the session a rejected write reverted, not "this session"', async () => {
+    // With several sessions open an unnamed notice lets the reader take the
+    // active row as the reverted one, which is the wrong session.
+    renderChatPage()
+    act(() => { reportActionFailure("Couldn't change this session's pin — the change was undone.", 'Research notes') })
+    const notice = await screen.findByTestId('session-action-error')
+    expect(notice.textContent).toContain('Research notes')
+  })
+
+  it('carries no heading when a reporter names no session', async () => {
+    renderChatPage()
+    act(() => { reportActionFailure('Session reload failed.') })
+    const notice = await screen.findByTestId('session-action-error')
+    expect(notice.textContent).not.toContain('Couldn’t update')
   })
 
   it('leaves the persisted set untouched from an embedded host', () => {
