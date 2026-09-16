@@ -50,11 +50,13 @@ with no app identity to check.
   `.smudge` driver comes from config under an arbitrary name — so a repo whose
   **repository-scoped** config declares one is refused with a 409 telling the user
   to create the worktree manually. Both scopes git reads inside a repo are probed:
-  `--local` (`.git/config`) and, when `extensions.worktreeConfig` is on and a
-  `config.worktree` file exists under the repo's **per-worktree** `$GIT_DIR`,
-  `--worktree` — `--local` alone does not report worktree-scoped keys, and for a
-  linked worktree that file lives under `<common>/worktrees/<id>`, not the common
-  dir. Both probes pass `--includes`, which git defaults OFF for a specific-scope
+  `--local` (`.git/config`) and, whenever `extensions.worktreeConfig` is on,
+  `--worktree` — probe first, classify a failed probe after
+  (`kiro_crew.git_worktree_scope`): a probe that fails because the per-worktree
+  `config.worktree` was never created is a healthy empty scope and proceeds, and
+  any other failure refuses. `--local` alone does not report worktree-scoped keys,
+  and for a linked worktree that file lives under `<common>/worktrees/<id>`, not
+  the common dir. Both probes pass `--includes`, which git defaults OFF for a specific-scope
   query: a driver reached through `include.path` would otherwise be invisible to
   the probe yet still run on checkout. A scope that cannot be read at all also refuses, since an
   unreadable scope cannot be proven filter-free. (Global config is not probed: that is the user's own

@@ -36,7 +36,8 @@ from kiro_crew.dashboard.handlers.worktree import (
     _resolve_commit,
     _run_git,
     _worktree_branches,
-    _worktree_config_active,
+    _worktree_extension_on,
+    _worktree_probe_failure_is_empty_scope,
     api_worktree_create,
 )
 from kiro_crew.validation import FOLLOWUP_BRANCH_RE, is_valid_followup_branch
@@ -64,7 +65,8 @@ _BLOCKING_GIT_HELPERS = frozenset(
         "_run_git",
         "_sandbox_exec_reason",
         "_worktree_branches",
-        "_worktree_config_active",
+        "_worktree_extension_on",
+        "_worktree_probe_failure_is_empty_scope",
         "_git_toplevel",
     }
 )
@@ -836,14 +838,41 @@ class TestCheckoutFilters:
         assert not await _off_loop(_branch_exists, str(repo), "feat/wtfiltered")
 
     @pytest.mark.asyncio
+    async def test_worktree_extension_override_cannot_hide_its_own_scope(self, repo):
+        """git takes the extension from the REPO config only, so a
+        worktree-scoped ``extensions.worktreeConfig=false`` leaves the scope
+        LIVE — but it wins a merged ``--get`` chain, so an extension probe
+        without ``--local`` reads the extension as off and never lists the
+        scope the driver hides in. The checkout must still refuse."""
+        _git("config", "extensions.worktreeConfig", "true", cwd=repo)
+        _git("config", "--worktree", "extensions.worktreeConfig", "false", cwd=repo)
+        _git("config", "--worktree", "filter.evil.smudge", "sh -c 'touch /tmp/pwned'", cwd=repo)
+        # Precondition: the merged read is genuinely poisoned while the scope
+        # stays live — or this case proves nothing.
+        merged = await _off_loop(
+            _run_git, ["config", "--bool", "--get", "extensions.worktreeConfig"], str(repo)
+        )
+        assert merged.stdout.strip() == "false"
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.post(
+                "/api/worktree/create", json={"repo": str(repo), "branch": "feat/wtoverride"}
+            )
+            assert resp.status == 409, await resp.text()
+            body = await resp.json()
+        assert "content filter" in body["error"]
+        assert not (repo.parent / "proj-wt-wtoverride").exists()
+        assert not await _off_loop(_branch_exists, str(repo), "feat/wtoverride")
+
+    @pytest.mark.asyncio
     async def test_linked_worktree_scoped_filter_config_is_refused(self, repo, tmp_path):
         """For a LINKED worktree, `config.worktree` lives under
         `$GIT_DIR` (`<common>/worktrees/<id>`), not under the common dir.
 
-        Probing the common dir therefore missed a filter declared in a linked
-        worktree's own config — `_worktree_config_active` returned False, the
-        `--worktree` scope was skipped, and the driver executed during checkout
-        (verified empirically before this fix).
+        A common-dir probe cannot see a filter declared in a linked
+        worktree's own config, so the guard resolves `--absolute-git-dir`:
+        with the extension on the scope is always listed, and the failure
+        classifier stats `$GIT_DIR`, never the common dir. A driver in the
+        linked worktree's file must refuse the checkout.
         """
         _git("config", "extensions.worktreeConfig", "true", cwd=repo)
         linked = tmp_path / "linked"
@@ -858,7 +887,10 @@ class TestCheckoutFilters:
         ).stdout.strip()
         assert not os.path.isfile(os.path.join(common, "config.worktree"))
         assert os.path.isfile(os.path.join(gitdir, "config.worktree"))
-        assert await _off_loop(_worktree_config_active, str(linked))
+        assert await _off_loop(_worktree_extension_on, str(linked))
+        # Were the probe ever to fail here, the classifier must keep the
+        # refusal: the linked worktree's own file EXISTS under $GIT_DIR.
+        assert not await _off_loop(_worktree_probe_failure_is_empty_scope, str(linked))
         async with TestClient(TestServer(_make_app(str(linked)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(linked), "branch": "feat/linked"}
@@ -872,7 +904,10 @@ class TestCheckoutFilters:
         """The extension alone must not refuse: `--worktree --list` exits 128 when
         no `config.worktree` file exists, and that is not a filter."""
         _git("config", "extensions.worktreeConfig", "true", cwd=repo)
-        assert not await _off_loop(_worktree_config_active, str(repo))
+        assert await _off_loop(_worktree_extension_on, str(repo))
+        # The probe WILL fail (no config.worktree yet) and the classifier must
+        # clear that failure as the empty scope.
+        assert await _off_loop(_worktree_probe_failure_is_empty_scope, str(repo))
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(repo), "branch": "feat/extonly"}

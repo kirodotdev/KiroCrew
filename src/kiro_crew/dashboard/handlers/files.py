@@ -72,6 +72,7 @@ from kiro_crew.dashboard.state import (
     append_and_surface,
 )
 from kiro_crew.doc_parser import extract_text
+from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, safe_read_prefix
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import OutboundFile
@@ -5760,6 +5761,27 @@ _GIT_FILTER_KEY_RE = re.compile(
 )
 
 
+def _worktree_probe_failure_is_empty_scope(
+    git_cmd: list[str], base: str, env: dict
+) -> bool:
+    """True when a failed ``--worktree`` probe hit the empty scope git creates lazily.
+
+    Called only AFTER ``git config --worktree ...`` exited non-zero — never to
+    gate whether that probe runs. Resolves ``$GIT_DIR`` through this handler's
+    own bounded runner and feeds it to
+    :func:`kiro_crew.git_worktree_scope.worktree_probe_failure_is_empty_scope`,
+    the one shared classification all four filter-driver guards use. See that
+    module's docstring for why the probe-first order is the contract.
+    """
+    gitdir_rc, gitdir_out, _ = _run_git_bounded(
+        [*git_cmd, "rev-parse", "--absolute-git-dir"],
+        cwd=base, env=env, timeout=5,
+    )
+    return worktree_probe_failure_is_empty_scope(
+        gitdir_out if gitdir_rc == 0 else "", base
+    )
+
+
 def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bool:
     """True when repo-supplied config names a content-filter driver (or the
     probe cannot prove it does not).
@@ -5767,17 +5789,28 @@ def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bo
     Mirrors ``worktree.py::_checkout_filter``: drivers can only come from a
     config file the repository supplies — ``--local`` (``.git/config``) and,
     when ``extensions.worktreeConfig`` is on, ``--worktree``
-    (``$GIT_DIR/config.worktree``). ``--includes`` is mandatory: a specific-scope
+    (``$GIT_DIR/config.worktree``). The worktree scope is PROBED FIRST and a
+    failure classified AFTERWARDS: git creates ``config.worktree`` lazily, so
+    a probe that failed because the file is genuinely absent is the empty
+    scope, not an unreadable one — while an existence pre-check would drop
+    the scope on a stale fact and never look at a file git goes on to read.
+    ``--includes`` is mandatory: a specific-scope
     query defaults include-following OFF, so a driver reached through
     ``include.path`` would be invisible to the probe yet still execute.
     Global/system config is deliberately not probed (the user's own machine
-    setup, e.g. ``git lfs install``, is not repository-supplied). A probe that
-    fails refuses: an unreadable scope cannot be proven filter-free. The probe
-    itself is safe — ``git config`` reads files and never runs drivers.
+    setup, e.g. ``git lfs install``, is not repository-supplied). Any other
+    probe failure refuses: an unreadable scope cannot be proven filter-free.
+    The probe itself is safe — ``git config`` reads files and never runs
+    drivers.
     """
     scopes = ["--local"]
+    # --local is load-bearing: git takes the extension from the REPO config
+    # only, while a merged read lets a worktree-scoped
+    # extensions.worktreeConfig=false win the chain and hide the very scope it
+    # lives in. --bool folds every git-true spelling (yes/on/1/valueless).
     ext_rc, ext_out, _ = _run_git_bounded(
-        [*git_cmd, "config", "--bool", "--get", "extensions.worktreeConfig"],
+        [*git_cmd, "config", "--local", "--includes", "--bool", "--get",
+         "extensions.worktreeConfig"],
         cwd=base, env=env, timeout=5,
     )
     if ext_rc == 0 and ext_out.strip() == "true":
@@ -5788,6 +5821,10 @@ def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bo
             cwd=base, env=env, timeout=5,
         )
         if rc != 0:
+            if scope == "--worktree" and _worktree_probe_failure_is_empty_scope(
+                git_cmd, base, env
+            ):
+                continue
             return True
         for key in out.splitlines():
             if _GIT_FILTER_KEY_RE.match(key.strip()):

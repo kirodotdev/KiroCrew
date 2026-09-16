@@ -24,6 +24,7 @@ import re
 import subprocess
 
 from kiro_crew import platform_compat
+from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
@@ -475,18 +476,41 @@ def repo_exec_config_reason(proj: str) -> str:
     machine configuration, not something the repository supplies.
     """
     scopes = ["--local"]
-    if _git(
-        proj, "config", "--local", "--includes", "--get", "extensions.worktreeConfig"
-    ).lower() in (
-        "true",
-        "yes",
-        "on",
-        "1",
+    # --bool folds every git-true spelling (yes/on/1/valueless) to "true"; a
+    # raw-spelling allowlist misses the valueless boolean form, which git
+    # still honors for config.worktree. A garbled value makes --bool exit
+    # non-zero (reads as "") AND kills the guarded git command itself with
+    # the same parse error, so skipping the scope is safe.
+    if (
+        _git(
+            proj,
+            "config",
+            "--local",
+            "--includes",
+            "--bool",
+            "--get",
+            "extensions.worktreeConfig",
+        )
+        == "true"
     ):
         scopes.append("--worktree")
     for scope in scopes:
         listing = _git_probe(proj, "config", scope, "--includes", "--name-only", "--list")
         if listing is None:
+            # Probe-first, classify after: git creates config.worktree lazily,
+            # so a --worktree listing that failed on a genuinely ABSENT file is
+            # the empty scope git documents, not an unreadable one (the shared
+            # decision in kiro_crew.git_worktree_scope). Every other failure
+            # stays _EXEC_CONFIG_UNREADABLE, including an unlocatable git dir.
+            # RAW stdout (_git_probe, not _git): the classifier trims exactly
+            # git's newline, and a stripped whitespace-bearing path would
+            # lstat the wrong location.
+            if scope == "--worktree":
+                gitdir_raw = _git_probe(proj, "rev-parse", "--absolute-git-dir")
+                if worktree_probe_failure_is_empty_scope(
+                    gitdir_raw if gitdir_raw is not None else "", proj
+                ):
+                    continue
             return _EXEC_CONFIG_UNREADABLE
         for line in listing.splitlines():
             key = line.strip()
