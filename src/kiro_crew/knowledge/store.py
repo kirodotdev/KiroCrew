@@ -2553,13 +2553,30 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         now = datetime.now().isoformat()
         properties = kwargs.get("properties", {})
         stored = _without_sync_status(properties)
-        # trust_class is EVIDENCE, written once at creation from the creating
-        # path's own knowledge of the source type; the query-time ACL gate reads
-        # it and never re-guesses. A caller may pass trust_class explicitly (a
-        # remote connector could stamp TRUST_MANAGED even for a type not in the
-        # local-creator set); otherwise it defaults from the type, fail-closed to
-        # managed for anything not a known local creator.
-        trust_class = kwargs.get("trust_class") or initial_trust_class(source_type)
+        # trust_class is EVIDENCE issued by a TRUSTED creator, not a
+        # caller-assertable field. The base value is derived from the source
+        # TYPE (initial_trust_class): only the fixed local-creator types yield
+        # TRUST_LOCAL. An explicit trust_class kwarg may only NARROW to
+        # TRUST_MANAGED (a remote connector stamping managed for a type that
+        # would otherwise default local); it can NEVER upgrade a non-local type
+        # to TRUST_LOCAL. So a caller passing trust_class=local_admitted for a
+        # 'sharepoint' (or any non-local) source is refused the local stamp and
+        # gets managed -- the stamp does not prove the issuer is trusted, the
+        # creator TYPE does. This is what stops external API input / a
+        # source_type rename / a forged kwarg from minting local trust.
+        base = initial_trust_class(source_type)
+        requested = kwargs.get("trust_class")
+        if requested == TRUST_MANAGED:
+            trust_class = TRUST_MANAGED  # narrowing is always allowed
+        elif requested in (None, ""):
+            trust_class = base
+        elif requested == TRUST_LOCAL:
+            # Honoured ONLY when the type itself is a local creator; otherwise
+            # the request is refused and the type-derived (managed) value stands.
+            trust_class = base
+        else:
+            # Unknown trust_class value -> fail-closed managed, never the request.
+            trust_class = TRUST_MANAGED
         self.db.execute(
             "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
             "trust_class, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2889,6 +2906,12 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             relations = [dict(r) for r in self.db.execute("SELECT * FROM entity_relations")]
             source_locations = [dict(r) for r in self.db.execute("SELECT * FROM source_locations")]
             mentions = [dict(r) for r in self.db.execute("SELECT * FROM mentions")]
+        if item_ids is not None:
+            item_acls = [dict(r) for r in self.db.execute(
+                f"SELECT * FROM item_acl WHERE item_id IN ({items_subq})",  # noqa: S608
+                (namespace,))]
+        else:
+            item_acls = [dict(r) for r in self.db.execute("SELECT * FROM item_acl")]
         return {
             "items": items,
             "entities": [dict(r) for r in self.db.execute("SELECT * FROM entities")],
@@ -2896,6 +2919,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             "sources": [dict(r) for r in self.db.execute("SELECT * FROM sources")],
             "source_locations": source_locations,
             "mentions": mentions,
+            "item_acls": item_acls,
         }
 
     def import_bundle(self, bundle: dict) -> dict:
@@ -2941,12 +2965,31 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 if (src.get("source_type") in _WALKING_SOURCE_TYPES
                         and restored != "paused"):
                     restored = "pending_confirmation"
+                # trust_class is PROVENANCE that must survive export/import, but a
+                # bundle is UNTRUSTED input, so a bundled trust_class is subject to
+                # the same issuer-trust check as add_source: local_admitted is
+                # honoured ONLY when the source_type is a real local creator;
+                # otherwise it is refused down to managed (fail-closed). This
+                # stops a hand-crafted bundle from smuggling a cloud source in as
+                # local_admitted, while preserving the stamp for genuine local
+                # sources so an imported local library keeps working.
+                base_tc = initial_trust_class(src.get("source_type"))
+                bundled_tc = src.get("trust_class")
+                if bundled_tc == TRUST_LOCAL:
+                    src_trust = base_tc  # local only if the type earns it
+                elif bundled_tc == TRUST_MANAGED:
+                    src_trust = TRUST_MANAGED
+                elif bundled_tc in (None, ""):
+                    src_trust = base_tc
+                else:
+                    src_trust = TRUST_MANAGED
                 self.db.execute(
                     "INSERT OR IGNORE INTO sources (id, name, source_type, uri, properties, "
-                    "sync_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "sync_status, trust_class, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (src["id"], src["name"], src["source_type"], src["uri"],
                      _without_sync_status(props_text),
-                     self._initial_status_or_default(restored),
+                     self._initial_status_or_default(restored), src_trust,
                      src.get("created_at", now), now))
             for item in bundle.get("items", []):
                 raw_emb = item.get("embedding")
@@ -3007,6 +3050,32 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     "INSERT OR IGNORE INTO mentions (item_id, entity_id, context, created_at) "
                     "VALUES (?, ?, ?, ?)",
                     (m["item_id"], m["entity_id"], m.get("context"), m.get("created_at", now)))
+            for acl in bundle.get("item_acls", []):
+                # ACL grants are provenance that must survive export/import so a
+                # managed item stays gated after a round-trip rather than being
+                # silently un-gated. A bundle is untrusted, but this grant is only
+                # ever MORE restrictive: managed defaults to 1 (fail-closed) when
+                # the bundle omits it, and fresh_as_of defaults to 0 (stale, needs
+                # revalidation) so an imported managed grant cannot be served as
+                # live off an old stamp. subjects/tenant come across verbatim;
+                # the query-time gate still checks them against the current
+                # subject and (for managed) revalidates.
+                item_id = acl.get("item_id")
+                if not item_id:
+                    continue
+                is_managed = 1 if (acl.get("managed") in (1, True, "1")) else 0
+                # A MANAGED grant imported into a new store was never revalidated
+                # THERE: force fresh_as_of=0 (stale) so it cannot be served off
+                # the exporting store's old confirmation -- it must be
+                # re-confirmed against the provider on the importing side. A
+                # trusted-local grant keeps its stamp (0 anyway for locals).
+                fresh = 0.0 if is_managed else float(acl.get("fresh_as_of") or 0.0)
+                self.db.execute(
+                    "INSERT OR IGNORE INTO item_acl "
+                    "(item_id, subjects, tenant, acl_version, managed, fresh_as_of, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (item_id, acl.get("subjects", "[]"), acl.get("tenant", ""),
+                     int(acl.get("acl_version") or 1), is_managed, fresh, now))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")

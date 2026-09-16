@@ -311,17 +311,17 @@ class HybridRetriever:
           (``sources.trust_class``, evidence written at creation) -- NOT from a
           source_type name guess, so a new/misspelled cloud type or a managed
           source missing its per-item flag cannot be waved through as local;
-        * a TRUSTED-LOCAL item (a source stamped local_admitted, or a sourceless
-          row -- see is_managed_trust_class, under review) with no grant is
-          servable to a bypass (local) context and otherwise takes the
+        * a TRUSTED-LOCAL item (a source stamped local_admitted) with no grant
+          is servable to a bypass (local) context and otherwise takes the
           subject/tenant test;
-        * a MANAGED item (managed/unstamped/dangling provenance, or a grant
-          explicitly flagged managed) ALWAYS takes the current-subject check AND
-          revalidation: the optional :attr:`revalidator` performs the provider
-          live-permission probe; with no revalidator wired the outcome is
-          UNVERIFIABLE and the policy falls back to the stored freshness stamp,
-          denying a stale/never-revalidated managed grant. A managed item under a
-          bypass context (no verifiable provider-mapped subject) is denied.
+        * a MANAGED item (managed/unstamped/dangling/SOURCELESS provenance, or a
+          grant explicitly flagged managed) ALWAYS takes the current-subject
+          check AND revalidation: the optional :attr:`revalidator` performs the
+          provider live-permission probe; with no revalidator wired the outcome
+          is UNVERIFIABLE and the policy falls back to the stored freshness
+          stamp, denying a stale/never-revalidated managed grant. A managed item
+          under a bypass context (no verifiable provider-mapped subject) is
+          denied.
 
         Runs before any downstream read of ``fused``, so it is the ONE place the
         gate lives: the result window, recency tie-break, keyword rescue and
@@ -341,11 +341,11 @@ class HybridRetriever:
             raw = grants.get(item_id)
             has_source, trust_class = trust.get(item_id, (False, None))
             # Managed classification from the provenance stamp (fail-closed):
-            #  - source stamped local_admitted -> trusted-local;
-            #  - sourceless -> trusted-local (no managed connector produces a
-            #    sourceless item; see is_managed_trust_class -- under review);
+            #  - source stamped local_admitted -> trusted-local (the ONLY local case);
             #  - source stamped managed, OR unstamped/unknown, OR a dangling
-            #    source row (trust_class None) -> managed.
+            #    source row (trust_class None), OR SOURCELESS (unverifiable
+            #    provenance) -> managed. Per Root's decision, no-source is not a
+            #    trusted-local shared-auth rule.
             managed_by_provenance = is_managed_trust_class(has_source, trust_class)
             if raw is None:
                 # No grant row. A trusted-local item is allowed for a bypass

@@ -98,11 +98,11 @@ class _StubRevalidator:
 # source-type classifier
 # --------------------------------------------------------------------------
 
-def test_sourceless_is_trusted_local_classifier():
-    # A sourceless item is trusted-local: no managed connector produces one
-    # (production always attaches a source). Under central review per the brief.
-    assert is_managed_trust_class(has_source=False, trust_class=None) is False
-    assert is_managed_trust_class(has_source=False, trust_class=TRUST_MANAGED) is False
+def test_sourceless_is_managed_failclosed_classifier():
+    # Root's decision: "no source therefore trusted-local" is NOT a shared-query
+    # authorization rule. A sourceless item has unverifiable provenance -> managed.
+    assert is_managed_trust_class(has_source=False, trust_class=None) is True
+    assert is_managed_trust_class(has_source=False, trust_class=TRUST_MANAGED) is True
 
 
 def test_local_admitted_stamp_is_trusted_local_classifier():
@@ -302,13 +302,18 @@ def test_dangling_source_item_fails_closed(store):
     assert r.search("delta", limit=10, access_context=LOCAL_LIBRARY) == []
 
 
-def test_sourceless_item_is_trusted_local(store):
-    """A sourceless item is trusted-local: the local library sees it. No managed
-    connector produces a sourceless item (production always attaches a source),
-    so this does not open a managed-content leak. Under central review."""
+def test_sourceless_item_is_managed_failclosed(store):
+    """A sourceless item has unverifiable provenance: fail-closed managed, denied
+    to the local library and to a subject with no grant (Root's decision -- the
+    test habit of omitting a source is not production trust evidence). Production
+    ingestion always attaches a source, so this only affects unexplained/legacy
+    sourceless rows, which are reported for explicit migration, never
+    auto-backfilled to local."""
     item = store.add_item("Pasted", "epsilon content", "doc")  # source_id=None
     r = _retriever(store, kw=[(item, 1)])
-    assert item in _ids(r.search("epsilon", limit=10, access_context=LOCAL_LIBRARY))
+    assert r.search("epsilon", limit=10, access_context=LOCAL_LIBRARY) == []
+    assert r.search("epsilon", limit=10,
+                    access_context=AccessContext(subject="alice", tenant="acme")) == []
 
 
 # --------------------------------------------------------------------------
@@ -485,3 +490,50 @@ def test_deleting_item_removes_its_grant(store):
     assert store.get_item_grants([item])
     store.delete_item(item)
     assert store.get_item_grants([item]) == {}
+
+
+def test_forged_local_stamp_refused_for_non_local_type(store):
+    """A caller cannot mint TRUST_LOCAL for a managed/unknown source type: the
+    stamp is issued from the creator TYPE, and an explicit local request for a
+    non-local type is refused (fail-closed managed). The stamp does not prove
+    the issuer is trusted."""
+    # Forge local on a cloud type.
+    sp = store.add_source("SP", "sharepoint", "sharepoint://x", trust_class=TRUST_LOCAL)
+    assert store.db.execute(
+        "SELECT trust_class FROM sources WHERE id = ?", (sp,)).fetchone()[0] == TRUST_MANAGED
+    # Forge local on an unknown type.
+    unk = store.add_source("U", "brand_new_2027", "u://x", trust_class=TRUST_LOCAL)
+    assert store.db.execute(
+        "SELECT trust_class FROM sources WHERE id = ?", (unk,)).fetchone()[0] == TRUST_MANAGED
+    # A genuine local creator type IS honoured.
+    lf = store.add_source("V", "local_folder", "file:///v", trust_class=TRUST_LOCAL)
+    assert store.db.execute(
+        "SELECT trust_class FROM sources WHERE id = ?", (lf,)).fetchone()[0] == TRUST_LOCAL
+    # And a narrowing override (managed on a local type) is allowed.
+    lf2 = store.add_source("V2", "local_folder", "file:///v2", trust_class=TRUST_MANAGED)
+    assert store.db.execute(
+        "SELECT trust_class FROM sources WHERE id = ?", (lf2,)).fetchone()[0] == TRUST_MANAGED
+
+
+def test_managed_grant_survives_reassignment_into_local_source(store):
+    """Re-label / dedup that moves a managed item's source_id must NOT launder it
+    into local: the per-item grant's managed flag is durable and forces managed
+    classification even if the item now points at a local source."""
+    cloud_src = _managed_source(store)
+    local_src = _local_source(store)
+    item = store.add_item("Cloud", "theta content", "doc", source_id=cloud_src)
+    store.set_item_acl(item, ["alice"], tenant="acme", managed=True, fresh_as_of=_fresh())
+    # Simulate a reassignment/dedup moving the item under a LOCAL source.
+    store.db.execute("UPDATE items SET source_id = ? WHERE id = ?", (local_src, item))
+    store.db.commit()
+    # trust_class now reads local via the JOIN, but the grant's managed=1 stands.
+    grants = store.get_item_grants([item])
+    assert grants[item]["managed"] is True
+    # The local library still cannot see it (managed enforcement holds), and a
+    # revoke hook denies it -> proven still on the managed path, not laundered.
+    r = _retriever(store, kw=[(item, 1)])
+    assert r.search("theta", limit=10, access_context=LOCAL_LIBRARY) == []
+    rr = _retriever(store, kw=[(item, 1)],
+                    revalidator=_StubRevalidator(RevalidationOutcome.REVOKED))
+    assert rr.search("theta", limit=10,
+                     access_context=AccessContext(subject="alice", tenant="acme")) == []

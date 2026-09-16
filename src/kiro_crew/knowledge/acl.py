@@ -74,35 +74,37 @@ TRUST_MANAGED = "managed"
 def is_managed_trust_class(has_source: bool, trust_class: str | None) -> bool:
     """True when an item must be treated as managed (gated + revalidated).
 
-    TRUSTED-LOCAL is decided from PROVENANCE, fail-closed against every case
-    where an EXTERNAL per-user ACL could exist:
+    TRUSTED-LOCAL requires POSITIVE provenance evidence: a source explicitly
+    stamped :data:`TRUST_LOCAL` by a trusted local creator. Everything else is
+    managed (fail-closed) -- Root's decision: "no source, therefore necessarily
+    trusted-local" is NOT a shared-query authorization rule, because the test
+    habit of omitting a source is not production trust evidence, and an item
+    whose provenance cannot be verified must not be waved through.
 
-    * a source stamped :data:`TRUST_LOCAL` -> trusted-local;
+    * a source stamped :data:`TRUST_LOCAL` -> trusted-local (the ONLY local case);
     * a ``managed`` stamp, an unstamped/unknown/``None`` stamp (a legacy source
       the migration did not classify local, or a dangling source_id whose row is
       gone) -> managed;
-    * a SOURCELESS item (``has_source`` False) -> trusted-local. RATIONALE +
-      OPEN REVIEW: every production ingestion path attaches a source (the managed
-      connectors, and the local folder/file/vault/artifact/agent aggregates), so
-      a managed cloud item is NEVER sourceless -- it always has both a connector
-      source AND a grant. A truly sourceless row is therefore local scaffolding /
-      legacy on-host content, and denying it here regresses the single-user local
-      library (its own default-context search would stop seeing legacy sourceless
-      items). Root has asked for a CENTRAL independent review of this specific
-      axis ("no source does not prove no external ACL"); the conservative
-      alternative is to flip this to ``return True`` (fail-closed managed) AND
-      migrate every legacy sourceless row to a stamped local source so the local
-      library keeps working. That flip breaks the retriever's whole
-      sourceless-item test idiom and needs the migration, so it is held for the
-      review rather than decided here to make a fixture green either way.
+    * a SOURCELESS item (``has_source`` False) -> MANAGED. Absence of a source is
+      not proof of no external ACL. Production ingestion always attaches a
+      source, so a genuinely-local item reaches the store through a stamped local
+      creator (folder/file/vault/artifact/agent); a sourceless row is
+      unverifiable provenance and is denied to a shared query. The single-user
+      local library keeps its own admitted content because that content is
+      sourced+stamped; only records with NO provenance evidence at all are
+      locked out (which, if any exist in a real library, are reported for
+      explicit migration -- never auto-backfilled to local).
 
     The decision reads the stored provenance stamp only; it never re-guesses
     trust from a source_type string, so a new/misspelled cloud connector type,
     or a managed source missing its per-item flag, cannot be waved through as
-    local.
+    local. The stamp itself does not prove the issuer is trusted -- only a
+    trusted local creator may issue :data:`TRUST_LOCAL` (see
+    store.initial_trust_class / add_source, which refuse a caller-forged local
+    stamp for a non-local creator type).
     """
     if not has_source:
-        return False
+        return True
     return trust_class != TRUST_LOCAL
 
 

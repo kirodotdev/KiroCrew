@@ -53,8 +53,18 @@ class _SpaceDeclaringEmbedder:
 
 
 def _add_embedded(store: KnowledgeStore, title: str, sig: str | None) -> str:
-    """An active item carrying a stored vector, stamped with *sig*."""
-    item_id = store.add_item(title, f"{title} body", "document", embedding=floats_to_bytes(_VEC))
+    """An active item carrying a stored vector, stamped with *sig*.
+
+    Attached to a trusted-local source so the query-time ACL gate (which treats
+    a sourceless item as fail-closed managed) admits it to the local library --
+    production ingestion always attaches a source.
+    """
+    sid = getattr(store, "_test_local_sid", None)
+    if sid is None:
+        sid = store.add_source("Local Test", "local_folder", "file:///emb-local")
+        store._test_local_sid = sid
+    item_id = store.add_item(title, f"{title} body", "document",
+                             source_id=sid, embedding=floats_to_bytes(_VEC))
     store.db.execute("UPDATE items SET embedding_sig = ? WHERE id = ?", (sig, item_id))
     store.db.commit()
     return item_id
