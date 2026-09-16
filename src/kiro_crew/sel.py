@@ -3414,6 +3414,27 @@ async def warm_sel_singleton() -> None:
         )
 
 
+async def audit_off_loop(write: Callable[[], None], what: str) -> None:
+    """Emit a best-effort audit row without ever blocking the event loop.
+
+    The write is ALWAYS threaded, because :func:`sel_is_warm` answers a different
+    question than this one: warm means the singleton is constructed, so ``sel()`` is
+    an attribute read rather than trust-dir creation plus an HMAC key load. What this
+    threads is the audit CALL, whose cost is not knowable at this seam -- a critical row
+    is written synchronously, a plain one usually only reaches the writer's queue -- which
+    is why ``_audit_hook_invocation_now`` threads it too. Gating the hop on warmth bought
+    a saved thread hop with a false story.
+
+    Swallowing is deliberate and matches every other audit site: the privileged
+    thing has already happened by the time this runs, so a failed row must not
+    turn a completed action into a 500.
+    """
+    try:
+        await asyncio.to_thread(write)
+    except Exception:
+        logger.debug("%s audit failed", what, exc_info=True)
+
+
 def sel_is_warm() -> bool:
     """Is the singleton constructed, so that ``sel()`` is a plain attribute read?
 
