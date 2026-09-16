@@ -74,6 +74,7 @@ from kiro_crew.security import (
     is_sensitive_path,
     is_sensitive_write_path,
 )
+from kiro_crew.security.readonly_bash import is_read_only_bash
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import CORE_MCP_SERVER
 from kiro_crew.validation import _bounded_pattern_search
@@ -1369,8 +1370,10 @@ class HookManager:
         # and governance). Its position guarantees a read-only classification can
         # never re-admit anything the gates above blocked. This re-homes the
         # "reads don't nag" UX now that kiro-cli's autoAllowReadonly is retired.
-        # Imports are function-local: slack.gateway imports hooks at module top,
-        # so a top-level import here would create a boot import cycle.
+        # The slack.gateway import below is function-local: slack.gateway imports
+        # hooks at module top, so a top-level import here would create a boot
+        # import cycle. The bash classifier lives on the security surface, which
+        # this module already imports at top, so it needs no such dodge.
         # Every auto-approve below carries ``read_only=True``: a verdict about the
         # call's EFFECT, and the only auto-approve READ_ONLY honours. The grant
         # tiers above stay untagged.
@@ -1379,8 +1382,6 @@ class HookManager:
             # classifier (rejects redirects/substitution/backgrounding). When the
             # command could not be recovered we already denied above; a present
             # command that is not read-only falls through to interactive approval.
-            from kiro_crew.dashboard.state import is_read_only_bash
-
             if command and is_read_only_bash(command):
                 return ToolHookResult.auto_approve(read_only=True)
         else:

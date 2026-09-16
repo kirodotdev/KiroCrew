@@ -179,11 +179,9 @@ from kiro_crew.dashboard.state import (
     build_tool_stall_recovery_prompt,
     context_entry_expired,
     durable_row_count,
-    is_read_only_bash,
     parse_hook_continuations,
     should_queue_hook_continuation,
     should_queue_refusal_recovery,
-    unsafe_bash_reason,
 )
 from kiro_crew.dashboard.steer_settle import settle_consumed_steers
 from kiro_crew.dashboard.turn_dispatch import (
@@ -288,6 +286,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
     sanitized_oauth_endpoint,
 )
+from kiro_crew.security.readonly_bash import is_read_only_bash, unsafe_bash_reason
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
