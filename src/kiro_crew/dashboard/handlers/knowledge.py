@@ -189,33 +189,37 @@ def _pipeline(request: web.Request):
 
 # ---------------------------------------------------------------------------
 # Query-time ACL wiring (knowledge/acl.py)
-#
 # The dashboard's knowledge search serves the on-host PERSONAL library. These
-# two seams turn the request's authenticated identity into the AccessContext the
+# seams turn the request's authenticated identity into the query-time inputs the
 # retriever gates with, and expose where a shared/multi-tenant deployment plugs
-# in the provider identity resolver + revalidation hook. They are deliberately
-# fail-closed and honest about what is wired TODAY:
+# in the provider binding resolver + revalidation hook. Fail-closed and honest
+# about what is wired TODAY:
 #
 #  * A managed cloud/structured item is gated on the PROVIDER-mapped subject/
-#    tenant (W01 Binding.subject_ref/tenant_ref). No such resolver exists yet, so
-#    a managed item stays denied here regardless of the dashboard identity -- the
-#    correct fail-closed posture, not a leak.
+#    tenant, resolved PER CANDIDATE from the query principal + the candidate's
+#    own (provider, account) by app["knowledge_binding_resolver"] (W01's
+#    trusted binding association). No resolver is wired yet, so a managed item
+#    stays denied regardless of the dashboard identity -- one request never
+#    applies one provider identity to the whole library.
 #  * A trusted-local item is what the personal library legitimately serves, so
-#    the default context is the local single-user one (acl.LOCAL_LIBRARY), which
-#    sees trusted-local content and denies managed content.
+#    the default whole-query context is acl.LOCAL_LIBRARY and the principal is
+#    acl.LOCAL_PRINCIPAL (trusted-local visible, every managed item denied).
 #
-# When the provider identity resolver lands, it is installed as
-# ``app["knowledge_identity_resolver"]`` (request -> AccessContext) and the
-# revalidation hook as ``app["knowledge_revalidator"]`` (acl.RevalidationHook);
-# both are read here so no call site changes.
+# Install points (all read here, no call-site change): a per-candidate
+# app["knowledge_binding_resolver"] (acl.BindingResolver), an
+# app["knowledge_revalidator"] (acl.RevalidationHook), and -- for a deployment
+# that resolves the whole-query principal itself -- app["knowledge_identity_
+# resolver"] (request -> AccessContext) and app["knowledge_query_principal"]
+# (request -> acl.QueryPrincipal).
 def _knowledge_access_context(request: web.Request):
-    """The verified AccessContext this request's knowledge query runs as.
+    """The whole-query AccessContext (used for trusted-local items and for a
+    deployment that resolves a single context via knowledge_identity_resolver).
 
-    Uses an installed ``knowledge_identity_resolver`` when present (the W01-backed
-    seam that maps the authenticated caller to a provider subject/tenant);
-    otherwise the on-host personal library runs under the local single-user
-    context. Never derives a managed-item identity from a raw dashboard/session
-    id -- that is the resolver's job, and its absence keeps managed items denied.
+    Uses an installed ``knowledge_identity_resolver`` when present; otherwise the
+    on-host personal library runs under the local single-user context. Never
+    derives a managed-item identity from a raw dashboard/session id -- that is
+    the per-candidate binding resolver's job, and its absence keeps managed items
+    denied.
     """
     resolver = request.app.get("knowledge_identity_resolver")
     if resolver is not None:
@@ -229,6 +233,35 @@ def _knowledge_access_context(request: web.Request):
                 "single-user context (managed items stay denied)", exc_info=True)
     from kiro_crew.knowledge.acl import LOCAL_LIBRARY
     return LOCAL_LIBRARY
+
+
+def _knowledge_query_principal(request: web.Request):
+    """The authenticated QueryPrincipal this request runs as.
+
+    Uses an installed ``knowledge_query_principal`` resolver when present; else
+    the local single-user principal (acl.LOCAL_PRINCIPAL), under which every
+    managed item is denied because it holds no provider binding. The
+    per-candidate binding resolver maps THIS principal to a provider identity for
+    each managed candidate's own (provider, account)."""
+    resolver = request.app.get("knowledge_query_principal")
+    if resolver is not None:
+        try:
+            p = resolver(request)
+            if p is not None:
+                return p
+        except Exception:
+            logger.warning(
+                "knowledge_query_principal raised; falling back to the local "
+                "single-user principal (managed items stay denied)", exc_info=True)
+    from kiro_crew.knowledge.acl import LOCAL_PRINCIPAL
+    return LOCAL_PRINCIPAL
+
+
+def _knowledge_binding_resolver(request: web.Request):
+    """The per-candidate provider BindingResolver, if a deployment installed one
+    on ``app["knowledge_binding_resolver"]``; None otherwise (managed items then
+    fall back to the whole-query context, i.e. denied under the local library)."""
+    return request.app.get("knowledge_binding_resolver")
 
 
 def _knowledge_revalidator(request: web.Request):
@@ -465,7 +498,8 @@ _SCOPED_SEARCH_START = 200
 _SCOPED_SEARCH_MAX = 20000
 
 
-async def _search_until_exhausted(retriever, q: str, limit: int, access_context=None) -> list[dict]:
+async def _search_until_exhausted(retriever, q: str, limit: int, access_context=None,
+                                  query_principal=None) -> list[dict]:
     """Retrieve hybrid-search candidates until the retriever runs out.
 
     A source scope is applied *after* ranking, so a fixed window can hide every
@@ -473,18 +507,22 @@ async def _search_until_exhausted(retriever, q: str, limit: int, access_context=
     window until the retriever returns fewer rows than requested means the
     caller has seen the whole ranking, so its filtered count is the true total.
 
-    ``access_context`` is the resolved query-time identity (see
-    _knowledge_access_context); it defaults to the local single-user context when
-    a caller does not supply one.
+    ``access_context``/``query_principal`` are the resolved query-time identity
+    (see _knowledge_access_context / _knowledge_query_principal); they default to
+    the local single-user identity when a caller does not supply them.
     """
     if access_context is None:
         from kiro_crew.knowledge.acl import LOCAL_LIBRARY
         access_context = LOCAL_LIBRARY
+    if query_principal is None:
+        from kiro_crew.knowledge.acl import LOCAL_PRINCIPAL
+        query_principal = LOCAL_PRINCIPAL
     want = max(limit * 3, _SCOPED_SEARCH_START)
     results: list[dict] = []
     while True:
         results = await run_in_embed_pool(
-            retriever.search, q, limit=want, access_context=access_context
+            retriever.search, q, limit=want, access_context=access_context,
+            query_principal=query_principal,
         )
         # Short read means the ranking is exhausted; nothing further to fetch.
         if len(results) < want or want >= _SCOPED_SEARCH_MAX:
@@ -576,8 +614,10 @@ async def list_items(request: web.Request) -> web.Response:
         retriever = HybridRetriever(
             store, embedder=embed_fn, embed_sig=embed_sig,
             revalidator=_knowledge_revalidator(request),
+            binding_resolver=_knowledge_binding_resolver(request),
         )
         access_context = _knowledge_access_context(request)
+        query_principal = _knowledge_query_principal(request)
         # mc-embed bulkhead: the search's query embed blocks on the shared model.
         # The retriever ranks globally, so post-retrieval filtering can discard
         # an unbounded share of any fixed window: if enough higher-ranked hits
@@ -587,11 +627,12 @@ async def list_items(request: web.Request) -> web.Response:
         # fewer rows than asked for), which makes the scoped total exact.
         # Unscoped searches keep the cheap limit * 3 window.
         if source_id:
-            all_results = await _search_until_exhausted(retriever, q, limit, access_context)
+            all_results = await _search_until_exhausted(
+                retriever, q, limit, access_context, query_principal)
         else:
             all_results = await run_in_embed_pool(
-                retriever.search, q, limit=limit * 3, access_context=access_context
-            )
+                retriever.search, q, limit=limit * 3, access_context=access_context,
+                query_principal=query_principal)
         # Batch fetch all candidate items (avoid N+1). A scoped search escalates
         # its candidate pool, so this query and the row serialization can both be
         # large: run them in a worker thread rather than on the event loop.
@@ -2853,6 +2894,7 @@ async def search_for_context(request: web.Request) -> web.Response:
     retriever = HybridRetriever(
         store, embedder=embed_fn, embed_sig=embed_sig,
         revalidator=_knowledge_revalidator(request),
+        binding_resolver=_knowledge_binding_resolver(request),
     )
     # HybridRetriever.search runs on an mc-embed worker thread; KnowledgeStore
     # hands each thread its own sqlite connection, so all sqlite
@@ -2861,6 +2903,7 @@ async def search_for_context(request: web.Request) -> web.Response:
     results = await run_in_embed_pool(
         retriever.search, q, limit=limit,
         access_context=_knowledge_access_context(request),
+        query_principal=_knowledge_query_principal(request),
     )
 
     cards = []

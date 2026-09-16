@@ -920,6 +920,12 @@ class KnowledgeStore:
             --   current against the provider (0 = never / ingest-time only).
             --   The freshness check reads it; a managed grant older than the
             --   staleness window with no fresh revalidation is denied.
+            -- resource_ref: JSON acl.ProviderResourceRef -- WHICH provider object
+            --   this managed item came from (provider/account/resource_id/
+            --   locator). Written at ingest; the query-time gate reads it to
+            --   resolve the per-candidate binding (by provider+account) and to
+            --   build the revalidation probe. A managed item whose resource_ref
+            --   is absent/unparseable cannot be revalidated -> denied.
             CREATE TABLE IF NOT EXISTS item_acl (
                 item_id TEXT PRIMARY KEY REFERENCES items(id),
                 subjects TEXT NOT NULL DEFAULT '[]',
@@ -927,6 +933,7 @@ class KnowledgeStore:
                 acl_version INTEGER NOT NULL DEFAULT 1,
                 managed INTEGER NOT NULL DEFAULT 0,
                 fresh_as_of REAL NOT NULL DEFAULT 0,
+                resource_ref TEXT,
                 updated_at TEXT NOT NULL
             );
 
@@ -1169,6 +1176,8 @@ class KnowledgeStore:
             if "fresh_as_of" not in acl_cols:
                 self.db.execute(
                     "ALTER TABLE item_acl ADD COLUMN fresh_as_of REAL NOT NULL DEFAULT 0")
+            if "resource_ref" not in acl_cols:
+                self.db.execute("ALTER TABLE item_acl ADD COLUMN resource_ref TEXT")
         # The orphan sweep is NOT here any more -- see `reclaim_orphans`. The
         # constructor runs on the event loop before the socket binds, and the
         # sweep is data-scaled and writer-locked, so on a large store it
@@ -1539,7 +1548,8 @@ class KnowledgeStore:
     # ------------------------------------------------------------------
 
     def set_item_acl(self, item_id: str, subjects, tenant: str, *,
-                     managed: bool = False, fresh_as_of: float = 0.0) -> int:
+                     managed: bool = False, fresh_as_of: float = 0.0,
+                     resource_ref=None) -> int:
         """Write (or overwrite) *item_id*'s ACL grant. Returns the new acl_version.
 
         ``subjects`` is an iterable of subject ids (or the ``acl.PUBLIC_SUBJECT``
@@ -1550,12 +1560,21 @@ class KnowledgeStore:
         provider (0.0 = ingest-time only, which the query-time freshness check
         treats as stale for a managed item until a revalidation refreshes it).
 
+        ``resource_ref`` is the acl.ProviderResourceRef (or its ``.to_json()``
+        string, or a dict) naming WHICH provider object this managed item came
+        from -- persisted so the query-time gate can resolve the per-candidate
+        binding (by provider+account) and build the revalidation probe. Required
+        in practice for a managed item: a managed grant with no resource_ref
+        cannot be revalidated and the gate denies it. Ignored for a trusted-local
+        grant.
+
         Overwriting an existing grant BUMPS ``acl_version`` monotonically, so any
         decision cached on the old version is invalidated the moment the grant
         changes -- this is what makes a narrowed grant take effect on the very
         next query rather than after a re-crawl.
         """
         subj_list = sorted({str(s) for s in subjects})
+        ref_json = self._resource_ref_json(resource_ref)
         now = datetime.now().isoformat()
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -1565,19 +1584,37 @@ class KnowledgeStore:
             next_version = (row["acl_version"] + 1) if row else 1
             self.db.execute(
                 "INSERT INTO item_acl "
-                "(item_id, subjects, tenant, acl_version, managed, fresh_as_of, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "(item_id, subjects, tenant, acl_version, managed, fresh_as_of, "
+                "resource_ref, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(item_id) DO UPDATE SET "
                 "subjects = excluded.subjects, tenant = excluded.tenant, "
                 "acl_version = excluded.acl_version, managed = excluded.managed, "
-                "fresh_as_of = excluded.fresh_as_of, updated_at = excluded.updated_at",
+                "fresh_as_of = excluded.fresh_as_of, resource_ref = excluded.resource_ref, "
+                "updated_at = excluded.updated_at",
                 (item_id, json.dumps(subj_list), tenant, next_version,
-                 1 if managed else 0, float(fresh_as_of), now))
+                 1 if managed else 0, float(fresh_as_of), ref_json, now))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
             raise
         return next_version
+
+    @staticmethod
+    def _resource_ref_json(resource_ref) -> str | None:
+        """Normalise a resource_ref (ProviderResourceRef | dict | json str | None)
+        to a stored JSON string (or None). Kept tolerant so the ingest caller may
+        pass the dataclass, a dict, or a pre-serialised string."""
+        if resource_ref is None:
+            return None
+        to_json = getattr(resource_ref, "to_json", None)
+        if callable(to_json):
+            return to_json()
+        if isinstance(resource_ref, dict):
+            return json.dumps(resource_ref, sort_keys=True)
+        if isinstance(resource_ref, str):
+            return resource_ref
+        return None
 
     def revoke_item_acl(self, item_id: str) -> int:
         """Revoke ALL access to *item_id* by clearing its subject set.
@@ -1675,7 +1712,7 @@ class KnowledgeStore:
             placeholders = ",".join("?" for _ in chunk)
             rows = self.db.execute(
                 "SELECT a.item_id, a.subjects, a.tenant, a.acl_version, "  # noqa: S608
-                "a.managed, a.fresh_as_of, i.source_id, s.trust_class "
+                "a.managed, a.fresh_as_of, a.resource_ref, i.source_id, s.trust_class "
                 "FROM item_acl a "
                 "LEFT JOIN items i ON i.id = a.item_id "
                 "LEFT JOIN sources s ON s.id = i.source_id "
@@ -1689,6 +1726,7 @@ class KnowledgeStore:
                     "acl_version": row["acl_version"],
                     "managed": bool(row["managed"]),
                     "fresh_as_of": row["fresh_as_of"],
+                    "resource_ref": row["resource_ref"],
                     "trust_class": row["trust_class"],
                     "has_source": row["source_id"] is not None,
                 }
@@ -3072,10 +3110,12 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 fresh = 0.0 if is_managed else float(acl.get("fresh_as_of") or 0.0)
                 self.db.execute(
                     "INSERT OR IGNORE INTO item_acl "
-                    "(item_id, subjects, tenant, acl_version, managed, fresh_as_of, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "(item_id, subjects, tenant, acl_version, managed, fresh_as_of, "
+                    "resource_ref, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (item_id, acl.get("subjects", "[]"), acl.get("tenant", ""),
-                     int(acl.get("acl_version") or 1), is_managed, fresh, now))
+                     int(acl.get("acl_version") or 1), is_managed, fresh,
+                     acl.get("resource_ref"), now))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")

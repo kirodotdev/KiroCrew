@@ -165,6 +165,60 @@ LOCAL_LIBRARY = AccessContext(
 # LOCAL_LIBRARY.
 ALLOW_ALL = LOCAL_LIBRARY
 
+
+@dataclass(frozen=True)
+class QueryPrincipal:
+    """The authenticated identity a whole knowledge query runs AS.
+
+    Distinct from :class:`AccessContext` on purpose: a query spans candidates
+    from MANY providers/accounts, and ONE request must NOT resolve a single
+    provider identity and apply it to the whole library. The principal is the
+    stable KiroCrew-side caller (a dashboard user id, an app/service identity);
+    the per-candidate :class:`BindingResolver` maps THIS principal to the right
+    provider-mapped :class:`AccessContext` for EACH candidate's own
+    (provider, account), so a user who is alice@contoso on SharePoint and a
+    different Salesforce identity is checked correctly against each.
+
+    ``principal_id`` is the verified caller id (never self-reported).
+    ``local_library`` marks a caller with no cross-identity boundary (the on-host
+    personal library): it sees trusted-local items and, having no provider
+    binding, is denied every managed item.
+    """
+
+    principal_id: str
+    local_library: bool = False
+
+
+#: The principal for the on-host personal library: local content only, every
+#: managed item denied (no provider binding to resolve).
+LOCAL_PRINCIPAL = QueryPrincipal(principal_id="<local-single-user>", local_library=True)
+
+
+@runtime_checkable
+class BindingResolver(Protocol):
+    """Maps the query principal to the provider-mapped identity for ONE candidate.
+
+    THIS is the seam that stops a single request from applying one provider
+    identity to the whole library: it is asked, per candidate, for the binding
+    that the authenticated ``principal`` holds on that candidate's specific
+    ``provider`` + ``account`` (the VENDOR side, from the candidate's
+    :class:`ProviderResourceRef`). It returns the :class:`AccessContext` whose
+    subject/tenant are that binding's ``subject_ref``/``tenant_ref`` (W01's
+    verified binding association), or ``None`` when the principal holds NO
+    binding for that provider/account -- in which case the gate denies the
+    candidate (fail-closed), it does NOT fall back to another provider's binding.
+
+    Implemented by the host/W01 layer, not here. Installed on the retriever as
+    ``binding_resolver`` and on the dashboard app as
+    ``app['knowledge_binding_resolver']``.
+    """
+
+    def resolve(
+        self, principal: "QueryPrincipal", provider: str, account: str
+    ) -> "AccessContext | None":
+        ...
+
+
 #: Default staleness window for a managed item's revalidation, in seconds. A
 #: grant last confirmed current more than this long ago is treated as stale and
 #: must be re-confirmed by the revalidation hook before the item is served.
@@ -253,38 +307,79 @@ class ProviderResourceRef:
     locator a revalidation probe needs to ask 'does this subject still have
     access to THIS?'.
 
-    This is the per-source provenance the ingest path must persist alongside the
-    grant (it is NOT derivable from item text). The exact fields a given provider
-    needs vary, so ``locator`` is a provider-shaped dict, but every managed
-    ingest MUST populate at least ``provider`` + enough of ``locator`` to
-    re-identify the object:
+    This is the per-source provenance the INGEST path must persist alongside the
+    grant (it is NOT derivable from item text); the store persists it on the
+    item's grant row (item_acl.resource_ref) via set_item_acl(resource_ref=...).
 
-    * ``provider``   -- the connector id (e.g. 'sharepoint', 'google_drive',
-                        'salesforce', 'github_structured'); selects which probe
-                        implementation and which credential binding to use.
-    * ``account``    -- the provider account / tenant the object lives in (a
-                        Graph tenant id, a Salesforce org id, a Drive
-                        corpora/driveId). Distinct from AccessContext.tenant,
-                        which is the KiroCrew-side boundary; this is the VENDOR
-                        side.
-    * ``resource_id``-- the object's stable provider id (a driveItem id, a
-                        SharePoint listItem id, an SObject id, a repo+path).
-    * ``locator``    -- any additional provider-shaped coordinates the probe
-                        needs (site id, drive id, list id, object type, field
-                        set). Free-form per provider, kept opaque here.
+    * ``provider``   -- the connector id ('sharepoint','onedrive','onenote',
+                        'teams','outlook','excel','gmail','google_drive',
+                        'salesforce','github','zoom','slack','asana'); selects
+                        which probe implementation AND which credential binding.
+    * ``account``    -- the VENDOR-side account/tenant/org the object lives in
+                        (a Graph tenant id, a Salesforce org id, a Drive driveId,
+                        a GitHub org/login, a Slack workspace id). Distinct from
+                        AccessContext.tenant (the KiroCrew boundary). The
+                        (provider, account) pair is what a per-candidate binding
+                        resolver keys on.
+    * ``resource_id``-- the object's stable provider id.
+    * ``locator``    -- provider-shaped coordinates the probe needs, kept opaque.
 
-    Examples of the minimal locator per provider family (for the connector
-    owners wiring the probe):
-      sharepoint/onedrive: {siteId|driveId, itemId, [listId]}
-      google_drive:        {fileId, [driveId/corpora]}
-      salesforce:          {sobjectType, recordId, [fieldSet]}
-      github_structured:   {owner, repo, path|objectId}
+    Per-provider locator (for the connector owners wiring the probe) -- these are
+    the ACTUAL object shapes, not a generic 'path':
+      github:        issue={owner,repo,number}; pull={owner,repo,number};
+                     commit={owner,repo,sha}; check_run={owner,repo,check_run_id}
+                     (a GitHub structured source is issue/PR/commit/check-run,
+                     NOT a file path).
+      sharepoint:    {tenantId, siteId, [listId], listItemId|driveItemId, endpoint}
+      onedrive:      {tenantId, driveId, driveItemId, endpoint}
+      onenote:       {tenantId, notebookId, sectionId, pageId, endpoint}
+      teams:         {tenantId, teamId, channelId, messageId, endpoint}
+      outlook:       {tenantId, mailboxId, messageId, endpoint}
+      excel:         {tenantId, driveId, driveItemId, worksheetId|range, endpoint}
+        (every Microsoft Graph provider carries the full container +
+         tenantId + Graph endpoint, not a bare id.)
+      google_drive:  {fileId, [driveId|corpora]}
+      salesforce:    {instanceUrl, sobjectType, recordId, [reportId], [fieldSet]}
+      gmail:         {messageId|threadId}
+      zoom:          {meetingId|recordingId}
+      slack:         {workspaceId, channel, ts}
+      asana:         {workspaceGid, resourceType, gid}
     """
 
     provider: str
     account: str = ""
     resource_id: str = ""
     locator: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_json(self) -> str:
+        """Serialise for storage on the grant row (item_acl.resource_ref)."""
+        return json.dumps({
+            "provider": self.provider,
+            "account": self.account,
+            "resource_id": self.resource_id,
+            "locator": dict(self.locator),
+        }, sort_keys=True)
+
+    @classmethod
+    def from_json(cls, raw: str | bytes | None) -> "ProviderResourceRef | None":
+        """Decode a stored resource ref. Malformed/absent -> None (fail-closed:
+        a managed item whose resource cannot be located cannot be revalidated,
+        so the gate denies it)."""
+        if not raw:
+            return None
+        try:
+            d = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(d, dict) or not isinstance(d.get("provider"), str) or not d["provider"]:
+            return None
+        loc = d.get("locator")
+        return cls(
+            provider=d["provider"],
+            account=d.get("account") or "",
+            resource_id=d.get("resource_id") or "",
+            locator=loc if isinstance(loc, dict) else {},
+        )
 
 
 @dataclass(frozen=True)

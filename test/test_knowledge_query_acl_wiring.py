@@ -12,9 +12,11 @@ from unittest.mock import MagicMock
 
 from kiro_crew.dashboard.handlers.knowledge import (
     _knowledge_access_context,
+    _knowledge_binding_resolver,
+    _knowledge_query_principal,
     _knowledge_revalidator,
 )
-from kiro_crew.knowledge.acl import LOCAL_LIBRARY, AccessContext
+from kiro_crew.knowledge.acl import LOCAL_LIBRARY, LOCAL_PRINCIPAL, AccessContext, QueryPrincipal
 
 
 def _request(app: dict) -> MagicMock:
@@ -56,3 +58,29 @@ def test_revalidator_is_none_when_unwired():
 def test_revalidator_returns_installed_hook():
     hook = object()
     assert _knowledge_revalidator(_request({"knowledge_revalidator": hook})) is hook
+
+
+def test_query_principal_defaults_to_local():
+    assert _knowledge_query_principal(_request({})) is LOCAL_PRINCIPAL
+
+
+def test_query_principal_uses_installed_resolver():
+    p = QueryPrincipal(principal_id="alice")
+    req = _request({"knowledge_query_principal": lambda r: p})
+    assert _knowledge_query_principal(req) is p
+
+
+def test_query_principal_falls_back_when_resolver_raises():
+    def _boom(r):
+        raise RuntimeError("down")
+    req = _request({"knowledge_query_principal": _boom})
+    assert _knowledge_query_principal(req) is LOCAL_PRINCIPAL
+
+
+def test_binding_resolver_none_when_unwired():
+    assert _knowledge_binding_resolver(_request({})) is None
+
+
+def test_binding_resolver_returns_installed():
+    resolver = object()
+    assert _knowledge_binding_resolver(_request({"knowledge_binding_resolver": resolver})) is resolver

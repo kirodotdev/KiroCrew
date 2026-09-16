@@ -20,6 +20,7 @@ from .acl import (
     AccessContext,
     AclPolicy,
     ItemGrant,
+    ProviderResourceRef,
     RevalidationHook,
     RevalidationOutcome,
     is_managed_trust_class,
@@ -120,7 +121,8 @@ class HybridRetriever:
 
     def __init__(self, store: KnowledgeStore, embedder=None, *, embed_sig: str | None = None,
                  acl_policy: AclPolicy | None = None,
-                 revalidator: RevalidationHook | None = None):
+                 revalidator: RevalidationHook | None = None,
+                 binding_resolver=None):
         """store: KnowledgeStore instance. embedder: optional callable(str) -> list[float].
 
         ``embed_sig`` is the :func:`~kiro_crew.knowledge.embedder.embed_signature`
@@ -149,6 +151,7 @@ class HybridRetriever:
         self.embed_sig = embed_sig
         self.acl_policy: AclPolicy = acl_policy or DEFAULT_POLICY
         self.revalidator: RevalidationHook | None = revalidator
+        self.binding_resolver = binding_resolver
 
     def search(
         self,
@@ -158,6 +161,7 @@ class HybridRetriever:
         namespace: str | None = None,
         *,
         access_context: AccessContext | None = None,
+        query_principal=None,
     ) -> list[dict]:
         """Hybrid search with RRF fusion. Returns [{id, title, summary, content, score, source, match_type}].
 
@@ -195,8 +199,17 @@ class HybridRetriever:
         Returns at most ``limit`` ranked rows, plus at most ONE extra trailing
         row -- the keyword leg's protected top hit (see below).
         """
-        from .acl import LOCAL_LIBRARY
+        from .acl import LOCAL_LIBRARY, LOCAL_PRINCIPAL
         ctx = access_context if access_context is not None else LOCAL_LIBRARY
+        # The whole-query principal. A local-library principal (or a local ctx
+        # with no principal) maps to LOCAL_PRINCIPAL: trusted-local visible,
+        # managed denied. When a binding_resolver is wired, managed candidates
+        # are resolved PER-CANDIDATE from this principal + the candidate's own
+        # (provider, account) -- one request never applies one provider identity
+        # to the whole library.
+        principal = query_principal
+        if principal is None:
+            principal = LOCAL_PRINCIPAL if ctx.bypass_acl else None
         kw = self._keyword_search(
             query, limit=limit * 2, source_id=source_id, namespace=namespace
         )
@@ -222,7 +235,7 @@ class HybridRetriever:
         # no readable grant, a stale/unverifiable grant, or no verifiable
         # identity is dropped -- while a trusted-local item is still servable to
         # the local single-user library.
-        fused = self._acl_filter(fused, ctx)
+        fused = self._acl_filter(fused, ctx, principal)
 
         # Resolve every fused candidate up front: both the recency tie-break below
         # and the result rows read the same item, so one lookup per id serves both.
@@ -301,57 +314,46 @@ class HybridRetriever:
         return results
 
     def _acl_filter(
-        self, fused: list[tuple[str, float]], ctx: AccessContext
+        self, fused: list[tuple[str, float]], ctx: AccessContext, principal=None
     ) -> list[tuple[str, float]]:
         """Keep only fused candidates the querying identity may see (fail-closed).
 
-        Item-scoped, NOT call-surface-scoped. For every candidate:
+        Item-scoped AND per-provider. For every candidate:
 
-        * classify it managed-vs-trusted-local from its source PROVENANCE stamp
-          (``sources.trust_class``, evidence written at creation) -- NOT from a
-          source_type name guess, so a new/misspelled cloud type or a managed
-          source missing its per-item flag cannot be waved through as local;
-        * a TRUSTED-LOCAL item (a source stamped local_admitted) with no grant
-          is servable to a bypass (local) context and otherwise takes the
-          subject/tenant test;
-        * a MANAGED item (managed/unstamped/dangling/SOURCELESS provenance, or a
-          grant explicitly flagged managed) ALWAYS takes the current-subject
-          check AND revalidation: the optional :attr:`revalidator` performs the
-          provider live-permission probe; with no revalidator wired the outcome
-          is UNVERIFIABLE and the policy falls back to the stored freshness
-          stamp, denying a stale/never-revalidated managed grant. A managed item
-          under a bypass context (no verifiable provider-mapped subject) is
-          denied.
+        * classify managed-vs-trusted-local from the source PROVENANCE stamp
+          (``sources.trust_class``); sourceless/unknown/dangling => managed;
+        * a TRUSTED-LOCAL item with no grant is servable to a bypass (local)
+          context, else takes the subject/tenant test against ``ctx``;
+        * a MANAGED item is gated against the PROVIDER-MAPPED identity for ITS OWN
+          (provider, account). When a :attr:`binding_resolver` is wired, that
+          identity is resolved PER CANDIDATE from ``principal`` + the candidate's
+          ProviderResourceRef -- one request never applies one provider identity
+          to the whole library, and a principal with no binding for that
+          provider/account is denied (never falls back to another binding). A
+          managed item whose resource_ref is missing/unparseable cannot be
+          located to revalidate and is denied. Then the revalidation chain runs
+          against that per-candidate context.
+
+        Without a binding_resolver the managed item is checked directly against
+        ``ctx`` (the direct-context path: a caller that already resolved a single
+        provider identity, or a test).
 
         Runs before any downstream read of ``fused``, so it is the ONE place the
-        gate lives: the result window, recency tie-break, keyword rescue and
-        enrichment passes all consume this filtered list.
+        gate lives.
         """
         if not fused:
             return fused
         ids = [item_id for item_id, _ in fused]
         grants = self.store.get_item_grants(ids)
-        # Every candidate needs its source PROVENANCE, including the ones with NO
-        # grant row (a trusted-local item legitimately has none). One batched read
-        # returns (has_source, trust_class) per id -- the evidence stamp the gate
-        # classifies from, never a source_type guess.
         trust = self.store.get_item_trust(ids)
         kept: list[tuple[str, float]] = []
         for item_id, score in fused:
             raw = grants.get(item_id)
             has_source, trust_class = trust.get(item_id, (False, None))
-            # Managed classification from the provenance stamp (fail-closed):
-            #  - source stamped local_admitted -> trusted-local (the ONLY local case);
-            #  - source stamped managed, OR unstamped/unknown, OR a dangling
-            #    source row (trust_class None), OR SOURCELESS (unverifiable
-            #    provenance) -> managed. Per Root's decision, no-source is not a
-            #    trusted-local shared-auth rule.
             managed_by_provenance = is_managed_trust_class(has_source, trust_class)
             if raw is None:
-                # No grant row. A trusted-local item is allowed for a bypass
-                # context (the local library) and denied for an enforcing one
-                # (it names a real subject an ungranted item cannot match). A
-                # managed item with no grant is always denied (fail-closed).
+                # No grant row: trusted-local visible only to a bypass context;
+                # a managed (or enforcing-context) item is denied.
                 if not managed_by_provenance and ctx.bypass_acl:
                     kept.append((item_id, score))
                 continue
@@ -360,33 +362,76 @@ class HybridRetriever:
                 raw.get("subjects"), raw.get("tenant"), raw.get("acl_version"),
                 managed=managed, fresh_as_of=raw.get("fresh_as_of"),
             )
+            if not managed:
+                # Trusted-local grant: check against the whole-query ctx.
+                if self.acl_policy.allows(ctx, grant):
+                    kept.append((item_id, score))
+                continue
+
+            # --- Managed candidate: resolve the per-candidate identity. ---
+            resource = ProviderResourceRef.from_json(raw.get("resource_ref"))
+            item_ctx = self._context_for_managed_candidate(ctx, principal, resource)
+            if item_ctx is None:
+                # No provider-mapped identity for THIS candidate's provider/
+                # account (no binding, or resource_ref missing) -> deny.
+                continue
+            if item_ctx.bypass_acl:
+                # A bypass/local context has no provider-mapped subject -> a
+                # managed item is never visible to it.
+                continue
+
             revalidation = RevalidationOutcome.UNVERIFIABLE
             hook_consulted = False
-            if managed and grant.readable and not ctx.bypass_acl and self.revalidator is not None:
+            if grant.readable and self.revalidator is not None:
                 hook_consulted = True
                 try:
-                    revalidation = self.revalidator.revalidate(ctx, item_id, grant)
+                    revalidation = self.revalidator.revalidate(item_ctx, item_id, grant)
                 except Exception:
-                    # A hook that errors is treated as UNVERIFIABLE, never as a
-                    # silent allow -- the fail-closed posture must survive a
-                    # broken/timed-out provider probe.
                     logger.warning(
                         "Knowledge ACL revalidation hook raised for item %s; "
                         "treating as unverifiable (fail-closed)", item_id,
                         exc_info=True)
                     revalidation = RevalidationOutcome.UNVERIFIABLE
-            # When a hook WAS consulted, its answer is authoritative: an
-            # UNVERIFIABLE (couldn't reach the provider / errored) is a hard deny
-            # for a managed item and must NOT fall back to the stored freshness
-            # stamp -- otherwise a broken provider probe would keep serving a
-            # within-window snapshot, defeating the point of revalidating. The
-            # stamp fallback only applies when NO hook is wired at all.
-            if (managed and hook_consulted
-                    and revalidation == RevalidationOutcome.UNVERIFIABLE):
+            # A consulted hook is authoritative: UNVERIFIABLE is a hard deny (no
+            # stale-stamp fallback). The stamp fallback only applies when NO hook
+            # is wired.
+            if hook_consulted and revalidation == RevalidationOutcome.UNVERIFIABLE:
                 continue
-            if self.acl_policy.allows(ctx, grant, revalidation=revalidation):
+            if self.acl_policy.allows(item_ctx, grant, revalidation=revalidation):
                 kept.append((item_id, score))
         return kept
+
+    def _context_for_managed_candidate(self, ctx, principal, resource):
+        """The AccessContext a managed candidate is gated against, or None (deny).
+
+        With a binding_resolver wired: the candidate MUST carry a resource_ref
+        (else it cannot be located/revalidated -> None), and the resolver maps
+        ``principal`` + the resource's (provider, account) to the binding's
+        AccessContext -- None when the principal holds no binding there, so the
+        gate denies rather than reusing another provider's identity.
+
+        Without a resolver: the direct-context path -- gate against ``ctx`` as
+        passed (a caller that already resolved a single provider identity, or a
+        test). A bypass/local ctx has no provider subject and the caller drops
+        the managed item.
+        """
+        if self.binding_resolver is None:
+            return ctx
+        if resource is None or not resource.provider:
+            return None
+        if principal is None:
+            return None
+        # A local-library principal has no cross-identity boundary and holds no
+        # provider binding: never resolve a managed binding for it.
+        if getattr(principal, "local_library", False):
+            return None
+        try:
+            return self.binding_resolver.resolve(principal, resource.provider, resource.account)
+        except Exception:
+            logger.warning(
+                "Knowledge ACL binding_resolver raised for provider=%s; denying "
+                "(fail-closed)", resource.provider, exc_info=True)
+            return None
 
     def _attach_source_locations(self, results: list[dict]) -> None:
         """Enrich results in place with citation metadata (section + line range).
