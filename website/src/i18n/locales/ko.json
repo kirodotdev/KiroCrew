@@ -9444,7 +9444,11 @@
         "search_files": "파일 검색",
         "searching": "검색 중…",
         "showing_first_matches": "처음 {{shown}}개의 일치 항목 표시 중",
-        "unable_to_list_folder": "폴더 목록을 표시할 수 없습니다"
+        "unable_to_list_folder": "폴더 목록을 표시할 수 없습니다",
+        "listing_timed_out": "폴더 목록 시간 초과",
+        "search_denied": "이 폴더에 접근할 수 없습니다",
+        "search_root_missing": "폴더를 찾을 수 없습니다",
+        "search_timed_out": "검색 시간 초과"
       },
       "knowledgePicker": {
         "cancel": "취소",

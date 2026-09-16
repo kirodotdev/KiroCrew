@@ -9846,7 +9846,11 @@
         "search_files": "Поиск файлов",
         "searching": "Поиск…",
         "showing_first_matches": "Показаны первые {{shown}} совпадений",
-        "unable_to_list_folder": "Не удалось получить список папки"
+        "unable_to_list_folder": "Не удалось получить список папки",
+        "listing_timed_out": "Время получения списка папки истекло",
+        "search_denied": "Нет доступа к этой папке",
+        "search_root_missing": "Папка не найдена",
+        "search_timed_out": "Время поиска истекло"
       },
       "knowledgePicker": {
         "cancel": "Отмена",

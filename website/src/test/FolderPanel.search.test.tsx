@@ -14,6 +14,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import FolderPanel from '../pages/chat/FolderPanel'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 
 const ROOT = '/proj'
 
@@ -283,6 +284,69 @@ describe('FolderPanel search', () => {
     await screen.findByText('README.md')
     await type('app')
 
-    expect(await screen.findByText('Access denied')).toBeInTheDocument()
+    expect(await screen.findByText('Search failed')).toBeInTheDocument()
+    expect(screen.queryByText('Access denied')).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * Every failure notice is keyed on the CAUSE, never on the rejection's own message.
+ *
+ * A deadline rejects with a message that is truthy, so the `message || t(...)` shape
+ * these notices used to carry rendered that English string in every locale. Each case
+ * asserts the raw text is ABSENT as well as the translated string present: presence
+ * alone would still pass with both on screen.
+ */
+describe('FolderPanel failure copy is cause-keyed', () => {
+  function deadline(): Error {
+    const e = new Error('deadline exceeded')
+    e.name = 'TimeoutError'
+    return e
+  }
+
+  it('names a timed-out search without leaking the deadline text', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(deadline())
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText('Search timed out')).toBeInTheDocument()
+    expect(screen.queryByText('deadline exceeded')).not.toBeInTheDocument()
+  })
+
+  it('names a timed-out listing without leaking the deadline text', async () => {
+    vi.spyOn(api, 'browseFiles').mockRejectedValue(deadline())
+
+    renderPanel()
+
+    expect(await screen.findByText('Folder listing timed out')).toBeInTheDocument()
+    expect(screen.queryByText('deadline exceeded')).not.toBeInTheDocument()
+  })
+
+  it('distinguishes a refusal from a timeout on the machine code', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(403, 'Access denied', JSON.stringify({ code: 'access_denied' })),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText('No access to this folder')).toBeInTheDocument()
+    expect(screen.queryByText('Search timed out')).not.toBeInTheDocument()
+  })
+
+  it('reports an expired session as a generic failure, not as a refused folder', async () => {
+    vi.spyOn(api, 'fileSearch').mockRejectedValue(
+      new ApiError(403, 'Access denied', JSON.stringify({ code: 'access_denied' }), true),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('app')
+
+    expect(await screen.findByText('Search failed')).toBeInTheDocument()
+    expect(screen.queryByText('No access to this folder')).not.toBeInTheDocument()
   })
 })
