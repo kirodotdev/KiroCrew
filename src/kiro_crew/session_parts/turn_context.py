@@ -61,6 +61,7 @@ logger = logging.getLogger("kiro_crew.session")
 
 if TYPE_CHECKING:
     from kiro_crew.session import LLMProvider, SessionManager
+    from kiro_crew.session_compaction import SeedWriter
     from kiro_crew.session_parts.policy import _CompactCallback
     from kiro_crew.session_parts.record import _Session
 
@@ -194,6 +195,11 @@ def is_compacting(self: SessionManager, key: str) -> bool:
 def compaction_waits_for_turn(self: SessionManager, key: str) -> bool:
     """Whether *key*'s compaction still waits for the turn holding the session."""
     return self._compaction.compaction_waits_for_turn(key)
+
+
+def set_compaction_seed_writer(self: SessionManager, writer: SeedWriter | None) -> None:
+    """Register the surface hook the rotation method asks ``supports`` of."""
+    self._compaction.set_seed_writer(writer)
 
 
 def mark_needs_reinjection(self: SessionManager, key: str) -> None:

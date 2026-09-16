@@ -55,6 +55,17 @@ export function clampAutocompactPct(n: number): number {
   return Math.min(AUTOCOMPACT_PCT_MAX, Math.max(AUTOCOMPACT_PCT_MIN, n))
 }
 
+// The order of `config.sections.COMPACTION_METHODS`; the backend's PATCH
+// allowlist accepts exactly these values. Each label is one catalog value
+// (Native's carries its own default marker), so no translation is glued together.
+export const COMPACTION_METHOD_OPTIONS = ['native', 'soft']
+export function compactionMethodLabels(): string[] {
+  return [
+    i18nT('pages.settings.chatPanel.compaction_method_native'),
+    i18nT('pages.settings.chatPanel.compaction_method_soft'),
+  ]
+}
+
 // About You — slugs shared with onboarding step 2 and context.py's prompt maps.
 export const ROLE_OPTIONS = ['', ...ROLE_SLUGS]
 export function roleLabels(): string[] {
@@ -194,7 +205,7 @@ export type ClampNotice = { requested: number; stored: number; min: number; max:
 
 /** Shape of the kirocrewConfig query payload this panel reads and patches. */
 export type KirocrewConfigShape = {
-  session?: { autocompact_pct?: number; compact_wait_secs?: number; max_per_creator?: number }
+  session?: { autocompact_pct?: number; compact_wait_secs?: number; max_per_creator?: number; compaction_method?: string }
   session_summary?: { enabled?: boolean }
   agent?: {
     acp_backend?: string

@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard.chat_runner import (
+    COMPACT_AFTER_TURN_METHOD_KEY,
     COMPACT_AFTER_TURN_NOTICE_KIND,
     _run_chat,
 )
@@ -168,6 +169,81 @@ async def test_each_turn_gets_its_own_notice(tmp_path):
 
     assert len(_notice_rows(slot)) == 2
     client.steer.assert_not_awaited()
+
+
+@pytest.mark.parametrize("method", ["soft", "native", "unreadable"])
+@pytest.mark.asyncio
+async def test_the_row_records_a_configured_rotation_method(tmp_path, monkeypatch, method):
+    """The card words the row from ``meta.compaction_method``: a rotation does not summarize.
+
+    The turn's one ``session.compaction_method`` read decides it. ``native`` and a
+    config whose method cannot be read leave the key off, so the row is main's.
+    """
+    from dataclasses import replace
+
+    from test_replay_rotation import _SessionSectionRaises
+
+    from kiro_crew.dashboard import chat_runner
+
+    real = KiroCrewConfig.load()
+    pinned: Any
+    if method == "unreadable":
+        pinned = _SessionSectionRaises(real)
+    else:
+        pinned = replace(real, session=replace(real.session, compaction_method=method))
+    monkeypatch.setattr(chat_runner.KiroCrewConfig, "load", staticmethod(lambda: pinned))
+    events = [
+        *_tool_round("tc-1"),
+        AcpEvent(kind=EVENT_TEXT_CHUNK, text="Done."),
+        AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+    ]
+    state, slot, _client = _state_and_slot(tmp_path, events, due=True)
+
+    await _run_chat(state, slot, "do the long task")
+
+    rows = _notice_rows(slot)
+    assert len(rows) == 1
+    assert rows[0]["content"] == "🔄 Context at 47% (limit 40%) — will compact after this turn."
+    if method == "soft":
+        assert rows[0]["meta"][COMPACT_AFTER_TURN_METHOD_KEY] == method
+    else:
+        assert COMPACT_AFTER_TURN_METHOD_KEY not in rows[0]["meta"]
+
+
+@pytest.mark.parametrize("session", ["claude", "cron_linked"])
+@pytest.mark.asyncio
+async def test_a_session_that_never_rotates_gets_no_rotation_wording(
+    tmp_path, monkeypatch, session
+):
+    """``soft`` is configured, but this session always runs ``native``: the
+    coordinator compacts a Claude backend in place and hands a key the seed
+    writer refuses (a cron-linked tab) to ``native``. The row is main's."""
+    from dataclasses import replace
+
+    from kiro_crew import session as session_module
+    from kiro_crew.dashboard import chat_runner
+
+    real = KiroCrewConfig.load()
+    pinned = replace(real, session=replace(real.session, compaction_method="soft"))
+    monkeypatch.setattr(chat_runner.KiroCrewConfig, "load", staticmethod(lambda: pinned))
+    events = [
+        *_tool_round("tc-1"),
+        AcpEvent(kind=EVENT_TEXT_CHUNK, text="Done."),
+        AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+    ]
+    state, slot, client = _state_and_slot(tmp_path, events, due=True)
+    if session == "claude":
+        monkeypatch.setattr(
+            session_module, "_is_claude_backend", lambda provider: provider is client
+        )
+    else:
+        slot.linked_session_key = "cron:job-7"
+
+    await _run_chat(state, slot, "do the long task")
+
+    rows = _notice_rows(slot)
+    assert len(rows) == 1
+    assert COMPACT_AFTER_TURN_METHOD_KEY not in rows[0]["meta"]
 
 
 # ── The verdict itself: read-only, and only where Crew would really compact ──

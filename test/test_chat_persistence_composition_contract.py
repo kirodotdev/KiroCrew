@@ -389,7 +389,7 @@ _SIGNATURES: dict[str, str] = {
     "_approx_window_payload_bytes": "(window: 'list[dict]') -> 'int'",
     "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'Path | None'",
     "_attach_variants": "(slot: '_ChatSlot', m: 'dict') -> 'None'",
-    "_build_history_prefix": "(slot: '_ChatSlot', *, conversation_log: 'ConversationLog | None' = None, current_message: 'dict | None' = None, model_window: 'int | None' = None) -> 'str'",
+    "_build_history_prefix": "(slot: '_ChatSlot', *, conversation_log: 'ConversationLog | None' = None, current_message: 'dict | None' = None, model_window: 'int | None' = None, rotation_configured: 'bool' = False) -> 'str'",
     "_build_kiro_model_map": "() -> 'dict[str, str]'",
     "_build_message_entry": "(m: 'dict', *, attachments: 'tuple[Path, str] | None' = None) -> 'dict | None'",
     "_build_message_entry_uncached": "(m: 'dict', *, attachments: 'tuple[Path, str] | None' = None) -> 'dict | None'",

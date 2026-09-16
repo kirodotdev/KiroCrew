@@ -95,7 +95,7 @@ async def _setup(monkeypatch, *, die_at_once: bool):
     mgr.set_child_teardown_handler(_NoRuns())
     notices: list[tuple[bool, str]] = []
 
-    async def _cb(key, pct, *, success, outcome="compacted"):
+    async def _cb(key, pct, *, success, outcome="compacted", method="native"):
         notices.append((success, outcome))
 
     mgr.set_compact_callback(_cb)

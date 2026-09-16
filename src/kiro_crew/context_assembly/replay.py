@@ -324,6 +324,10 @@ def is_context_cap_notice(row: dict) -> bool:
     return isinstance(meta, dict) and meta.get("notice") == CONTEXT_CAP_NOTICE
 
 
+# Appended where the replay cuts a row's content short.
+_TRUNCATED_MARK = "…[truncated]"
+
+
 def _replay_identity(row: dict) -> tuple | None:
     """Delivery identity, never a global text-equality deduplication key."""
     meta = row.get("meta")
@@ -391,7 +395,9 @@ def _merge_replay_rows(
 _RECALL_FALLBACK_MAX_ROWS = 20
 
 
-def _quota_tail(messages: list[dict], *, conv_max: int, inject_max: int) -> list[dict]:
+def _quota_tail(
+    messages: list[dict], *, conv_max: int, inject_max: int, skip_rotation_notices: bool = False
+) -> list[dict]:
     """The newest rows under separate conversation and ``inject`` row quotas, oldest first.
 
     A steer the person took back (``steerState: retracted``) is left out.
@@ -407,8 +413,16 @@ def _quota_tail(messages: list[dict], *, conv_max: int, inject_max: int) -> list
     thing that would arrive: either as a path the prompt builder re-inlines --
     resurrecting an image a compaction already dropped -- or, once the file is gone,
     as prose naming a picture the model cannot see.
+
+    *skip_rotation_notices* leaves out every compaction notice a rotation posted
+    (``session_compaction_methods.is_rotation_notice``). Such a row is status for
+    the person, not conversation, and counted by the successor's replay it would
+    spend tail budget the rotation's projection already charged. The session
+    replay passes it only when a rotation method is configured, so a default
+    config admits every row as before.
     """
     from kiro_crew.image_refs import strip_image_refs
+    from kiro_crew.session_compaction_methods import is_rotation_notice
 
     kept: list[dict] = []
     conv = inj = 0
@@ -420,6 +434,8 @@ def _quota_tail(messages: list[dict], *, conv_max: int, inject_max: int) -> list
         if _is_steer_row(m) and m["meta"].get("steerState") == _STEER_STATE_RETRACTED:
             # Taken back before the turn read it: it was never part of the
             # conversation, and its text was cleared when it was taken back.
+            continue
+        if skip_rotation_notices and is_rotation_notice(m):
             continue
         if role == "inject":
             if inj >= inject_max:
@@ -438,27 +454,52 @@ def _quota_tail(messages: list[dict], *, conv_max: int, inject_max: int) -> list
     return kept
 
 
+def replay_scale(window_tokens: int | None) -> float:
+    """The factor the replay's per-window figures scale by: window over reference, in [0.2, 1.0].
+
+    Replay is a separate, existing tail-history allowance, not background
+    capacity. Small-window replay limits are preserved; larger windows cannot
+    enlarge it beyond the reference allowance.
+    """
+    return max(
+        0.2,
+        min(1.0, _budgets._effective_window(window_tokens) / _budgets._REFERENCE_WINDOW_TOKENS),
+    )
+
+
+def replay_budget_chars(
+    window_tokens: int | None, *, budget_chars: int = _REPLAY_BUDGET_CHARS
+) -> int:
+    """Characters of conversation tail a session replay carries for *window_tokens*.
+
+    The one tail figure: :func:`replay_text` renders under it, and a rotation
+    compaction projects its successor's usage from it. *budget_chars* is the
+    budget at the reference window (see :func:`replay_text`).
+    """
+    return round(budget_chars * replay_scale(window_tokens))
+
+
 def replay_text(
-    messages: list[dict], model_window: int | None, *, budget_chars: int = _REPLAY_BUDGET_CHARS
+    messages: list[dict],
+    model_window: int | None,
+    *,
+    budget_chars: int = _REPLAY_BUDGET_CHARS,
+    clip_newest: bool = False,
 ) -> str:
     """The tail-heavy replay of *messages* within the window-scaled replay budget.
 
     Keeps as many recent messages as fit, newest first. ``inject`` rows are clipped
     to a per-row ceiling and spend their own share of the budget, so conversation is
-    never starved by breadcrumbs. Returned unredacted; the caller redacts.
+    never starved by breadcrumbs. The newest row is kept whatever its size; with
+    *clip_newest* it is clipped to the budget with the truncation mark (see
+    ``build_session_replay``). Returned unredacted; the caller redacts.
 
     *budget_chars* is the budget at the reference window: ``_REPLAY_BUDGET_CHARS``
     for every cold start but the conductor context cap's trim, which passes a
     larger one.
     """
-    # Replay is a separate, existing tail-history allowance, not background
-    # capacity. Preserve small-window replay limits; larger windows cannot
-    # enlarge it beyond the reference allowance.
-    factor = max(
-        0.2,
-        min(1.0, _budgets._effective_window(model_window) / _budgets._REFERENCE_WINDOW_TOKENS),
-    )
-    replay_budget = round(budget_chars * factor)
+    factor = replay_scale(model_window)
+    replay_budget = replay_budget_chars(model_window, budget_chars=budget_chars)
     inject_cap = max(1, min(replay_budget, round(_REPLAY_INJECT_CAP_CHARS * factor)))
 
     # Reserved so conversation cannot be starved by breadcrumbs: inject rows spend
@@ -474,12 +515,14 @@ def replay_text(
         role = m["role"].title()
         content = m.get("content", "")
         if m["role"] == "inject" and len(content) > inject_cap:
-            content = content[:inject_cap] + "…[truncated]"
+            content = content[:inject_cap] + _TRUNCATED_MARK
         line = f"{role}: {content}"
         if m["role"] == "inject" and inject_total + len(line) > inject_budget and lines:
             continue
         if total + len(line) > replay_budget and lines:
             break
+        if clip_newest and not lines and len(line) > replay_budget:
+            line = line[: max(0, replay_budget - len(_TRUNCATED_MARK))] + _TRUNCATED_MARK
         lines.append(line)
         total += len(line) + 2  # +2 for separator
         if m["role"] == "inject":
