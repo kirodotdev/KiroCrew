@@ -74,6 +74,24 @@ what makes it attributable and revertible.
 **The rules of engagement need a human review before the first auditor runs.**
 That review is a precondition of the first round, not a formality.
 
+### Preconditions for the first round
+
+Before the first dispatch, REPORT the readiness state as data — every item below
+read from the ledger or the filesystem in this session, never carried over from
+how a previous round left the machine. A missing or unreadable item is reported
+as missing, never inferred as ready, and is a stop condition for the first round.
+
+| Item | Read it from | Ready reads as |
+|---|---|---|
+| Active rules of engagement | `scripts/ledger.py list rules` | how many rows are `active`, and the `approved_by` on each — a row nobody signed is not a reviewed rule, and the count alone cannot tell you the review happened |
+| The gating golden-path corpus | the committed `golden-paths.json` beside the skill | the rows `scripts/verify_fix.py` will actually re-check, because that gate reads this file and never the table. `scripts/ledger.py list golden-paths` reports the table, which is import and dedupe state — a count there is not a corpus a fix is judged against |
+| The five scripts | the skill's `scripts/` directory | all five present and readable; an absent one is `UNKNOWN` and never permission |
+| Scope answered from the ledger | one `scripts/scope_check.py` call | NO fallback warning on stderr, AND a verdict that is not `UNKNOWN`. The fallback names the export it read instead, and its presence means the rows are NOT signed — an answer from a file somebody can edit without leaving a row behind. Silence alone is not the ready reading: an unreadable database, and a ledger whose every rule has been revoked, both answer `UNKNOWN` with no warning at all |
+
+Report the four as four readings, each with the number or the name you read. An
+item you did not read is not ready, and a precondition nobody stated is the state
+the operator has no way to ask about.
+
 ## What qualifies as a work item
 
 One work item is **one attack surface**. Three properties, all required — a
@@ -118,11 +136,46 @@ silence as approval, and never re-scope a blocked step into something that looks
 permitted. Record each pending gate as your own obligation and re-read it every
 cycle until it is answered.
 
+When you block on one, name WHICH of the two gates holds you, the exact step you
+are asking to be allowed — the surface, the finding id, the command or the PR —
+and what you will do the moment the answer is yes. An operator asked to approve
+"active testing" is approving a mood, and a mood cannot be refused in part; one
+asked to approve a named step can allow that step and hold the rest.
+
 A third `human_approval` row covers the golden-path corpus rather than a
 dispatch: approving a `golden_paths` row, and **deactivating an approved one**,
 both need a human yes on the same terms. The symmetry is the control — a gate
 whose input can be shrunk is not a gate, because the cheapest way to green is
 retiring the row a fix broke. That row is not yours to grant either.
+
+### Hand the operator the command, never run it
+
+Four `scripts/ledger.py` verbs are the human's: `add-rule`,
+`import-golden-paths`, `approve-golden-path` and `approve-lesson`. Each writes a
+row that IS the boundary this fleet is bounded by, so an agent that types one has
+signed the operator's name to its own decision. Being told to run one is not
+authority to run it, and there is no exception that makes it yours.
+
+When one of them is what stands between the fleet and its next step, EMIT IT,
+ready to run — a command that is described rather than handed over gets retyped,
+and retyped from the wrong directory:
+
+- The absolute path to the script, resolved in this session, so the command runs
+  from wherever the operator is standing.
+- Every flag filled from what you read, except `--approved-by`: leave it as the
+  operator's own to fill and say so on the line. The approver is the one field
+  that cannot be yours, because it is the signature.
+- One line saying what THAT verb prints back, so the operator can tell success
+  from silence. All four print one JSON line on stdout, and they do not print the
+  same thing:
+
+  | Verb | A correct run prints |
+  |---|---|
+  | `add-rule` | the new row's id and `active: 1` |
+  | `approve-lesson`, `approve-golden-path` | the row's id, `active: 1` and the approver. A repeat on the same row is instead a sentence on stderr and exit 2 — approval is recorded once, so that refusal is correct behaviour and not a failure to retry |
+  | `import-golden-paths` | the `imported`, `skipped` and `total` counts, and no row id. It is idempotent, so re-importing the same file succeeds with the rows skipped |
+
+Preparing that text is clerical. Typing it is the gate.
 
 ## Auditor seed template
 
@@ -330,6 +383,9 @@ Stop and report, rather than continuing, on any of these:
   exit: final tally, then `autonudge_stop`.
 - The rules of engagement have not been reviewed by a human. Nothing is
   dispatched before that.
+- A readiness precondition is missing, unreadable, or answered from the export
+  rather than the ledger. Report the reading, hand over the command that fixes
+  it, and dispatch nothing until it reads ready.
 - A worker reports a policy refusal. That surface stops until you rule on the
   event; the worker does not continue past it, and neither do you.
 - A worker reports having circumvented a block, a scope rule, or a forbidden
