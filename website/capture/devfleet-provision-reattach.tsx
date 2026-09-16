@@ -12,9 +12,15 @@
  * page reload; the stub replaces the backend, not the component.
  *
  * Scene + theme come from the query string: ?scene=running&theme=dark
- * Scenes mirror the two states the reattach restores:
+ * Scenes mirror the states the reattach restores:
  *   running — reload mid-provision: stepper + live log resume from the payload
  *   failed  — reload after a failed provision: red strip + log auto-expanded
+ *   steperr — a failed provision whose runner labelled the failing step's
+ *             stderr tail with `::steperr::` markers; the stream is shaped
+ *             like a refused `pip install`: diagnostic on stderr, the
+ *             block-buffered stdout progress line flushed AFTER it, then the
+ *             markers and the CLI's closing line — the stream a notice built
+ *             from the last output line gets wrong
  */
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -52,7 +58,21 @@ const FAILED_LINES = [
   'npm ERR! command failed: npm run build',
 ]
 
-const RID = scene === 'failed' ? 'run-prov-failed01' : 'run-prov-live0001'
+const STEPERR_LINES = [
+  '[provision] creating venv for kc-wt-oauth-device-flow (one-time, ~1 min)\u2026',
+  '  $ /usr/bin/python3.12 -m venv /w/kc-wt-oauth-device-flow/.venv  (cwd=/w/kc-wt-oauth-device-flow)',
+  '  $ /w/kc-wt-oauth-device-flow/.venv/bin/pip install --editable /w/kc-wt-oauth-device-flow  (cwd=/w/kc-wt-oauth-device-flow)',
+  "ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied: '/w/kc-wt-oauth-device-flow/.venv/lib/python3.12/site-packages/kiro_crew.pth'",
+  'Consider using the `--user` option or check the permissions.',
+  'Obtaining file:///w/kc-wt-oauth-device-flow',
+  '  Installing build dependencies: started',
+  "  Installing build dependencies: finished with status 'done'",
+  "::steperr::2::ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied: '/w/kc-wt-oauth-device-flow/.venv/lib/python3.12/site-packages/kiro_crew.pth'",
+  '::steperr::2::Consider using the `--user` option or check the permissions.',
+  "pod: provisioning 'kc-wt-oauth-device-flow' failed (see output above)",
+]
+
+const RID = scene === 'running' ? 'run-prov-live0001' : 'run-prov-failed01'
 
 const FLEET = {
   base_branch: 'main',
@@ -76,9 +96,9 @@ const FLEET = {
   pods_available: true,
 }
 
-const RUN = scene === 'failed'
-  ? { status: 'done', exit_code: 1, output: FAILED_LINES, started: NOW - 214 }
-  : { status: 'running', output: RUNNING_LINES, started: NOW - 87 }
+const RUN = scene === 'running'
+  ? { status: 'running', output: RUNNING_LINES, started: NOW - 87 }
+  : { status: 'done', exit_code: 1, output: scene === 'steperr' ? STEPERR_LINES : FAILED_LINES, started: NOW - 214 }
 
 const realFetch = globalThis.fetch.bind(globalThis)
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
