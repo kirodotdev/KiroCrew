@@ -504,4 +504,169 @@ describe('RegistryManager', () => {
       expect(screen.queryByText('Trusted source')).toBeNull()
     })
   })
+
+  describe('review tier on a build-pinned row', () => {
+    const PINNED = { name: 'internal', repo: 'https://forge.example.com/org/registry.git', branch: 'main', trust: 'owner' }
+
+    it('shows the label as the title and keeps the id readable beneath it', async () => {
+      // The id keys the index cache and every installed app's `_registry` tag,
+      // so a support conversation names it. Replacing it with the label would
+      // leave nothing on screen to match those against.
+      mockListRegistries.mockResolvedValue({
+        registries: [],
+        pinned: [{ ...PINNED, label: 'Amazon internal apps', review: 'curated' }],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Amazon internal apps')).toBeInTheDocument())
+      // Prefixed: three near-identical strings on a community row (title, badge,
+      // id) left a reader unable to tell the grey word was an identifier.
+      expect(screen.getByText('id: internal')).toBeInTheDocument()
+    })
+
+    it('falls back to the id when no label is set, with no id subtitle', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [{ ...PINNED, review: 'curated' }] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('internal')).toBeInTheDocument())
+      // The id IS the title here, so repeating it underneath would be noise.
+      expect(screen.queryByText('id: internal')).toBeNull()
+    })
+
+    it('badges a curated registry as Team reviewed and says who reviewed it', async () => {
+      // "Team reviewed", not "Trusted": a one-word-apart sibling of the
+      // "Trusted source" credential badge that still ships for an untiered owner
+      // row is undecodable, and the two assert different things.
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [{ ...PINNED, review: 'curated' }] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Team reviewed')).toBeInTheDocument())
+      expect(
+        screen.getByLabelText(/Reviewed by the Kiro Crew team before listing/),
+      ).toBeInTheDocument()
+    })
+
+    it('badges a community registry Not vetted, carrying the payload', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [{ ...PINNED, review: 'community' }] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Not vetted')).toBeInTheDocument())
+      expect(screen.getByLabelText(/Not vetted by the Kiro Crew team/)).toBeInTheDocument()
+    })
+
+    it('does not badge a community registry as trusted', async () => {
+      // This is the whole defect: the two pinned registries rendered
+      // identically, so a community source read as team-curated.
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [{ ...PINNED, review: 'community' }] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Not vetted')).toBeInTheDocument())
+      expect(screen.queryByText('Team reviewed')).toBeNull()
+      expect(screen.queryByText('Trusted source')).toBeNull()
+    })
+
+    it('states the credential posture from trust, not from the review tier', async () => {
+      // A community registry pinned at the credential-free `index` tier is the
+      // posture a community tier most likely wants; telling that user their
+      // credentials are used would be false about a security-relevant fact.
+      mockListRegistries.mockResolvedValue({
+        registries: [],
+        pinned: [{ ...PINNED, trust: 'index', review: 'community' }],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Not vetted')).toBeInTheDocument())
+      expect(screen.queryByLabelText(/still clone with your Git credentials/)).toBeNull()
+      expect(screen.getByLabelText(/Install only apps you recognise/)).toBeInTheDocument()
+    })
+
+    it('leaves an empty review tier rendering exactly as before', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [{ ...PINNED, review: '' }] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Trusted source')).toBeInTheDocument())
+      expect(screen.queryByText('Team reviewed')).toBeNull()
+      expect(screen.queryByText('Not vetted')).toBeNull()
+      expect(screen.getByText('Included with this installation')).toBeInTheDocument()
+    })
+
+    it('renders a curated row above a community row the backend listed first', async () => {
+      // Display order is the shared helper's job, so the rail and this card
+      // agree. The backend order is untouched — it still decides duplicate-name
+      // resolution.
+      mockListRegistries.mockResolvedValue({
+        registries: [],
+        pinned: [
+          { ...PINNED, name: 'community', repo: 'https://forge.example.com/org/community.git', label: 'Community apps', review: 'community' },
+          { ...PINNED, name: 'internal', label: 'Internal apps', review: 'curated' },
+        ],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Internal apps')).toBeInTheDocument())
+      const rendered = screen.getAllByText(/^(Internal apps|Community apps)$/).map(n => n.textContent)
+      expect(rendered).toEqual(['Internal apps', 'Community apps'])
+    })
+
+    it('sorts an unreviewed row between curated and community', async () => {
+      mockListRegistries.mockResolvedValue({
+        registries: [],
+        pinned: [
+          { ...PINNED, name: 'c', repo: 'https://forge.example.com/org/c.git', label: 'C community', review: 'community' },
+          { ...PINNED, name: 'p', repo: 'https://forge.example.com/org/p.git', label: 'P plain' },
+          { ...PINNED, name: 'k', repo: 'https://forge.example.com/org/k.git', label: 'K curated', review: 'curated' },
+        ],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('K curated')).toBeInTheDocument())
+      const rendered = screen.getAllByText(/^(C community|P plain|K curated)$/).map(n => n.textContent)
+      expect(rendered).toEqual(['K curated', 'P plain', 'C community'])
+    })
+
+    it('puts an OPERATOR row above a pinned community row', async () => {
+      // The card and the App Store SOURCES rail must agree, and the rail orders
+      // one merged list. Rendering pinned rows as their own block put a community
+      // row above an operator row here and below it there, so a user comparing
+      // the two surfaces saw the sources swapped.
+      mockListRegistries.mockResolvedValue({
+        registries: [{ name: 'my-team', repo: 'https://forge.example.com/me/mine.git', branch: 'main' }],
+        pinned: [
+          { ...PINNED, name: 'community', repo: 'https://forge.example.com/org/c.git', label: 'Community apps', review: 'community' },
+          { ...PINNED, name: 'internal', label: 'Internal apps', review: 'curated' },
+        ],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Internal apps')).toBeInTheDocument())
+      const rendered = screen.getAllByText(/^(Internal apps|my-team|Community apps)$/).map(n => n.textContent)
+      expect(rendered).toEqual(['Internal apps', 'my-team', 'Community apps'])
+    })
+
+    it('keeps remove off a pinned row and on an operator row in the merged list', async () => {
+      // Merging the two lists must not hand a pinned row a delete button: it
+      // would appear to work and be undone by the next read.
+      mockListRegistries.mockResolvedValue({
+        registries: [{ name: 'my-team', repo: 'https://forge.example.com/me/mine.git', branch: 'main' }],
+        pinned: [{ ...PINNED, label: 'Internal apps', review: 'curated' }],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Internal apps')).toBeInTheDocument())
+      expect(screen.getByLabelText('Remove my-team registry')).toBeInTheDocument()
+      expect(screen.queryByLabelText('Remove internal registry')).toBeNull()
+      expect(screen.queryByLabelText('Remove Internal apps registry')).toBeNull()
+    })
+
+    it('still excludes pinned rows from the replace-all PUT after the merge', async () => {
+      mockListRegistries.mockResolvedValue({
+        registries: [{ name: 'my-team', repo: 'https://forge.example.com/me/mine.git', branch: 'main' }],
+        pinned: [{ ...PINNED, label: 'Internal apps', review: 'curated' }],
+      })
+      mockUpdateRegistries.mockResolvedValue({ ok: true, registries: [], newlyTrustedHosts: [] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), {
+        target: { value: 'https://forge.example.com/me/second.git' },
+      })
+      const buttons = screen.getAllByText('Add Registry')
+      fireEvent.click(buttons[buttons.length - 1])
+      await waitFor(() => {
+        expect(mockUpdateRegistries).toHaveBeenCalledWith([
+          { name: 'my-team', repo: 'https://forge.example.com/me/mine.git', branch: 'main' },
+          { name: '', repo: 'https://forge.example.com/me/second.git', branch: '' },
+        ])
+      })
+    })
+  })
 })

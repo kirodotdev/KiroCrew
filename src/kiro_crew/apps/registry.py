@@ -387,6 +387,28 @@ _TRUST_INDEX = "index"
 _TRUST_OWNER = "owner"
 _REGISTRY_TRUST_TIERS: frozenset[str] = frozenset({_TRUST_INDEX, _TRUST_OWNER})
 
+#: Review tiers an ``ExternalRegistryConfig.review`` value may name.
+#
+# This says how thoroughly a registry's LISTINGS were reviewed before being
+# published, which is a statement to the user — not a security control. ``trust``
+# alone selects the credential posture for cloning, so a ``curated`` registry at
+# the ``index`` tier still clones credential-free and a ``community`` one at the
+# ``owner`` tier still clones with this machine's git identity. Keeping the two
+# axes separate is deliberate: collapsing them would make "we read the listings"
+# silently hand out credentials.
+#
+# ``""`` is the default and means the registry makes no claim, so a build that
+# never sets the field renders exactly as it did before it existed. An
+# unrecognised value degrades to ``""`` rather than dropping the row: the field is
+# display metadata, and the list it lands in feeds index fetch, the trusted-host
+# allowlist and install, so a typo must not be able to take a registry offline.
+_REVIEW_UNSET = ""
+_REVIEW_CURATED = "curated"
+_REVIEW_COMMUNITY = "community"
+_REGISTRY_REVIEW_TIERS: frozenset[str] = frozenset(
+    {_REVIEW_UNSET, _REVIEW_CURATED, _REVIEW_COMMUNITY}
+)
+
 
 def _registry_identity_key(name_or_repo: str) -> str:
     """The key two registries collide on: the cache file they would share.
@@ -466,6 +488,12 @@ def _pinned_registries() -> list[Any]:
     sees one attribute shape. A malformed row is dropped with a warning rather
     than raised on: this list feeds security gates
     (:func:`is_clone_host_trusted`), and those must keep answering.
+
+    ``label`` and ``review`` are display metadata carried through unchanged. An
+    unrecognised ``review`` value degrades to ``""`` (no claim) and is logged;
+    it never drops the row, because a display field must not be able to remove a
+    registry from install and the security gates — see
+    :data:`_REGISTRY_REVIEW_TIERS`.
     """
     try:
         edition_rows = current_context().apps_loader.default_registries()
@@ -515,11 +543,42 @@ def _pinned_registries() -> list[Any]:
         name = row.get("name")
         branch = row.get("branch")
         trust = row.get("trust")
+        label = row.get("label")
+        raw_review = row.get("review")
+        review = raw_review.strip() if isinstance(raw_review, str) else _REVIEW_UNSET
+        # An unknown review tier DEGRADES to "no claim"; it does not drop the row.
+        # `review` is display metadata, and this list feeds index fetch, the
+        # trusted-host allowlist and install — so dropping the row would let a
+        # typo, or a tier a future core adds that this one does not know, take a
+        # whole registry offline: its apps vanish from the store, its installs
+        # fail, and its host leaves the clone-trust set. A display field must not
+        # be able to do that.
+        #
+        # Degrading is not the "falsely reassuring" outcome it first looks like:
+        # `""` is NO claim, which is exactly what a build that never set the field
+        # renders, so a mistyped `community` shows an unbadged row rather than a
+        # trusted-looking one. Logged at error level so the misconfiguration is
+        # visible to whoever shipped it instead of being silently normalised.
+        if review not in _REGISTRY_REVIEW_TIERS:
+            logger.error(
+                "Registry %r declares an unknown review tier %r (known: %s) — "
+                "showing it with no review claim.",
+                name,
+                review,
+                ", ".join(repr(t) for t in sorted(_REGISTRY_REVIEW_TIERS)),
+            )
+            review = _REVIEW_UNSET
         pinned.append(
             ExternalRegistryConfig(
                 name=name.strip() if isinstance(name, str) else "",
                 repo=repo,
                 branch=branch if isinstance(branch, str) and branch else "main",
+                # Display only, so an absent or non-string label is simply empty
+                # and the id is shown instead. It is never substituted INTO
+                # `name`: the id is what cache paths and every installed app's
+                # `_registry` tag are keyed by.
+                label=label.strip() if isinstance(label, str) else "",
+                review=review,
                 trust=trust if isinstance(trust, str) and trust else _TRUST_INDEX,
             )
         )
