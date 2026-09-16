@@ -623,7 +623,7 @@ after right-click → Open or `xattr -dr com.apple.quarantine KiroCrew.app`.)
 
 The build is already wired for this — `website/electron/package.json` enables
 `hardenedRuntime` with `build/entitlements.mac.plist`, and the
-`scripts/notarize.js` afterSign hook notarizes when credentials are present and
+`website/electron/scripts/notarize.js` afterSign hook notarizes when credentials are present and
 silently skips when they aren't. You only supply the secrets at build time via
 env vars (nothing is committed):
 
