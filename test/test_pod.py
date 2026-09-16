@@ -2635,6 +2635,46 @@ class TestEveryBootPathWriteRefusesAPlantedLink:
 
         assert victim.read_text() == "keep me"
 
+    def test_a_directory_link_at_the_seed_config_is_refused(self, tmp_path: Path) -> None:
+        """Same guard, with the shape a Windows writer can actually plant.
+
+        A junction is directory-only, so it cannot alias a host FILE -- but a
+        live one at ``config.json`` answered True to ``exists()`` and False to
+        ``is_symlink()``, so the create-only guard read it as "already
+        configured" and the pod booted with a directory where its config should
+        be. Built with the product's own link helper so each platform exercises
+        its own shape (junction on an unelevated Windows shard)."""
+        somewhere = tmp_path / "somewhere"
+        somewhere.mkdir()
+        home = tmp_path / "home"
+        home.mkdir()
+        platform_compat.symlink_or_junction(str(somewhere), str(home / "config.json"))
+        assert platform_compat.is_link_or_junction(home / "config.json")
+
+        with pytest.raises(rt.PodError, match="symbolic link or junction"):
+            rt.write_pod_config(home, "")
+
+        assert not any(somewhere.iterdir()), "wrote through the link"
+
+    def test_a_junction_shaped_seed_config_is_refused_on_every_platform(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The junction SHAPE, simulated so POSIX shards pin the guard too: the
+        OS junction oracle ``platform_compat._ISJUNCTION`` recognises one real,
+        empty directory while every ``pathlib`` predicate keeps its true answer
+        (``is_symlink()`` False, ``exists()`` True). The old guard returned
+        silently here."""
+        home = tmp_path / "home"
+        home.mkdir()
+        entry = home / "config.json"
+        entry.mkdir()
+        monkeypatch.setattr(platform_compat, "_ISJUNCTION", lambda p: Path(p) == entry)
+        assert platform_compat.is_link_or_junction(entry)
+        assert not entry.is_symlink()
+
+        with pytest.raises(rt.PodError, match="junction"):
+            rt.write_pod_config(home, "")
+
     def test_a_normal_home_still_gets_its_config_and_workspace(self, tmp_path: Path) -> None:
         """The other half: hardening must not break the ordinary path."""
         home = tmp_path / "home"
@@ -4132,6 +4172,114 @@ class TestOrphanSymlinkSafety:
         rc = rt.cleanup_home(c, "swapped")
         assert rc == 1, "a surviving entry must be a reported failure, never rc 0"
         assert "symlink" in capsys.readouterr().out
+
+
+class TestOrphanJunctionSafety:
+    """The same threat as :class:`TestOrphanSymlinkSafety`, in the shape it takes on
+    Windows. A directory symlink there needs SeCreateSymbolicLinkPrivilege, so the
+    only link an unelevated same-user writer can plant under pod_root is a
+    JUNCTION -- which answers True to ``is_dir()`` and False to ``is_symlink()``.
+    Every ``is_symlink()`` guard in the orphan / reclaim path was therefore blind
+    to exactly the link that can occur. Each case runs twice: once
+    through the product's own ``symlink_or_junction`` helper (the real shape on the
+    Windows shards, a symlink elsewhere), once with the junction shape SIMULATED so
+    POSIX shards pin the guard as well -- the OS junction oracle
+    ``platform_compat._ISJUNCTION`` recognises one real directory while every
+    ``pathlib`` predicate keeps its true answer."""
+
+    @staticmethod
+    def _plane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PodConfig:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        c = PodConfig.load()
+        c.pod_root.mkdir(parents=True, exist_ok=True)
+        return c
+
+    @staticmethod
+    def _fake_junction(monkeypatch: pytest.MonkeyPatch, entry: Path) -> None:
+        entry.mkdir()
+        monkeypatch.setattr(platform_compat, "_ISJUNCTION", lambda p: Path(p) == entry)
+        assert platform_compat.is_link_or_junction(entry)
+        assert entry.is_dir() and not entry.is_symlink()
+
+    def test_orphan_homes_never_lists_a_directory_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+        (c.pod_root / "live").mkdir()
+        platform_compat.symlink_or_junction(str(c.pod_root / "live"), str(c.pod_root / "alias"))
+        monkeypatch.setattr(rt, "active_names", lambda cc: {"live"})
+        assert rt.orphan_homes(c) == []
+
+    def test_orphan_homes_never_lists_a_junction_shaped_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+        self._fake_junction(monkeypatch, c.pod_root / "alias")
+        monkeypatch.setattr(rt, "active_names", lambda cc: set())
+        assert rt.orphan_homes(c) == []
+
+    def test_cleanup_home_refuses_a_directory_link_as_a_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """rc 2 and named as a link. On Windows the old guard resolved the
+        junction to the live sibling, passed containment, and -- because stdlib
+        rmtree refuses a junction root -- spun the whole retry window before
+        reporting the sibling's files as "something is still writing there"."""
+        c = self._plane(tmp_path, monkeypatch)
+        victim = c.pod_root / "live"
+        victim.mkdir()
+        (victim / "sessions.db").write_text("precious")
+        platform_compat.symlink_or_junction(str(victim), str(c.pod_root / "alias"))
+
+        assert rt.cleanup_home(c, "alias") == 2
+
+        assert (victim / "sessions.db").exists(), "followed the link and deleted the target"
+        out = capsys.readouterr().out
+        assert "junction" in out and "still writing" not in out
+
+    def test_cleanup_home_refuses_a_junction_shaped_entry_on_every_platform(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Simulated shape. The old guard passed the entry as a plain child of
+        pod_root and rmtree'd it: rc 0 over a planted link."""
+        c = self._plane(tmp_path, monkeypatch)
+        entry = c.pod_root / "alias"
+        self._fake_junction(monkeypatch, entry)
+        monkeypatch.setattr(
+            rt.shutil, "rmtree", lambda p, ignore_errors=False: pytest.fail("deleted a link")
+        )
+
+        assert rt.cleanup_home(c, "alias") == 2
+
+        assert entry.exists()
+        assert "junction" in capsys.readouterr().out
+
+    def test_a_dangling_junction_shaped_swap_is_reported_as_a_link(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The post-delete residue check. An entry swapped to a junction between
+        the pre-check and the delete survives rmtree (refused, silently under
+        ignore_errors); the old ``is_symlink()`` residue test then spun the whole
+        retry window and reported the entry's contents as survivors instead of
+        naming the link. Simulated so every platform pins it: the swap happens
+        inside the faked rmtree, and the oracle recognises the swapped entry."""
+        c = self._plane(tmp_path, monkeypatch)
+        entry = c.pod_root / "swapped"
+        entry.mkdir()  # a real dir at pre-check time
+        calls: list[int] = []
+
+        def _swap_then_refuse(p, ignore_errors=False):
+            calls.append(1)
+            # Net effect of the interleaving: the entry is now a junction, which
+            # rmtree refuses. Teach the oracle that from here on.
+            monkeypatch.setattr(platform_compat, "_ISJUNCTION", lambda q: Path(q) == entry)
+
+        monkeypatch.setattr(rt.shutil, "rmtree", _swap_then_refuse)
+        rc = rt.cleanup_home(c, "swapped")
+        assert rc == 1, "a surviving entry must be a reported failure, never rc 0"
+        assert len(calls) == 1, "a swapped link must stop the retry window at once"
+        out = capsys.readouterr().out
+        assert "junction" in out and "still writing" not in out
 
 
 class TestDownSamplesStateUnderTheLock:

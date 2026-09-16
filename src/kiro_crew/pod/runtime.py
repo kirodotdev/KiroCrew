@@ -40,6 +40,7 @@ from kiro_crew.platform_compat import (
     attributed_descendants,
     file_lock,
     find_port_listeners,
+    is_link_or_junction,
     listening_pid_tool_available,
     loopback_owner_pids,
     open_file_no_reparse,
@@ -1466,6 +1467,8 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
             )
         rc = cleanup_home(cfg, name)
         dropin_path = unit_mod.dropin_path(cfg, name)
+        # Linux-only (a systemd drop-in): junctions do not exist on this
+        # platform, so ``is_symlink()`` is the complete link test here.
         had_dropin = dropin_path.exists() or dropin_path.is_symlink()
         dropin_gone = unit_mod.remove_dropin(cfg, name)
         reload_cp: subprocess.CompletedProcess | None = None
@@ -1647,11 +1650,20 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
     :func:`cleanup_home`'s re-validation via ``kirocrew pod down <name>``.
     """
     try:
-        # never follow a symlink: a link under pod_root can point at a LIVE
+        # never follow a link: a link under pod_root can point at a LIVE
         # pod's HOME (or anywhere), and everything downstream of this
         # enumeration treats the NAME as the directory it will judge and
         # delete. A real pod HOME is always created as a plain directory.
-        entries = [p for p in cfg.pod_root.iterdir() if p.is_dir() and not p.is_symlink()]
+        # Junction-aware, not ``is_symlink()``: on unelevated Windows the only
+        # link a same-user writer CAN plant is a directory junction, which
+        # answers True to ``is_dir()`` and False to ``is_symlink()`` -- so an
+        # ``is_symlink()`` filter listed exactly the planted alias as an
+        # orphan, and the operator's `pod down <alias>` then judged the live
+        # sibling it points at. Link test FIRST: it is an lstat, so a link is
+        # rejected before ``is_dir()`` would stat THROUGH it -- on Windows a
+        # link whose target is a UNC share turns that stat into an outbound
+        # SMB connection that authenticates as this process.
+        entries = [p for p in cfg.pod_root.iterdir() if not is_link_or_junction(p) and p.is_dir()]
     except OSError:
         return []
     live = active_names(cfg)
@@ -3043,9 +3055,13 @@ def write_pod_config(home_dir: Path, seed: str) -> None:
     # link, so a link planted at ``config.json`` pointing at any existing host file
     # read as "already configured" and the pod booted on the attacker's file. A link
     # here is refused outright rather than treated as either absent or present.
-    existing = os.stat(dst_cfg, follow_symlinks=False) if dst_cfg.is_symlink() else None
-    if existing is not None:
-        raise PodError(f"refusing to seed pod config: {dst_cfg} is a symbolic link")
+    # Junction-aware: a Windows junction cannot alias a FILE, but a live one at
+    # this name answered True to ``exists()`` and False to ``is_symlink()``, so
+    # the guard read it as "already configured" and the pod booted with a
+    # directory where its config should be; a dangling one answered False to
+    # both and the create-only write then landed on the surviving entry.
+    if is_link_or_junction(dst_cfg):
+        raise PodError(f"refusing to seed pod config: {dst_cfg} is a symbolic link or junction")
     if dst_cfg.exists():
         return
     sanitized = sanitized_seed_config(Path(seed)) if seed else None
@@ -3971,9 +3987,13 @@ def _rmtree_bounded(unresolved: Path) -> bool:
         shutil.rmtree(unresolved, ignore_errors=True)
         if not os.path.lexists(unresolved):
             return True
-        if unresolved.is_symlink():
+        if is_link_or_junction(unresolved):
             # A swap happened; retrying cannot help and must not be attempted —
-            # the caller reports the link itself as the residue.
+            # the caller reports the link itself as the residue. Junction-aware
+            # for the same reason as the pre-check in cleanup_home: stdlib rmtree
+            # refuses a junction root exactly as it refuses a symlink, so the
+            # retry loop would otherwise spin its whole window on an entry that
+            # can never be reclaimed.
             return False
         if attempt + 1 < _HOME_RECLAIM_ATTEMPTS:
             time.sleep(_HOME_RECLAIM_PAUSE_SECS)
@@ -4008,12 +4028,17 @@ def cleanup_home(cfg: PodConfig, name: str) -> int:
         return 2
     root = cfg.pod_root.resolve()
     unresolved = cfg.pod_root / name
-    # Refuse to delete THROUGH a symlink: resolving first lets a link planted
+    # Refuse to delete THROUGH a link: resolving first lets a link planted
     # under pod_root pass the containment check below while the tree it names
     # lives elsewhere — including another, live pod's HOME. A real pod HOME is
     # always created as a plain directory, so a link here is never ours to follow.
-    if unresolved.is_symlink():
-        print(f"refusing pod cleanup: {unresolved} is a symlink, not a pod HOME")
+    # Junction-aware, because on unelevated Windows a junction is the only link a
+    # same-user writer can plant, and ``is_symlink()`` answers False for it: the
+    # alias then resolved to the live sibling, passed containment, and the
+    # failure below was reported as "something is still writing there" instead
+    # of as the planted link it was.
+    if is_link_or_junction(unresolved):
+        print(f"refusing pod cleanup: {unresolved} is a symlink or junction, not a pod HOME")
         return 2
     target = unresolved.resolve()
     if target == root or target.parent != root:
@@ -4040,12 +4065,12 @@ def cleanup_home(cfg: PodConfig, name: str) -> int:
     # link does not exist — so a target-existence check would report a clean
     # reclaim while the link remains as residue that orphan_homes (which
     # skips symlinks) can never surface again.
-    if unresolved.is_symlink():
-        # Swapped to a symlink mid-delete: rmtree refused it (correctly), and
+    if is_link_or_junction(unresolved):
+        # Swapped to a link mid-delete: rmtree refused it (correctly), and
         # the link itself is the residue — name it rather than the target.
         print(
             f"pod cleanup did not remove {unresolved}: the entry is now a "
-            "symlink, which teardown refuses to follow — remove it by hand"
+            "symlink or junction, which teardown refuses to follow — remove it by hand"
         )
         return 1
     survivors = _surviving_entries(target)

@@ -541,7 +541,6 @@ test/test_deploy_handlers_coverage.py
 test/test_deploy_profiles_cov80.py
 test/test_deploy_public_gate_3599.py
 test/test_deploy_round14_fixes.py
-test/test_deploy_round15_fixes.py
 test/test_deploy_round16_fixes.py
 test/test_deploy_round17_fixes.py
 test/test_deploy_round18_fixes.py

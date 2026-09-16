@@ -343,6 +343,103 @@ class TestDeployManagedReplacement:
             deploy_pkg._register_core_skills()
 
 
+class TestDeployLinkMigrationIsJunctionAware:
+    """The migration branch of ``_register_core_skills`` detaches a LINK at
+    ``<home>/skills/<name>`` before copying. That name is also published by
+    ``apps/bridges.py`` through ``platform_compat.symlink_or_junction`` -- a
+    directory JUNCTION on unelevated Windows -- and a junction answers False to
+    ``is_symlink()``. With the old ``is_symlink()`` test a live junction reached
+    the ``exists()`` branch, where ``rmtree_force`` refused it (stdlib rmtree does
+    not descend a junction root) and startup aborted with "could not remove"; a
+    dangling one answered False to ``exists()`` too, fell through every branch, and
+    ``copytree`` crashed on the surviving entry."""
+
+    def _wire(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        import kiro_crew.deploy as deploy_pkg
+
+        source_root = tmp_path / "deploy-src"
+        source_root.mkdir()
+        _make_skill_tree(source_root, "artifact-deploy")
+        home = tmp_path / "home"
+        (home / "skills").mkdir(parents=True)
+        monkeypatch.setattr(deploy_pkg, "config_dir", lambda: home)
+        monkeypatch.setattr(deploy_pkg, "_SKILLS_DIR", source_root)
+        return home / "skills" / "artifact-deploy"
+
+    def test_a_live_link_is_detached_and_its_target_survives(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Built with the product's own link helper, so each platform exercises
+        the shape it actually produces. The link is detached (never followed) and
+        replaced by a managed copy; whatever it pointed at is untouched."""
+        import kiro_crew.deploy as deploy_pkg
+        from kiro_crew import platform_compat
+
+        link = self._wire(tmp_path, monkeypatch)
+        target = tmp_path / "an-app-skill"
+        target.mkdir()
+        (target / "SKILL.md").write_text("theirs", encoding="utf-8")
+        # Carry the marker too: the old code's ``exists()`` branch then chose
+        # rmtree_force THROUGH the link, which is the destructive shape.
+        (target / deploy_pkg._MANAGED_MARKER).write_text("")
+        platform_compat.symlink_or_junction(str(target), str(link))
+        assert platform_compat.is_link_or_junction(link)
+
+        deploy_pkg._register_core_skills()
+
+        assert not platform_compat.is_link_or_junction(link)
+        assert (link / deploy_pkg._MANAGED_MARKER).is_file()
+        assert (link / "scripts" / "run.py").is_file()
+        assert (target / "SKILL.md").read_text(encoding="utf-8") == "theirs"
+
+    def test_a_dangling_link_is_removed_and_the_copy_lands(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.deploy as deploy_pkg
+        from kiro_crew import platform_compat
+
+        link = self._wire(tmp_path, monkeypatch)
+        gone = tmp_path / "removed-target"
+        gone.mkdir()
+        platform_compat.symlink_or_junction(str(gone), str(link))
+        gone.rmdir()
+        assert platform_compat.is_link_or_junction(link)
+        assert not link.exists()
+
+        deploy_pkg._register_core_skills()
+
+        assert not platform_compat.is_link_or_junction(link)
+        assert (link / deploy_pkg._MANAGED_MARKER).is_file()
+
+    def test_a_junction_shaped_entry_is_detached_on_every_platform(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The junction SHAPE, simulated so POSIX shards pin it too.
+
+        A junction cannot be made on POSIX, so the OS-level junction oracle
+        ``platform_compat._ISJUNCTION`` is taught to recognise one real, empty
+        directory; every ``pathlib`` predicate keeps its true answer
+        (``is_symlink()`` False, ``is_dir()`` True) -- the answer set a live
+        junction gives. ``is_link_or_junction`` / ``unlink_link_or_junction``
+        run their real logic over it (rmdir, the junction removal). With the
+        old ``is_symlink()`` test the entry was judged a user-placed directory
+        (no marker), the skill was skipped, and no copy landed. The two tests
+        above exercise the real shape on the Windows shards."""
+        import kiro_crew.deploy as deploy_pkg
+        from kiro_crew import platform_compat
+
+        link = self._wire(tmp_path, monkeypatch)
+        link.mkdir()  # an empty real dir standing in for the junction entry
+        monkeypatch.setattr(platform_compat, "_ISJUNCTION", lambda p: Path(p) == link)
+        assert platform_compat.is_link_or_junction(link)
+        assert not link.is_symlink()
+
+        deploy_pkg._register_core_skills()
+
+        assert (link / deploy_pkg._MANAGED_MARKER).is_file()
+        assert (link / "SKILL.md").is_file()
+
+
 @_POSIX_MODES
 def test_source_fingerprint_predicts_the_normalized_copy(tmp_path: Path) -> None:
     """Hashing a 0o555 source with ``assume_owner_rwx_dirs=True`` equals

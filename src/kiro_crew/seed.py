@@ -675,19 +675,24 @@ def seed(fixture_name: str, *, replace: bool = False) -> None:
         )
     dst = _resolve_target()
 
-    # Dangling symlink: ``dst.exists()`` follows symlinks, so a symlink
-    # whose target has been deleted (or never existed) returns ``False``.
-    # That means it bypasses every ``exists()``-gated branch below AND
-    # falls straight into ``shutil.copytree(src, dst)``, which raises a
-    # raw ``FileExistsError`` because the symlink path entry itself is
-    # still on the filesystem. ``is_symlink()`` does NOT follow the link,
-    # so ``is_symlink() and not exists()`` is the only way to detect a
-    # dangling link. Keep this guard FIRST among the symlink / not-a-dir
-    # checks — both the populated-symlink and empty-symlink guardrails below
-    # rely on ``exists()`` returning ``True``, so they don't fire here.
-    if dst.is_symlink() and not dst.exists():
+    # Dangling link: ``dst.exists()`` follows links, so a link whose target
+    # has been deleted (or never existed) returns ``False``. That means it
+    # bypasses every ``exists()``-gated branch below AND falls straight into
+    # ``shutil.copytree(src, dst)``, which raises a raw ``FileExistsError``
+    # because the link's path entry itself is still on the filesystem. The
+    # link test must be the reparse-point oracle the sibling guardrails below
+    # already use, not ``is_symlink()``: a Windows directory JUNCTION -- the
+    # shape ``platform_compat.symlink_or_junction`` and any unelevated
+    # Windows writer produce -- answers False to ``is_symlink()``, and when
+    # dangling also to ``exists()``, so an ``is_symlink()`` guard let it
+    # fall through to the raw ``FileExistsError``. ``lstat`` sees the entry
+    # itself, so the oracle holds for a dangling link too. Keep this guard
+    # FIRST among the link / not-a-dir checks — both the populated-link and
+    # empty-link guardrails below rely on ``exists()`` returning ``True``,
+    # so they don't fire here.
+    if pinned_fs.is_reparse_point(dst) and not dst.exists():
         raise SeedError(
-            f"$KIROCREW_HOME is a dangling symlink: {dst}. "
+            f"$KIROCREW_HOME is a dangling symlink or junction: {dst}. "
             "Point it at a real directory (or remove the link so seed "
             "can create a fresh directory).",
             guardrail=SeedError.GUARDRAIL_DANGLING_SYMLINK,
