@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.wecom.renderer import WeComRenderer, _render_options_as_text
 from kiro_crew.wecom.transport import WECOM_CAPABILITIES
 
@@ -16,25 +17,26 @@ class TestStripOptionsRedos:
         # each position — polynomial. The tempered body
         # (?:[^[]|\[(?!OPTIONS:))* forbids only a re-occurring "[OPTIONS:", so the
         # body is unambiguous (linear). A whitespace-padded unterminated tag and
-        # many repeated "[OPTIONS:" prefixes (the real pump) must both return
-        # promptly.
-        import time
+        # many repeated "[OPTIONS:" prefixes (the real pump) must both be rejected
+        # in CPU time linear in the pump -- see
+        # conftest.assert_rejected_without_backtracking for why this is not a
+        # 1.0 s wall-clock bound.
 
         # A single unterminated tag: no closing ']' after the last "[OPTIONS",
         # so the whole still-streaming partial is hidden.
-        evil = "[OPTIONS:" + ("\t" * 200_000) + "x"
-        start = time.perf_counter()
-        result = _render_options_as_text(evil)
-        assert time.perf_counter() - start < 1.0, "possible ReDoS"
-        assert result == "", "an unterminated marker is hidden, never rendered"
+        def hidden(text: str) -> None:
+            assert (
+                _render_options_as_text(text) == ""
+            ), "an unterminated marker is hidden, never rendered"
 
-        # Many repeated "[OPTIONS:" prefixes (the real polynomial pump): the
-        # linear match must still return promptly. There is no closing ']', so
-        # the trailer regex does not match and the text is returned unchanged.
-        evil = "[OPTIONS:" * 100_000 + "x"
-        start = time.perf_counter()
-        result = _render_options_as_text(evil)
-        assert time.perf_counter() - start < 1.0, "possible ReDoS"
+        assert_rejected_without_backtracking(hidden, lambda n: "[OPTIONS:" + ("\t" * n) + "x")
+
+        # Many repeated "[OPTIONS:" prefixes (the real polynomial pump). There is
+        # no closing ']', so the trailer regex does not match; the property under
+        # test is the cost of deciding that, not the rendered text.
+        assert_rejected_without_backtracking(
+            _render_options_as_text, lambda n: "[OPTIONS:" * n + "x"
+        )
 
 
 class FakeClient:

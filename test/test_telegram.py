@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.dashboard.token_auth import parse_duration
@@ -1313,19 +1314,16 @@ class TestExtractOptions:
         # each position — polynomial. The tempered body
         # (?:[^[]|\[(?!OPTIONS:))* forbids only a re-occurring "[OPTIONS:", so
         # the body is unambiguous (linear). A whitespace-padded unterminated tag
-        # and many repeated "[OPTIONS:" prefixes (the real pump) must both return
-        # promptly.
-        import time
-
-        for evil in (
-            "[OPTIONS:" + ("\t" * 200_000) + "x",
-            "[OPTIONS:" * 100_000 + "x",
-        ):
-            start = time.perf_counter()
-            body, opts = _extract_options(evil)
-            elapsed = time.perf_counter() - start
-            assert elapsed < 1.0, f"_extract_options took {elapsed:.2f}s (possible ReDoS)"
+        # and many repeated "[OPTIONS:" prefixes (the real pump) must both be
+        # rejected in CPU time linear in the pump -- see
+        # conftest.assert_rejected_without_backtracking for why this is not a
+        # 1.0 s wall-clock bound.
+        def reject(text: str) -> None:
+            body, opts = _extract_options(text)
             assert opts == []
+
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" + ("\t" * n) + "x")
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" * n + "x")
 
 
 # ── transport.py: deny-by-default auth + capabilities + inbound ─────────────

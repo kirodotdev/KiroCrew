@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,6 +25,52 @@ from kiro_crew.apps.backend import (
     stop_app_backend,
 )
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
+
+
+def _own_probe_sel(probe_home: str):
+    """Give ``_sandbox_can_spawn`` a synchronous SEL bound under *probe_home*, or None.
+
+    Returns the instance the probe now owns, or ``None`` when the process already
+    held a singleton -- one the operator's code constructed (a ``base_dir``
+    instance from a sibling module, say) is not the probe's to replace or retire,
+    and ``wrap_argv()`` will simply append to it. If construction fails, the
+    probe clears the partially published singleton before propagating the error.
+
+    ``sync=True`` is the whole point: the probe's denial audit is then written
+    INLINE on this thread and NO writer thread is ever started, so nothing can
+    outlive the ``with TemporaryDirectory()`` holding a reference to the
+    directory it is about to remove. The earlier shape retired an async instance
+    after the fact with ``flush()`` + shutdown sentinel + ``join(timeout=5)``,
+    and a join that times out leaves a daemon thread whose next ``_flush_batch``
+    re-creates the deleted home -- the leak this exists to close, one race away.
+    """
+    from kiro_crew.sel import SecurityEventLog
+
+    if SecurityEventLog._instance is not None:
+        return None
+    try:
+        return SecurityEventLog(Path(probe_home), sync=True)
+    except BaseException:
+        # ``__new__`` publishes the singleton before ``_init_locked`` finishes,
+        # so failed initialization can leave this probe's half-built instance.
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        raise
+
+
+def _retire_probe_sel(owned) -> None:
+    """Clear the class slots for the instance ``_own_probe_sel`` returned.
+
+    Nothing to flush or join: a ``sync=True`` instance has no queue and no
+    thread. Clearing the slots lets the first test's ``sel()`` rebuild under
+    the session floor's redirected default dir (``_isolate_sel_default_dir``).
+    """
+    from kiro_crew.sel import SecurityEventLog
+
+    if owned is None or SecurityEventLog._instance is not owned:
+        return
+    SecurityEventLog._instance = None
+    SecurityEventLog._initialized = False
 
 
 def _sandbox_can_spawn() -> bool:
@@ -49,6 +96,21 @@ def _sandbox_can_spawn() -> bool:
     backend at all, and every test it gates then failed closed under the
     fixture's default config, while CI (no operator config) skipped them. The
     gate must observe what the tests will observe: the default config.
+
+    The probe also OWNS the Security Event Log ``wrap_argv()`` writes to. On a
+    host with no sandbox backend the call fail-closes and records a ``denied``
+    audit through ``sel()`` -- a process SINGLETON whose ``_dir`` is bound once,
+    here from ``empty_home``. Left to construct itself that instance would be
+    ASYNC, and (a) its writer thread keeps the chain lock / log open long enough
+    on Windows that ``TemporaryDirectory`` cannot remove ``empty_home`` -- the
+    failure lands in the bare ``except`` below and the directory leaks at the
+    TEMP root, one per xdist worker, holding a ``security_events.jsonl`` and a
+    ``trust/sel_hmac.key`` -- and (b) it outlives the probe: the rootdir
+    ``_isolate_sel_default_dir`` floor only resets the singleton at the first
+    test's setup, and any write on the lingering thread ``mkdir``s the deleted
+    home back into existence. MEASURED: five full runs each left ten such
+    directories. So the probe constructs the singleton itself, ``sync=True``
+    (inline writes, no thread), and clears it before the directory goes.
     """
     try:
         from kiro_crew import sandbox as _sb
@@ -56,13 +118,16 @@ def _sandbox_can_spawn() -> bool:
         with tempfile.TemporaryDirectory() as empty_home:
             saved = os.environ.get("KIROCREW_HOME")
             os.environ["KIROCREW_HOME"] = empty_home
+            owned = None
             try:
+                owned = _own_probe_sel(empty_home)
                 argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
             finally:
                 if saved is None:
                     os.environ.pop("KIROCREW_HOME", None)
                 else:
                     os.environ["KIROCREW_HOME"] = saved
+                _retire_probe_sel(owned)
     except Exception:  # noqa: BLE001 — any probe failure => treat as "can't spawn"
         return False
     try:

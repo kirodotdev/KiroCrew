@@ -59,7 +59,6 @@ test/test_cli.py::TestInstallPidfdChildWatcher::test_installs_safe_watcher_on_ma
 test/test_cli.py::TestInstallPidfdChildWatcher::test_sets_watcher_on_linux
 test/test_cli.py::TestRestart::test_spawn_detached_gateway_uses_kirocrew_bin
 test/test_cli.py::TestSetupWorkspaceDir::test_uses_saved_path_as_default
-test/test_config_paths.py::TestConfigDir::test_kirocrew_home_system_dir_is_ignored
 test/test_config_paths.py::TestDefaultWorkspaceBase::test_macos_uses_volumes_when_present
 test/test_cpp_wiring_enterprise.py::test_launcher_script_hides_sso
 test/test_cron_cancel.py::TestSubprocessRegistry::test_run_command_sandboxed_can_be_cancelled_mid_run

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.slack.format import (
     OPTIONS_CHECKBOXES_ACTION,
     OPTIONS_SUBMIT_ACTION,
@@ -51,20 +52,17 @@ class TestExtractOptions:
         # ``(?:[^[\n]|\[(?!OPTIONS:))*`` forbids only a re-occurring ``[OPTIONS:``,
         # so the body is unambiguous (linear). Two adversarial inputs — a long
         # whitespace-padded unterminated tag, and many repeated ``[OPTIONS:``
-        # prefixes (the real pump) — must both return promptly.
-        import time
-
-        for evil in (
-            "[OPTIONS:" + (" " * 200_000) + "x",
-            "[OPTIONS:" * 100_000 + "x",
-        ):
-            start = time.perf_counter()
-            cleaned, choices = extract_options(evil)
-            elapsed = time.perf_counter() - start
-            assert elapsed < 1.0, f"extract_options took {elapsed:.2f}s (possible ReDoS)"
+        # prefixes (the real pump) — must both be rejected in CPU time linear in
+        # the pump; see conftest.assert_rejected_without_backtracking for why this
+        # is not a 1.0 s wall-clock bound.
+        def reject(text: str) -> None:
+            cleaned, choices = extract_options(text)
             # No terminating ']' → no match, input returned unchanged.
             assert choices == []
-            assert cleaned == evil
+            assert cleaned == text
+
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" + (" " * n) + "x")
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" * n + "x")
 
 
 class TestBuildOptionsBlocks:

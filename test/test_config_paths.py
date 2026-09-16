@@ -53,7 +53,17 @@ class TestConfigDir:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         # A system directory must be refused and fall back to ~/.kiro/crew.
-        monkeypatch.setenv("KIROCREW_HOME", "/usr")
+        # The refused location is platform-shaped: ``/usr`` is a POSIX system
+        # tree, but on Windows ``Path("/usr").resolve()`` is ``C:\usr`` -- an
+        # ordinary, non-existent directory the override ACCEPTED, so this test
+        # both failed there and CREATED ``C:\usr`` on the developer's system
+        # drive on every run. The drive root is the location ``_is_unsafe_home``
+        # refuses on Windows (``p == p.parent``); it exists and is never touched.
+        if sys.platform == "win32":
+            system_dir = Path.cwd().anchor  # e.g. ``C:\``
+        else:
+            system_dir = "/usr"
+        monkeypatch.setenv("KIROCREW_HOME", system_dir)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         result = paths.config_dir()
         assert result == tmp_path / ".kiro" / "crew"

@@ -1490,6 +1490,92 @@ And two the census of duration and RSS added:
   mutant, on every host. Measure the work the algorithm does, in units the algorithm
   defines.
 
+### What a sixth five-run pass found (Windows host, ten workers, ~98k tests per run)
+
+Repeated on `main` one day after the macOS pass above, on the Windows developer machine
+of the second pass, with the same per-test probe plus a before/after snapshot of the TEMP
+root and the operator's home. Four of the eight classes it found had landed upstream from
+the macOS pass while this one was being written (the retained ASTs, the `workspace_root()`
+default, the `GIT_*` session fixture and the two `delenv`-before-write env leaks — each
+reproduced here independently, with the same fix); the four below were new. One test
+flipped across the five runs, and the always-red set (173 tests, every one from
+`workflow_memory` refusing files whose owner is the built-in `Administrators` group) was
+the host, not the suite — see the section above.
+
+- **A singleton built at COLLECTION outlives the tmp dir it was bound to.**
+  `test_app_backend.py`'s `_sandbox_can_spawn()` probe runs `wrap_argv()` under an
+  empty `KIROCREW_HOME` inside a `TemporaryDirectory`. On a host with no sandbox
+  backend the call fail-closes and records a `denied` audit through `sel()` — the
+  process singleton, which binds `_dir` once from whatever `_default_dir()` says at
+  that moment: the throwaway home. The `_isolate_sel_default_dir` session floor resets
+  the singleton at the FIRST TEST's setup, which is after collection, so the probe's
+  instance stays live through the whole collection phase and any write on it
+  `mkdir`s the deleted home back: one bare `tmp*` directory at the TEMP root per
+  worker, holding `security_events.jsonl` and a `trust/` HMAC key, on every run.
+  Fix, local: the probe OWNS the singleton — `_own_probe_sel` constructs it
+  `sync=True` under the temp home BEFORE `wrap_argv()`, so the denial is written
+  inline and no writer thread ever exists, and `_retire_probe_sel` clears the class
+  slots before the directory goes. The first shape retired an async instance after
+  the fact (flush, shutdown sentinel, `join(timeout=5)`); review pointed out that a
+  join which times out leaves a daemon thread whose next `_flush_batch` re-creates the
+  deleted home — the very leak, one race away. Prefer never starting the thread over
+  stopping it. The shape to grep for is a module-level probe that can reach a process
+  singleton (`sel()`, a config loader, a metrics exporter) — the floor cannot see it
+  because no fixture has run yet, and a `with TemporaryDirectory()` around it proves
+  nothing when the object it created holds the path.
+- **`int(MagicMock())` is 1, and a drain loop reads it as "one still pending".**
+  `_drain_update_callback_work` polls `int(sessions.inbound_callback_count)` until it
+  reaches zero or its 30 s deadline. The shared `_mock_sessions()` never set that
+  attribute, so the mock answered 1 forever, and twelve auto-apply-update tests each
+  sat out the full 30 s — six minutes per run, in a file whose other 300 tests take
+  fifteen seconds — then took the "restart deferred" branch instead of the restart
+  they were named for, and still passed. The tell is a test whose duration is EXACTLY
+  a production timeout. A `MagicMock` attribute the code under test converts (`int()`,
+  `float()`, `len()`, `bool()`) or compares must be set explicitly in the helper that
+  builds the mock; the fix here was one line, `s.inbound_callback_count = 0`.
+- **A ReDoS regression in these grammars is EXPONENTIAL, so the guard's input size
+  decides whether it fails or hangs.** `test_options_marker_closers`'
+  `elapsed < 1.0` wall-clock bound on a 200 000-tab pump flipped once in five runs —
+  0.15 s of CPU, descheduled behind nine sibling workers (class 5). Measured against a
+  mutated closer class that shares `\t` with the trailing `[ \t]*`: 0.27 s at 20
+  characters, 4.3 s at 24, doubling per character. Under that regression the
+  200 000-character input never returns and the worker is killed at `--timeout` — a
+  lost run (class 6), not a red test; the same shape sat in three sibling tests, and
+  a fifth guard (`test_options_marker_label_closers`' opener-run ratio) failed in the
+  change-related gate for a reason of its own: it DIVIDED two `time.monotonic()`
+  readings, and on Windows that clock ticks every 15.6 ms, so a 20 000-opener scan
+  that read 0.0 (floored to 1 ms) against one that landed on a single tick (16 ms)
+  produced a 16x "ratio" with the property intact — a mutant whose interior admits
+  the lookalike openers is exponential as well (3.2 s at 24), and one whose interior
+  admits EVERY bracket grows ~8x per pumped block (3.8 s at 8), so no single "small"
+  size is safe against every regression class.
+  `conftest.assert_rejected_without_backtracking` replaces every wall-clock guard
+  on the marker grammar — sixteen across nine test files, found by grepping for
+  the PUMP shape (`"[OPTIONS:" ... * <n>`) rather than for any one assertion
+  message, since two rounds of review each turned up siblings a message grep had
+  missed: thread CPU, a one-unit RAMP from 1 to 24 whose first over-budget size
+  fails the assertion — so the cost of catching a regression is bounded by one
+  growth step times the budget, measured 6 s against both mutants — then ascending
+  long pumps (200, 2 000, 20 000) for the polynomial class, taking a second reading
+  only when the first overran (a GC pause cannot hit two in a row). The property
+  itself is also asserted structurally where it can be: no
+  closer, opener or wrapper character `isspace()` or is a label separator.
+- **A refused "system directory" is platform-shaped, and the refusal path CREATES
+  what it does not refuse.** `KIROCREW_HOME=/usr` resolves to `C:\usr` on Windows,
+  which `_is_unsafe_home` (correctly) does not know, so `config_dir()` accepted the
+  override and made the directory on the system drive every run; the test was a
+  strict xfail there for the wrong reason. The test now names the location the guard
+  refuses on the host it runs on (the drive root on Windows) and the xfail line is
+  gone. A fixture value that spells a POSIX absolute path is a Windows relative one
+  (`host_abs`, above), and a resolver test must check what its rejected input
+  resolves TO before assuming rejection.
+
+Two things this pass did NOT find are worth recording so the next one does not
+re-derive them. A per-worker `test-floor-*` directory at the TEMP root was residue from
+runs KILLED mid-session on the same host (zero of fifty-five floors leaked from a run that
+finished), and the computer-use host catalog probing `Program Files` at import is the
+product's own capability probe, transient and by design.
+
 ## Running the suite: the defaults, and how to narrow safely
 
 The checkpoint run before a commit is the change-related set on both surfaces,
@@ -2002,6 +2088,18 @@ assert traced(build(4000)) == traced(build(2000))
 
 Keep a *small*-`n` absolute assertion alongside it so a uniform slowdown is still caught, and
 verify the threshold against a mutated implementation rather than reasoning about it.
+
+For a regex — no instrumentation surface at all — use `test/conftest.py`'s
+`assert_rejected_without_backtracking(reject, build_pump)`, and note what the mutation
+showed: a shared character between two adjacent quantified classes in the marker grammars
+is not polynomial but EXPONENTIAL (doubling per pumped character; 4.3 s at 24), so the
+200 000-character pump the old guards used would never return under a regression and the
+worker would die at `--timeout` (class 6) — and no single "small" size is safe either: a
+harsher mutant grew ~8x per pumped block. The helper therefore RAMPS the pump one unit
+at a time from 1 to 24, on thread CPU, failing at the first size that overruns its
+budget (so catching any regression costs about one growth step), and only then tries
+ascending long pumps for the polynomial class. Size any complexity guard so the
+regression it exists to catch FAILS it, not hangs it.
 
 **First check that the time is even the algorithm's.** `test_chained_cd_expansions` asserted
 `elapsed < 30s` around the bash gate and took 144s under load — but with the gate's

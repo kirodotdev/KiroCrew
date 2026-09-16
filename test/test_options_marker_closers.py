@@ -23,10 +23,11 @@ widen anything else.
 
 from __future__ import annotations
 
-import time
-
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
     MARKER_CLOSERS,
+    MARKER_OPENERS,
+    MARKER_WRAPPERS,
     OPTIONS_RE_LINE,
     OPTIONS_RE_TRAILER,
     split_trailing_protocol_suffix,
@@ -147,13 +148,29 @@ class TestStreamingAgreesWithTheRegexes:
 
 
 class TestNoRedosRegression:
+    def test_bracket_classes_share_nothing_with_the_whitespace_runs(self):
+        """The property the grammar's linearity argument rests on, asserted
+        directly: widening ``\\]`` to a character class must not introduce
+        ambiguity with the trailing ``[ \\t]*`` / ``\\s*`` or the separators
+        (CWE-1333). A closer, opener or wrapper that IS whitespace makes the
+        body exponential (measured: doubling per pumped character)."""
+        for name, chars in (
+            ("MARKER_CLOSERS", MARKER_CLOSERS),
+            ("MARKER_OPENERS", MARKER_OPENERS),
+            ("MARKER_WRAPPERS", MARKER_WRAPPERS),
+        ):
+            for ch in chars:
+                assert not ch.isspace(), f"{name} contains whitespace {ch!r}"
+                assert ch not in "|,", f"{name} contains a label separator {ch!r}"
+
     def test_unterminated_marker_with_long_run_stays_linear(self):
-        """Widening ``\\]`` to a character class must not introduce ambiguity with
-        the trailing ``[ \\t]*`` / ``\\s*`` (CWE-1333). No closer shares a
-        character with either, so the body stays unambiguous."""
-        evil = "[OPTIONS:" + ("\t" * 200_000) + "x"
-        start = time.perf_counter()
-        assert OPTIONS_RE_LINE.search(evil) is None
-        assert OPTIONS_RE_TRAILER.search(evil) is None
-        elapsed = time.perf_counter() - start
-        assert elapsed < 1.0, f"marker match too slow ({elapsed:.2f}s) — may backtrack"
+        """The same property, observed: an unterminated head followed by a run
+        of tabs is rejected in CPU time linear in the run. See
+        ``conftest.assert_rejected_without_backtracking`` for why the probe is
+        small-first and on thread CPU rather than a 1.0 s wall clock."""
+
+        def reject(text: str) -> None:
+            assert OPTIONS_RE_LINE.search(text) is None
+            assert OPTIONS_RE_TRAILER.search(text) is None
+
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" + ("\t" * n) + "x")

@@ -439,6 +439,19 @@ The consequence for how you write a test:
       patch you need to drop early lives in `with pytest.MonkeyPatch.context() as patched:`
 - [ ] No module-level `skipif` probe that reads `KiroCrewConfig` / `config_dir()` /
       `Path.home()` — it runs before any pin and observes the operator's real config
+- [ ] A collection-time probe that can construct a process singleton (`sel()`, a config
+      loader) RETIRES it before its temp home is removed — the session floor only resets
+      singletons at the first test's setup, and a live one re-creates the deleted path
+- [ ] Every `MagicMock` attribute the code under test converts or compares (`int()`,
+      `len()`, `bool()`, `<`) is set explicitly in the mock helper — `int(MagicMock())`
+      is 1, and a drain loop reads that as "one still pending" until its deadline. A
+      test whose duration equals a production timeout has hit this
+- [ ] A complexity guard (ReDoS, "stays linear") is sized so the regression it exists to
+      catch FAILS it inside `--timeout` rather than hangs the worker: RAMP the pump one
+      unit at a time on thread CPU (`assert_rejected_without_backtracking`), never a single
+      huge input on a wall clock — no fixed "small" size is safe against every growth rate
+- [ ] A test of a refused location names one the guard refuses on THIS host: `/usr` is
+      `C:\usr` on Windows — accepted by the resolver, and then created on the system drive
 - [ ] Fixture paths are absolute on EVERY host: `host_abs("usr", "bin")`, never a `/usr/bin`
       literal (`ntpath.isabs` rejects a driveless path from Python 3.13); a path that belongs
       to a simulated platform is judged with that platform's module (`posixpath`)

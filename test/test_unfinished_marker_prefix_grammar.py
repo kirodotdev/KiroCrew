@@ -13,8 +13,7 @@ of the marker grammar, probing occurrences rightmost-first so label bytes
 that merely contain a sentinel cannot shadow the genuine fragment start.
 """
 
-import time
-
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import split_trailing_protocol_suffix
 
 
@@ -107,11 +106,13 @@ class TestBenignCompositions:
 class TestOccurrenceWalkStaysLinear:
     def test_adversarial_sentinel_repetition_is_linear(self):
         """Rightmost-first probing with match-at-pos must not go quadratic on
-        a buffer that repeats failing sentinels."""
-        evil = "x[OPTIONSz" * 50_000
-        start = time.perf_counter()
-        visible, suffix = split_trailing_protocol_suffix(evil)
-        elapsed = time.perf_counter() - start
-        assert visible == evil
-        assert suffix == ""
-        assert elapsed < 1.0, f"occurrence walk too slow ({elapsed:.2f}s)"
+        a buffer that repeats failing sentinels. Ramped on thread CPU via
+        ``conftest.assert_rejected_without_backtracking`` rather than a 1.0 s
+        wall clock: the bound must fail under the regression, not hang."""
+
+        def untouched(evil: str) -> None:
+            visible, suffix = split_trailing_protocol_suffix(evil)
+            assert visible == evil
+            assert suffix == ""
+
+        assert_rejected_without_backtracking(untouched, lambda n: "x[OPTIONSz" * n)

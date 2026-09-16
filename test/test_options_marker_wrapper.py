@@ -20,10 +20,9 @@ regression risk (a widened grammar swallowing genuine prose):
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
     MARKER_WRAPPERS,
     OPTIONS_RE_LINE,
@@ -190,10 +189,14 @@ class TestNoRedosRegression:
 
     def test_adversarial_wrapper_runs_stay_linear(self):
         # CWE-1333: the new optional groups must not create a second parse of
-        # long runs around a marker that never completes.
-        evil = ("`" * 100_000) + "[OPTIONS:" + ("\t" * 100_000) + "x"
-        start = time.perf_counter()
-        assert OPTIONS_RE_LINE.search(evil) is None
-        assert OPTIONS_RE_TRAILER.search(evil) is None
-        elapsed = time.perf_counter() - start
-        assert elapsed < 1.0, f"marker match too slow ({elapsed:.2f}s) — may backtrack"
+        # long runs around a marker that never completes. Both runs -- the
+        # leading wrapper run and the trailing tab run -- grow with the pump;
+        # see conftest.assert_rejected_without_backtracking for why this is a
+        # thread-CPU ramp rather than a 1.0 s wall clock.
+        def reject(text: str) -> None:
+            assert OPTIONS_RE_LINE.search(text) is None
+            assert OPTIONS_RE_TRAILER.search(text) is None
+
+        assert_rejected_without_backtracking(
+            reject, lambda n: ("`" * n) + "[OPTIONS:" + ("\t" * n) + "x"
+        )
