@@ -674,14 +674,17 @@ async def test_restart_revokes_the_prior_grant_before_replacement_persistence(
     )
     write_snapshot = svc._write_monitor_snapshot_locked
 
-    async def require_prior_revocation(payload: dict[str, Any] | None = None) -> None:
+    async def require_prior_revocation(
+        payload: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
         assert not trust.is_monitor_owner_credentials_recorded(
             prior.id,
             prior.slot_key,
             prior.monitor.kind,
             prior.monitor.target,
         )
-        await write_snapshot(payload)
+        await write_snapshot(payload, **kwargs)
 
     monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", require_prior_revocation)
 
@@ -790,10 +793,11 @@ async def test_failed_restart_activation_preserves_a_concurrent_committed_patch(
     )
     activation_entered = threading.Event()
     continue_activation = threading.Event()
+    coordination_timeout = 10
 
     def fail_activation(_monitor_id: str) -> None:
         activation_entered.set()
-        assert continue_activation.wait(timeout=1)
+        assert continue_activation.wait(timeout=coordination_timeout)
         raise OSError("transient vault failure")
 
     monkeypatch.setattr(trust, "activate_monitor_owner_credentials", fail_activation)
@@ -816,17 +820,22 @@ async def test_failed_restart_activation_preserves_a_concurrent_committed_patch(
             grant_owner_provider_credentials=True,
         )
     )
-    assert await asyncio.to_thread(activation_entered.wait, 1)
-    replacement = svc.get_by_slot(prior.slot_key)
-    assert replacement is not None and replacement.id != prior.id
-    concurrent = await svc.update_monitor(
-        replacement.id,
-        wake_instructions="Keep the committed edit.",
-    )
-    assert concurrent is replacement
-    continue_activation.set()
+    assert await asyncio.to_thread(activation_entered.wait, coordination_timeout)
+    try:
+        replacement = svc.get_by_slot(prior.slot_key)
+        assert replacement is not None and replacement.id != prior.id
+        concurrent = await svc.update_monitor(
+            replacement.id,
+            wake_instructions="Keep the committed edit.",
+        )
+        assert concurrent is replacement
+    finally:
+        continue_activation.set()
 
-    restarted, error, status = await asyncio.wait_for(restart, timeout=1)
+    restarted, error, status = await asyncio.wait_for(
+        restart,
+        timeout=coordination_timeout,
+    )
 
     assert restarted is None and status == 409
     assert error == "monitor changed while credential authorization failed"

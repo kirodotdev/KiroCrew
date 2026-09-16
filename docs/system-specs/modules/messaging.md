@@ -201,16 +201,23 @@ the event's `TurnUsage` and a disposition derived from its stop reason. ACP's
 stale-stream compatibility completion reuses `end_turn`, so that reason remains
 uncharged until the event carries provenance that distinguishes it from a provider
 result. Completion accounting therefore survives failure or cancellation during
-renderer finalization. A normal handler return, command intercept, stream exception,
+renderer finalization. At callback entry it captures the existing AutoNudge
+service-generation admission and starts one shielded accounting transaction in
+the shared mutation-owner registry. If shutdown closes while that transaction is
+waiting on the monitor lock or executor write, AutoNudge drains it to durability
+before session/channel storage closes; repeated caller cancellation is propagated
+only after the write settles. A callback that had not started when admission
+closed is refused rather than creating new accounting or rearming work during
+teardown. A normal handler return, command intercept, stream exception,
 or ACP-synthesized terminal does not manufacture completion evidence. Callback
-failure is logged and cannot
-change the channel turn's output or error behavior. The hook is absent from ordinary inbound turns
-and legacy AutoNudge turns. Slack reports a raw completion before its cancellable,
-best-effort analytics usage-row write. If shutdown cancellation lands after the
-raw event but before the driver returns, the adapter reports the captured
-completion once before propagating cancellation, so an accepted wake cannot remain
-in flight. A shutdown refusal before stream entry is transient `BUSY`, not terminal
-`UNAVAILABLE`, and retries the durable claim after restart. Directive consumption
+failure is logged and cannot change the channel turn's output or error behavior.
+The hook is absent from ordinary inbound turns and legacy AutoNudge turns. Slack
+reports a raw completion before its cancellable, best-effort analytics usage-row
+write. If shutdown cancellation lands after the raw event but before the driver
+returns, the adapter reports the captured completion once before propagating
+cancellation, so an accepted wake cannot remain in flight. A shutdown refusal
+before stream entry is transient `BUSY`, not terminal `UNAVAILABLE`, and retries
+the durable claim after restart. Directive consumption
 occurs before a later raw `EVENT_COMPLETE`, so an action that calls `monitor_stop`
 or the structured `autonudge_stop` alias first makes its monitor inactive with a
 durable `user_stop` outcome while retaining only the current wake correlation. The

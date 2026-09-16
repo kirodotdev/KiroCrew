@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sqlite3
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew.apps.builtins.auto_research.handlers import (
     DEFAULT_DEPTH_DECAY,
     DEFAULT_EXECUTION_MODE,
@@ -59,6 +62,19 @@ def _isolate(tmp_path: Path):
         yield tmp_path
 
 
+@pytest.fixture(scope="module")
+def autonudge_store_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Storage outlives every service-owned task in this module."""
+    return tmp_path_factory.mktemp("auto-research-autonudge")
+
+
+@pytest.fixture
+def autonudge_store_dir(autonudge_store_root: Path, request: pytest.FixtureRequest) -> Path:
+    path = autonudge_store_root / request.node.name
+    path.mkdir()
+    return path
+
+
 class TestPathValidation:
     def test_valid_hex_id(self):
         assert _validate_campaign_id("a1b2c3d4")
@@ -91,7 +107,7 @@ class TestPathValidation:
     def test_safe_dir_rejects_invalid(self, tmp_path: Path):
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
             assert _safe_campaign_dir("../etc") is None
-            assert _safe_campaign_dir("a1b2c3d4") is not None
+            assert _safe_campaign_dir("a1b2c3d4") is None
 
 
 class TestValidation:
@@ -355,6 +371,388 @@ class TestCycleFileMatching:
             assert "[REDACTED: suspicious URL" in blob
 
 
+class TestFindingReadTrustBoundary:
+    CID = "a1b2c3d4"
+
+    @staticmethod
+    def _path(root: Path, cycle: int = 1) -> Path:
+        path = root / "research" / TestFindingReadTrustBoundary.CID / "findings"
+        path.mkdir(parents=True, exist_ok=True)
+        return path / f"cycle_{cycle:03d}.json"
+
+    def test_safe_regular_finding_keeps_web_links_and_redacts_content(
+        self, _isolate: Path
+    ):
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _read_finding_bytes,
+        )
+
+        source = "https://docs.example.test/research/path?q=plain"
+        finding = self._path(_isolate)
+        finding.write_text(
+            json.dumps(
+                {
+                    "cycle": 1,
+                    "new_findings_count": 1,
+                    "source": source,
+                    "summary": "key AKIAIOSFODNN7EXAMPLE leaked",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert _read_finding_bytes(finding) == finding.read_bytes()
+        surfaced = get_findings(self.CID)
+        assert surfaced[0]["source"] == source
+        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(surfaced)
+
+    def test_traversal_encoded_relative_and_url_shaped_paths_are_refused(
+        self, _isolate: Path
+    ):
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _read_finding_bytes,
+        )
+
+        outside = _isolate / "outside" / "cycle_001.json"
+        outside.parent.mkdir()
+        outside.write_text('{"summary":"outside"}', encoding="utf-8")
+        root = _isolate / "research"
+        encoded = root / "%2e%2e" / "findings" / "cycle_001.json"
+        encoded.parent.mkdir(parents=True)
+        encoded.write_text('{"summary":"encoded"}', encoding="utf-8")
+
+        assert _read_finding_bytes(outside) is None
+        assert _read_finding_bytes(Path("a1b2c3d4/findings/cycle_001.json")) is None
+        assert _read_finding_bytes(Path("https://example.test/cycle_001.json")) is None
+        assert _read_finding_bytes(Path("file:///tmp/cycle_001.json")) is None
+        assert _read_finding_bytes(encoded) is None
+
+    def test_sensitive_home_is_refused_by_the_shared_file_gate(
+        self, _isolate: Path, monkeypatch
+    ):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        home = _isolate / "home"
+        sensitive_root = home / ".ssh" / "research"
+        # Path.home() follows HOME on POSIX and USERPROFILE on Windows. Set both:
+        # a fake home that only exists in HOME does not model a Windows home and
+        # must not make the shared gate appear to fail open there.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        assert Path.home() == home
+        finding = sensitive_root / self.CID / "findings" / "cycle_001.json"
+        finding.parent.mkdir(parents=True)
+        finding.write_text('{"summary":"must not surface"}', encoding="utf-8")
+
+        with patch.object(h, "RESEARCH_DIR", sensitive_root):
+            assert h._read_finding_bytes(finding) is None
+            assert h.get_findings(self.CID) == []
+
+    def test_hardlinked_finding_is_refused_by_the_shared_file_gate(
+        self, _isolate: Path
+    ):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        finding = self._path(_isolate)
+        finding.write_text('{"summary":"owned"}', encoding="utf-8")
+        alias = finding.with_name("cycle_002.json")
+        try:
+            alias.hardlink_to(finding)
+        except (NotImplementedError, OSError):
+            pytest.skip("hardlinks unavailable on this filesystem")
+        if finding.stat().st_nlink < 2:
+            pytest.skip("filesystem does not report hardlink counts")
+
+        assert h._read_finding_bytes(finding) is None
+        assert h._read_finding_bytes(alias) is None
+        assert h.get_findings(self.CID) == []
+
+    @requires_symlinks
+    def test_report_symlink_is_refused(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        campaign = h._campaign_dir(self.CID)
+        identity = h._campaign_identity(self.CID)
+        assert identity is not None
+        outside = _isolate / "outside-report.md"
+        outside.write_text("outside", encoding="utf-8")
+        (campaign / "FINDINGS.md").symlink_to(outside)
+
+        assert h._read_report(self.CID) == ""
+        with pytest.raises(h._ReportExportRefusedError):
+            h._read_report_export_for_identity(identity)
+
+    def test_report_hardlink_is_refused(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        campaign = h._campaign_dir(self.CID)
+        report = campaign / "FINDINGS.md"
+        report.write_text("owned", encoding="utf-8")
+        alias = _isolate / "report-alias.md"
+        try:
+            alias.hardlink_to(report)
+        except (NotImplementedError, OSError):
+            pytest.skip("hardlinks unavailable on this filesystem")
+        if report.stat().st_nlink < 2:
+            pytest.skip("filesystem does not report hardlink counts")
+
+        identity = h._campaign_identity(self.CID)
+        assert identity is not None
+        assert h._read_report(self.CID) == ""
+        with pytest.raises(h._ReportExportRefusedError):
+            h._read_report_export_for_identity(identity)
+
+    def test_opened_finding_refuses_when_campaign_pin_changes(
+        self, _isolate: Path, monkeypatch
+    ):
+        from contextlib import contextmanager
+
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        finding = self._path(_isolate)
+        finding.write_text('{"summary":"owned"}', encoding="utf-8")
+
+        @contextmanager
+        def changed_identity(_identity, *, revalidate_on_exit=True):
+            del revalidate_on_exit
+            raise PermissionError("campaign directory changed")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(h._CampaignIdentity, "pin", changed_identity)
+        assert h._read_finding_bytes(finding) is None
+
+    def test_linked_findings_directory_cannot_escape_campaign_owner(
+        self, _isolate: Path
+    ):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        outside = _isolate / "outside-findings"
+        outside.mkdir()
+        (outside / "cycle_001.json").write_text(
+            '{"summary":"outside owner"}', encoding="utf-8"
+        )
+        campaign = _isolate / "research" / self.CID
+        campaign.mkdir(parents=True)
+        make_dir_link(campaign / "findings", outside)
+
+        linked = campaign / "findings" / "cycle_001.json"
+        assert h._read_finding_bytes(linked) is None
+        assert h._cycle_finding_candidates(campaign / "findings") == []
+        assert h.get_findings(self.CID) == []
+
+    def test_linked_campaign_directory_cannot_change_owner(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        requested = self.CID
+        owner = "b1c2d3e4"
+        requested_dir = h._campaign_dir(requested)
+        requested_dir.joinpath("findings").rmdir()
+        requested_dir.rmdir()
+        owner_dir = h._campaign_dir(owner)
+        (owner_dir / "findings" / "cycle_001.json").write_text(
+            '{"cycle":1,"summary":"owner-only"}',
+            encoding="utf-8",
+        )
+        (owner_dir / "FINDINGS.md").write_text("owner report", encoding="utf-8")
+        make_dir_link(requested_dir, owner_dir)
+
+        assert h._campaign_identity(requested) is None
+        assert h._safe_campaign_dir(requested) is None
+        assert h.get_findings(requested) == []
+        assert h._read_report(requested) == ""
+        assert h.delete_campaign(requested) == {"error": "aliased campaign_id"}
+        assert h.get_findings(owner)[0]["summary"] == "owner-only"
+        assert h._read_report(owner) == "owner report"
+
+    @pytest.mark.skipif(
+        os.name != "posix",
+        reason="Windows pins a campaign directory against the rename this test requires",
+    )
+    def test_pinned_read_rejects_real_directory_replacement(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        requested = self.CID
+        replacement = "b1c2d3e4"
+        requested_dir = h._campaign_dir(requested)
+        (requested_dir / "FINDINGS.md").write_text("requested", encoding="utf-8")
+        identity = h._campaign_identity(requested)
+        assert identity is not None
+        replacement_dir = h._campaign_dir(replacement)
+        (replacement_dir / "FINDINGS.md").write_text("replacement", encoding="utf-8")
+
+        parked = requested_dir.with_name("parked-requested")
+        requested_dir.rename(parked)
+        replacement_dir.rename(requested_dir)
+
+        assert h._read_campaign_file_bytes(
+            identity,
+            ("FINDINGS.md",),
+            max_bytes=1024,
+        ) is None
+        with pytest.raises(h._ReportExportRefusedError):
+            h._read_report_export_for_identity(identity)
+        assert h._campaign_identity(requested) is None
+        with pytest.raises(ValueError, match="aliased"):
+            h._campaign_dir(requested)
+
+    def test_every_cycle_finding_consumer_uses_the_shared_gate(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        for cycle in range(1, 6):
+            finding = self._path(_isolate, cycle)
+            finding.write_text(
+                json.dumps({"new_findings_count": 0, "cycle": cycle}),
+                encoding="utf-8",
+            )
+
+        report = _isolate / "research" / self.CID / "FINDINGS.md"
+        report.write_text("# report", encoding="utf-8")
+        with patch.object(h, "_read_campaign_file_bytes", return_value=None) as gate:
+            assert h.get_findings(self.CID) == []
+            assert h._capture_run_finding_snapshot(self.CID) is None
+            assert not h.check_stagnation(self.CID)
+            assert h._read_report(self.CID) == ""
+        assert gate.call_count >= 4
+
+    @pytest.mark.skipif(
+        os.name != "posix",
+        reason="Windows pins a campaign directory against the rename this test requires",
+    )
+    def test_delete_revalidates_live_identity_before_tree_mutation(
+        self, _isolate: Path, monkeypatch
+    ):
+        """A replacement landing after lookup is refused before its bytes mutate."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        requested = create_campaign(
+            {
+                "question": "Research a sufficiently detailed requested campaign",
+                "sources": ["web"],
+            }
+        )["id"]
+        replacement = create_campaign(
+            {
+                "question": "Research a sufficiently detailed replacement campaign",
+                "sources": ["web"],
+            }
+        )["id"]
+        requested_dir = h._campaign_dir(requested)
+        replacement_dir = h._campaign_dir(replacement)
+        marker = replacement_dir / "replacement.txt"
+        marker.write_text("must survive", encoding="utf-8")
+        real_remove = h._remove_campaign_tree
+
+        def _swap_before_mutation(identity):
+            requested_dir.rename(requested_dir.with_name("parked-requested"))
+            replacement_dir.rename(requested_dir)
+            return real_remove(identity)
+
+        monkeypatch.setattr(h, "_remove_campaign_tree", _swap_before_mutation)
+
+        assert h.delete_campaign(requested) == {
+            "error": "cleanup incomplete",
+            "residual": True,
+        }
+        assert (requested_dir / marker.name).read_text(encoding="utf-8") == "must survive"
+        assert h.get_campaign(requested) is not None
+
+    def test_delete_matching_live_identity_removes_tree_and_row(self, _isolate: Path):
+        """Opposite mode: an unchanged campaign still deletes completely."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        cid = create_campaign(
+            {
+                "question": "Research a sufficiently detailed removable campaign",
+                "sources": ["web"],
+            }
+        )["id"]
+        directory = h._campaign_dir(cid)
+        (directory / "owned.txt").write_text("owned", encoding="utf-8")
+
+        assert h.delete_campaign(cid) == {
+            "id": cid,
+            "deleted": True,
+            "residual": False,
+        }
+        assert not directory.exists()
+        assert h.get_campaign(cid) is None
+
+    def test_delete_with_missing_research_root_removes_the_row(self, _isolate: Path):
+        """An absent root has no descriptor cache entry to evict after deletion."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        cid = create_campaign(
+            {
+                "question": "Research a campaign whose root later disappears",
+                "sources": ["web"],
+            }
+        )["id"]
+        campaign_dir = h._campaign_dir(cid)
+        (campaign_dir / "findings").rmdir()
+        (campaign_dir / "status.json").unlink()
+        campaign_dir.rmdir()
+        campaign_dir.parent.rmdir()
+
+        assert h.delete_campaign(cid) == {
+            "id": cid,
+            "deleted": True,
+            "residual": False,
+        }
+        assert h.get_campaign(cid) is None
+
+    @pytest.mark.skipif(
+        os.name != "posix",
+        reason="Windows pins a campaign directory against the rename this test requires",
+    )
+    def test_MUTATION_skipping_live_pin_can_empty_a_replacement(
+        self, _isolate: Path, monkeypatch
+    ):
+        """An unchecked reopen reproduces the stale-identity data-loss defect."""
+        from contextlib import contextmanager
+
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        requested = create_campaign(
+            {
+                "question": "Research a sufficiently detailed requested campaign",
+                "sources": ["web"],
+            }
+        )["id"]
+        replacement = create_campaign(
+            {
+                "question": "Research a sufficiently detailed replacement campaign",
+                "sources": ["web"],
+            }
+        )["id"]
+        requested_dir = h._campaign_dir(requested)
+        replacement_dir = h._campaign_dir(replacement)
+        marker = replacement_dir / "replacement.txt"
+        marker.write_text("must survive", encoding="utf-8")
+        real_remove = h._remove_campaign_tree
+
+        @contextmanager
+        def _unsafe_pin(identity, *, revalidate_on_exit=True):
+            del revalidate_on_exit
+            fd = h.pin_directory(identity.directory)
+            try:
+                yield fd
+            finally:
+                os.close(fd)
+
+        def _swap_and_remove_without_identity_check(identity):
+            requested_dir.rename(requested_dir.with_name("parked-requested"))
+            replacement_dir.rename(requested_dir)
+            monkeypatch.setattr(h._CampaignIdentity, "pin", _unsafe_pin)
+            return real_remove(identity)
+
+        monkeypatch.setattr(h, "_remove_campaign_tree", _swap_and_remove_without_identity_check)
+        h.delete_campaign(requested)
+
+        assert not (requested_dir / marker.name).exists(), (
+            "without the live inode check, replacement bytes were unexpectedly protected"
+        )
+
+
 class TestFileInterface:
     def test_write_status(self, tmp_path: Path):
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
@@ -475,7 +873,7 @@ class TestCRUD:
         (_campaign_dir(cid) / "FINDINGS.md").write_text("# Report")
         assert delete_campaign(cid)["deleted"] is True
         assert get_campaign(cid) is None
-        assert not _safe_campaign_dir(cid).exists()
+        assert _safe_campaign_dir(cid) is None
 
     def test_delete_missing(self):
         from kiro_crew.apps.builtins.auto_research.handlers import delete_campaign
@@ -573,6 +971,21 @@ class TestStalledCampaignVerdict:
         status, message = _stalled_campaign_verdict(self.CID, [f])
         assert status == CampaignStatus.COMPLETE
         assert message is None
+
+    def test_runtime_budget_precedes_verified_finding(self, _isolate: Path):
+        """A verified finding cannot override an operator runtime limit."""
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+
+        f = self._write_finding(
+            _isolate, 3, {"summary": "done", "verification": {"passed": True}}
+        )
+        status, message = _stalled_campaign_verdict(
+            self.CID,
+            [f],
+            stopped_reason="runtime_budget",
+        )
+        assert status == CampaignStatus.STOPPED
+        assert message == "Research time budget reached — findings are preserved."
 
     def test_done_marker_with_findings_is_deliberate_stop(self, _isolate: Path):
         from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
@@ -859,6 +1272,324 @@ class TestStalledCampaignVerdict:
             assert camp["completed_at"] is not None
 
 
+class TestCycleCapGenerationScoping:
+    """A resumed capped campaign is completed only by findings the CURRENT run
+    generation produced -- never by findings a prior generation left on disk.
+
+    ``update_campaign_status`` records a multiset of pre-run content identities.
+    Completion subtracts those identities independent of filename, cycle number,
+    list position, and file-set churn.
+    """
+
+    def _write_findings(
+        self, tmp_path: Path, cid: str, count: int, *, start: int = 1
+    ) -> None:
+        d = tmp_path / "research" / cid / "findings"
+        d.mkdir(parents=True, exist_ok=True)
+        for i in range(start, start + count):
+            (d / f"cycle_{i:03d}.json").write_text(
+                json.dumps({"summary": f"finding {i}"})
+            )
+
+    def _new_campaign(self) -> str:
+        return create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )["id"]
+
+    def test_resume_not_completed_by_prior_generation_findings(self, _isolate: Path):
+        """The exact F1 case: a capped campaign with cap-many historical
+        findings is Resumed, the new loop produces nothing, and the stale count
+        must NOT complete it."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cap = 3
+        cid = self._new_campaign()
+        # A prior generation already wrote cap-many findings.
+        self._write_findings(_isolate, cid, cap)
+        # Resume mints a new generation; the snapshot captures those cap files.
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        # The new loop hits the cycle cap without producing a readable finding.
+        files = _list_cycle_files(cid)
+        status, message = _stalled_campaign_verdict(
+            cid, files, stopped_reason="cycle_cap", required_cycle_count=cap
+        )
+        assert status == CampaignStatus.FAILED
+        assert "stalled" in (message or "")
+
+    def test_completes_when_current_generation_meets_cap(self, _isolate: Path):
+        """A Resume that DOES produce cap-many new readable findings still
+        completes -- historical identities are ignored, not the new work."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cap = 2
+        cid = self._new_campaign()
+        self._write_findings(_isolate, cid, 1)  # prior generation
+        update_campaign_status(cid, CampaignStatus.RUNNING)  # snapshot one prior payload
+        self._write_findings(_isolate, cid, cap, start=2)  # current gen: cap new
+        files = _list_cycle_files(cid)
+        status, _ = _stalled_campaign_verdict(
+            cid, files, stopped_reason="cycle_cap", required_cycle_count=cap
+        )
+        assert status == CampaignStatus.COMPLETE
+
+    def test_fresh_run_completes_on_cap(self, _isolate: Path):
+        """A first run (empty snapshot) completes on cap-many findings -- the fix
+        must not regress the ordinary fresh-start completion."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cap = 2
+        cid = self._new_campaign()
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        self._write_findings(_isolate, cid, cap)
+        files = _list_cycle_files(cid)
+        status, _ = _stalled_campaign_verdict(
+            cid, files, stopped_reason="cycle_cap", required_cycle_count=cap
+        )
+        assert status == CampaignStatus.COMPLETE
+
+    def test_verified_file_cannot_bypass_cycle_generation_count(self, _isolate: Path):
+        """A cycle cap owns completion even when its latest file is verified."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cap = 2
+        cid = self._new_campaign()
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        d = _isolate / "research" / cid / "findings"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "cycle_001.json").write_text(
+            json.dumps({"summary": "goal met", "verification": {"passed": True}})
+        )
+        status, message = _stalled_campaign_verdict(
+            cid,
+            _list_cycle_files(cid),
+            stopped_reason="cycle_cap",
+            required_cycle_count=cap,
+        )
+        assert status == CampaignStatus.FAILED
+        assert "stalled" in (message or "")
+
+    @pytest.mark.parametrize("legacy_value", [None, -1, 0, 3, "not-json"])
+    def test_unknown_snapshot_refuses_cap_completion(self, _isolate: Path, legacy_value):
+        """Rows migrated from positional-baseline builds cannot recover exact
+        pre-run identities, so every legacy/invalid value is UNKNOWN."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _get_db,
+            _list_cycle_files,
+            _run_finding_snapshot,
+            _stalled_campaign_verdict,
+        )
+
+        cap = 3
+        cid = self._new_campaign()
+        self._write_findings(_isolate, cid, cap)
+        db = _get_db()
+        db.execute(
+            "UPDATE campaigns SET run_finding_snapshot = ? WHERE id = ?",
+            (legacy_value, cid),
+        )
+        db.commit()
+        db.close()
+        assert _run_finding_snapshot(cid) is None
+        status, message = _stalled_campaign_verdict(
+            cid,
+            _list_cycle_files(cid),
+            stopped_reason="cycle_cap",
+            required_cycle_count=cap,
+        )
+        assert status == CampaignStatus.FAILED
+        assert "stalled" in (message or "")
+
+    def test_unknown_snapshot_heals_after_a_real_start(self, _isolate: Path):
+        """A real Start/Resume replaces UNKNOWN with a trustworthy snapshot."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _get_db,
+            _list_cycle_files,
+            _run_finding_snapshot,
+            _stalled_campaign_verdict,
+        )
+
+        cap = 2
+        cid = self._new_campaign()
+        db = _get_db()
+        db.execute("UPDATE campaigns SET run_finding_snapshot = NULL WHERE id = ?", (cid,))
+        db.commit()
+        db.close()
+        assert _run_finding_snapshot(cid) is None
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        assert _run_finding_snapshot(cid) == Counter()
+        self._write_findings(_isolate, cid, cap)
+        status, _ = _stalled_campaign_verdict(
+            cid,
+            _list_cycle_files(cid),
+            stopped_reason="cycle_cap",
+            required_cycle_count=cap,
+        )
+        assert status == CampaignStatus.COMPLETE
+
+    def test_lower_numbered_current_file_cannot_slide_history_across_boundary(self, _isolate: Path):
+        """The reported blocker: insertion before the old position is harmless."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cid = self._new_campaign()
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        (findings / "cycle_900.json").write_text(
+            json.dumps({"summary": "historical"}), encoding="utf-8"
+        )
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        (findings / "cycle_001.json").write_text("{malformed", encoding="utf-8")
+
+        status, _ = _stalled_campaign_verdict(
+            cid,
+            _list_cycle_files(cid),
+            stopped_reason="cycle_cap",
+            required_cycle_count=1,
+        )
+        assert status == CampaignStatus.FAILED
+
+    def test_renamed_historical_file_keeps_its_identity(self, _isolate: Path):
+        """A rename/reorder cannot turn old readable bytes into new evidence."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cid = self._new_campaign()
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        historical = findings / "cycle_900.json"
+        historical.write_text(json.dumps({"summary": "historical"}), encoding="utf-8")
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        historical.rename(findings / "cycle_050.json")
+        (findings / "cycle_001.json").write_text("{malformed", encoding="utf-8")
+
+        status, _ = _stalled_campaign_verdict(
+            cid,
+            _list_cycle_files(cid),
+            stopped_reason="cycle_cap",
+            required_cycle_count=1,
+        )
+        assert status == CampaignStatus.FAILED
+
+    def test_duplicate_variant_selection_churn_cannot_promote_history(self, _isolate: Path):
+        """The snapshot covers physical variants hidden by logical dedup."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cid = self._new_campaign()
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        selected = findings / "cycle-5.json"
+        selected.write_text(json.dumps({"summary": "selected history"}), encoding="utf-8")
+        (findings / "cycle_005.json").write_text(
+            json.dumps({"summary": "hidden history"}), encoding="utf-8"
+        )
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        selected.unlink()
+        (findings / "cycle_001.json").write_text("{malformed", encoding="utf-8")
+
+        status, _ = _stalled_campaign_verdict(
+            cid,
+            _list_cycle_files(cid),
+            stopped_reason="cycle_cap",
+            required_cycle_count=1,
+        )
+        assert status == CampaignStatus.FAILED
+
+    def test_removed_history_and_sparse_new_files_still_complete(self, _isolate: Path):
+        """Opposite mode: churn does not hide genuinely new readable evidence."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cid = self._new_campaign()
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        historical = findings / "cycle_500.json"
+        historical.write_text(json.dumps({"summary": "historical"}), encoding="utf-8")
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        historical.unlink()
+        (findings / "cycle_002.json").write_text(
+            json.dumps({"summary": "current low"}), encoding="utf-8"
+        )
+        (findings / "cycle_900.json").write_text(
+            json.dumps({"summary": "current high"}), encoding="utf-8"
+        )
+
+        status, _ = _stalled_campaign_verdict(
+            cid,
+            _list_cycle_files(cid),
+            stopped_reason="cycle_cap",
+            required_cycle_count=2,
+        )
+        assert status == CampaignStatus.COMPLETE
+
+    def test_identical_replacement_fails_closed(self, _isolate: Path):
+        """Remove+replace with identical bytes cannot prove a new delivery."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cid = self._new_campaign()
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"summary": "same evidence"})
+        historical = findings / "cycle_800.json"
+        historical.write_text(payload, encoding="utf-8")
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        historical.unlink()
+        (findings / "cycle_001.json").write_text(payload, encoding="utf-8")
+
+        status, _ = _stalled_campaign_verdict(
+            cid,
+            _list_cycle_files(cid),
+            stopped_reason="cycle_cap",
+            required_cycle_count=1,
+        )
+        assert status == CampaignStatus.FAILED
+
+    def test_runtime_budget_stays_resumable_regardless_of_history(self, _isolate: Path):
+        """Opposite bound: a runtime-budget stop is STOPPED (resumable) and
+        never consults the finding count, so historical findings cannot flip it
+        to a terminal COMPLETE."""
+        from kiro_crew.apps.builtins.auto_research.handlers import (
+            _list_cycle_files,
+            _stalled_campaign_verdict,
+        )
+
+        cid = self._new_campaign()
+        self._write_findings(_isolate, cid, 5)
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        files = _list_cycle_files(cid)
+        status, message = _stalled_campaign_verdict(
+            cid, files, stopped_reason="runtime_budget", required_cycle_count=0
+        )
+        assert status == CampaignStatus.STOPPED
+        assert "preserved" in (message or "")
+
+
 # --- Redaction ---
 class TestRedaction:
     def test_redact_finding_with_security_module(self):
@@ -1127,6 +1858,10 @@ class TestHTTPHandlers:
         with (
             patch("kiro_crew.apps.builtins.auto_research.handlers.DB_PATH", tmp_path / "t.db"),
             patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path / "r"),
+            patch(
+                "kiro_crew.apps.builtins.auto_research.handlers._launch_loop",
+                AsyncMock(return_value=True),
+            ),
         ):
             async with TestClient(TestServer(app)) as c:
                 r = await c.post(
@@ -1173,6 +1908,10 @@ class TestHTTPHandlers:
         with (
             patch("kiro_crew.apps.builtins.auto_research.handlers.DB_PATH", tmp_path / "t.db"),
             patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path / "r"),
+            patch(
+                "kiro_crew.apps.builtins.auto_research.handlers._launch_loop",
+                AsyncMock(return_value=True),
+            ),
         ):
             async with TestClient(TestServer(app)) as c:
                 cr = await c.post(
@@ -1194,6 +1933,10 @@ class TestHTTPHandlers:
         with (
             patch("kiro_crew.apps.builtins.auto_research.handlers.DB_PATH", tmp_path / "t.db"),
             patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path / "r"),
+            patch(
+                "kiro_crew.apps.builtins.auto_research.handlers._launch_loop",
+                AsyncMock(return_value=True),
+            ),
         ):
             async with TestClient(TestServer(app)) as c:
                 cr = await c.post(
@@ -1225,8 +1968,9 @@ class TestHTTPHandlers:
             observed.append(("prepare", get_campaign(cid)["status"]))
             await asyncio.sleep(0)
 
-        async def _launch(_request, cid: str, *, prepared: bool = False) -> None:
+        async def _launch(_request, cid: str, *, prepared: bool = False) -> bool:
             observed.append(("launch", prepared, get_campaign(cid)["status"]))
+            return True
 
         with (
             patch("kiro_crew.apps.builtins.auto_research.handlers.DB_PATH", tmp_path / "t.db"),
@@ -1252,8 +1996,237 @@ class TestHTTPHandlers:
         ]
 
     @pytest.mark.asyncio
+    async def test_resume_replacement_failure_preserves_prior_loop(
+        self, autonudge_store_dir: Path, monkeypatch
+    ):
+        """Resume keeps its durable recovery record until replacement commits."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AUTONUDGE_STOP_REASON, AutoNudgeService
+
+        svc = AutoNudgeService(base_dir=autonudge_store_dir)
+        await svc.start()
+        state = MagicMock()
+        state.conversation_log = None
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )
+        cid = campaign["id"]
+        slot_key = f"research-{cid}"
+        slot = SimpleNamespace(key=slot_key)
+        state.get_or_create_slot.return_value = slot
+        state.get_slot.return_value = slot
+        old_loop = await svc.add(slot_key=slot_key, message="old run", idle_secs=60)
+        await svc.update(
+            old_loop.id,
+            active=False,
+            stopped_reason=AUTONUDGE_STOP_REASON,
+        )
+        persisted_before = svc._path.read_bytes()
+        monkeypatch.setattr(
+            svc,
+            "_write_state",
+            MagicMock(side_effect=OSError("disk full")),
+        )
+
+        try:
+            with pytest.raises(OSError, match="disk full"):
+                await h._launch_loop(SimpleNamespace(app={"state": state}), cid)
+
+            assert svc.get_by_slot(slot_key) is old_loop
+            assert not old_loop.active
+            assert old_loop.stopped_reason == AUTONUDGE_STOP_REASON
+            assert svc._path.read_bytes() == persisted_before
+        finally:
+            await svc.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_resume_route_rolls_back_campaign_when_replacement_persist_fails(
+        self, app, autonudge_store_dir: Path, monkeypatch
+    ):
+        """A failed Resume must not leave RUNNING paired with an inactive old loop."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AUTONUDGE_STOP_REASON, AutoNudgeService
+
+        svc = AutoNudgeService(base_dir=autonudge_store_dir)
+        await svc.start()
+        state = MagicMock()
+        state.conversation_log = None
+        app["state"] = state
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )
+        cid = campaign["id"]
+        # Establish a real prior run boundary, then add a historical finding
+        # after it. Resume temporarily advances the snapshot to that finding;
+        # rollback must restore the prior empty identity multiset.
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        update_campaign_status(cid, CampaignStatus.FAILED, error_message="stalled")
+        findings = h._campaign_dir(cid) / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        (findings / "cycle_001.json").write_text(
+            json.dumps({"summary": "prior run"}),
+            encoding="utf-8",
+        )
+        previous = get_campaign(cid)
+        assert previous is not None
+        assert previous["run_finding_snapshot"] == "[]"
+        slot_key = f"research-{cid}"
+        slot = SimpleNamespace(key=slot_key)
+        state.get_or_create_slot.return_value = slot
+        state.get_slot.return_value = slot
+        old_loop = await svc.add(slot_key=slot_key, message="old run", idle_secs=60)
+        await svc.update(
+            old_loop.id,
+            active=False,
+            stopped_reason=AUTONUDGE_STOP_REASON,
+        )
+        persisted_before = svc._path.read_bytes()
+        monkeypatch.setattr(
+            svc,
+            "_write_state",
+            MagicMock(side_effect=OSError("disk full")),
+        )
+
+        try:
+            async with TestClient(TestServer(app)) as client:
+                response = await client.patch(
+                    f"/api/apps/auto-research/campaigns/{cid}",
+                    json={"action": "resume"},
+                )
+            assert response.status == 500
+
+            current = get_campaign(cid)
+            assert current is not None
+            assert current["status"] == previous["status"] == CampaignStatus.FAILED
+            assert current["error_message"] == previous["error_message"] == "stalled"
+            assert current["started_at"] == previous["started_at"]
+            assert current["completed_at"] == previous["completed_at"]
+            assert current["run_finding_snapshot"] == previous["run_finding_snapshot"] == "[]"
+            assert svc.get_by_slot(slot_key) is old_loop
+            assert not old_loop.active
+            assert old_loop.stopped_reason == AUTONUDGE_STOP_REASON
+            assert svc._path.read_bytes() == persisted_before
+        finally:
+            await svc.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_resume_rollback_emits_convergence_sse(
+        self, app, autonudge_store_dir: Path, monkeypatch
+    ):
+        """After a failed Resume rolls the row back, a convergence SSE carrying
+        the RESTORED status must fire (GPT F2). Otherwise a client that
+        refetched on a transient FAILED keeps showing FAILED indefinitely: the
+        rollback rewrites the row with no event of its own."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AUTONUDGE_STOP_REASON, AutoNudgeService
+
+        svc = AutoNudgeService(base_dir=autonudge_store_dir)
+        await svc.start()
+        state = MagicMock()
+        state.conversation_log = None
+        app["state"] = state
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        events: list[dict] = []
+        monkeypatch.setattr(h, "_emit_sse", events.append)
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )
+        cid = campaign["id"]
+        # Prior generation ended STOPPED; Resume must restore exactly that.
+        update_campaign_status(cid, CampaignStatus.STOPPED, error_message="budget")
+        slot_key = f"research-{cid}"
+        slot = SimpleNamespace(key=slot_key)
+        state.get_or_create_slot.return_value = slot
+        state.get_slot.return_value = slot
+        old_loop = await svc.add(slot_key=slot_key, message="old run", idle_secs=60)
+        await svc.update(old_loop.id, active=False, stopped_reason=AUTONUDGE_STOP_REASON)
+        monkeypatch.setattr(
+            svc, "_write_state", MagicMock(side_effect=OSError("disk full"))
+        )
+
+        try:
+            async with TestClient(TestServer(app)) as client:
+                response = await client.patch(
+                    f"/api/apps/auto-research/campaigns/{cid}",
+                    json={"action": "resume"},
+                )
+            assert response.status == 500
+            # The row rolled back to STOPPED; a convergence event for that
+            # restored status must have been emitted (the loop path emits no
+            # transient event, so without the fix `events` is empty).
+            assert {"type": "stopped", "campaign_id": cid} in events
+        finally:
+            await svc.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_workflow_resume_failure_converges_off_failed_sse(
+        self, app, autonudge_store_dir: Path, monkeypatch
+    ):
+        """A workflow launch failure emits a transient `failed` SSE before
+        returning; the rollback must then emit the RESTORED status LAST so a
+        refetch can never leave the dashboard cached in FAILED (GPT F2)."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        state = MagicMock()
+        state.conversation_log = None
+        # workflow_service unavailable -> _launch_workflow emits `failed`, False.
+        state.workflow_service = None
+        app["state"] = state
+        events: list[dict] = []
+        monkeypatch.setattr(h, "_emit_sse", events.append)
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+                "execution_mode": "workflow",
+            }
+        )
+        cid = campaign["id"]
+        update_campaign_status(cid, CampaignStatus.STOPPED, error_message="budget")
+        previous = get_campaign(cid)
+        assert previous is not None
+        assert previous["run_finding_snapshot"] is None
+
+        async with TestClient(TestServer(app)) as client:
+            response = await client.patch(
+                f"/api/apps/auto-research/campaigns/{cid}",
+                json={"action": "resume"},
+            )
+        assert response.status == 500
+        types = [e.get("type") for e in events if e.get("campaign_id") == cid]
+        # The transient event the client may refetch on is present...
+        assert "failed" in types
+        # ...but the LAST event converges readers onto the restored status,
+        # so the UI cannot retain FAILED after the DB rolled back.
+        assert types[-1] == "stopped"
+        current = get_campaign(cid)
+        assert current is not None
+        assert current["run_finding_snapshot"] is previous["run_finding_snapshot"] is None
+
+    @pytest.mark.asyncio
     async def test_resume_cannot_be_overwritten_by_slow_terminal_sidecar(
-        self, app, tmp_path: Path, monkeypatch
+        self, app, autonudge_store_dir: Path, monkeypatch
     ):
         """Terminal settlement finishes before Resume publishes its new run."""
         from aiohttp.test_utils import TestClient, TestServer
@@ -1261,7 +2234,7 @@ class TestHTTPHandlers:
         from kiro_crew.apps.builtins.auto_research import handlers as h
         from kiro_crew.autonudge import AUTONUDGE_STOP_REASON, AutoNudgeService
 
-        svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+        svc = AutoNudgeService(base_dir=autonudge_store_dir)
         await svc.start()
         state = MagicMock()
         state.conversation_log = None
@@ -1271,7 +2244,7 @@ class TestHTTPHandlers:
         monkeypatch.setattr(
             h,
             "_stalled_campaign_verdict",
-            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+            lambda _cid, _files, *, stopped_reason="", **_kwargs: (CampaignStatus.STOPPED, None),
         )
 
         terminal_sidecar_started = threading.Event()
@@ -1343,11 +2316,11 @@ class TestHTTPHandlers:
             assert replacement.id != old_loop.id
         finally:
             release_terminal_sidecar.set()
-            svc.stop()
+            await svc.shutdown()
 
     @pytest.mark.asyncio
     async def test_stale_settlement_skips_replacement_run_effects(
-        self, _isolate: Path, monkeypatch
+        self, _isolate: Path, autonudge_store_dir: Path, monkeypatch
     ):
         """A watchdog observation cannot settle a later run generation."""
         from kiro_crew.apps.builtins.auto_research import handlers as h
@@ -1366,7 +2339,7 @@ class TestHTTPHandlers:
         update_campaign_status(cid, CampaignStatus.RUNNING)
         assert get_campaign(cid)["started_at"] != old_started_at
 
-        svc = AutoNudgeService(base_dir=_isolate / "autonudge")
+        svc = AutoNudgeService(base_dir=autonudge_store_dir)
         await svc.start()
         replacement = await svc.add(
             slot_key=f"research-{cid}",
@@ -1397,7 +2370,7 @@ class TestHTTPHandlers:
             assert events == []
             verdict.assert_not_called()
         finally:
-            svc.stop()
+            await svc.shutdown()
 
     @pytest.mark.asyncio
     async def test_action_unknown(self, app, tmp_path: Path):
@@ -1564,7 +2537,7 @@ class TestHTTPHandlers:
                 return "sid1"
 
         app["state"] = SimpleNamespace(knowledge_store=_FakeStore())
-        app["knowledge_pipeline"] = SimpleNamespace(ingest_file=AsyncMock())
+        app["knowledge_pipeline"] = SimpleNamespace(ingest_text=AsyncMock())
         with patch("kiro_crew.apps.builtins.auto_research.handlers.DB_PATH", tmp_path / "t.db"), \
              patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path / "r"):
             async with TestClient(TestServer(app)) as c:
@@ -1906,9 +2879,8 @@ class TestRedactCampaignFields:
 
 class TestLoopLaunch:
     @pytest.mark.asyncio
-    async def test_launch_clears_tombstone_before_slow_marker_cleanup(self, monkeypatch):
-        """A crash after settlement but before loop removal must not let the
-        previous run's source tombstone stop a resumed run again."""
+    async def test_launch_preserves_tombstone_until_atomic_replacement(self, monkeypatch):
+        """Marker cleanup must not delete the replacement transaction's rollback row."""
         from kiro_crew.apps.builtins.auto_research import handlers as h
         from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
 
@@ -1925,8 +2897,8 @@ class TestLoopLaunch:
 
         await h._launch_loop(SimpleNamespace(app={}), "a1b2c3d4")
 
-        svc.remove.assert_awaited_once_with("stale-stop")
-        assert order == ["tombstone", "marker"]
+        svc.remove.assert_not_awaited()
+        assert order == ["marker"]
 
     @pytest.mark.asyncio
     async def test_launch_arms_autonudge(self, monkeypatch):
@@ -1940,7 +2912,8 @@ class TestLoopLaunch:
         monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
         state = MagicMock()
         state.get_or_create_slot.return_value = SimpleNamespace(key=f"research-{c['id']}")
-        await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
+        launched = await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
+        assert launched is True
         svc.add.assert_awaited_once()
         kw = svc.add.call_args.kwargs
         assert kw["slot_key"] == f"research-{c['id']}"
@@ -2095,7 +3068,7 @@ class TestLoopLaunch:
         from kiro_crew.apps.builtins.auto_research import handlers as h
 
         monkeypatch.setattr(h, "_autonudge_instance", lambda: None)
-        await h._launch_loop(SimpleNamespace(app={}), "a1b2c3d4")  # must not raise
+        assert await h._launch_loop(SimpleNamespace(app={}), "a1b2c3d4") is False
 
     @pytest.mark.asyncio
     async def test_stop_removes_loop(self, monkeypatch):
@@ -2302,7 +3275,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(
             h,
             "_stalled_campaign_verdict",
-            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+            lambda _cid, _files, *, stopped_reason="", **_kwargs: (CampaignStatus.STOPPED, None),
         )
 
         persisted_off_loop = False
@@ -2349,7 +3322,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(
             h,
             "_stalled_campaign_verdict",
-            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+            lambda _cid, _files, *, stopped_reason="", **_kwargs: (CampaignStatus.STOPPED, None),
         )
 
         status_write_started = threading.Event()
@@ -2377,12 +3350,12 @@ class TestWatchdogStopTombstone:
 
         assert svc.get_by_slot(f"research-{cid}") is None
         assert loop.id not in svc._timers
-        svc.stop()
+        await svc.shutdown()
 
         restored = AutoNudgeService(base_dir=tmp_path)
         await restored.start()
         assert restored.get_by_slot(f"research-{cid}") is None
-        restored.stop()
+        await restored.shutdown()
 
     @pytest.mark.asyncio
     async def test_slow_settlement_cannot_remove_resumed_replacement(
@@ -2406,7 +3379,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(
             h,
             "_stalled_campaign_verdict",
-            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+            lambda _cid, _files, *, stopped_reason="", **_kwargs: (CampaignStatus.STOPPED, None),
         )
 
         status_write_started = threading.Event()
@@ -2437,7 +3410,7 @@ class TestWatchdogStopTombstone:
         await settlement
 
         assert svc.get_by_slot(slot_key) is replacement
-        svc.stop()
+        await svc.shutdown()
 
     @pytest.mark.asyncio
     async def test_cancellation_propagates_after_status_write_failure(self, tmp_path, monkeypatch):
@@ -2453,7 +3426,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(
             h,
             "_stalled_campaign_verdict",
-            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+            lambda _cid, _files, *, stopped_reason="", **_kwargs: (CampaignStatus.STOPPED, None),
         )
 
         status_write_started = threading.Event()
@@ -2480,7 +3453,7 @@ class TestWatchdogStopTombstone:
 
         # A non-terminal campaign keeps its loop so restart can retry settling.
         assert svc.get_by_slot(f"research-{cid}") is loop
-        svc.stop()
+        await svc.shutdown()
 
     @pytest.mark.asyncio
     async def test_settlement_failure_is_logged_without_replacing_cancellation(
@@ -2505,7 +3478,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(
             h,
             "_stalled_campaign_verdict",
-            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+            lambda _cid, _files, *, stopped_reason="", **_kwargs: (CampaignStatus.STOPPED, None),
         )
 
         status_write_started = threading.Event()
@@ -2542,7 +3515,7 @@ class TestWatchdogStopTombstone:
                 "the log record must carry the worker failure's traceback"
             )
         finally:
-            svc.stop()
+            await svc.shutdown()
 
     @pytest.mark.asyncio
     async def test_partial_terminal_persistence_still_removes_durable_loop(
@@ -2574,7 +3547,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(
             h,
             "_stalled_campaign_verdict",
-            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+            lambda _cid, _files, *, stopped_reason="", **_kwargs: (CampaignStatus.STOPPED, None),
         )
 
         real_write_status = h.write_status
@@ -2607,12 +3580,12 @@ class TestWatchdogStopTombstone:
         assert last_counts == {}
         assert last_ts == {}
         assert events == []
-        svc.stop()
+        await svc.shutdown()
 
         restored = AutoNudgeService(base_dir=store)
         await restored.start()
         assert restored.get_by_slot(f"research-{cid}") is None
-        restored.stop()
+        await restored.shutdown()
 
     @pytest.mark.asyncio
     async def test_transient_terminal_loop_removal_is_retried(
@@ -2644,7 +3617,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(
             h,
             "_stalled_campaign_verdict",
-            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+            lambda _cid, _files, *, stopped_reason="", **_kwargs: (CampaignStatus.STOPPED, None),
         )
 
         real_write_state = svc._write_state
@@ -2670,12 +3643,12 @@ class TestWatchdogStopTombstone:
         assert removal_failed
         assert get_campaign(cid)["status"] == CampaignStatus.STOPPED
         assert svc.get_by_slot(f"research-{cid}") is None
-        svc.stop()
+        await svc.shutdown()
 
         restored = AutoNudgeService(base_dir=store)
         await restored.start()
         assert restored.get_by_slot(f"research-{cid}") is None
-        restored.stop()
+        await restored.shutdown()
 
     @pytest.mark.asyncio
     async def test_exhausted_terminal_loop_removal_stays_inactive_after_restart(
@@ -2707,7 +3680,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(
             h,
             "_stalled_campaign_verdict",
-            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+            lambda _cid, _files, *, stopped_reason="", **_kwargs: (CampaignStatus.STOPPED, None),
         )
 
         real_write_state = svc._write_state
@@ -2742,7 +3715,7 @@ class TestWatchdogStopTombstone:
         assert retained.id not in svc._timers
         assert last_counts == {}
         assert last_ts == {}
-        svc.stop()
+        await svc.shutdown()
 
         restored = AutoNudgeService(base_dir=store)
         await restored.start()
@@ -2751,7 +3724,7 @@ class TestWatchdogStopTombstone:
         assert restored_loop.id == loop.id
         assert restored_loop.active is False
         assert restored_loop.id not in restored._timers
-        restored.stop()
+        await restored.shutdown()
 
     @pytest.mark.asyncio
     async def test_new_run_defers_stale_tombstone_without_rearming(
@@ -3154,6 +4127,359 @@ class TestForkAndGrillTreeHTTP:
             "# Parent findings\nsome evidence"
         )
 
+    @pytest.mark.asyncio
+    async def test_fork_oversized_parent_findings_rolls_back_the_child(self, app):
+        """A bounded parent report must fail honestly without persisting a fork child."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        parent = h.create_campaign(
+            {
+                "question": "Parent report that is too large to copy into a fork",
+                "sources": ["web"],
+            }
+        )
+        pid = parent["id"]
+        h.update_campaign_status(pid, h.CampaignStatus.COMPLETE)
+        (h._campaign_dir(pid) / "FINDINGS.md").write_bytes(
+            b"x" * (h._REPORT_EXPORT_MAX_BYTES + 1)
+        )
+
+        async with TestClient(TestServer(app)) as client:
+            response = await client.patch(
+                f"/api/apps/auto-research/campaigns/{pid}",
+                json={"action": "fork"},
+            )
+            payload = await response.json()
+
+        assert response.status == 413
+        assert payload == {
+            "error": "Parent findings are too large to copy into a fork.",
+            "code": "parent_findings_too_large",
+        }
+        assert [campaign["id"] for campaign in h.list_campaigns()] == [pid]
+        assert [path.name for path in h.research_dir().iterdir()] == [pid]
+
+    @pytest.mark.asyncio
+    async def test_fork_copy_io_failure_rolls_back_the_child(self, app, monkeypatch):
+        """Every post-create copy refusal removes the fresh child before replying."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        parent = h.create_campaign(
+            {
+                "question": "Parent report whose copy raises a storage refusal",
+                "sources": ["web"],
+            }
+        )
+        pid = parent["id"]
+        h.update_campaign_status(pid, h.CampaignStatus.STOPPED)
+        monkeypatch.setattr(
+            h,
+            "_copy_parent_findings_for_identities",
+            MagicMock(side_effect=OSError("copy refused")),
+        )
+
+        async with TestClient(TestServer(app)) as client:
+            response = await client.patch(
+                f"/api/apps/auto-research/campaigns/{pid}",
+                json={"action": "fork"},
+            )
+            payload = await response.json()
+
+        assert response.status == 500
+        assert payload == {
+            "error": "Parent findings could not be copied into a fork.",
+            "code": "campaign_fork_failed",
+        }
+        assert [campaign["id"] for campaign in h.list_campaigns()] == [pid]
+        assert [path.name for path in h.research_dir().iterdir()] == [pid]
+
+    @pytest.mark.asyncio
+    async def test_fork_id_collision_never_compensates_preexisting_campaign(
+        self, app, monkeypatch
+    ):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        parent = h.create_campaign(
+            {"question": "Parent for exact allocation collision", "sources": ["web"]}
+        )
+        parent_id = parent["id"]
+        h.update_campaign_status(parent_id, h.CampaignStatus.COMPLETE)
+        child_id = "c0111de1"
+        h.create_campaign(
+            {
+                "question": "Pre-existing campaign must survive a fork collision",
+                "sources": ["web"],
+            },
+            campaign_id=child_id,
+        )
+        existing_dir = h._safe_campaign_dir(child_id)
+        assert existing_dir is not None
+        (existing_dir / "preexisting.bin").write_bytes(b"pre-existing bytes\x00\xff")
+
+        def _row_snapshot() -> dict[str, object]:
+            db = h._get_db()
+            try:
+                row = db.execute(
+                    "SELECT * FROM campaigns WHERE id = ?", (child_id,)
+                ).fetchone()
+                assert row is not None
+                return dict(row)
+            finally:
+                db.close()
+
+        def _tree_snapshot() -> list[tuple[str, bytes | None]]:
+            return [
+                (
+                    str(path.relative_to(existing_dir)),
+                    None if path.is_dir() else path.read_bytes(),
+                )
+                for path in sorted(existing_dir.rglob("*"))
+            ]
+
+        row_before = await asyncio.to_thread(_row_snapshot)
+        tree_before = await asyncio.to_thread(_tree_snapshot)
+        parent_identity = h._campaign_identity(parent_id)
+        assert parent_identity is not None
+        compensate = MagicMock(side_effect=AssertionError("collision must not compensate"))
+        audit = MagicMock()
+        monkeypatch.setattr(h, "_compensate_fork_child", compensate)
+        monkeypatch.setattr(h, "_audit", audit)
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                await h._create_and_seed_fork(
+                    parent_identity,
+                    self._fork_config(parent_id),
+                    child_id,
+                )
+        finally:
+            await asyncio.to_thread(parent_identity.close)
+
+        compensate.assert_not_called()
+        audit.assert_not_called()
+        assert await asyncio.to_thread(_row_snapshot) == row_before
+        assert await asyncio.to_thread(_tree_snapshot) == tree_before
+
+    @pytest.mark.asyncio
+    async def test_post_commit_status_write_failure_compensates_owned_child(
+        self, app, monkeypatch
+    ):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        parent = h.create_campaign(
+            {"question": "Parent for post-commit child failure", "sources": ["web"]}
+        )
+        parent_id = parent["id"]
+        h.update_campaign_status(parent_id, h.CampaignStatus.COMPLETE)
+        parent_identity = h._campaign_identity(parent_id)
+        assert parent_identity is not None
+        child_id = "fa110c01"
+        observed_owned_state: list[tuple[bool, bool]] = []
+        real_write = h._write_campaign_text
+        real_compensate = h._compensate_fork_child
+
+        def _write_then_fail(identity, name: str, text: str) -> None:
+            real_write(identity, name, text)
+            if identity.campaign_id == child_id and name == "status.json":
+                db = h._get_db()
+                try:
+                    row_exists = (
+                        db.execute(
+                            "SELECT 1 FROM campaigns WHERE id = ?", (child_id,)
+                        ).fetchone()
+                        is not None
+                    )
+                finally:
+                    db.close()
+                observed_owned_state.append(
+                    (row_exists, (identity.directory / "status.json").is_file())
+                )
+                raise OSError("post-commit status write failed")
+
+        compensate = MagicMock(side_effect=real_compensate)
+        audit = MagicMock()
+        monkeypatch.setattr(h, "_write_campaign_text", _write_then_fail)
+        monkeypatch.setattr(h, "_compensate_fork_child", compensate)
+        monkeypatch.setattr(h, "_audit", audit)
+        try:
+            with pytest.raises(OSError, match="post-commit status write failed"):
+                await h._create_and_seed_fork(
+                    parent_identity,
+                    self._fork_config(parent_id),
+                    child_id,
+                )
+        finally:
+            await asyncio.to_thread(parent_identity.close)
+
+        assert observed_owned_state == [(True, True)]
+        compensate.assert_called_once()
+        assert h.get_campaign(child_id) is None
+        assert h._safe_campaign_dir(child_id) is None
+        assert not any(
+            call.args[:1] == ("campaign_fork_cleanup_failed",)
+            for call in audit.call_args_list
+        )
+
+    @staticmethod
+    def _fork_config(parent_id: str) -> dict[str, object]:
+        return {
+            "question": "Cancelled fork child question padded long enough",
+            "sources": ["web"],
+            "parent_id": parent_id,
+        }
+
+    @pytest.mark.asyncio
+    async def test_fork_cancellation_during_child_identity_compensates(self, app, monkeypatch):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        parent = h.create_campaign(
+            {"question": "Parent for cancelled identity resolution", "sources": ["web"]}
+        )
+        parent_id = parent["id"]
+        h.update_campaign_status(parent_id, h.CampaignStatus.COMPLETE)
+        parent_identity = h._campaign_identity(parent_id)
+        assert parent_identity is not None
+        child_id = "ca11ce01"
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        real_identity = h._campaign_identity_off_loop
+
+        async def _blocked_identity(campaign_id: str):
+            if campaign_id == child_id:
+                entered.set()
+                await release.wait()
+            return await real_identity(campaign_id)
+
+        monkeypatch.setattr(h, "_campaign_identity_off_loop", _blocked_identity)
+        try:
+            task = asyncio.create_task(
+                h._create_and_seed_fork(
+                    parent_identity,
+                    self._fork_config(parent_id),
+                    child_id,
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 5)
+            assert h.get_campaign(child_id) is not None
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+        finally:
+            parent_identity.close()
+
+        assert h.get_campaign(child_id) is None
+        assert h._safe_campaign_dir(child_id) is None
+
+    @pytest.mark.asyncio
+    async def test_fork_cancellation_during_seed_compensates(self, app, monkeypatch):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        parent = h.create_campaign(
+            {"question": "Parent for cancelled child seeding", "sources": ["web"]}
+        )
+        parent_id = parent["id"]
+        h.update_campaign_status(parent_id, h.CampaignStatus.STOPPED)
+        parent_identity = h._campaign_identity(parent_id)
+        assert parent_identity is not None
+        child_id = "ca11ce02"
+        entered = threading.Event()
+        release = threading.Event()
+        real_copy = h._copy_parent_findings_for_identities
+
+        def _blocked_copy(parent_arg, child_arg) -> None:
+            entered.set()
+            assert release.wait(5), "test never released the seed copy"
+            real_copy(parent_arg, child_arg)
+
+        monkeypatch.setattr(h, "_copy_parent_findings_for_identities", _blocked_copy)
+        try:
+            task = asyncio.create_task(
+                h._create_and_seed_fork(
+                    parent_identity,
+                    self._fork_config(parent_id),
+                    child_id,
+                )
+            )
+            assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 5), 6)
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+        finally:
+            release.set()
+            parent_identity.close()
+
+        assert h.get_campaign(child_id) is None
+        assert h._safe_campaign_dir(child_id) is None
+
+    @pytest.mark.asyncio
+    async def test_fork_cancellation_reports_incomplete_compensation(
+        self, app, monkeypatch, caplog
+    ):
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        parent = h.create_campaign(
+            {"question": "Parent for incomplete cancellation cleanup", "sources": ["web"]}
+        )
+        parent_id = parent["id"]
+        h.update_campaign_status(parent_id, h.CampaignStatus.COMPLETE)
+        parent_identity = h._campaign_identity(parent_id)
+        assert parent_identity is not None
+        child_id = "ca11ce03"
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        cleanup_entered = threading.Event()
+        cleanup_release = threading.Event()
+        audit = MagicMock()
+        real_identity = h._campaign_identity_off_loop
+
+        async def _blocked_identity(campaign_id: str):
+            if campaign_id == child_id:
+                entered.set()
+                await release.wait()
+            return await real_identity(campaign_id)
+
+        def _incomplete_cleanup(_campaign_id: str, identity) -> bool:
+            if identity is not None:
+                identity.close()
+            cleanup_entered.set()
+            assert cleanup_release.wait(5), "test never released fork cleanup"
+            return False
+
+        monkeypatch.setattr(h, "_campaign_identity_off_loop", _blocked_identity)
+        monkeypatch.setattr(h, "_compensate_fork_child", _incomplete_cleanup)
+        monkeypatch.setattr(h, "_audit", audit)
+        try:
+            task = asyncio.create_task(
+                h._create_and_seed_fork(
+                    parent_identity,
+                    self._fork_config(parent_id),
+                    child_id,
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 5)
+            task.cancel()
+            release.set()
+            assert await asyncio.wait_for(asyncio.to_thread(cleanup_entered.wait, 5), 6)
+            task.cancel()
+            cleanup_release.set()
+            with caplog.at_level(logging.ERROR, logger=h.__name__):
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 5)
+        finally:
+            cleanup_release.set()
+            parent_identity.close()
+
+        assert h.get_campaign(child_id) is not None
+        assert h._safe_campaign_dir(child_id) is not None
+        audit.assert_any_call("campaign_fork_cleanup_failed", child_id)
+        assert "cleanup incomplete after CancelledError" in caplog.text
+        assert h.delete_campaign(child_id)["deleted"] is True
+
     def test_fork_name_helper(self):
         from kiro_crew.apps.builtins.auto_research.handlers import _fork_name
 
@@ -3257,14 +4583,21 @@ class TestForkAndGrillTreeHTTP:
         # Simulate a malformed tree mixing a dict node with a bare string.
         d = h._safe_campaign_dir(cid)
         assert d is not None
-        (d / "grill_tree.json").write_text(
-            json.dumps([{"id": "n1", "text": "ok"}, "leaked AKIAIOSFODNN7EXAMPLE here"])
+        payload = json.dumps(
+            [{"id": "n1", "text": "ok — research"}, "leaked AKIAIOSFODNN7EXAMPLE here"],
+            ensure_ascii=False,
+        )
+        await asyncio.to_thread(
+            (d / "grill_tree.json").write_text,
+            payload,
+            encoding="utf-8",
         )
         async with TestClient(TestServer(app)) as c:
             r = await c.get(f"/api/apps/auto-research/campaigns/{cid}/grill-tree")
             assert r.status == 200
-            body = await r.text()
-        assert "AKIAIOSFODNN7EXAMPLE" not in body
+            body = await r.json()
+        assert body["tree"][0]["text"] == "ok — research"
+        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(body)
 
     @pytest.mark.asyncio
     async def test_grill_tree_redacts_nested_list_elements(self, app):
@@ -3715,9 +5048,42 @@ class TestExecutionModeAndBudget:
         cols = {r["name"] for r in db.execute("PRAGMA table_info(campaigns)")}
         db.close()
         assert {
-            "execution_mode", "max_subquestions_per_round",
-            "depth_decay", "reserve_fraction",
+            "execution_mode",
+            "max_subquestions_per_round",
+            "depth_decay",
+            "reserve_fraction",
+            "run_finding_snapshot",
         } <= cols
+
+    def test_snapshot_migration_leaves_legacy_count_untrusted(self, _isolate: Path):
+        """A prerelease count column cannot be converted into file identities."""
+        db_path = _isolate / "test.db"
+        db = sqlite3.connect(db_path)
+        db.execute("""CREATE TABLE campaigns (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, question TEXT NOT NULL,
+            sub_questions TEXT NOT NULL DEFAULT '[]', sources TEXT NOT NULL DEFAULT '[]',
+            max_cycles INTEGER NOT NULL DEFAULT 30, idle_secs INTEGER NOT NULL DEFAULT 120,
+            status TEXT NOT NULL DEFAULT 'ready',
+            created_at REAL NOT NULL, started_at REAL, completed_at REAL,
+            total_cycles INTEGER NOT NULL DEFAULT 0, error_message TEXT,
+            success_criteria TEXT, auto_approve INTEGER NOT NULL DEFAULT 0,
+            run_finding_baseline INTEGER NOT NULL DEFAULT -1)""")
+        db.execute(
+            "INSERT INTO campaigns (id, name, question, created_at, "
+            "run_finding_baseline) VALUES (?, ?, ?, ?, ?)",
+            ("a1b2c3d4", "legacy", "A sufficiently long legacy question", 1.0, 3),
+        )
+        db.commit()
+        db.close()
+
+        migrated = _get_db()
+        row = migrated.execute(
+            "SELECT run_finding_baseline, run_finding_snapshot FROM campaigns "
+            "WHERE id = 'a1b2c3d4'"
+        ).fetchone()
+        migrated.close()
+        assert row["run_finding_baseline"] == 3
+        assert row["run_finding_snapshot"] is None
 
     def test_defaults_applied(self):
         r = create_campaign(self._base())

@@ -147,6 +147,25 @@ async def test_update_audit_failure_does_not_break_the_denial(broken_sel: None) 
 
 
 @pytest.mark.asyncio
+async def test_update_translates_a_revival_conflict_to_409(audits: list[dict]) -> None:
+    message = (
+        "Goal cannot restart because it reached its runtime budget. "
+        "Clear stopped goal, then start a new goal."
+    )
+    svc = RecordingSvc(update_error=MonitorUpdateConflict(message))
+
+    loop, error, status = await authorize_and_update_nudge(
+        svc=svc,
+        loop_id="l1",
+        active=True,
+        source="dashboard",
+    )
+
+    assert loop is None and status == 409 and error == message
+    assert [a["outcome"] for a in audits] == ["invoked", "denied"]
+
+
+@pytest.mark.asyncio
 async def test_update_audits_then_reraises_a_service_failure(audits: list[dict]) -> None:
     """``svc.update`` blowing up must leave an ``error`` event behind before the
     exception propagates — a silent failure would lose the security record."""

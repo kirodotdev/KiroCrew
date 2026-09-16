@@ -111,18 +111,6 @@ def _body(resp: web.Response) -> Any:
     return json.loads(resp.text or "")
 
 
-def _spy(monkeypatch: pytest.MonkeyPatch, method: str, target: Path, sink: list[str]) -> None:
-    """Record the thread name of a real ``Path`` call against *target*."""
-    original = getattr(Path, method)
-
-    def _wrapper(self: Path, *args: object, **kwargs: object) -> object:
-        if self == target:
-            sink.append(threading.current_thread().name)
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, method, _wrapper)
-
-
 # --- 1. static ratchet -------------------------------------------------------
 
 
@@ -198,7 +186,13 @@ class TestGrillTreeReadsOffLoop:
         tree_path = d / "grill_tree.json"
         tree_path.write_text(json.dumps([{"text": "why?"}]))
         reads: list[str] = []
-        _spy(monkeypatch, "read_text", tree_path, reads)
+        real_reader = h._read_campaign_file_bytes
+
+        def _read(*args: Any, **kwargs: Any) -> bytes | None:
+            reads.append(threading.current_thread().name)
+            return real_reader(*args, **kwargs)
+
+        monkeypatch.setattr(h, "_read_campaign_file_bytes", _read)
 
         resp = await h._handle_grill_tree(_mk("x/grill-tree", app=_app(), match={"id": cid}))
 
@@ -249,8 +243,19 @@ class TestKnowledgeExportIoOffLoop:
         sanitized = d / "findings_for_knowledge.md"
         reads: list[str] = []
         writes: list[str] = []
-        _spy(monkeypatch, "read_text", findings, reads)
-        _spy(monkeypatch, "write_text", sanitized, writes)
+        real_reader = h._read_campaign_file_bytes
+        real_writer = h._write_campaign_text
+
+        def _read(*args: Any, **kwargs: Any) -> bytes | None:
+            reads.append(threading.current_thread().name)
+            return real_reader(*args, **kwargs)
+
+        def _write(*args: Any, **kwargs: Any) -> None:
+            writes.append(threading.current_thread().name)
+            real_writer(*args, **kwargs)
+
+        monkeypatch.setattr(h, "_read_campaign_file_bytes", _read)
+        monkeypatch.setattr(h, "_write_campaign_text", _write)
         app = _app(state=self._state(), knowledge_pipeline=MagicMock(ingest=AsyncMock()))
 
         await h._handle_to_knowledge(_mk("x/to-knowledge", app=app, match={"id": cid}))

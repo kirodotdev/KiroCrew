@@ -22,11 +22,14 @@ export interface AutoNudgeLoop {
    *  Already serialized by the backend's `asdict(loop)` — the field simply
    *  was not surfaced here before (#6482). */
   next_due_ts: number
+  /** Backend-authoritative runtime check. The server owns the persisted anchor,
+   *  avoiding client/server clock skew in restart decisions. */
+  runtime_budget_spent: boolean
   /** Why the loop last went inactive: '' while active or never stopped,
    *  otherwise one of the service's terminal codes (`cycle_cap`,
-   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`). Only
-   *  the REST list carries it; the websocket frame for a plain loop does not,
-   *  so a consumer merging frames over a fetched record must keep it. */
+   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`). Both
+   *  REST and websocket projections carry it so an event cannot erase the
+   *  restart decision made from the fetched record. */
   stopped_reason?: string
   /** Short stand-in for `message` in the visible transcript row; '' = none. */
   banner?: string

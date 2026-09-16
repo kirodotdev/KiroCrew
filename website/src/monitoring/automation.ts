@@ -97,6 +97,7 @@ export interface LegacyGoalLoop {
   lastFireAt: number
   nextDueAt?: number
   maxRuntimeSecs?: number
+  runtimeBudgetSpent: boolean
   stoppedReason: string
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
    *  time; '' when the loop was armed with none. Carried by the REST reads
@@ -312,6 +313,7 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       lastFireAt: finite(loop.last_fire_ts),
       nextDueAt: finite(loop.next_due_ts),
       maxRuntimeSecs: count(loop.max_runtime_secs),
+      runtimeBudgetSpent: loop.runtime_budget_spent === true,
       stoppedReason: text(loop.stopped_reason),
       ...(typeof loop.stop_sentinel_path === 'string'
         ? { stopSentinelPath: loop.stop_sentinel_path }
