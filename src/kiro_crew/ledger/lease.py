@@ -22,7 +22,17 @@ The path is the key rather than ``(kind, unit_id)`` because the data home is
 repointable: the same unit id under two homes is two files, and the kernel locks
 a file. Both the acquire and the release run under one module lock, for the same
 reason the count exists -- two threads reaching for one unit must share a
-descriptor rather than race two of them and have one refuse the other.
+descriptor rather than race two of them and have one refuse the other. That lock
+is REENTRANT, and has to be: a release is bound to a handle's lifetime through
+``weakref.finalize``, and the cyclic collector runs finalizers on whatever thread
+happens to allocate when its threshold trips -- including a thread that is inside
+``acquire`` with this lock held. A plain lock there is a self-deadlock the caller
+can never see coming, since nothing in its own code took the lock twice; it
+surfaced as a whole test worker hanging in ``_take`` until the timeout killed it.
+Reentry is safe because the two paths never touch one key at the same time: a
+key with a live reference is found in the table before ``_take`` runs, so a
+finalizer firing during ``_take`` always releases a DIFFERENT key, and one firing
+during ``release`` finds its own key already gone.
 
 After locking, the held inode is compared with the file now at the lease path.
 A POSIX lock names an inode, so a lock on a path that was unlinked and recreated
@@ -52,7 +62,9 @@ LEASE_FILE = ".lease"
 #: when the lease file is replaced under us, which nothing here does.
 _MAX_ATTEMPTS = 3
 
-_lock = threading.Lock()
+#: Reentrant -- see the module docstring: a ``weakref.finalize`` release can run
+#: on the thread that holds this lock, from inside ``acquire``.
+_lock = threading.RLock()
 
 
 @dataclass
@@ -147,6 +159,11 @@ def release(key: str) -> None:
     Closing the descriptor is what releases the lock, and it happens under the
     module lock: a successor acquire in this process must not find the old
     descriptor still open and read its own predecessor as another owner.
+
+    Also the body of a ``weakref.finalize`` callback, so it may run on ANY thread
+    at ANY allocation -- including one that is already inside this module with
+    the lock held. The lock is reentrant for exactly that; see the module
+    docstring for why the reentry cannot observe a half-updated key.
     """
     with _lock:
         held = _held.get(key)

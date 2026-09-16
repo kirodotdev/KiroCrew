@@ -22,6 +22,7 @@ import os
 import select
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -202,6 +203,85 @@ def test_two_handles_in_one_process_share_one_ownership():
     del second
     gc.collect()
     assert _Foreign().can_take(), "ownership outlived every handle that held it"
+
+
+def test_a_release_fired_by_the_collector_inside_an_acquire_does_not_deadlock(monkeypatch):
+    """A finalizer's release may run on the thread that is inside ``acquire``.
+
+    Ownership is released by ``weakref.finalize`` when a handle is dropped. A
+    handle that is only reachable through a reference cycle is freed by the
+    cyclic collector, which runs on whatever thread trips the allocation
+    threshold -- including one that is inside ``acquire`` for ANOTHER unit, with
+    the module lock held. With a non-reentrant lock that release blocks on the
+    lock its own thread holds, and the process hangs there until something kills
+    it. CI saw exactly that: a Windows shard's worker stuck in ``_take`` with the
+    finalizer's ``release`` at the top of the stack, reported as a crashed worker.
+
+    The collector is driven by hand at the one point that matters -- inside
+    ``_take``, under the lock -- and automatic collection is off for the window,
+    so the interleaving is the test's, not the allocator's. The handle whose
+    release fires is a real ``Ledger`` that claimed ownership through an append,
+    parked in a cycle so only the collector can free it.
+
+    Mutation guard: making the lock a plain ``threading.Lock`` hangs the acquire
+    below, and the bounded wait reports it.
+    """
+    from kiro_crew.ledger import lease
+
+    class Cycle:
+        pass
+
+    collected_key = str(lg.ledger_dir(lg.KIND_SESSION, "collected-owner") / LEASE_FILE)
+    owner = _session("collected-owner")
+    owner.append("turn/started", {"turn": 1, "actor": "user"}, src="acp")
+    assert collected_key in lease._held
+    cycle = Cycle()
+    cycle.handle = owner
+    cycle.me = cycle
+    del owner, cycle
+
+    was_enabled = gc.isenabled()
+    gc.disable()  # nothing frees the cycle before the point chosen below
+    real_take = lease._take
+    released_under_lock = threading.Event()
+
+    def take_with_collection(path):
+        gc.collect()  # frees the cycle here, while acquire() holds lease._lock
+        if collected_key not in lease._held:
+            released_under_lock.set()
+        return real_take(path)
+
+    monkeypatch.setattr(lease, "_take", take_with_collection)
+
+    kept: "list[Ledger]" = []  # keeps the other unit's handle, and so its ownership
+    done = threading.Event()
+
+    def other_owner():
+        handle = _session("other-unit")
+        handle.append("turn/started", {"turn": 1, "actor": "user"}, src="acp")
+        kept.append(handle)
+        done.set()
+
+    worker = threading.Thread(target=other_owner, name="lease-acquirer", daemon=True)
+    worker.start()
+    try:
+        completed = done.wait(10.0)
+        if not completed:
+            # Unstick the worker so the rest of this process does not inherit the
+            # deadlock: a plain Lock can be released from any thread, and once it
+            # is, the finalizer finishes and the acquire runs to completion.
+            with contextlib.suppress(RuntimeError):
+                lease._lock.release()
+            worker.join(5.0)
+    finally:
+        if was_enabled:
+            gc.enable()
+    assert (
+        released_under_lock.is_set()
+    ), "the release never fired inside acquire; nothing was proven"
+    assert completed, "acquire deadlocked on a release the collector fired on its own thread"
+    assert _Foreign("collected-owner").can_take(), "the collected handle kept its ownership"
+    assert not _Foreign("other-unit").can_take(), "the acquire that completed owns nothing"
 
 
 def test_a_repair_is_refused_while_another_owner_holds_the_log():
