@@ -11,6 +11,7 @@ import type { BaseCodeOptions, FileContents, SupportedLanguages } from '@pierre/
 import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, setCustomExtension } from '@pierre/diffs'
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
 import { WorkerPoolManager, type WorkerRequest, type WorkerResponse } from '@pierre/diffs/worker'
+import highlightWorkerUrl from '@pierre/diffs/worker/worker-portable.js?worker&url'
 import { useIsDark } from '../hooks/useIsDark'
 import { usePlainDiff } from '../hooks/usePlainDiff'
 import ErrorNotice from '../components/ErrorNotice'
@@ -243,9 +244,12 @@ export function normalizePatchHunks(patch: string): string {
  *  active request to a worker, but keying timers by request ID also makes late
  *  responses harmless and keeps the protocol contract explicit. */
 export function createMonitoredWorker(reportFailure: (reason?: unknown) => void): Worker {
-  const worker = new Worker(new URL('@pierre/diffs/worker/worker-portable.js', import.meta.url), {
-    type: 'module',
-  })
+  // HTTP caches retain the worker response's old CSP along with its bytes.
+  // The library bundle did not change when WASM was enabled, so its hash alone
+  // cannot retire pre-WASM headers. Keep the revision stable across retries.
+  const url = new URL(highlightWorkerUrl, import.meta.url)
+  url.searchParams.set('csp', 'wasm-v1')
+  const worker = new Worker(url, { type: 'module' })
   const watchdogs = new Map<string, ReturnType<typeof setTimeout>>()
   const clearWatchdog = (id: string) => {
     const timer = watchdogs.get(id)
