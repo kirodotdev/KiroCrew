@@ -1003,7 +1003,6 @@ class IngestionPipeline:
                 # Single-file/remote source: replace all items for this source
                 resolve_old_group = True
             props: dict[str, object] = {}
-            existing: dict | None = {"id": source_id}  # sentinel — source already exists
             src_row = await asyncio.to_thread(
                 lambda: self.store.db.execute(
                     "SELECT uri, properties FROM sources WHERE id = ?", (source_id,)).fetchone())
@@ -1068,7 +1067,7 @@ class IngestionPipeline:
                 job_id=job_id, source_id=source_id, props=props, meta=meta,
                 ext=ext, text=text, uri=uri, content_hash=content_hash,
                 display_name=display_name, namespace=namespace,
-                existing=existing, old_item_ids=old_item_ids,
+                old_item_ids=old_item_ids,
                 _old_item_ids=_old_item_ids, path=path, on_progress=on_progress,
                 embed_priority=embed_priority, on_committed=on_committed,
                 budget_token=budget_token,
@@ -1096,7 +1095,7 @@ class IngestionPipeline:
 
     async def _ingest_file_body(self, *, job_id, source_id, props, meta, ext, text,
                                 uri, content_hash, display_name, namespace,
-                                existing, old_item_ids, _old_item_ids, path,
+                                old_item_ids, _old_item_ids, path,
                                 on_progress, embed_priority,
                                 on_committed=None, budget_token=None) -> str | None:
         """Chunk/extract/store/finalize — split out so ingest_file can mark the
@@ -1229,10 +1228,16 @@ class IngestionPipeline:
                 self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
                 if on_committed is not None:
                     on_committed(list(created_item_ids))
-                if existing:
-                    self.store.update_source(source_id, properties=json.dumps({**props, 'content_hash': content_hash, **meta}))
-                self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
-                self.store.update_source(source_id, last_synced=now)
+                # A key DELTA onto the row's current blob, in one write-locked
+                # take with the status and timestamp: the sync scheduler's
+                # outcome writers land on this same row from their own worker
+                # threads, and a whole-blob rewrite from the snapshot ``props``
+                # taken at ingest start would resurrect that snapshot over
+                # whatever they committed since. revise_source_properties
+                # documents the serialization.
+                self.store.merge_source_properties(
+                    source_id, set_keys={'content_hash': content_hash, **meta},
+                    sync_status='synced', last_synced=now)
             elif processed < total:
                 # Partial failure: remove only items created during THIS ingestion
                 # call, taken from the write itself -- a before/after re-read of

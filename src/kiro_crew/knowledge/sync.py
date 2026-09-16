@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 from datetime import datetime
 
 from .connectors.base import BaseConnector
@@ -21,17 +20,6 @@ class SyncScheduler:
         self.store = store
         self.pipeline = pipeline
         self.connectors = connectors
-        # Serialises recording a sync OUTCOME -- success reset or failure
-        # increment -- which is a read-modify-write of the source row. On the
-        # loop each pair was atomic for free (no await between the read and the
-        # write); on worker threads the interleavings corrupt the counter both
-        # ways: two failures both read N and write N+1 (a dead source never
-        # reaches MAX_FAILURES), and a failure that reads before a success's
-        # reset writes its stale increment -- or a premature 'error' -- after it
-        # (a healthy source is quiesced with no automatic recovery). One lock
-        # over both writers restores the atomicity without touching the store;
-        # it only ever blocks a worker thread, never the loop.
-        self._sync_outcome_lock = threading.Lock()
 
     def _get_source(self, source_id: str) -> dict | None:
         row = self.store.db.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
@@ -108,52 +96,44 @@ class SyncScheduler:
 
     def _record_success(self, source_id: str, meta: dict | None, *,
                         completed: bool):
-        # Runs on a worker thread (sync_source offloads it). The row is re-read
-        # UNDER the lock rather than reusing the pre-sync snapshot, so the reset
-        # lands on the row's current blob and cannot resurrect a stale one. A
+        # Runs on a worker thread (sync_source offloads it). Recording an
+        # OUTCOME -- this reset, or the failure increment below -- is a
+        # read-modify-write of the source row, and other writers land on the
+        # same row from their own worker threads: the other outcome writer, and
+        # the ingest finalize's content-hash stamp. store.revise_source_properties
+        # takes the write lock BEFORE reading and applies the revision to the
+        # row's CURRENT blob, so the reset can neither resurrect a stale blob
+        # nor be lost under one, and two increments cannot both read N. A
         # COMPLETED sync is current information: writing sync_status='synced'
         # clears an 'error' an overlapping failure stamped, so this outcome
         # supersedes it instead of leaving the row quiesced. A partial, failed
         # or duplicate job keeps its hands off the column -- the ingest's own
         # finalize already stamped the truth there.
-        #
-        # Residual, deliberately out of scope here: ingestion's finalize hop
-        # rewrites the properties blob from a snapshot taken at ingest start on
-        # its own worker thread, outside this lock. That writer pre-dates this
-        # change and its serialization is tracked as a follow-up.
-        with self._sync_outcome_lock:
-            source = self._get_source(source_id)
-            if not source:
-                return
-            props = json.loads(source.get("properties") or "{}")
+        def revise(props: dict) -> str | None:
             props["consecutive_failures"] = 0
             if meta:
                 props["metadata"] = meta
-            updates: dict = {
-                "last_synced": datetime.now().isoformat(), "properties": props}
-            if completed:
-                updates["sync_status"] = "synced"
-            self.store.update_source(source_id, **updates)
+            return "synced" if completed else None
+
+        self.store.revise_source_properties(
+            source_id, revise, last_synced=datetime.now().isoformat())
 
     def _record_failure(self, source_id: str):
-        # Runs on a worker thread (sync_source offloads it); the shared outcome
-        # lock keeps the counter read and its write one atomic unit across
-        # threads, on this path and the success path alike.
-        with self._sync_outcome_lock:
-            source = self._get_source(source_id)
-            if not source:
-                return
-            props = json.loads(source.get("properties") or "{}")
+        # Runs on a worker thread (sync_source offloads it); the store's
+        # write-locked take keeps the counter read and its write one atomic
+        # unit across threads, on this path and the success path alike.
+        def revise(props: dict) -> str | None:
             failures = props.get("consecutive_failures", 0) + 1
             props["consecutive_failures"] = failures
-            updates = {"properties": props}
-            if failures >= MAX_FAILURES:
-                # The column is the single source of truth: the dashboard, the
-                # watcher's pre-scan skip and sync_all below all read it.
-                updates["sync_status"] = "error"
-                logger.warning(
-                    "Source %s reached %d failures, marking as error", source_id, failures)
-            self.store.update_source(source_id, **updates)
+            if failures < MAX_FAILURES:
+                return None
+            # The column is the single source of truth: the dashboard, the
+            # watcher's pre-scan skip and sync_all below all read it.
+            logger.warning(
+                "Source %s reached %d failures, marking as error", source_id, failures)
+            return "error"
+
+        self.store.revise_source_properties(source_id, revise)
 
     async def sync_all(self) -> list[dict]:
         # Off the loop: this is a background coroutine and a contended sqlite
