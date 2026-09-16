@@ -18,7 +18,7 @@ import re
 import shlex
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -384,6 +384,19 @@ class Channel:
         self._save()
         return True
 
+    def _evict_oldest(self) -> None:
+        """Drop the oldest message and clear the stored thread pair on every reply to it.
+
+        A reply left pointing at an evicted parent reaches neither dashboard view: the
+        transcript renders only top-level messages, and the thread panel needs the parent.
+        """
+        removed = self.messages.pop(0)
+        self._msg_index.pop(removed.id, None)
+        for retained in self.messages:
+            if retained.thread_id == removed.id:
+                retained.thread_id = None
+                retained.reply_to = None
+
     async def post(
         self,
         from_id: str,
@@ -408,6 +421,8 @@ class Channel:
             if parent:
                 reply_to = parent.from_id
                 parent.reply_count += 1
+            else:
+                thread_id = None
 
         msg = ChannelMessage(
             id=uuid.uuid4().hex[:8],
@@ -421,13 +436,24 @@ class Channel:
         )
         self.messages.append(msg)
         self._msg_index[msg.id] = msg
+        orphaned_reply_to: str | None = None
         if len(self.messages) > _MAX_MESSAGES:
-            removed = self.messages.pop(0)
-            self._msg_index.pop(removed.id, None)
+            self._evict_oldest()
+            if thread_id is not None and msg.thread_id is None:
+                orphaned_reply_to = reply_to
+            # This append's own parent can be the message just evicted, so re-read the
+            # pair: routing below must follow what was persisted, not the pre-eviction locals.
+            thread_id = msg.thread_id
+            reply_to = msg.reply_to
 
         # Human message resets A2A exchange budget — agents get fresh rounds
         if from_id == "human":
             self.exchange_counts.clear()
+
+        # Inboxes receive a snapshot. A later append's rolloff clears the stored pair in
+        # place, and a consumer still holding the live object would root its turn on fields
+        # that changed after it was queued.
+        queued = replace(msg)
 
         for agent in self.members.values():
             if agent.id == from_id or agent.state in ("done", "failed"):
@@ -439,7 +465,14 @@ class Channel:
 
             # Thread routing: default listener = parent sender
             if thread_id and reply_to == agent.id and not mentions:
-                await agent.inbox.put(msg)
+                await agent.inbox.put(queued)
+                continue
+
+            # This append's own rolloff evicted the parent, so no thread branch matches an
+            # agent's reply. It still belongs to the sender it was answering; a human's
+            # falls through to the top-level orchestrator branch below instead.
+            if not is_human and orphaned_reply_to == agent.id and not mentions:
+                await agent.inbox.put(queued)
                 continue
 
             # Thread fallback: if reply_to doesn't match any agent (e.g. system message),
@@ -451,12 +484,12 @@ class Channel:
                 and agent.is_orchestrator
                 and reply_to not in self.members
             ):
-                await agent.inbox.put(msg)
+                await agent.inbox.put(queued)
                 continue
 
             # Orchestrator gets all top-level human messages (no @mention needed)
             if is_human and not mentions and not thread_id and agent.is_orchestrator:
-                await agent.inbox.put(msg)
+                await agent.inbox.put(queued)
                 continue
 
             # Everyone else: strict @mention only
@@ -476,7 +509,7 @@ class Channel:
                     continue
                 self.exchange_counts[pair] = self.exchange_counts.get(pair, 0) + 1
 
-            await agent.inbox.put(msg)
+            await agent.inbox.put(queued)
 
         # Dead agent bounce
         for mid in mentions:
@@ -493,8 +526,7 @@ class Channel:
                 self.messages.append(bounce)
                 self._msg_index[bounce.id] = bounce
                 if len(self.messages) > _MAX_MESSAGES:
-                    removed = self.messages.pop(0)
-                    self._msg_index.pop(removed.id, None)
+                    self._evict_oldest()
                 self._broadcast(
                     "channel_message", {"channel_id": self.id, "message": bounce.to_dict()}
                 )

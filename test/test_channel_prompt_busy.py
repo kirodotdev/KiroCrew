@@ -19,14 +19,17 @@ otherwise re-acquire the same wedged session out of the registry.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
+import inspect
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew import channel as channel_mod
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
 from kiro_crew.channel import (
     Channel,
@@ -38,6 +41,7 @@ from kiro_crew.channel import (
 )
 from kiro_crew.llm_helpers import is_prompt_busy
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.session import SessionManager
 
 
 def _make_agent():
@@ -532,4 +536,30 @@ async def test_a_replacement_registered_under_the_same_key_is_not_streamed_throu
     assert not stale_seen, (
         "the message was streamed through the provider cached at spawn, which the registry has "
         f"already replaced; saw {stale_seen!r}"
+    )
+
+
+# ── the session-manager contract the fake above cannot vouch for ──
+
+
+def test_every_session_manager_call_in_channel_exists_on_the_real_manager():
+    """`run_channel_agent` takes `sessions: Any`, so nothing else catches a missing method.
+
+    mypy cannot check it, and the fake in this file answers whatever it is asked -- so a call
+    to a method `SessionManager` does not define passes every channel test and raises
+    `AttributeError` on the first real spawn, before the member ever reaches "listening".
+    """
+    calls = {
+        node.func.attr
+        for node in ast.walk(ast.parse(inspect.getsource(channel_mod)))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "sessions"
+    }
+    assert calls, "no sessions.* calls were found, so this guard is measuring nothing"
+    missing = sorted(name for name in calls if not hasattr(SessionManager, name))
+    assert not missing, (
+        f"channel.py calls SessionManager method(s) that do not exist: {missing}. "
+        "Every channel-agent spawn raises AttributeError."
     )
