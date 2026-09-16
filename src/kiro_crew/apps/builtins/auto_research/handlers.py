@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html as html_mod
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import sqlite3
@@ -15,10 +17,14 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 from aiohttp import web
 
@@ -34,19 +40,35 @@ from kiro_crew.apps.builtins.auto_research.workflow_template import (
     build_workflow_args,
 )
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.autonudge import (
     AUTONUDGE_STOP_REASON,
 )
 from kiro_crew.autonudge import get_instance as _autonudge_instance
+from kiro_crew.autonudge import (
+    runtime_budget_exceeded,
+)
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
+)
+from kiro_crew.hooks import (
+    FileTooLargeError,
+    safe_read_file_bytes_nolink,
+    validate_file_path,
 )
 from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
 from kiro_crew.knowledge.llm_pool import LLMPool
 from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.on_loop_db import OnLoopDBGuard
-from kiro_crew.platform_compat import is_link_or_junction, unlink_link_or_junction
+from kiro_crew.pinned_fs import dir_flags, fd_real_path, pin_parent
+from kiro_crew.platform_compat import (
+    is_link_or_junction,
+    pin_directory,
+    pin_directory_for_removal,
+    remove_pinned_directory,
+    unlink_link_or_junction,
+)
 
 try:
     from kiro_crew.artifacts import ArtifactNotFoundError, ArtifactStore
@@ -190,15 +212,462 @@ def _validate_campaign_id(campaign_id: str) -> bool:
     return is_campaign_id(campaign_id)
 
 
-def _safe_campaign_dir(campaign_id: str) -> Path | None:
-    """Return campaign dir only if it resolves within the research dir."""
+_CAMPAIGN_DIRECTORY_IDENTITIES: dict[tuple[int, int, str], tuple[int, int]] = {}
+_CAMPAIGN_DIRECTORY_HANDLES: dict[tuple[int, int, str], tuple[int, int]] = {}
+_CAMPAIGN_DIRECTORY_IDENTITIES_LOCK = threading.Lock()
+
+
+def _release_campaign_owner(key: tuple[int, int, str] | None) -> int:
+    """Release one Windows identity reference and return the last owner fd."""
+    if key is None:
+        return -1
+    with _CAMPAIGN_DIRECTORY_IDENTITIES_LOCK:
+        held = _CAMPAIGN_DIRECTORY_HANDLES.get(key)
+        if held is None:
+            return -1
+        fd, references = held
+        if references > 1:
+            _CAMPAIGN_DIRECTORY_HANDLES[key] = (fd, references - 1)
+            return -1
+        _CAMPAIGN_DIRECTORY_HANDLES.pop(key, None)
+        return fd
+
+
+def _close_fds(*fds: int) -> None:
+    for fd in fds:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _close_fds_from_finalizer(*fds: int) -> None:
+    """Close leaked descriptors without doing close work on a running loop."""
+    owned = tuple(fd for fd in fds if fd >= 0)
+    if not owned:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _close_fds(*owned)
+        return
+    try:
+        loop.run_in_executor(None, _close_fds, *owned)
+    except RuntimeError:
+        # A running loop can have its default executor shut down during teardown.
+        # Keep leak safety without falling back to a synchronous close on that loop.
+        threading.Thread(
+            target=_close_fds,
+            args=owned,
+            name="auto-research-fd-finalizer",
+            daemon=False,
+        ).start()
+
+
+def _descriptor_is_direct_child(parent_fd: int, child_fd: int) -> bool:
+    if os.name == "posix":
+        actual_parent = os.open("..", dir_flags(), dir_fd=child_fd)
+        try:
+            expected = os.fstat(parent_fd)
+            actual = os.fstat(actual_parent)
+            return (expected.st_dev, expected.st_ino) == (actual.st_dev, actual.st_ino)
+        finally:
+            os.close(actual_parent)
+    parent_path = fd_real_path(parent_fd)
+    child_path = fd_real_path(child_fd)
+    return bool(
+        parent_path
+        and child_path
+        and os.path.normcase(os.path.normpath(os.path.dirname(child_path)))
+        == os.path.normcase(os.path.normpath(parent_path))
+    )
+
+
+@dataclass
+class _CampaignIdentity:
+    """Pinned root + campaign handles that remain authoritative after awaits."""
+
+    campaign_id: str
+    root: Path
+    directory: Path
+    slot_key: str
+    device: int | None
+    inode: int | None
+    _root_fd: int
+    _campaign_fd: int
+    _owner_key: tuple[int, int, str] | None = None
+
+    def _take_fds(self) -> tuple[int, ...]:
+        owner_fd = _release_campaign_owner(self._owner_key)
+        self._owner_key = None
+        fds = (self._campaign_fd, self._root_fd, owner_fd)
+        self._campaign_fd = self._root_fd = -1
+        return fds
+
+    def close(self) -> None:
+        """Close deterministically; callers invoke this from blocking contexts."""
+        _close_fds(*self._take_fds())
+
+    def __del__(self) -> None:
+        _close_fds_from_finalizer(*self._take_fds())
+
+    def duplicate_root(self) -> int:
+        if self._root_fd < 0:
+            raise FileNotFoundError(self.root)
+        return os.dup(self._root_fd)
+
+    def _validate_live_root(self) -> None:
+        """Require the currently named research root to retain this identity."""
+        current = research_dir().resolve()
+        current_fd = -1
+        try:
+            current_fd = (
+                pin_parent(str(current), what="campaign root", refusal=PermissionError)
+                if os.name == "posix"
+                else pin_directory(current)
+            )
+            captured_stat = os.fstat(self._root_fd)
+            current_stat = os.fstat(current_fd)
+            if (current_stat.st_dev, current_stat.st_ino) != (
+                captured_stat.st_dev,
+                captured_stat.st_ino,
+            ):
+                raise PermissionError("research root identity changed")
+        finally:
+            _close_fds(current_fd)
+
+    @contextmanager
+    def pin(self, *, revalidate_on_exit: bool = True) -> Iterator[int]:
+        if self._campaign_fd < 0:
+            raise FileNotFoundError(self.directory)
+        root_fd = self.duplicate_root()
+        campaign_fd = os.dup(self._campaign_fd)
+        bound_fd = -1
+
+        def _open_and_validate_binding() -> int:
+            nonlocal bound_fd
+            self._validate_live_root()
+            if os.name == "posix":
+                bound_fd = os.open(self.campaign_id, dir_flags(), dir_fd=root_fd)
+                bound = os.fstat(bound_fd)
+            else:
+                # The removal-capable campaign handle omits FILE_SHARE_DELETE,
+                # so its name and every ancestor stay fixed while it lives. Its
+                # descriptor identity plus the direct-child and live-root checks
+                # below are authoritative without a second by-name open.
+                bound = os.fstat(campaign_fd)
+            current = os.fstat(campaign_fd)
+            if (bound.st_dev, bound.st_ino) != (self.device, self.inode):
+                raise PermissionError("campaign name no longer owns its captured inode")
+            if (current.st_dev, current.st_ino) != (self.device, self.inode):
+                raise PermissionError("campaign directory identity changed")
+            if not _descriptor_is_direct_child(root_fd, campaign_fd):
+                raise PermissionError("campaign directory left its pinned root")
+            self._validate_live_root()
+            return bound_fd
+
+        try:
+            _open_and_validate_binding()
+            yield campaign_fd
+            if revalidate_on_exit:
+                _close_fds(bound_fd)
+                bound_fd = -1
+                _open_and_validate_binding()
+        finally:
+            _close_fds(bound_fd, campaign_fd, root_fd)
+
+
+def _campaign_identity(campaign_id: str) -> _CampaignIdentity | None:
+    """Open root/campaign once; later operations duplicate only those handles."""
     if not _validate_campaign_id(campaign_id):
         return None
-    root = research_dir()
-    d = (root / campaign_id).resolve()
-    if not d.is_relative_to(root.resolve()):
+    root = research_dir().resolve()
+    directory = root / campaign_id
+    root_fd = campaign_fd = -1
+    device: int | None = None
+    inode: int | None = None
+    owner_key: tuple[int, int, str] | None = None
+    try:
+        try:
+            root_fd = (
+                pin_parent(str(root), what="campaign root", refusal=PermissionError)
+                if os.name == "posix"
+                else pin_directory(root)
+            )
+        except FileNotFoundError:
+            pass
+        if root_fd >= 0:
+            root_stat = os.fstat(root_fd)
+            key = (root_stat.st_dev, root_stat.st_ino, campaign_id)
+            try:
+                if os.name == "posix":
+                    campaign_fd = os.open(campaign_id, dir_flags(), dir_fd=root_fd)
+                else:
+                    with _CAMPAIGN_DIRECTORY_IDENTITIES_LOCK:
+                        held = _CAMPAIGN_DIRECTORY_HANDLES.get(key)
+                        if held is not None:
+                            owner_fd, references = held
+                            campaign_fd = os.dup(owner_fd)
+                            _CAMPAIGN_DIRECTORY_HANDLES[key] = (owner_fd, references + 1)
+                        else:
+                            campaign_fd = pin_directory_for_removal(directory)
+                            campaign_stat = os.fstat(campaign_fd)
+                            expected = (campaign_stat.st_dev, campaign_stat.st_ino)
+                            if not _descriptor_is_direct_child(root_fd, campaign_fd):
+                                raise PermissionError(
+                                    "campaign directory is outside its pinned root"
+                                )
+                            previous = _CAMPAIGN_DIRECTORY_IDENTITIES.setdefault(key, expected)
+                            if previous != expected:
+                                raise PermissionError(
+                                    "campaign root or directory ownership changed"
+                                )
+                            owner_fd = os.dup(campaign_fd)
+                            _CAMPAIGN_DIRECTORY_HANDLES[key] = (owner_fd, 1)
+                        owner_key = key
+            except FileNotFoundError:
+                pass
+        if campaign_fd >= 0:
+            root_stat = os.fstat(root_fd)
+            campaign_stat = os.fstat(campaign_fd)
+            device, inode = campaign_stat.st_dev, campaign_stat.st_ino
+            if not _descriptor_is_direct_child(root_fd, campaign_fd):
+                raise PermissionError("campaign directory is outside its pinned root")
+            key = (root_stat.st_dev, root_stat.st_ino, campaign_id)
+            expected = (device, inode)
+            with _CAMPAIGN_DIRECTORY_IDENTITIES_LOCK:
+                previous = _CAMPAIGN_DIRECTORY_IDENTITIES.setdefault(key, expected)
+            if previous != expected:
+                raise PermissionError("campaign root or directory ownership changed")
+    except (OSError, PermissionError):
+        owner_fd = _release_campaign_owner(owner_key)
+        _close_fds(campaign_fd, root_fd, owner_fd)
         return None
-    return d
+    return _CampaignIdentity(
+        campaign_id,
+        root,
+        directory,
+        research_slot_key(campaign_id),
+        device,
+        inode,
+        root_fd,
+        campaign_fd,
+        owner_key,
+    )
+
+
+async def _campaign_identity_off_loop(campaign_id: str) -> _CampaignIdentity | None:
+    """Resolve a campaign without running descriptor work on the event loop."""
+    return await asyncio.to_thread(_campaign_identity, campaign_id)
+
+
+@contextmanager
+def _pin_campaign(
+    identity: _CampaignIdentity,
+    *,
+    revalidate_on_exit: bool = True,
+) -> Iterator[int]:
+    """Duplicate and revalidate the handles captured by the identity."""
+    if revalidate_on_exit:
+        with identity.pin() as campaign_fd:
+            yield campaign_fd
+    else:
+        with identity.pin(revalidate_on_exit=False) as campaign_fd:
+            yield campaign_fd
+
+
+def _safe_campaign_dir(campaign_id: str) -> Path | None:
+    """Return the validated path for legacy non-authoritative callers."""
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
+        return None
+    try:
+        with identity.pin():
+            return identity.directory
+    except (OSError, PermissionError):
+        return None
+    finally:
+        identity.close()
+
+
+def _read_campaign_file_bytes(
+    identity: _CampaignIdentity,
+    relative_parts: tuple[str, ...],
+    *,
+    max_bytes: int,
+    allow_truncate: bool = False,
+) -> bytes | None:
+    """Read one campaign-owned file without re-resolving its ancestor by name."""
+    if not relative_parts or any(
+        not part or part in (".", "..") or Path(part).name != part for part in relative_parts
+    ):
+        return None
+    by_name_path = identity.directory.joinpath(*relative_parts)
+    if validate_file_path(str(by_name_path)) is None:
+        return None
+    data = b""
+    try:
+        with _pin_campaign(identity) as campaign_fd:
+            if os.name != "posix":
+                return safe_read_file_bytes_nolink(
+                    str(identity.directory.joinpath(*relative_parts)),
+                    within_root=str(identity.directory),
+                    max_bytes=max_bytes,
+                    allow_truncate=allow_truncate,
+                )
+
+            parent_fd = os.dup(campaign_fd)
+            file_fd = -1
+            try:
+                for component in relative_parts[:-1]:
+                    next_fd = os.open(component, dir_flags(), dir_fd=parent_fd)
+                    os.close(parent_fd)
+                    parent_fd = next_fd
+                file_fd = os.open(
+                    relative_parts[-1],
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_fd,
+                )
+                st = os.fstat(file_fd)
+                if st.st_nlink > 1 or not stat.S_ISREG(st.st_mode):
+                    return None
+                with os.fdopen(file_fd, "rb") as fh:
+                    data = fh.read(max_bytes + 1)
+                file_fd = -1
+            finally:
+                os.close(parent_fd)
+                if file_fd >= 0:
+                    os.close(file_fd)
+    except (OSError, PermissionError):
+        return None
+    if len(data) > max_bytes:
+        if allow_truncate:
+            return data[:max_bytes]
+        raise FileTooLargeError(f"File exceeds {max_bytes // (1024 * 1024)} MB safety cap")
+    return data
+
+
+def _read_campaign_json_or_missing(
+    identity: _CampaignIdentity,
+    relative_parts: tuple[str, ...],
+    *,
+    max_bytes: int,
+) -> Any:
+    """Parse one bounded campaign-owned JSON leaf, or return ``None``."""
+    try:
+        raw = _read_campaign_file_bytes(
+            identity,
+            relative_parts,
+            max_bytes=max_bytes,
+        )
+    except FileTooLargeError:
+        return None
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _campaign_leaf_stat(identity: _CampaignIdentity, name: str) -> os.stat_result | None:
+    """Inspect one root leaf while the campaign handle pins its ancestry."""
+    with identity.pin() as campaign_fd:
+        try:
+            if os.name == "posix":
+                return os.stat(name, dir_fd=campaign_fd, follow_symlinks=False)
+            return os.stat(identity.directory / name, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+
+
+def _write_campaign_file_text(
+    identity: _CampaignIdentity,
+    relative_parts: tuple[str, ...],
+    text: str,
+    *,
+    create_parents: bool = False,
+    exclusive: bool = False,
+) -> bool:
+    """Publish one campaign-owned text leaf through held directory identities."""
+    if not relative_parts or any(
+        not part or part in (".", "..") or Path(part).name != part for part in relative_parts
+    ):
+        raise PermissionError("invalid campaign text path")
+    target = identity.directory.joinpath(*relative_parts)
+    if validate_file_path(str(target)) is None:
+        raise PermissionError("campaign text leaf failed the sensitive-path gate")
+
+    with identity.pin() as campaign_fd:
+        if os.name == "posix":
+            parent_fd = os.dup(campaign_fd)
+            fd = -1
+            try:
+                for component in relative_parts[:-1]:
+                    if create_parents:
+                        try:
+                            os.mkdir(component, mode=0o700, dir_fd=parent_fd)
+                        except FileExistsError:
+                            pass
+                    next_fd = os.open(component, dir_flags(), dir_fd=parent_fd)
+                    os.close(parent_fd)
+                    parent_fd = next_fd
+                flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+                if exclusive:
+                    flags |= os.O_EXCL
+                try:
+                    fd = os.open(relative_parts[-1], flags, 0o666, dir_fd=parent_fd)
+                except FileExistsError:
+                    if exclusive:
+                        return False
+                    raise
+                opened = os.fstat(fd)
+                if opened.st_nlink > 1 or not stat.S_ISREG(opened.st_mode):
+                    raise PermissionError("campaign text leaf is not singly owned")
+                if not exclusive:
+                    os.ftruncate(fd, 0)
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                    fd = -1
+                    handle.write(text)
+            finally:
+                _close_fds(fd, parent_fd)
+        else:
+            pinned_parents: list[int] = []
+            parent = identity.directory
+            try:
+                for component in relative_parts[:-1]:
+                    parent = parent / component
+                    if is_link_or_junction(parent):
+                        raise PermissionError("campaign text parent is aliased")
+                    if create_parents:
+                        parent.mkdir(exist_ok=True)
+                    pinned_parents.append(pin_directory(parent))
+                if exclusive:
+                    try:
+                        with target.open("x", encoding="utf-8", newline="") as handle:
+                            handle.write(text)
+                    except FileExistsError:
+                        return False
+                else:
+                    existing = None
+                    try:
+                        existing = target.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    if existing is not None and (
+                        existing.st_nlink > 1 or not stat.S_ISREG(existing.st_mode)
+                    ):
+                        raise PermissionError("campaign text leaf is not singly owned")
+                    atomic_write(target, text, newline="")
+            finally:
+                _close_fds(*reversed(pinned_parents))
+    return True
+
+
+def _write_campaign_text(identity: _CampaignIdentity, name: str, text: str) -> None:
+    """Publish one root text leaf through the captured campaign handle."""
+    _write_campaign_file_text(identity, (name,), text)
 
 
 # --- Database ---
@@ -264,16 +733,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("BEGIN")
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS campaigns (
+            conn.execute("""CREATE TABLE IF NOT EXISTS campaigns (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, question TEXT NOT NULL,
                 sub_questions TEXT NOT NULL DEFAULT '[]', sources TEXT NOT NULL DEFAULT '[]',
                 max_cycles INTEGER NOT NULL DEFAULT 30, idle_secs INTEGER NOT NULL DEFAULT 120,
                 status TEXT NOT NULL DEFAULT 'ready',
                 created_at REAL NOT NULL, started_at REAL, completed_at REAL,
                 total_cycles INTEGER NOT NULL DEFAULT 0, error_message TEXT,
-                success_criteria TEXT, auto_approve INTEGER NOT NULL DEFAULT 0)"""
-            )
+                success_criteria TEXT, auto_approve INTEGER NOT NULL DEFAULT 0)""")
             # Migrate DBs created before later columns were added.
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
             if "success_criteria" not in cols:
@@ -317,6 +784,20 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             # agent's / backend's default — never a hardcoded id).
             if "model" not in cols:
                 conn.execute("ALTER TABLE campaigns ADD COLUMN model TEXT NOT NULL DEFAULT ''")
+            # Stable run-generation fence for cycle-cap completion. The worker
+            # owns filenames, so list position, cycle number, and path name are
+            # all mutable. Persist a multiset of pre-run content digests instead:
+            # renames and reordered/sparse numbering retain the same identity,
+            # while genuinely new bytes are current-generation evidence.
+            #
+            # NULL means UNKNOWN, not an empty baseline. Existing RUNNING rows
+            # cannot reconstruct the file set they started with, so migration
+            # must refuse cycle-cap completion until the next Start/Resume writes
+            # a trustworthy snapshot. Older prerelease databases may also carry
+            # the superseded run_finding_baseline INTEGER column; it is ignored
+            # rather than converted because a count cannot recover identities.
+            if "run_finding_snapshot" not in cols:
+                conn.execute("ALTER TABLE campaigns ADD COLUMN run_finding_snapshot TEXT")
             conn.commit()
             _INITIALIZED_DBS.add(key)
         except Exception:
@@ -510,11 +991,52 @@ def validate_campaign(config: dict) -> dict:
 # lexical sort also mis-orders unpadded names: `cycle_10` < `cycle_2`).
 _CYCLE_FILE_RE = re.compile(r"^cycle[_-]?(\d+)\.json$", re.IGNORECASE)
 
+#: Cycle findings are compact JSON evidence. Bound every gateway-owned read well
+#: below the generic file-tool ceiling so an agent-written file cannot tie up a
+#: transfer worker or inflate a generation snapshot indefinitely.
+_FINDING_MAX_BYTES = 1024 * 1024
+_REPORT_VIEW_MAX_BYTES = 1024 * 1024
+#: Complete exports stay distinct from the 1 MiB dashboard view. Four MiB keeps
+#: every accepted FINDINGS.md byte while leaving enough room under the Artifact
+#: Store's 25 MiB content ceiling for worst-case sixfold HTML escaping.
+_REPORT_EXPORT_MAX_BYTES = 4 * 1024 * 1024
+_REPORT_RECENT_CYCLES = 4
+
+
+class _ReportExportRefusedError(RuntimeError):
+    """The report leaf exists but cannot be exported through the safe reader."""
+
 
 def _cycle_index(path: Path) -> int:
     """Cycle number parsed from a finding filename, or -1 if it doesn't match."""
     m = _CYCLE_FILE_RE.match(path.name)
     return int(m.group(1)) if m else -1
+
+
+def _cycle_finding_candidates(findings_dir: Path) -> list[tuple[Path, int]]:
+    """All recognized physical cycle files, ordered without deduplication.
+
+    The findings directory and each leaf are agent-writable. Refuse links,
+    junctions and non-regular leaves before discovery; the descriptor-bound
+    reader repeats the security decision at open time to close replacement
+    races and reject hard-link aliases.
+    """
+    if is_link_or_junction(findings_dir) or not findings_dir.exists():
+        return []
+    matched: list[tuple[Path, int]] = []
+    # Glob ALL entries (not "*.json") so the case-insensitive regex governs the
+    # match — Path.glob is case-sensitive, so "*.json" would miss "Cycle_002.JSON".
+    for path in findings_dir.glob("*"):
+        try:
+            if is_link_or_junction(path) or not stat.S_ISREG(path.lstat().st_mode):
+                continue
+        except OSError:
+            continue
+        matched.append((path, _cycle_index(path)))
+    return sorted(
+        ((path, cycle) for path, cycle in matched if cycle >= 0),
+        key=lambda item: (item[1], item[0].name),
+    )
 
 
 def _cycle_finding_files(findings_dir: Path) -> list[Path]:
@@ -534,16 +1056,59 @@ def _cycle_finding_files(findings_dir: Path) -> list[Path]:
     one before it reaches any external surface. (`check_stagnation()` reads only
     the integer `new_findings_count` and surfaces nothing.)
     """
-    if not findings_dir.exists():
-        return []
-    # Glob ALL entries (not "*.json") so the case-insensitive regex governs the
-    # match — Path.glob is case-sensitive, so "*.json" would miss "Cycle_002.JSON".
-    matched = [(p, _cycle_index(p)) for p in findings_dir.glob("*") if p.is_file()]
-    matched = [(p, i) for p, i in matched if i >= 0]
     by_cycle: dict[int, Path] = {}
-    for p, i in sorted(matched, key=lambda t: (t[1], t[0].name)):
-        by_cycle.setdefault(i, p)
+    for path, cycle_index in _cycle_finding_candidates(findings_dir):
+        by_cycle.setdefault(cycle_index, path)
     return [by_cycle[i] for i in sorted(by_cycle)]
+
+
+def _recent_cycle_files(campaign_id: str, limit: int = _REPORT_RECENT_CYCLES) -> list[Path]:
+    """Return the latest unique cycle files with O(*limit*) memory.
+
+    Directory entry names are untrusted. Reject linked/junction/non-regular
+    leaves before considering their cycle number; the later content read still
+    uses the descriptor-pinned no-link gate. Keeping only the highest cycle
+    numbers avoids materializing an unbounded campaign directory merely to show
+    recent evidence beside a truncated cumulative report.
+    """
+    if limit <= 0:
+        return []
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
+        return []
+    try:
+        findings_dir = identity.directory / "findings"
+        if is_link_or_junction(findings_dir) or not findings_dir.exists():
+            return []
+        selected: dict[int, Path] = {}
+        try:
+            entries = findings_dir.iterdir()
+            for path in entries:
+                try:
+                    if is_link_or_junction(path) or not stat.S_ISREG(path.lstat().st_mode):
+                        continue
+                except OSError:
+                    continue
+                cycle = _cycle_index(path)
+                if cycle < 0:
+                    continue
+                current = selected.get(cycle)
+                if current is not None:
+                    if path.name < current.name:
+                        selected[cycle] = path
+                    continue
+                if len(selected) < limit:
+                    selected[cycle] = path
+                    continue
+                oldest = min(selected)
+                if cycle > oldest:
+                    selected.pop(oldest)
+                    selected[cycle] = path
+        except OSError:
+            return []
+        return [selected[cycle] for cycle in sorted(selected)]
+    finally:
+        identity.close()
 
 
 # --- Stagnation ---
@@ -554,20 +1119,21 @@ def check_stagnation(campaign_id: str) -> bool:
     if not d:
         return False
     findings_dir = d / "findings"
-    if not findings_dir.exists():
+    if is_link_or_junction(findings_dir) or not findings_dir.exists():
         return False
     files = _cycle_finding_files(findings_dir)
     if len(files) < 5:
         return False
     for f in files[-5:]:
+        raw = _read_finding_bytes(f)
+        if raw is None:
+            return False
         try:
-            # LLM-written cycle file: pin UTF-8 (Windows would otherwise decode
-            # with the ANSI code page) and absorb bad bytes, because a decode
-            # error here would abort the whole watchdog sweep.
-            raw = f.read_text(encoding="utf-8", errors="replace")
-            if json.loads(raw).get("new_findings_count", 0) > 0:
+            # LLM-written cycle file: pin UTF-8 semantics and absorb bad bytes,
+            # because a decode error here must not abort the watchdog sweep.
+            if json.loads(raw.decode("utf-8", errors="replace")).get("new_findings_count", 0) > 0:
                 return False
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return False
     return True
 
@@ -576,11 +1142,66 @@ def check_stagnation(campaign_id: str) -> bool:
 
 
 def _campaign_dir(campaign_id: str) -> Path:
-    """Create and return campaign dir. Only call with validated IDs."""
-    d = research_dir() / campaign_id
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "findings").mkdir(exist_ok=True)
-    return d
+    """Create the exact directory owned by a canonical campaign id."""
+    if not _validate_campaign_id(campaign_id):
+        raise ValueError("invalid or aliased campaign id")
+    root = research_dir().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
+        raise ValueError("invalid or aliased campaign id")
+    root_fd = identity.duplicate_root()
+    campaign_fd = -1
+    try:
+        if os.name == "posix":
+            try:
+                os.mkdir(identity.campaign_id, mode=0o700, dir_fd=root_fd)
+            except FileExistsError:
+                pass
+            campaign_fd = os.open(identity.campaign_id, dir_flags(), dir_fd=root_fd)
+        else:
+            identity.directory.mkdir(exist_ok=True)
+            campaign_fd = os.dup(identity._campaign_fd)
+        if not _descriptor_is_direct_child(root_fd, campaign_fd):
+            raise PermissionError("campaign directory left its pinned root")
+
+        st = os.fstat(campaign_fd)
+        root_stat = os.fstat(root_fd)
+        key = (root_stat.st_dev, root_stat.st_ino, identity.campaign_id)
+        expected = (st.st_dev, st.st_ino)
+        with _CAMPAIGN_DIRECTORY_IDENTITIES_LOCK:
+            previous = _CAMPAIGN_DIRECTORY_IDENTITIES.setdefault(key, expected)
+        if previous != expected:
+            raise PermissionError("campaign root or directory ownership changed")
+
+        findings = identity.directory / "findings"
+        if os.name == "posix":
+            try:
+                os.mkdir("findings", mode=0o700, dir_fd=campaign_fd)
+            except FileExistsError:
+                pass
+            findings_fd = os.open("findings", dir_flags(), dir_fd=campaign_fd)
+        else:
+            if is_link_or_junction(findings):
+                raise PermissionError("campaign findings directory is aliased")
+            findings.mkdir(exist_ok=True)
+            findings_fd = pin_directory(findings)
+        os.close(findings_fd)
+    finally:
+        if campaign_fd >= 0:
+            os.close(campaign_fd)
+        os.close(root_fd)
+        identity.close()
+    return identity.directory
+
+
+def _campaign_identity_for_write(campaign_id: str) -> _CampaignIdentity:
+    """Create the campaign directory if needed, then retain its exact identity."""
+    _campaign_dir(campaign_id)
+    identity = _campaign_identity(campaign_id)
+    if identity is None or identity.device is None or identity.inode is None:
+        raise PermissionError("campaign identity unavailable for write")
+    return identity
 
 
 def _read_text_or_missing(path: Path) -> str | None:
@@ -632,12 +1253,7 @@ def _write_text(path: Path, text: str) -> None:
 
 
 def _write_new_cycle_files(pending: list[tuple[Path, str]]) -> bool:
-    """Write each cycle file that does not exist yet. Blocking; call off-loop.
-
-    The "already written by an earlier poll" check stays with the write it
-    guards, so idempotence costs no per-cycle stat on the event loop. Returns
-    whether anything was written.
-    """
+    """Compatibility writer for non-production tests and detached paths."""
     wrote = False
     for fpath, text in pending:
         if fpath.exists():
@@ -648,16 +1264,56 @@ def _write_new_cycle_files(pending: list[tuple[Path, str]]) -> bool:
     return wrote
 
 
+def _write_new_cycle_files_for_identity(
+    identity: _CampaignIdentity,
+    pending: list[tuple[Path, str]],
+) -> bool:
+    """Create new cycle leaves through one retained campaign identity."""
+    wrote = False
+    expected_parent = identity.directory / "findings"
+    for fpath, text in pending:
+        if fpath.parent != expected_parent or _cycle_index(fpath) < 0:
+            raise PermissionError("cycle path left its campaign findings directory")
+        wrote = (
+            _write_campaign_file_text(
+                identity,
+                ("findings", fpath.name),
+                text,
+                create_parents=True,
+                exclusive=True,
+            )
+            or wrote
+        )
+    return wrote
+
+
 def _copy_parent_findings(src: Path, dst: Path) -> None:
-    """Seed a forked campaign with its parent's findings. Blocking; call off-loop."""
+    """Compatibility copy for detached paths; production uses pinned identities."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        # Agent-written prose on both ends: pin UTF-8 so a fork does not lose the
-        # parent's context to a locale-encoding error, and absorb bad bytes.
         content = src.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return
     dst.write_text(content, encoding="utf-8")
+
+
+def _copy_parent_findings_for_identities(
+    parent: _CampaignIdentity,
+    child: _CampaignIdentity,
+) -> None:
+    """Seed a fork without reopening either campaign through a released path."""
+    raw = _read_campaign_file_bytes(
+        parent,
+        ("FINDINGS.md",),
+        max_bytes=_REPORT_EXPORT_MAX_BYTES,
+    )
+    if raw is None:
+        return
+    _write_campaign_text(
+        child,
+        "parent_findings.md",
+        raw.decode("utf-8", errors="replace"),
+    )
 
 
 def _unlink_if_present(path: Path) -> bool:
@@ -677,38 +1333,46 @@ def _questions_path(campaign_id: str) -> Path | None:
 
 def _pending_question(campaign_id: str) -> str | None:
     """Read the agent's pending clarification question text, if present."""
-    p = _questions_path(campaign_id)
-    if not p or not p.exists():
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
         return None
     try:
-        # The agent authors questions.json and its clarification text is very
-        # often non-ASCII, so UTF-8 must be explicit: a locale-encoding failure
-        # here 500s get_campaign and strands the campaign in NEEDS_INPUT.
-        raw = p.read_text(encoding="utf-8", errors="replace")
-        return str(json.loads(raw).get("question", "")) or None
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return None
+        data = _read_campaign_json_or_missing(
+            identity,
+            ("questions.json",),
+            max_bytes=64 * 1024,
+        )
+        return str(data.get("question", "")) or None if isinstance(data, dict) else None
+    finally:
+        identity.close()
 
 
 def write_status(campaign_id: str, status: str, **extra: Any) -> None:
     if not _validate_campaign_id(campaign_id):
         return
-    d = _campaign_dir(campaign_id)
-    (d / "status.json").write_text(
-        json.dumps(
-            {"status": status, "campaign_id": campaign_id, "ts": time.time(), **extra},
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    identity = _campaign_identity_for_write(campaign_id)
+    try:
+        _write_campaign_text(
+            identity,
+            "status.json",
+            json.dumps(
+                {"status": status, "campaign_id": campaign_id, "ts": time.time(), **extra},
+                indent=2,
+            ),
+        )
+    finally:
+        identity.close()
 
 
 def write_guidance(campaign_id: str, text: str) -> None:
     if not _validate_campaign_id(campaign_id):
         return
-    d = _campaign_dir(campaign_id)
-    # User-typed mid-campaign guidance — non-ASCII is the norm, not the edge case.
-    (d / "guidance.txt").write_text(text, encoding="utf-8")
+    identity = _campaign_identity_for_write(campaign_id)
+    try:
+        # User-typed mid-campaign guidance — non-ASCII is the norm, not the edge case.
+        _write_campaign_text(identity, "guidance.txt", text)
+    finally:
+        identity.close()
 
 
 def get_findings(campaign_id: str) -> list[dict]:
@@ -716,14 +1380,16 @@ def get_findings(campaign_id: str) -> list[dict]:
     if not d:
         return []
     findings_dir = d / "findings"
-    if not findings_dir.exists():
+    if is_link_or_junction(findings_dir) or not findings_dir.exists():
         return []
     results = []
     for f in _cycle_finding_files(findings_dir):
+        raw = _read_finding_bytes(f)
+        if raw is None:
+            continue
         try:
-            raw = f.read_text(encoding="utf-8", errors="replace")
-            results.append(_redact_finding(json.loads(raw)))
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            results.append(_redact_finding(json.loads(raw.decode("utf-8", errors="replace"))))
+        except json.JSONDecodeError:
             continue
     return results
 
@@ -737,9 +1403,97 @@ def _list_cycle_files(campaign_id: str) -> list[Path]:
     """
     safe_dir = _safe_campaign_dir(campaign_id)
     findings_dir = (safe_dir / "findings") if safe_dir else None
-    if not findings_dir or not findings_dir.exists():
+    if not findings_dir or is_link_or_junction(findings_dir) or not findings_dir.exists():
         return []
     return _cycle_finding_files(findings_dir)
+
+
+def _read_finding_bytes(path: Path) -> bytes | None:
+    """Read one owned cycle finding through the authoritative file-tool gate.
+
+    Finding paths come from an agent-writable directory. Accept only the exact
+    absolute ``<research>/<campaign>/findings/cycle*.json`` shape, refuse linked
+    campaign/findings/leaf names, then delegate the actual open to
+    ``safe_read_file_bytes_nolink``. That shared gate canonicalizes and rejects
+    sensitive targets, opens without following a replacement leaf, fstats the
+    descriptor (single-linked regular files only), verifies the opened inode is
+    still inside this campaign, and bounds the read. URL-like strings and
+    percent-encoded traversal remain finding DATA; they are never decoded into a
+    filesystem path here.
+    """
+    root = research_dir().resolve()
+    if not path.is_absolute():
+        return None
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    if (
+        len(relative.parts) != 3
+        or not _validate_campaign_id(relative.parts[0])
+        or relative.parts[1] != "findings"
+        or _cycle_index(Path(relative.parts[2])) < 0
+    ):
+        return None
+
+    identity = _campaign_identity(relative.parts[0])
+    if identity is None:
+        return None
+    try:
+        expected = identity.directory / "findings" / relative.parts[2]
+        if path != expected:
+            return None
+        try:
+            return _read_campaign_file_bytes(
+                identity,
+                ("findings", relative.parts[2]),
+                max_bytes=_FINDING_MAX_BYTES,
+            )
+        except FileTooLargeError:
+            return None
+    finally:
+        identity.close()
+
+
+def _finding_content_identity(raw: bytes) -> str:
+    """Stable identity for one exact persisted evidence payload."""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _capture_run_finding_snapshot(campaign_id: str) -> str | None:
+    """Serialize the pre-run multiset of every recognized finding payload.
+
+    The snapshot includes duplicate filename variants, not only the lexically
+    selected file for each cycle number. A later rename can therefore change
+    which path is selected without making historical bytes look new. Any I/O
+    gap makes the whole boundary UNKNOWN: omitting one historical identity could
+    let it be counted as current evidence later.
+    """
+    safe_dir = _safe_campaign_dir(campaign_id)
+    findings_dir = (safe_dir / "findings") if safe_dir else None
+    candidates = _cycle_finding_candidates(findings_dir) if findings_dir else []
+    identities: list[str] = []
+    for path, _cycle in candidates:
+        raw = _read_finding_bytes(path)
+        if raw is None:
+            return None
+        identities.append(_finding_content_identity(raw))
+    return json.dumps(sorted(identities), separators=(",", ":"))
+
+
+def _read_finding_with_identity(path: Path) -> tuple[str | None, dict]:
+    """Read one finding once, returning its byte identity and parsed object."""
+    raw = _read_finding_bytes(path)
+    if raw is None:
+        return None, {}
+    identity = _finding_content_identity(raw)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return identity, {}
+    if not isinstance(data, dict):
+        return identity, {}
+    return identity, _redact_finding(data)
 
 
 def _read_finding_file(path: Path) -> dict:
@@ -758,13 +1512,7 @@ def _read_finding_file(path: Path) -> dict:
     console, so the watchdog saw zero new findings and failed a healthy
     campaign as stalled.
     """
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return _redact_finding(data)
+    return _read_finding_with_identity(path)[1]
 
 
 # --- CRUD ---
@@ -838,11 +1586,15 @@ def create_campaign(config: dict) -> dict:
     # pruned branches, origin tags — enables revisiting + challenge mode).
     grill_tree = config.get("grill_tree")
     if grill_tree and isinstance(grill_tree, list):
-        d = _campaign_dir(campaign_id)
-        d.mkdir(parents=True, exist_ok=True)
-        d.joinpath("grill_tree.json").write_text(
-            json.dumps(grill_tree, indent=2), encoding="utf-8"
-        )
+        identity = _campaign_identity_for_write(campaign_id)
+        try:
+            _write_campaign_text(
+                identity,
+                "grill_tree.json",
+                json.dumps(grill_tree, indent=2),
+            )
+        finally:
+            identity.close()
     write_status(campaign_id, CampaignStatus.READY)
     _audit("campaign_created", campaign_id)
     return {"id": campaign_id, "name": name, "status": CampaignStatus.READY}
@@ -870,6 +1622,13 @@ def update_campaign_status(campaign_id: str, new_status: str, **kwargs: Any) -> 
         sets.append("completed_at = ?")
         vals.append(None)
         kwargs.setdefault("error_message", None)  # clear stale failure on (re)start
+        # Fence the new run generation with the exact pre-run evidence
+        # identities. A count/position boundary is unstable when files are
+        # inserted, removed, renamed, sparse, or reordered. The serialized
+        # digest multiset stays stable across those path-level changes and is
+        # written in the same transaction that mints started_at.
+        sets.append("run_finding_snapshot = ?")
+        vals.append(_capture_run_finding_snapshot(campaign_id))
     if new_status in (CampaignStatus.COMPLETE, CampaignStatus.STOPPED, CampaignStatus.FAILED):
         sets.append("completed_at = ?")
         vals.append(time.time())
@@ -920,11 +1679,288 @@ def get_campaign(campaign_id: str) -> dict | None:
     )
 
 
+class _CampaignActionFailure(RuntimeError):
+    """Expected Start/Resume failure after a durable non-RUNNING recovery."""
+
+
+class _CampaignRollbackUnsafe(RuntimeError):
+    """Rollback and fail-safe persistence both left no proven safe state."""
+
+
+_CAMPAIGN_ACTION_STORAGE_FAILURES = (OSError, sqlite3.Error)
+
+
+def _restore_campaign_after_failed_launch(campaign_id: str, previous: dict[str, Any]) -> None:
+    """Restore the exact pre-Start/Resume row after worker arming fails.
+
+    This rewrites the row and status sidecar but emits NO SSE of its own (it
+    runs off-loop via ``asyncio.to_thread``; ``_emit_sse`` is loop-affine). A
+    launch failure may already have pushed a transient ``failed`` SSE, so the
+    loop-affine caller MUST emit a convergence event carrying the restored
+    status after this returns — otherwise a client that refetched on the
+    transient ``failed`` keeps showing FAILED after the row rolled back.
+    """
+    db = _get_db()
+    try:
+        db.execute("BEGIN")
+        db.execute(
+            "UPDATE campaigns SET status = ?, started_at = ?, completed_at = ?, "
+            "error_message = ?, run_finding_snapshot = ? WHERE id = ?",
+            (
+                previous["status"],
+                previous["started_at"],
+                previous["completed_at"],
+                previous["error_message"],
+                previous["run_finding_snapshot"],
+                campaign_id,
+            ),
+        )
+        db.commit()
+    finally:
+        db.close()
+    write_status(
+        campaign_id,
+        previous["status"],
+        error_message=previous["error_message"],
+    )
+    _audit("campaign_launch_rolled_back", campaign_id)
+
+
+def _persisted_campaign_status(campaign_id: str) -> str | None:
+    db = _get_db()
+    try:
+        row = db.execute(
+            "SELECT status FROM campaigns WHERE id = ?",
+            (campaign_id,),
+        ).fetchone()
+    finally:
+        db.close()
+    return str(row["status"]) if row is not None else None
+
+
+def _force_failed_after_rollback_storage_error(
+    campaign_id: str,
+    rollback_error: BaseException,
+) -> str:
+    """Persist a fail-safe non-RUNNING row after exact rollback storage fails.
+
+    SQLite is authoritative. A later sidecar failure is logged but cannot turn a
+    committed FAILED row back into RUNNING; if the database write itself cannot
+    be committed, the caller raises `_CampaignRollbackUnsafe` and must not claim
+    a controlled recovery.
+    """
+    message = "Campaign launch failed and its previous state could not be restored."
+    db = _get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            "UPDATE campaigns SET status = ?, completed_at = ?, error_message = ? " "WHERE id = ?",
+            (CampaignStatus.FAILED, time.time(), message, campaign_id),
+        )
+        db.commit()
+    finally:
+        db.close()
+    try:
+        write_status(campaign_id, CampaignStatus.FAILED, error_message=message)
+    except _CAMPAIGN_ACTION_STORAGE_FAILURES:
+        logger.exception(
+            "auto_research: FAILED sidecar persistence also failed after rollback "
+            "storage recovery for %s",
+            campaign_id,
+        )
+    _audit("campaign_launch_rollback_forced_failed", campaign_id)
+    return CampaignStatus.FAILED.value
+
+
+def _recover_campaign_after_failed_launch(
+    campaign_id: str,
+    previous: dict[str, Any],
+) -> tuple[str, BaseException | None]:
+    """Return a proven non-RUNNING status and any recovered storage failure."""
+    try:
+        _restore_campaign_after_failed_launch(campaign_id, previous)
+        return str(previous["status"]), None
+    except _CAMPAIGN_ACTION_STORAGE_FAILURES as rollback_error:
+        logger.exception(
+            "auto_research: exact launch rollback persistence failed for %s",
+            campaign_id,
+        )
+        try:
+            persisted = _persisted_campaign_status(campaign_id)
+        except _CAMPAIGN_ACTION_STORAGE_FAILURES:
+            persisted = None
+        if persisted is not None and persisted != CampaignStatus.RUNNING:
+            return persisted, rollback_error
+        try:
+            forced = _force_failed_after_rollback_storage_error(
+                campaign_id,
+                rollback_error,
+            )
+        except _CAMPAIGN_ACTION_STORAGE_FAILURES as force_error:
+            try:
+                persisted = _persisted_campaign_status(campaign_id)
+            except _CAMPAIGN_ACTION_STORAGE_FAILURES:
+                persisted = None
+            if persisted is not None and persisted != CampaignStatus.RUNNING:
+                return persisted, rollback_error
+            raise _CampaignRollbackUnsafe(
+                "campaign launch rollback could not persist a non-RUNNING state"
+            ) from force_error
+        return forced, rollback_error
+
+
 def list_campaigns() -> list[dict]:
     db = _get_db()
     rows = db.execute("SELECT * FROM campaigns ORDER BY created_at DESC").fetchall()
     db.close()
     return [_redact_campaign(dict(r)) for r in rows]
+
+
+def _campaign_dirfd_delete_supported() -> bool:
+    """Return whether campaign trees can be removed entirely through dir fds."""
+    return bool(
+        os.name == "posix"
+        and os.scandir in os.supports_fd
+        and {os.open, os.unlink, os.rmdir}.issubset(os.supports_dir_fd)
+    )
+
+
+def _remove_campaign_contents_fd(directory_fd: int, failures: list[str]) -> None:
+    """Remove one pinned directory's contents without resolving its path again."""
+    try:
+        with os.scandir(directory_fd) as entries:
+            children = list(entries)
+    except OSError as exc:
+        failures.append(str(exc))
+        return
+    for child in children:
+        try:
+            if child.is_dir(follow_symlinks=False):
+                child_fd = os.open(child.name, dir_flags(), dir_fd=directory_fd)
+                try:
+                    _remove_campaign_contents_fd(child_fd, failures)
+                finally:
+                    os.close(child_fd)
+                os.rmdir(child.name, dir_fd=directory_fd)
+            else:
+                os.unlink(child.name, dir_fd=directory_fd)
+        except OSError as exc:
+            failures.append(str(exc))
+
+
+def _remove_campaign_contents_path(directory: Path, failures: list[str]) -> None:
+    """Remove children by path while a Windows no-share-delete pin holds root."""
+
+    def _on_error(_func: Any, path: Any, _exc: BaseException) -> None:
+        failures.append(str(path))
+
+    try:
+        children = list(directory.iterdir())
+    except OSError as exc:
+        failures.append(str(exc))
+        return
+    for child in children:
+        try:
+            if is_link_or_junction(child):
+                unlink_link_or_junction(child)
+            elif child.is_dir():
+                shutil.rmtree(child, onexc=_on_error)
+            else:
+                child.unlink()
+        except OSError as exc:
+            failures.append(str(exc))
+
+
+def _remove_campaign_leaf(identity: _CampaignIdentity, name: str) -> bool:
+    """Remove one campaign root leaf without releasing its owner identity."""
+    if not name or Path(name).name != name:
+        raise PermissionError("invalid campaign cleanup leaf")
+    if identity.device is None or identity.inode is None:
+        return False
+    with identity.pin() as campaign_fd:
+        if os.name == "posix":
+            if not _campaign_dirfd_delete_supported():
+                raise PermissionError("descriptor-bound campaign cleanup is unavailable")
+            try:
+                leaf_stat = os.stat(name, dir_fd=campaign_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return False
+            if stat.S_ISDIR(leaf_stat.st_mode):
+                child_fd = os.open(name, dir_flags(), dir_fd=campaign_fd)
+                failures: list[str] = []
+                try:
+                    _remove_campaign_contents_fd(child_fd, failures)
+                finally:
+                    os.close(child_fd)
+                if failures:
+                    raise OSError("; ".join(failures))
+                os.rmdir(name, dir_fd=campaign_fd)
+            else:
+                os.unlink(name, dir_fd=campaign_fd)
+            return True
+
+        target = identity.directory / name
+        if not target.exists() and not is_link_or_junction(target):
+            return False
+        if is_link_or_junction(target):
+            unlink_link_or_junction(target)
+        elif target.is_dir():
+            failures = []
+            _remove_campaign_contents_path(target, failures)
+            if failures:
+                raise OSError("; ".join(failures))
+            target.rmdir()
+        else:
+            target.unlink()
+        return True
+
+
+def _remove_campaign_tree(identity: _CampaignIdentity) -> list[str]:
+    """Remove only the live directory still owned by *identity*.
+
+    The initial identity is a lookup result, not mutation authority. Reopen and
+    revalidate it at the mutation boundary, keep that descriptor open while
+    removing children, and bind the final directory removal to the same validated
+    identity rather than resolving its pathname again.
+    """
+    failures: list[str] = []
+    try:
+        if _campaign_dirfd_delete_supported():
+            with _pin_campaign(identity, revalidate_on_exit=False) as campaign_fd:
+                _remove_campaign_contents_fd(campaign_fd, failures)
+                if failures:
+                    return failures
+                root_fd = identity.duplicate_root()
+                current_fd = -1
+                try:
+                    current_fd = os.open(identity.campaign_id, dir_flags(), dir_fd=root_fd)
+                    current = os.fstat(current_fd)
+                    if (
+                        identity.device is not None
+                        and (current.st_dev, current.st_ino) != (identity.device, identity.inode)
+                    ) or not _descriptor_is_direct_child(root_fd, current_fd):
+                        raise PermissionError("campaign directory identity changed before removal")
+                    # The parent descriptor and validated child descriptor stay
+                    # open through this descriptor-relative removal.
+                    os.rmdir(identity.campaign_id, dir_fd=root_fd)
+                finally:
+                    if current_fd >= 0:
+                        os.close(current_fd)
+                    os.close(root_fd)
+        else:
+            # Windows has no dir_fd traversal, but the retained campaign handle
+            # omits FILE_SHARE_DELETE and carries DELETE access. Keep it live
+            # while every child is removed, revalidate that same kernel object,
+            # then make the object -- not its mutable path -- the final mutation
+            # authority.
+            with _pin_campaign(identity):
+                _remove_campaign_contents_path(identity.directory, failures)
+            if failures:
+                return failures
+            remove_pinned_directory(identity._campaign_fd)
+    except (OSError, PermissionError, NotImplementedError) as exc:
+        failures.append(str(exc))
+    return failures
 
 
 def delete_campaign(campaign_id: str) -> dict:
@@ -941,14 +1977,12 @@ def delete_campaign(campaign_id: str) -> dict:
     """
     if not _validate_campaign_id(campaign_id):
         return {"error": "invalid campaign_id"}
-    d = _safe_campaign_dir(campaign_id)
-    if d and d.exists():
-        failures: list[str] = []
-
-        def _on_error(_func: Any, path: Any, _exc: BaseException) -> None:
-            failures.append(str(path))
-
-        shutil.rmtree(d, onexc=_on_error)
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
+        return {"error": "aliased campaign_id"}
+    campaign_id = identity.campaign_id
+    if identity.device is not None:
+        failures = _remove_campaign_tree(identity)
         if failures:
             logger.warning(
                 "auto_research: campaign %s directory cleanup left %d path(s) "
@@ -957,6 +1991,7 @@ def delete_campaign(campaign_id: str) -> dict:
                 campaign_id,
                 len(failures),
             )
+            identity.close()
             return {"error": "cleanup incomplete", "residual": True}
     db = _get_db()
     db.execute("BEGIN")
@@ -964,7 +1999,16 @@ def delete_campaign(campaign_id: str) -> dict:
     db.commit()
     db.close()
     if rows == 0:
+        identity.close()
         return {"error": "campaign not found"}
+    if identity.device is not None:
+        with _CAMPAIGN_DIRECTORY_IDENTITIES_LOCK:
+            root_stat = os.fstat(identity._root_fd)
+            _CAMPAIGN_DIRECTORY_IDENTITIES.pop(
+                (root_stat.st_dev, root_stat.st_ino, campaign_id),
+                None,
+            )
+    identity.close()
     return {"id": campaign_id, "deleted": True, "residual": False}
 
 
@@ -1042,9 +2086,7 @@ def _guarded_txn(
     """
     db = _get_db()
     try:
-        row = db.execute(
-            "SELECT status, started_at FROM campaigns WHERE id = ?", (cid,)
-        ).fetchone()
+        row = db.execute("SELECT status, started_at FROM campaigns WHERE id = ?", (cid,)).fetchone()
         if row is None or row["status"] not in allowed_current:
             return None
         if expected_started_at is not None and row["started_at"] != expected_started_at:
@@ -1101,9 +2143,7 @@ async def _guarded_transition(
     async with _campaign_transition_lock(cid):
 
         def _txn_and_notify() -> dict | None:
-            result = _guarded_txn(
-                cid, new_status, allowed_current, expected_started_at, **kwargs
-            )
+            result = _guarded_txn(cid, new_status, allowed_current, expected_started_at, **kwargs)
             if result and on_commit is not None:
                 on_commit(result)
             return result
@@ -1127,33 +2167,30 @@ async def _expire_trust(cid: str, observed_started_at: float | None) -> None:
     def _on_parked(_result: dict) -> None:
         # Runs in the txn thread right after the transition persists — survives
         # a cancellation of the awaiting watchdog frame (see _guarded_transition).
-        qpath = _questions_path(cid)
-        if qpath:
-            try:
-                # The path lives in the agent-writable research dir: clear a
-                # link/junction or directory squatting on it before writing, and
-                # never let a write failure suppress the audit/SSE for a
-                # transition that already persisted.
-                if is_link_or_junction(qpath):
-                    unlink_link_or_junction(qpath)
-                elif qpath.is_dir():
-                    shutil.rmtree(qpath)
-                qpath.write_text(
+        identity = _campaign_identity(cid)
+        try:
+            if identity is not None:
+                _remove_campaign_leaf(identity, "questions.json")
+                _write_campaign_text(
+                    identity,
+                    "questions.json",
                     json.dumps(
                         {
                             "question": "Auto-approval expired after 24h. Resume to "
                             "re-authorize and continue."
                         }
                     ),
-                    encoding="utf-8",
                 )
-            except OSError:
-                logger.warning(
-                    "auto_research: could not publish the expiry prompt for %s "
-                    "(campaign is parked NEEDS_INPUT; Resume still works)",
-                    cid,
-                    exc_info=True,
-                )
+        except (OSError, PermissionError):
+            logger.warning(
+                "auto_research: could not publish the expiry prompt for %s "
+                "(campaign is parked NEEDS_INPUT; Resume still works)",
+                cid,
+                exc_info=True,
+            )
+        finally:
+            if identity is not None:
+                identity.close()
         _audit("campaign_trust_expired", cid)
         _sse_from_thread(event_loop, {"type": "needs_input", "campaign_id": cid})
 
@@ -1183,14 +2220,19 @@ def _should_pause_for_question(cid: str, auto_approve: bool) -> bool:
     "unattended" is a code-enforced guarantee, not reliant on the LLM obeying
     a prompt. Returns False when there's no question or it was discarded.
     """
-    qp = _questions_path(cid)
-    if not (qp and qp.exists()):
+    identity = _campaign_identity(cid)
+    if identity is None:
         return False
-    if auto_approve:
-        qp.unlink(missing_ok=True)
-        _audit("campaign_unattended_question_discarded", cid)
-        return False
-    return True
+    try:
+        if _campaign_leaf_stat(identity, "questions.json") is None:
+            return False
+        if auto_approve:
+            _remove_campaign_leaf(identity, "questions.json")
+            _audit("campaign_unattended_question_discarded", cid)
+            return False
+        return True
+    finally:
+        identity.close()
 
 
 async def _suspend_research_loops_while_disabled(state: Any) -> None:
@@ -1247,26 +2289,22 @@ def _read_worker_done(campaign_id: str) -> dict | None:
     the gateway — and at most ``_WORKER_DONE_MAX_BYTES`` are ever read; an
     over-cap file is treated as absent, never truncated-and-parsed.
     """
-    d = _safe_campaign_dir(campaign_id)
-    if d is None:
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
         return None
-    marker = d / _WORKER_DONE_FILENAME
     try:
-        if is_link_or_junction(marker):
-            return None
-        st = marker.stat()
-        if not stat.S_ISREG(st.st_mode) or st.st_size > _WORKER_DONE_MAX_BYTES:
-            return None
-        # Cap at open time too (the file can grow between stat and read):
-        # read one byte past the cap so an over-cap file is detected and
-        # rejected rather than silently truncated into valid-looking JSON.
-        with open(marker, "rb") as fh:
-            raw = fh.read(_WORKER_DONE_MAX_BYTES + 1)
-        if len(raw) > _WORKER_DONE_MAX_BYTES:
+        raw = _read_campaign_file_bytes(
+            identity,
+            (_WORKER_DONE_FILENAME,),
+            max_bytes=_WORKER_DONE_MAX_BYTES,
+        )
+        if raw is None:
             return None
         data = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+    except (FileTooLargeError, json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
+    finally:
+        identity.close()
     if not isinstance(data, dict):
         return None
     reason = data.get("reason")
@@ -1286,16 +2324,216 @@ def _clear_worker_done_marker(campaign_id: str) -> None:
     True and ``is_symlink()`` False) is removed as a link so a link into a
     foreign tree can never recursively delete its target's contents.
     """
-    d = _safe_campaign_dir(campaign_id)
-    if d is None:
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
         return
-    marker = d / _WORKER_DONE_FILENAME
-    if is_link_or_junction(marker):
-        unlink_link_or_junction(marker)
-    elif marker.is_dir():
-        shutil.rmtree(marker, ignore_errors=True)
+    try:
+        _remove_campaign_leaf(identity, _WORKER_DONE_FILENAME)
+    except (FileNotFoundError, PermissionError):
+        return
+    finally:
+        identity.close()
+
+
+def _run_finding_snapshot(campaign_id: str) -> Counter[str] | None:
+    """Pre-run finding-content multiset for the CURRENT generation, or None.
+
+    The snapshot is written on every Start/Resume. NULL, malformed JSON, and
+    legacy count values are UNKNOWN because none can prove which exact files
+    predate this run. Unknown boundaries fail closed until the next transition
+    captures a valid identity set.
+    """
+    db = _get_db()
+    try:
+        row = db.execute(
+            "SELECT run_finding_snapshot FROM campaigns WHERE id = ?", (campaign_id,)
+        ).fetchone()
+    finally:
+        db.close()
+    if row is None:
+        return None
+    raw = row["run_finding_snapshot"]
+    if not isinstance(raw, str):
+        return None
+    try:
+        identities = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(identities, list) or any(
+        not isinstance(identity, str)
+        or len(identity) != 64
+        or any(ch not in "0123456789abcdef" for ch in identity)
+        for identity in identities
+    ):
+        return None
+    return Counter(identities)
+
+
+def _cycle_cap_generation_complete(
+    campaign_id: str,
+    cycle_files: list[Path],
+    required_cycle_count: int,
+) -> bool:
+    """Return whether this run has cap-many readable new evidence payloads.
+
+    This is the only count-based completion policy. Every caller gets the same
+    three fail-closed checks: a positive cap, a known identity snapshot, and one
+    readable current-generation finding per delivered cycle. Historical
+    identities are subtracted as a multiset, so file insertion, removal, rename,
+    sparse numbering, dedup-selection changes, and list reordering cannot slide
+    old evidence across the generation boundary. Raw file count remains only a
+    cheap change detector; it is never completion evidence.
+    """
+    if required_cycle_count <= 0:
+        return False
+    historical = _run_finding_snapshot(campaign_id)
+    if historical is None:
+        return False
+    readable_count = 0
+    for path in cycle_files:
+        identity, finding = _read_finding_with_identity(path)
+        if identity is None:
+            continue
+        if historical[identity] > 0:
+            historical[identity] -= 1
+            continue
+        if finding:
+            readable_count += 1
+    return readable_count >= required_cycle_count
+
+
+class _SettlementTrigger(str, Enum):
+    FINDING = "finding"
+    TERMINAL = "terminal"
+    IDLE = "idle"
+
+
+@dataclass(frozen=True)
+class _SettlementRequest:
+    trigger: _SettlementTrigger
+    stopped_reason: str = ""
+    required_cycle_count: int = 0
+
+
+class _SettlementOutcome(str, Enum):
+    SETTLED = "settled"
+    NO_VERDICT = "no_verdict"
+    STALE = "stale"
+
+
+@dataclass(frozen=True)
+class _LoopSettlementAuthority:
+    """Immutable terminal-bound inputs for one exact loop generation."""
+
+    loop_id: str
+    active: bool
+    stopped_reason: str
+    max_cycles: int
+    cycle_count: int
+    max_runtime_secs: int
+    created_ts: float
+    runtime_deadline: float
+    runtime_expired: bool
+
+
+def _loop_settlement_authority(loop: Any) -> _LoopSettlementAuthority | None:
+    """Snapshot every loop field that can change terminal classification."""
+    if loop is None:
+        return None
+    max_runtime_secs = int(getattr(loop, "max_runtime_secs", 0) or 0)
+    created_ts = float(getattr(loop, "created_ts", 0.0) or 0.0)
+    runtime_deadline = created_ts + max_runtime_secs if created_ts and max_runtime_secs else 0.0
+    runtime_view = SimpleNamespace(
+        max_runtime_secs=max_runtime_secs,
+        created_ts=created_ts,
+    )
+    return _LoopSettlementAuthority(
+        loop_id=str(getattr(loop, "id", "") or ""),
+        active=bool(getattr(loop, "active", False)),
+        stopped_reason=str(getattr(loop, "stopped_reason", "") or ""),
+        max_cycles=int(getattr(loop, "max_cycles", 0) or 0),
+        cycle_count=int(getattr(loop, "cycle_count", 0) or 0),
+        max_runtime_secs=max_runtime_secs,
+        created_ts=created_ts,
+        runtime_deadline=runtime_deadline,
+        runtime_expired=runtime_budget_exceeded(cast(Any, runtime_view)),
+    )
+
+
+def _same_loop_generation(
+    observed: _LoopSettlementAuthority | None,
+    current: _LoopSettlementAuthority | None,
+) -> bool:
+    """Return whether two snapshots name the same exact loop generation."""
+    if observed is None or current is None:
+        return observed is current
+    return bool(observed.loop_id) and observed.loop_id == current.loop_id
+
+
+def _request_for_authority(
+    requested: _SettlementRequest,
+    authority: _LoopSettlementAuthority | None,
+) -> _SettlementRequest | None:
+    """Reclassify a settlement request from current terminal authority.
+
+    A missing loop preserves the campaign-row fallback. A live loop owns all
+    terminal bounds: a newly spent bound upgrades FINDING/IDLE to TERMINAL, a
+    lifted bound invalidates an earlier TERMINAL request, and a live finding
+    uses the current cap rather than the campaign row observed by the watchdog.
+    """
+    if authority is None:
+        return requested
+    terminal = _terminal_settlement_request(authority)
+    if terminal is not None:
+        return terminal
+    if requested.trigger == _SettlementTrigger.TERMINAL:
+        return None
+    if requested.trigger == _SettlementTrigger.FINDING:
+        return _SettlementRequest(
+            _SettlementTrigger.FINDING,
+            required_cycle_count=authority.max_cycles,
+        )
+    return requested
+
+
+def _terminal_settlement_request(loop: Any) -> _SettlementRequest | None:
+    """Return the one authoritative terminal interpretation of a loop.
+
+    Explicit terminal reasons and live counters share this function for active
+    and inactive rows. Cycle cap precedes runtime budget, matching AutoNudge's
+    enforcement order; an app-disable ``manual`` reason cannot hide spent live
+    counters, while an unspent manual pause remains restartable.
+    """
+    if loop is None:
+        return None
+    stopped_reason = str(getattr(loop, "stopped_reason", "") or "")
+    max_runtime_secs = int(getattr(loop, "max_runtime_secs", 0) or 0)
+    runtime_expired = False
+    if max_runtime_secs:
+        runtime_expired = (
+            loop.runtime_expired
+            if isinstance(loop, _LoopSettlementAuthority)
+            else runtime_budget_exceeded(loop)
+        )
+    if not bool(getattr(loop, "active", False)) and stopped_reason == AUTONUDGE_STOP_REASON:
+        return _SettlementRequest(_SettlementTrigger.TERMINAL, stopped_reason)
+    cycle_cap = int(getattr(loop, "max_cycles", 0) or 0)
+    cycle_count = int(getattr(loop, "cycle_count", 0) or 0)
+    if cycle_cap and cycle_count >= cycle_cap:
+        terminal_bound = "cycle_cap"
+    elif max_runtime_secs and runtime_expired:
+        terminal_bound = "runtime_budget"
     else:
-        marker.unlink(missing_ok=True)
+        # ``stopped_reason`` is historical diagnosis, not authority. A PATCH
+        # can lift either bound without clearing it, and a stale terminal
+        # reason must not settle the newly resumable generation.
+        return None
+    required = int(getattr(loop, "max_cycles", 0) or 0) if terminal_bound == "cycle_cap" else 0
+    return _SettlementRequest(
+        _SettlementTrigger.TERMINAL,
+        terminal_bound,
+        required,
+    )
 
 
 def _stalled_campaign_verdict(
@@ -1303,49 +2541,70 @@ def _stalled_campaign_verdict(
     cycle_files: list[Path],
     *,
     stopped_reason: str = "",
-) -> tuple[CampaignStatus, str | None]:
-    """Classify an idle-deadline expiry — not every silence is a failure.
+    required_cycle_count: int = 0,
+    trigger: _SettlementTrigger = _SettlementTrigger.IDLE,
+    cycle_cap_reconfigured: bool = False,
+) -> tuple[CampaignStatus, str | None] | None:
+    """Classify one authoritative settlement request.
 
-    The watchdog only marks COMPLETE when a NEW cycle file arrives carrying
-    ``verification.passed=true`` (or the cycle cap is hit). A worker that ends
-    its run deliberately via ``autonudge_stop`` — goal met, nothing more to
-    write — produces no further findings, so silence up to the unresponsive
-    deadline is not evidence of a stall: stamping FAILED ("research stalled")
-    would contradict a finished report on disk. Distinguish the cases from durable
-    evidence:
-
-    - Latest finding has ``verification.passed=true`` → COMPLETE. Also heals a
-      completed campaign whose status was later reset to RUNNING (resume paths
-      allow terminal→RUNNING): with no new files the count never advances, so
-      the count>prev COMPLETE branch can never re-fire.
-    - A source-owned ``autonudge_stop`` tombstone, or as a fallback the
-      worker-written ``worker_done.json`` marker, plus a READABLE latest
-      finding → the worker ended the run on purpose → STOPPED. The tombstone
-      wins without reading the LLM-written marker. Same terminal affordances
-      as a user Stop (fork / export / add-to-knowledge), no red failure banner.
-      A stop signal alongside only unreadable findings is NOT a deliberate
-      finish — STOPPED's "findings are preserved" promise would be false — so
-      it falls through to FAILED. Mere ABSENCE of the autonudge loop is
-      deliberately NOT used as the signal: the nudge fire path also removes
-      loops for unreachable (deleted/closed) worker sessions, which is a
-      failure, not a finish.
-    - Otherwise → FAILED (genuine stall), unchanged.
+    Precedence is invariant across active/inactive loop rows and every caller:
+    runtime budget remains resumable, cycle cap trusts only readable evidence
+    from the current generation, and only an unbounded/non-terminal request may
+    accept a verified finding independently. A finding observation with no
+    terminal verdict returns ``None``; it is progress, not a stall.
     """
-    if cycle_files:
-        latest = _read_finding_file(cycle_files[-1])
+    latest = _read_finding_file(cycle_files[-1]) if cycle_files else {}
+
+    if stopped_reason == "runtime_budget":
+        return (
+            CampaignStatus.STOPPED,
+            "Research time budget reached — findings are preserved.",
+        )
+    if stopped_reason == "cycle_cap":
+        if _cycle_cap_generation_complete(
+            campaign_id,
+            cycle_files,
+            required_cycle_count,
+        ):
+            return CampaignStatus.COMPLETE, None
+        return (
+            CampaignStatus.FAILED,
+            "No activity — research stalled. Resume to continue.",
+        )
+
+    if trigger in (_SettlementTrigger.FINDING, _SettlementTrigger.IDLE):
+        if trigger == _SettlementTrigger.FINDING and cycle_cap_reconfigured:
+            if _cycle_cap_generation_complete(
+                campaign_id,
+                cycle_files,
+                required_cycle_count,
+            ):
+                return CampaignStatus.COMPLETE, None
+            return None
         verified = latest.get("verification")
         if isinstance(verified, dict) and verified.get("passed") is True:
             return CampaignStatus.COMPLETE, None
-        deliberate_stop = stopped_reason == AUTONUDGE_STOP_REASON
+        if trigger == _SettlementTrigger.FINDING and _cycle_cap_generation_complete(
+            campaign_id,
+            cycle_files,
+            required_cycle_count,
+        ):
+            return CampaignStatus.COMPLETE, None
+
+    deliberate_stop = stopped_reason == AUTONUDGE_STOP_REASON
+    if trigger in (_SettlementTrigger.TERMINAL, _SettlementTrigger.IDLE):
         if latest and (deliberate_stop or _read_worker_done(campaign_id) is not None):
             return (
                 CampaignStatus.STOPPED,
                 "Worker ended the research loop — findings are preserved.",
             )
-    return (
-        CampaignStatus.FAILED,
-        "No activity — research stalled. Resume to continue.",
-    )
+
+    if trigger == _SettlementTrigger.IDLE or trigger == _SettlementTrigger.TERMINAL:
+        return (
+            CampaignStatus.FAILED,
+            "No activity — research stalled. Resume to continue.",
+        )
+    return None
 
 
 def _persist_new_cycle_bookkeeping(campaign_id: str, cycle_files: list[Path]) -> dict:
@@ -1435,18 +2694,41 @@ async def _settle_campaign_from_watchdog(
     *,
     observed_started_at: float | None,
     stopped_reason: str = "",
-) -> None:
-    """Classify one terminal signal and cancellation-safely remove its loop."""
+    required_cycle_count: int = 0,
+    trigger: _SettlementTrigger = _SettlementTrigger.IDLE,
+) -> _SettlementOutcome:
+    """Run one generation-bound settlement transaction.
+
+    Every completion or terminal signal enters here. Alias rejection, loop
+    ownership, cycle bookkeeping, verdict precedence, status persistence, and
+    loop retirement therefore describe one campaign identity and generation.
+    """
+    # Capture loop ownership before the first await. Resume may replace this
+    # slot while descriptor validation runs in a worker; settlement must remain
+    # bound to the generation that triggered it, not whichever loop exists when
+    # the worker returns.
+    requested = _SettlementRequest(trigger, stopped_reason, required_cycle_count)
+    if not _validate_campaign_id(campaign_id):
+        return _SettlementOutcome.STALE
+    svc = _autonudge_instance()
+    slot_key = research_slot_key(campaign_id)
+    terminating_loop = svc.get_by_slot(slot_key) if svc else None
+    terminating_authority = _loop_settlement_authority(terminating_loop)
+    terminating_loop_id = (
+        terminating_authority.loop_id if terminating_authority is not None else None
+    )
+
+    identity = await _campaign_identity_off_loop(campaign_id)
+    if identity is None or identity.slot_key != slot_key:
+        return _SettlementOutcome.STALE
+    campaign_id = identity.campaign_id
 
     # Bind cleanup to the loop that produced this terminal observation. Status
     # persistence makes Resume legal and may be slow; Resume can replace the
     # slot-bound loop before settlement continues. Re-resolving by slot after
     # that await would delete the replacement and leave RUNNING with no worker.
-    svc = _autonudge_instance()
-    terminating_loop = svc.get_by_slot(research_slot_key(campaign_id)) if svc else None
-    terminating_loop_id = terminating_loop.id if terminating_loop is not None else None
 
-    async def _settle() -> None:
+    async def _settle() -> _SettlementOutcome:
         async def _remove_terminating_loop() -> None:
             try:
                 if svc is not None and terminating_loop_id is not None:
@@ -1470,12 +2752,30 @@ async def _settle_campaign_from_watchdog(
                 last_ts.pop(campaign_id, None)
 
         async with _campaign_transition_lock(campaign_id):
+            current_loop = terminating_loop
+            # The database generation is only half of the ownership check. A
+            # Resume publishes its new ``started_at`` before ``svc.add`` finishes
+            # atomically replacing the retained loop, while holding this same
+            # lock. Settlement may have captured that old loop before waiting for
+            # the lock, so re-read the slot after acquisition and require the
+            # exact loop generation that triggered the terminal observation. A
+            # completed replacement therefore wins without letting this stale
+            # task classify the new campaign run. Mutable terminal fields are
+            # captured, not compared here: they are reclassified below after
+            # every DB/bookkeeping suspension.
+            if svc is not None:
+                current_loop = svc.get_by_slot(slot_key)
+            captured_authority = _loop_settlement_authority(current_loop)
+            if not _same_loop_generation(terminating_authority, captured_authority):
+                return _SettlementOutcome.STALE
+            if _request_for_authority(requested, captured_authority) is None:
+                return _SettlementOutcome.STALE
             if not await asyncio.to_thread(
                 _campaign_run_is_current,
                 campaign_id,
                 observed_started_at,
             ):
-                return
+                return _SettlementOutcome.STALE
             if len(cycle_files) > last_counts.get(campaign_id, 0):
                 # The worker may publish its final finding and stop tombstone in the
                 # same turn. Preserve the ordinary cycle bookkeeping before the
@@ -1486,21 +2786,85 @@ async def _settle_campaign_from_watchdog(
                     last_counts,
                     last_ts,
                 )
-            status, message = await asyncio.to_thread(
-                _stalled_campaign_verdict,
-                campaign_id,
-                cycle_files,
-                stopped_reason=stopped_reason,
-            )
+            # Reconcile at most once when authority changes while the off-loop
+            # verdict reads findings. The second change aborts stale settlement
+            # rather than chasing a moving terminal boundary indefinitely.
+            verdict: tuple[CampaignStatus, str | None] | None = None
+            authoritative_loop = current_loop
+            authoritative_authority = captured_authority
+            for attempt in range(2):
+                if svc is not None:
+                    authoritative_loop = svc.get_by_slot(slot_key)
+                authoritative_authority = _loop_settlement_authority(authoritative_loop)
+                if not _same_loop_generation(
+                    terminating_authority,
+                    authoritative_authority,
+                ):
+                    return _SettlementOutcome.STALE
+                authoritative_terminal = _terminal_settlement_request(authoritative_authority)
+                captured_terminal = _terminal_settlement_request(captured_authority)
+                if (
+                    requested.trigger != _SettlementTrigger.TERMINAL
+                    and authoritative_terminal is not None
+                    and authoritative_terminal.stopped_reason == "cycle_cap"
+                    and captured_terminal is None
+                    and authoritative_authority is not None
+                    and captured_authority is not None
+                    and authoritative_authority.cycle_count != captured_authority.cycle_count
+                ):
+                    # The counter can advance after ``cycle_files`` was listed.
+                    # Reclassifying against that stale evidence would turn a
+                    # healthy just-finished cycle into FAILED. The next watchdog
+                    # poll relists files and enters through the terminal path.
+                    return _SettlementOutcome.STALE
+                authoritative_request = _request_for_authority(
+                    requested,
+                    authoritative_authority,
+                )
+                if authoritative_request is None:
+                    return _SettlementOutcome.STALE
+                cycle_cap_reconfigured = bool(
+                    authoritative_request.trigger == _SettlementTrigger.FINDING
+                    and authoritative_authority is not None
+                    and authoritative_request.required_cycle_count != required_cycle_count
+                )
+                verdict = await asyncio.to_thread(
+                    _stalled_campaign_verdict,
+                    campaign_id,
+                    cycle_files,
+                    stopped_reason=authoritative_request.stopped_reason,
+                    required_cycle_count=authoritative_request.required_cycle_count,
+                    trigger=authoritative_request.trigger,
+                    cycle_cap_reconfigured=cycle_cap_reconfigured,
+                )
+                post_verdict_loop = authoritative_loop
+                if svc is not None:
+                    post_verdict_loop = svc.get_by_slot(slot_key)
+                post_verdict_authority = _loop_settlement_authority(post_verdict_loop)
+                if not _same_loop_generation(
+                    terminating_authority,
+                    post_verdict_authority,
+                ):
+                    return _SettlementOutcome.STALE
+                if post_verdict_authority == authoritative_authority:
+                    authoritative_loop = post_verdict_loop
+                    authoritative_authority = post_verdict_authority
+                    break
+                if attempt == 1:
+                    return _SettlementOutcome.STALE
+            if verdict is None:
+                return _SettlementOutcome.NO_VERDICT
+            status, message = verdict
             # Persist a non-rearmable loop state before SQLite becomes terminal.
             # If the later removal write fails, restart may retain this exact
             # loop, but it cannot schedule another worker turn.
             if (
                 svc is not None
-                and terminating_loop is not None
-                and terminating_loop.active
+                and authoritative_loop is not None
+                and authoritative_authority is not None
+                and authoritative_authority.active
             ):
-                await svc.update(terminating_loop.id, active=False)
+                await svc.update(authoritative_loop.id, active=False)
             try:
                 await asyncio.to_thread(
                     update_campaign_status,
@@ -1526,6 +2890,7 @@ async def _settle_campaign_from_watchdog(
                 raise
             await _remove_terminating_loop()
             _emit_sse({"type": status.value, "campaign_id": campaign_id})
+            return _SettlementOutcome.SETTLED
 
     def _report_terminal_settlement(settled: "asyncio.Task[Any]") -> None:
         # Retrieve and report the worker failure without letting it replace the
@@ -1545,7 +2910,15 @@ async def _settle_campaign_from_watchdog(
     # persisted loop that start() can re-arm for a terminal campaign, so settle
     # the cleanup task before the cancellation propagates.
     settlement = asyncio.create_task(_settle())
-    await _settle_before_cancellation(settlement, on_settled=_report_terminal_settlement)
+    return await _settle_before_cancellation(
+        settlement,
+        on_settled=_report_terminal_settlement,
+    )
+
+
+def _slot_in_flight(slot: Any) -> bool:
+    """Return whether an agent turn is running, including between stages."""
+    return bool(slot is not None and (slot.running or getattr(slot, "_in_stage_execution", False)))
 
 
 async def _watchdog_loop(app: web.Application | None = None) -> None:
@@ -1594,43 +2967,50 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                 if row["execution_mode"] == "workflow":
                     await _poll_workflow_campaign(cid, state, row["started_at"])
                     continue
-                slot_key = research_slot_key(cid)
+                identity = await _campaign_identity_off_loop(cid)
+                if identity is None:
+                    logger.warning(
+                        "Auto Research: refusing aliased campaign identity %s",
+                        cid,
+                    )
+                    continue
+                cid = identity.campaign_id
+                slot_key = identity.slot_key
                 slot = state._slots.get(slot_key) if state is not None else None
                 svc = _autonudge_instance()
                 loop = svc.get_by_slot(slot_key) if svc is not None else None
                 started = row["started_at"]
-                run_newly_observed = (
-                    cid not in last_counts or last_ts.get(cid, 0.0) < (started or 0)
+                run_newly_observed = cid not in last_counts or last_ts.get(cid, 0.0) < (
+                    started or 0
                 )
-                if loop is not None and not loop.active:
-                    stopped_reason = str(getattr(loop, "stopped_reason", "") or "")
-                    if stopped_reason == AUTONUDGE_STOP_REASON:
-                        if run_newly_observed:
-                            # A resume marks the campaign RUNNING before _launch_loop
-                            # removes the previous run's tombstone. Establish this
-                            # run's observation boundary before trusting stop evidence
-                            # so a watchdog poll in that window cannot settle the new
-                            # run. Keep the tombstone inactive while launch catches up.
-                            cycle_files = await asyncio.to_thread(_list_cycle_files, cid)
-                            last_counts[cid] = len(cycle_files)
-                            last_ts[cid] = time.time()
-                        # The directive runs inside the worker turn. Removing
-                        # its loop before that turn exits would cancel the
-                        # firing timer and destroy the response/bookkeeping.
-                        if slot is not None and slot.running:
-                            continue
-                        if run_newly_observed:
-                            continue
+                terminal_request = _terminal_settlement_request(loop)
+                if terminal_request is not None:
+                    if run_newly_observed:
+                        # Start/Resume publishes its new generation before the
+                        # retained loop is replaced. Establish the new evidence
+                        # boundary before trusting any old loop terminal state.
                         cycle_files = await asyncio.to_thread(_list_cycle_files, cid)
-                        await _settle_campaign_from_watchdog(
-                            cid,
-                            cycle_files,
-                            last_counts,
-                            last_ts,
-                            observed_started_at=started,
-                            stopped_reason=stopped_reason,
-                        )
+                        last_counts[cid] = len(cycle_files)
+                        last_ts[cid] = time.time()
                         continue
+                    if _slot_in_flight(slot):
+                        # Every terminal reason waits on the same turn/stage
+                        # ownership gate. Its final finding and cycle accounting
+                        # must land before one settlement transaction classifies it.
+                        last_ts[cid] = time.time()
+                        continue
+                    cycle_files = await asyncio.to_thread(_list_cycle_files, cid)
+                    await _settle_campaign_from_watchdog(
+                        cid,
+                        cycle_files,
+                        last_counts,
+                        last_ts,
+                        observed_started_at=started,
+                        stopped_reason=terminal_request.stopped_reason,
+                        required_cycle_count=terminal_request.required_cycle_count,
+                        trigger=terminal_request.trigger,
+                    )
+                    continue
                 # 24h auto-approve cap: expire trust and require re-authorization.
                 if started and time.time() - started > _TRUST_TTL_SECS:
                     if slot is not None:
@@ -1647,7 +3027,11 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                     await svc.update(loop.id, active=True)
                 # Attended: pause for the user. Unattended: discard the stray
                 # question + keep running (code-enforced; see helper).
-                if _should_pause_for_question(cid, bool(row["auto_approve"])):
+                if await asyncio.to_thread(
+                    _should_pause_for_question,
+                    cid,
+                    bool(row["auto_approve"]),
+                ):
                     await _guarded_transition(
                         cid,
                         CampaignStatus.NEEDS_INPUT,
@@ -1661,7 +3045,7 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                 # Lightweight: count files without reading them all. Only parse
                 # the latest finding when count advances (avoids re-reading 50+
                 # JSON files every 5s).
-                cycle_files = _list_cycle_files(cid)
+                cycle_files = await asyncio.to_thread(_list_cycle_files, cid)
                 count = len(cycle_files)
                 if run_newly_observed:
                     last_counts[cid] = count
@@ -1669,34 +3053,24 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                     continue
                 prev = last_counts[cid]
                 if count > prev:
-                    latest = await _record_new_cycle_from_watchdog(
+                    if _slot_in_flight(slot):
+                        # A finding can appear before the owning turn persists
+                        # its cycle charge or final loop state. Defer both
+                        # bookkeeping and classification until that owner exits.
+                        last_ts[cid] = time.time()
+                        continue
+                    settlement = await _settle_campaign_from_watchdog(
                         cid,
                         cycle_files,
                         last_counts,
                         last_ts,
+                        observed_started_at=started,
+                        required_cycle_count=int(row["max_cycles"] or 0),
+                        trigger=_SettlementTrigger.FINDING,
                     )
-                    verified = latest.get("verification")
-                    if isinstance(verified, dict) and verified.get("passed") is True:
-                        await _guarded_transition(
-                            cid,
-                            CampaignStatus.COMPLETE,
-                            allowed_current=(CampaignStatus.RUNNING,),
-                            expected_started_at=started,
-                            on_commit=lambda _r, cid=cid: _sse_from_thread(
-                                event_loop, {"type": "complete", "campaign_id": cid}
-                            ),
-                        )
-                    elif count >= row["max_cycles"]:
-                        await _guarded_transition(
-                            cid,
-                            CampaignStatus.COMPLETE,
-                            allowed_current=(CampaignStatus.RUNNING,),
-                            expected_started_at=started,
-                            on_commit=lambda _r, cid=cid: _sse_from_thread(
-                                event_loop, {"type": "complete", "campaign_id": cid}
-                            ),
-                        )
-                    elif check_stagnation(cid):
+                    if settlement != _SettlementOutcome.NO_VERDICT:
+                        continue
+                    if await asyncio.to_thread(check_stagnation, cid):
                         await _guarded_transition(
                             cid,
                             CampaignStatus.STAGNANT,
@@ -1707,9 +3081,13 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                             ),
                         )
                 elif cid in last_ts:
-                    if slot is not None and slot.running:
+                    if _slot_in_flight(slot):
                         # Agent is actively working this cycle (deep research can
-                        # take minutes) — alive, not unresponsive. Refresh liveness.
+                        # take minutes) — alive, not unresponsive. A multi-stage
+                        # plan between stages counts as alive too (``running`` is
+                        # False there, only ``_in_stage_execution`` set); without
+                        # it a between-stage turn past the idle deadline would be
+                        # condemned as stalled. Refresh liveness.
                         last_ts[cid] = time.time()
                     elif time.time() - last_ts[cid] > _unresponsive_deadline(row["idle_secs"]):
                         # Deadline expired — but classify before condemning: a
@@ -1755,46 +3133,40 @@ def _require_auth(request: web.Request) -> web.Response | None:
 
 
 async def _prepare_loop_launch(cid: str) -> None:
-    """Remove prior-run stop evidence before a campaign becomes RUNNING.
+    """Clear prior-run marker evidence before a campaign becomes RUNNING.
 
-    The watchdog queries RUNNING campaigns, so callers must await this helper
-    before publishing that state. Otherwise a slow marker cleanup can expose a
-    resumed campaign alongside its previous run's tombstone, letting the
-    watchdog settle the new run before its worker is armed.
+    The prior inactive loop stays durable until ``AutoNudgeService.add``
+    atomically replaces it. ``add`` restores that record when replacement
+    persistence fails, so Resume never deletes its only recovery record first.
+    The campaign transition lock excludes the watchdog across marker cleanup,
+    RUNNING publication, and replacement arming.
     """
-    # A fresh run must not inherit the previous run's deliberate-stop signals:
-    # stale marker/tombstone evidence would classify a genuine stall of THIS
-    # run as STOPPED. Consume the source-owned tombstone before the potentially
-    # slow marker cleanup so even direct _launch_loop callers preserve that
-    # ordering. The marker path is LLM-writable, so its cleanup runs off-loop
-    # and may rmtree an arbitrarily large rogue directory.
-    svc = _autonudge_instance()
-    if svc is not None:
-        previous = svc.get_by_slot(research_slot_key(cid))
-        if (
-            previous is not None
-            and not previous.active
-            and str(getattr(previous, "stopped_reason", "") or "") == AUTONUDGE_STOP_REASON
-        ):
-            await svc.remove(previous.id)
+    # The marker path is LLM-writable, so its cleanup runs off-loop and may
+    # rmtree an arbitrarily large rogue directory. The slot-bound loop is not
+    # removed here: _launch_loop's add transaction owns replacement ordering.
     await asyncio.to_thread(_clear_worker_done_marker, cid)
 
 
-async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False) -> None:
-    """Arm an autonudge loop that drives the research cycles for this campaign.
+async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False) -> bool:
+    """Arm the autonudge worker and report whether a durable loop was created.
 
-    Best-effort: if autonudge or dashboard state is unavailable, the status
-    change still stands but no worker is launched (logged for visibility).
+    Missing dashboard or AutoNudge state is reported as ``False`` so the
+    enclosing Start/Resume transaction can restore its prior campaign row.
     """
+    identity = await _campaign_identity_off_loop(cid)
+    if identity is None:
+        return False
+    cid = identity.campaign_id
     if not prepared:
         await _prepare_loop_launch(cid)
     state = request.app.get("state")
     svc = _autonudge_instance()
     if state is None or svc is None:
+        await asyncio.to_thread(identity.close)
         logger.warning(
             "auto_research: cannot launch loop for %s (autonudge/state unavailable)", cid
         )
-        return
+        return False
 
     def _read_launch_row_and_write_brief() -> sqlite3.Row | None:
         """Row read + brief render in ONE write transaction.
@@ -1828,7 +3200,8 @@ async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False
 
     row = await asyncio.to_thread(_read_launch_row_and_write_brief)
     if row is None:
-        return
+        await asyncio.to_thread(identity.close)
+        return False
     # Pin the campaign's explicit model pick on the worker slot ('' = inherit
     # the research agent's / backend's default resolution — never a hardcoded
     # id here). If a concrete pick is not served for this account, the session
@@ -1836,7 +3209,7 @@ async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False
     # worker on the backend default — the notice it posts lands in the hidden
     # research-<cid> transcript, not on the Research Lab page.
     campaign_model = row["model"] or ""
-    slot_key = research_slot_key(cid)
+    slot_key = identity.slot_key
     slot = state.get_or_create_slot(
         name=slot_key,
         agent=_RESEARCH_AGENT,
@@ -1891,14 +3264,17 @@ async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False
     slot._trust = True
     _audit("campaign_auto_approve", cid)
     state.push_slots_update()  # surface the app-owned worker slot so the UI filters it
+    campaign_dir = identity.directory
+    await asyncio.to_thread(identity.close)
     await svc.add(
         slot_key=slot.key,
-        message=_RESEARCH_NUDGE.format(cid=cid, dir=_campaign_dir(cid)),
+        message=_RESEARCH_NUDGE.format(cid=cid, dir=campaign_dir),
         idle_secs=int(row["idle_secs"] or DEFAULT_IDLE_SECS),
         max_cycles=int(row["max_cycles"] or 0),
-        stop_sentinel_path=str(_campaign_dir(cid) / "STOP"),
+        stop_sentinel_path=str(campaign_dir / "STOP"),
         admission_check=lambda: state.get_slot(slot.key) is slot,
     )
+    return True
 
 
 _brief_publish_locks: dict[str, threading.Lock] = {}
@@ -2031,7 +3407,11 @@ def _write_brief(cid: str, row: Any) -> None:
             "Wait for all completion events, then synthesize results into your cycle finding. "
             f"If fewer than {pw} sub-questions remain open, spawn only as many as needed.",
         ]
-    _campaign_dir(cid).joinpath("brief.md").write_text("\n".join(lines), encoding="utf-8")
+    identity = _campaign_identity_for_write(cid)
+    try:
+        _write_campaign_text(identity, "brief.md", "\n".join(lines))
+    finally:
+        identity.close()
 
 
 # --- RL v2: recursive exploration (emergent sub-questions) ---
@@ -2163,7 +3543,9 @@ def _activate_emergent(campaign_id: str) -> list[dict]:
             return []
         subs = json.loads(row["sub_questions"] or "[]")
         initial = [
-            s for s in subs if isinstance(s, dict) and s.get("origin") in ("grill", "manual", None, "")
+            s
+            for s in subs
+            if isinstance(s, dict) and s.get("origin") in ("grill", "manual", None, "")
         ]
         initial_open = [s for s in initial if s.get("status") != "answered"]
         if initial_open and int(row["total_cycles"] or 0) < len(initial):
@@ -2236,23 +3618,30 @@ def _enter_finalize(campaign_id: str) -> bool:
     """Signal FINALIZE MODE once: freeze exploration (drop any stray emergent
     file) and write a guidance directive telling the agent to consolidate the
     accumulated findings into a final answer. Returns True if newly signaled."""
-    d = _safe_campaign_dir(campaign_id)
-    if d is None:
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
         return False
-    (d / _EMERGENT_FILENAME).unlink(missing_ok=True)  # halt pending exploration
-    flag = d / _FINALIZE_FLAG
-    if flag.exists():
-        return False  # already signaled — leave the guidance in place
-    flag.write_text(str(time.time()), encoding="utf-8")
-    write_guidance(
-        campaign_id,
-        "FINALIZE MODE — you are near the cycle budget. STOP opening new "
-        "sub-questions and STOP proposing emergent_questions.json. Use the "
-        "remaining cycles to CONSOLIDATE everything you have learned into a "
-        "clear, well-structured final answer to the main question in FINDINGS.md "
-        "(executive summary, key findings with evidence, and any open gaps). If "
-        "the Definition of Done is met, set verification.passed=true in your finding.",
-    )
+    try:
+        _remove_campaign_leaf(identity, _EMERGENT_FILENAME)
+        if not _write_campaign_file_text(
+            identity,
+            (_FINALIZE_FLAG,),
+            str(time.time()),
+            exclusive=True,
+        ):
+            return False
+        _write_campaign_text(
+            identity,
+            "guidance.txt",
+            "FINALIZE MODE — you are near the cycle budget. STOP opening new "
+            "sub-questions and STOP proposing emergent_questions.json. Use the "
+            "remaining cycles to CONSOLIDATE everything you have learned into a "
+            "clear, well-structured final answer to the main question in FINDINGS.md "
+            "(executive summary, key findings with evidence, and any open gaps). If "
+            "the Definition of Done is met, set verification.passed=true in your finding.",
+        )
+    finally:
+        identity.close()
     _audit("campaign_finalize_mode", campaign_id)
     return True
 
@@ -2276,16 +3665,24 @@ def _advance_exploration(campaign_id: str) -> None:
 
 async def _stop_loop(cid: str, *, remove: bool) -> None:
     """Pause (remove=False) or tear down (remove=True) a campaign's autonudge loop."""
+    identity = await _campaign_identity_off_loop(cid)
+    if identity is None:
+        return
     svc = _autonudge_instance()
     if svc is None:
+        await asyncio.to_thread(identity.close)
         return
-    loop = svc.get_by_slot(research_slot_key(cid))
+    loop = svc.get_by_slot(identity.slot_key)
     if not loop:
+        await asyncio.to_thread(identity.close)
         return
-    if remove:
-        await svc.remove(loop.id)
-    else:
-        await svc.update(loop.id, active=False)
+    try:
+        if remove:
+            await svc.remove(loop.id)
+        else:
+            await svc.update(loop.id, active=False)
+    finally:
+        await asyncio.to_thread(identity.close)
 
 
 # --- Dynamic Workflow mode helpers ---
@@ -2301,43 +3698,57 @@ def _campaign_execution_mode(campaign_id: str) -> str:
 
 
 def _write_workflow_run_id(campaign_id: str, run_id: str) -> None:
-    d = _campaign_dir(campaign_id)
-    # cycle_offset: number of cycle files already written by prior runs. Pause
-    # cancels the DW run and resume launches a NEW run whose investigate events
-    # restart at index 0; without this offset the adapter would re-index new
-    # findings over the old ones (or drop them until the new run out-produced the
-    # old). Persisting the offset makes the resumed run append correctly.
-    cycle_offset = len(_list_cycle_files(campaign_id))
-    d.joinpath(_WORKFLOW_RUN_FILE).write_text(
-        json.dumps({"run_id": run_id, "ts": time.time(), "cycle_offset": cycle_offset}),
-        encoding="utf-8",
-    )
+    identity = _campaign_identity_for_write(campaign_id)
+    try:
+        # cycle_offset: number of cycle files already written by prior runs. Pause
+        # cancels the DW run and resume launches a NEW run whose investigate events
+        # restart at index 0; without this offset the adapter would re-index new
+        # findings over the old ones (or drop them until the new run out-produced the
+        # old). Persisting the offset makes the resumed run append correctly.
+        cycle_offset = len(_list_cycle_files(campaign_id))
+        _write_campaign_text(
+            identity,
+            _WORKFLOW_RUN_FILE,
+            json.dumps({"run_id": run_id, "ts": time.time(), "cycle_offset": cycle_offset}),
+        )
+    finally:
+        identity.close()
 
 
 def _read_workflow_cycle_offset(campaign_id: str) -> int:
-    d = _safe_campaign_dir(campaign_id)
-    p = (d / _WORKFLOW_RUN_FILE) if d else None
-    if not p or not p.exists():
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
         return 0
     try:
-        return int(json.loads(p.read_text(encoding="utf-8")).get("cycle_offset", 0) or 0)
-    except (OSError, ValueError, TypeError):
+        data = _read_campaign_json_or_missing(
+            identity,
+            (_WORKFLOW_RUN_FILE,),
+            max_bytes=64 * 1024,
+        )
+        return int(data.get("cycle_offset", 0) or 0) if isinstance(data, dict) else 0
+    except (ValueError, TypeError):
         return 0
+    finally:
+        identity.close()
 
 
 def _read_workflow_run_id(campaign_id: str) -> str | None:
-    d = _safe_campaign_dir(campaign_id)
-    p = (d / _WORKFLOW_RUN_FILE) if d else None
-    if not p or not p.exists():
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
         return None
     try:
-        return str(json.loads(p.read_text(encoding="utf-8")).get("run_id") or "") or None
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return None
+        data = _read_campaign_json_or_missing(
+            identity,
+            (_WORKFLOW_RUN_FILE,),
+            max_bytes=64 * 1024,
+        )
+        return str(data.get("run_id") or "") or None if isinstance(data, dict) else None
+    finally:
+        identity.close()
 
 
-async def _launch_workflow(request: web.Request, cid: str) -> None:
-    """Start the research methodology as a Dynamic Workflow (workflow mode).
+async def _launch_workflow(request: web.Request, cid: str) -> bool:
+    """Start Dynamic Workflow mode and report whether a durable run ID exists.
 
     Best-effort: if the gateway's WorkflowService is unavailable or the start
     fails, mark the campaign FAILED so it doesn't sit zombie in RUNNING. The
@@ -2345,9 +3756,14 @@ async def _launch_workflow(request: web.Request, cid: str) -> None:
     events/result into the same cycle/findings files + SSE the UI already
     consumes.
     """
+    identity = await _campaign_identity_off_loop(cid)
+    if identity is None:
+        return False
+    cid = identity.campaign_id
     state = request.app.get("state")
     svc = getattr(state, "workflow_service", None) if state is not None else None
     if svc is None:
+        await asyncio.to_thread(identity.close)
         logger.warning(
             "auto_research: workflow_service unavailable; cannot launch workflow for %s", cid
         )
@@ -2358,7 +3774,7 @@ async def _launch_workflow(request: web.Request, cid: str) -> None:
             error_message="Dynamic Workflow engine unavailable — cannot start workflow mode.",
         )
         _emit_sse({"type": "failed", "campaign_id": cid})
-        return
+        return False
 
     def _read_workflow_row() -> sqlite3.Row | None:
         db = _get_db()
@@ -2369,10 +3785,13 @@ async def _launch_workflow(request: web.Request, cid: str) -> None:
 
     row = await asyncio.to_thread(_read_workflow_row)
     if row is None:
-        return
+        await asyncio.to_thread(identity.close)
+        return False
     args = build_workflow_args(dict(row))
+    slot_key = identity.slot_key
+    await asyncio.to_thread(identity.close)
     try:
-        res = await svc.start(RESEARCH_WORKFLOW_SOURCE, name=research_slot_key(cid), args=args)
+        res = await svc.start(RESEARCH_WORKFLOW_SOURCE, name=slot_key, args=args)
     except Exception:
         logger.exception("auto_research: workflow start failed for %s", cid)
         await asyncio.to_thread(
@@ -2382,27 +3801,46 @@ async def _launch_workflow(request: web.Request, cid: str) -> None:
             error_message="Workflow start failed — see gateway logs for details.",
         )
         _emit_sse({"type": "failed", "campaign_id": cid})
-        return
+        return False
     run_id = (res or {}).get("run_id")
     if run_id:
-        _write_workflow_run_id(cid, run_id)
+        try:
+            await asyncio.to_thread(_write_workflow_run_id, cid, run_id)
+        except BaseException:
+            # start() registered and scheduled this exact run before returning
+            # its id. If local ownership publication fails, cancel that run
+            # before the enclosing campaign transaction rolls back.
+            cancelled = await svc.cancel(run_id)
+            if not cancelled:
+                logger.warning(
+                    "auto_research: workflow %s could not be cancelled after "
+                    "run-id publication failed",
+                    run_id,
+                )
+            raise
         _audit("campaign_workflow_started", cid)
-    else:
-        logger.warning("auto_research: workflow start returned no run_id for %s: %s", cid, res)
-        await asyncio.to_thread(
-            update_campaign_status,
-            cid,
-            CampaignStatus.FAILED,
-            error_message="Workflow start returned no run ID.",
-        )
-        _emit_sse({"type": "failed", "campaign_id": cid})
+        return True
+    logger.warning("auto_research: workflow start returned no run_id for %s: %s", cid, res)
+    await asyncio.to_thread(
+        update_campaign_status,
+        cid,
+        CampaignStatus.FAILED,
+        error_message="Workflow start returned no run ID.",
+    )
+    _emit_sse({"type": "failed", "campaign_id": cid})
+    return False
 
 
 async def _stop_workflow(request: web.Request, cid: str) -> None:
     """Cancel a campaign's Dynamic Workflow run (workflow mode). Best-effort."""
+    identity = await _campaign_identity_off_loop(cid)
+    if identity is None:
+        return
+    cid = identity.campaign_id
+    await asyncio.to_thread(identity.close)
     state = request.app.get("state")
     svc = getattr(state, "workflow_service", None) if state is not None else None
-    run_id = _read_workflow_run_id(cid)
+    run_id = await asyncio.to_thread(_read_workflow_run_id, cid)
     if svc is not None and run_id:
         try:
             await svc.cancel(run_id)
@@ -2420,6 +3858,10 @@ async def _poll_workflow_campaign(
     raises into the watchdog. ``observed_started_at`` fences every terminal
     write to the run generation this poll actually observed.
     """
+    identity = await _campaign_identity_off_loop(campaign_id)
+    if identity is None:
+        return
+    campaign_id = identity.campaign_id
     try:
         event_loop = asyncio.get_running_loop()
 
@@ -2434,7 +3876,7 @@ async def _poll_workflow_campaign(
             return cleaned
 
         svc = getattr(state, "workflow_service", None) if state is not None else None
-        run_id = _read_workflow_run_id(campaign_id)
+        run_id = await asyncio.to_thread(_read_workflow_run_id, campaign_id)
         if svc is None or not run_id:
             return
         # svc.result() reads a file-backed snapshot (JSON on disk) — it does not
@@ -2446,10 +3888,11 @@ async def _poll_workflow_campaign(
             # Bounded-poll fallback: if the run snapshot is gone (LRU eviction,
             # lost record) and the campaign has been RUNNING for > 1h with no
             # progress, mark it FAILED rather than let it sit zombie forever.
-            d = _safe_campaign_dir(campaign_id)
-            run_file = (d / _WORKFLOW_RUN_FILE) if d else None
-            run_meta = (
-                await asyncio.to_thread(_read_json_or_missing, run_file) if run_file else None
+            run_meta = await asyncio.to_thread(
+                _read_campaign_json_or_missing,
+                identity,
+                (_WORKFLOW_RUN_FILE,),
+                max_bytes=64 * 1024,
             )
             if isinstance(run_meta, dict):
                 try:
@@ -2482,7 +3925,7 @@ async def _poll_workflow_campaign(
                 _campaign_run_is_current, campaign_id, observed_started_at
             ):
                 return  # replacement run took over while we read the snapshot
-            d = _campaign_dir(campaign_id)
+            d = identity.directory
             events = snap.get("events") or []
             # Correlate agent_started (carries label/phase) -> agent_finished by id.
             started: dict = {}
@@ -2497,7 +3940,10 @@ async def _poll_workflow_campaign(
                     meta = started.get(data.get("agent_id"), {})
                     if str(meta.get("label", "")).startswith("investigate") and data.get("ok"):
                         investigate.append((meta, data))
-            cycle_offset = _read_workflow_cycle_offset(campaign_id)
+            cycle_offset = await asyncio.to_thread(
+                _read_workflow_cycle_offset,
+                campaign_id,
+            )
             wrote = False
             # Each investigation maps to one cycle file (intentional: the UI shows
             # per-investigation progress, and total_cycles is a UI counter, not the
@@ -2509,7 +3955,9 @@ async def _poll_workflow_campaign(
                 fpath = d.joinpath("findings", "cycle_%03d.json" % cycle_no)
                 meta, fin = investigate[i]
                 label = str(meta.get("label", ""))
-                insight = label[len("investigate: ") :] if label.startswith("investigate: ") else label
+                insight = (
+                    label[len("investigate: ") :] if label.startswith("investigate: ") else label
+                )
                 finding = {
                     "cycle": cycle_no,
                     "summary": _redact_llm(fin.get("result_summary", "")),
@@ -2531,7 +3979,7 @@ async def _poll_workflow_campaign(
                     ``_txn_and_notify``'s commit-then-notify discipline. Blocking;
                     call off-loop.
                     """
-                    if not _write_new_cycle_files(pending):
+                    if not _write_new_cycle_files_for_identity(identity, pending):
                         return False
                     count = len(_list_cycle_files(campaign_id))
                     db = _get_db()
@@ -2541,8 +3989,7 @@ async def _poll_workflow_campaign(
                         # somehow raced past the entry check cannot write counts
                         # into a replacement run's row.
                         db.execute(
-                            "UPDATE campaigns SET total_cycles=? "
-                            "WHERE id=? AND started_at IS ?",
+                            "UPDATE campaigns SET total_cycles=? " "WHERE id=? AND started_at IS ?",
                             (count, campaign_id, observed_started_at),
                         )
                         db.commit()
@@ -2559,11 +4006,17 @@ async def _poll_workflow_campaign(
                     )
                 )
             if wrote:
+
+                def _latest_persisted_finding() -> dict:
+                    files = _list_cycle_files(campaign_id)
+                    return _read_finding_file(files[-1]) if files else {}
+
+                latest = await asyncio.to_thread(_latest_persisted_finding)
                 _emit_sse(
                     {
                         "type": "new_finding",
                         "campaign_id": campaign_id,
-                        "finding": _read_finding_file(_list_cycle_files(campaign_id)[-1]),
+                        "finding": latest,
                     }
                 )
             status = snap.get("status")
@@ -2574,8 +4027,9 @@ async def _poll_workflow_campaign(
                     fs = (result or {}).get("findings") or []
                     report = "\n\n".join(str(x) for x in fs) if isinstance(fs, list) else ""
                 await asyncio.to_thread(
-                    _write_text,
-                    d.joinpath("FINDINGS.md"),
+                    _write_campaign_text,
+                    identity,
+                    "FINDINGS.md",
                     _redact_llm(report) or "(no findings gathered)",
                 )
 
@@ -2594,6 +4048,7 @@ async def _poll_workflow_campaign(
 
                 await asyncio.to_thread(_complete_and_notify)
             elif status in ("failed", "cancelled"):
+
                 def _fail_and_notify() -> dict | None:
                     r = _guarded_txn(
                         campaign_id,
@@ -2605,14 +4060,14 @@ async def _poll_workflow_campaign(
                         ),
                     )
                     if r:
-                        _sse_from_thread(
-                            event_loop, {"type": "failed", "campaign_id": campaign_id}
-                        )
+                        _sse_from_thread(event_loop, {"type": "failed", "campaign_id": campaign_id})
                     return r
 
                 await asyncio.to_thread(_fail_and_notify)
     except Exception:
         logger.exception("auto_research: workflow poll failed for %s", campaign_id)
+    finally:
+        await asyncio.to_thread(identity.close)
 
 
 # --- HTTP handlers ---
@@ -2870,22 +4325,83 @@ async def _handle_get(request: web.Request) -> web.Response:
     return web.json_response(c) if c else web.json_response({"error": "Not found"}, status=404)
 
 
-def _read_report(campaign_id: str) -> str:
-    """Read the agent's cumulative FINDINGS.md report (empty if none yet).
-
-    UTF-8 with byte replacement: the report is LLM prose, and
-    ``UnicodeDecodeError`` is a ``ValueError`` — NOT an ``OSError`` — so before
-    this it escaped the handler and turned GET /campaigns/{id}/report into a 500
-    for any report containing a non-ASCII character.
-    """
-    d = _safe_campaign_dir(campaign_id)
-    if not d:
-        return ""
-    p = d / "FINDINGS.md"
+def _read_report_for_identity(identity: _CampaignIdentity) -> str | None:
+    """Read one bounded report view through the campaign's pinned identity."""
     try:
-        return p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
-    except OSError:
+        raw = _read_campaign_file_bytes(
+            identity,
+            ("FINDINGS.md",),
+            max_bytes=_REPORT_VIEW_MAX_BYTES,
+            allow_truncate=True,
+        )
+    except FileTooLargeError:  # defensive: allow_truncate owns this case
+        return None
+    if raw is None:
+        return None
+    text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    if len(raw) < _REPORT_VIEW_MAX_BYTES:
+        return text
+
+    recent = [
+        finding
+        for path in _recent_cycle_files(identity.campaign_id)
+        if (finding := _read_finding_file(path))
+    ]
+    suffix = "\n\n[Report view limited to the first 1 MiB; the complete report remains on disk.]"
+    if recent:
+        suffix += "\n\n## Recent cycle evidence\n\n" + json.dumps(
+            recent,
+            ensure_ascii=False,
+            indent=2,
+        )
+    return text + suffix
+
+
+def _read_report_export_for_identity(identity: _CampaignIdentity) -> str | None:
+    """Read the complete authoritative report within the export safety bound.
+
+    Unlike :func:`_read_report_for_identity`, this never truncates, appends a
+    dashboard banner, or substitutes recent cycle evidence. The metadata probe
+    only classifies missing versus refused; the bytes still come exclusively
+    from the campaign-pinned, no-link, single-inode reader.
+    """
+    try:
+        report_stat = _campaign_leaf_stat(identity, "FINDINGS.md")
+    except OSError as exc:
+        raise _ReportExportRefusedError("report metadata unavailable") from exc
+    if report_stat is None:
+        return None
+    if not stat.S_ISREG(report_stat.st_mode) or report_stat.st_nlink > 1:
+        raise _ReportExportRefusedError("report is not a single-linked regular file")
+
+    raw = _read_campaign_file_bytes(
+        identity,
+        ("FINDINGS.md",),
+        max_bytes=_REPORT_EXPORT_MAX_BYTES,
+    )
+    if raw is None:
+        # A disappearance after the metadata probe is still an ordinary missing
+        # report. Any leaf or campaign that remains but failed the authoritative
+        # open/revalidation gate is an explicit refusal, never a false 404.
+        try:
+            report_stat = _campaign_leaf_stat(identity, "FINDINGS.md")
+        except OSError as exc:
+            raise _ReportExportRefusedError("report metadata unavailable") from exc
+        if report_stat is None:
+            return None
+        raise _ReportExportRefusedError("report failed the campaign ownership gate")
+    return raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _read_report(campaign_id: str) -> str:
+    """Read a bounded, useful view of the cumulative FINDINGS.md report."""
+    identity = _campaign_identity(campaign_id)
+    if identity is None:
         return ""
+    try:
+        return _read_report_for_identity(identity) or ""
+    finally:
+        identity.close()
 
 
 async def _handle_report(request: web.Request) -> web.Response:
@@ -2895,8 +4411,13 @@ async def _handle_report(request: web.Request) -> web.Response:
     if not _validate_campaign_id(cid):
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
     _audit("campaign_report", cid)
-    # FINDINGS.md is agent-authored — redact before serving to the dashboard.
-    report = _redact_finding({"v": _read_report(cid)})["v"]
+
+    def _read_and_redact_report() -> str:
+        return _redact_finding({"v": _read_report(cid)})["v"]
+
+    # The oversized branch scans an agent-controlled directory and reads up to
+    # four bounded cycle files. Keep the complete read+redaction path off-loop.
+    report = await asyncio.to_thread(_read_and_redact_report)
     return web.json_response({"report": report})
 
 
@@ -2906,8 +4427,19 @@ async def _handle_action(request: web.Request) -> web.Response:
     cid = request.match_info["id"]
     if not _validate_campaign_id(cid):
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
+    identity = await _campaign_identity_off_loop(cid)
+    if identity is None:
+        return web.json_response(
+            {
+                "error": "Invalid or aliased campaign ID",
+                "code": "campaign_identity_invalid",
+            },
+            status=400,
+        )
+    cid = identity.campaign_id
     body = await _read_json_body(request)
     if isinstance(body, web.Response):
+        await asyncio.to_thread(identity.close)
         return body
     action = body.get("action")
     status_map = {
@@ -2917,6 +4449,7 @@ async def _handle_action(request: web.Request) -> web.Response:
         "stop": CampaignStatus.STOPPED,
     }
     if action not in status_map and action != "fork":
+        await asyncio.to_thread(identity.close)
         return web.json_response({"error": f"Unknown action: {action}"}, status=400)
 
     # Fork: creates a new child campaign from a completed parent.
@@ -2934,8 +4467,10 @@ async def _handle_action(request: web.Request) -> web.Response:
 
         parent = await asyncio.to_thread(_read_fork_parent)
         if parent is None:
+            await asyncio.to_thread(identity.close)
             return web.json_response({"error": "Not found"}, status=404)
         if parent["status"] not in (CampaignStatus.COMPLETE, CampaignStatus.STOPPED):
+            await asyncio.to_thread(identity.close)
             return web.json_response(
                 {"error": "Can only fork a completed or stopped campaign"}, status=409
             )
@@ -2956,23 +4491,75 @@ async def _handle_action(request: web.Request) -> web.Response:
         }
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, create_campaign, fork_config)
-        # Copy parent FINDINGS.md as context into the fork's dir. Use the
-        # path-traversal-guarded _safe_campaign_dir (resolve + is_relative_to)
-        # for both ids — defense-in-depth even though both are already
-        # format-validated (cid via _validate_campaign_id, result["id"] is a
-        # freshly generated uuid) — consistent with _handle_grill_tree /
-        # get_findings.
-        parent_dir = _safe_campaign_dir(cid)
-        fork_dir = _safe_campaign_dir(result["id"])
-        if parent_dir is None or fork_dir is None:
-            return web.json_response({"error": "Invalid campaign ID"}, status=400)
-        # One hop: the copy reads the parent's findings (unbounded LLM output)
-        # and writes them into the fork, neither of which belongs on the loop.
-        await asyncio.to_thread(
-            _copy_parent_findings, parent_dir / "FINDINGS.md", fork_dir / "parent_findings.md"
-        )
-        _audit("campaign_forked", result["id"], parent=cid)
+        child_id = result["id"]
+        # Resolve the child identity after creation; the parent identity remains
+        # retained across the create suspension and is revalidated by the copy.
+        # Every failure after this point compensates the fresh child before the
+        # route returns, so a failed seed cannot leave a visible orphan.
+        child_identity = await _campaign_identity_off_loop(child_id)
+        failure: str | None = None
+        if child_identity is None:
+            failure = "identity"
+        else:
+            try:
+                await asyncio.to_thread(
+                    _copy_parent_findings_for_identities,
+                    identity,
+                    child_identity,
+                )
+            except FileTooLargeError:
+                failure = "too_large"
+            except (OSError, PermissionError):
+                logger.warning(
+                    "auto_research: failed to seed fork %s from %s",
+                    child_id,
+                    cid,
+                    exc_info=True,
+                )
+                failure = "copy"
+            finally:
+                await asyncio.to_thread(child_identity.close)
+        if failure is not None:
+            try:
+                rollback = await asyncio.to_thread(delete_campaign, child_id)
+                rolled_back = rollback.get("deleted") is True
+            except (OSError, sqlite3.Error):
+                logger.exception("auto_research: failed to roll back fork %s", child_id)
+                rolled_back = False
+            await asyncio.to_thread(identity.close)
+            if not rolled_back:
+                return web.json_response(
+                    {
+                        "error": "Fork cleanup could not be completed safely.",
+                        "code": "campaign_fork_cleanup_failed",
+                    },
+                    status=500,
+                )
+            if failure == "too_large":
+                return web.json_response(
+                    {
+                        "error": "Parent findings are too large to copy into a fork.",
+                        "code": "parent_findings_too_large",
+                    },
+                    status=413,
+                )
+            if failure == "copy":
+                return web.json_response(
+                    {
+                        "error": "Parent findings could not be copied into a fork.",
+                        "code": "campaign_fork_failed",
+                    },
+                    status=500,
+                )
+            return web.json_response(
+                {"error": "Forked campaign could not be initialized."},
+                status=500,
+            )
+        await asyncio.to_thread(identity.close)
+        _audit("campaign_forked", child_id, parent=cid)
         return web.json_response(result, status=201)
+
+    await asyncio.to_thread(identity.close)
 
     # Guard invalid source-state transitions (e.g. start on a running campaign,
     # which would reset started_at and relaunch a duplicate worker loop).
@@ -3000,7 +4587,11 @@ async def _handle_action(request: web.Request) -> web.Response:
         def _read_status_row() -> sqlite3.Row | None:
             db = _get_db()
             try:
-                return db.execute("SELECT status FROM campaigns WHERE id = ?", (cid,)).fetchone()
+                return db.execute(
+                    "SELECT status, started_at, completed_at, error_message, "
+                    "run_finding_snapshot FROM campaigns WHERE id = ?",
+                    (cid,),
+                ).fetchone()
             finally:
                 db.close()
 
@@ -3012,20 +4603,90 @@ async def _handle_action(request: web.Request) -> web.Response:
                 {"error": f"Cannot {action} a campaign in '{srow['status']}' state"}, status=409
             )
         mode = await asyncio.to_thread(_campaign_execution_mode, cid)
-        if action in ("start", "resume") and mode != "workflow":
-            # Publish RUNNING only after old stop evidence is gone. The watchdog
-            # selects RUNNING campaigns, so reversing this order exposes a partial
-            # resume while marker cleanup or tombstone persistence is still pending.
-            await _prepare_loop_launch(cid)
+        if action in ("start", "resume"):
+            previous = dict(srow)
+
+            async def _publish_running_and_launch() -> dict:
+                if mode != "workflow":
+                    # Clear old marker evidence before publishing RUNNING, but
+                    # keep the inactive loop as add()'s atomic rollback row.
+                    await _prepare_loop_launch(cid)
+                try:
+                    launched = await asyncio.to_thread(
+                        update_campaign_status,
+                        cid,
+                        status_map[action],
+                    )
+                    if "error" in launched:
+                        return launched
+                    if mode == "workflow":
+                        launch_succeeded = await _launch_workflow(request, cid)
+                    else:
+                        launch_succeeded = await _launch_loop(request, cid, prepared=True)
+                    if not launch_succeeded:
+                        raise _CampaignActionFailure(
+                            f"Auto Research {mode} worker could not be launched"
+                        )
+                    return launched
+                except BaseException as exc:
+                    # Recover one durable non-RUNNING status before converting an
+                    # expected launch/storage failure into an HTTP response. Exact
+                    # rollback wins; a storage failure during rollback falls back
+                    # to a durable FAILED row. If neither can commit,
+                    # `_CampaignRollbackUnsafe` escapes and no false recovery is
+                    # claimed.
+                    recovered_status, rollback_error = await asyncio.to_thread(
+                        _recover_campaign_after_failed_launch,
+                        cid,
+                        previous,
+                    )
+                    # A launch path may have emitted transient FAILED. Publish the
+                    # proven post-recovery status so clients converge on the same
+                    # durable row the transaction verified.
+                    _emit_sse({"type": recovered_status, "campaign_id": cid})
+                    if isinstance(exc, _CampaignActionFailure):
+                        if rollback_error is not None:
+                            raise _CampaignActionFailure(
+                                f"{exc}; rollback storage recovered as {recovered_status}"
+                            ) from exc
+                        raise
+                    if isinstance(exc, _CAMPAIGN_ACTION_STORAGE_FAILURES):
+                        message = str(exc)
+                        if rollback_error is not None:
+                            message += f"; rollback storage recovered as {recovered_status}"
+                        raise _CampaignActionFailure(message) from exc
+                    # Cancellation/control flow and programming errors remain
+                    # visible to their owners after durable recovery settles.
+                    raise
+
+            # The task owns preparation + RUNNING publication + launch + rollback.
+            # _settle_before_cancellation keeps the outer transition lock held
+            # until that entire transaction reaches a durable outcome.
+            transaction = asyncio.create_task(_publish_running_and_launch())
+            try:
+                result = await _settle_before_cancellation(transaction)
+            except _CampaignActionFailure as exc:
+                # Expected persistence/storage failures and explicit launch
+                # refusals arrive here only after the prior campaign row was
+                # restored. Cancellation and programming errors are not wrapped.
+                return web.json_response(
+                    {"error": str(exc), "code": "campaign_action_failed"},
+                    status=500,
+                )
+            if "error" in result:
+                # Machine-readable code so the localized dashboard can switch on
+                # the failure instead of rendering English prose verbatim
+                # (error-code contract; RFC 9457 3.1.1). `error` stays advisory.
+                return web.json_response(
+                    {"error": result["error"], "code": "campaign_action_failed"},
+                    status=404,
+                )
+            return web.json_response(result)
+
         result = await asyncio.to_thread(update_campaign_status, cid, status_map[action])
         if "error" in result:
             return web.json_response(result, status=404)
-        if action in ("start", "resume"):
-            if mode == "workflow":
-                await _launch_workflow(request, cid)
-            else:
-                await _launch_loop(request, cid, prepared=True)
-        elif action == "pause":
+        if action == "pause":
             if mode == "workflow":
                 await _stop_workflow(request, cid)
             else:
@@ -3080,12 +4741,16 @@ async def _handle_nudge(request: web.Request) -> web.Response:
     text = body.get("text", "")
     if not text:
         return web.json_response({"error": "text required"}, status=400)
-    write_guidance(cid, text)
-    # If the agent paused awaiting input, clear the question and resume.
-    # Guarded: a Stop/Pause that committed while this handler ran must win —
-    # restoring RUNNING over it would resurrect a campaign with no worker.
-    qp = _questions_path(cid)
-    cleared = await asyncio.to_thread(_unlink_if_present, qp) if qp is not None else False
+
+    def _publish_guidance_and_clear_question() -> bool:
+        identity = _campaign_identity_for_write(cid)
+        try:
+            _write_campaign_text(identity, "guidance.txt", text)
+            return _remove_campaign_leaf(identity, "questions.json")
+        finally:
+            identity.close()
+
+    cleared = await asyncio.to_thread(_publish_guidance_and_clear_question)
     if cleared:
         await _guarded_transition(
             cid, CampaignStatus.RUNNING, allowed_current=(CampaignStatus.NEEDS_INPUT,)
@@ -3186,12 +4851,9 @@ async def _handle_to_artifact(request: web.Request) -> web.Response:
     # Fail fast before any filesystem / DB / render work if artifacts are off.
     if not _HAS_ARTIFACTS:
         return web.json_response({"error": "Artifact system unavailable"}, status=503)
-    d = _safe_campaign_dir(cid)
-    if d is None:
+    identity = await _campaign_identity_off_loop(cid)
+    if identity is None:
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
-    findings_path = d / "FINDINGS.md"
-    if not await asyncio.to_thread(findings_path.exists):
-        return web.json_response({"error": "No findings yet"}, status=404)
 
     def _read_export_row() -> sqlite3.Row | None:
         db = _get_db()
@@ -3206,11 +4868,30 @@ async def _handle_to_artifact(request: web.Request) -> web.Response:
 
     row = await asyncio.to_thread(_read_export_row)
     if row is None:
+        await asyncio.to_thread(identity.close)
         return web.json_response({"error": "Not found"}, status=404)
     question = row["question"]
-    findings_md = await asyncio.to_thread(_read_text_or_missing, findings_path)
+    try:
+        findings_md = await asyncio.to_thread(_read_report_export_for_identity, identity)
+    except _ReportExportRefusedError:
+        return web.json_response(
+            {"error": "Findings could not be read safely", "code": "findings_refused"},
+            status=409,
+        )
+    except FileTooLargeError:
+        return web.json_response(
+            {
+                "error": "Findings exceed the complete export limit",
+                "code": "findings_too_large",
+            },
+            status=413,
+        )
+    finally:
+        await asyncio.to_thread(identity.close)
     if findings_md is None:
-        return web.json_response({"error": "No findings yet", "code": "findings_missing"}, status=404)
+        return web.json_response(
+            {"error": "No findings yet", "code": "findings_missing"}, status=404
+        )
     subs = json.loads(row["sub_questions"] or "[]")
 
     # Prefer an LLM-authored report (synthesized + nicely formatted). Cap the
@@ -3343,17 +5024,19 @@ async def _handle_knowledge_status(request: web.Request) -> web.Response:
     cid = request.match_info["id"]
     if not _validate_campaign_id(cid):
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
-    d = _safe_campaign_dir(cid)
-    if d is None:
+    identity = await _campaign_identity_off_loop(cid)
+    if identity is None:
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
+    d = identity.directory
     state = request.app.get("state")
     if state is None or not hasattr(state, "knowledge_store"):
+        await asyncio.to_thread(identity.close)
         return web.json_response({"in_library": False})
     store = state.knowledge_store
-    # Mirror _handle_to_knowledge's dedup key: the resolved path of the
-    # sanitized copy. resolve() works even if the file hasn't been written yet
-    # (it has not, until the user adds it), so no filesystem side effects here.
-    uri = str((d / "findings_for_knowledge.md").resolve())
+    # The source row keeps the campaign-local display URI; no pathname operation
+    # remains after the descriptor-backed identity check above.
+    uri = str(d / "findings_for_knowledge.md")
+    await asyncio.to_thread(identity.close)
     try:
         existing = await asyncio.to_thread(store.get_source_by_uri, uri)
     except Exception:
@@ -3371,31 +5054,67 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
     cid = request.match_info["id"]
     if not _validate_campaign_id(cid):
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
-    d = _safe_campaign_dir(cid)
-    if d is None:
+    identity = await _campaign_identity_off_loop(cid)
+    if identity is None:
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
-    findings_path = d / "FINDINGS.md"
-    if not await asyncio.to_thread(findings_path.exists):
-        return web.json_response({"error": "No findings yet"}, status=404)
+    d = identity.directory
+    try:
+        findings_stat = await asyncio.to_thread(_campaign_leaf_stat, identity, "FINDINGS.md")
+    except OSError:
+        await asyncio.to_thread(identity.close)
+        return web.json_response(
+            {"error": "Findings could not be read safely", "code": "findings_refused"},
+            status=409,
+        )
+    if findings_stat is None:
+        await asyncio.to_thread(identity.close)
+        return web.json_response(
+            {"error": "No findings yet", "code": "findings_missing"}, status=404
+        )
     # Access knowledge store and pipeline from app state
     state = request.app.get("state")
     if state is None or not hasattr(state, "knowledge_store"):
+        await asyncio.to_thread(identity.close)
         return web.json_response({"error": "Knowledge Library unavailable"}, status=503)
     store = state.knowledge_store
     pipeline = request.app.get("knowledge_pipeline")
     if pipeline is None:
+        await asyncio.to_thread(identity.close)
         return web.json_response({"error": "Knowledge pipeline unavailable"}, status=503)
-    raw_findings = await asyncio.to_thread(_read_text_or_missing, findings_path)
-    if raw_findings is None:
-        return web.json_response({"error": "No findings yet", "code": "findings_missing"}, status=404)
-    # The Knowledge Library is an external surface (content surfaces to users and
-    # agents via RAG/search), so redact credentials + exfil URLs before ingestion.
-    # The agent may have encountered secrets mid-research; ingesting raw would
-    # leak them. Write a sanitized copy and ingest THAT, never the raw file.
-    redacted = _redact_finding({"v": raw_findings})["v"]
+
+    def _read_and_publish_sanitized() -> tuple[str, str] | None:
+        try:
+            raw = _read_report_export_for_identity(identity)
+            if raw is None:
+                return None
+            redacted = _redact_finding({"v": raw})["v"]
+            _write_campaign_text(identity, "findings_for_knowledge.md", redacted)
+            return raw, redacted
+        finally:
+            identity.close()
+
+    try:
+        published = await asyncio.to_thread(_read_and_publish_sanitized)
+    except _ReportExportRefusedError:
+        return web.json_response(
+            {"error": "Findings could not be read safely", "code": "findings_refused"},
+            status=409,
+        )
+    except FileTooLargeError:
+        return web.json_response(
+            {
+                "error": "Findings exceed the complete export limit",
+                "code": "findings_too_large",
+            },
+            status=413,
+        )
+    if published is None:
+        return web.json_response(
+            {"error": "No findings yet", "code": "findings_missing"}, status=404
+        )
+    _raw_findings, redacted = published
     sanitized_path = d / "findings_for_knowledge.md"
-    await asyncio.to_thread(_write_text, sanitized_path, redacted)
-    uri = str(sanitized_path.resolve())
+    uri = str(sanitized_path)
     # Dedup check
     existing = await asyncio.to_thread(store.get_source_by_uri, uri)
     if existing:
@@ -3454,7 +5173,11 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
             # A user's one-shot import: the click is deliberate, and this route has
             # no budget of its own the way the watcher and artifact-sync sweeps do,
             # so it counts against the explicit-import chunk ceiling.
-            await pipeline.ingest_file(uri, source_id=sid)
+            ingest_text = getattr(pipeline, "ingest_text", None)
+            if ingest_text is None:
+                await pipeline.ingest_file(uri, source_id=sid)
+            else:
+                await ingest_text(redacted, name, source_id=sid)
             await asyncio.to_thread(_mark_synced)
         except ImportChunkBudgetError as exc:
             # Transient, so not 'error': sync_all skips an errored source, which
@@ -3601,11 +5324,18 @@ async def _handle_grill_tree(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
         return denied
     cid = request.match_info["id"]
-    d = _safe_campaign_dir(cid)
-    if d is None:
+    identity = await _campaign_identity_off_loop(cid)
+    if identity is None:
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
-    tree_path = d / "grill_tree.json"
-    tree = await asyncio.to_thread(_read_json_or_missing, tree_path)
+    try:
+        tree = await asyncio.to_thread(
+            _read_campaign_json_or_missing,
+            identity,
+            ("grill_tree.json",),
+            max_bytes=_REPORT_VIEW_MAX_BYTES,
+        )
+    finally:
+        await asyncio.to_thread(identity.close)
     if tree is None:
         return web.json_response({"tree": []})
     # Never trust LLM output: node text/recommended fields are model-generated,

@@ -19,8 +19,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.autonudge import NudgeLoop
+from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.monitoring.models import (
+    MonitorActionCompletion,
+    MonitorActionDisposition,
+    MonitorState,
+)
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import (
     _CRON_MSG_LIMIT,
@@ -894,6 +899,173 @@ class TestShutdown:
     async def test_shutdown_with_no_services(self):
         orch = _make_orchestrator()
         await orch._shutdown()  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_shutdown_awaits_autonudge_drain(self):
+        orch = _make_orchestrator()
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.shutdown = AsyncMock()
+
+        await orch._shutdown()
+
+        orch.autonudge_svc.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_drains_autonudge_before_session_storage_close(self):
+        orch = _make_orchestrator()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        order: list[str] = []
+
+        async def drain_autonudge():
+            order.append("autonudge-start")
+            started.set()
+            await release.wait()
+            order.append("autonudge-durable")
+
+        async def close_sessions():
+            order.append("sessions-close")
+
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.shutdown = AsyncMock(side_effect=drain_autonudge)
+        orch.sessions = _mock_sessions()
+        orch.sessions.close_all = AsyncMock(side_effect=close_sessions)
+
+        shutdown = asyncio.create_task(orch._shutdown())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert "sessions-close" not in order
+
+        release.set()
+        await shutdown
+
+        assert order.index("autonudge-durable") < order.index("sessions-close")
+
+    @pytest.mark.asyncio
+    async def test_started_dashboard_accounting_is_durable_before_session_close(
+        self,
+        tmp_path,
+    ):
+        service = AutoNudgeService(base_dir=tmp_path)
+        loop = NudgeLoop(
+            id="monitor1",
+            slot_key="chat-1-123",
+            message="inspect the changed pull request",
+            monitor=MonitorState(
+                kind="github_pull_request",
+                target="owner/repo#123",
+                objective="review_ready",
+                created_ts=1_000.0,
+            ),
+        )
+        service._loops[loop.id] = loop
+        assert await service.mark_monitor_action_in_flight(
+            loop.id,
+            "failure-a",
+            now=1_100.0,
+        )
+        await service._lock.acquire()
+        completion = asyncio.create_task(
+            service.record_monitor_turn_completion(
+                MonitorActionCompletion(
+                    monitor_id=loop.id,
+                    fingerprint="failure-a",
+                    disposition=MonitorActionDisposition.SUCCESS,
+                    completed_ts=1_120.0,
+                    input_tokens=12,
+                    output_tokens=4,
+                )
+            )
+        )
+        for _ in range(100):
+            if service._inflight_adds:
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("dashboard accounting never entered the service drain")
+
+        sessions = _mock_sessions()
+
+        async def close_sessions():
+            assert service._inflight_adds == set()
+            restored = AutoNudgeService(base_dir=tmp_path)
+            await asyncio.to_thread(restored._load)
+            restored_loop = restored.get_by_id(loop.id)
+            assert restored_loop is not None and restored_loop.monitor is not None
+            assert restored_loop.monitor.agent_turns == 1
+            assert restored_loop.monitor.total_tokens == 16
+
+        sessions.close_all = AsyncMock(side_effect=close_sessions)
+        orch = _make_orchestrator()
+        orch.autonudge_svc = service
+        orch.sessions = sessions
+
+        async def release_after_shutdown_closes_admission():
+            while service._accepting_mutations:
+                await asyncio.sleep(0)
+            sessions.close_all.assert_not_awaited()
+            service._lock.release()
+
+        release = asyncio.create_task(release_after_shutdown_closes_admission())
+        shutdown = asyncio.create_task(orch._shutdown())
+        try:
+            await shutdown
+            await completion
+            await release
+        finally:
+            if service._lock.locked():
+                service._lock.release()
+            pending = [task for task in (completion, release, shutdown) if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        sessions.close_all.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_autonudge_shutdown_continues_gateway_cleanup(self):
+        orch = _make_orchestrator()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        drained = asyncio.Event()
+
+        async def durable_shutdown():
+            started.set()
+            drain = asyncio.create_task(release.wait())
+            interrupted = False
+            try:
+                await asyncio.shield(drain)
+            except asyncio.CancelledError:
+                interrupted = True
+                while not drain.done():
+                    try:
+                        await asyncio.shield(drain)
+                    except asyncio.CancelledError:
+                        continue
+            drained.set()
+            if interrupted:
+                raise asyncio.CancelledError()
+
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.shutdown = AsyncMock(side_effect=durable_shutdown)
+        orch.cron_svc = MagicMock()
+        orch.cron_svc.stop = AsyncMock()
+        orch.heartbeat_svc = MagicMock()
+        orch.heartbeat_svc.stop = MagicMock()
+
+        shutdown = asyncio.create_task(orch._shutdown())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        shutdown.cancel()
+        await asyncio.sleep(0)
+        assert not shutdown.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await shutdown
+
+        assert drained.is_set()
+        orch.cron_svc.stop.assert_awaited_once()
+        orch.heartbeat_svc.stop.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_stops_cron(self):

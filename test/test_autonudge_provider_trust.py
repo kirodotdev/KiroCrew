@@ -674,14 +674,17 @@ async def test_restart_revokes_the_prior_grant_before_replacement_persistence(
     )
     write_snapshot = svc._write_monitor_snapshot_locked
 
-    async def require_prior_revocation(payload: dict[str, Any] | None = None) -> None:
+    async def require_prior_revocation(
+        payload: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
         assert not trust.is_monitor_owner_credentials_recorded(
             prior.id,
             prior.slot_key,
             prior.monitor.kind,
             prior.monitor.target,
         )
-        await write_snapshot(payload)
+        await write_snapshot(payload, **kwargs)
 
     monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", require_prior_revocation)
 

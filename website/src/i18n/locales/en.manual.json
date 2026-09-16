@@ -1725,6 +1725,11 @@
       "clear_stopped_goal": "Clear stopped goal",
       "loop_stopped": "Stopped",
       "stopped_help": "Start loop resumes this goal. Clear stopped goal removes it for good.",
+      "stopped_help_cycle_cap": "Raise Max cycles to resume this goal. Clear stopped goal removes it for good.",
+      "stopped_help_runtime_budget": "Clear stopped goal, then start a new goal.",
+      "stopped_reason_cycle_cap": "Reached Max cycles.",
+      "stopped_reason_runtime_budget": "Reached its maximum runtime.",
+      "stopped_reason_approval_stalled": "Waiting for a tool approval in this conversation.",
       "clear_goal_for_good": "Clear goal for good",
       "cancel": "Cancel",
       "clear_goal_question": "Remove this goal for good?"

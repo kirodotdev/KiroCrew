@@ -28,7 +28,7 @@ function renderPopover(loop: AutoNudgeLoop | null) {
 const makeLoop = (over: Partial<AutoNudgeLoop> = {}): AutoNudgeLoop => ({
   id: 'l1', slot_key: SLOT, message: 'active loop goal',
   idle_secs: 90, max_cycles: 3, cycle_count: 1, active: true, last_fire_ts: 0,
-  next_due_ts: 0, ...over,
+  next_due_ts: 0, runtime_budget_spent: false, ...over,
 })
 
 describe('AutoNudgePopover goal persistence', () => {
@@ -189,6 +189,143 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     expect(save, 'no /api/autonudge write was issued').toBeTruthy()
     const body = JSON.parse(save![1]!.body!)
     expect(body.idle_secs).toBe(45)
+  })
+
+  it('Save preserves a runtime-budget-stopped loop instead of presenting a false restart', async () => {
+    renderPopover(makeLoop({
+      active: false,
+      next_due_ts: 0,
+      stopped_reason: 'runtime_budget',
+      runtime_budget_spent: true,
+    }))
+
+    expect(screen.getByTestId('auto-nudge-loop-paused').textContent)
+      .toBe('Stopped · Reached its maximum runtime.')
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Clear stopped goal, then start a new goal.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Save$/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no PATCH for the existing goal was issued').toBeTruthy()
+    const body = JSON.parse(patch![1]!.body!)
+    expect(body).toEqual({ message: 'active loop goal', idle_secs: 90, max_cycles: 3 })
+    // `active: true` made an expired goal briefly pulse in the UI, but its
+    // already-spent runtime anchor stopped it again immediately. Save edits
+    // configuration only; a fresh goal owns explicit re-arming.
+    expect(body).not.toHaveProperty('active')
+  })
+
+  it('uses a non-repeating approval-stalled suffix', () => {
+    renderPopover(makeLoop({
+      active: false,
+      next_due_ts: 0,
+      stopped_reason: 'approval_stalled',
+    }))
+
+    expect(screen.getByTestId('auto-nudge-loop-paused').textContent)
+      .toBe('Stopped · Waiting for a tool approval in this conversation.')
+  })
+
+  it('restarts after another caller lifts a stale runtime budget', async () => {
+    renderPopover(makeLoop({
+      active: false,
+      next_due_ts: 0,
+      stopped_reason: 'runtime_budget',
+      runtime_budget_spent: false,
+    }))
+
+    expect(screen.getByTestId('auto-nudge-loop-paused').textContent)
+      .toBe('Stopped')
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Start loop resumes this goal. Clear stopped goal removes it for good.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the unspent goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toHaveProperty('active', true)
+  })
+
+  it('restarts a reasonless legacy stop when its bounds still allow work', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: '' }))
+
+    expect(screen.getByRole('button', { name: /Start loop/i })).toBeTruthy()
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Start loop resumes this goal. Clear stopped goal removes it for good.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the legacy goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toHaveProperty('active', true)
+  })
+
+  it('offers an explicit restart after a cycle-capped loop receives a higher cap', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'cycle_cap', cycle_count: 3, max_cycles: 3 }))
+    expect(screen.getByTestId('auto-nudge-loop-paused').textContent)
+      .toBe('Stopped · Reached Max cycles.')
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Raise Max cycles to resume this goal. Clear stopped goal removes it for good.')
+
+    fireEvent.change(cyclesField(), { target: { value: '4' } })
+
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Start loop resumes this goal. Clear stopped goal removes it for good.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the capped goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toEqual({
+      message: 'active loop goal',
+      idle_secs: 90,
+      max_cycles: 4,
+      active: true,
+    })
+  })
+
+  it('does not restart a cycle-capped loop whose runtime budget is also spent', async () => {
+    renderPopover(makeLoop({
+      active: false,
+      next_due_ts: 0,
+      stopped_reason: 'cycle_cap',
+      cycle_count: 3,
+      max_cycles: 4,
+      runtime_budget_spent: true,
+    }))
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Save$/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no config PATCH for the runtime-spent goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).not.toHaveProperty('active')
+  })
+
+  it('does not restart an approval-stalled loop whose cycle cap is already spent', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'approval_stalled', cycle_count: 3, max_cycles: 3 }))
+
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Raise Max cycles to resume this goal. Clear stopped goal removes it for good.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Save$/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no config PATCH for the approval-stalled goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).not.toHaveProperty('active')
+  })
+
+  it('restarts an approval-stalled loop when its bounds still allow work', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'approval_stalled', cycle_count: 0, max_cycles: 0 }))
+
+    expect(screen.getByRole('button', { name: /Start loop/i })).toBeTruthy()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the approval-stalled goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toHaveProperty('active', true)
   })
 })
 
@@ -611,13 +748,11 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     expect((triggerButton() as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('names the way OUT of a paused loop instead of leaving Save to do it silently', () => {
-    // The primary button PATCHes `active: true`, so on a paused loop it is the
-    // resume control -- and it used to read "Save", which said nothing. A blind
-    // reader found no resume path at all and called "Stop loop" risky as a
-    // result. Both directions asserted: an active loop must still read Save, or
-    // this would just move the confusion.
-    renderWith(makeLoop({ active: false }))
+  it('names the way OUT of a manually paused loop instead of leaving Save to do it silently', () => {
+    // A manual pause has no terminal bound to lift, so the primary button may
+    // explicitly restart it. Reasonless legacy stops stay config-only because
+    // the client cannot prove why they became inactive.
+    renderWith(makeLoop({ active: false, stopped_reason: 'manual' }))
     expect(screen.getByRole('button', { name: 'Start loop' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
     cleanup()
@@ -722,7 +857,7 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     // than the resumable-sounding Paused, and a help line names both exits
     // because the erase has no undo. Both directions asserted so this cannot
     // just move the confusion.
-    renderWith(makeLoop({ active: false }))
+    renderWith(makeLoop({ active: false, stopped_reason: 'manual' }))
     const clear = screen.getByRole('button', { name: 'Clear stopped goal' })
     expect(clear).toBeTruthy()
     // Danger-coloured unconditionally, not on :hover -- a touch viewport never

@@ -58,9 +58,14 @@ from kiro_crew.safety_override import safety_override
 from . import crew_store, github_client, provider, store
 
 try:  # the autonudge service is feature-flagged; the runtime degrades without it
+    from kiro_crew.autonudge import MonitorUpdateConflict
     from kiro_crew.autonudge import get_instance as _autonudge_instance
 except ImportError:  # pragma: no cover - defensive
     _autonudge_instance = None  # type: ignore[assignment]
+
+    class MonitorUpdateConflict(RuntimeError):  # type: ignore[no-redef]
+        """Fallback type when the optional autonudge service is unavailable."""
+
 
 try:
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -1372,7 +1377,18 @@ async def watchdog_cycle(
                     # does, without re-arming a loop that already exists.
                     slot = await ensure_crew_session(state, owner, repo, crew)
                 if not loop.active:
-                    await svc.update(loop.id, active=True)
+                    try:
+                        await svc.update(loop.id, active=True)
+                    except MonitorUpdateConflict:
+                        # Canonical crew loops are created with both bounds
+                        # unlimited, so manual app-disable pauses reactivate here.
+                        # Preserve an out-of-band/legacy bounded row instead of
+                        # letting one conflict abort the rest of the crew sweep.
+                        logger.warning(
+                            "issue-radar crew %s: retained inactive loop %s could not restart",
+                            crew.get("id"),
+                            loop.id,
+                        )
         # The pass itself awaits — the grant, the launch, the re-arm — so read once
         # more and undo it if the operator stopped the crew while it ran.
         # ``revoke_crew_execution`` is the exact inverse of what this body just

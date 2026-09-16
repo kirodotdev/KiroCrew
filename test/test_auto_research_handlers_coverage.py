@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +45,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
+from conftest import make_dir_link
 from kiro_crew.apps.builtins.auto_research import handlers as h
 
 BASE = "/api/apps/auto-research"
@@ -214,7 +217,7 @@ def fast_watchdog(monkeypatch: pytest.MonkeyPatch):
 def polls(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Counts watchdog polls of a campaign's findings dir.
 
-    Lets a test sequence "baseline recorded" -> "new finding written" on an
+    Lets a test sequence "first watchdog poll" -> "new finding written" on an
     observed event instead of a wall-clock sleep, so the count-advance
     transitions cannot flake on a slow (or fast) runner.
     """
@@ -222,8 +225,10 @@ def polls(monkeypatch: pytest.MonkeyPatch) -> dict:
     seen = {"n": 0}
 
     def _counted(cid: str):
+        files = real(cid)
         seen["n"] += 1
-        return real(cid)
+        seen["last_count"] = len(files)
+        return files
 
     monkeypatch.setattr(h, "_list_cycle_files", _counted)
     return seen
@@ -297,7 +302,10 @@ class TestLaunchWorkflow:
     @pytest.mark.asyncio
     async def test_missing_workflow_service_fails_the_campaign(self, _isolate: Path, sse):
         cid = _campaign(execution_mode="workflow")
-        await h._launch_workflow(_mk("PATCH", cid, app=_app(state=SimpleNamespace())), cid)
+        launched = await h._launch_workflow(
+            _mk("PATCH", cid, app=_app(state=SimpleNamespace())), cid
+        )
+        assert launched is False
         assert _status(cid) == h.CampaignStatus.FAILED
         assert sse.types() == ["failed"]
         assert "unavailable" in (h.get_campaign(cid) or {})["error_message"]
@@ -305,16 +313,17 @@ class TestLaunchWorkflow:
     @pytest.mark.asyncio
     async def test_absent_state_fails_the_campaign(self, _isolate: Path, sse):
         cid = _campaign(execution_mode="workflow")
-        await h._launch_workflow(_mk("PATCH", cid, app=_app()), cid)
+        assert await h._launch_workflow(_mk("PATCH", cid, app=_app()), cid) is False
         assert _status(cid) == h.CampaignStatus.FAILED
 
     @pytest.mark.asyncio
     async def test_unknown_campaign_is_a_no_op(self, _isolate: Path, sse):
         _campaign()  # create the schema
         start = AsyncMock(return_value={"run_id": "r"})
-        await h._launch_workflow(
+        launched = await h._launch_workflow(
             _mk("PATCH", "deadbeef", app=_app(state=_workflow_state(start=start))), "deadbeef"
         )
+        assert launched is False
         start.assert_not_awaited()
         assert sse.events == []
 
@@ -322,21 +331,69 @@ class TestLaunchWorkflow:
     async def test_successful_start_persists_the_run_id(self, _isolate: Path, sse):
         cid = _campaign(execution_mode="workflow", max_cycles=7)
         start = AsyncMock(return_value={"run_id": "run-42"})
-        await h._launch_workflow(
+        launched = await h._launch_workflow(
             _mk("PATCH", cid, app=_app(state=_workflow_state(start=start))), cid
         )
+        assert launched is True
         assert h._read_workflow_run_id(cid) == "run-42"
         assert start.await_args.kwargs["name"] == "research-" + cid
         assert start.await_args.kwargs["args"]["max_rounds"] == 7
         assert sse.events == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["start", "resume"], ids=["start", "resume"])
+    async def test_run_id_publication_failure_cancels_and_returns_structured_error(
+        self,
+        _isolate: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        action: str,
+    ):
+        cid = _campaign(execution_mode="workflow")
+        if action == "resume":
+            _running(cid)
+            h.update_campaign_status(cid, h.CampaignStatus.PAUSED)
+        previous = h.get_campaign(cid)
+        assert previous is not None
+        start = AsyncMock(return_value={"run_id": "run-orphan"})
+        cancel = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            h,
+            "_write_workflow_run_id",
+            MagicMock(side_effect=OSError("disk full")),
+        )
+
+        response = await h._handle_action(
+            _mk(
+                "PATCH",
+                f"campaigns/{cid}",
+                app=_app(state=_workflow_state(start=start, cancel=cancel)),
+                match={"id": cid},
+                body={"action": action},
+            )
+        )
+
+        assert response.status == 500
+        assert _body(response) == {
+            "error": "disk full",
+            "code": "campaign_action_failed",
+        }
+        cancel.assert_awaited_once_with("run-orphan")
+        assert h._read_workflow_run_id(cid) is None
+        current = h.get_campaign(cid)
+        assert current is not None
+        assert current["status"] == previous["status"]
+        assert current["started_at"] == previous["started_at"]
+        assert current["completed_at"] == previous["completed_at"]
+        assert current["error_message"] == previous["error_message"]
+
+    @pytest.mark.asyncio
     async def test_start_raising_fails_the_campaign(self, _isolate: Path, sse):
         cid = _campaign(execution_mode="workflow")
         start = AsyncMock(side_effect=RuntimeError("engine down"))
-        await h._launch_workflow(
+        launched = await h._launch_workflow(
             _mk("PATCH", cid, app=_app(state=_workflow_state(start=start))), cid
         )
+        assert launched is False
         assert _status(cid) == h.CampaignStatus.FAILED
         assert "Workflow start failed" in (h.get_campaign(cid) or {})["error_message"]
         assert sse.types() == ["failed"]
@@ -345,9 +402,10 @@ class TestLaunchWorkflow:
     async def test_start_without_a_run_id_fails_the_campaign(self, _isolate: Path, sse):
         cid = _campaign(execution_mode="workflow")
         start = AsyncMock(return_value=None)
-        await h._launch_workflow(
+        launched = await h._launch_workflow(
             _mk("PATCH", cid, app=_app(state=_workflow_state(start=start))), cid
         )
+        assert launched is False
         assert _status(cid) == h.CampaignStatus.FAILED
         assert "no run ID" in (h.get_campaign(cid) or {})["error_message"]
         assert h._read_workflow_run_id(cid) is None
@@ -656,14 +714,15 @@ class TestWatchdogLoop:
         assert "needs_input" in sse.types()
 
     @pytest.mark.asyncio
-    async def test_trust_is_reestablished_and_a_paused_loop_rearmed(
+    async def test_trust_is_reestablished_and_a_manual_app_pause_is_rearmed(
         self, _isolate: Path, fast_watchdog, monkeypatch: pytest.MonkeyPatch
     ):
+        """Manual inactivity is the app-disable compatibility path, not a bound."""
         cid = _campaign()
         _running(cid)
         slot = SimpleNamespace(_trust=False, running=True)
         state = SimpleNamespace(_slots={f"research-{cid}": slot})
-        loop = SimpleNamespace(id="loop-1", active=False)
+        loop = SimpleNamespace(id="loop-1", active=False, stopped_reason="manual")
         svc = SimpleNamespace(get_by_slot=MagicMock(return_value=loop), update=AsyncMock())
         monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
         assert await _drive_watchdog(
@@ -671,6 +730,834 @@ class TestWatchdogLoop:
         )
         assert svc.update.await_args.kwargs == {"active": True}
         assert svc.update.await_args.args[0] == "loop-1"
+
+    @pytest.mark.asyncio
+    async def test_manual_pause_at_spent_cycle_cap_settles_before_reactivation(
+        self, _isolate: Path, fast_watchdog, sse, monkeypatch: pytest.MonkeyPatch
+    ):
+        """App-disable may win the reason race after the final delivered cycle."""
+        cid = _campaign(auto_approve=True, max_cycles=2)
+        _running(cid)
+        _write_finding(cid, 1)
+        _write_finding(cid, 2)
+        loop = SimpleNamespace(
+            id="loop-capped",
+            active=False,
+            stopped_reason="manual",
+            max_cycles=2,
+            cycle_count=2,
+            max_runtime_secs=0,
+        )
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        assert await _drive_watchdog(
+            {"state": None},
+            lambda: _status(cid) == h.CampaignStatus.COMPLETE and "complete" in sse.types(),
+        )
+        svc.update.assert_not_awaited()
+        svc.remove.assert_awaited_once_with("loop-capped")
+
+    @pytest.mark.asyncio
+    async def test_terminal_bound_waits_for_inflight_worker_turn(
+        self, _isolate: Path, fast_watchdog, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A final worker finding can still complete a run whose bound just expired."""
+        cid = _campaign(auto_approve=True, max_cycles=1)
+        _running(cid)
+        _write_finding(cid, 1, verification={"passed": True})
+        slot = SimpleNamespace(_trust=True, running=True)
+        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+        loop = SimpleNamespace(
+            id="loop-capped",
+            active=False,
+            stopped_reason="cycle_cap",
+            max_cycles=1,
+            cycle_count=1,
+            max_runtime_secs=0,
+        )
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        task = asyncio.ensure_future(h._watchdog_loop({"state": state}))
+        try:
+            await asyncio.sleep(0.05)
+            assert _status(cid) == h.CampaignStatus.RUNNING
+            svc.remove.assert_not_awaited()
+
+            slot.running = False
+            assert await _await_until(
+                lambda: _status(cid) == h.CampaignStatus.COMPLETE
+                and svc.remove.await_count == 1
+            )
+        finally:
+            task.cancel()
+            await task
+
+        svc.remove.assert_awaited_once_with("loop-capped")
+
+    @pytest.mark.asyncio
+    async def test_terminal_bound_waits_for_a_between_stage_worker_turn(
+        self, _isolate: Path, fast_watchdog, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A multi-stage worker turn reads ``running`` False *between* stages,
+        with only ``_in_stage_execution`` set. The terminal-bound settle gate
+        must treat that as in-flight; otherwise a bound expiring between stages
+        terminalizes the campaign before its final stage persists findings
+        (crash/data-loss). Mirror of test_terminal_bound_waits_for_inflight_worker_turn
+        but with the between-stage flag instead of ``running``."""
+        cid = _campaign(auto_approve=True, max_cycles=1)
+        _running(cid)
+        _write_finding(cid, 1, verification={"passed": True})
+        slot = SimpleNamespace(_trust=True, running=False, _in_stage_execution=True)
+        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+        loop = SimpleNamespace(
+            id="loop-capped",
+            active=False,
+            stopped_reason="cycle_cap",
+            max_cycles=1,
+            cycle_count=1,
+            max_runtime_secs=0,
+        )
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        task = asyncio.ensure_future(h._watchdog_loop({"state": state}))
+        try:
+            await asyncio.sleep(0.05)
+            # Between stages -> still in flight -> not settled.
+            assert _status(cid) == h.CampaignStatus.RUNNING
+            svc.remove.assert_not_awaited()
+
+            # The plan's final stage finishes and clears the flag.
+            slot._in_stage_execution = False
+            assert await _await_until(
+                lambda: _status(cid) == h.CampaignStatus.COMPLETE
+                and svc.remove.await_count == 1
+            )
+        finally:
+            task.cancel()
+            await task
+
+        svc.remove.assert_awaited_once_with("loop-capped")
+
+    @pytest.mark.asyncio
+    async def test_active_runtime_budget_precedes_a_verified_final_finding(
+        self,
+        _isolate: Path,
+        fast_watchdog,
+        polls,
+        sse,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Budget expiry during an in-flight turn cannot publish COMPLETE.
+
+        AutoNudge persists the inactive runtime-budget row after delivery. The
+        watchdog can observe the verified finding first while the loop is still
+        active, so the live counters must fence the count-advance path too.
+        """
+        cid = _campaign(auto_approve=True, max_cycles=30)
+        _running(cid)
+        _write_finding(cid, 1)
+        slot = SimpleNamespace(_trust=True, running=True)
+        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+        loop = SimpleNamespace(
+            id="loop-budget",
+            active=True,
+            stopped_reason="",
+            max_cycles=30,
+            cycle_count=1,
+            max_runtime_secs=60,
+            created_ts=time.time() - 120,
+        )
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        polls["n"] = 0
+        task = asyncio.ensure_future(h._watchdog_loop({"state": state}))
+        try:
+            assert await _await_until(
+                lambda: polls["n"] >= 1 and polls.get("last_count") == 1
+            )
+            _write_finding(cid, 2, verification={"passed": True})
+            assert await _await_until(lambda: svc.get_by_slot.call_count >= 2)
+            assert _status(cid) == h.CampaignStatus.RUNNING
+
+            slot.running = False
+            assert await _await_until(
+                lambda: _status(cid) == h.CampaignStatus.STOPPED
+                and svc.remove.await_count == 1
+            )
+            assert await _await_until(lambda: "stopped" in sse.types())
+        finally:
+            task.cancel()
+            await task
+
+        assert "complete" not in sse.types()
+        assert (h.get_campaign(cid) or {})["total_cycles"] == 2
+        assert [finding["cycle"] for finding in h.get_findings(cid)] == [1, 2]
+        svc.update.assert_awaited_once_with("loop-budget", active=False)
+        svc.remove.assert_awaited_once_with("loop-budget")
+
+    @pytest.mark.asyncio
+    async def test_verified_finding_waits_for_its_inflight_owner(
+        self,
+        _isolate: Path,
+        fast_watchdog,
+        polls,
+        sse,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        cid = _campaign(auto_approve=True, max_cycles=30)
+        _running(cid)
+        _write_finding(cid, 1)
+        slot = SimpleNamespace(_trust=True, running=True)
+        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+        loop = SimpleNamespace(
+            id="loop-active",
+            active=True,
+            stopped_reason="",
+            max_cycles=30,
+            cycle_count=1,
+            max_runtime_secs=0,
+            created_ts=time.time(),
+        )
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        polls["n"] = 0
+        task = asyncio.ensure_future(h._watchdog_loop({"state": state}))
+        try:
+            assert await _await_until(
+                lambda: polls["n"] >= 1 and polls.get("last_count") == 1
+            )
+            _write_finding(cid, 2, verification={"passed": True})
+            assert await _await_until(lambda: svc.get_by_slot.call_count >= 2)
+            assert _status(cid) == h.CampaignStatus.RUNNING
+            assert (h.get_campaign(cid) or {})["total_cycles"] == 0
+
+            slot.running = False
+            assert await _await_until(
+                lambda: _status(cid) == h.CampaignStatus.COMPLETE
+                and svc.remove.await_count == 1
+            )
+        finally:
+            task.cancel()
+            await task
+
+        assert (h.get_campaign(cid) or {})["total_cycles"] == 2
+        assert sse.types() == ["new_finding", "complete"]
+        svc.update.assert_awaited_once_with("loop-active", active=False)
+        svc.remove.assert_awaited_once_with("loop-active")
+
+    @pytest.mark.asyncio
+    async def test_raised_live_cap_defers_completion_until_new_cap(
+        self,
+        _isolate: Path,
+        fast_watchdog,
+        polls,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        cid = _campaign(auto_approve=True, max_cycles=2)
+        _running(cid)
+        _write_finding(cid, 1)
+        slot = SimpleNamespace(_trust=True, running=True)
+        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+        loop = SimpleNamespace(
+            id="loop-raised-cap",
+            active=True,
+            stopped_reason="",
+            max_cycles=2,
+            cycle_count=1,
+            max_runtime_secs=0,
+            created_ts=time.time(),
+        )
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        polls["n"] = 0
+        task = asyncio.create_task(h._watchdog_loop({"state": state}))
+        try:
+            assert await _await_until(
+                lambda: polls["n"] >= 1 and polls.get("last_count") == 1
+            )
+            _write_finding(cid, 2, verification={"passed": True})
+            loop.max_cycles = 3
+            loop.cycle_count = 2
+            slot.running = False
+            assert await _await_until(
+                lambda: (h.get_campaign(cid) or {})["total_cycles"] == 2
+            )
+            assert _status(cid) == h.CampaignStatus.RUNNING
+            svc.remove.assert_not_awaited()
+
+            _write_finding(cid, 3, verification={"passed": True})
+            loop.cycle_count = 3
+            assert await _await_until(
+                lambda: _status(cid) == h.CampaignStatus.COMPLETE
+            )
+        finally:
+            task.cancel()
+            await task
+
+        svc.remove.assert_awaited_once_with("loop-raised-cap")
+
+    @pytest.mark.asyncio
+    async def test_lowered_live_cap_completes_after_inflight_owner_exits(
+        self,
+        _isolate: Path,
+        fast_watchdog,
+        polls,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        cid = _campaign(auto_approve=True, max_cycles=3)
+        _running(cid)
+        _write_finding(cid, 1)
+        slot = SimpleNamespace(_trust=True, running=True)
+        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+        loop = SimpleNamespace(
+            id="loop-lowered-cap",
+            active=True,
+            stopped_reason="",
+            max_cycles=3,
+            cycle_count=1,
+            max_runtime_secs=0,
+            created_ts=time.time(),
+        )
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        polls["n"] = 0
+        task = asyncio.create_task(h._watchdog_loop({"state": state}))
+        try:
+            assert await _await_until(
+                lambda: polls["n"] >= 1 and polls.get("last_count") == 1
+            )
+            _write_finding(cid, 2, verification={"passed": True})
+            loop.max_cycles = 2
+            loop.cycle_count = 2
+            assert _status(cid) == h.CampaignStatus.RUNNING
+            slot.running = False
+            assert await _await_until(
+                lambda: _status(cid) == h.CampaignStatus.COMPLETE
+            )
+        finally:
+            task.cancel()
+            await task
+
+        svc.remove.assert_awaited_once_with("loop-lowered-cap")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        (
+            "initial_cap",
+            "live_cap",
+            "loop_mode",
+            "expected_status",
+            "expected_outcome",
+        ),
+        [
+            (2, 3, "same", h.CampaignStatus.RUNNING, h._SettlementOutcome.NO_VERDICT),
+            (3, 2, "same", h.CampaignStatus.COMPLETE, h._SettlementOutcome.SETTLED),
+            (2, 2, "same", h.CampaignStatus.COMPLETE, h._SettlementOutcome.SETTLED),
+            (2, 2, "missing", h.CampaignStatus.COMPLETE, h._SettlementOutcome.SETTLED),
+            (2, 2, "replacement", h.CampaignStatus.RUNNING, h._SettlementOutcome.STALE),
+        ],
+        ids=["raised", "lowered", "stable", "missing-fallback", "replacement"],
+    )
+    async def test_MUTATION_settlement_uses_post_await_live_cap(
+        self,
+        _isolate: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        initial_cap: int,
+        live_cap: int,
+        loop_mode: str,
+        expected_status: str,
+        expected_outcome: h._SettlementOutcome,
+    ):
+        """The final loop read, after bookkeeping awaits, owns completion."""
+        cid = _campaign(auto_approve=True, max_cycles=initial_cap)
+        _running(cid)
+        _write_finding(cid, 1)
+        _write_finding(cid, 2, verification={"passed": True})
+        captured = SimpleNamespace(
+            id="loop-lock-cap",
+            active=True,
+            stopped_reason="",
+            max_cycles=initial_cap,
+            cycle_count=2,
+        )
+        if loop_mode == "missing":
+            captured = None
+            authoritative = None
+        elif loop_mode == "replacement":
+            authoritative = SimpleNamespace(
+                id="replacement-loop",
+                active=True,
+                stopped_reason="",
+                max_cycles=live_cap,
+                cycle_count=2,
+            )
+        else:
+            authoritative = SimpleNamespace(
+                id="loop-lock-cap",
+                active=True,
+                stopped_reason="",
+                max_cycles=live_cap,
+                cycle_count=2,
+            )
+        calls = {"n": 0}
+
+        def _current_loop(_slot_key: str):
+            calls["n"] += 1
+            return captured if calls["n"] <= 2 else authoritative
+
+        svc = SimpleNamespace(
+            # Capture, lock-entry snapshot, then pre/post-verdict authority.
+            get_by_slot=MagicMock(side_effect=_current_loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        started = (h.get_campaign(cid) or {})["started_at"]
+
+        outcome = await h._settle_campaign_from_watchdog(
+            cid,
+            h._list_cycle_files(cid),
+            {cid: 0},
+            {cid: time.time()},
+            observed_started_at=started,
+            required_cycle_count=initial_cap,
+            trigger=h._SettlementTrigger.FINDING,
+        )
+
+        assert outcome == expected_outcome
+        assert _status(cid) == expected_status
+        expected_calls = 3 if loop_mode == "replacement" else 4
+        assert svc.get_by_slot.call_count == expected_calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("drift", "expected_outcome", "expected_status"),
+        [
+            ("raise-cycle-cap", h._SettlementOutcome.STALE, h.CampaignStatus.RUNNING),
+            ("lift-runtime", h._SettlementOutcome.STALE, h.CampaignStatus.RUNNING),
+            ("spend-runtime", h._SettlementOutcome.SETTLED, h.CampaignStatus.STOPPED),
+            ("replace-loop", h._SettlementOutcome.STALE, h.CampaignStatus.RUNNING),
+            ("opposite-bound", h._SettlementOutcome.SETTLED, h.CampaignStatus.STOPPED),
+        ],
+    )
+    async def test_MUTATION_settlement_reclassifies_complete_terminal_authority(
+        self,
+        _isolate: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        drift: str,
+        expected_outcome: h._SettlementOutcome,
+        expected_status: str,
+    ):
+        """Every terminal-bound field is re-read after bookkeeping awaits."""
+        cid = _campaign(auto_approve=True, max_cycles=2)
+        _running(cid)
+        _write_finding(cid, 1)
+        _write_finding(cid, 2, verification={"passed": True})
+        now = time.time()
+        captured = SimpleNamespace(
+            id="loop-authority",
+            active=False,
+            stopped_reason="cycle_cap",
+            max_cycles=2,
+            cycle_count=2,
+            max_runtime_secs=0,
+            created_ts=now,
+        )
+        authoritative = captured
+        trigger = h._SettlementTrigger.TERMINAL
+        stopped_reason = "cycle_cap"
+        required_cycle_count = 2
+        if drift == "raise-cycle-cap":
+            authoritative = SimpleNamespace(
+                id="loop-authority",
+                active=True,
+                stopped_reason="cycle_cap",
+                max_cycles=3,
+                cycle_count=2,
+                max_runtime_secs=0,
+                created_ts=now,
+            )
+        elif drift == "lift-runtime":
+            captured = SimpleNamespace(
+                id="loop-authority",
+                active=False,
+                stopped_reason="runtime_budget",
+                max_cycles=30,
+                cycle_count=2,
+                max_runtime_secs=60,
+                created_ts=now - 120,
+            )
+            authoritative = SimpleNamespace(
+                id="loop-authority",
+                active=True,
+                stopped_reason="runtime_budget",
+                max_cycles=30,
+                cycle_count=2,
+                max_runtime_secs=0,
+                created_ts=now - 120,
+            )
+            stopped_reason = "runtime_budget"
+            required_cycle_count = 0
+        elif drift == "spend-runtime":
+            captured = SimpleNamespace(
+                id="loop-authority",
+                active=True,
+                stopped_reason="",
+                max_cycles=30,
+                cycle_count=2,
+                max_runtime_secs=60,
+                created_ts=now,
+            )
+            authoritative = captured
+            # Entry, lock, and first classification snapshots are unspent;
+            # the first post-verdict snapshot crosses the unchanged loop's
+            # derived deadline, and the second classification observes it.
+            monkeypatch.setattr(
+                h,
+                "runtime_budget_exceeded",
+                MagicMock(side_effect=[False, False, False, True, True, True]),
+            )
+            trigger = h._SettlementTrigger.FINDING
+            stopped_reason = ""
+            required_cycle_count = 30
+        elif drift == "replace-loop":
+            authoritative = SimpleNamespace(
+                id="replacement-loop",
+                active=False,
+                stopped_reason="runtime_budget",
+                max_cycles=30,
+                cycle_count=2,
+                max_runtime_secs=60,
+                created_ts=now - 120,
+            )
+            trigger = h._SettlementTrigger.FINDING
+            stopped_reason = ""
+            required_cycle_count = 2
+        elif drift == "opposite-bound":
+            authoritative = SimpleNamespace(
+                id="loop-authority",
+                active=False,
+                stopped_reason="runtime_budget",
+                max_cycles=3,
+                cycle_count=2,
+                max_runtime_secs=60,
+                created_ts=now - 120,
+            )
+
+        calls = {"n": 0}
+
+        def _current_loop(_slot_key: str):
+            calls["n"] += 1
+            return captured if calls["n"] <= 2 else authoritative
+
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(side_effect=_current_loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        started = (h.get_campaign(cid) or {})["started_at"]
+
+        outcome = await h._settle_campaign_from_watchdog(
+            cid,
+            h._list_cycle_files(cid),
+            {cid: 0},
+            {cid: now},
+            observed_started_at=started,
+            stopped_reason=stopped_reason,
+            required_cycle_count=required_cycle_count,
+            trigger=trigger,
+        )
+
+        assert outcome == expected_outcome
+        assert _status(cid) == expected_status
+        if expected_outcome == h._SettlementOutcome.SETTLED:
+            svc.remove.assert_awaited_once_with("loop-authority")
+        else:
+            svc.remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_MUTATION_stale_authority_never_falls_through_to_stagnation(
+        self,
+        _isolate: Path,
+        fast_watchdog,
+        polls,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        cid = _campaign(auto_approve=True, max_cycles=30)
+        _running(cid)
+        _write_finding(cid, 1)
+        settlement = AsyncMock(return_value=h._SettlementOutcome.STALE)
+        stagnation = MagicMock(return_value=True)
+        monkeypatch.setattr(h, "_settle_campaign_from_watchdog", settlement)
+        monkeypatch.setattr(h, "check_stagnation", stagnation)
+
+        polls["n"] = 0
+        task = asyncio.create_task(h._watchdog_loop({"state": None}))
+        try:
+            assert await _await_until(
+                lambda: polls["n"] >= 1 and polls.get("last_count") == 1
+            )
+            _write_finding(cid, 2, new_findings_count=0)
+            assert await _await_until(lambda: settlement.await_count >= 2)
+        finally:
+            task.cancel()
+            await task
+
+        assert _status(cid) == h.CampaignStatus.RUNNING
+        stagnation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_active_cycle_cap_rejects_verified_but_thin_generation(
+        self,
+        _isolate: Path,
+        fast_watchdog,
+        polls,
+        sse,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Verification cannot replace cap-many current-generation evidence."""
+        cid = _campaign(auto_approve=True, max_cycles=2)
+        _running(cid)
+        slot = SimpleNamespace(_trust=True, running=False)
+        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+        loop = SimpleNamespace(
+            id="loop-cap",
+            active=True,
+            stopped_reason="",
+            max_cycles=2,
+            cycle_count=1,
+            max_runtime_secs=0,
+            created_ts=time.time(),
+        )
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        polls["n"] = 0
+        task = asyncio.ensure_future(h._watchdog_loop({"state": state}))
+        try:
+            assert await _await_until(lambda: polls["n"] >= 1)
+            _write_finding(cid, 1, verification={"passed": True})
+            loop.cycle_count = 2
+            assert await _await_until(
+                lambda: _status(cid) == h.CampaignStatus.FAILED
+                and svc.remove.await_count == 1
+            )
+            assert await _await_until(lambda: "failed" in sse.types())
+        finally:
+            task.cancel()
+            await task
+
+        assert "complete" not in sse.types()
+        assert [finding["cycle"] for finding in h.get_findings(cid)] == [1]
+        svc.update.assert_awaited_once_with("loop-cap", active=False)
+        svc.remove.assert_awaited_once_with("loop-cap")
+
+    @pytest.mark.asyncio
+    async def test_terminal_bound_does_not_settle_a_run_resumed_into_the_launch_window(
+        self, _isolate: Path, fast_watchdog, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Opus regression: a Resume marks the campaign RUNNING (new started_at)
+        before ``_launch_loop`` swaps the spent loop. A watchdog poll landing in
+        that window must NOT terminalize the just-resumed run. The terminal-bound
+        branch now defers one poll for a newly-observed run (mirroring the
+        AUTONUDGE_STOP branch), by which point the new active loop is installed
+        and the whole block is skipped. Without the guard the first poll settles
+        the spent prior loop's bound against the new run and flips it to FAILED."""
+        cid = _campaign(auto_approve=True, max_cycles=30)
+        _running(cid)  # new started_at -> run_newly_observed on the first poll
+        _write_finding(cid, 1)
+        spent = SimpleNamespace(
+            id="loop-capped",
+            active=False,
+            stopped_reason="cycle_cap",
+            max_cycles=30,
+            cycle_count=30,
+            max_runtime_secs=0,
+        )
+        launched = SimpleNamespace(
+            id="loop-capped",
+            active=True,
+            stopped_reason="",
+            max_cycles=30,
+            cycle_count=0,
+            max_runtime_secs=0,
+        )
+        calls = {"n": 0}
+
+        def _get_by_slot(_slot_key: str):
+            calls["n"] += 1
+            # First observation: launch still in flight, old spent loop present.
+            # Subsequent observations: launch completed, new active loop in place.
+            return spent if calls["n"] == 1 else launched
+
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(side_effect=_get_by_slot),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+
+        assert await _drive_watchdog({"state": SimpleNamespace(_slots={})}, lambda: calls["n"] >= 3)
+        assert _status(cid) == h.CampaignStatus.RUNNING
+        svc.remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_count_advance_completion_scopes_to_the_current_generation(
+        self, _isolate: Path, fast_watchdog, polls, sse
+    ):
+        """Opus regression: the primary (non-stalled) count-advance completion
+        must count only THIS generation's cycle files. A resumed capped campaign
+        whose prior generation already left cap-many findings on disk must not
+        COMPLETE on a single new file; it completes only once the CURRENT
+        generation reaches the cap. Mirrors ``_stalled_campaign_verdict``'s
+        identity-snapshot fence on the live path."""
+        cid = _campaign(auto_approve=True, max_cycles=2)
+        _write_finding(cid, 1)
+        _write_finding(cid, 2)  # prior generation already at the cap
+        _running(cid)  # Resume snapshots both prior payload identities
+        polls["n"] = 0
+        task = asyncio.ensure_future(h._watchdog_loop({"state": None}))
+        try:
+            assert await _await_until(lambda: polls["n"] >= 1)  # first poll observed
+            _write_finding(cid, 3)  # ONE new file this generation (total 3 >= cap)
+            # Total count exceeds the cap, but only one file is this generation's,
+            # so completion is refused and the run keeps going.
+            assert await _await_until(lambda: polls["n"] >= 3)
+            assert _status(cid) == h.CampaignStatus.RUNNING
+            _write_finding(cid, 4)  # second new file: current generation hits cap
+            assert await _await_until(lambda: _status(cid) == h.CampaignStatus.COMPLETE)
+            assert await _await_until(lambda: "complete" in sse.types())
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_count_advance_refuses_corrupt_current_generation_evidence(
+        self, _isolate: Path, fast_watchdog, polls, sse
+    ):
+        """Raw file count is only a change detector, never completion proof."""
+        cid = _campaign(auto_approve=True, max_cycles=1)
+        _running(cid)
+        polls["n"] = 0
+        task = asyncio.ensure_future(h._watchdog_loop({"state": None}))
+        try:
+            assert await _await_until(lambda: polls["n"] >= 1)
+            findings = h._campaign_dir(cid) / "findings"
+            findings.mkdir(parents=True, exist_ok=True)
+            (findings / "cycle_001.json").write_text("{not json", encoding="utf-8")
+            assert await _await_until(lambda: polls["n"] >= 3)
+            assert _status(cid) == h.CampaignStatus.RUNNING
+            assert "complete" not in sse.types()
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_count_advance_never_completes_an_unbounded_zero_cap(
+        self, _isolate: Path, fast_watchdog, polls, sse
+    ):
+        """Zero means unlimited; one readable finding must not end the run."""
+        cid = _campaign(auto_approve=True, max_cycles=0)
+        _running(cid)
+        polls["n"] = 0
+        task = asyncio.ensure_future(h._watchdog_loop({"state": None}))
+        try:
+            assert await _await_until(lambda: polls["n"] >= 1)
+            _write_finding(cid, 1)
+            assert await _await_until(lambda: polls["n"] >= 3)
+            assert _status(cid) == h.CampaignStatus.RUNNING
+            assert "complete" not in sse.types()
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    def test_cycle_cap_requires_readable_evidence_for_every_delivered_cycle(
+        self, _isolate: Path
+    ):
+        """Scheduler spend alone cannot promote an incomplete campaign."""
+        cid = _campaign(auto_approve=True, max_cycles=2)
+        _running(cid)
+        readable = _write_finding(cid, 1)
+        unreadable = h._campaign_dir(cid) / "findings" / "cycle_002.json"
+        unreadable.write_text("{not json", encoding="utf-8")
+        original_bytes = {path: path.read_bytes() for path in (readable, unreadable)}
+
+        status, message = h._stalled_campaign_verdict(
+            cid,
+            [readable, unreadable],
+            stopped_reason="cycle_cap",
+            required_cycle_count=2,
+        )
+
+        assert status == h.CampaignStatus.FAILED
+        assert message == "No activity — research stalled. Resume to continue."
+        assert {path: path.read_bytes() for path in original_bytes} == original_bytes
+
+        h.update_campaign_status(cid, status, error_message=message)
+        resumed = h.update_campaign_status(cid, h.CampaignStatus.RUNNING)
+        assert resumed["status"] == h.CampaignStatus.RUNNING
+        assert len(h._list_cycle_files(cid)) == 2
+
+    def test_runtime_budget_stop_remains_distinct_from_manual_pause(self, _isolate: Path):
+        """A spent wall-clock budget stops the campaign instead of auto-resuming it."""
+        cid = _campaign(auto_approve=True)
+        _write_finding(cid, 1)
+        status, message = h._stalled_campaign_verdict(
+            cid,
+            [h._campaign_dir(cid) / "cycle-001.json"],
+            stopped_reason="runtime_budget",
+        )
+        assert status == h.CampaignStatus.STOPPED
+        assert message == "Research time budget reached — findings are preserved."
 
     @pytest.mark.asyncio
     async def test_pending_question_pauses_an_attended_campaign(
@@ -696,9 +1583,12 @@ class TestWatchdogLoop:
         _write_finding(cid, 1)
         state = SimpleNamespace(_slots={})
 
+        # Count only watchdog observations; Start/Resume snapshot capture is
+        # independent of the cheap poll path.
+        polls["n"] = 0
         task = asyncio.ensure_future(h._watchdog_loop({"state": state}))
         try:
-            assert await _await_until(lambda: polls["n"] >= 1)  # baseline count recorded
+            assert await _await_until(lambda: polls["n"] >= 1)  # first poll observed
             _write_finding(cid, 2, verification={"passed": True})
             assert await _await_until(lambda: _status(cid) == h.CampaignStatus.COMPLETE)
             # The status commit (worker thread) and the SSE emit (call_soon_threadsafe
@@ -726,6 +1616,8 @@ class TestWatchdogLoop:
         cid = _campaign(auto_approve=True, max_cycles=2)
         _running(cid)
         _write_finding(cid, 1)
+        # Count only watchdog observations; snapshot capture is independent.
+        polls["n"] = 0
         task = asyncio.ensure_future(h._watchdog_loop({"state": None}))
         try:
             assert await _await_until(lambda: polls["n"] >= 1)
@@ -752,6 +1644,8 @@ class TestWatchdogLoop:
         _running(cid)
         for i in range(1, 6):
             _write_finding(cid, i, new_findings_count=0)
+        # Count only watchdog observations; snapshot capture is independent.
+        polls["n"] = 0
         task = asyncio.ensure_future(h._watchdog_loop({"state": None}))
         try:
             assert await _await_until(lambda: polls["n"] >= 1)
@@ -1110,6 +2004,17 @@ class TestGrillTreeEndpoint:
         assert _body(resp) == {"tree": []}
 
     @pytest.mark.asyncio
+    async def test_tree_read_uses_the_campaign_descriptor_gate(self, _isolate: Path):
+        cid = _campaign(grill_tree=[{"id": "n1", "kind": "research", "text": "How?"}])
+        with mock.patch.object(h, "_read_campaign_file_bytes", return_value=None) as reader:
+            resp = await h._handle_grill_tree(
+                _mk("GET", f"campaigns/{cid}/grill-tree", app=_app(), match={"id": cid})
+            )
+        assert _body(resp) == {"tree": []}
+        assert reader.call_args.args[1] == ("grill_tree.json",)
+        assert reader.call_args.kwargs["max_bytes"] == h._REPORT_VIEW_MAX_BYTES
+
+    @pytest.mark.asyncio
     async def test_stored_nodes_are_served(self, _isolate: Path):
         cid = _campaign(grill_tree=[{"id": "n1", "kind": "research", "text": "How?"}])
         resp = await h._handle_grill_tree(
@@ -1223,8 +2128,57 @@ class TestReportAndNudge:
         cid = _campaign()
         report = h._campaign_dir(cid) / "FINDINGS.md"
         report.write_text("body")
-        with mock.patch.object(Path, "read_text", side_effect=OSError("nope")):
+        with mock.patch.object(h, "_read_campaign_file_bytes", return_value=None):
             assert h._read_report(cid) == ""
+
+    def test_large_report_keeps_a_bounded_prefix_and_recent_utf8_evidence(
+        self, _isolate: Path
+    ):
+        cid = _campaign()
+        report = h._campaign_dir(cid) / "FINDINGS.md"
+        # The cap cuts inside this three-byte code point. Replacement decoding
+        # must remain safe, and current evidence must still be visible.
+        report.write_bytes(b"A" * (h._REPORT_VIEW_MAX_BYTES - 1) + "€tail".encode("utf-8"))
+        _write_finding(cid, 41, summary="最新の証拠")
+
+        rendered = h._read_report(cid)
+
+        assert len(rendered.encode("utf-8")) < h._REPORT_VIEW_MAX_BYTES * 2
+        assert rendered.startswith("A" * 100)
+        assert "�" in rendered
+        assert "Report view limited" in rendered
+        assert "Recent cycle evidence" in rendered
+        assert "最新の証拠" in rendered
+
+    @pytest.mark.parametrize(
+        "raw",
+        [b"# R\xc3\xa9sum\xc3\xa9\n\xe6\x9c\x80\xe6\x96\xb0", b"# R\xc3\xa9sum\xc3\xa9\r\n\xe6\x9c\x80\xe6\x96\xb0", b"# R\xc3\xa9sum\xc3\xa9\r\xe6\x9c\x80\xe6\x96\xb0"],
+        ids=["lf", "crlf", "cr"],
+    )
+    def test_small_report_uses_canonical_lf(self, _isolate: Path, raw: bytes):
+        cid = _campaign()
+        report = h._campaign_dir(cid) / "FINDINGS.md"
+        report.write_bytes(raw)
+        assert h._read_report(cid) == "# Résumé\n最新"
+
+    def test_large_report_and_recent_findings_share_the_no_link_gate(
+        self, _isolate: Path
+    ):
+        cid = _campaign()
+        report = h._campaign_dir(cid) / "FINDINGS.md"
+        report.write_bytes(b"x" * (h._REPORT_VIEW_MAX_BYTES + 1))
+        _write_finding(cid, 1, summary="recent")
+        real = h._read_campaign_file_bytes
+
+        with mock.patch.object(h, "_read_campaign_file_bytes", wraps=real) as gate:
+            rendered = h._read_report(cid)
+
+        assert "recent" in rendered
+        assert gate.call_count == 2
+        report_call, finding_call = gate.call_args_list
+        assert report_call.args[1] == ("FINDINGS.md",)
+        assert report_call.kwargs["allow_truncate"] is True
+        assert finding_call.args[1] == ("findings", "cycle_001.json")
 
     @pytest.mark.asyncio
     async def test_report_endpoint_serves_the_findings_file(self, _isolate: Path):
@@ -1234,6 +2188,28 @@ class TestReportAndNudge:
             _mk("GET", f"campaigns/{cid}/report", app=_app(), match={"id": cid})
         )
         assert _body(resp)["report"] == "# Key finding"
+
+    @pytest.mark.asyncio
+    async def test_report_endpoint_keeps_event_loop_responsive(
+        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        cid = _campaign()
+
+        def slow_report(_cid: str) -> str:
+            time.sleep(0.2)
+            return "bounded"
+
+        monkeypatch.setattr(h, "_read_report", slow_report)
+        started = asyncio.get_running_loop().time()
+        task = asyncio.create_task(
+            h._handle_report(
+                _mk("GET", f"campaigns/{cid}/report", app=_app(), match={"id": cid})
+            )
+        )
+        await asyncio.sleep(0.02)
+        assert asyncio.get_running_loop().time() - started < 0.1
+        assert not task.done()
+        assert _body(await task)["report"] == "bounded"
 
     @pytest.mark.asyncio
     async def test_nudge_is_refused_in_workflow_mode(self, _isolate: Path):
@@ -1389,6 +2365,55 @@ class TestArtifactRoutes:
         resp = await h._handle_to_artifact(_mk("POST", "a", app=_app(), match={"id": cid}))
         assert resp.status == 404
         assert _body(resp)["error"] == "No findings yet"
+        assert _body(resp)["code"] == "findings_missing"
+
+    @pytest.mark.asyncio
+    async def test_to_artifact_routes_findings_through_complete_campaign_reader(
+        self, _isolate: Path
+    ):
+        cid = _campaign()
+        (h._campaign_dir(cid) / "FINDINGS.md").write_text("findings")
+        with mock.patch.object(h, "_read_campaign_file_bytes", return_value=None) as reader:
+            resp = await h._handle_to_artifact(_mk("POST", "a", app=_app(), match={"id": cid}))
+        assert resp.status == 409
+        assert _body(resp)["code"] == "findings_refused"
+        assert reader.call_args.args[1] == ("FINDINGS.md",)
+        assert reader.call_args.kwargs["max_bytes"] == h._REPORT_EXPORT_MAX_BYTES
+        assert reader.call_args.kwargs.get("allow_truncate", False) is False
+
+    @pytest.mark.asyncio
+    async def test_to_artifact_exports_complete_large_report_without_view_banner(
+        self, _isolate: Path
+    ):
+        cid = _campaign()
+        tail = "AUTHORITATIVE_EXPORT_TAIL"
+        findings = "A" * (h._REPORT_VIEW_MAX_BYTES + 1) + tail
+        (h._campaign_dir(cid) / "FINDINGS.md").write_text(findings)
+        store = MagicMock()
+        store.create.return_value = _FakeArtifact("slug-large")
+
+        with mock.patch.object(h, "ArtifactStore", return_value=store):
+            resp = await h._handle_to_artifact(_mk("POST", "a", app=_app(), match={"id": cid}))
+
+        assert resp.status == 201
+        exported = store.create.call_args.kwargs["content"]
+        assert tail in exported
+        assert "Report view limited" not in exported
+        assert "Recent cycle evidence" not in exported
+
+    @pytest.mark.asyncio
+    async def test_to_artifact_rejects_report_over_complete_export_bound(
+        self, _isolate: Path
+    ):
+        cid = _campaign()
+        (h._campaign_dir(cid) / "FINDINGS.md").write_bytes(
+            b"x" * (h._REPORT_EXPORT_MAX_BYTES + 1)
+        )
+
+        resp = await h._handle_to_artifact(_mk("POST", "a", app=_app(), match={"id": cid}))
+
+        assert resp.status == 413
+        assert _body(resp)["code"] == "findings_too_large"
 
     @pytest.mark.asyncio
     async def test_to_artifact_falls_back_to_a_mechanical_render(self, _isolate: Path):
@@ -1541,6 +2566,70 @@ class TestKnowledgeRoutes:
         cid = _campaign()
         resp = await h._handle_to_knowledge(_mk("POST", "k", app=_app(), match={"id": cid}))
         assert resp.status == 404
+        assert _body(resp)["code"] == "findings_missing"
+
+    @pytest.mark.asyncio
+    async def test_ingest_routes_findings_through_complete_campaign_reader(
+        self, _isolate: Path
+    ):
+        cid = _campaign()
+        (h._campaign_dir(cid) / "FINDINGS.md").write_text("findings")
+        app = _app(
+            state=SimpleNamespace(knowledge_store=MagicMock()),
+            knowledge_pipeline=SimpleNamespace(ingest_file=AsyncMock()),
+        )
+        with mock.patch.object(h, "_read_campaign_file_bytes", return_value=None) as reader:
+            resp = await h._handle_to_knowledge(_mk("POST", "k", app=app, match={"id": cid}))
+        assert resp.status == 409
+        assert _body(resp)["code"] == "findings_refused"
+        assert reader.call_args.args[1] == ("FINDINGS.md",)
+        assert reader.call_args.kwargs["max_bytes"] == h._REPORT_EXPORT_MAX_BYTES
+        assert reader.call_args.kwargs.get("allow_truncate", False) is False
+
+    @pytest.mark.asyncio
+    async def test_ingest_exports_complete_large_report_without_view_banner(
+        self, _isolate: Path
+    ):
+        cid = _campaign()
+        tail = "AUTHORITATIVE_KNOWLEDGE_TAIL"
+        findings = "K" * (h._REPORT_VIEW_MAX_BYTES + 1) + tail
+        campaign = h._campaign_dir(cid)
+        (campaign / "FINDINGS.md").write_text(findings)
+        store = MagicMock()
+        store.get_source_by_uri.return_value = None
+        store.add_source.return_value = 11
+        pipeline = SimpleNamespace(ingest_file=AsyncMock())
+        app = _app(
+            state=SimpleNamespace(knowledge_store=store),
+            knowledge_pipeline=pipeline,
+        )
+
+        resp = await h._handle_to_knowledge(_mk("POST", "k", app=app, match={"id": cid}))
+
+        assert resp.status == 201
+        exported = (campaign / "findings_for_knowledge.md").read_text()
+        assert tail in exported
+        assert "Report view limited" not in exported
+        assert "Recent cycle evidence" not in exported
+        await _drain_bg_tasks(app)
+
+    @pytest.mark.asyncio
+    async def test_ingest_rejects_report_over_complete_export_bound(
+        self, _isolate: Path
+    ):
+        cid = _campaign()
+        (h._campaign_dir(cid) / "FINDINGS.md").write_bytes(
+            b"x" * (h._REPORT_EXPORT_MAX_BYTES + 1)
+        )
+        app = _app(
+            state=SimpleNamespace(knowledge_store=MagicMock()),
+            knowledge_pipeline=SimpleNamespace(ingest_file=AsyncMock()),
+        )
+
+        resp = await h._handle_to_knowledge(_mk("POST", "k", app=app, match={"id": cid}))
+
+        assert resp.status == 413
+        assert _body(resp)["code"] == "findings_too_large"
 
     @pytest.mark.asyncio
     async def test_ingest_without_a_store_is_a_503(self, _isolate: Path):
@@ -1882,6 +2971,45 @@ class TestActionDispatch:
         assert resp.status == 404
 
     @pytest.mark.asyncio
+    async def test_aliased_campaign_cannot_start_or_acquire_slot_ownership(
+        self, _isolate: Path, dispatch
+    ):
+        requested = _campaign()
+        owner = _campaign()
+        requested_dir = h._campaign_dir(requested)
+        requested_dir.joinpath("status.json").unlink()
+        requested_dir.joinpath("findings").rmdir()
+        requested_dir.rmdir()
+        make_dir_link(requested_dir, h._campaign_dir(owner))
+
+        response = await self._act(requested, "start")
+
+        assert response.status == 400
+        assert _body(response)["code"] == "campaign_identity_invalid"
+        assert _status(requested) == h.CampaignStatus.READY
+        assert _status(owner) == h.CampaignStatus.READY
+        dispatch.launch_loop.assert_not_awaited()
+        dispatch.launch_workflow.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_replaced_real_campaign_directory_cannot_acquire_slot_ownership(
+        self, _isolate: Path, dispatch
+    ):
+        requested = _campaign()
+        owner = _campaign()
+        requested_dir = h._campaign_dir(requested)
+        owner_dir = h._campaign_dir(owner)
+        requested_dir.rename(requested_dir.with_name("parked-requested"))
+        owner_dir.rename(requested_dir)
+
+        response = await self._act(requested, "start")
+
+        assert response.status == 400
+        assert _body(response)["code"] == "campaign_identity_invalid"
+        dispatch.launch_loop.assert_not_awaited()
+        dispatch.launch_workflow.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_start_on_a_running_campaign_is_a_409(self, _isolate: Path, dispatch):
         cid = _campaign()
         _running(cid)
@@ -1901,6 +3029,115 @@ class TestActionDispatch:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("action", ["start", "resume"], ids=["start", "resume"])
+    async def test_postcommit_running_sidecar_failure_is_structured_after_rollback(
+        self,
+        _isolate: Path,
+        dispatch,
+        monkeypatch: pytest.MonkeyPatch,
+        action: str,
+    ):
+        """A failed RUNNING sidecar returns a stable error after restoring the row."""
+        cid = _campaign()
+        if action == "resume":
+            _running(cid)
+            h.update_campaign_status(cid, h.CampaignStatus.FAILED, error_message="stalled")
+        previous = h.get_campaign(cid)
+        assert previous is not None
+        real_write_status = h.write_status
+
+        def fail_running_sidecar(campaign_id, status, **kwargs):
+            if status == h.CampaignStatus.RUNNING:
+                raise OSError("status store unavailable")
+            return real_write_status(campaign_id, status, **kwargs)
+
+        monkeypatch.setattr(h, "write_status", fail_running_sidecar)
+        response = await self._act(cid, action)
+        assert response.status == 500
+        assert _body(response) == {
+            "error": "status store unavailable",
+            "code": "campaign_action_failed",
+        }
+
+        current = h.get_campaign(cid)
+        assert current is not None
+        assert current["status"] == previous["status"]
+        assert current["error_message"] == previous["error_message"]
+        assert current["started_at"] == previous["started_at"]
+        assert current["completed_at"] == previous["completed_at"]
+        dispatch.launch_loop.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rollback_sidecar_failure_is_structured_after_database_restore(
+        self, _isolate: Path, dispatch, monkeypatch: pytest.MonkeyPatch
+    ):
+        cid = _campaign()
+        previous = h.get_campaign(cid)
+        assert previous is not None
+        monkeypatch.setattr(
+            h,
+            "write_status",
+            MagicMock(side_effect=OSError("status store unavailable")),
+        )
+
+        response = await self._act(cid, "start")
+
+        assert response.status == 500
+        assert _body(response) == {
+            "error": "status store unavailable; rollback storage recovered as ready",
+            "code": "campaign_action_failed",
+        }
+        current = h.get_campaign(cid)
+        assert current is not None
+        assert current["status"] == previous["status"] == h.CampaignStatus.READY
+        dispatch.launch_loop.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rollback_database_failure_forces_a_durable_failed_row(
+        self, _isolate: Path, dispatch, monkeypatch: pytest.MonkeyPatch
+    ):
+        cid = _campaign(execution_mode="workflow")
+        dispatch.launch_workflow.side_effect = OSError("run store unavailable")
+        monkeypatch.setattr(
+            h,
+            "_restore_campaign_after_failed_launch",
+            MagicMock(side_effect=sqlite3.OperationalError("rollback write failed")),
+        )
+
+        response = await self._act(cid, "start")
+
+        assert response.status == 500
+        assert _body(response) == {
+            "error": "run store unavailable; rollback storage recovered as failed",
+            "code": "campaign_action_failed",
+        }
+        current = h.get_campaign(cid)
+        assert current is not None
+        assert current["status"] == h.CampaignStatus.FAILED
+        assert "previous state could not be restored" in current["error_message"]
+
+    @pytest.mark.asyncio
+    async def test_double_database_failure_never_claims_structured_recovery(
+        self, _isolate: Path, dispatch, monkeypatch: pytest.MonkeyPatch
+    ):
+        cid = _campaign(execution_mode="workflow")
+        dispatch.launch_workflow.side_effect = OSError("run store unavailable")
+        monkeypatch.setattr(
+            h,
+            "_restore_campaign_after_failed_launch",
+            MagicMock(side_effect=sqlite3.OperationalError("rollback write failed")),
+        )
+        monkeypatch.setattr(
+            h,
+            "_force_failed_after_rollback_storage_error",
+            MagicMock(side_effect=sqlite3.OperationalError("fail-safe write failed")),
+        )
+        monkeypatch.setattr(h, "_persisted_campaign_status", lambda _cid: "running")
+
+        with pytest.raises(h._CampaignRollbackUnsafe):
+            await self._act(cid, "start")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["start", "resume"], ids=["start", "resume"])
     async def test_workflow_mode_start_launches_a_run(self, _isolate: Path, dispatch, action):
         cid = _campaign(execution_mode="workflow")
         if action == "resume":
@@ -1912,11 +3149,301 @@ class TestActionDispatch:
         dispatch.launch_loop.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["start", "resume"], ids=["start", "resume"])
+    async def test_workflow_storage_failure_is_structured_after_rollback(
+        self, _isolate: Path, dispatch, action: str
+    ):
+        cid = _campaign(execution_mode="workflow")
+        if action == "resume":
+            _running(cid)
+            h.update_campaign_status(cid, h.CampaignStatus.PAUSED)
+        previous = h.get_campaign(cid)
+        assert previous is not None
+        dispatch.launch_workflow.side_effect = OSError("workflow run store full")
+
+        response = await self._act(cid, action)
+        assert response.status == 500
+        assert _body(response) == {
+            "error": "workflow run store full",
+            "code": "campaign_action_failed",
+        }
+        current = h.get_campaign(cid)
+        assert current is not None
+        assert current["status"] == previous["status"]
+        assert current["started_at"] == previous["started_at"]
+        assert current["completed_at"] == previous["completed_at"]
+        assert current["error_message"] == previous["error_message"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["start", "resume"], ids=["start", "resume"])
+    async def test_workflow_launch_cancellation_propagates_after_rollback(
+        self, _isolate: Path, dispatch, action: str
+    ):
+        cid = _campaign(execution_mode="workflow")
+        if action == "resume":
+            _running(cid)
+            h.update_campaign_status(cid, h.CampaignStatus.PAUSED)
+        previous = h.get_campaign(cid)
+        assert previous is not None
+        dispatch.launch_workflow.side_effect = asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            await self._act(cid, action)
+        current = h.get_campaign(cid)
+        assert current is not None
+        assert current["status"] == previous["status"]
+        assert current["started_at"] == previous["started_at"]
+        assert current["completed_at"] == previous["completed_at"]
+        assert current["error_message"] == previous["error_message"]
+
+    @pytest.mark.asyncio
+    async def test_workflow_programming_error_propagates_after_rollback(
+        self, _isolate: Path, dispatch
+    ):
+        cid = _campaign(execution_mode="workflow")
+        previous = h.get_campaign(cid)
+        assert previous is not None
+        dispatch.launch_workflow.side_effect = ValueError("bad launch result")
+
+        with pytest.raises(ValueError, match="bad launch result"):
+            await self._act(cid, "start")
+        current = h.get_campaign(cid)
+        assert current is not None
+        assert current["status"] == previous["status"]
+        assert current["started_at"] == previous["started_at"]
+        assert current["completed_at"] == previous["completed_at"]
+        assert current["error_message"] == previous["error_message"]
+
+    @pytest.mark.asyncio
     async def test_agent_mode_start_arms_the_loop(self, _isolate: Path, dispatch):
         cid = _campaign()
         await self._act(cid, "start")
         dispatch.launch_loop.assert_awaited_once()
         dispatch.launch_workflow.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["agent", "workflow"])
+    async def test_unsuccessful_launch_result_restores_prior_campaign(
+        self, _isolate: Path, dispatch, mode
+    ):
+        cid = _campaign(execution_mode=mode)
+        previous = h.get_campaign(cid)
+        assert previous is not None
+        if mode == "workflow":
+            dispatch.launch_workflow.return_value = False
+        else:
+            dispatch.launch_loop.return_value = False
+
+        response = await self._act(cid, "start")
+        assert response.status == 500
+        assert _body(response) == {
+            "error": f"Auto Research {mode} worker could not be launched",
+            "code": "campaign_action_failed",
+        }
+
+        current = h.get_campaign(cid)
+        assert current is not None
+        assert current["status"] == previous["status"] == h.CampaignStatus.READY
+        assert current["started_at"] == previous["started_at"]
+        assert current["completed_at"] == previous["completed_at"]
+        assert current["error_message"] == previous["error_message"]
+
+    @pytest.mark.asyncio
+    async def test_resume_replacement_wins_over_waiting_watchdog_settlement(
+        self, _isolate: Path, dispatch, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A settlement that captured the retained loop before waiting for the
+        transition lock must not classify the replacement run after Resume's
+        slow loop arm commits."""
+        cid = _campaign()
+        _running(cid)
+        h.update_campaign_status(cid, h.CampaignStatus.STOPPED)
+        old_loop = SimpleNamespace(id="old-loop", active=False)
+        replacement = SimpleNamespace(id="replacement-loop", active=True)
+        current = {"loop": old_loop}
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(side_effect=lambda _slot: current["loop"]),
+            update=AsyncMock(),
+            remove=AsyncMock(),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        verdict = MagicMock(side_effect=AssertionError("replacement run was classified"))
+        monkeypatch.setattr(h, "_stalled_campaign_verdict", verdict)
+        launch_started = asyncio.Event()
+        release_launch = asyncio.Event()
+
+        async def slow_launch(*_args, **_kwargs):
+            launch_started.set()
+            await release_launch.wait()
+            current["loop"] = replacement
+            return True
+
+        dispatch.launch_loop.side_effect = slow_launch
+        resume = asyncio.create_task(self._act(cid, "resume"))
+        await launch_started.wait()
+        observed_started_at = (h.get_campaign(cid) or {})["started_at"]
+        settlement = asyncio.create_task(
+            h._settle_campaign_from_watchdog(
+                cid,
+                [],
+                {cid: 0},
+                {cid: 1.0},
+                observed_started_at=observed_started_at,
+                stopped_reason="cycle_cap",
+            )
+        )
+        await asyncio.sleep(0)
+        assert not settlement.done(), "settlement did not wait for Resume's transition lock"
+
+        release_launch.set()
+        response = await resume
+        await settlement
+
+        assert response.status == 200
+        assert (h.get_campaign(cid) or {})["status"] == h.CampaignStatus.RUNNING
+        assert current["loop"] is replacement
+        verdict.assert_not_called()
+        svc.update.assert_not_awaited()
+        svc.remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_settlement_wins_before_resume_replacement(
+        self, _isolate: Path, dispatch, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Opposite ordering: settlement owns the lock first, Resume waits, then
+        starts from the settled row and installs its replacement without a
+        cancellation or database deadlock."""
+        cid = _campaign()
+        _running(cid)
+        observed_started_at = (h.get_campaign(cid) or {})["started_at"]
+        old_loop = SimpleNamespace(id="old-loop", active=False)
+        replacement = SimpleNamespace(id="replacement-loop", active=True)
+        current = {"loop": old_loop}
+
+        async def remove_old(loop_id: str) -> None:
+            assert loop_id == old_loop.id
+            current["loop"] = None
+
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(side_effect=lambda _slot: current["loop"]),
+            update=AsyncMock(),
+            remove=AsyncMock(side_effect=remove_old),
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(
+            h,
+            "_stalled_campaign_verdict",
+            lambda *_args, **_kwargs: (h.CampaignStatus.STOPPED, "bound reached"),
+        )
+        terminal_write_started = threading.Event()
+        release_terminal_write = threading.Event()
+        real_update = h.update_campaign_status
+
+        def slow_terminal_write(campaign_id: str, status: str, **kwargs):
+            if status == h.CampaignStatus.STOPPED:
+                terminal_write_started.set()
+                assert release_terminal_write.wait(timeout=5)
+            return real_update(campaign_id, status, **kwargs)
+
+        monkeypatch.setattr(h, "update_campaign_status", slow_terminal_write)
+
+        async def launch_replacement(*_args, **_kwargs):
+            current["loop"] = replacement
+            return True
+
+        dispatch.launch_loop.side_effect = launch_replacement
+        settlement = asyncio.create_task(
+            h._settle_campaign_from_watchdog(
+                cid,
+                [],
+                {cid: 0},
+                {cid: 1.0},
+                observed_started_at=observed_started_at,
+                stopped_reason="cycle_cap",
+            )
+        )
+        assert await asyncio.to_thread(terminal_write_started.wait, 5)
+        resume = asyncio.create_task(self._act(cid, "resume"))
+        await asyncio.sleep(0)
+        assert not resume.done(), "Resume bypassed the settlement transition lock"
+
+        release_terminal_write.set()
+        await settlement
+        response = await resume
+
+        assert response.status == 200
+        assert (h.get_campaign(cid) or {})["status"] == h.CampaignStatus.RUNNING
+        assert current["loop"] is replacement
+        svc.remove.assert_awaited_once_with(old_loop.id)
+        dispatch.launch_loop.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_resume_keeps_running_when_replacement_commits(
+        self, _isolate: Path, dispatch
+    ):
+        """Cancellation waits for launch and rolls back only an actual failure."""
+        cid = _campaign()
+        _running(cid)
+        h.update_campaign_status(cid, h.CampaignStatus.FAILED, error_message="stalled")
+        launch_started = asyncio.Event()
+        release_launch = asyncio.Event()
+
+        async def committed_launch(*_args, **_kwargs):
+            launch_started.set()
+            await release_launch.wait()
+            return True
+
+        dispatch.launch_loop.side_effect = committed_launch
+        request_task = asyncio.create_task(self._act(cid, "resume"))
+        await launch_started.wait()
+        request_task.cancel()
+        release_launch.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+        campaign = h.get_campaign(cid)
+        assert campaign is not None
+        assert campaign["status"] == h.CampaignStatus.RUNNING
+        assert campaign["error_message"] is None
+        dispatch.launch_loop.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_resume_waits_for_status_write_and_launch(
+        self, _isolate: Path, dispatch, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Cancellation cannot release the lock between RUNNING commit and launch."""
+        import threading
+
+        cid = _campaign()
+        _running(cid)
+        h.update_campaign_status(cid, h.CampaignStatus.FAILED, error_message="stalled")
+        real_update = h.update_campaign_status
+        write_started = threading.Event()
+        release_write = threading.Event()
+
+        def slow_running_write(campaign_id, status, **kwargs):
+            if status == h.CampaignStatus.RUNNING:
+                write_started.set()
+                assert release_write.wait(timeout=5)
+            return real_update(campaign_id, status, **kwargs)
+
+        monkeypatch.setattr(h, "update_campaign_status", slow_running_write)
+        request_task = asyncio.create_task(self._act(cid, "resume"))
+        assert await asyncio.to_thread(write_started.wait, 5)
+        request_task.cancel()
+        await asyncio.sleep(0)
+        assert not request_task.done()
+        release_write.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+        campaign = h.get_campaign(cid)
+        assert campaign is not None
+        assert campaign["status"] == h.CampaignStatus.RUNNING
+        assert campaign["error_message"] is None
+        dispatch.launch_loop.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("mode", ["agent", "workflow"])
