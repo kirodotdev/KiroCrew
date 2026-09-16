@@ -825,6 +825,7 @@ class AcpSessionHandle:
         watchdog: WatchdogSettings | None = None,
         crew_agent: str = "",
         session_key: str = "",
+        bound_cwd: str = "",
     ) -> None:
         self._session_id = session_id
         # The Kiro Crew session that OWNS this ACP session, threaded from the
@@ -841,6 +842,9 @@ class AcpSessionHandle:
         self.native_context_documents: dict[str, str] = {}
         self._queue = queue
         self._runtime = runtime
+        # The directory THIS session was opened against, which on a shared runtime is
+        # not the runtime's own: sessions for different projects live on one process.
+        self._bound_cwd = bound_cwd
         # When True, destroy() skips the transcript unlink (subagent
         # continuability: the transcript is spawn_continue's resume material).
         self.keep_transcript = False
