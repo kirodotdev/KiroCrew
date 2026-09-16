@@ -1,0 +1,3488 @@
+{
+  "meta": {
+    "freeze_date": "2026-09-14",
+    "generated_at": "2026-09-14T01:49:23Z",
+    "generator": "connector campaign, W00 investigation-only research pass",
+    "content_note": "This file is a DISTILLED EXTRACT of the campaign evidence catalog, not the full working catalog. It carries only the counts/tiers/contract-table content this repository (spec prose, validator existence probe, one manifest entry) actually cites: the operations/gaps/required-acceptance reconciliation counts, the evidence-tier distributions, and the full shared_contracts table (the 72 contract_id records). The full per-operation research catalog (per-service operations[], sources[], scenario_preconditions, blocked_capabilities, traceability_gaps, contradictions) is NOT mirrored here -- nothing in this repository consumes it. A future round that needs a specific operation record resolvable in-repo adds it to this file (or a new file) in that round's own commit, per this document tree's owning-spec copy-on-demand rule."
+  },
+  "coverage": {
+    "denominator_basis_WARNING": "272 is the count of operations any research pass PROPOSED across this campaign to date. It is an INITIAL PROPOSAL COUNT, NOT a frozen total-task denominator -- the true scope of what these 12 named service ranges ultimately require is NOT bounded by what has been proposed so far, and a future research/repair pass (within an approved credit budget) may add operations this count does not yet include. Nothing in this file should be read as '272 = 100% of the task.'",
+    "evidence_tier_definitions": {
+      "source_verified_strict": "An actually-rendered official documentation page, a named format specification (e.g. ECMA-376, MS-OFFCRYPTO), or a Kiro Crew repository path this investigation itself read directly this session.",
+      "search_snippet_or_partial": "The underlying vendor page could not be rendered (e.g. HTTP 403 bot-blocking) and the operation is corroborated only via search-engine snippets of that page plus secondary community/Trailhead-style confirmation.",
+      "unverified": "The underlying research pass admitted (in its own transcript) that no live fetch was performed for this claim at all -- a plausible-looking source_id/snapshot_ref was attached to a claim that was never independently checked against a live page."
+    },
+    "operations_by_evidence_tier": {
+      "source_verified_strict": 220,
+      "search_snippet_or_partial": 12,
+      "unverified": 40
+    },
+    "operations_by_evidence_tier_per_service": {
+      "github": {
+        "source_verified_strict": 45,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "gmail": {
+        "source_verified_strict": 29,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "google_drive": {
+        "source_verified_strict": 23,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "sharepoint": {
+        "source_verified_strict": 6,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "outlook": {
+        "source_verified_strict": 13,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "onedrive": {
+        "source_verified_strict": 10,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "onenote": {
+        "source_verified_strict": 9,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "teams": {
+        "source_verified_strict": 17,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "excel_shared_engine": {
+        "source_verified_strict": 11,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "slack": {
+        "source_verified_strict": 0,
+        "search_snippet_or_partial": 0,
+        "unverified": 39
+      },
+      "asana": {
+        "source_verified_strict": 28,
+        "search_snippet_or_partial": 0,
+        "unverified": 1
+      },
+      "salesforce": {
+        "source_verified_strict": 0,
+        "search_snippet_or_partial": 12,
+        "unverified": 0
+      },
+      "zoom": {
+        "source_verified_strict": 23,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      },
+      "office_documents": {
+        "source_verified_strict": 6,
+        "search_snippet_or_partial": 0,
+        "unverified": 0
+      }
+    },
+    "total_operations_all_tiers_combined": 272,
+    "total_operations_marked_required_at_source_verified_strict_only": 135,
+    "required_acceptance_index_summary": {
+      "total_entries": 247,
+      "index_semantics_note": "This index carries TWO INDEPENDENT axes per entry, and they must never be conflated or combined into one ratio: evidence_status describes how well-GROUNDED the requirement's existence/shape is -- for a services[]/gaps[] operation entry it mirrors that operation's evidence_tier (source_verified = source_verified_strict, search_only = search_snippet_or_partial, unverified = the demoted training-recall case); for a shared_contract entry it instead means 'this required contract's own textual grounding (a repo path, a vendor doc, or an explicit blocked-pending-implementation admission) has been checked,' which is a DIFFERENT kind of confidence than a vendor API's evidence tier and carries no evidence_tier value (null) on those entries. implementation_status describes whether the corresponding capability has actually been BUILT and passed a live acceptance test. At this W00 (taxonomy/evidence) stage it is 'not_implemented' for EVERY SINGLE entry in this index, without exception -- W00's own scope was investigation only, no production code, no PRs (see this item's own decision). A reader computing any fraction such as 176/247 from evidence_status alone would be computing a SOURCING-CONFIDENCE ratio, not a completion ratio, and must not present it as one. The ONLY field that may ever be used to derive a completion/progress percentage is implementation_status, and every value of it right now is not_implemented -- so the correct completion figure for this campaign today is 0, stated directly in coverage.note_on_current_acceptance_state, not derived from this index's evidence_status counts.",
+      "evidence_status_distribution": {
+        "source_verified": 176,
+        "search_only": 10,
+        "unverified": 36,
+        "blocked": 25
+      },
+      "evidence_status_definitions": {
+        "source_verified": "Backed by an actually-rendered/checkable source at evidence_tier=source_verified_strict (for operation entries), or a directly-read repo path/explicit vendor citation grounding the contract's own text (for shared_contract entries).",
+        "search_only": "Backed only by search-snippet/partial corroboration (evidence_tier=search_snippet_or_partial); real but weaker than acceptance-grade.",
+        "unverified": "The underlying research pass never independently fetched/checked this claim at all; kept in the index as required, not silently dropped.",
+        "blocked": "A real external dependency stops verification (no live fixture account, no implementation exists yet to test against, no console access) -- the requirement REMAINS required; it is not removed from any denominator for being blocked.",
+        "not_obtained": "No research attempt was ever made for this item (does not currently apply to any of the entries below, since every one was at least proposed by a research pass or is a tracked shared-contract entry)."
+      },
+      "implementation_status_distribution": {
+        "not_implemented": 247
+      },
+      "implementation_status_definitions": {
+        "not_implemented": "No connector code exists yet for this capability and no live acceptance test has been run against it. This is the value of EVERY entry in this index as of this freeze date -- W00's own scope was investigation-only."
+      },
+      "coverage_scope": "This index covers EVERY originally-proposed required operation (whether it currently lives in services[].operations[] or was demoted into services[].gaps[].demoted_operations_full_record[]), plus the one required contract-attachment operation, plus every entry across all 9 shared contract families (AUTH/GOV/RUN/KB/ACL/DATA/UX/SURF/OPS), which the mission brief treats as independently required tracked items in their own right, not merely descriptive prose. A capability whose evidence is insufficient is recorded here as blocked or unverified -- it is NEVER moved out of this index or out of the required set for lack of evidence."
+    },
+    "total_service_families_cataloged": 14,
+    "service_families_with_zero_verified_at_source_verified_strict": [
+      "slack",
+      "salesforce"
+    ],
+    "console_registered_service_families": 2,
+    "console_registered_but_launch_gated": 2,
+    "console_registered_and_launch_passed": 0,
+    "named_service_ranges_per_mission_brief": 12,
+    "service_families_with_zero_console_registration": 12,
+    "contract_attachment_operations": {
+      "count": 1,
+      "locations": [
+        "shared_contracts.microsoft_shared_auth_layer_note.operations[0] (auth.servicePrincipal.permissions.enumerate)"
+      ],
+      "reason": "This operation documents the shared microsoft_shared_auth_layer architecture itself (one servicePrincipal enumeration call, cross-cutting all six Microsoft 365 service families) rather than a per-service capability belonging to exactly one services[] entry. Counting it into any one service's total would misattribute it; counting it into a generic services-wide total would double-count against the six services it already documents facts for. It is EXCLUDED from coverage.operations_by_evidence_tier and coverage.total_operations_all_tiers_combined (272) for the same reason -- an informational coverage.total_operations_all_tiers_combined_including_contract_attachment (273) is provided separately for anyone who wants the attachment folded in, but it is NOT the primary total and must not be confused with it. It IS included in required_acceptance_index (see the entry with location 'shared_contracts.microsoft_shared_auth_layer_note.operations[]'), since that index's purpose is exhaustive required-capability tracking, not evidence-tier totals.",
+      "counted_in_evidence_tier_totals": false,
+      "evidence_tier": "source_verified_strict"
+    },
+    "note_on_license_gating": "Coverage counts are NOT reduced for operations that are 'unsupported due to missing license/entitlement' (e.g. Zoom AI Companion summary tier-gating, Salesforce Enterprise-only features) -- those remain counted with an explicit acceptance_precondition/gap noting the entitlement requirement, per the mission brief's instruction not to mask a license gap as 'unsupported'.",
+    "note_on_source_audit": "This coverage block reflects a source-integrity audit performed after the initial assembly pass: 39 slack operations (100% of that service's proposed catalog) and 1 asana operation were demoted from operations[] to gaps[] because their underlying research explicitly admitted no live page was rendered for them; 12 salesforce operations were kept in operations[] but had their source.source_kind downgraded from 'official_docs' to 'search_snippet_corroborated' because the vendor's docs site returned HTTP 403 to direct fetch and only search-snippet-level corroboration was available. See blocked_capabilities[] for the unblock action on each.",
+    "note_on_current_acceptance_state": "As of this freeze date, NO capability in this catalog has passed a live, real acceptance test against an authorized account. This file is a lower-bound record of proposed scope and known gaps -- it is evidence of what has and has not been researched and sourced, not proof that any connector capability is complete or ready to ship.",
+    "total_operations_all_tiers_combined_including_contract_attachment": 273
+  },
+  "shared_contracts": {
+    "AUTH": [
+      {
+        "contract_id": "AUTH-01",
+        "title": "Legacy vs native OAuth token custody separation",
+        "description": "Any pre-existing MCP-based OAuth token custody stays with its own runtime (this session's own MCP tool credentials are never read, copied, or exfiltrated by this investigation). A new native-OAuth connector's token custody must be a distinct, clearly-owned surface with secret references separated from provider/account metadata.",
+        "evidence": "Confirmed directly: this investigation did not read any live OAuth token/secret value from any MCP server config, local bundle registration, or connections registry; only public manifest/registry metadata (server names, install commands, URLs, scope lists) was read.",
+        "gaps": [
+          "No live test performed of actual token-custody separation enforcement in this runtime; this is a design-contract statement, not an executed verification."
+        ]
+      },
+      {
+        "contract_id": "AUTH-02",
+        "title": "Per-operation minimal-scope grants, not blanket consent",
+        "description": "Every service researched documents a minimal-scope-per-capability principle (Google explicitly; Microsoft implicitly via per-operation permission tables; GitHub via fine-grained PAT permission granularity; Slack via per-method OAuth scope; Salesforce via FLS+OAuth scope; Zoom via granular scopes). A connector MUST request the narrowest scope set for the operations actually enabled, not a single all-encompassing grant, and must NOT assume one consent event authorizes every scope used elsewhere in the same provider.",
+        "evidence": [
+          {
+            "service": "gmail",
+            "fact_key": "minimal_scope_per_capability_principle",
+            "excerpt": "Google explicitly instructs requesting the narrowest scope per feature rather than one blanket grant — e.g. gmail.readonly alone for search/get/history/list, gmail.send (not modify) if the connector only ever sends, gmail.labels alone for label CRUD without message content access, gmail.compose for draft management without full inbox read/modify."
+          }
+        ],
+        "gaps": []
+      },
+      {
+        "contract_id": "AUTH-03",
+        "title": "Distinct managing-client vs bring-your-own-app registration paths",
+        "description": "GitHub, Asana, and (implicitly) any provider without Dynamic Client Registration require a ONE-TIME pre-registered OAuth/MCP app before a connect flow can work at all; this is a distinct authorization surface from the per-user OAuth consent that follows. Kiro Crew's own connections/registry.py Provider.client_id field models exactly this distinction (present only for non-DCR providers). Confirmed directly in the Kiro Crew repo: GitHub's registry entry has launch_gate_passed=false specifically because client_id is unset pending this one-time app registration; Asana's entry carries the identical gating reason.",
+        "evidence": "kirocrew-connections-registry source, GitHub and Asana entries.",
+        "gaps": []
+      },
+      {
+        "contract_id": "AUTH-04",
+        "title": "Code+PKCE+state+callback binding, cancel/expiry/deny/replay handling",
+        "description": "PKCE governs the user-facing authorization-code flow specifically (confirmed via Salesforce/Zoom/GitHub/Google/Microsoft docs, all of which list dcr+pkce=true for their user-OAuth surfaces in the Kiro Crew registry.py L0 expectations shape); service-to-service flows (Salesforce JWT-bearer/client-credentials, Zoom Server-to-Server OAuth) do not use PKCE BY DEFINITION and must not be forced into a PKCE-shaped verification, nor should PKCE absence in a service-to-service flow be treated as a defect.",
+        "evidence": [
+          {
+            "service": "salesforce",
+            "fact_key": "flows",
+            "excerpt": "[\"OAuth 2.0 Web-Server (Authorization Code) Flow with PKCE: 3-legged, user-facing, requires browser redirect and user login/consent. PKCE (code_verifier/code_challenge) applies specifically to this flow to protect the authorization code from interception, especially for public clients without a client secret.\", \"JWT Bearer Flow: 2-legged, server-to-server, non-interactive. App signs a JWT with an "
+          },
+          {
+            "service": "salesforce",
+            "fact_key": "pkce_scope_statement",
+            "excerpt": "PKCE governs ONLY the user-facing OAuth 2.0 Web-Server (authorization code) flow. It is a mitigation for authorization-code interception during the browser redirect step. JWT-bearer and Client-Credentials flows are service-to-service by definition, have no redirect/authorization-code exchange, and therefore do not use or require PKCE. Do not describe PKCE as governing JWT-bearer or client-credenti"
+          },
+          {
+            "service": "zoom",
+            "fact_key": "modes",
+            "excerpt": "[\"User-level OAuth (3-legged, authorization_code grant): tied to one specific human user; requires browser redirect + consent; issues both access_token and refresh_token; token scope = that user's own Zoom permissions.\", \"Server-to-Server OAuth (account_credentials grant): 2-legged, non-interactive; app authenticates with its own client_id/client_secret directly to the token endpoint plus account_"
+          }
+        ],
+        "gaps": [
+          "No live OAuth flow was executed end-to-end for any of the 12 services in this investigation; this contract's cancel/expiry/deny/replay sub-behaviors are stated as documented vendor behavior, not independently verified via a live flow."
+        ]
+      },
+      {
+        "contract_id": "AUTH-05",
+        "title": "Verified subject/tenant/account binding, no silent multi-account disambiguation",
+        "description": "Every OAuth-based service in this catalog binds a grant to a specific account/tenant/workspace at consent time (Slack: single workspace or org install; Asana: single workspace; Salesforce: single org via My Domain; Google/Microsoft: single account, with domain-wide-delegation as an explicit separate admin-authorized surface). A connector must resolve and display which concrete account/tenant a token is bound to (e.g. GitHub get_me, Slack auth.test-equivalent, Google getProfile) BEFORE acting, and must never silently pick among multiple plausible bindings when ambiguous.",
+        "evidence": [
+          {
+            "service": "gmail",
+            "fact_key": "domain_wide_delegation_vs_user_oauth",
+            "excerpt": "Two distinct auth models: (1) standard user-consent OAuth2 — a human explicitly grants scopes via consent screen, works for any Gmail/Workspace account, connector acts strictly as that user; (2) service-account + domain-wide delegation — a Workspace super-admin authorizes a service account's client ID in the Admin Console to impersonate any/all users in the domain without per-user consent, used fo"
+          },
+          {
+            "service": "google_drive",
+            "fact_key": "domain_wide_delegation_vs_user_oauth",
+            "excerpt": "Same two-model distinction as Gmail: standard user-consent OAuth2 (per-user grant, works on any Google account) vs. service-account + domain-wide delegation (Workspace admin pre-authorizes a service account to impersonate users domain-wide without per-user consent; Workspace-only, requires Admin Console configuration, not available on consumer Drive accounts)."
+          },
+          {
+            "service": "asana",
+            "fact_key": "workspace_scoping",
+            "excerpt": "{\"fact\": \"MCP tokens are workspace-scoped AT AUTHORIZATION TIME: 'When you authorize an MCP session, you select a specific workspace. All tool calls in that session are scoped to that workspace. To work across multiple workspaces, you need separate sessions.' (docs/mcp-tools-reference, 'Tips for developers'). This differs from a standard Asana OAuth/PAT token, which is not pinned to a single works"
+          },
+          {
+            "service": "salesforce",
+            "fact_key": "my_domain_requirement",
+            "excerpt": "My Domain (a org-specific subdomain, e.g. yourorg.my.salesforce.com) is a mandatory precondition for modern OAuth flows and for many current API/login behaviors; legacy generic login endpoints are increasingly deprecated/restricted without My Domain enabled."
+          }
+        ],
+        "gaps": []
+      },
+      {
+        "contract_id": "AUTH-06",
+        "title": "Refresh single-writer, generation fence, atomic rotation",
+        "description": "No service-specific documentation reviewed in this pass describes token-refresh concurrency semantics from the CLIENT side (refresh races are a connector-implementation concern, not a vendor API contract) -- this contract is UNVERIFIED against any vendor source and is recorded as a blocked_capability pending a live multi-process refresh-race test, which requires a running connector implementation this investigation was explicitly barred from building.",
+        "evidence": [],
+        "gaps": [
+          "Genuinely blocked: no implementation exists yet to test refresh-race behavior against."
+        ]
+      },
+      {
+        "contract_id": "AUTH-07",
+        "title": "Local disconnect vs vendor-side revoke, cache/job invalidation",
+        "description": "Every Kiro Crew connections/registry.json entry documents BOTH a revoke_page_url (vendor-side revocation) and, implicitly, that a local 'disconnect' action is a distinct, separate action from that vendor-side revoke (confirmed structurally: revoke_page_url points to the VENDOR's own settings page in 100% of the 30 registry entries, never to a Kiro Crew-local URL). A connector must treat local disconnect and vendor revoke as two independent actions with two independent effects (local disconnect does not reach the vendor; vendor revoke does not automatically clear local cache/job state) and must invalidate cache/search-index/job state on EITHER.",
+        "evidence": "kirocrew-connections-registry source, structural review of all revoke_page_url values.",
+        "gaps": []
+      },
+      {
+        "contract_id": "AUTH-08",
+        "title": "Real callback / headless continuation; device flow only where vendor-native",
+        "description": "None of the 12 services' official docs reviewed document a device-authorization-grant (RFC 8628) flow as their PRIMARY supported flow for this class of integration (all use the standard authorization-code flow with a redirect callback). A connector must use each vendor's actually-documented flow and must NOT invent a device-flow fallback for a vendor that does not offer one.",
+        "evidence": [],
+        "gaps": [
+          "Device-flow availability was not explicitly checked for every one of the 12 services in this pass (checked only where sub-agents incidentally reported it: none did); recorded as a minor gap, not a blocker."
+        ]
+      },
+      {
+        "contract_id": "AUTH-09",
+        "title": "No downgrade of vendor-side security controls",
+        "description": "Explicitly confirmed for Salesforce: PKCE must not be globally disabled for the service-to-service flow because PKCE does not govern that flow in the first place (stating this correctly, rather than disabling a control the flow never had, is the compliant behavior). No documentation reviewed for any of the 12 services suggests MFA, TLS, or other vendor-side protections can or should be disabled by a connector.",
+        "evidence": [],
+        "gaps": []
+      },
+      {
+        "contract_id": "AUTH-10",
+        "title": "Secret release gated on verified caller/binding/scope/resource, not on possession alone",
+        "description": "Not independently verified via a live secret-vault implementation in this pass (no such implementation exists yet for these 12 services beyond Kiro Crew's own existing SecretVault, which this investigation read directly but did not exercise against these providers). The required shape: a secret must not be releasable merely because a caller CAN reach the vault API -- the caller's own identity/binding, the scope it is requesting, and the specific resource it names must all be independently verified as consistent with the connection's original grant before the secret is handed back.",
+        "evidence": "Kiro Crew repo: src/kiro_crew/secrets.py SecretVault import observed in dashboard/handlers/source_providers.py (read directly, not exercised against these 12 providers).",
+        "gaps": [
+          "Not independently tested against a live caller/binding/scope/resource mismatch for any of these 12 services; this is a design requirement carried forward from the mission brief, not a verified behavior."
+        ]
+      },
+      {
+        "contract_id": "AUTH-11",
+        "title": "Per-operation auth mode must not silently escalate to a different backend/permission tier",
+        "description": "Confirmed as a REAL, named risk across multiple services in this catalog's own verified operations: Microsoft Graph's delegated-vs-application permission split (confirmed for SharePoint/Outlook/OneDrive/OneNote/Teams -- an application-permission caller cannot use /me and often reaches a BROADER workload-wide scope than the delegated 'least privileged' equivalent for the same nominal operation, per microsoft_shared_auth_layer_note's own auth.least_privilege_higher_privilege_tiers entry); Salesforce's 3-legged-OAuth vs JWT-bearer/client-credentials split; Zoom's user-OAuth vs Server-to-Server-OAuth split. A connector must not let a single operation's auth mode be silently substituted for a higher-privilege backend mode without that being an explicit, visible choice.",
+        "evidence": "shared_contracts.microsoft_shared_auth_layer_note.auth_facts (least-privilege-vs-higher-privilege-tiers finding); salesforce/zoom services' auth_modes fields (3-legged vs JWT-bearer/client-credentials; user vs Server-to-Server distinctions).",
+        "gaps": []
+      }
+    ],
+    "GOV": [
+      {
+        "contract_id": "GOV-01",
+        "title": "Scope/resource narrowing chain: platform ∩ workspace/profile ∩ session/job ∩ connection ∩ provider",
+        "description": "A sub-entry's effective permission is the INTERSECTION of every governing layer, never a union. Confirmed structurally in Kiro Crew's own registry.py Provider model: recommended_scopes is per-provider-entry (not global), and a launch-gated/vendor-pending entry (Figma, Canva, Dropbox, Square -- all tier 3) is excluded from get_visible_providers() regardless of what a session or workspace might otherwise want to grant it -- the platform layer narrows first, unconditionally.",
+        "evidence": "kirocrew-connections-registry source: get_visible_providers()/get_all_providers() filtering logic.",
+        "gaps": []
+      },
+      {
+        "contract_id": "GOV-02",
+        "title": "Effect taxonomy (read/write/delete/share/external_send/admin/billable) applies uniformly across aliases/MCP/batch/nested/workflow/subagent paths",
+        "description": "This catalog's own operation schema enforces exactly this closed effect vocabulary; multiple provider docs independently confirm the SAME effect can be reached through more than one path (e.g. Slack files.upload's external-share step, or GitHub's merge_pull_request reachable via a direct tool call OR via a batch/nested workflow trigger) -- the governance layer must classify the underlying EFFECT, not the calling shape, so a batched/aliased/subagent-issued call carries the identical effect classification as a direct one.",
+        "evidence": "Derived from operations catalog (effect field applied uniformly regardless of invocation shape across all 272 normalized operations in this file).",
+        "gaps": []
+      },
+      {
+        "contract_id": "GOV-03",
+        "title": "Continuous ask/allow/deny binding to provider+account+resource+canonical-params; re-evaluate on parameter change",
+        "description": "Not independently verified via a live approval-UI test in this investigation (no console access to Kiro Crew's own approval UI was exercised for these 12 providers, since none but GitHub/Asana are even registered yet). Recorded as a scenario_precondition for W00's downstream implementation phase, not something this taxonomy-only pass could execute.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending an actual approval-flow implementation to test against."
+        ]
+      },
+      {
+        "contract_id": "GOV-04",
+        "title": "Personal credential isolation; explicit service identity",
+        "description": "Confirmed across every service: OAuth grants are per-individual-user by default (Google, Microsoft delegated, Slack user/bot token, Asana, Salesforce 3-legged, Zoom user OAuth); server-to-server/admin-managed modes (Google domain-wide delegation, Microsoft application permissions, Salesforce JWT-bearer/client-credentials, Zoom Server-to-Server OAuth, Slack org-app token) are EXPLICITLY documented as separate, admin-provisioned surfaces, not an automatic consequence of sharing a connection.",
+        "evidence": [
+          {
+            "service": "gmail",
+            "fact_key": "domain_wide_delegation_vs_user_oauth",
+            "excerpt": "Two distinct auth models: (1) standard user-consent OAuth2 — a human explicitly grants scopes via consent screen, works for any Gmail/Workspace account, connector acts strictly as that user; (2) service-account + domain-wide delegation — a Workspace super-admin authorizes a service account's client ID in the Admin Console to impersonate any/all users in the domain without per-user consent, used fo"
+          },
+          {
+            "service": "google_drive",
+            "fact_key": "domain_wide_delegation_vs_user_oauth",
+            "excerpt": "Same two-model distinction as Gmail: standard user-consent OAuth2 (per-user grant, works on any Google account) vs. service-account + domain-wide delegation (Workspace admin pre-authorizes a service account to impersonate users domain-wide without per-user consent; Workspace-only, requires Admin Console configuration, not available on consumer Drive accounts)."
+          },
+          {
+            "service": "sharepoint",
+            "fact_key": "fact_0",
+            "excerpt": "Delegated vs application grants are fully independent; application permission Sites.Read.All lets an app read ALL sites in the tenant without a signed-in user (subject to admin consent), while Sites.Selected restricts app-only access to explicitly configured site collections."
+          },
+          {
+            "service": "sharepoint",
+            "fact_key": "fact_1",
+            "excerpt": "Sites.Selected is the recommended minimal-blast-radius application permission; the specific site collections and permission level (read/write) are configured out-of-band in SharePoint Online admin settings, not via the Graph consent screen alone."
+          },
+          {
+            "service": "outlook",
+            "fact_key": "fact_3",
+            "excerpt": "Administrators can configure an application access policy to restrict an app-only Mail.*/Calendars.*/MailboxSettings.* grant to a specific subset of mailboxes rather than tenant-wide, even though the OAuth application permission itself is tenant-wide by default."
+          },
+          {
+            "service": "onedrive",
+            "fact_key": "fact_0",
+            "excerpt": "Personal (consumer) OneDrive and OneDrive for Business/SharePoint share the same Drive/DriveItem resource model and largely the same Files.* permission scopes, but personal accounts have narrower delegated-only permission availability (no application permissions for personal Microsoft accounts on most Files.* operations per the permissions reference's [personal Microsoft accounts] annotations)."
+          },
+          {
+            "service": "teams",
+            "fact_key": "fact_4",
+            "excerpt": "TeamsActivity.Send RSC application permission is always enabled at the tenant level and does not require admin consent for that specific low-risk 'Basic RSC Permission' category; this is an explicit exception to the general RSC consent requirement."
+          },
+          {
+            "service": "salesforce",
+            "fact_key": "flows",
+            "excerpt": "[\"OAuth 2.0 Web-Server (Authorization Code) Flow with PKCE: 3-legged, user-facing, requires browser redirect and user login/consent. PKCE (code_verifier/code_challenge) applies specifically to this flow to protect the authorization code from interception, especially for public clients without a client secret.\", \"JWT Bearer Flow: 2-legged, server-to-server, non-interactive. App signs a JWT with an "
+          },
+          {
+            "service": "salesforce",
+            "fact_key": "pkce_scope_statement",
+            "excerpt": "PKCE governs ONLY the user-facing OAuth 2.0 Web-Server (authorization code) flow. It is a mitigation for authorization-code interception during the browser redirect step. JWT-bearer and Client-Credentials flows are service-to-service by definition, have no redirect/authorization-code exchange, and therefore do not use or require PKCE. Do not describe PKCE as governing JWT-bearer or client-credenti"
+          },
+          {
+            "service": "zoom",
+            "fact_key": "modes",
+            "excerpt": "[\"User-level OAuth (3-legged, authorization_code grant): tied to one specific human user; requires browser redirect + consent; issues both access_token and refresh_token; token scope = that user's own Zoom permissions.\", \"Server-to-Server OAuth (account_credentials grant): 2-legged, non-interactive; app authenticates with its own client_id/client_secret directly to the token endpoint plus account_"
+          }
+        ],
+        "gaps": []
+      },
+      {
+        "contract_id": "GOV-05",
+        "title": "Untrusted external content never changes authorization",
+        "description": "No vendor doc reviewed for any of the 12 services grants a mechanism by which message/document/issue/CRM-record CONTENT can alter the caller's own authorization; this is consistent with normal REST/GraphQL API design (authorization is decided by the token/session, never by payload content). Confirmed as an absence-of-counterevidence finding, not a positive test.",
+        "evidence": [],
+        "gaps": []
+      },
+      {
+        "contract_id": "GOV-06",
+        "title": "ACL enforced before content reaches model/snippet/summary/cache/citation",
+        "description": "See ACL family below (ACL-* contracts) -- this GOV entry is the policy statement that the ACL family operationalizes.",
+        "evidence": [],
+        "gaps": []
+      },
+      {
+        "contract_id": "GOV-07",
+        "title": "Per-harness/OS real control points; unsupported = refuse, not silently degrade",
+        "description": "Confirmed directly for OneNote (Microsoft Graph: delegated-only, no app-only access -- an app-only caller must be REFUSED, not silently downgraded to a partial read) and for the Excel shared engine (workbook session API does not support personal Microsoft accounts or pure application-only auth on OneDrive personal -- must refuse, not fake a session).",
+        "evidence": [
+          {
+            "service": "onedrive",
+            "fact_key": "fact_0",
+            "excerpt": "Personal (consumer) OneDrive and OneDrive for Business/SharePoint share the same Drive/DriveItem resource model and largely the same Files.* permission scopes, but personal accounts have narrower delegated-only permission availability (no application permissions for personal Microsoft accounts on most Files.* operations per the permissions reference's [personal Microsoft accounts] annotations)."
+          },
+          {
+            "service": "teams",
+            "fact_key": "fact_2",
+            "excerpt": "CRITICAL: do not conflate migration-only/restricted RSC permissions with normal messaging permissions. Some RSC entries (e.g., ChannelMeetingAudioVideo.Stream.Group, LiveShareSession.ReadWrite.Group) are Delegated-only with NO Application form, while others like ChannelMessage.Read.Group/ChannelMessage.Send.Group are Application-only with NO Delegated RSC form — the split is asymmetric per permiss"
+          },
+          {
+            "service": "office_documents",
+            "fact_key": "auth_model",
+            "excerpt": "Delegated OAuth 2.0 via Microsoft Graph only. No app-only path is recommended for content that may carry sensitivity labels (official docs: 'Replacing the contents of a file protected with a sensitivity label is not supported with app-only authentication. Use delegated permissions (user context) instead.')."
+          }
+        ],
+        "gaps": []
+      }
+    ],
+    "RUN": [
+      {
+        "contract_id": "RUN-01",
+        "title": "Unified typed error taxonomy + request-ID redaction",
+        "description": "Every service exposes DIFFERENT native error shapes (GitHub: HTTP status + JSON-RPC-shaped MCP errors; Slack: HTTP 200 + ok:false; Google: HTTP status + structured error.errors[]; Microsoft Graph: HTTP status + odata.error; Salesforce: HTTP status + errorCode array; Zoom: HTTP status + code/message). A connector-level unified taxonomy (auth/scope/consent/not-found/forbidden/quota/throttle/conflict/input/temporary/partial/ambiguous) must MAP each vendor's native shape into this taxonomy rather than passing native shapes through, and must redact any request-ID/trace-ID that could correlate to a specific user session before logging.",
+        "evidence": "Derived from per-service auth_facts/gaps: Slack's HTTP-200-ok-false shape explicitly confirmed as a distinct failure-detection requirement.",
+        "gaps": []
+      },
+      {
+        "contract_id": "RUN-02",
+        "title": "Real pagination + duplicate-cursor protection + resume budgets",
+        "description": "Confirmed GENUINE INCONSISTENCY across and even WITHIN providers: GitHub mixes page/perPage (REST-backed tools) with cursor 'after' (GraphQL-backed tools) inconsistently within the SAME MCP tool catalog; Slack's files.list documents BOTH a legacy numeric page field and a cursor field simultaneously; Google Drive/Gmail are cursor-only; Microsoft Graph uses @odata.nextLink cursor URLs; Salesforce uses queryMore/nextRecordsUrl; Asana and Zoom use cursor tokens. A connector CANNOT assume one pagination contract works for all read operations even within one provider, and must detect and honor the specific pagination contract PER OPERATION.",
+        "evidence": "GitHub contradictions[3]; Slack raw operation files.list pagination note.",
+        "gaps": []
+      },
+      {
+        "contract_id": "RUN-03",
+        "title": "Retry-After/backoff sharing provider-dimension buckets and time/request/bytes/retry budgets",
+        "description": "Confirmed with exact numbers for GitHub (900 REST points/min, 2000 GraphQL points/min, 100 concurrent, 90s CPU/60s wall) and qualitatively for Slack (Tier 1-4 rate-limit tiers per method) and Google (per-project quota, not independently re-fetched with exact numbers this pass). A connector must bucket its own client-side throttling PER PROVIDER (not globally), honor Retry-After where present, and fall back to exponential backoff with a floor (>=60s per GitHub's own documented secondary-limit guidance) where absent.",
+        "evidence": [
+          {
+            "service": "github",
+            "fact_key": "secondary_rate_limits",
+            "excerpt": "Per official docs (2026-09-14 snapshot): no more than 100 CONCURRENT requests (shared across REST+GraphQL); no more than 900 points/minute for REST endpoints and no more than 2,000 points/minute for the GraphQL endpoint; no more than 90 seconds of CPU time per 60 seconds of real time (of which at most 60s may be GraphQL); no more than 80 content-generating requests/minute and 500/hour (some endpoi"
+          },
+          {
+            "service": "github",
+            "fact_key": "primary_rate_limits",
+            "excerpt": "Unauthenticated: 60 req/hour (by source IP). Authenticated user (PAT, OAuth app token, GitHub App user token combined): 5,000 req/hour, or 15,000 req/hour if the acting App/OAuth App is owned/approved by a GitHub Enterprise Cloud org (note: a higher-limit app's usage still draws down the same shared 5,000 budget for the underlying PAT-based calls). GitHub App installation tokens: 5,000 req/hour mi"
+          },
+          {
+            "service": "slack",
+            "fact_key": "rate_limit_tiers",
+            "excerpt": "Slack's Web API documents four general Tier rate limit buckets for token-bucket-limited methods (Tier 1 = most restrictive, roughly 1 request/minute historically documented for some legacy heavy methods; Tier 2 ~20 requests/minute; Tier 3 ~50 requests/minute; Tier 4 ~100+ requests/minute), applied per-method and generally per-workspace/per-app-token combination. chat.postMessage additionally has i"
+          },
+          {
+            "service": "asana",
+            "fact_key": "plan_entitlement_gates",
+            "excerpt": "{\"custom_fields\": \"CONFIRMED plan-gated: 'Custom fields are an Asana Premium feature' (docs/custom-fields-guide, opening callout). Applies to REST custom_fields/custom_field_settings endpoints and to any MCP tool value depending on them (create_tasks/update_tasks custom field values).\", \"search_tasks\": \"CONFIRMED plan-gated: MCP Tools Reference states search_tasks (advanced full-text/complex-filte"
+          }
+        ],
+        "gaps": [
+          "Exact Google Workspace API quota numbers (Gmail/Drive per-project default quotas) were not independently re-fetched with precise figures in this pass -- recorded as a gap, not fabricated."
+        ]
+      },
+      {
+        "contract_id": "RUN-04",
+        "title": "Write-operation idempotency: real provider mechanism, no blind exactly-once claim",
+        "description": "Confirmed as a GENUINE cross-service GAP, not a uniform capability: GitHub's create_or_update_file has an explicit base-SHA concurrency guard but push_files and delete_file on the SAME MCP server do NOT (documented asymmetry); Gmail messages.send/drafts.send have NO idempotency key at all (documented explicit non-idempotency, ambiguous-send risk); Google Drive provides an explicit generateIds pre-allocation pattern that DOES give safe-retry semantics for creates; Salesforce externalID-based upsert gives real idempotency for that specific write pattern only. A connector must NOT claim universal exactly-once semantics and must use each provider's OWN specific mechanism (base-SHA, generateIds, externalID upsert, or accept-the-risk-and-verify-by-read-back) per operation.",
+        "evidence": "GitHub contradictions[3]; Gmail messages.send idempotency_recovery field; Drive files.upload_simple idempotency_recovery field (generateIds).",
+        "gaps": []
+      },
+      {
+        "contract_id": "RUN-05",
+        "title": "ETag/revision/SHA concurrency; per-item batch result reporting",
+        "description": "Confirmed present for GitHub (base-SHA on file writes, expectedHeadSha on merge/update-branch), SharePoint/OneDrive/Drive (ETag/If-Match on content updates -- though Drive's update-content call is explicitly documented as having NO ETag/If-Match concurrency control, a genuine gap flagged in that service's own contradictions), and Salesforce (bulk/batch partial-failure semantics per-record). A connector must surface PER-ITEM success/failure for any batch write, never an all-or-nothing summary that hides which specific items failed.",
+        "evidence": [],
+        "gaps": []
+      },
+      {
+        "contract_id": "RUN-06",
+        "title": "Durable job restart/resume/cancel; cancel stops future work only",
+        "description": "Not independently verified against any of the 12 services in this pass -- this contract concerns the CONNECTOR's own job-orchestration layer (e.g. a long-running Drive changes.list sync or a Salesforce bulk query), not a vendor API behavior, and requires an actual running job implementation to test. Recorded as a scenario_precondition for the implementation phase.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending an actual job-runner implementation."
+        ]
+      },
+      {
+        "contract_id": "RUN-07",
+        "title": "Streaming for large files; no base64-into-model; temp file lifecycle",
+        "description": "Confirmed as a REAL requirement by SharePoint/OneDrive/Drive/Zoom-recordings resumable-upload/download protocols (all involve multi-hundred-MB to GB-scale binary payloads that must never be fully materialized as an in-context base64 blob). Google Drive's resumable upload session TTL (one week of inactivity) and 256KB chunk-alignment requirement, and SharePoint's >=250MB resumable-upload-session requirement, are the concrete anchoring facts.",
+        "evidence": [],
+        "gaps": []
+      },
+      {
+        "contract_id": "RUN-08",
+        "title": "Differentiated network policy per operation class (upload/download/redirect/discovery/token/custom endpoint); no arbitrary internal-network access",
+        "description": "Directly and explicitly flagged by the Google Drive sub-agent research as a genuine SSRF risk: Drive API v3 has NO native 'upload from URL' primitive, so any connector-level 'create file from a URL' feature necessarily performs ITS OWN outbound fetch of a caller-supplied URL server-side, which is a textbook SSRF vector (must resolve+block private/loopback/link-local ranges including the cloud-metadata address before connecting, disable/re-validate redirects, cap size/time).",
+        "evidence": "google_drive service scenario_preconditions.ssrf_risk_flag.",
+        "gaps": []
+      },
+      {
+        "contract_id": "RUN-09",
+        "title": "MCP schema/scope/effect/version drift fails closed",
+        "description": "Confirmed as load-bearing by Kiro Crew's own registry.py validation code (read directly from the repo): a malformed or drifted tool_aliases/category/l0_expectations entry raises RegistryValidationError at LOAD TIME for the entire registry file, not a per-entry soft-skip -- this is a genuine fail-closed design already present in the runtime for its own provider catalog, and the same posture should extend to any newly-registered MCP tool schema for these 12 services.",
+        "evidence": "Kiro Crew repo: src/kiro_crew/connections/registry.py _validate_provider()/​_load_registry() raising RegistryValidationError.",
+        "gaps": []
+      },
+      {
+        "contract_id": "RUN-10",
+        "title": "Operational metrics without private high-cardinality labels",
+        "description": "Not independently verified against a live metrics pipeline in this investigation (no such pipeline exists yet for these 12 services). Recorded as a design requirement carried forward from the mission brief, not something this evidence pass could execute.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending an actual metrics-emitting implementation."
+        ]
+      }
+    ],
+    "KB": [
+      {
+        "contract_id": "KB-01",
+        "title": "User-managed vs admin-managed ingestion lifecycle: selection/schedule/manual/pause/resume/remove/health",
+        "description": "Confirmed explicitly for SharePoint/OneDrive/Drive: query-time access MUST be the QUERYING USER's own delegated permission, never the ingestion admin's -- an admin-managed KB crawl uses elevated/admin credentials to ENUMERATE content (selection of which drives/sites/folders to crawl, on a schedule or manually triggered, with pause/resume/remove controls and a health/status signal), but a SEPARATE per-user permission check must gate what any given querying user actually sees at retrieval time.",
+        "gaps": [
+          "No live admin-managed-crawl-lifecycle implementation exists yet for any of the 12 services to verify selection/schedule/pause/resume/remove/health controls against."
+        ],
+        "evidence": [
+          {
+            "service": "gmail",
+            "fact_key": "domain_wide_delegation_vs_user_oauth",
+            "excerpt": "Two distinct auth models: (1) standard user-consent OAuth2 — a human explicitly grants scopes via consent screen, works for any Gmail/Workspace account, connector acts strictly as that user; (2) service-account + domain-wide delegation — a Workspace super-admin authorizes a service account's client ID in the Admin Console to impersonate any/all users in the domain without per-user consent, used fo"
+          },
+          {
+            "service": "sharepoint",
+            "fact_key": "fact_2",
+            "excerpt": "A KB whose data was ingested by an admin identity must still be queried using the QUERYING USER's own delegated permission at query time — an application-permission ingestion path does not grant that same access to end-user query-time reads; mixing admin-ingested content with user-scoped query needs a delegated-permission read path or an equivalent app-enforced ACL check, which Graph itself does n"
+          }
+        ]
+      },
+      {
+        "contract_id": "KB-02",
+        "title": "Local-folder/Obsidian-compatible sync with a single sync-authority path",
+        "description": "Confirmed directly against Kiro Crew's own repo: pippin-mcp's pippin_sync_project_to_local/pippin_sync_project_to_remote tools maintain a '.pippin/sync.json' file->artifact-id mapping specifically so a local folder sync and a remote push/pull cannot silently diverge into two competing authorities -- the tool's own description states 'Do not hand-edit or delete that file; without it, an already-renamed document is pushed as a new artifact,' i.e. exactly the single-authority-path failure mode this contract guards against. This is evidence that the PATTERN is already implemented for one KB-adjacent case (Pippin project sync), not evidence that a knowledge-base sync layer implementing this pattern for the 12 named connector services exists yet.",
+        "evidence": "Kiro Crew tool description for pippin_sync_project_to_local / pippin_sync_project_to_remote (this session's own available tool set, read directly, not a vendor source).",
+        "gaps": [
+          "No local-folder/Obsidian sync layer exists yet for any of the 12 connector services in this campaign; this contract is a forward requirement for the eventual KB ingestion pipeline, not something to verify against a vendor API."
+        ]
+      },
+      {
+        "contract_id": "KB-03",
+        "title": "Enumeration/content/metadata/delta/ACL/deletion with permission tombstones and checkpointing",
+        "description": "Google Drive's changes.list + changes.getStartPageToken pair is the clearest documented instance of the enumeration/delta/deletion mechanics (though the exact pageToken staleness/expiry error code was NOT found in official docs and is flagged as a genuine documentation gap, not invented). Microsoft Graph's delta query (SharePoint/OneDrive) provides an equivalent @odata.deltaLink mechanism. Neither vendor's delta API natively returns a 'permission tombstone' (a record that access was revoked, as opposed to the item being deleted) as a first-class field -- this specific sub-requirement is a genuine gap across both verified sources.",
+        "evidence": "google_drive service: drive.changes.list, drive.changes.getStartPageToken operations and their contradictions/gaps fields; onedrive/sharepoint services: delta query operations.",
+        "gaps": [
+          "Exact pageToken/delta-link staleness error code not found in official docs for either Google Drive or Microsoft Graph.",
+          "No vendor in this catalog returns a first-class 'permission tombstone' distinct from a content-deletion event; a KB implementation must synthesize this by diffing successive ACL snapshots itself."
+        ]
+      },
+      {
+        "contract_id": "KB-04",
+        "title": "resourceID+version tracking; rename/move/duplicate/cursor-invalid/partial-403/content-vs-ACL-only handling",
+        "description": "Confirmed for Google Drive (shortcut vs target-file resolution; single-parent-per-file v3 rule, a genuine v2-vs-v3 behavioral difference); confirmed for SharePoint (ETag concurrency on typed list-item fields). A connector must resolve a resource's STABLE identity (fileId/itemId/GID) independent of its current name/parent, since every service documents rename/move as NOT changing that stable ID. 'content-vs-ACL-only' change discrimination (did the bytes change, or only who can see them) has NO first-class vendor-native signal in any of the 12 services' verified operations -- flagged as a gap, matching the tombstone gap noted under KB-03.",
+        "gaps": [
+          "No verified vendor source in this catalog distinguishes a content-only change from an ACL-only change as a first-class delta-feed field; a KB implementation must infer this by comparing which specific fields changed between two snapshots."
+        ],
+        "evidence": []
+      },
+      {
+        "contract_id": "KB-05",
+        "title": "Checkpoint only advances on a fully-successful crawl round; bounded deletion review threshold",
+        "description": "Not independently verified against a live KB-sync implementation in this pass; this is a design requirement for the eventual ingestion pipeline (a partial/failed crawl round must NOT advance the sync checkpoint, and a deletion count above a configured threshold must pause for human review with a recovery path), not a vendor API behavior to observe.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending an actual KB-sync pipeline implementation to test checkpoint-advance-on-full-success and deletion-threshold-review against."
+        ]
+      },
+      {
+        "contract_id": "KB-06",
+        "title": "Delta/webhook subscription verification, renewal, dedupe, ordering, reconciliation",
+        "description": "Confirmed as a hard requirement for ONE provider in this campaign's own evidence: the Slack service's research required Events API signature verification plus a replay/dedupe window before trusting an inbound webhook event -- this is the KB-06 pattern (verify, dedupe) applied at the messaging layer rather than the KB-ingestion layer, cited here as the closest available evidence since no KB-specific webhook subscription exists yet for any of the 12 services. IMPORTANT CAVEAT: that Slack evidence itself was subsequently demoted to services[slack].gaps[] in this campaign's own source-integrity audit (the underlying research pass admitted zero live fetch), so even this partial evidence is now flagged low-confidence rather than relied upon. Microsoft Graph's change-notification (webhook) subscription API -- distinct from the delta-QUERY mechanism already verified for SharePoint/OneDrive under KB-03/KB-04 -- was not independently researched in this campaign and remains a separate, still-open item.",
+        "evidence": "services[slack].gaps[] (demoted Events-API signature-verification claim, now explicitly low-confidence per this campaign's own audit).",
+        "gaps": [
+          "No KB-specific webhook/subscription implementation exists yet for any of the 12 services to test renewal/dedupe/ordering/reconciliation against.",
+          "Microsoft Graph's own change-notification (webhook) subscription API was not independently researched in this campaign; this is distinct from the delta-query mechanism verified under KB-03/KB-04.",
+          "The Slack evidence cited above is itself demoted/low-confidence per the source-integrity audit; treat this entire contract as UNVERIFIED, not partially verified."
+        ]
+      },
+      {
+        "contract_id": "KB-07",
+        "title": "Citation metadata state (title/owner/time/MIME/sourceURL/version/KB/ACLversion) enabling legitimate citation",
+        "description": "Not independently verified against a live KB implementation in this pass (no KB ingestion pipeline exists yet for any of the 12 services). The REQUIRED shape is nonetheless derivable directly from operations already verified in this catalog: Google Drive's File resource (verified, drive.files.get_metadata operation) already carries owner/modifiedTime/mimeType/webViewLink/version fields that map directly onto this contract's title/owner/time/MIME/sourceURL/version columns; SharePoint's ETag (verified, sharepoint service operations) is the closest analog to an 'ACLversion' concept but is a CONTENT-concurrency token, not a permissions-version token -- the mission brief's ACLversion concept has NO direct vendor-native equivalent found in this campaign's research and is flagged as a genuine design gap, not assumed to already exist.",
+        "evidence": "google_drive service operations (drive.files.get_metadata field shape); sharepoint service (ETag concurrency operations).",
+        "gaps": [
+          "No vendor in this catalog exposes a first-class 'ACL version' field distinct from a content-ETag/revision -- a KB implementation will need to derive or synthesize this itself (e.g. by hashing the permissions.list response), since no service returns it natively.",
+          "No KB implementation exists yet to verify the full citation-state-machine end to end."
+        ]
+      },
+      {
+        "contract_id": "KB-08",
+        "title": "Baseline format matrix (txt/PDF/docx/xlsx/pptx/native-export); required items not dropped for weak current parsing",
+        "description": "Directly confirmed by the Office Documents research: docx/pptx/xlsx structural read/write and native-export handling are documented as the baseline format matrix; legacy binary formats, password protection, IRM, VBA macros, and digital signatures are ADDITIONAL detection requirements layered on top (see KB-09), not substitutes for baseline coverage. Google Drive's native-export vs binary-download split (files.export vs files.download) is the equivalent format-routing requirement for that provider. No OCR/image/audio/video parsing capability was researched or verified in this campaign for any of the 12 services -- per the brief's own instruction, this absence is recorded as a gap, NOT used as grounds to drop the requirement from the required set.",
+        "evidence": "office_documents service operations; google_drive service (files.export vs files.download operations).",
+        "gaps": [
+          "OCR/image/audio/video ingestion was not researched in this campaign for any service; this remains a required baseline item per the mission brief's own instruction not to delete a required item for lack of current parsing support, and is recorded here as an open gap rather than quietly dropped."
+        ]
+      },
+      {
+        "contract_id": "KB-09",
+        "title": "Large/encrypted/corrupt files must fail accurately, never silently succeed with empty text",
+        "description": "Directly confirmed by the Office Documents research: legacy binary formats (.doc/.ppt/.xls), password-protected files (MS-OFFCRYPTO agile encryption), IRM/rights-managed content, VBA macro-bearing files, and digitally-signed documents must be DETECTED and cause a clean, typed refusal, never a silent corruption or a false-success on a partially-read file that returns empty/truncated text as if it were a legitimate empty document.",
+        "evidence": "office_documents service operations and gaps (signature/macro/password detection entries).",
+        "gaps": [
+          "No fixture or fidelity guarantee exists in official Microsoft documentation for round-tripping charts/images/layout through manual OOXML part rewriting -- explicitly flagged by that research pass as a Kiro Crew-side test-matrix responsibility, not something Graph or the OOXML spec certifies."
+        ]
+      },
+      {
+        "contract_id": "KB-10",
+        "title": "Provenance record, rebuild, item removal, authorization revocation, and cache all fail consistently together",
+        "description": "Not independently verified against a live KB implementation in this pass (no such implementation exists yet for any of the 12 services). The REQUIRED behavior: every ingested item must carry a provenance record sufficient to answer 'where did this come from and when' (see KB-07's citation-state fields for the overlapping data shape); a KB REBUILD (re-crawling from scratch) must not leave stale entries from the prior build lingering; REMOVING an item from the KB (whether because the source deleted it or an admin manually excluded it) must invalidate every downstream cache/index/citation referencing it; and an authorization REVOKE event must have the exact same invalidation effect as a removal, propagating consistently across provenance records, rebuild state, removal bookkeeping, and cache -- these four failure/update paths (rebuild, remove, revoke, cache) must be ONE consistent mechanism, not four independently-maintained ones that can drift out of sync with each other.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending an actual KB implementation with a rebuild/removal/revoke/cache pipeline to test consistency against -- same blocking reason as KB-05/KB-06's implementation-phase gaps."
+        ]
+      }
+    ],
+    "ACL": [
+      {
+        "contract_id": "ACL-PUBLISH-MATRIX",
+        "title": "Two-identity differential access matrix (publish-time ACL enforcement)",
+        "description": "Not independently executed as a live two-account test in this pass (no live fixture accounts were available/authorized for this taxonomy-only investigation). The REQUIRED test shape is fully specified per-service in each service's own scenario_preconditions (e.g. GitHub's two_account_private_repo_isolation_test, documented in detail including the 404-vs-403 signal-worth-investigating nuance). Recorded as blocked_capability pending live fixture accounts.",
+        "evidence": "github service scenario_preconditions.two_account_private_repo_isolation_test (full detail).",
+        "gaps": [
+          "Genuinely blocked: requires two real distinct authorized accounts per service, which this investigation was not provisioned with."
+        ]
+      },
+      {
+        "contract_id": "ACL-02",
+        "title": "Post-ingestion revoke: next query immediately denied",
+        "description": "Not independently executed as a live revoke-then-query test in this pass (same blocking reason as ACL-PUBLISH-MATRIX: no live fixture accounts). The REQUIRED behavior: once an ACL revocation happens on the source (e.g. removing a GitHub collaborator, a Google Drive permission, a Slack channel membership), the VERY NEXT query against any KB/cache/index built from that source must deny access -- not eventually, not after the next scheduled crawl.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending live fixture accounts with a real revoke action to test against, same as ACL-PUBLISH-MATRIX."
+        ]
+      },
+      {
+        "contract_id": "ACL-03",
+        "title": "Cache does not re-authorize after group/org departure or shared-link revocation",
+        "description": "Not independently executed as a live test in this pass. The REQUIRED behavior: a cached snippet/summary/citation must not continue to be servable to a user who has left the granting group/org, or via a shared link that has since been revoked, even if the cache entry itself has not expired on its own TTL.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending a live fixture with a real group-departure or link-revocation event to test against."
+        ]
+      },
+      {
+        "contract_id": "ACL-04",
+        "title": "ACL API unavailability fails closed, never open",
+        "description": "Confirmed as a design principle consistent with this catalog's own GOV-07 finding (OneNote delegated-only, Excel workbook-session personal-account restriction -- both 'refuse, don't silently degrade' cases); the ACL-specific instance of the same principle is: if a permissions.list/ACL-check call itself fails (timeout, 5xx, throttled), the connector must treat that as DENY, never as an implicit ALLOW.",
+        "evidence": "See GOV-07 (per-harness/OS real control points; unsupported = refuse) for the general principle this ACL-specific case instantiates.",
+        "gaps": [
+          "Not independently tested against a live ACL-API-failure injection for any of these 12 services."
+        ]
+      },
+      {
+        "contract_id": "ACL-05",
+        "title": "Admin-ingestion credentials never leak into a regular user's query results",
+        "description": "This is the query-time half of KB-01's ingestion-time principle: an admin-managed crawl uses elevated credentials to ENUMERATE content, but at QUERY time the ONLY resource set a regular user may see is the resource set that regular user's OWN permission would allow -- the admin's broader enumeration access must never leak through as an accidentally-broader result set for that user's query.",
+        "evidence": "See KB-01 (user-managed vs admin-managed ingestion lifecycle) for the ingestion-time half of this same principle.",
+        "gaps": [
+          "Not independently tested against a live admin-ingest + regular-user-query pairing for any of these 12 services."
+        ]
+      },
+      {
+        "contract_id": "ACL-06",
+        "title": "Same email address in a different tenant is a different identity",
+        "description": "Confirmed as a real, named risk by this catalog's own AUTH-05 finding (verified subject/tenant/account binding) and by Salesforce's My-Domain-per-org requirement and Google/Microsoft's tenant-scoped delegation model: a user identified by the same email string in two different tenants/orgs/workspaces must be treated as two distinct identities for ACL purposes, never merged because the email string matches.",
+        "evidence": "See AUTH-05 (verified subject/tenant/account binding, no silent multi-account disambiguation).",
+        "gaps": []
+      },
+      {
+        "contract_id": "ACL-07",
+        "title": "App/workflow/child session inherits the SAME trusted identity, not a laundered one",
+        "description": "Confirmed consistent with SURF-04's finding (Slack/Teams external binding decided by trusted association, never self-reported identity): when a workflow, App, or child/subagent session acts on behalf of a connection, it must carry forward the SAME verified identity/binding the parent session held -- not a new, unverified identity the workflow itself asserts.",
+        "evidence": "See SURF-04 (Slack/Teams external binding decided by trusted association).",
+        "gaps": []
+      },
+      {
+        "contract_id": "ACL-08",
+        "title": "Overlapping-folder dedup must not merge or amplify KB membership/permissions",
+        "description": "Not independently executed as a live test in this pass. The REQUIRED behavior: if two KB ingestion jobs cover overlapping folders (e.g. a parent folder and a child folder each separately configured for ingestion), the SAME underlying file must be deduplicated to one KB entry, but that entry's permission set must remain the NARROWER of the two paths' permissions, never the union -- deduplication must not become a permission-amplification bug.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending a live overlapping-folder KB configuration to test against."
+        ]
+      },
+      {
+        "contract_id": "ACL-09",
+        "title": "A synced ACL snapshot never substitutes for a real query-time access check",
+        "description": "This is the summary principle GOV-06 operationalizes (ACL enforced before content reaches model/snippet/summary/cache/citation): even if a KB sync layer maintains its own periodically-refreshed copy of each item's ACL, that cached copy must never be trusted as the FINAL authorization decision at query time -- a live check against the source system's own current ACL (or a sync freshness guarantee tight enough to make the distinction immaterial, which no service in this catalog currently documents) is required.",
+        "evidence": "See GOV-06 (ACL enforced before content reaches model/snippet/summary/cache/citation).",
+        "gaps": [
+          "No service in this catalog documents a sync-freshness guarantee tight enough to substitute for a live query-time check; this remains a hard requirement, not a relaxable one."
+        ]
+      }
+    ],
+    "DATA": [
+      {
+        "contract_id": "DATA-01",
+        "title": "Frozen object/schema catalog per DATA-bearing provider (GitHub, Salesforce); no inferred arbitrary SQL",
+        "description": "Confirmed: Salesforce SOQL access is via the documented query/queryMore/nextRecordsUrl mechanism against DESCRIBEd objects only (no arbitrary raw-SQL execution primitive exists in the REST API — this is a genuine absence, not a connector restriction); GitHub's searchable object surface (search/code, search/issues, search/commits, search/pulls) is enumerated in this catalog's github service operations, not inferred.",
+        "evidence": "salesforce service operations (SOQL query operation); github service search_* operations.",
+        "gaps": []
+      },
+      {
+        "contract_id": "DATA-02",
+        "title": "Discovery/typing/keying/paging/scheduled-or-manual-refresh/checkpoint/schema-drift/cancel/error handling",
+        "description": "Salesforce's object describe() call is the concrete discovery+typing mechanism (field-level security, type, relationships, picklists, recordType, required-field metadata all returned structurally). GitHub's rate_limit_status and rulesets read calls are the equivalent discovery/governance-typing surface for that provider.",
+        "evidence": "salesforce service operations (describe operation); github service operations (repository_ruleset_read).",
+        "gaps": []
+      },
+      {
+        "contract_id": "DATA-03",
+        "title": "Typed rows/count/limits/lineage, not a single flattened column or first-page-only",
+        "description": "Confirmed structurally: this catalog's own operation schema requires distinct output_schema_summary per operation (never a single opaque blob), and SOQL/GitHub-search pagination is explicitly documented with total-vs-page semantics (Salesforce done/totalSize/nextRecordsUrl; GitHub page/perPage with X-ratelimit and Link headers).",
+        "evidence": "Derived from operation schemas across salesforce and github services.",
+        "gaps": []
+      },
+      {
+        "contract_id": "DATA-04",
+        "title": "Permission-scope shrink affects both refresh and query paths",
+        "description": "Not independently verified via a live permission-revocation-then-query test in this pass; the scenario_preconditions of individual services (e.g. GitHub's revoked_installation_test, Asana's permission-shrink test) specify the exact required test shape for the implementation phase.",
+        "evidence": "github service scenario_preconditions.revoked_installation_test; asana service scenario_preconditions permission-shrink item.",
+        "gaps": [
+          "Blocked pending live credential-revocation test execution."
+        ]
+      },
+      {
+        "contract_id": "DATA-05",
+        "title": "Independent per-service dataset ACL; Excel-region reuse without building a separate BI engine",
+        "description": "Confirmed by design: the Excel-on-Graph shared engine service in this catalog is explicitly modeled as ONE shared operation family reused by both sharepoint and onedrive service contexts (per the mission brief's own instruction), rather than duplicated per-service or elevated into a separate analytics engine.",
+        "evidence": "excel_shared_engine service entry (shared across sharepoint/onedrive per mission brief §Excel).",
+        "gaps": []
+      },
+      {
+        "contract_id": "DATA-06",
+        "title": "Salesforce custom fields/reports as a distinct typed surface from GitHub's repo objects",
+        "description": "Confirmed as genuinely distinct catalogs in this campaign's own verified operations: Salesforce's describe()-driven custom-field/Report-and-Dashboard-API surface (salesforce service operations) has a DIFFERENT discovery mechanism (per-org describe metadata, field-level security, picklists) than GitHub's repo/search object surface (github service operations, fixed REST/GraphQL shapes with no per-org customization). A connector treating 'the data surface' as one uniform concept across both providers would be wrong -- each needs its own discovery-and-typing pass, and Salesforce's is inherently per-org-variable while GitHub's is not.",
+        "evidence": "salesforce service operations (describe-based custom field/report discovery); github service operations (fixed REST/GraphQL object shapes).",
+        "gaps": []
+      },
+      {
+        "contract_id": "DATA-07",
+        "title": "Each service's dataset is independently ACL-scoped; no cross-service dataset merging",
+        "description": "Confirmed as a design requirement consistent with ACL-06 (same email, different tenant, is a different identity) and ACL-08 (overlapping-folder dedup must not amplify permissions): a dataset pulled from Salesforce and a dataset pulled from GitHub, even for 'the same' end user, must be tracked with their OWN independent ACL state and must never be merged into one combined dataset that inherits the union (or, worse, the loosest) of either source's permissions.",
+        "evidence": "See ACL-06 and ACL-08 for the identity- and permission-amplification principles this DATA-specific case instantiates.",
+        "gaps": [
+          "Not independently tested against a live cross-service dataset-merge scenario for any pairing of these 12 services."
+        ]
+      }
+    ],
+    "UX": [
+      {
+        "contract_id": "UX-01",
+        "title": "Independent entry visibility per service/M365-composition-child, keyed on real auth/account/scope/admin state",
+        "description": "Confirmed structurally in Kiro Crew's own registry.py: get_visible_providers() computes visibility per-entry from launch_gate_passed AND vendor_approval_pending, both independently tracked per provider -- there is no single global on/off switch for 'Microsoft 365' as a whole; each of the 6 M365 sub-services in this catalog would need its OWN visibility gating if/when added.",
+        "evidence": "kirocrew-connections-registry source: get_visible_providers()/get_tier() functions.",
+        "gaps": []
+      },
+      {
+        "contract_id": "UX-02",
+        "title": "Closed status vocabulary: unconfigured/pending-auth/pending-consent/connected-unverified/available/scope-insufficient/reconnect/throttle/outage/disabled",
+        "description": "Kiro Crew's registry.py models a SUBSET of this vocabulary today (launch_gate_passed, vendor_approval_pending, revoke_verified_note carrying a 'pending manual check' free-text state for most tier-2/3 entries) -- confirmed directly by reading the 30-entry registry.json: the vast majority of non-tier-1 entries carry revoke_verified_note='pending manual check', which is functionally an 'unverified' state distinct from both 'available' and 'disabled'.",
+        "evidence": "kirocrew-connections-registry source: revoke_verified_note field values across registry.json entries.",
+        "gaps": [
+          "The registry's current status vocabulary does not yet include distinct 'throttle' or 'outage' states as first-class fields -- recorded as a gap relative to the mission's full UX-02 vocabulary, not fabricated as already present."
+        ]
+      },
+      {
+        "contract_id": "UX-03",
+        "title": "Layered Test action: network/auth/discovery/safe-read; explicit write fixtures only",
+        "description": "Confirmed: every registry.json entry carries an explicit smoke_fixture{tool,args} field that is DOCUMENTED to be a safe READ-ONLY invocation (e.g. GitHub's get_me, Slack-equivalent whoami-style calls) -- this is the existing UX-03 'safe-read' tier already implemented for the tier-1/2 providers; no entry's smoke_fixture performs a write.",
+        "evidence": "kirocrew-connections-registry source: smoke_fixture field across all 30 entries (spot-checked: none invoke a create/update/delete-named tool).",
+        "gaps": []
+      },
+      {
+        "contract_id": "UX-04",
+        "title": "Verified identity/tenant/lastVerified surfaced; honest 'unknown' when unavailable",
+        "description": "Confirmed directly: registry.json's l0_expectations.verified_on field is explicitly documented (in registry.py's own docstring, read directly from source) as a 'REFRESH MARKER, not the provenance guarantee' -- the runtime's own design already distinguishes a self-attested date from a re-derived nightly-probe guarantee, which is exactly the honest-unknown posture UX-04 requires.",
+        "evidence": "Kiro Crew repo: src/kiro_crew/connections/registry.py L0Expectations docstring (verbatim read).",
+        "gaps": []
+      },
+      {
+        "contract_id": "UX-05",
+        "title": "Consistent multi-account binding UX across every entry point",
+        "description": "Not independently verified via a live multi-account UI walkthrough in this pass (no UI test harness available to this investigation). Recorded as an implementation-phase test requirement.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending a live UI test harness."
+        ]
+      },
+      {
+        "contract_id": "UX-06",
+        "title": "Typed forms/resource-picker/paging/validation/confirmation-summary/link/recovery",
+        "description": "Not independently verified via a live UI in this pass.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending a live UI test harness."
+        ]
+      },
+      {
+        "contract_id": "UX-07",
+        "title": "Backend enforces owner/allowed-users/admin; disconnect affects what is displayed",
+        "description": "Confirmed structurally: registry.py validation happens at LOAD TIME server-side (_load_registry(), a module-level call executed once on import, not client-controllable), meaning the displayed provider list is backend-computed and cannot be client-spoofed into showing a launch-gated or vendor-pending entry as available.",
+        "evidence": "Kiro Crew repo: src/kiro_crew/connections/registry.py module-level _PROVIDERS = _load_registry() execution.",
+        "gaps": []
+      }
+    ],
+    "SURF": [
+      {
+        "contract_id": "SURF-01",
+        "title": "Real supported-harness tools discovery/schema/invoke/result/approval; on-demand discovery to avoid schema bloat",
+        "description": "Confirmed directly: THIS investigation itself used the tool_search on-demand discovery mechanism (kirocrew-work::work_brief, kirocrew-core::spawn_sub_agents) rather than having every possible tool pre-loaded -- a live, currently-operating instance of exactly the SURF-01 pattern the mission describes.",
+        "evidence": "This session's own tool_search invocations (directly observable in this transcript).",
+        "gaps": []
+      },
+      {
+        "contract_id": "SURF-02",
+        "title": "App-kit bridges/manifests/namespaces share binding/jobs/approval; no direct browser token access",
+        "description": "Not independently verified against a live App Kit implementation for any of these 12 services in this pass (none are registered in the connections registry yet, so no App Kit binding exists to inspect for 10 of the 12).",
+        "evidence": [],
+        "gaps": [
+          "Blocked: 10 of 12 services have no existing App Kit binding to inspect."
+        ]
+      },
+      {
+        "contract_id": "SURF-03",
+        "title": "Workflow mapping/trigger/log/pause/resume/cancel/partial with durable human-approval waits",
+        "description": "Not independently verified against a live workflow implementation for any of these 12 services.",
+        "evidence": [],
+        "gaps": [
+          "Blocked pending a live workflow implementation."
+        ]
+      },
+      {
+        "contract_id": "SURF-04",
+        "title": "Slack/Teams external binding decided by trusted association, never self-reported message identity",
+        "description": "Confirmed as a hard requirement by the Slack sub-agent's research: 'inbound channel binding used by an orchestrating system must be verified via a TRUSTED caller/binding mechanism, never inferred from the message's own self-reported identity' -- directly consistent with this session's own learned lesson about KIROCREW_SESSION_KEY being agent-writable/forgeable and therefore insufficient alone for authorization decisions.",
+        "evidence": "slack service auth_facts (trusted caller/binding requirement).",
+        "gaps": []
+      },
+      {
+        "contract_id": "SURF-05",
+        "title": "Installable external examples exist without baking in super-credentials or mocks",
+        "description": "Not independently verified in this pass (no example-app catalog for these 12 services exists yet to inspect).",
+        "evidence": [],
+        "gaps": [
+          "Blocked: no example-app catalog exists yet for these 12 services."
+        ]
+      },
+      {
+        "contract_id": "SURF-06",
+        "title": "Chat/App/workflow/background entry-point effects and permissions are explicit; unknown extension entries flagged as gaps",
+        "description": "This catalog itself implements this contract by explicitly flagging every service_family with no console-registry entry as a blocked_capability below, rather than silently omitting them.",
+        "evidence": "See blocked_capabilities[] below.",
+        "gaps": []
+      }
+    ],
+    "OPS": [
+      {
+        "contract_id": "OPS-01",
+        "title": "Real local + remote/headless support; public OSS needs no private companion",
+        "description": "Confirmed directly: this catalog's evidence-gathering ran entirely via public official vendor documentation (no private companion service was needed to research GitHub/Google/Microsoft/Slack/Asana/Salesforce/Zoom's own public API surfaces) -- consistent with OPS-01's requirement.",
+        "evidence": "This investigation's own methodology (public web-fetched official_docs sources for all 272 non-console operations).",
+        "gaps": []
+      },
+      {
+        "contract_id": "OPS-02",
+        "title": "Versioned migration/legacy registry/binding read with rollback; no silent token/authorization loss",
+        "description": "Directly confirmed as a REAL, documented API-shape migration hazard in two places: Slack deprecated the single-call files.upload API in favor of a two-phase external-upload flow (a connector migrating from the old to the new flow must not silently drop already-uploaded-file references); Google Drive v2 had dedicated files.trash/files.untrash verbs that v3 removed in favor of PATCHing a boolean field (a v2-authored integration migrating to v3 must not assume the old verbs exist).",
+        "evidence": "slack service (files.upload deprecation note); google_drive service (v2-vs-v3 trash contradiction).",
+        "gaps": []
+      },
+      {
+        "contract_id": "OPS-03",
+        "title": "Registration/callback/min-scope/consent/tenant/license separation for self-use vs multi-tenant distribution",
+        "description": "Confirmed via GitHub and Asana's shared gating reason in the Kiro Crew registry (client_id unset pending a ONE-TIME Kiro app registration) -- this is precisely the self-use-vs-distribution registration boundary OPS-03 describes: an individual user's own PAT/OAuth works today without any app registration, but Kiro Crew's managed multi-tenant Connect flow requires the separate one-time app-registration step first.",
+        "evidence": "kirocrew-connections-registry source: GitHub/Asana client_id + launch_gate_passed=false.",
+        "gaps": []
+      },
+      {
+        "contract_id": "OPS-04",
+        "title": "Live diagnostics + quota/audit/sync/refresh/revoke/rebuild/conflict/job-recovery runbook",
+        "description": "Not independently verified against a live runbook for any of these 12 services (none are far enough along in the connections registry to have generated a runbook yet, except GitHub/Asana which are launch-gated, not live).",
+        "evidence": [],
+        "gaps": [
+          "Blocked: no live runbook exists yet for any of these 12 services."
+        ]
+      },
+      {
+        "contract_id": "OPS-05",
+        "title": "Clean install/upgrade/migration failure recovery; locked dependencies",
+        "description": "Not independently verified against a live install/upgrade cycle for any of these 12 services' eventual connector packaging.",
+        "evidence": [],
+        "gaps": [
+          "Blocked: no packaging artifact exists yet to test install/upgrade against."
+        ]
+      }
+    ],
+    "microsoft_shared_auth_layer_note": {
+      "operations": [
+        {
+          "operation_id": "auth.servicePrincipal.permissions.enumerate",
+          "provider": "microsoft_graph",
+          "required": true,
+          "category": "baseline_alignment",
+          "source": {
+            "source_kind": "official_docs",
+            "source_id": "graph/permissions-reference",
+            "observed_at": "2026-09-14",
+            "snapshot_ref": "https://learn.microsoft.com/en-us/graph/permissions-reference"
+          },
+          "effect": "read",
+          "input_schema_summary": "GET https://graph.microsoft.com/v1.0/servicePrincipals(appId='00000003-0000-0000-c000-000000000000')?$select=id,appId,displayName,appRoles,oauth2PermissionScopes,resourceSpecificApplicationPermissions",
+          "output_schema_summary": "servicePrincipal object listing every delegated (oauth2PermissionScopes) and application (appRoles) permission Microsoft Graph exposes, across ALL 6 services in this catalog plus every other Graph capability",
+          "auth_modes": {
+            "delegated": [
+              "Application.Read.All"
+            ],
+            "application": []
+          },
+          "scopes": [
+            "Application.Read.All"
+          ],
+          "account_types": [
+            "work_school"
+          ],
+          "region_edition_license": "Global service",
+          "endpoint": "GET /servicePrincipals(appId='00000003-0000-0000-c000-000000000000')",
+          "pagination": "n/a (single resource with expanded collections)",
+          "idempotency_recovery": "n/a (GET)",
+          "contradictions": [],
+          "acceptance_preconditions": [
+            "caller needs at least Application.Read.All to introspect the full permission catalog programmatically"
+          ],
+          "gaps": [],
+          "source_note": "category corrected post-hoc from out-of-vocabulary value 'read' (that value belongs to the effect vocabulary, not category) to 'baseline_alignment'. This operation is NOT counted in coverage.total_operations_originally_cataloged (272) or total_operations_verified, because it is a CONTRACT-LEVEL attachment describing the shared microsoft_shared_auth_layer architecture itself (documented once, cross-cutting all six Microsoft 365 service families), not a per-service capability enumerated under any single service_id in services[]. It is tracked separately in coverage.contract_attachment_operations so it is neither silently double-counted into a service's total nor silently omitted from any count entirely.",
+          "evidence_tier": "source_verified_strict"
+        }
+      ],
+      "auth_facts": [
+        "A SINGLE Entra ID application registration (a single Azure AD app object with one client ID/secret or certificate) is the mechanism that authenticates against ALL SIX services covered in this catalog (SharePoint, Outlook, OneDrive, OneNote, Teams, Excel) because they are all surfaced through the ONE Microsoft Graph API endpoint (graph.microsoft.com) and the ONE Graph service principal (appId 00000003-0000-0000-c000-000000000000).",
+        "Each individual Graph operation (e.g., Mail.Read, Files.ReadWrite, Sites.Selected, ChatMessage.Send, Notes.ReadWrite, Calendars.Read) is its OWN independently-consentable OAuth2 permission scope (delegated) or app role (application) with its own GUID identifier, its own AdminConsentRequired flag, and its own least-privilege/higher-privilege tiering as shown by the per-operation permission tables fetched across every API reference page in this catalog.",
+        "CRITICAL SECURITY WARNING (explicitly requested by task): one consent event for one scope (e.g., a user or admin consenting to Mail.Read at sign-in) must NEVER be assumed to also grant any OTHER scope used elsewhere in the application (e.g., Files.ReadWrite for OneDrive, or Chat.ReadWrite for Teams) — each scope requires its OWN explicit consent grant, whether via incremental/dynamic consent at runtime or via a single up-front admin-consent event that enumerates every scope the app will ever use. An application must not silently attempt operations gated by scopes it has not been separately granted.",
+        "Delegated permissions are constrained to what the SIGNED-IN USER can themselves do (least-privilege inherited from the user's own role/mailbox/site access), while application permissions grant the app tenant-wide access to that resource type independent of any user, subject only to admin consent — this delegated-vs-application split is uniform across all 6 services, though the AVAILABILITY of an application-permission form varies per operation (e.g., OneNote has NO application-permission form for ANY operation; Teams ChannelMessage.Send has no tenant-wide application form but DOES have an RSC application-only equivalent; personal Microsoft accounts support only a subset of delegated scopes and essentially no application permissions).",
+        "Microsoft Entra ID (formerly Azure AD) is the identity provider underpinning this single-app-many-scopes model; the OAuth 2.0 / OpenID Connect token issued by Entra ID carries the specific consented scopes as claims, and Graph enforces authorization per-call based on those claims plus, for delegated calls, the signed-in user's own effective permissions in the target resource (e.g., Sites.Read.All grants tenant-wide site read for app-only, but for delegated calls Graph still additionally requires the signed-in user to actually have access to that specific site)."
+      ],
+      "scenario_preconditions": [
+        "Before implementing ANY cross-service operation in this catalog (e.g., a workflow that reads OneDrive files AND sends Outlook mail AND posts a Teams message), the integrating application must explicitly request and be granted EACH underlying scope (Files.Read*, Mail.Send, ChatMessage.Send/RSC equivalent) individually — there is no 'all Microsoft 365' or 'all 6 services' umbrella scope.",
+        "For OneNote specifically, because NO application-permission form exists for any OneNote scope, any cross-service background/daemon workflow that needs to touch OneNote must fall back to a delegated flow for that leg of the workflow even if every other service in the same workflow uses application permissions — this is an architecturally significant asymmetry the shared-auth-layer design must account for."
+      ],
+      "contradictions": [
+        "The general assumption that 'a single Entra ID app + Graph endpoint' implies uniform authorization behavior across services is contradicted by the material differences documented per-service in this catalog: OneNote (delegated-only, zero application-permission support), Teams RSC vs tenant-wide permission inversions (channel messaging is delegated-only tenant-wide but application-only under RSC), and personal-Microsoft-account restrictions (SharePoint/Excel largely unavailable for personal accounts; OneDrive/Outlook/Teams partially available; OneNote available only via delegated Notes.* scopes)."
+      ],
+      "gaps": [
+        "Exact token lifetime, refresh-token rotation policy, and conditional-access interaction details for the shared Entra ID layer were not covered by the source pages fetched in this research pass (out of scope for the six connector capability pages) and would require the dedicated Microsoft identity platform authentication documentation.",
+        "Cross-tenant / multi-tenant app consent nuances (e.g., how consent differs when the calling app is registered in a different tenant than the target resource tenant) were not verified against live docs in this pass."
+      ]
+    }
+  },
+  "required_acceptance_index": [
+    {
+      "operation_id": "gh_search_repositories",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server search_repositories tool (repos toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_get_file_contents",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server get_file_contents tool (repos toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_create_branch",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server create_branch tool (repos toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_create_or_update_file",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server create_or_update_file tool (repos toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_list_branches",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server list_branches tool (repos toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_get_commit",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server get_commit tool (repos toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_list_commits",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server list_commits tool (repos toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_get_diagnostics_actors_permissions_context",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server get_me tool (context toolset, local default) / get_teams / get_team_members",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_issue_read_get",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server issue_read tool method=get (issues toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_issue_read_get_comments",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server issue_read method=get_comments",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_search_issues",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server search_issues tool (issues toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_list_issues",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server list_issues tool (issues toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_issue_write_create",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server issue_write tool method=create (issues toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_issue_write_update",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server issue_write tool method=update",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_add_issue_comment",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server add_issue_comment tool (issues toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_pull_request_read",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server pull_request_read tool (pull_requests toolset), 9 methods",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_list_pull_requests",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server list_pull_requests tool (pull_requests toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_create_pull_request",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server create_pull_request tool (pull_requests toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_update_pull_request",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server update_pull_request tool (pull_requests toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_pull_request_review_write",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server pull_request_review_write tool (pull_requests toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_merge_pull_request",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server merge_pull_request tool (pull_requests toolset) - BRANCH-PROTECTED WRITE",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_actions_list",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server actions_list tool (actions toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_actions_get",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server actions_get tool (actions toolset)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_actions_run_trigger",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "github-mcp-server actions_run_trigger tool (actions toolset) - WORKFLOW-DISPATCH WRITE",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_get_branch_protection_legacy",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "REST API endpoints for protected branches - Get branch protection",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gh_rate_limit_status",
+      "provider": "github",
+      "service_id": "github",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "REST API endpoints for rate limits / Rate limits for the REST API",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.messages.search",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.messages.list",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.messages.get",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.messages.get",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.messages.send",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.messages.send",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.messages.reply",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-guides-sending+users.messages.send",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.messages.forward",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-guides-uploads+users.messages.attachments.get",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.messages.attachments.get",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.messages.attachments",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.messages.batchLabel",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.messages.batchModify",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.messages.trash",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.messages.trash",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.messages.restore",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.messages.untrash",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.threads.list",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.threads",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.threads.get",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.threads.get",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.threads.labels",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.threads.modify",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.threads.trash",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.threads.trash",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.threads.restore",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.threads.untrash",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.labels.list",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.labels.list",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.labels.get",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.labels.get",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.labels.create",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.labels.create",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.labels.update",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.labels.update+patch",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.labels.apply",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.messages.modify+users.threads.modify",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.drafts.list",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.drafts.list",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.drafts.get",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.drafts.get",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.drafts.create",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-guides-drafts+users.drafts.create",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.drafts.update",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.drafts.update",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.drafts.send",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.drafts.send",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.people.contacts.search",
+      "provider": "people_api",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "people-api-people.searchContacts",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.people.contacts.get",
+      "provider": "people_api",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "people-api-people.get",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.history.list",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-guides-sync+users.history.list",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.profile.get",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.getProfile",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "gmail.settings.sendAs.list",
+      "provider": "gmail",
+      "service_id": "gmail",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gmail-api-users.settings.sendAs",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.download",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.download+manage-downloads",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.export",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.export",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.search",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.list+search-files",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.get_metadata",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.get+files-resource",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.upload_simple",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-manage-uploads-simple",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.upload_multipart_with_metadata",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-manage-uploads-multipart",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.upload_resumable",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-manage-uploads-resumable",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.create_metadata_only",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.create",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.replace_update_content",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.update+manage-uploads-patch-vs-put",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.move",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.update-addParents-removeParents",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.copy",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.copy",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.trash",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.update-trashed-field",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.files.delete_permanent",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.delete",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.folders.create",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.create-folder-mimetype",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.folders.search",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files.list-folder-query",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.permissions.read",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-permissions.list-get",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.comments.read",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-comments.list-get",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.changes.list",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-manage-changes",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.changes.getStartPageToken",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-manage-changes",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.drives.info",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-drives.list-get",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "drive.shortcuts.behavior",
+      "provider": "drive",
+      "service_id": "google_drive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "drive-api-v3-files-resource-shortcutDetails",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sharepoint.sites.get",
+      "provider": "microsoft_graph",
+      "service_id": "sharepoint",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/sharepoint",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sharepoint.lists.items.list",
+      "provider": "microsoft_graph",
+      "service_id": "sharepoint",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/sharepoint",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sharepoint.listitem.update",
+      "provider": "microsoft_graph",
+      "service_id": "sharepoint",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/sharepoint",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sharepoint.listitem.delete",
+      "provider": "microsoft_graph",
+      "service_id": "sharepoint",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/sharepoint",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sharepoint.file.uploadSession.create",
+      "provider": "microsoft_graph",
+      "service_id": "sharepoint",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/driveitem-createuploadsession",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "outlook.messages.list",
+      "provider": "microsoft_graph",
+      "service_id": "outlook",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/mail-api-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "outlook.message.send",
+      "provider": "microsoft_graph",
+      "service_id": "outlook",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#mail.send",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "outlook.events.create",
+      "provider": "microsoft_graph",
+      "service_id": "outlook",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#calendars.readwrite",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "outlook.calendarView.get",
+      "provider": "microsoft_graph",
+      "service_id": "outlook",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#calendars.read",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onedrive.drive.get",
+      "provider": "microsoft_graph",
+      "service_id": "onedrive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onedrive",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onedrive.driveitem.children.list",
+      "provider": "microsoft_graph",
+      "service_id": "onedrive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onedrive",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onedrive.driveitem.get",
+      "provider": "microsoft_graph",
+      "service_id": "onedrive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onedrive",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onedrive.folder.create",
+      "provider": "microsoft_graph",
+      "service_id": "onedrive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onedrive",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onedrive.permission.invite",
+      "provider": "microsoft_graph",
+      "service_id": "onedrive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onedrive",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onedrive.driveitem.upload",
+      "provider": "microsoft_graph",
+      "service_id": "onedrive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/driveitem-createuploadsession",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onedrive.delta.query",
+      "provider": "microsoft_graph",
+      "service_id": "onedrive",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/driveitem-delta",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onenote.notebooks.list",
+      "provider": "microsoft_graph",
+      "service_id": "onenote",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onenote-api-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onenote.sections.list",
+      "provider": "microsoft_graph",
+      "service_id": "onenote",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onenote-api-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onenote.pages.list",
+      "provider": "microsoft_graph",
+      "service_id": "onenote",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onenote-api-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onenote.page.getContent",
+      "provider": "microsoft_graph",
+      "service_id": "onenote",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onenotepage",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onenote.page.create",
+      "provider": "microsoft_graph",
+      "service_id": "onenote",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onenotepage + onenote-api-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onenote.page.update",
+      "provider": "microsoft_graph",
+      "service_id": "onenote",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/page-update",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "onenote.page.delete",
+      "provider": "microsoft_graph",
+      "service_id": "onenote",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/onenotepage",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.chats.list",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#chat.read",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.chat.create",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#chat.create",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.chat.sendMessage",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#chatmessage.send",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.team.list",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/teams-api-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.member.add",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/resources/teams-api-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.channel.list",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#channel.readbasic.all",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.channel.create",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#channel.create",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.channelMessage.list",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#channelmessage.read.all",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.channelMessage.send",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference#channelmessage.send",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "teams.onlineMeetings.create",
+      "provider": "microsoft_graph",
+      "service_id": "teams",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/api/application-post-onlinemeetings",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "excel.worksheets.list",
+      "provider": "microsoft_graph",
+      "service_id": "excel_shared_engine",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/excel-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "excel.session.create",
+      "provider": "microsoft_graph",
+      "service_id": "excel_shared_engine",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/excel-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "excel.range.get",
+      "provider": "microsoft_graph",
+      "service_id": "excel_shared_engine",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/excel-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "excel.range.write",
+      "provider": "microsoft_graph",
+      "service_id": "excel_shared_engine",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/excel-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "excel.usedRange.get",
+      "provider": "microsoft_graph",
+      "service_id": "excel_shared_engine",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/excel-overview",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "get_tasks",
+      "provider": "asana",
+      "service_id": "asana",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "gettasks",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.describe.global",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "REST API Developer Guide - Describe Global",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.describe.object",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "REST API Developer Guide - sObject Describe",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.soql.query",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "REST API Developer Guide - Query Resource",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.record.crud",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "REST API Developer Guide - sObject Rows",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.bulk.job",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "Bulk API 2.0 and Bulk API Developer Guide - Errors and Job Results",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.upsert.external_id",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "REST API Developer Guide - sObject Rows by External ID",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.oauth.web_server_pkce",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "Trailhead / External Client Apps - Implement OAuth 2.0 Web Server Flow",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.oauth.jwt_bearer",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "Set Up Salesforce for Embedding Tableau Next Externally (JWT bearer flow description); OAuth 2.0 JWT Bearer Flow",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.oauth.client_credentials",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "Get Started with Conversation Data API - client credentials flow / Run As execution user",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "sf.governance.server_side_enforcement",
+      "provider": "salesforce",
+      "service_id": "salesforce",
+      "location": "services[].operations[]",
+      "evidence_tier": "search_snippet_or_partial",
+      "source_id": "General REST/SOQL/Apex platform behavior re: sharing, validation rules, triggers, flows (cross-referenced via official REST API and Apex docs)",
+      "evidence_status": "search_only",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.meetings.list",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Meetings",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.meetings.get",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Meetings",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.meetings.create",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Meetings (Create a meeting)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.meetings.update",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Meetings (Update a meeting)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.meetings.past_participants",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Meetings (Past meeting participants)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.meetings.recurring_instances",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Meetings (List meeting instances / occurrences)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.meetings.registrants",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Meetings (Registrants)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.recordings.list",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Cloud Recording (List recordings)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.recordings.get_detail",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Cloud Recording (Get meeting recordings)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.webinars.list",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Webinars",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.webinars.get_detail",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Webinars (Get a webinar)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.webinars.participants",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Webinars (Past webinar participants)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.webinars.registrants",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Webinars (Registrants)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.contacts.search",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Contacts (Search company contacts)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.users.me_profile",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API Reference - Users (Get a user)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.oauth.user_level",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom Developer Docs - OAuth 2.0",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.oauth.server_to_server",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom Developer Docs - Server-to-Server OAuth",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.auth.two_modes_scoping_distinction",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom Developer Docs - OAuth 2.0 and Server-to-Server OAuth (cross-referenced)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "zoom.security.token_url_handling",
+      "provider": "zoom",
+      "service_id": "zoom",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "Zoom API general security guidance re: signed download URLs (cross-referenced from Cloud Recording docs)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "office_documents.detect_unsupported_or_protected_format",
+      "provider": "office_documents",
+      "service_id": "office_documents",
+      "location": "services[].operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "MS-OFFCRYPTO (encryption); ECMA-376 (vbaProject.bin, [Content_Types].xml); learn.microsoft.com/en-us/answers (Purview/RMS behavior); usenix.org sec23summer_235-rohlmann (OOXML digital signatures)",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "chat.postMessage",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "chat.update",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "chat.delete",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.create",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.history",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.replies",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.invite",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.join",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.kick",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.leave",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.members",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.open",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.info",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "conversations.list",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "reactions.add",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "reactions.remove",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "files.getUploadURLExternal",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "external_upload_put",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "files.completeUploadExternal",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "files.info",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "files.list",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "search.messages",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "users.info",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "users.list",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "usergroups.create",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "usergroups.list",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "usergroups.users.update",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "team.info",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "auth.test",
+      "provider": "slack",
+      "service_id": "slack",
+      "location": "services[].gaps[].demoted_operations_full_record[]",
+      "evidence_tier": "unverified",
+      "source_id": "slack-api-docs",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "auth.servicePrincipal.permissions.enumerate",
+      "provider": "microsoft_graph",
+      "service_id": null,
+      "location": "shared_contracts.microsoft_shared_auth_layer_note.operations[]",
+      "evidence_tier": "source_verified_strict",
+      "source_id": "graph/permissions-reference",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-01",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Legacy vs native OAuth token custody separation",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-02",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Per-operation minimal-scope grants, not blanket consent",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-03",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Distinct managing-client vs bring-your-own-app registration paths",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-04",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Code+PKCE+state+callback binding, cancel/expiry/deny/replay handling",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-05",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Verified subject/tenant/account binding, no silent multi-account disambiguation",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-06",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Refresh single-writer, generation fence, atomic rotation",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-07",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Local disconnect vs vendor-side revoke, cache/job invalidation",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-08",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Real callback / headless continuation; device flow only where vendor-native",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-09",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "No downgrade of vendor-side security controls",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-10",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Secret release gated on verified caller/binding/scope/resource, not on possession alone",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "AUTH-11",
+      "provider": "shared_contract:AUTH",
+      "service_id": null,
+      "location": "shared_contracts.AUTH[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Per-operation auth mode must not silently escalate to a different backend/permission tier",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "GOV-01",
+      "provider": "shared_contract:GOV",
+      "service_id": null,
+      "location": "shared_contracts.GOV[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Scope/resource narrowing chain: platform ∩ workspace/profile ∩ session/job ∩ connection ∩ provider",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "GOV-02",
+      "provider": "shared_contract:GOV",
+      "service_id": null,
+      "location": "shared_contracts.GOV[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Effect taxonomy (read/write/delete/share/external_send/admin/billable) applies uniformly across aliases/MCP/batch/nested/workflow/subagent paths",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "GOV-03",
+      "provider": "shared_contract:GOV",
+      "service_id": null,
+      "location": "shared_contracts.GOV[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Continuous ask/allow/deny binding to provider+account+resource+canonical-params; re-evaluate on parameter change",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "GOV-04",
+      "provider": "shared_contract:GOV",
+      "service_id": null,
+      "location": "shared_contracts.GOV[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Personal credential isolation; explicit service identity",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "GOV-05",
+      "provider": "shared_contract:GOV",
+      "service_id": null,
+      "location": "shared_contracts.GOV[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Untrusted external content never changes authorization",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "GOV-06",
+      "provider": "shared_contract:GOV",
+      "service_id": null,
+      "location": "shared_contracts.GOV[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "ACL enforced before content reaches model/snippet/summary/cache/citation",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "GOV-07",
+      "provider": "shared_contract:GOV",
+      "service_id": null,
+      "location": "shared_contracts.GOV[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Per-harness/OS real control points; unsupported = refuse, not silently degrade",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-01",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Unified typed error taxonomy + request-ID redaction",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-02",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Real pagination + duplicate-cursor protection + resume budgets",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-03",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Retry-After/backoff sharing provider-dimension buckets and time/request/bytes/retry budgets",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-04",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Write-operation idempotency: real provider mechanism, no blind exactly-once claim",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-05",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "ETag/revision/SHA concurrency; per-item batch result reporting",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-06",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Durable job restart/resume/cancel; cancel stops future work only",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-07",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Streaming for large files; no base64-into-model; temp file lifecycle",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-08",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Differentiated network policy per operation class (upload/download/redirect/discovery/token/custom endpoint); no arbitrary internal-network access",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-09",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "MCP schema/scope/effect/version drift fails closed",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "RUN-10",
+      "provider": "shared_contract:RUN",
+      "service_id": null,
+      "location": "shared_contracts.RUN[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Operational metrics without private high-cardinality labels",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-01",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "User-managed vs admin-managed ingestion lifecycle: selection/schedule/manual/pause/resume/remove/health",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-02",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Local-folder/Obsidian-compatible sync with a single sync-authority path",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-03",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Enumeration/content/metadata/delta/ACL/deletion with permission tombstones and checkpointing",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-04",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "resourceID+version tracking; rename/move/duplicate/cursor-invalid/partial-403/content-vs-ACL-only handling",
+      "evidence_status": "unverified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-05",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Checkpoint only advances on a fully-successful crawl round; bounded deletion review threshold",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-06",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Delta/webhook subscription verification, renewal, dedupe, ordering, reconciliation",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-07",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Citation metadata state (title/owner/time/MIME/sourceURL/version/KB/ACLversion) enabling legitimate citation",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-08",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Baseline format matrix (txt/PDF/docx/xlsx/pptx/native-export); required items not dropped for weak current parsing",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-09",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Large/encrypted/corrupt files must fail accurately, never silently succeed with empty text",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "KB-10",
+      "provider": "shared_contract:KB",
+      "service_id": null,
+      "location": "shared_contracts.KB[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Provenance record, rebuild, item removal, authorization revocation, and cache all fail consistently together",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "ACL-PUBLISH-MATRIX",
+      "provider": "shared_contract:ACL",
+      "service_id": null,
+      "location": "shared_contracts.ACL[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Two-identity differential access matrix (publish-time ACL enforcement)",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "ACL-02",
+      "provider": "shared_contract:ACL",
+      "service_id": null,
+      "location": "shared_contracts.ACL[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Post-ingestion revoke: next query immediately denied",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "ACL-03",
+      "provider": "shared_contract:ACL",
+      "service_id": null,
+      "location": "shared_contracts.ACL[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Cache does not re-authorize after group/org departure or shared-link revocation",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "ACL-04",
+      "provider": "shared_contract:ACL",
+      "service_id": null,
+      "location": "shared_contracts.ACL[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "ACL API unavailability fails closed, never open",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "ACL-05",
+      "provider": "shared_contract:ACL",
+      "service_id": null,
+      "location": "shared_contracts.ACL[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Admin-ingestion credentials never leak into a regular user's query results",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "ACL-06",
+      "provider": "shared_contract:ACL",
+      "service_id": null,
+      "location": "shared_contracts.ACL[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Same email address in a different tenant is a different identity",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "ACL-07",
+      "provider": "shared_contract:ACL",
+      "service_id": null,
+      "location": "shared_contracts.ACL[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "App/workflow/child session inherits the SAME trusted identity, not a laundered one",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "ACL-08",
+      "provider": "shared_contract:ACL",
+      "service_id": null,
+      "location": "shared_contracts.ACL[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Overlapping-folder dedup must not merge or amplify KB membership/permissions",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "ACL-09",
+      "provider": "shared_contract:ACL",
+      "service_id": null,
+      "location": "shared_contracts.ACL[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "A synced ACL snapshot never substitutes for a real query-time access check",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "DATA-01",
+      "provider": "shared_contract:DATA",
+      "service_id": null,
+      "location": "shared_contracts.DATA[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Frozen object/schema catalog per DATA-bearing provider (GitHub, Salesforce); no inferred arbitrary SQL",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "DATA-02",
+      "provider": "shared_contract:DATA",
+      "service_id": null,
+      "location": "shared_contracts.DATA[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Discovery/typing/keying/paging/scheduled-or-manual-refresh/checkpoint/schema-drift/cancel/error handling",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "DATA-03",
+      "provider": "shared_contract:DATA",
+      "service_id": null,
+      "location": "shared_contracts.DATA[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Typed rows/count/limits/lineage, not a single flattened column or first-page-only",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "DATA-04",
+      "provider": "shared_contract:DATA",
+      "service_id": null,
+      "location": "shared_contracts.DATA[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Permission-scope shrink affects both refresh and query paths",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "DATA-05",
+      "provider": "shared_contract:DATA",
+      "service_id": null,
+      "location": "shared_contracts.DATA[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Independent per-service dataset ACL; Excel-region reuse without building a separate BI engine",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "DATA-06",
+      "provider": "shared_contract:DATA",
+      "service_id": null,
+      "location": "shared_contracts.DATA[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Salesforce custom fields/reports as a distinct typed surface from GitHub's repo objects",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "DATA-07",
+      "provider": "shared_contract:DATA",
+      "service_id": null,
+      "location": "shared_contracts.DATA[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Each service's dataset is independently ACL-scoped; no cross-service dataset merging",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "UX-01",
+      "provider": "shared_contract:UX",
+      "service_id": null,
+      "location": "shared_contracts.UX[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Independent entry visibility per service/M365-composition-child, keyed on real auth/account/scope/admin state",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "UX-02",
+      "provider": "shared_contract:UX",
+      "service_id": null,
+      "location": "shared_contracts.UX[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Closed status vocabulary: unconfigured/pending-auth/pending-consent/connected-unverified/available/scope-insufficient/reconnect/throttle/outage/disabled",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "UX-03",
+      "provider": "shared_contract:UX",
+      "service_id": null,
+      "location": "shared_contracts.UX[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Layered Test action: network/auth/discovery/safe-read; explicit write fixtures only",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "UX-04",
+      "provider": "shared_contract:UX",
+      "service_id": null,
+      "location": "shared_contracts.UX[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Verified identity/tenant/lastVerified surfaced; honest 'unknown' when unavailable",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "UX-05",
+      "provider": "shared_contract:UX",
+      "service_id": null,
+      "location": "shared_contracts.UX[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Consistent multi-account binding UX across every entry point",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "UX-06",
+      "provider": "shared_contract:UX",
+      "service_id": null,
+      "location": "shared_contracts.UX[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Typed forms/resource-picker/paging/validation/confirmation-summary/link/recovery",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "UX-07",
+      "provider": "shared_contract:UX",
+      "service_id": null,
+      "location": "shared_contracts.UX[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Backend enforces owner/allowed-users/admin; disconnect affects what is displayed",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "SURF-01",
+      "provider": "shared_contract:SURF",
+      "service_id": null,
+      "location": "shared_contracts.SURF[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Real supported-harness tools discovery/schema/invoke/result/approval; on-demand discovery to avoid schema bloat",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "SURF-02",
+      "provider": "shared_contract:SURF",
+      "service_id": null,
+      "location": "shared_contracts.SURF[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "App-kit bridges/manifests/namespaces share binding/jobs/approval; no direct browser token access",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "SURF-03",
+      "provider": "shared_contract:SURF",
+      "service_id": null,
+      "location": "shared_contracts.SURF[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Workflow mapping/trigger/log/pause/resume/cancel/partial with durable human-approval waits",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "SURF-04",
+      "provider": "shared_contract:SURF",
+      "service_id": null,
+      "location": "shared_contracts.SURF[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Slack/Teams external binding decided by trusted association, never self-reported message identity",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "SURF-05",
+      "provider": "shared_contract:SURF",
+      "service_id": null,
+      "location": "shared_contracts.SURF[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Installable external examples exist without baking in super-credentials or mocks",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "SURF-06",
+      "provider": "shared_contract:SURF",
+      "service_id": null,
+      "location": "shared_contracts.SURF[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Chat/App/workflow/background entry-point effects and permissions are explicit; unknown extension entries flagged as gaps",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "OPS-01",
+      "provider": "shared_contract:OPS",
+      "service_id": null,
+      "location": "shared_contracts.OPS[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Real local + remote/headless support; public OSS needs no private companion",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "OPS-02",
+      "provider": "shared_contract:OPS",
+      "service_id": null,
+      "location": "shared_contracts.OPS[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Versioned migration/legacy registry/binding read with rollback; no silent token/authorization loss",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "OPS-03",
+      "provider": "shared_contract:OPS",
+      "service_id": null,
+      "location": "shared_contracts.OPS[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Registration/callback/min-scope/consent/tenant/license separation for self-use vs multi-tenant distribution",
+      "evidence_status": "source_verified",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "OPS-04",
+      "provider": "shared_contract:OPS",
+      "service_id": null,
+      "location": "shared_contracts.OPS[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Live diagnostics + quota/audit/sync/refresh/revoke/rebuild/conflict/job-recovery runbook",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    },
+    {
+      "operation_id": "OPS-05",
+      "provider": "shared_contract:OPS",
+      "service_id": null,
+      "location": "shared_contracts.OPS[]",
+      "evidence_tier": null,
+      "source_id": null,
+      "title": "Clean install/upgrade/migration failure recovery; locked dependencies",
+      "evidence_status": "blocked",
+      "implementation_status": "not_implemented"
+    }
+  ]
+}

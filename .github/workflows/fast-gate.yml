@@ -401,3 +401,41 @@ jobs:
         # No setup-python step: ubuntu-latest ships Python 3 and the script is
         # stdlib-only.
         run: ./scripts/docs-lint.sh
+
+  connector-manifest-schema:
+    name: Connector Manifest Schema Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: the append-only evidence check resolves
+      # the diff base through the shared resolver script, which runs
+      # `git fetch origin` against the same remote (as the comment-history gate
+      # above does).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate every connector-campaign manifest entry against its schema
+        # Whole-tree, not diff-scoped: every committed entry under
+        # docs/system-specs/connector-manifest/entries/ is re-validated on every
+        # push, not just the ones a diff touched, because a manifest entry's
+        # cross-file references (ConformanceRun/EvidenceReceipt in the sibling
+        # runs/ and receipts/ directories) can go stale from a change to a
+        # DIFFERENT entry's sibling record, not only from editing the entry
+        # itself — see check_connector_manifest.py's own "immutable ref
+        # binding" staleness check. Contract:
+        # docs/system-specs/modules/connector-capability-manifest.md
+        env:
+          # `base.sha`, not `origin/<base>`: see the brand-name gate's note.
+          MANIFEST_APPEND_ONLY_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # The append-only evidence-history check (runs/*.jsonl, receipts/*.jsonl
+          # must only ever gain tail appends vs the base) needs the base SHA
+          # resolved and fetched, exactly like the comment-history gate.
+          MANIFEST_APPEND_ONLY_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$MANIFEST_APPEND_ONLY_BASE_REF" 'the connector-manifest append-only gate')" || exit 1
+          export MANIFEST_APPEND_ONLY_BASE_REF
+          # Self-test first: one probe per schema rule, so a rule that silently
+          # stops matching (a required-field check, a snapshot_ref resolution
+          # rule, a three-way cross-reference equality) fails here instead of
+          # shipping a validator that passes everything.
+          python3 scripts/check_connector_manifest.py --test
+          python3 scripts/check_connector_manifest.py
