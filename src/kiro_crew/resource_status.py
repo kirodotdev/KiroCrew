@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 from collections.abc import MutableMapping
@@ -89,12 +90,12 @@ def _read_load_per_cpu(cpu_count: int) -> float | None:
 class ResourceStatus:
     """A single advisory snapshot of host resource headroom."""
 
-    available_gb: float          # -1.0 when the memory probe is unavailable
+    available_gb: float  # -1.0 when the memory probe is unavailable
     cpu_count: int
-    load_per_cpu: float | None   # 1-min loadavg / cpu_count, None if unavailable
-    posture: str                 # one of the POSTURE_* constants
-    pressure_gb: float           # tight threshold in effect
-    critical_gb: float           # critical threshold in effect
+    load_per_cpu: float | None  # 1-min loadavg / cpu_count, None if unavailable
+    posture: str  # one of the POSTURE_* constants
+    pressure_gb: float  # tight threshold in effect
+    critical_gb: float  # critical threshold in effect
 
     @property
     def under_pressure(self) -> bool:
@@ -239,9 +240,26 @@ def probe(cfg: object | None = None) -> ResourceStatus:
 #: Env var pytest-xdist consults when resolving ``-n auto`` / ``-n logical``.
 XDIST_AUTO_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 
-#: Assumed steady-state memory of one xdist worker (GB). Deliberately a
-#: constant, not a config key — ``xdist_auto_cap`` is the single operator knob.
-_XDIST_PER_WORKER_GB = 1.0
+#: Platform-aware assumed steady-state memory of one xdist worker (GB). A
+#: full-suite worker holds ~1.5 GB on Linux but 14.9-16.1 GB on macOS, so no
+#: single fixed number is correct for every host. macOS is sized to that
+#: footprint; Linux/Windows to the collection floor plus headroom. Deliberately
+#: a constant, not a config key -- ``xdist_auto_cap`` is the single operator
+#: knob. Sized identically to the local ``-n auto`` budget (``xdist_budget``)
+#: so the two never disagree.
+_MACOS_XDIST_PER_WORKER_GB = 16.0
+_DEFAULT_XDIST_PER_WORKER_GB = 3.0
+
+
+def _resolve_xdist_per_worker_gb() -> float:
+    """Per-worker reservation (GB): the platform-aware built-in.
+
+    Sized identically to :func:`xdist_budget._platform_default_gib_per_worker`
+    so the local ``-n auto`` hook and this agent-spawn cap size a worker
+    identically.
+    """
+    return _MACOS_XDIST_PER_WORKER_GB if sys.platform == "darwin" else _DEFAULT_XDIST_PER_WORKER_GB
+
 
 #: Fraction of *currently available* memory one test run may claim. Half, so
 #: two concurrent agent sessions sizing themselves at the same instant cannot
@@ -253,16 +271,20 @@ def compute_xdist_auto_workers(
     available_gb: float,
     cpu_count: int,
     *,
-    per_worker_gb: float = _XDIST_PER_WORKER_GB,
+    per_worker_gb: float | None = None,
     share: float = _XDIST_MEMORY_SHARE,
 ) -> int:
     """Memory-aware worker count for ``-n auto``: never more than the CPUs,
     never more than ``available_gb * share / per_worker_gb``, never below 1.
 
-    The floor of 1 keeps a low-memory host running the suite serially rather
-    than failing the run; the CPU ceiling means this can only tighten xdist's
-    own default, never exceed it.
+    ``per_worker_gb`` defaults to the platform-aware, config-overridable
+    reservation (see :func:`_resolve_xdist_per_worker_gb`); pass an explicit
+    value only in tests. The floor of 1 keeps a low-memory host running the
+    suite serially rather than failing the run; the CPU ceiling means this can
+    only tighten xdist's own default, never exceed it.
     """
+    if per_worker_gb is None or per_worker_gb <= 0:
+        per_worker_gb = _resolve_xdist_per_worker_gb()
     cpus = max(1, cpu_count)
     by_memory = int(max(0.0, available_gb) * share / per_worker_gb)
     return max(1, min(cpus, by_memory))
@@ -323,7 +345,7 @@ class AdmissionDecision:
     """
 
     admitted: bool
-    posture: str        # POSTURE_* observed at decision time
+    posture: str  # POSTURE_* observed at decision time
     available_gb: float  # -1.0 when the memory probe is unavailable
     reason: str = ""
 
@@ -360,9 +382,7 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
                 # (and the gate's default-on) could DEFER work because the
                 # config was unreadable — the documented contract is that
                 # only a genuine critical posture refuses.
-                return AdmissionDecision(
-                    admitted=True, posture=POSTURE_UNKNOWN, available_gb=-1.0
-                )
+                return AdmissionDecision(admitted=True, posture=POSTURE_UNKNOWN, available_gb=-1.0)
         status = probe(cfg)
         if not _gate_enabled(cfg):
             return AdmissionDecision(

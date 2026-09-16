@@ -46,46 +46,48 @@ _MIB = 1024**2
 # Headroom to reserve per worker.
 #
 # A worker's cost has two parts. The FLOOR is collection: every xdist worker
-# independently collects every testpath -- ~57,000 items -- for ~747 MiB of
-# VmHWM before it runs a single test, 99% of it private, so there is no page
-# sharing to exploit. On top of that a worker GROWS by roughly 25 MiB per 1,000
-# tests it runs, and that growth does not saturate.
+# independently collects every testpath before it runs a single test, most of
+# it private, so there is no page sharing to exploit. On top of that a worker
+# GROWS by roughly 25 MiB per 1,000 tests it runs, and that growth does not
+# saturate -- so **per-worker footprint is inversely proportional to the worker
+# count.** Fewer workers means more tests each, and the growth is per-test, so
+# measuring on a wide run understates the case where the budget actually binds.
+# Do NOT lower these on the strength of a measurement taken at high parallelism.
 #
-# The consequence is the whole reason this constant is 2 and must stay there:
-# **per-worker footprint is inversely proportional to the worker count.** Fewer
-# workers means more tests each, and the growth is per-test, so the projected
-# peak is 747 + (57,000 / N) * 0.0255 MiB:
-#
-#     N=32 -> 792 MiB     N=8 -> 928 MiB     N=2 -> 1473 MiB     N=1 -> 2198 MiB
-#
-# Measuring on a wide run therefore makes this reservation look 2x too generous
-# (a real -n8 worker peaks at 921-1154 MiB) while it is in fact slightly TIGHT
-# for the case where the budget actually binds. A divisor sized on the -n8
-# number would grant 6 workers on an 8 GiB laptop; those 6 would then run ~9,500
-# tests each, want ~6 GiB between them, and swap the machine -- which is the
-# incident this budget exists to prevent, reintroduced by "optimizing" it.
-#
-# So: do NOT lower this on the strength of a measurement taken at high
-# parallelism. The number that matters is the footprint at the worker count the
-# budget is about to grant, not the one your dev host runs at.
-#
-# Known limit, stated rather than hidden: at N=1 the projection exceeds 2 GiB, so
-# the single-worker floor can outgrow its own reservation. Nothing here can fix
-# that -- one worker is already the minimum -- and it is the case where the run is
-# slow but survivable rather than parallel and fatal.
+# THE FLOOR HAS DRIFTED, AND IT IS PLATFORM-DEPENDENT. When this constant was
+# first calibrated it modelled a 747 MiB collection floor over a ~57,000-item
+# suite. Measured 2026-09 the suite is 103,958 items and a single-process
+# collection peaks at ~1,515 MiB on Linux -- roughly double the original floor
+# on both terms. Worse, the *running* footprint is not the same across
+# platforms: a full-suite worker was measured at ~1.5 GiB on Linux but
+# 14.9-16.1 GiB on macOS (issue #10061), where four workers granted by ``-n
+# auto`` reserved 62 GiB on a 36 GiB host and the kernel jetsam-killed it. A
+# single fixed constant cannot be right for both -- 2 GiB is fatally low for a
+# macOS worker, and the macOS figure (16) would clamp a healthy Linux host to a
+# handful of workers for no reason. So the reservation is PLATFORM-AWARE.
+# Deliberately a constant, not a config key -- ``xdist_auto_cap`` is the single
+# operator knob.
 #
 # This sizes for EXPECTED footprint: it cannot save a host from a genuinely
 # leaking worker (one orphaned run was observed at 4.3 GiB RSS), a separate bug.
-_GIB_PER_WORKER = 2
-# Headroom to reserve per worker against the LIVE availability reading.
 #
-# Deliberately the same as the static divisor above, because both describe the
-# same worker. The two readings differ in KIND -- total RAM is a worst-case bound
-# that never moves, availability is already the current headroom -- but that
-# argues about how much margin to add on top, and at 2 GiB there is none: it is
-# ~1x the measured per-worker peak. Anything less admits more workers than the
-# host has memory for at the moment it is asked.
-_GIB_PER_WORKER_AVAILABLE = 2
+# Known limit, stated rather than hidden: at very low worker counts the growth
+# term can outgrow even the raised reservation. Nothing here can fix that -- one
+# worker is already the minimum -- and it is the case where the run is slow but
+# survivable rather than parallel and fatal.
+
+#: Platform-aware per-worker reservation (GiB). macOS is sized to the measured
+#: 14.9-16.1 GiB full-suite worker footprint (issue #10061); Linux/Windows to
+#: the measured ~1.5 GiB collection floor plus headroom for the per-test growth
+#: term at the worker counts the budget actually grants.
+_MACOS_GIB_PER_WORKER = 16
+_DEFAULT_GIB_PER_WORKER = 3
+
+
+def _platform_default_gib_per_worker() -> int:
+    """The built-in per-worker reservation for THIS platform."""
+    return _MACOS_GIB_PER_WORKER if platform_compat.IS_MACOS else _DEFAULT_GIB_PER_WORKER
+
 
 # Lock files this process holds for its whole lifetime -- the fds MUST stay open,
 # because the lock lives exactly as long as the fd does.
@@ -287,11 +289,12 @@ def _static_memory_bounded_capacity(cores: int) -> int:
     Total RAM stays in GiB because a machine with under 1 GiB of RAM in total is not a
     configuration this suite runs on, and its unit is pinned by existing tests.
     """
+    per_worker = _platform_default_gib_per_worker()
     return _bounded_by(
         cores,
         (
-            (_host_total_gib() * 1024, _GIB_PER_WORKER),
-            (_cgroup_limit_mib(), _GIB_PER_WORKER),
+            (_host_total_gib() * 1024, per_worker),
+            (_cgroup_limit_mib(), per_worker),
         ),
     )
 
@@ -306,7 +309,7 @@ def _live_memory_bounded_cap(cap: int) -> int:
     place for a transient reading: it throttles THIS run without reshaping the namespace
     every other run has to agree on.
     """
-    return _bounded_by(cap, ((_host_available_mib(), _GIB_PER_WORKER_AVAILABLE),))
+    return _bounded_by(cap, ((_host_available_mib(), _platform_default_gib_per_worker()),))
 
 
 def _claim_worker_slots(capacity: int, cap: int) -> int:
@@ -416,9 +419,9 @@ def _warn_if_clamped(resolved: int, cap: int, unbudgeted: int) -> None:
         free = f"{available / 1024:.1f} GiB free" if available else "memory-bounded"
         warnings.warn(
             f"xdist worker budget: {cap} of {unbudgeted} workers ({free}, "
-            f"{_host_total_gib()} GiB installed). Each worker needs about "
-            f"{_GIB_PER_WORKER_AVAILABLE} GiB, mostly to collect the suite. A run this "
-            "narrow is slow, not stuck -- free some memory, run a subset "
+            f"{_host_total_gib()} GiB installed). Each worker is reserved about "
+            f"{_platform_default_gib_per_worker()} GiB, mostly to collect the suite. A run "
+            "this narrow is slow, not stuck -- free some memory, run a subset "
             "(pytest test/test_thing.py), or pass an explicit -n <N> to bypass "
             "this budget.",
             stacklevel=1,

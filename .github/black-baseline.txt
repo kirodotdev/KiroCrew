@@ -286,7 +286,6 @@ src/kiro_crew/pod/launchd.py
 src/kiro_crew/pod/provision.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
-src/kiro_crew/resource_status.py
 src/kiro_crew/security/__init__.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
@@ -1047,6 +1046,4 @@ test/test_workspace_absolute_paths.py
 test/test_write_secret_file.py
 test/test_ws_and_plan_memory_fixes.py
 test/test_ws_event_scoping.py
-test/test_xdist_auto_cap.py
-test/test_xdist_host_budget.py
 test/windows_sim.py

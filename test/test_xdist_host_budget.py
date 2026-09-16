@@ -75,6 +75,31 @@ def _deterministic_live_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(ct._XDIST_ENV_CAP, raising=False)
 
 
+#: The per-worker reservation these tests do their arithmetic against. Pinned so
+#: the assertions are about the DIVISION MECHANISM, not the platform-specific
+#: default: the real reservation is 3 GiB on Linux/Windows and 16 GiB on macOS,
+#: so a test hard-coding either would be red on the other OS.
+_TEST_GIB_PER_WORKER = 2
+
+#: The genuine platform-default resolver, captured before the autouse pin below
+#: replaces it, so the test that is ABOUT the platform default can still reach it.
+_REAL_PLATFORM_DEFAULT_GIB_PER_WORKER = ct._platform_default_gib_per_worker
+
+
+@pytest.fixture(autouse=True)
+def _pin_per_worker_reservation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``_platform_default_gib_per_worker`` so the budget math is deterministic.
+
+    The reservation is platform-aware, so left live a "32 GiB host -> N workers"
+    assertion would read 16 on Linux but 2 on macOS. Pinning it to
+    :data:`_TEST_GIB_PER_WORKER` keeps every test about the shared division
+    mechanism rather than the default that feeds it; the default itself is
+    covered by :func:`test_per_worker_reservation_is_platform_aware`, which
+    reaches it through :data:`_REAL_PLATFORM_DEFAULT_GIB_PER_WORKER`.
+    """
+    monkeypatch.setattr(ct, "_platform_default_gib_per_worker", lambda: _TEST_GIB_PER_WORKER)
+
+
 @pytest.fixture
 def budget_host(slot_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
     """A deterministic 10-core / 32 GiB host, so only contention varies."""
@@ -86,8 +111,7 @@ def budget_host(slot_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> path
 
 def _hold_slots_in_subprocess(slot_dir: pathlib.Path, count: int) -> subprocess.Popen[str]:
     """Start a child holding ``count`` slot locks; it exits when stdin closes."""
-    code = textwrap.dedent(
-        f"""
+    code = textwrap.dedent(f"""
         import os, sys
         sys.path.insert(0, {str(pathlib.Path(ct.__file__).parent)!r})
         sys.path.insert(0, {str(pathlib.Path(ct.__file__).parent.parent / "src")!r})
@@ -100,8 +124,7 @@ def _hold_slots_in_subprocess(slot_dir: pathlib.Path, count: int) -> subprocess.
             held.append(fd)
         print("ready", flush=True)
         sys.stdin.read()
-        """
-    )
+        """)
     proc = subprocess.Popen(
         [sys.executable, "-c", code],
         stdin=subprocess.PIPE,
@@ -149,9 +172,7 @@ def test_slot_dir_separates_hosts_sharing_a_network_home(
 
 
 @pytest.mark.parametrize("raw", ["host-1.example.com", "", "../../etc", "a/b", "  ", "."])
-def test_host_key_is_a_safe_single_path_segment(
-    monkeypatch: pytest.MonkeyPatch, raw: str
-) -> None:
+def test_host_key_is_a_safe_single_path_segment(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
     monkeypatch.setattr(socket, "gethostname", lambda: raw)
     key = ct._host_key()
 
@@ -245,9 +266,7 @@ def test_host_total_gib_falls_back_to_win32_when_sysconf_is_absent(
 def test_claim_alone_takes_the_ceiling(slot_dir: pathlib.Path) -> None:
     assert ct._claim_worker_slots(6, 64) == 6
     assert len(ct._held_slots) == 6
-    assert sorted(p.name for p in slot_dir.iterdir()) == [
-        f"worker-{i:03d}.lock" for i in range(6)
-    ]
+    assert sorted(p.name for p in slot_dir.iterdir()) == [f"worker-{i:03d}.lock" for i in range(6)]
 
 
 def test_claim_respects_the_per_run_cap(slot_dir: pathlib.Path) -> None:
@@ -464,10 +483,12 @@ def test_second_run_takes_what_is_left(budget_host: pathlib.Path) -> None:
         holder.communicate()
 
 
-def test_memory_binds_before_cores(budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_memory_binds_before_cores(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """8 GiB cannot back 10 workers, whatever the core count says."""
     monkeypatch.setattr(ct, "_host_total_gib", lambda: 8)
-    assert ct.resolve_workers() == 8 // ct._GIB_PER_WORKER
+    assert ct.resolve_workers() == 8 // _TEST_GIB_PER_WORKER
 
 
 def test_unknown_memory_falls_back_to_cores(
@@ -493,8 +514,26 @@ def test_a_loaded_laptop_is_bounded_by_what_is_free_not_by_what_it_owns(
 
     resolved = ct.resolve_workers()
 
-    assert resolved == 3 // ct._GIB_PER_WORKER_AVAILABLE
-    assert resolved < 16 // ct._GIB_PER_WORKER, "the static bound alone would over-grant"
+    assert resolved == 3 // _TEST_GIB_PER_WORKER
+    assert resolved < 16 // _TEST_GIB_PER_WORKER, "the static bound alone would over-grant"
+
+
+def test_per_worker_reservation_is_platform_aware(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fix's core claim: one worker's reservation is not one number.
+
+    A full-suite worker holds ~1.5 GiB on Linux but 14.9-16.1 GiB on macOS. A
+    fixed 2 GiB divisor is fatally low for macOS -- four ``-n auto`` workers
+    reserve 62 GiB on a 36 GiB Mac and the kernel jetsam-kills it -- while the
+    macOS figure would clamp a healthy Linux host to a handful of workers, so
+    the default depends on the platform.
+    """
+    monkeypatch.setattr(ct.platform_compat, "IS_MACOS", True, raising=False)
+    assert _REAL_PLATFORM_DEFAULT_GIB_PER_WORKER() == ct._MACOS_GIB_PER_WORKER
+    monkeypatch.setattr(ct.platform_compat, "IS_MACOS", False, raising=False)
+    assert _REAL_PLATFORM_DEFAULT_GIB_PER_WORKER() == ct._DEFAULT_GIB_PER_WORKER
+    # The macOS default is the wall against the overshoot: four workers must not
+    # be granted against a 36 GiB host.
+    assert 4 * ct._MACOS_GIB_PER_WORKER > 36
 
 
 def test_a_starved_host_floors_at_one_worker_instead_of_refusing(
@@ -511,7 +550,9 @@ def test_a_starved_host_floors_at_one_worker_instead_of_refusing(
     assert ct.resolve_workers() == 1
 
 
-def test_env_cap_lowers_the_ceiling(budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_env_cap_lowers_the_ceiling(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(ct._MAX_WORKERS_ENV, "3")
     assert ct.resolve_workers() == 3
 
@@ -546,7 +587,7 @@ def test_the_xdist_env_var_is_a_ceiling_not_a_floor(
     monkeypatch.setenv(ct._XDIST_ENV_CAP, "64")
     monkeypatch.setattr(ct, "_host_available_mib", lambda: 4 * 1024)
 
-    assert ct.resolve_workers() == 4 // ct._GIB_PER_WORKER_AVAILABLE
+    assert ct.resolve_workers() == 4 // _TEST_GIB_PER_WORKER
 
 
 @pytest.mark.parametrize("raw", ["", "not-a-number", "0", "-3"])
