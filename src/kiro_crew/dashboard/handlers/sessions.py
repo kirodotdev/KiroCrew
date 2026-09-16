@@ -27,7 +27,12 @@ from aiohttp import web
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew import session_directive
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
-from kiro_crew.agent_discovery import AmbiguousAgentSpecError, spec_by_declared_name
+from kiro_crew.agent_discovery import (
+    AmbiguousAgentSpecError,
+    read_agent_spec_strict,
+    spec_by_declared_name,
+)
+from kiro_crew.agent_spec_format import agent_spec_candidates
 
 # The migration module owns the pre-migration leftover-tab spelling.
 from kiro_crew.channel_transcript_migration import _orphan_target_stem
@@ -2867,16 +2872,27 @@ def _read_managed_tool_policy_sync(agents_dir: Path, agent_name: str) -> dict[st
     two specs declare *agent_name*: that is not "no policy" either, and the
     caller records it as a denial rather than answering it silently.
     """
-    agent_path = agents_dir / f"{agent_name}.json"
     try:
         config: Any = spec_by_declared_name(
             agents_dir, agent_name, operation="session_tool_policy", source="dashboard"
         )
         if config is None:
-            if not agent_path.is_file():
+            # ``<name>.json`` then ``<name>.md``: beside a twin the JSON wins,
+            # the order every direct-filename fallback uses (see
+            # ``kas_agents.load_agent_spec``).
+            present = [p for p in agent_spec_candidates(agents_dir, agent_name) if p.is_file()]
+            if not present:
                 return None
-            config = json.loads(agent_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+            # The hardened reader: the agents directory is user-writable, so
+            # a symlink here is not followed to a sensitive target.
+            config = read_agent_spec_strict(
+                present[0], operation="session_tool_policy", source="dashboard"
+            )
+    except AmbiguousAgentSpecError:
+        # A ``ValueError`` subclass, so it is named BEFORE the parse-failure arm
+        # below or it would be swallowed as "no policy" instead of propagating.
+        raise
+    except (OSError, ValueError):
         return None
     if not isinstance(config, dict):
         # Valid JSON that is not an object (a list, a scalar, null) parses

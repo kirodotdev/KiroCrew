@@ -562,6 +562,12 @@ def test_rewriter_calls_restrict_to_owner_on_windows(tmp_path: Path, monkeypatch
     # Simulate Windows: IS_POSIX=False, IS_WINDOWS=True.
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_POSIX", False)
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    # The spec read goes through the hardened no-reparse open, which under the
+    # simulated flag would call the real Win32 API; this test is about the
+    # lockdown of what gets WRITTEN, so read the fixture plainly.
+    monkeypatch.setattr(
+        "kiro_crew.agent_discovery.safe_read_file_bytes", lambda raw: Path(raw).read_bytes()
+    )
     # Forwarding ON or the env-declaring fixture is declassified and no sidecar
     # write happens at all.
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.forward_declared_env_enabled", lambda: True)
@@ -812,6 +818,11 @@ def test_failed_sidecar_protection_leaves_no_readable_credentials(
 
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_POSIX", False)
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    # Same as the lockdown test above: keep the hardened spec read off the real
+    # Win32 open the simulated flag would select.
+    monkeypatch.setattr(
+        "kiro_crew.agent_discovery.safe_read_file_bytes", lambda raw: Path(raw).read_bytes()
+    )
     with (
         patch(
             "kiro_crew.mcp_gateway.rewriter.platform_compat.restrict_to_owner",

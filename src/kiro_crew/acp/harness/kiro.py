@@ -30,6 +30,7 @@ from kiro_crew.acp.harness.base import (
     TeardownPolicy,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_CLIENT_CAPABILITIES,
     METHOD_SESSION_TERMINATE,
@@ -88,6 +89,20 @@ class KiroHarness(MembershipHarness):
             await asyncio.to_thread(agent_mod.ensure_agent_materialized, ctx.agent)
         except Exception:
             logger.warning("pre-spawn agent materialization failed", exc_info=True)
+
+        # kiro-cli discovers ``*.json`` only. A markdown-only agent (the KAS and
+        # Kiro IDE form, listed by Crew's own discovery) would spawn, then fault
+        # every turn with ``Mode not found``. Refuse here, naming the file and
+        # the backend that can run it, rather than start a session that cannot.
+        markdown_spec = await asyncio.to_thread(
+            agent_mod.markdown_spec_for_agent, ctx.agent, ctx.work_dir
+        )
+        if markdown_spec is not None:
+            raise AcpRuntimeError(
+                f"agent {ctx.agent!r} is defined in markdown ({markdown_spec.name}); the "
+                f"kiro-cli backend loads JSON agent specs only. Switch agent.acp_backend "
+                f"to {ACP_BACKEND_KAS!r} or add a JSON spec for this agent."
+            )
 
         # The derived-spec freshness gate is deliberately NOT here, and this is the
         # only host-level gate that is not: it is the same check for every host, and it

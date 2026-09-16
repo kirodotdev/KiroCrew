@@ -23,6 +23,7 @@ from kiro_crew import model_registry
 from kiro_crew.agent import _prompt_path
 from kiro_crew.agent_discovery import agent_skill_globs
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
@@ -2232,7 +2233,7 @@ def _read_include_crew_context(agent: str) -> bool:
     directory error all default to injecting, reproducing the pre-opt-out behavior.
     """
     try:
-        candidates = kiro_agents_dir().glob("*.json")
+        candidates = iter_agent_spec_files(kiro_agents_dir(), ordered=False)
     except OSError:
         return True
     for f in candidates:
@@ -2249,7 +2250,7 @@ def _read_include_crew_context(agent: str) -> bool:
             # re-resolves, refuses a sensitive target, and opens O_NOFOLLOW —
             # closing the TOCTOU where the final path component is swapped to a
             # symlink into ~/.aws etc. AFTER the is_sensitive_path check above.
-            data = json.loads(safe_read_file(str(f)))
+            data = parse_agent_spec_text(safe_read_file(str(f)), f)
             if not isinstance(data, dict):
                 continue
             if data.get("name") == agent or f.stem == agent:

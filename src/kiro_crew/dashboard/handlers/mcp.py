@@ -22,6 +22,7 @@ from kiro_crew.agent import (
     rebuild_agent_config,
 )
 from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     FORWARD_DECLARED_ENV_DEFAULT,
@@ -840,7 +841,7 @@ async def api_mcp_active(request: web.Request) -> web.Response:
 
     # Non-kirocrew agent: read from agent config
     if agent and agent != "kirocrew":
-        for f in kiro_agents_dir_path().glob("*.json"):
+        for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
             spec = _read_agent_spec(
                 f,
                 operation="api_mcp_active",
@@ -2991,7 +2992,7 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     agents_dir = kiro_agents_dir_path()
     if not agents_dir.is_dir():
         return rows
-    for path in sorted(agents_dir.glob("*.json")):
+    for path in iter_agent_spec_files(agents_dir):
         spec = _read_agent_spec(
             path,
             operation="mcp_server_rows",
@@ -3058,7 +3059,7 @@ def _launch_specs_for(names: set[str]) -> dict[str, list[SimpleNamespace]]:
     agents_dir = kiro_agents_dir_path()
     if not agents_dir.is_dir():
         return specs
-    for path in sorted(agents_dir.glob("*.json")):
+    for path in iter_agent_spec_files(agents_dir):
         spec = _read_agent_spec(
             path,
             operation="mcp_stub_eligibility",

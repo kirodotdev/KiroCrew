@@ -35,6 +35,7 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
 )
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_spec_format import is_agent_spec_name
 from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cli_perf import _read_gateway_pid
@@ -256,6 +257,8 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     bound_model = ""
     bound_spec: Path | None = None
     if bound != "kirocrew":
+        # Display only: the resolver below reads the real file, whichever form
+        # (``.json`` or ``.md``) and whichever filename declares the name.
         bound_spec = agents_dir / f"{bound}.json"
         # Read through the resolver's own accessor: it matches on the spec's
         # ``name`` field as well as the filename, which a bare path join misses.
@@ -434,7 +437,7 @@ def _strict_agent_json_specs(directory: Path) -> list[Path]:
                 (
                     Path(entry.path)
                     for entry in entries
-                    if entry.name.endswith(".json") and not entry.name.startswith("._")
+                    if is_agent_spec_name(entry.name) and not entry.name.startswith("._")
                 ),
                 key=lambda path: path.stem,
             )

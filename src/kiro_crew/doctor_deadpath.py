@@ -31,13 +31,17 @@ sibling change wiring another sweep into doctor rebases trivially.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.agent_spec_format import (
+    is_markdown_spec,
+    iter_agent_spec_files,
+    parse_agent_spec_text,
+)
 from kiro_crew.config.paths import kiro_agents_dir
 
 logger = logging.getLogger(__name__)
@@ -332,12 +336,13 @@ def _walk_spec(spec_path: Path) -> tuple[list[DeadPath], str | None]:
         # one such file is reported as unreadable rather than aborting the whole
         # walk, keeping the check fail-open per file.
         return [], f"not valid UTF-8 ({exc})"
+    form = "frontmatter" if is_markdown_spec(spec_path) else "JSON"
     try:
-        data = json.loads(raw)
+        data = parse_agent_spec_text(raw, spec_path)
     except ValueError as exc:
-        return [], f"malformed JSON ({exc})"
+        return [], f"malformed {form} ({exc})"
     if not isinstance(data, dict):
-        return [], "top-level JSON is not an object"
+        return [], f"top-level {form} is not an object"
 
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
@@ -414,7 +419,7 @@ def check_dead_paths(*, agents_dir: Path | None = None, repair=_default_repair) 
     managed_names = set(OWNED_KIRO_AGENT_FILES)
     managed_needs_repair = False
 
-    for spec_path in sorted(agents_dir.glob("*.json")):
+    for spec_path in iter_agent_spec_files(agents_dir):
         managed = spec_path.name in managed_names
         dead, unreadable = _walk_spec(spec_path)
         result = SpecResult(spec=spec_path.name, managed=managed, dead=dead, unreadable=unreadable)

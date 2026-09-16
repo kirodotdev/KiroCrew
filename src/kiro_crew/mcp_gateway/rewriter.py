@@ -1,7 +1,12 @@
-"""Rewrite kiro agent JSON so MCP servers route through the broker.
+"""Rewrite kiro agent specs so MCP servers route through the broker.
 
-The rewriter reads ``~/.kiro/agents/*.json`` and writes modified copies into
-the overlay directory (``<config_dir>/mcp-gateway/agents/``). The host
+The rewriter reads ``~/.kiro/agents/*.json`` and ``*.md`` (the markdown form,
+see :mod:`kiro_crew.agent_spec_format`) and writes modified JSON copies into
+the overlay directory (``<config_dir>/mcp-gateway/agents/``). The overlay is
+always ``<stem>.json`` whatever the source's form: ``session_servers.py`` looks
+an agent's overlay up by ``<agent>.json``, and a markdown spec's servers must
+be stubbed exactly like a JSON spec's or they would spawn direct, outside the
+tool gate. The host
 filesystem remains untouched — the broker stubs in these specs are injected
 into each kiro-cli session over ACP ``session/new``, which outranks the
 same-named entry in the agent spec (see ``session_servers.py``).
@@ -38,6 +43,7 @@ from pathlib import Path
 from typing import Any, Collection, Mapping
 
 from kiro_crew import __version__, platform_compat
+from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import mcp_search_path, spec_path_key
@@ -102,7 +108,7 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # relock — so an older fingerprint still validates correctly, and bumping would
 # gratuitously defeat the transient-keep gate (which compares stored vs current
 # inputs) on the first upgraded boot.
-_FINGERPRINT_SCHEMA = 4
+_FINGERPRINT_SCHEMA = 5
 
 
 @dataclass
@@ -1208,7 +1214,7 @@ def _rewrite_inputs_fingerprint(
     * ``schema`` / ``package`` — invalidate on rewriter logic changes.
     """
     sources: dict[str, list[Any] | None] = {
-        p.name: _stat_sig(p) for p in sorted(source_dir.glob("*.json"))
+        p.name: _stat_sig(p) for p in iter_agent_spec_files(source_dir)
     }
     return {
         "schema": _FINGERPRINT_SCHEMA,
@@ -1574,6 +1580,10 @@ def rewrite_agents(
           these when a stub registers, to find the real backend command
           to spawn for a new pool key.
     """
+    # Deferred: ``agent_discovery`` reaches ``config.loader`` through ``hooks``,
+    # and ``config.loader`` imports this module's path helpers at import time.
+    from kiro_crew.agent_discovery import read_agent_spec_strict
+
     stub_set = stub_servers or frozenset()
 
     # An install upgraded from an older release can still carry a settings
@@ -1801,23 +1811,31 @@ def rewrite_agents(
             "stay in effect until a later pass succeeds)"
         )
 
-    for path in sorted(source_dir.glob("*.json")):
+    for path in iter_agent_spec_files(source_dir):
+        # The overlay is JSON whatever the source: ``session_servers`` resolves
+        # ``<agent>.json``. The fingerprint's ``sources`` stays keyed by the
+        # SOURCE name, so a markdown edit invalidates its overlay.
+        overlay_name = f"{path.stem}.json"
         if (
             injection_unknown
-            and (overlay_dir / path.name).is_file()
+            and (overlay_dir / overlay_name).is_file()
             and _overlay_inputs_unchanged(
                 stored, current_inputs, source_name=path.name
             )
-            and _kept_overlay_vouched(stored, overlay_dir=overlay_dir, name=path.name)
+            and _kept_overlay_vouched(stored, overlay_dir=overlay_dir, name=overlay_name)
         ):
             # Keep without classifying: the spec is not read on this path, so a
             # source whose CONTENT is deterministically bad is kept too, unlike
             # the read below which prunes it. The pass is uncacheable, so the
             # next boot reads that source and prunes its overlay then.
-            transient_keep.add(path.name)
+            transient_keep.add(overlay_name)
             continue
         try:
-            spec = json.loads(path.read_text())
+            # The hardened reader keeps the transient/deterministic split the
+            # two handlers below depend on, and refuses what a bare read would
+            # follow: a symlink in this user-writable directory pointing at a
+            # sensitive file, whose content would otherwise land in an overlay.
+            spec = read_agent_spec_strict(path, operation="mcp_overlay_rewrite", source="unknown")
         except OSError as exc:
             # Transient: the file stat'ed fine for the fingerprint but could
             # not be read. Readability can return without size/mtime changing,
@@ -1825,7 +1843,7 @@ def rewrite_agents(
             # this agent forever. Mark the pass uncacheable, and keep the
             # agent's previous overlay.
             notes.source_read_failed = True
-            transient_keep.add(path.name)
+            transient_keep.add(overlay_name)
             logger.warning(
                 "skipping agent %s: %s (previous overlay, if any, stays in "
                 "effect until a later pass succeeds)",
@@ -1833,10 +1851,11 @@ def rewrite_agents(
                 exc,
             )
             continue
-        except json.JSONDecodeError as exc:
-            # Deterministic: the CONTENT is bad, and fixing it changes the
-            # file's stat signature, which invalidates the fingerprint — so
-            # this skip is safe to cache.
+        except ValueError as exc:
+            # Deterministic: the CONTENT is bad (JSON, frontmatter, encoding, a
+            # sensitive or oversized target), and fixing it changes the file's
+            # stat signature, which invalidates the fingerprint — so this skip
+            # is safe to cache.
             logger.warning("skipping agent %s: %s", path.name, exc)
             continue
         if not isinstance(spec, dict):
@@ -1868,7 +1887,7 @@ def rewrite_agents(
             notes=notes,
         )
         _collect_target_env(new_spec.get("mcpServers", {}), target_env)
-        target = overlay_dir / path.name
+        target = overlay_dir / overlay_name
         try:
             # Atomic + owner-only: temp-file + os.replace (via atomic_write) so a
             # concurrent reader — the per-session stub injection resolves this
@@ -1893,11 +1912,11 @@ def rewrite_agents(
                 exc,
             )
             overlay_write_failed = True
-            transient_keep.add(path.name)
+            transient_keep.add(overlay_name)
             continue
-        written.add(path.name)
+        written.add(overlay_name)
         if wrapped:
-            results[path.name] = wrapped
+            results[overlay_name] = wrapped
 
     # Prune stale overlay entries (user deleted or renamed an agent). The
     # keep-set answers "does this overlay's source still exist and did we

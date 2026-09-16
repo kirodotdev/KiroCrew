@@ -9,10 +9,11 @@ resolved the agent's config file inline::
 
 all three on the single event loop every other gateway request shares.
 
-The proof below is thread identity at the real filesystem seam -- ``read_text``
-itself -- not an assertion that ``asyncio.to_thread`` was called. A spy on the
-offload would keep passing if the call were later moved back inline behind some
-other wrapper; the thread the read actually runs on cannot be faked.
+The proof below is thread identity at the real filesystem seam -- the hardened
+``safe_read_file_bytes`` gate the strict spec reader opens the file through --
+not an assertion that ``asyncio.to_thread`` was called. A spy on the offload
+would keep passing if the call were later moved back inline behind some other
+wrapper; the thread the read actually runs on cannot be faked.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew import agent_discovery
 from kiro_crew.dashboard.handlers import sessions as sessions_mod
 
 AGENT = "reviewer"
@@ -69,13 +71,13 @@ async def test_the_agent_config_read_runs_off_the_event_loop(
     )
 
     read_threads: list[int] = []
-    real_read_text = Path.read_text
+    real_read = agent_discovery.safe_read_file_bytes
 
-    def recording_read_text(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    def recording_read(raw: str) -> bytes | None:
         read_threads.append(threading.get_ident())
-        return real_read_text(self, *args, **kwargs)
+        return real_read(raw)
 
-    monkeypatch.setattr(Path, "read_text", recording_read_text)
+    monkeypatch.setattr(agent_discovery, "safe_read_file_bytes", recording_read)
 
     loop_thread = threading.get_ident()
     response = await _call(monkeypatch, tmp_path)

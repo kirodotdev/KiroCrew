@@ -49,13 +49,17 @@ auto-approve input Crew's governance ceiling has filtered.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
-from kiro_crew.agent_discovery import AmbiguousAgentSpecError, spec_by_declared_name
+from kiro_crew.agent_discovery import (
+    AmbiguousAgentSpecError,
+    read_agent_spec_strict,
+    spec_by_declared_name,
+)
+from kiro_crew.agent_spec_format import agent_spec_candidates
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import is_sensitive_path
@@ -551,7 +555,9 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
 
     A spec that DECLARES ``name == agent_id`` wins, found through
     :func:`kiro_crew.agent_discovery.spec_by_declared_name`, and
-    ``<agent_id>.json`` is read only when no spec declares the id. That is the
+    ``<agent_id>.json`` or ``<agent_id>.md`` (the markdown form, frontmatter
+    plus a body that is the prompt -- see :mod:`kiro_crew.agent_spec_format`)
+    is read only when no spec declares the id. That is the
     order :func:`kiro_crew.agent.agent_spec_path` and the documented resolution
     convention use, and it is what keeps a misnamed ``<agent_id>.json`` that
     declares some other agent from being projected under this id, with that
@@ -565,20 +571,22 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     reader's guards, labelled ``kas_agent_projection`` so a denial is
     attributed to the projection, and reopening the file it came from would
     read it a second time with none of them. The fallback read of
-    ``<agent_id>.json`` is the module's own, unchanged; a spec declaring no
-    name at all, or a name other than its stem, reaches the projection only
-    through it.
+    ``<agent_id>.json`` (or ``.md``) goes through
+    :func:`kiro_crew.agent_discovery.read_agent_spec_strict`, the same guards
+    with the failure class kept; a spec declaring no name at all, or a name
+    other than its stem, reaches the projection only through it.
 
     The scan and the fallback read raise :class:`KasAgentTranslationError` on
     an ``OSError`` for the same reason: every caller of this module handles the
     translation error, not an ``OSError``. On 3.12 ``Path.glob`` propagates one
     from the ``is_dir`` probe it runs on the directory itself (3.13 and 3.14
-    run no such probe), and ``Path.read_text`` propagates a permission error
-    on every supported version, so an unsearchable agents dir reaches this
-    function as an ``OSError`` and the conversion is what makes the failure
-    uniform.
+    run no such probe), and the strict reader raises one for a file it cannot
+    resolve or open on every supported version, so an unsearchable agents dir
+    reaches this function as an ``OSError`` and the conversion is what makes
+    the failure uniform.
     """
-    path = agents_dir / f"{agent_id}.json"
+    candidates = agent_spec_candidates(agents_dir, agent_id)
+    path = candidates[0]
     try:
         declared = spec_by_declared_name(
             agents_dir, agent_id, operation="kas_agent_projection", source="unknown"
@@ -589,12 +597,20 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
         raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
     if declared is not None:
         return declared
+    # ``<id>.json`` first: beside an ``<id>.md`` twin the JSON wins, the same
+    # rule the directory scan applies (see ``agent_spec_format``).
+    present = [p for p in candidates if p.is_file()]
+    if present:
+        path = present[0]
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        # The hardened reader, not a bare ``read_text``: the agents directory is
+        # user-writable, so a symlink here must not be followed to a sensitive
+        # target or an oversized file slurped into the projection.
+        raw = read_agent_spec_strict(path, operation="kas_agent_projection", source="unknown")
     except OSError as exc:
         raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
     except ValueError as exc:
-        raise KasAgentTranslationError(f"agent spec {path} is not valid JSON: {exc}") from exc
+        raise KasAgentTranslationError(f"agent spec {path} is not a valid spec: {exc}") from exc
     if not isinstance(raw, dict):
         raise KasAgentTranslationError(f"agent spec {path} is not an object")
     return raw

@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from kiro_crew import agent_discovery
 from kiro_crew.mcp_gateway import rewriter
 from kiro_crew.mcp_gateway.rewriter import (
     _FINGERPRINT_NAME,
@@ -721,16 +722,19 @@ def test_transient_agent_read_failure_keeps_the_previous_overlay(
     assert sidecars_before  # _mk_tree declares env, so sidecars exist
 
     _bump_mtime(src / "agent-1.json")  # invalidate so the next call rewrites
-    real_read = Path.read_text
+    # Specs are read through the hardened gate (``agent_discovery``'s
+    # ``safe_read_file_bytes``), which reports an unreadable file as ``None``;
+    # the strict reader turns that into the transient ``OSError`` handled here.
+    real_read = agent_discovery.safe_read_file_bytes
     fail = {"on": True}
-    victim_src = src / "agent-1.json"
+    victim_src = (src / "agent-1.json").resolve()
 
-    def flaky(self: Path, *args: Any, **kwargs: Any) -> str:
-        if fail["on"] and self == victim_src:
-            raise OSError("transient I/O error")
-        return real_read(self, *args, **kwargs)
+    def flaky(raw: str) -> bytes | None:
+        if fail["on"] and Path(raw) == victim_src:
+            return None
+        return real_read(raw)
 
-    monkeypatch.setattr(Path, "read_text", flaky)
+    monkeypatch.setattr(agent_discovery, "safe_read_file_bytes", flaky)
     _rewrite(tmp_path)
     fail["on"] = False
 
@@ -1129,15 +1133,18 @@ def test_transient_source_read_failure_is_not_cached(
     """A file that stats fine but fails to READ must not freeze an incomplete
     output set: readability can return without the stat signature changing."""
     _mk_tree(tmp_path)
-    real_read = Path.read_text
+    # Agent specs are read through the hardened gate; ``None`` from it is the
+    # transient read failure the rewriter keeps the previous overlay for.
+    real_read = agent_discovery.safe_read_file_bytes
     fail = {"on": True}
 
-    def flaky(self: Path, *args: Any, **kwargs: Any) -> str:
-        if fail["on"] and self.name == "agent-0.json" and "agents" in self.parts:
-            raise OSError("transient I/O error")
-        return real_read(self, *args, **kwargs)
+    def flaky(raw: str) -> bytes | None:
+        p = Path(raw)
+        if fail["on"] and p.name == "agent-0.json" and "agents" in p.parts:
+            return None
+        return real_read(raw)
 
-    monkeypatch.setattr(Path, "read_text", flaky)
+    monkeypatch.setattr(agent_discovery, "safe_read_file_bytes", flaky)
     _rewrite(tmp_path)
     fail["on"] = False
 
