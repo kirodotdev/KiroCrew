@@ -117,7 +117,17 @@ def _acp_server_entry(
         return None
     args = [a if isinstance(a, str) else json.dumps(a, sort_keys=True, default=str)
             for a in (entry.get("args") or [])]
-    if channel_id and "--channel-id" not in expand_stub_flags(args):
+    try:
+        flags = expand_stub_flags(args)
+    except ValueError:
+        # A stub whose envelope cannot be read cannot be launched against the
+        # metadata the rewriter hashed; injecting it would shadow the agent's
+        # working entry with one that dies at parse time. Skip it, like the
+        # command-less case above, so one unreadable overlay entry degrades
+        # this server to unpooled operation instead of failing the session.
+        logger.warning("mcp-gateway: skipping stub %r with an unreadable flag envelope", name)
+        return None
+    if channel_id and "--channel-id" not in flags:
         args.append(f"{STUB_FLAGS_FLAG}={encode_target_args(['--channel-id', channel_id])}")
     shaped: dict[str, Any] = {
         k: v for k, v in entry.items() if k not in _ACP_RESERVED and k != "command"

@@ -206,6 +206,23 @@ def test_session_channel_id_rides_the_envelope(tmp_path):
     assert session_servers._acp_server_entry("probe", entry, None)["args"] == entry["args"]
 
 
+@pytest.mark.parametrize("channel_id", [None, "C1"])
+def test_session_skips_a_stub_with_an_unreadable_envelope(tmp_path, caplog, channel_id):
+    """An overlay entry whose envelope cannot be decoded is left out of the
+    session, like a command-less one; the session itself still starts."""
+    entry = _percent_entry(tmp_path)
+    broken = dict(entry, args=entry["args"][:2] + [f"{hashing.STUB_FLAGS_FLAG}=!!!!"])
+    assert session_servers._acp_server_entry("probe", broken, channel_id) is None
+    assert any("unreadable flag envelope" in r.message for r in caplog.records)
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    (overlay / "agent.json").write_text(
+        json.dumps({"mcpServers": {"broken": broken, "probe": entry}}), encoding="utf-8"
+    )
+    injected = session_servers.pooled_session_servers(overlay, "agent", channel_id)
+    assert [s["name"] for s in injected] == ["probe"]
+
+
 @pytest.mark.parametrize("args", CASES)
 def test_emitted_stub_and_daemon_hash_same_argv(tmp_path, args):
     entry = _entry(tmp_path, args)
