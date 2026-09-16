@@ -22,10 +22,11 @@ import { useDiffSplit } from '../hooks/useDiffSplit'
 import { countLines } from './FileChangeChips'
 import { store } from '../store'
 import { findBestOccurrence } from '../hooks/useMarkdownCommentHighlights'
-import { detectFileType } from './FileRenderers'
+import { detectFileType, BinaryFileCard } from './FileRenderers'
 import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from './ContentRenderer'
 import { api } from '../api/client'
 import { fileReadUrl, fileDownloadUrl } from '../utils/fileReadUrl'
+import { fetchFileRead, fileReadQueryKey } from '../utils/fileReadQuery'
 import { loadCommentDrafts, saveCommentDrafts, setCommentsForFile } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -251,11 +252,26 @@ export function resolveSourcePos(range: Range, root: HTMLElement, content: strin
 interface Props {
   filePath: string
   content: string
+  /** `/api/file-read` refused to decode this file (a NUL byte inside its sniff
+   *  window), so `content` is empty BY DESIGN and the body renders a
+   *  download/reveal card. Without it the panel put 512 KB of U+FFFD in the
+   *  code editor and offered to save it back over the real bytes. Rich types
+   *  (image, pdf, video, …) keep their own viewer — they are binary too, and
+   *  they read the file through `/api/file-raw`, not through this buffer. */
+  binary?: boolean
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch, Refresh). Document tabs restamp
    *  their saved baseline here so a re-open still treats the tab as clean;
-   *  omitted by other hosts, which fall back to onContentChange. */
-  onDiskContent?: (c: string) => void
+   *  omitted by other hosts, which fall back to onContentChange.
+   *
+   *  `binary` is the verdict for the bytes THIS read saw. It travels with the
+   *  content because the two are one fact about one read: a file that was text
+   *  when the tab opened can be replaced on disk by binary bytes (a build
+   *  output, a checkout, an agent write), and patching the buffer while leaving
+   *  the verdict at its hydrated value leaves the editor live over bytes it
+   *  cannot represent — where a save would overwrite them. `undefined` means
+   *  the caller has no verdict to report and the stored one stands. */
+  onDiskContent?: (c: string, binary?: boolean) => void
   onSave: (filePath: string, content: string) => Promise<void>
   onClose: () => void
   liveWatch?: boolean
@@ -330,6 +346,33 @@ import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile } from './Fi
  * list for the content-string SVG that artifacts render.
  */
 const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw', 'video', 'audio', 'sheet', 'office']
+
+/**
+ * The subset of {@link RICH_FILE_TYPES} whose viewer reads the FILE, not the
+ * buffer -- each of these fetches from `filePath` (`/api/file-raw`,
+ * `/api/file-stream`, `/api/file-sheet`, `/api/file-office-preview`) and never
+ * looks at `content`.
+ *
+ * That distinction is what decides who gets the binary card. The rest of
+ * `RICH_FILE_TYPES` -- `svg`, `csv`, `json`, `jsonl`, `html`, `excalidraw` --
+ * renders FROM the content string, so a file whose bytes could not be decoded
+ * leaves those viewers with `''`: an empty table, an empty tree, a blank frame.
+ * A `.json` file that is actually a database, or a `.csv` with a NUL in it,
+ * belongs on the card exactly as a `.zip` does.
+ *
+ * Named by mechanism rather than by "is rich", because the reason a viewer may
+ * skip the card is that it can still show the real bytes -- not that it happens
+ * to be a viewer.
+ */
+const BYTE_BACKED_FILE_TYPES = new Set(['image', 'pdf', 'sheet', 'office', 'video', 'audio'])
+
+/** Outcome of one of this panel's own disk reads (Refresh, Cancel, the watch).
+ *  `superseded` means a newer read of this panel started before this one
+ *  answered, or the panel moved to another path: apply nothing, say nothing. */
+type DiskRead =
+  | { kind: 'ok'; text: string; binary: boolean }
+  | { kind: 'failed' }
+  | { kind: 'superseded' }
 
 /** Comment hint banner — shown once per session for markdown files */
 function CommentHint({ onDismiss }: { onDismiss: () => void }) {
@@ -801,6 +844,17 @@ function useFileArtifactState(filePath: string, content: string, onError: Report
       if (res.headers.get('X-Truncated') === 'true') {
         throw new Error(i18nT('components.markdownPanel.file_too_large_to_add'))
       }
+      // Same class as the truncation refusal above: the response is not the
+      // document. For a file the read could not decode the body is an envelope
+      // (`{"binary": true, ...}`), so promoting `res.text()` would store that
+      // JSON AS the artifact's content -- and an artifact is COPIED, so nothing
+      // would reference the original and the wrong content would be permanent.
+      // The affordance is hidden for such a file; this is the chokepoint, which
+      // is what covers the fullscreen toolbar's copy of the button and any
+      // later caller.
+      if (res.headers.get('X-File-Binary') === 'true') {
+        throw new Error(i18nT('components.markdownPanel.binary_file_cannot_be_added'))
+      }
       const fresh = await res.text()
       // Same slot is passed as the X-Session-Key so the server's
       // restricted-session gate sees the REAL session. With the transport's
@@ -960,7 +1014,7 @@ export interface MarkdownPanelHandle {
   requestNavigate: (nav: (stillClean: () => boolean) => void) => void
 }
 
-export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, connected = true, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, active = true, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey }: Props, ref) {
+export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, binary, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, connected = true, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, active = true, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey }: Props, ref) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const ime = useImeGuard()
   const qc = useQueryClient()
@@ -990,6 +1044,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // else editable opens straight in the Pierre editor — there is no separate
   // read-only source mode for code files.
   const [editing, setEditing] = useState(() => {
+    // Undecodable bytes have no buffer to edit, and a code file's default IS
+    // the editor -- so this has to be refused in the initializer, not in an
+    // effect, or the editor paints for a frame before the card replaces it.
+    if (binary && !BYTE_BACKED_FILE_TYPES.has(detectFileType(filePath))) return false
     if (revealLine && revealTargetsSource) return true
     if (MD_EXTS.has(extOf(filePath))) return false
     return !RICH_FILE_TYPES.includes(detectFileType(filePath))
@@ -1136,6 +1194,16 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const isMarkdown = MD_EXTS.has(ext)
   const isRichType = RICH_FILE_TYPES.includes(fileType)
   useEffect(() => { if (isRichType) setDiffMode(false) }, [isRichType])
+  // The verdict can arrive AFTER mount: a restored cold tab renders with
+  // `binary` undefined and gets it from the hydration read, so the initializer
+  // above is not the only entry point. Neither a source diff nor an edit buffer
+  // means anything for bytes that were never decoded.
+  const showBinaryCard = !!binary && !BYTE_BACKED_FILE_TYPES.has(fileType)
+  useEffect(() => {
+    if (!showBinaryCard) return
+    setDiffMode(false)
+    setEditing(false)
+  }, [showBinaryCard])
   // ── Preview-mode find (Cmd+F) ─────────────────────────────────────────────
   // Three surfaces compete for Cmd+F: the editor owns it while editing (it stops
   // propagation before anything else sees the key), and ChatPage's chat-find
@@ -1316,12 +1384,77 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const lang = langFor(ext)
   const displayContent = isMarkdown ? content : wrapCode(content, ext)
 
+  /** Read the file as it is now, with the verdict the read produced.
+   *
+   * Refresh, Cancel and the file watch all go through here, and only the
+   * NEWEST of this panel's reads may land: each read aborts the one before it
+   * and answers `superseded` if a later one started while it was in flight, so
+   * an older re-read cannot put back bytes -- or a verdict -- that a newer one
+   * has already replaced. Reporting stays with each caller because only it
+   * knows whether a human is waiting on the result. */
+  const diskReadAbortRef = useRef<AbortController | null>(null)
+
+  const readFromDisk = useCallback(async (): Promise<DiskRead> => {
+    diskReadAbortRef.current?.abort()
+    const ac = new AbortController()
+    diskReadAbortRef.current = ac
+    try {
+      const r = await fetchFileRead(filePath, ac.signal)
+      if (ac.signal.aborted) return { kind: 'superseded' }
+      return r.ok ? { kind: 'ok', text: r.text, binary: r.binary } : { kind: 'failed' }
+    } catch {
+      return ac.signal.aborted ? { kind: 'superseded' } : { kind: 'failed' }
+    }
+  }, [filePath])
+
+  // A path change or unmount withdraws the read in flight, so it cannot apply
+  // or report its result to a tab that has moved on.
+  useEffect(() => () => {
+    diskReadAbortRef.current?.abort()
+    diskReadAbortRef.current = null
+  }, [filePath])
+
+  /** Apply a disk read to the tab: buffer, saved baseline and verdict together.
+   *  The `['file-read', path]` cache entry is dropped rather than rewritten, so a
+   *  reopen inside its 10 s window refetches instead of rehydrating a verdict
+   *  this read has just made stale. */
+  const applyDiskRead = useCallback((disk: { text: string; binary: boolean }) => {
+    qc.removeQueries({ queryKey: fileReadQueryKey(filePath), exact: true })
+    if (onDiskContent) onDiskContent(disk.text, disk.binary)
+    else onContentChange(disk.text)
+  }, [qc, filePath, onDiskContent, onContentChange])
+
+
   useFileWatch(
     liveWatch && !editing && !dirty ? filePath : null,
     // A watch-fired change IS the disk truth, so route it through
     // onDiskContent when the host can restamp its saved baseline; falling
     // back to onContentChange keeps non-tab hosts unchanged.
-    useCallback((c: string) => { (onDiskContent ?? onContentChange)(c) }, [onDiskContent, onContentChange]),
+    //
+    // The event's own `content` is deliberately NOT used, in either direction.
+    // `/api/file-watch` decodes with `errors="replace"` and carries no binary
+    // verdict, so a file replaced on disk by binary bytes would push U+FFFD into
+    // the buffer AND leave the card decision at its hydrated value — editor
+    // live, save destructive. The event says "it changed"; the re-read says what
+    // it now is, and if the re-read cannot answer then NOTHING is applied: the
+    // buffer stays at the last revision whose verdict is known, which is stale
+    // but honest, where the event body would be new content under an old
+    // verdict. One extra GET per actual change of the one file on screen, on a
+    // subscription only armed while the panel is clean and not editing.
+    useCallback(() => {
+      void (async () => {
+        const disk = await readFromDisk()
+        // Superseded by a later read, or the user started typing while it was
+        // in flight — two ways this result must be dropped with nothing to say.
+        if (disk.kind === 'superseded' || dirtyRef.current) return
+        // An unreadable re-read is the third, and it is NOT quiet: the panel is
+        // now showing a revision it knows is superseded and cannot describe the
+        // current one, which the user has to be told rather than left to infer
+        // from a document that stopped changing.
+        if (disk.kind === 'failed') { reportActionError(i18nT('components.markdownPanel.cannot_read_file')); return }
+        applyDiskRead(disk)
+      })()
+    }, [applyDiskRead, readFromDisk, reportActionError]),
   )
 
 
@@ -1412,23 +1545,28 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     try {
       if (onRefresh) { await onRefresh(filePath) }
       else {
-        const res = await fetch(fileReadUrl(filePath))
-        if (!res.ok) return
-        const text = await res.text()
+        const disk = await readFromDisk()
+        // A newer read owns the answer; this one has nothing to add or report.
+        if (disk.kind === 'superseded') return
+        // A click that produces nothing reads as a broken button, so the
+        // human-initiated paths report through the panel's own action notice.
+        if (disk.kind === 'failed') { reportActionError(i18nT('components.markdownPanel.cannot_read_file')); return }
         // The read is async, and the dirty check above ran at click time:
         // anything typed while it was in flight made the buffer dirty, and
         // these disk bytes must not clobber that work.
         if (dirtyRef.current) return
-        ;(onDiskContent ?? onContentChange)(text)
+        applyDiskRead(disk)
       }
     } finally { setRefreshing(false) }
-  }, [filePath, onContentChange, onDiskContent, onRefresh, refreshing, dirty])
+  }, [filePath, onRefresh, refreshing, dirty, readFromDisk, applyDiskRead, reportActionError])
 
   // Discard pending edits (matches the artifact detail page's Cancel button).
   // Re-reads the file from disk into the buffer, clearing dirty. Confirms first
   // because edits are gone for good. Only markdown-ish files have a preview to
   // return to; code files stay in source mode (Cancel just discards edits).
-  const canPreview = isMarkdown
+  // Also gates Cancel's "return to preview" — there is no preview to return
+  // to, and no buffer to discard.
+  const canPreview = isMarkdown && !showBinaryCard
   const handleCancel = useCallback(async () => {
     if (!dirty) { if (canPreview) setEditing(false); return }
     if (!(await confirm({
@@ -1439,17 +1577,23 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     try {
       if (onRefresh) { await onRefresh(filePath) }
       else {
-        const res = await fetch(fileReadUrl(filePath))
         // Cancel means "match the disk", so the re-read moves the saved
         // baseline too (onDiskContent), the same as Refresh — otherwise the
         // stale baseline could later read a deliberate edit back to it as
         // clean and let a close discard that work.
-        if (res.ok) (onDiskContent ?? onContentChange)(await res.text())
+        const disk = await readFromDisk()
+        if (disk.kind === 'superseded') return
+        // Cancel means "match the disk". If the disk could not be read, the
+        // buffer still holds the edits -- so the dirty flag MUST stay set, or a
+        // later close discards work the panel just claimed was safe. Report and
+        // leave the user exactly where they were.
+        if (disk.kind === 'failed') { reportActionError(i18nT('components.markdownPanel.cannot_read_file')); return }
+        applyDiskRead(disk)
       }
       setDirty(false)
       if (canPreview) setEditing(false)
     } finally { setRefreshing(false) }
-  }, [dirty, filePath, onContentChange, onDiskContent, onRefresh, canPreview, confirm])
+  }, [dirty, filePath, onRefresh, canPreview, confirm, readFromDisk, applyDiskRead, reportActionError])
 
   const resolveSelectionCoords = useCallback((fallbackText?: string) => {
     const sel = window.getSelection()
@@ -1968,7 +2112,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   }, [fullscreen])
 
   const editorToolbarButtons = (<>
-    {!isRichType && (
+    {!isRichType && !showBinaryCard && (
       <button className={`p-1.5 rounded-md border cursor-pointer ${diffMode ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={toggleDiffMode} title={i18nT('components.markdownPanel.toggle_diff_view')} aria-label={i18nT('components.markdownPanel.toggle_diff_view')}><FileDiff size={14} /></button>
     )}
     {!isRichType && editing && (
@@ -1990,9 +2134,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // Snapshot (⋯ menu): capture current content as a new artifact version;
   // unsaved edits are persisted first so the snapshot reflects the screen.
   const handleSnapshot = useCallback(async () => {
+    if (showBinaryCard) {
+      reportActionError(i18nT('components.markdownPanel.binary_file_cannot_be_added'))
+      return
+    }
     if (dirty) await handleSave()
     artifactState.snapshot()
-  }, [dirty, handleSave, artifactState])
+  }, [showBinaryCard, dirty, handleSave, artifactState, reportActionError])
 
   return (
     <>
@@ -2024,7 +2172,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               </span>
             )}
             <span className="flex-1 min-w-[8px]" />
-            <FileArtifactActionButton state={artifactState} />
+            {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
             {(() => {
               const kExt = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(kExt)
@@ -2038,7 +2186,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
                 aria-pressed={editing}
               >{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
             )}
-            {!isRichType && (
+            {!isRichType && !showBinaryCard && (
               <button className={barIconBtn(diffMode)} onClick={toggleDiffMode} title={i18nT('components.markdownPanel.toggle_diff_view')} aria-label={i18nT('components.markdownPanel.toggle_diff_view')} aria-pressed={diffMode}><FileDiff size={14} /></button>
             )}
             {onRailToggle && (
@@ -2053,7 +2201,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             <OverflowMenu filePath={filePath} content={content} onError={reportActionError}
               onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk')}
               onFullscreen={() => { void guardDraft(() => setFullscreen(f => !f)) }} fullscreen={fullscreen}
-              onSnapshot={artifactState.existing ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
+              onSnapshot={artifactState.existing && !showBinaryCard ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
               wordWrap={wordWrap} onToggleWordWrap={() => setWordWrap(!wordWrap)}
               lineNums={lineNums} onToggleLineNums={() => setLineNums(!lineNums)}
               collapseUnchanged={collapseUnchanged} onToggleCollapseUnchanged={() => setCollapseUnchanged(!collapseUnchanged)}
@@ -2096,12 +2244,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               border so the overlay scrollbar and outline rail share that edge;
               pr-6 keeps the text clear of the ticks. */}
           <div ref={sidePanelScrollRef} onScroll={scrollMemory.onScroll} className={`flex-1 min-h-0 overflow-auto ${isMarkdown && !editing ? 'scrollbar-overlay pr-6' : ''}`}>
-            {zeroDiff && <ZeroDiffNotice onExitDiff={toggleDiffMode} />}
-            {diffUnavailableText && !editing && <ZeroDiffNotice message={diffUnavailableText} onExitDiff={toggleDiffMode} />}
-            {!zeroDiff && !diffUnavailable && !diffChecking && !isRichType && (
+            {showBinaryCard && <BinaryFileCard filePath={filePath} />}
+            {!showBinaryCard && zeroDiff && <ZeroDiffNotice onExitDiff={toggleDiffMode} />}
+            {!showBinaryCard && diffUnavailableText && !editing && <ZeroDiffNotice message={diffUnavailableText} onExitDiff={toggleDiffMode} />}
+            {!showBinaryCard && !zeroDiff && !diffUnavailable && !diffChecking && !isRichType && (
               <DiffViewBlock flush sideBySide={diffSplit} diffMode={diffMode && !editing} fileName={fileName} originalContent={originalContent} content={content} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />
             )}
-            {!zeroDiff && (!diffUnavailable || editing) && (!diffMode || editing) && <ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && (!diffMode || editing) && <ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
               previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} />}
           </div>
@@ -2157,7 +2306,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           <span className="text-base font-semibold text-text-strong truncate">{fileName}</span>
           <div className="flex items-center gap-1.5">
             <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40" onClick={handleRefresh} disabled={refreshing || dirty} title={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file')} aria-label={i18nT('components.markdownPanel.refresh_file')}><RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /></button>
-            <FileArtifactActionButton state={artifactState} />
+            {!showBinaryCard && <FileArtifactActionButton state={artifactState} />}
             {(() => {
               const ext = '.' + (filePath.split('.').pop() || '').toLowerCase()
               const canK = knowledge.formats && knowledge.formats.includes(ext)
@@ -2175,10 +2324,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         <div data-mc-mdpanel className="relative flex-1 overflow-hidden min-h-0">
           {findBar}
           <div ref={fullscreenBodyRef} className="h-full overflow-auto px-16 py-4">
-            {zeroDiff && <ZeroDiffNotice onExitDiff={toggleDiffMode} />}
-            {diffUnavailableText && !editing && <ZeroDiffNotice message={diffUnavailableText} onExitDiff={toggleDiffMode} />}
-            {!zeroDiff && !diffUnavailable && !isRichType && <DiffViewBlock sideBySide={diffSplit} diffMode={diffMode && !editing} fileName={fileName} originalContent={originalContent} content={content} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
-            {!zeroDiff && (!diffUnavailable || editing) && (!diffMode || editing) && <ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {showBinaryCard && <BinaryFileCard filePath={filePath} />}
+            {!showBinaryCard && zeroDiff && <ZeroDiffNotice onExitDiff={toggleDiffMode} />}
+            {!showBinaryCard && diffUnavailableText && !editing && <ZeroDiffNotice message={diffUnavailableText} onExitDiff={toggleDiffMode} />}
+            {!showBinaryCard && !zeroDiff && !diffUnavailable && !isRichType && <DiffViewBlock sideBySide={diffSplit} diffMode={diffMode && !editing} fileName={fileName} originalContent={originalContent} content={content} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
+            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && (!diffMode || editing) && <ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
               previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} />}
           </div>

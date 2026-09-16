@@ -6426,6 +6426,9 @@
       "search_failed": "Impossibile cercare i file. Riprova."
     },
     "fileRenderers": {
+      "binary_file_download_hint": "Non è testo, quindi non c'è nulla da mostrare qui. Scarica una copia per aprirlo in un'altra app.",
+      "binary_file_open_hint": "Non è testo, quindi non c'è nulla da mostrare qui. Aprilo nella sua app oppure scarica una copia.",
+      "binary_file_title": "Impossibile visualizzare l'anteprima di questo file",
       "download": "Scarica",
       "download_file": "Scarica {{filename}}",
       "empty_file": "File vuoto",
@@ -6882,6 +6885,7 @@
       "adding": "Aggiunta in corso…",
       "adding_2": "Aggiunta in corso...",
       "already_in_library": "Già nella libreria",
+      "binary_file_cannot_be_added": "Questo file non è testo, quindi non può essere aggiunto agli artefatti.",
       "cancel": "Annulla",
       "cancel_discard_unsaved_edits": "Annulla — scarta le modifiche non salvate",
       "cannot_read_file": "Impossibile leggere il file",

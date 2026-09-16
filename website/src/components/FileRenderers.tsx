@@ -347,7 +347,9 @@ function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string;
   // whole path as the "filename". Matches the pattern in MarkdownRenderer.tsx
   // and VectorMemoryCard.tsx.
   const filename = filePath.split(/[\\/]/).pop() || filePath
-  const ext = extOf(filePath).replace('.', '').toUpperCase()
+  // `BIN` fallback: the binary card is reached by a byte sniff, not by an
+  // extension list, so `coredump` and `a.out` land here with nothing to show.
+  const ext = extOf(filePath).replace('.', '').toUpperCase() || 'BIN'
   const url = fileDownloadUrl(filePath)
   const sizeCls = showBigDownload ? 'px-3 py-1.5 text-sm' : 'px-2 py-1 text-xs'
   const iconSize = showBigDownload ? 16 : 14
@@ -429,6 +431,40 @@ function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string;
     </div>
   )
 }
+
+/** Fallback body for a file `/api/file-read` refused to decode — the same
+ *  card the unsupported-office path shows, on the same reasoning: the bytes are
+ *  already on disk at the path the panel is naming, so Open-with-default-app is
+ *  the action, with Download as the remote fallback. Rendered instead of the
+ *  Pierre editor, which would otherwise show 512 KB of U+FFFD.
+ *
+ *  Deliberately NOT keyed on extension. The verdict comes from the backend's
+ *  NUL sniff, so an extension-less binary gets the card and a `.py` file in
+ *  latin-1 does not. */
+export const BinaryFileCard = memo(function BinaryFileCard({ filePath }: { filePath: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // The hint names the action the card LEADS with, same rule as OfficeCard's own
+  // hint: Open exists only on a direct-local, non-Windows session, so on a remote
+  // browser the copy must not send the user hunting for a button that is not
+  // there. Same gate the card's buttons read.
+  const canOpen = useCanOpenFile('file')
+  return (
+    <div
+      data-testid="binary-file-card"
+      className="h-full flex flex-col items-center justify-center gap-3 p-4 bg-bg-elevated rounded-md border border-border"
+    >
+      <div className="text-sm font-medium text-text text-center">
+        {i18nT('components.fileRenderers.binary_file_title')}
+      </div>
+      <div className="text-xs text-muted text-center max-w-md">
+        {canOpen
+          ? i18nT('components.fileRenderers.binary_file_open_hint')
+          : i18nT('components.fileRenderers.binary_file_download_hint')}
+      </div>
+      <OfficeCard filePath={filePath} showBigDownload hideHint />
+    </div>
+  )
+})
 
 type OfficePreviewBody = { text?: string; truncated?: boolean }
 

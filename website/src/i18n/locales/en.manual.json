@@ -1977,6 +1977,9 @@
       "video": "Video: {{name}}"
     },
     "fileRenderers": {
+      "binary_file_download_hint": "It isn't text, so there's nothing to show here. Download a copy to open it in another app.",
+      "binary_file_open_hint": "It isn't text, so there's nothing to show here. Open it in its app, or download a copy.",
+      "binary_file_title": "This file can't be previewed",
       "media_preview_failed": "Playback failed — the browser cannot decode this file.",
       "office_open_hint": "Preview isn't available for this file. Open it in its app, or download a copy.",
       "scroll_for_more_count": "Scroll for more… ({{count}} remaining)",
@@ -2289,6 +2292,7 @@
       "adding": "Adding…",
       "adding_2": "Adding...",
       "already_in_library": "Already in Library",
+      "binary_file_cannot_be_added": "This file isn't text, so it can't be added to artifacts.",
       "cannot_read_file": "Cannot read file",
       "diff_failed_to_compute": "Couldn't compute the diff — git failed for this file",
       "diff_no_baseline_not_git": "This file isn't in a git repository, so there is no baseline to diff against",

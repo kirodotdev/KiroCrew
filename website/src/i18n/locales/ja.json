@@ -6226,6 +6226,9 @@
       "search_failed": "ファイルを検索できませんでした。もう一度お試しください。"
     },
     "fileRenderers": {
+      "binary_file_download_hint": "テキストではないため、ここに表示できるものはありません。コピーをダウンロードして別のアプリで開いてください。",
+      "binary_file_open_hint": "テキストではないため、ここに表示できるものはありません。対応アプリで開くか、コピーをダウンロードしてください。",
+      "binary_file_title": "このファイルはプレビューできません",
       "download": "ダウンロード",
       "download_file": "{{filename}} をダウンロード",
       "empty_file": "空のファイル",
@@ -6676,6 +6679,7 @@
       "adding": "追加中…",
       "adding_2": "追加中…",
       "already_in_library": "既にライブラリに含まれています",
+      "binary_file_cannot_be_added": "このファイルはテキストではないため、アーティファクトに追加できません。",
       "cancel": "キャンセル",
       "cancel_discard_unsaved_edits": "キャンセル — 保存されていない編集内容を破棄",
       "cannot_read_file": "ファイルを読み込めません",

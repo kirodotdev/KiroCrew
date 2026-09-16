@@ -109,6 +109,12 @@ export interface PanelTab {
    *  alongside the body it mirrors, so persistence stays metadata-only and a
    *  restored tab is dirty-by-default until hydration re-establishes both. */
   savedContent?: string
+  /** The read said this file is not text (`/api/file-read` answered its
+   *  `binary` envelope), so the body renders a download/reveal card instead of
+   *  a decoded buffer. TRANSIENT — stripped in `serializeBucket` alongside the
+   *  `content` whose absence it explains, and re-established by the same
+   *  hydration read that refills the buffer. */
+  binary?: boolean
   original?: string
   modified?: string
   /** Last selected working-tree diff view for file tabs. Persisted with the
@@ -463,7 +469,7 @@ export function openPanelView(slotKey: string | null, kind: ViewKind): void {
 function serializeBucket(b: Bucket): string {
   const tabs = b.tabs
     .filter(t => t.kind !== 'diff' && t.kind !== 'app')
-    .map(t => { const copy = { ...t }; delete copy.content; delete copy.savedContent; delete copy.revealLine; return copy })
+    .map(t => { const copy = { ...t }; delete copy.content; delete copy.savedContent; delete copy.binary; delete copy.revealLine; return copy })
   // If the focused tab was a DROPPED diff/app tab, refocus a surviving tab.
   // Only then: a focus that names no stored tab at all is a host's leading tab
   // (`usePanelTabs(…, { leadingId })` — the Members page's Crew summary), which
@@ -703,7 +709,7 @@ export function usePanelTabs(
     })
   }, [update, leadingId])
 
-  const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean }) => {
+  const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; binary?: boolean }) => {
     // `revealLine` is always present in the object, `undefined` when absent:
     // `upsert` merges onto an existing tab with a spread, which only overwrites
     // keys the incoming object HAS. Omitting it would leave a previous chip's
@@ -720,7 +726,13 @@ export function usePanelTabs(
         // not what the user was looking at, and silently replacing the buffer
         // destroyed their work with no prompt and no undo. Everything EXCEPT
         // the buffer and its baseline is refreshed (focus, reveal target,
-        // slot, diff-mode preference).
+        // slot, diff-mode preference). The verdict describes the bytes the TAB
+        // holds; a dirty tab holds the user's text (a binary tab has
+        // content === savedContent === '' and cannot be dirty), so the editor
+        // must stay reachable and the incoming disk verdict is NOT applied
+        // here. That verdict only reaches the tab through a path that replaces
+        // the buffer: a clean reopen (branch below), or Cancel/Refresh in
+        // MarkdownPanel.readFromDisk, which patch both content and verdict.
         return upsertInBucket(b, {
           id: `file:${path}`, kind: 'file', title: basename(path), path, slot,
           revealLine: reveal,
@@ -730,6 +742,10 @@ export function usePanelTabs(
       return upsertInBucket(b, {
         id: `file:${path}`, kind: 'file', title: basename(path), path, content, slot,
         savedContent: content,
+        // Always present, `undefined` when absent: `upsert` spreads onto an
+        // existing tab, so omitting it would leave a previous read's verdict on
+        // a tab whose file has since been replaced by a text one.
+        binary: opts?.binary,
         revealLine: reveal,
         ...(opts?.diffMode != null ? { diffMode: opts.diffMode } : {}),
       }, opts?.replaceId)

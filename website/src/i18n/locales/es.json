@@ -6426,6 +6426,9 @@
       "search_failed": "No se pudieron buscar archivos. Inténtalo de nuevo."
     },
     "fileRenderers": {
+      "binary_file_download_hint": "No es texto, así que no hay nada que mostrar aquí. Descarga una copia para abrirlo en otra aplicación.",
+      "binary_file_open_hint": "No es texto, así que no hay nada que mostrar aquí. Ábrelo en su aplicación o descarga una copia.",
+      "binary_file_title": "No se puede previsualizar este archivo",
       "download": "Descargar",
       "download_file": "Descargar {{filename}}",
       "empty_file": "Archivo vacío",
@@ -6882,6 +6885,7 @@
       "adding": "Añadiendo…",
       "adding_2": "Añadiendo…",
       "already_in_library": "Ya está en la Biblioteca",
+      "binary_file_cannot_be_added": "Este archivo no es texto, así que no se puede añadir a los artefactos.",
       "cancel": "Cancelar",
       "cancel_discard_unsaved_edits": "Cancelar — descarta los cambios sin guardar",
       "cannot_read_file": "No se puede leer el archivo",

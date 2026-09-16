@@ -98,6 +98,33 @@ describe('usePanelTabs', () => {
     expect(result.current.activeTab?.savedContent).toBe('on-disk')
   })
 
+  it('re-opening a dirty text tab keeps its edits reachable: the disk binary verdict is not applied to the preserved buffer', () => {
+    const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
+    act(() => result.current.openFile('/a.bin', 'x', 'slot', { binary: false }))
+    act(() => result.current.patchTab('file:/a.bin', { content: 'x edited' }))
+
+    // The file was replaced on disk by bytes that sniff binary; the user
+    // re-clicks the chip. The dirty buffer still holds the user's text, so the
+    // tab must stay text (editor reachable) — the incoming binary verdict is
+    // NOT stamped onto the preserved edits, else MarkdownPanel would render
+    // only <BinaryFileCard> and the unsaved work would be unreachable.
+    act(() => result.current.openFile('/a.bin', '', 'slot', { binary: true }))
+
+    expect(result.current.activeTab?.content).toBe('x edited')
+    expect(result.current.activeTab?.savedContent).toBe('x')
+    expect(result.current.activeTab?.binary).toBeFalsy()
+  })
+
+  it('re-opening a CLEAN tab does apply the incoming disk binary verdict', () => {
+    const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
+    act(() => result.current.openFile('/a.bin', 'x', 'slot', { binary: false }))
+    // No unsaved edits (buffer === baseline): the disk read replaces both the
+    // buffer and its verdict, so the sibling branch does stamp binary: true.
+    act(() => result.current.openFile('/a.bin', '', 'slot', { binary: true }))
+
+    expect(result.current.activeTab?.binary).toBe(true)
+  })
+
   it('re-opening a clean file refreshes it from disk', () => {
     const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
     act(() => result.current.openFile('/notes.md', 'version-1'))

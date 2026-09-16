@@ -1031,7 +1031,7 @@ export default function SidePanel({
                 slot={slot}
                 onClose={() => handleCloseTab(t.id)}
                 onContentChange={(c) => patchTab(t.id, { content: c })}
-                onDiskContent={(c) => patchTab(t.id, { content: c, savedContent: c })}
+                onDiskContent={(c, binary) => patchTab(t.id, { content: c, savedContent: c, ...(binary === undefined ? {} : { binary }) })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
                 onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
                 onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
@@ -1190,8 +1190,9 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   scrollMemoryKey?: string
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): the panel routes it here
-   *  so the tab's saved baseline moves with the buffer it just replaced. */
-  onDiskContent: (c: string) => void
+   *  so the tab's saved baseline moves with the buffer it just replaced, and the
+   *  binary verdict of that read moves with both. */
+  onDiskContent: (c: string, binary?: boolean) => void
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
@@ -1215,6 +1216,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       active={active}
       filePath={tab.path || ''}
       content={tab.content || ''}
+      binary={tab.binary}
       scrollMemoryKey={scrollMemoryKey}
       onContentChange={onContentChange}
       onDiskContent={onDiskContent}
@@ -1261,7 +1263,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): restamps the tab's saved
    *  baseline alongside the buffer, so a re-open still treats the tab clean. */
-  onDiskContent: (c: string) => void
+  onDiskContent: (c: string, binary?: boolean) => void
   onDiffModeChange: (diffMode: boolean) => void
   /** Drop the tab's one-shot line-reveal target once the panel has acted on it. */
   onRevealConsumed: () => void

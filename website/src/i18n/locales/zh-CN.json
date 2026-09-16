@@ -6226,6 +6226,9 @@
       "search_failed": "无法搜索文件。请重试。"
     },
     "fileRenderers": {
+      "binary_file_download_hint": "它不是文本，因此这里没有可显示的内容。请下载一份副本，用其他应用打开。",
+      "binary_file_open_hint": "它不是文本，因此这里没有可显示的内容。请用对应的应用打开，或下载一份副本。",
+      "binary_file_title": "无法预览此文件",
       "download": "下载",
       "download_file": "下载 {{filename}}",
       "empty_file": "空文件",
@@ -6676,6 +6679,7 @@
       "adding": "添加中…",
       "adding_2": "添加中…",
       "already_in_library": "已在库中",
+      "binary_file_cannot_be_added": "此文件不是文本，因此无法添加到工件。",
       "cancel": "取消",
       "cancel_discard_unsaved_edits": "取消 — 丢弃未保存的修改",
       "cannot_read_file": "无法读取文件",

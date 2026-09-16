@@ -6226,6 +6226,9 @@
       "search_failed": "파일을 검색할 수 없습니다. 다시 시도하세요."
     },
     "fileRenderers": {
+      "binary_file_download_hint": "텍스트가 아니어서 여기에 표시할 내용이 없습니다. 사본을 다운로드하여 다른 앱에서 여세요.",
+      "binary_file_open_hint": "텍스트가 아니어서 여기에 표시할 내용이 없습니다. 해당 앱에서 열거나 사본을 다운로드하세요.",
+      "binary_file_title": "이 파일은 미리 볼 수 없습니다",
       "download": "다운로드",
       "download_file": "{{filename}} 다운로드",
       "empty_file": "빈 파일",
@@ -6676,6 +6679,7 @@
       "adding": "추가하는 중…",
       "adding_2": "추가하는 중…",
       "already_in_library": "이미 라이브러리에 있음",
+      "binary_file_cannot_be_added": "이 파일은 텍스트가 아니므로 아티팩트에 추가할 수 없습니다.",
       "cancel": "취소",
       "cancel_discard_unsaved_edits": "취소 — 저장하지 않은 편집 내용 삭제",
       "cannot_read_file": "파일을 읽을 수 없습니다",

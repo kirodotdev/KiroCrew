@@ -6326,6 +6326,9 @@
       "search_failed": "Dateien konnten nicht durchsucht werden. Bitte erneut versuchen."
     },
     "fileRenderers": {
+      "binary_file_download_hint": "Sie ist kein Text, es gibt hier also nichts zu zeigen. Laden Sie eine Kopie herunter, um sie in einer anderen App zu öffnen.",
+      "binary_file_open_hint": "Sie ist kein Text, es gibt hier also nichts zu zeigen. Öffnen Sie sie in ihrer App oder laden Sie eine Kopie herunter.",
+      "binary_file_title": "Diese Datei kann nicht angezeigt werden",
       "download": "Herunterladen",
       "download_file": "{{filename}} herunterladen",
       "empty_file": "Leere Datei",
@@ -6779,6 +6782,7 @@
       "adding": "Wird hinzugefügt…",
       "adding_2": "Wird hinzugefügt...",
       "already_in_library": "Schon in der Bibliothek",
+      "binary_file_cannot_be_added": "Diese Datei ist kein Text und kann daher nicht zu Artefakten hinzugefügt werden.",
       "cancel": "Abbrechen",
       "cancel_discard_unsaved_edits": "Abbrechen — nicht gespeicherte Änderungen verwerfen",
       "cannot_read_file": "Datei kann nicht gelesen werden",
