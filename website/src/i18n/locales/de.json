@@ -6853,6 +6853,10 @@
       "diff_status_failed": "Die git-Änderungen dieser Datei konnten nicht geprüft werden."
     },
     "markdownRenderer": {
+      "download_failed": "Das Diagramm konnte nicht heruntergeladen werden. Versuche es erneut.",
+      "diagram_actions": "Weitere Aktionen",
+      "download_svg": "SVG herunterladen",
+      "download_png": "PNG herunterladen",
       "click_to_browse_shift_click_to_open_in_file_explorer": "Klicken zum Durchsuchen / Shift+Klick zum Anzeigen im Explorer",
       "click_to_browse_shift_click_to_reveal_in_finder": "Klicken zum Durchsuchen / Shift+Klick zum Anzeigen im Finder",
       "click_to_browse_shift_click_to_show_in_file_manager": "Klicken zum Durchsuchen / Shift+Klick zum Anzeigen im Dateimanager",

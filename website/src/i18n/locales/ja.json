@@ -6750,6 +6750,10 @@
       "diff_status_failed": "このファイルの git の変更を確認できませんでした。"
     },
     "markdownRenderer": {
+      "download_failed": "図をダウンロードできませんでした。もう一度お試しください。",
+      "diagram_actions": "その他の操作",
+      "download_svg": "SVG をダウンロード",
+      "download_png": "PNG をダウンロード",
       "click_to_browse_shift_click_to_open_in_file_explorer": "クリックして参照 / Shift+クリックでエクスプローラーに表示",
       "click_to_browse_shift_click_to_reveal_in_finder": "クリックして参照 / Shift+クリックで Finder に表示",
       "click_to_browse_shift_click_to_show_in_file_manager": "クリックして参照 / Shift+クリックでファイルマネージャーに表示",

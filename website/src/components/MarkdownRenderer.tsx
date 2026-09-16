@@ -1,8 +1,11 @@
+import { mermaidFontCss } from './mermaidFontCss'
+import { downloadBlob } from '../utils/download'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu'
 import React, { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
 import Clickable from './Clickable'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
-import { X, Download, Plus, Minus, Search, Folder, Maximize2, Check, FileCode, FileSpreadsheet, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare, ExternalLink } from 'lucide-react'
+import { X, Download, MoreHorizontal, Plus, Minus, Search, Folder, Maximize2, Check, FileCode, FileSpreadsheet, Copy, Image as ImageIcon, ImageOff, GitPullRequest, MessageSquare, ExternalLink } from 'lucide-react'
 import { copyCode, copyToClipboard } from '../utils/clipboard'
 import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
 import { hastTableToCsv, hastTableToMarkdown } from '../utils/tableClipboard'
@@ -566,6 +569,36 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   // for (and targets) the diagram currently on screen.
   const [svg, setSvg] = useState('')
   const [enlarged, setEnlarged] = useState(false)
+  const moreRef = useRef<HTMLButtonElement>(null)
+  const enlargeAfterMenu = useRef(false)
+  const [downloadFailed, setDownloadFailed] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const downloadDiagram = async (format: 'svg' | 'png') => {
+    setDownloading(true)
+    try {
+      let blob: Blob
+      if (format === 'svg') {
+        blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
+      } else {
+        const node = ref.current
+        if (!node) throw new Error('diagram not mounted')
+        const { toBlob } = await import('html-to-image')
+        const image = await toBlob(node, {
+          pixelRatio: 2,
+          fontEmbedCSS: await mermaidFontCss(node),
+          backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(),
+        })
+        if (!image) throw new Error('canvas encoder returned null')
+        blob = image
+      }
+      downloadBlob(blob, `mermaid-diagram.${format}`)
+      setDownloadFailed(false)
+    } catch {
+      setDownloadFailed(true)
+    } finally {
+      setDownloading(false)
+    }
+  }
   // Which of the two views is on screen. The diagram host below stays MOUNTED
   // either way and is hidden with the `hidden` ATTRIBUTE rather than unmounted:
   // the render effect is guarded on `renderedRef.current === code`, so a
@@ -787,7 +820,7 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
           that left the default state is still reachable without hovering.
 
           AT MOST TWO BUTTONS IN EVERY REACHABLE STATE, by construction rather
-          than by counting: the diagram view is toggle + enlarge, the source view
+          than by counting: the diagram view is toggle + actions, the source view
           is toggle + copy (enlarge would open a viewer for the view just left),
           and a failed render is copy alone, there being no rendered diagram to
           toggle to. Copy rides with the SOURCE for a second reason: on the
@@ -809,12 +842,7 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
             <FileCode className="lucide-inline" aria-hidden="true" />
           </button>
         )}
-        {/* Copies the SOURCE, never the rendered image, and only where the source
-            is on screen: the source view, and a failed render, where it is what a
-            reader most wants to take away. Copying the image is not offered at
-            all -- this surface leaves mermaid's `htmlLabels` at its default, so
-            labels live in `<foreignObject>`, which browsers refuse to paint in an
-            image context; see `DiagramLightbox`'s note on the same constraint. */}
+        {/* Copy remains source-only; rendered-image downloads live in the menu. */}
         {(showSource || failed) && (
           <button
             data-testid="mermaid-copy-source"
@@ -828,15 +856,42 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
           </button>
         )}
         {svg && !showSource && (
-          <button
-            data-testid="mermaid-enlarge"
-            aria-label={i18nT('components.diagramLightbox.enlarge_diagram')}
-            title={i18nT('components.diagramLightbox.enlarge_diagram')}
-            className={MERMAID_ACTION_BTN_CLS}
-            onClick={() => setEnlarged(true)}
-          >
-            <Maximize2 className="lucide-inline" aria-hidden="true" />
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                ref={moreRef}
+                data-testid="mermaid-more-actions"
+                aria-label={i18nT('components.markdownRenderer.diagram_actions')}
+                title={i18nT('components.markdownRenderer.diagram_actions')}
+                className={MERMAID_ACTION_BTN_CLS}
+              >
+                <MoreHorizontal className="lucide-inline" aria-hidden="true" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" onCloseAutoFocus={event => {
+              if (!enlargeAfterMenu.current) return
+              event.preventDefault()
+              enlargeAfterMenu.current = false
+              // Seat focus on the lasting trigger before the viewer captures it.
+              // Opening during onSelect would let the menu steal focus back.
+              moreRef.current?.focus({ preventScroll: true })
+              setEnlarged(true)
+            }}>
+              <DropdownMenuItem data-testid="mermaid-enlarge" onSelect={() => { enlargeAfterMenu.current = true }}>
+                <Maximize2 className="lucide-inline" aria-hidden="true" />
+                {i18nT('components.diagramLightbox.enlarge_diagram')}
+              </DropdownMenuItem>
+              <DropdownMenuItem data-testid="mermaid-download-svg" disabled={downloading} onSelect={() => { void downloadDiagram('svg') }}>
+                <Download className="lucide-inline" aria-hidden="true" />
+                {i18nT('components.markdownRenderer.download_svg')}
+              </DropdownMenuItem>
+              <DropdownMenuItem data-testid="mermaid-download-png" disabled={downloading} onSelect={() => { void downloadDiagram('png') }}>
+                <Download className="lucide-inline" aria-hidden="true" />
+                {i18nT('components.markdownRenderer.download_png')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
       </div>
       {/* A SEPARATED REGION below the action row, deliberately NOT a third
@@ -850,6 +905,16 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
           No hand-off, for exactly the reason given at the render notice above --
           this renderer is embedded in hosts holding unsaved drafts it cannot
           identify, so navigating away could discard what the user typed. */}
+      {/* No hand-off: the containing file editor or composer may hold unsaved drafts. */}
+      {downloadFailed && (
+        <ErrorNotice
+          variant="inline"
+          className="mt-2"
+          message={i18nT('components.markdownRenderer.download_failed')}
+          onDismiss={() => setDownloadFailed(false)}
+          testId="mermaid-download-error"
+        />
+      )}
       {copyState === 'failed' && (
         <ErrorNotice
           variant="inline"

@@ -6956,6 +6956,10 @@
       "diff_status_failed": "No se pudieron comprobar los cambios de git de este archivo."
     },
     "markdownRenderer": {
+      "download_failed": "No se pudo descargar el diagrama. Inténtalo de nuevo.",
+      "diagram_actions": "Más acciones",
+      "download_svg": "Descargar SVG",
+      "download_png": "Descargar PNG",
       "click_to_browse_shift_click_to_open_in_file_explorer": "Clic para explorar / Shift+clic para mostrar en el Explorador de archivos",
       "click_to_browse_shift_click_to_reveal_in_finder": "Clic para explorar / Shift+clic para mostrar en Finder",
       "click_to_browse_shift_click_to_show_in_file_manager": "Clic para explorar / Shift+clic para mostrar en el gestor de archivos",

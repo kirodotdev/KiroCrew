@@ -6853,6 +6853,10 @@
       "diff_status_failed": "इस फ़ाइल के git परिवर्तनों की जाँच नहीं की जा सकी।"
     },
     "markdownRenderer": {
+      "download_failed": "आरेख डाउनलोड नहीं हो सका। फिर से कोशिश करें।",
+      "diagram_actions": "और कार्रवाइयाँ",
+      "download_svg": "SVG डाउनलोड करें",
+      "download_png": "PNG डाउनलोड करें",
       "click_to_browse_shift_click_to_open_in_file_explorer": "ब्राउज़ करने के लिए क्लिक करें / File Explorer में दिखाने के लिए Shift+क्लिक करें",
       "click_to_browse_shift_click_to_reveal_in_finder": "ब्राउज़ करने के लिए क्लिक करें / Finder में दिखाने के लिए Shift+क्लिक करें",
       "click_to_browse_shift_click_to_show_in_file_manager": "ब्राउज़ करने के लिए क्लिक करें / फ़ाइल मैनेजर में दिखाने के लिए Shift+क्लिक करें",

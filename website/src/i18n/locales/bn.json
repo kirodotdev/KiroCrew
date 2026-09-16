@@ -6853,6 +6853,10 @@
       "diff_status_failed": "এই ফাইলের git পরিবর্তন পরীক্ষা করা যায়নি।"
     },
     "markdownRenderer": {
+      "download_failed": "ডায়াগ্রাম ডাউনলোড করা যায়নি। আবার চেষ্টা করুন।",
+      "diagram_actions": "আরও অ্যাকশন",
+      "download_svg": "SVG ডাউনলোড করুন",
+      "download_png": "PNG ডাউনলোড করুন",
       "click_to_browse_shift_click_to_open_in_file_explorer": "ব্রাউজ করতে ক্লিক করুন / File Explorer-এ দেখাতে Shift+ক্লিক করুন",
       "click_to_browse_shift_click_to_reveal_in_finder": "ব্রাউজ করতে ক্লিক করুন / Finder-এ দেখাতে Shift+ক্লিক করুন",
       "click_to_browse_shift_click_to_show_in_file_manager": "ব্রাউজ করতে ক্লিক করুন / ফাইল ম্যানেজারে দেখাতে Shift+ক্লিক করুন",

@@ -7059,6 +7059,10 @@
       "diff_status_failed": "Не удалось проверить изменения git для этого файла."
     },
     "markdownRenderer": {
+      "download_failed": "Не удалось скачать диаграмму. Попробуйте ещё раз.",
+      "diagram_actions": "Другие действия",
+      "download_svg": "Скачать SVG",
+      "download_png": "Скачать PNG",
       "click_to_browse_shift_click_to_open_in_file_explorer": "Щелчок — просмотреть / Shift+щелчок — показать в проводнике",
       "click_to_browse_shift_click_to_reveal_in_finder": "Щелчок — просмотреть / Shift+щелчок — показать в Finder",
       "click_to_browse_shift_click_to_show_in_file_manager": "Щелчок — просмотреть / Shift+щелчок — показать в файловом менеджере",

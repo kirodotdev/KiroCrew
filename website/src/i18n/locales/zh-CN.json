@@ -6750,6 +6750,10 @@
       "diff_status_failed": "无法检查此文件的 git 更改。"
     },
     "markdownRenderer": {
+      "download_failed": "无法下载图表。请重试。",
+      "diagram_actions": "更多操作",
+      "download_svg": "下载 SVG",
+      "download_png": "下载 PNG",
       "click_to_browse_shift_click_to_open_in_file_explorer": "点击浏览 / Shift+点击在文件资源管理器中显示",
       "click_to_browse_shift_click_to_reveal_in_finder": "点击浏览 / Shift+点击在 Finder 中显示",
       "click_to_browse_shift_click_to_show_in_file_manager": "点击浏览 / Shift+点击在文件管理器中显示",
