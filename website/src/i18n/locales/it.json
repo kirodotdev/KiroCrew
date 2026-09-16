@@ -11789,6 +11789,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Modalità di approvazione",
         "auto": "automatico",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' abilita la sandbox per gli strumenti non attendibili. Il passaggio a o da 'wsl2' ha effetto dopo un riavvio del gateway.",
         "auto_size_max": "Dimensione automatica massima",
         "auto_update": "Aggiornamento automatico",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Limite massimo per il numero di subagenti concorrenti calcolato automaticamente (si applica solo quando Subagenti concorrenti massimi = 0). La formula memoria/CPU dell’host non lo supera mai. Intervallo 1–64. Predefinito: 16.",
@@ -11824,6 +11825,7 @@
         "pool_size": "Dimensione del pool",
         "pool_ttl": "TTL del pool",
         "provider": "Provider",
+        "restart_required_which_wsl2_distribution_to_sand": "Riavvio necessario. Quale distribuzione WSL2 usare per la sandbox — le istanze di utilità interne di Docker Desktop non vengono proposte qui.",
         "sandbox": "Sandbox",
         "save": "Salva",
         "saved": "Salvato",
@@ -11841,7 +11843,9 @@
         "number_of_pre_spawned_processes_0_disables": "Numero di processi pre-avviati. 0 disattiva la funzione.",
         "agent_for_pool_processes_empty_uses_default_agent": "Agente per i processi del pool. Se vuoto usa l'agente predefinito.",
         "warm_pool_description": "Pre-avvia i processi ACP CLI per un avvio istantaneo della sessione.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Età massima per i processi del pool. 0 disattiva la scadenza."
+        "max_age_for_pooled_processes_0_disables_expiry": "Età massima per i processi del pool. 0 disattiva la scadenza.",
+        "wsl2_distribution": "Distribuzione WSL2",
+        "wsl_default_distro": "(Predefinita WSL)"
       },
       "mcpTab": {
         "actions": "Azioni",

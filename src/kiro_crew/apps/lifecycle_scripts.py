@@ -32,6 +32,7 @@ from kiro_crew.sandbox import (
     create_subprocess_limited,
     wrap_argv,
     wrap_argv_async,
+    wsl2_env_passthrough,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,11 +72,31 @@ async def run_lifecycle_script(
 
     safe_script = f"set -euo pipefail\n{script}"
     base_cmd = ["/bin/bash", "-c", safe_script]
-    sandboxed_cmd, cleanup = await wrap_argv_async(base_cmd, mode="standard", _prepare=wrap_argv)
+    # cwd is threaded through wrap_argv_async (not only passed to the spawn
+    # below) so the wsl2 backend can translate it into `wsl.exe --cd`: the
+    # working directory of wsl.exe itself (a Windows process) does not
+    # propagate into the guest shell it starts. Every other backend ignores
+    # this argument and keeps relying on the cwd= passed to
+    # create_subprocess_limited.
+    # posix_shell_argv=True: base_cmd is genuine POSIX bash -c argv, one of
+    # the few call sites the wsl2 backend can actually confine (default is
+    # False -- opt-in -- since this is a shared chokepoint most callers use
+    # for native-Windows executable invocations wsl2 cannot run).
+    sandboxed_cmd, cleanup = await wrap_argv_async(
+        base_cmd, mode="standard", cwd=str(app_root), posix_shell_argv=True, _prepare=wrap_argv
+    )
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
     env = minimal_env(NONINTERACTIVE="1")
     if extra_env:
         env.update(extra_env)
+    # No-op except under the wsl2 backend: WSL forwards a Windows env var
+    # into the guest shell only when WSLENV names it, so without this the
+    # script would see neither $NONINTERACTIVE nor any caller-supplied
+    # extra_env key despite reaching every other platform's shell correctly.
+    # Only these two — NOT `minimal_env`'s own baseline (PATH, HOME, ...),
+    # which the guest must supply from its own correct values, not the
+    # Windows host's.
+    env = wsl2_env_passthrough(env, ("NONINTERACTIVE", *(extra_env or {})))
     try:
         # Process-group isolation for timeout tree-kill. Pass both flags explicitly
         # (NOT **dict unpack — breaks mypy's Popen overload resolution on the build

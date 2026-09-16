@@ -444,7 +444,7 @@ class TestRunScriptHook:
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", secret)
         seen: dict[str, object] = {}
 
-        def safe_spawn(argv, *, env):
+        def safe_spawn(argv, *, env, **kwargs):
             seen["base_env"] = dict(env)
             wrapper_env = dict(env)
             wrapper_env["DBUS_SESSION_BUS_ADDRESS"] = bus_address

@@ -1014,16 +1014,30 @@ still right when it is a transcript -- whoever wrote it has the newer history --
 shape that fails the check fails that turn rather than being handed to the backend.
 
 **The container writes the sandbox settings rather than inheriting them.** The
-gateway reads `agent.sandbox` and two unsandboxed-fallback flags from the same
-`config.json`, so a file supplied to the task could turn the sandbox off while the
-supervisor's refusal reported nothing wrong. All three are forced -- `sandbox` to
-`auto`, both flags to false -- and forcing rather than defaulting matters because
-`sandbox_allow_unsandboxed_exec` resolves an undeclared value through a platform
-default, so silence is not a constant. The rule is by PREFIX rather than by that list
-of three: `test_crew_container_config_isolation.py` requires every `AgentConfig`
-field whose name begins with `sandbox` to appear in `FORCED_AGENT_SETTINGS`, with the
-value checked as well as the key, so a sandbox knob added to the gateway reds CI
-until the container decides what to write for it.
+gateway reads `agent.sandbox` and the knobs beside it from the same `config.json`, so
+a file supplied to the task could turn the sandbox off while the supervisor's refusal
+reported nothing wrong. Every one of them is forced, and forcing rather than
+defaulting matters because `sandbox_allow_unsandboxed_exec` resolves an undeclared
+value through a platform default, so silence is not a constant.
+
+`sandbox` is forced to `auto` because it names the MODE and `auto` is the sandboxed
+one. Every other knob is a way to opt OUT of that mode, so each is forced to the
+value of its declared type that grants nothing: `false` for the two
+unsandboxed-fallback flags, `""` for `sandbox_wsl_distro`. That last one cannot bite
+in this container -- `wrap_argv` reaches it only through `_operator_wants_wsl2()`,
+which answers nothing unless `agent.sandbox` is `wsl2`, and the line above forbids
+that -- but it is written anyway, because leaving it out would make the container's
+posture depend on that coupling holding in another module.
+
+The rule is by PREFIX rather than by a list:
+`test_crew_container_config_isolation.py` requires every `AgentConfig` field whose
+name begins with `sandbox` to appear in `FORCED_AGENT_SETTINGS`, with the value
+checked as well as the key. The expected value is derived from the field's declared
+type through a per-TYPE table, not a per-key one, so a knob whose safe value was never
+spellable as `false` is covered on the day it is added rather than standing that
+assertion off against it. A type the table does not know reds CI and names the field,
+which keeps the decision with a human for a knob whose safe value is not its type's
+empty value -- an int where `0` means "unlimited", say.
 
 **The config is published atomically.** The file's failure is in the future: nothing
 reads it during the write, and a truncated write is read at the NEXT start, on a

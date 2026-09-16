@@ -1573,7 +1573,7 @@ class TestInstallPathCredentialPosture:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -1621,7 +1621,7 @@ class TestInstallPathCredentialPosture:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -1818,7 +1818,7 @@ class TestSameRepoCredentialCarveOut:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -1868,7 +1868,7 @@ class TestSameRepoCredentialCarveOut:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -1920,7 +1920,7 @@ class TestSameRepoCredentialCarveOut:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -2686,7 +2686,7 @@ class TestOriginMismatchDeleteOrder:
         # Marker proving old content survived.
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _FailProc:
@@ -2752,7 +2752,7 @@ class TestOriginMismatchDeleteOrder:
         )
         (dest / "old-file.txt").write_text("old", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -2834,7 +2834,7 @@ class TestOriginMismatchDeleteOrder:
                 raise OSError("Permission denied: locked files")
             return original_rename(self_path, target)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         # Mock create_subprocess_limited to simulate `git remote get-url origin`
@@ -2892,7 +2892,7 @@ class TestOriginMismatchDeleteOrder:
         )
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _HangingProc:
@@ -2971,7 +2971,7 @@ class TestOriginMismatchDeleteOrder:
         # Marker proving old content survived.
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         # First call: _clone_origin_url reads the stale origin.
@@ -3045,7 +3045,7 @@ class TestOriginMismatchDeleteOrder:
         )
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         call_count = 0
@@ -3116,7 +3116,7 @@ class TestOriginMismatchDeleteOrder:
         )
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         call_count = 0
@@ -3258,7 +3258,7 @@ class TestUnreadableOriginAbort:
             encoding="utf-8",
         )
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -3331,7 +3331,7 @@ class TestBuildFailureRestoresOldCheckout:
         )
         (pkg_dir / "my-local-work.txt").write_text("important", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -3409,7 +3409,7 @@ class TestBuildFailureRestoresOldCheckout:
             encoding="utf-8",
         )
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -3487,7 +3487,7 @@ class TestRestoreCollision:
         )
         (dest / "local-work.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _FailProc:
@@ -3589,7 +3589,7 @@ class TestInstallScriptFailurePreservesStaleCheckout:
         )
         (pkg_dir / "local-edits.txt").write_text("precious data", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -3678,7 +3678,7 @@ class TestInstallScriptFailurePreservesStaleCheckout:
             async def communicate(self):
                 return (b"script failed", None)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         with (
@@ -3939,7 +3939,7 @@ class TestInstallScriptFailurePreservesStaleCheckout:
             async def communicate(self):
                 return (b"script failed", None)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         with (
@@ -4423,7 +4423,7 @@ class TestSubdirectoryEscapeRefusalNeverWritesOutsideCheckout:
         evil_link = app_source / "evil"
         evil_link.symlink_to(outside)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _GitProc:
@@ -5974,7 +5974,7 @@ class TestCloneFailureDiagnostics:
     """
 
     @staticmethod
-    def _fake_wrap_argv(argv, mode="standard"):
+    def _fake_wrap_argv(argv, mode="standard", **kwargs):
         return list(argv), None
 
     class _FailProc:
@@ -6122,7 +6122,7 @@ class TestDetachedHeadNeverMovedAside:
         dest = tmp_path / "app-sources" / "tag-pinned-app"
         self._make_detached_checkout(dest, origin_url)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _PullProc:
@@ -6186,7 +6186,7 @@ class TestDetachedHeadNeverMovedAside:
         dest = tmp_path / "app-sources" / "tag-pinned-app"
         self._make_detached_checkout(dest, origin_url)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _PullProc:
@@ -6245,7 +6245,7 @@ class TestDetachedHeadNeverMovedAside:
         )
         (git_dir / "HEAD").write_text("ref: refs/heads/old-branch\n", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -6327,7 +6327,7 @@ class TestOriginMismatchLogsBeforeMoveAside:
         )
         (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -6585,7 +6585,7 @@ class TestInstallFailureReportsStaleCheckout:
             async def communicate(self):
                 raise asyncio.TimeoutError
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return list(argv), None
 
         with (
@@ -8115,7 +8115,7 @@ async def _run_index_clone_failure(tmp_path, output: bytes, *, index_originated:
     ``git clone failed`` body."""
     from kiro_crew.apps import registry as reg
 
-    def _fake_wrap_argv(argv, mode="standard"):
+    def _fake_wrap_argv(argv, mode="standard", **kwargs):
         return argv, None
 
     async def _fake_create(*args, **kwargs):
@@ -8393,7 +8393,7 @@ class TestCloneLocaleIsPinnedForDeterministicClassifier:
 
         captured: dict = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **kwargs):
             return argv, None
 
         async def _fake_create(*args, **kwargs):

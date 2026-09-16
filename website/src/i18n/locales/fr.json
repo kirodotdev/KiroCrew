@@ -11789,6 +11789,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Mode d'approbation",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' active le bac à sable pour les outils non fiables. Le passage vers ou depuis 'wsl2' prend effet après un redémarrage de la passerelle.",
         "auto_size_max": "Taille auto max",
         "auto_update": "Mise à jour auto",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Plafond du nombre de sous-agents simultanés calculé automatiquement (s’applique uniquement quand Sous-agents simultanés max = 0). La formule mémoire/CPU de l’hôte ne le dépasse jamais. Plage 1–64. Par défaut : 16.",
@@ -11824,6 +11825,7 @@
         "pool_size": "Taille du pool",
         "pool_ttl": "TTL du pool",
         "provider": "Fournisseur",
+        "restart_required_which_wsl2_distribution_to_sand": "Redémarrage requis. Distribution WSL2 utilisée pour le bac à sable — les instances utilitaires internes de Docker Desktop ne sont pas proposées ici.",
         "sandbox": "Sandbox",
         "save": "Enregistrer",
         "saved": "Enregistré",
@@ -11841,7 +11843,9 @@
         "number_of_pre_spawned_processes_0_disables": "Nombre de processus prélancés. 0 désactive.",
         "agent_for_pool_processes_empty_uses_default_agent": "Agent pour les processus du pool. Vide = agent par défaut.",
         "warm_pool_description": "Pré-lance des processus ACP CLI pour un démarrage de session instantané.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Âge maximal des processus du pool. 0 désactive l'expiration."
+        "max_age_for_pooled_processes_0_disables_expiry": "Âge maximal des processus du pool. 0 désactive l'expiration.",
+        "wsl2_distribution": "Distribution WSL2",
+        "wsl_default_distro": "(Par défaut WSL)"
       },
       "mcpTab": {
         "actions": "Actions",

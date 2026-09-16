@@ -1809,6 +1809,24 @@ def _selectable_acp_backends() -> list[str]:
     return selectable_backend_values()
 
 
+def _selectable_sandbox_values() -> list[str]:
+    """The ``agent.sandbox`` values this host can actually be switched to.
+
+    ``"wsl2"`` is offered only when it is plausible at all — Windows, with
+    `wsl.exe` present — the SAME live-values pattern as
+    ``_selectable_acp_backends`` above, for the identical reason: validity
+    depends on the host, so a static literal would either reject a value
+    that's fine elsewhere or offer one that can never work here. This is a
+    cheap presence check, not the full unshare probe: selecting "wsl2" and
+    seeing the fail-closed remedy if it doesn't actually work is what the
+    probe is for, not this list.
+    """
+    values = ["auto", "off"]
+    if platform_compat.IS_WINDOWS and platform_compat.trusted_system_bin("wsl.exe"):
+        values.append("wsl2")
+    return values
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
     # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
@@ -1870,7 +1888,8 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "enum",
         "values": ["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
     },
-    "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
+    "agent.sandbox": {"type": "enum", "values_fn": _selectable_sandbox_values},
+    "agent.sandbox_wsl_distro": {"type": "str", "max_len": 128, "pattern": r"^[A-Za-z0-9._\- ]*$"},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.tool_search": {"type": "bool"},
     "memory.private_provisioning_enabled": {"type": "bool"},

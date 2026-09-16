@@ -11789,6 +11789,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Modo de aprovação",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' ativa o sandbox para ferramentas não confiáveis. Mudar para ou de 'wsl2' entra em vigor após reiniciar o gateway.",
         "auto_size_max": "Máx. de auto-dimensionamento",
         "auto_update": "Atualização automática",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Teto da contagem auto-dimensionada de subagentes simultâneos (só se aplica quando Máx. de subagentes simultâneos = 0). A fórmula de memória/CPU do host nunca excede esse valor. Faixa 1–64. Padrão: 16.",
@@ -11824,6 +11825,7 @@
         "pool_size": "Tamanho do pool",
         "pool_ttl": "TTL do pool",
         "provider": "Provedor",
+        "restart_required_which_wsl2_distribution_to_sand": "Reinício necessário. Qual distribuição WSL2 usar para o sandbox — as instâncias utilitárias internas do Docker Desktop não são oferecidas aqui.",
         "sandbox": "Sandbox",
         "save": "Salvar",
         "saved": "Salvo",
@@ -11841,7 +11843,9 @@
         "number_of_pre_spawned_processes_0_disables": "Número de processos pré-iniciados. 0 desativa.",
         "agent_for_pool_processes_empty_uses_default_agent": "Agente para os processos do pool. Vazio usa o agente padrão.",
         "warm_pool_description": "Pré-inicia processos da ACP CLI para um arranque de sessão instantâneo.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Idade máxima dos processos do pool. 0 desativa a expiração."
+        "max_age_for_pooled_processes_0_disables_expiry": "Idade máxima dos processos do pool. 0 desativa a expiração.",
+        "wsl2_distribution": "Distribuição WSL2",
+        "wsl_default_distro": "(Padrão do WSL)"
       },
       "mcpTab": {
         "actions": "Ações",

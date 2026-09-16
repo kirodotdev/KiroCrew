@@ -11623,6 +11623,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "अनुमोदन मोड",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' अविश्वसनीय टूल के लिए सैंडबॉक्स सक्षम करता है। 'wsl2' पर या उससे बदलना गेटवे पुनः आरंभ के बाद प्रभावी होता है।",
         "auto_size_max": "ऑटो-साइज़ अधिकतम",
         "auto_update": "स्वतः अपडेट",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "ऑटो-साइज़ किए गए समवर्ती सब-एजेंट काउंट की ऊपरी सीमा (सिर्फ़ तब लागू होती है जब अधिकतम समवर्ती सब-एजेंट = 0 हो)। होस्ट मेमोरी/CPU फ़ॉर्मूला इससे कभी आगे नहीं जाता। रेंज 1–64। डिफ़ॉल्ट: 16।",
@@ -11658,6 +11659,7 @@
         "pool_size": "पूल आकार",
         "pool_ttl": "पूल TTL",
         "provider": "प्रोवाइडर",
+        "restart_required_which_wsl2_distribution_to_sand": "पुनः आरंभ आवश्यक। सैंडबॉक्स के लिए कौन-सा WSL2 वितरण उपयोग करें — Docker Desktop की अपनी यूटिलिटी इंस्टेंस यहाँ नहीं दिखाई जातीं।",
         "sandbox": "सैंडबॉक्स",
         "save": "सहेजें",
         "saved": "सहेजा गया",
@@ -11675,7 +11677,9 @@
         "number_of_pre_spawned_processes_0_disables": "पहले से स्पॉन किए गए प्रोसेस की संख्या। 0 से बंद।",
         "agent_for_pool_processes_empty_uses_default_agent": "पूल प्रोसेस के लिए एजेंट। खाली छोड़ने पर डिफ़ॉल्ट एजेंट उपयोग होता है।",
         "warm_pool_description": "सत्र तुरंत शुरू करने के लिए ACP CLI प्रक्रियाएँ पहले से चालू करें।",
-        "max_age_for_pooled_processes_0_disables_expiry": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है।"
+        "max_age_for_pooled_processes_0_disables_expiry": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है।",
+        "wsl2_distribution": "WSL2 डिस्ट्रिब्यूशन",
+        "wsl_default_distro": "(WSL डिफ़ॉल्ट)"
       },
       "mcpTab": {
         "actions": "कार्रवाइयाँ",

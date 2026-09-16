@@ -349,6 +349,42 @@ class TestCommandCronShellResolution:
         with patch.object(cron_script, "run_limited", return_value=expanding):
             assert cron_script._shell_is_posix_strict("/bin/sh-is-really-bash") is False
 
+    def test_the_probe_allows_a_cold_wsl2_distro_time_to_answer(self, monkeypatch):
+        """A 5s ceiling refused every command cron on the backend that exists to
+        allow them.
+
+        Under wsl2 this probe is a ``wsl.exe`` round trip, and ``sandbox.py``
+        measured a cold one at 7.5s. The probe memoizes, so a timeout shorter
+        than the real cost does not merely fail once: it caches False, and
+        ``_resolve_command_shell`` then answers "no POSIX shell available" for
+        the rest of the process. The timeout is borrowed from the module that
+        owns the measurement rather than restated here.
+        """
+        from kiro_crew import cron_script
+        from kiro_crew.sandbox import _WSL2_PROBE_TIMEOUT_SECS
+
+        monkeypatch.setattr(
+            "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (argv, None)
+        )
+        seen: dict[str, float] = {}
+
+        def _capture(argv, **kwargs):
+            seen["timeout"] = kwargs["timeout"]
+            return MagicMock(returncode=0, stdout="x.{a,a}\n", stderr="")
+
+        for selected, expected in ((True, _WSL2_PROBE_TIMEOUT_SECS), (False, 5)):
+            cron_script._POSIX_STRICT_CACHE.clear()
+            seen.clear()
+            monkeypatch.setattr(cron_script, "wsl2_selected", lambda s=selected: s)
+            with patch.object(cron_script, "run_limited", _capture):
+                assert cron_script._shell_is_posix_strict("/bin/dash") is True
+            assert seen["timeout"] == expected, selected
+
+        # The native ceiling must stay where it was: this fix is about the wsl2
+        # round trip, and widening a local `sh -c` probe to 30s would make an
+        # unrelated hung shell hold up every cron start instead of one.
+        assert _WSL2_PROBE_TIMEOUT_SECS > 7.5
+
     def test_windows_refuses_command_cron_shell(self, monkeypatch):
         """Windows ships no shell whose language matches what
         mcp_cron._vet_shell_command was written against: cmd.exe is not POSIX,
@@ -372,6 +408,65 @@ class TestCommandCronShellResolution:
         result = cron_script.run_command_sandboxed("echo hi", timeout=10)
         assert result["status"] == "error"
         assert "No POSIX shell" in result["output"]
+
+    def test_wsl2_sh_is_probed_not_trusted_by_name(self, monkeypatch):
+        """wsl2's `/bin/sh` must pass the same strict probe every other
+        platform's candidate does -- trusting it by name alone would let an
+        unusual distro whose /bin/sh is secretly bash reopen exactly the
+        brace-expansion bypass this whole vet gate exists to prevent."""
+        from kiro_crew import cron_script
+
+        monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(cron_script, "wsl2_selected", lambda: True)
+        monkeypatch.setattr(cron_script, "_operator_wants_wsl2", lambda: "Ubuntu-26.04")
+        cron_script._POSIX_STRICT_CACHE.clear()
+
+        probed_with: list[tuple[str, str | None]] = []
+
+        def fake_probe(shell, *, cache_key=None):
+            probed_with.append((shell, cache_key))
+            return True
+
+        monkeypatch.setattr(cron_script, "_shell_is_posix_strict", fake_probe)
+        assert cron_script._resolve_command_shell() == "/bin/sh"
+        assert probed_with == [("/bin/sh", "wsl2:Ubuntu-26.04:/bin/sh")]
+
+    def test_wsl2_sh_rejected_when_probe_fails(self, monkeypatch):
+        from kiro_crew import cron_script
+
+        monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(cron_script, "wsl2_selected", lambda: True)
+        monkeypatch.setattr(cron_script, "_operator_wants_wsl2", lambda: "")
+        monkeypatch.setattr(cron_script, "_shell_is_posix_strict", lambda s, **k: False)
+        assert cron_script._resolve_command_shell() is None
+
+    def test_wsl2_probe_cache_key_is_distro_qualified(self, monkeypatch):
+        """`/bin/sh` names a DIFFERENT binary per distro; caching on the bare
+        string would let a probe result from one distro vouch for another
+        after the operator switches agent.sandbox_wsl_distro. Exercises
+        `_shell_is_posix_strict`'s real cache (not mocked away), routed
+        through a stubbed `wrap_argv`/`run_limited` so no real spawn happens."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew import cron_script
+
+        cron_script._POSIX_STRICT_CACHE.clear()
+        monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (argv, None))
+        strict = MagicMock(returncode=0, stdout="x.{a,a}\n", stderr="")
+        expanding = MagicMock(returncode=0, stdout="x.a x.a\n", stderr="")
+
+        # Distro A's /bin/sh is a real POSIX shell -- cached under its own key.
+        with patch.object(cron_script, "run_limited", return_value=strict):
+            assert cron_script._shell_is_posix_strict("/bin/sh", cache_key="wsl2:A:/bin/sh") is True
+
+        # Distro B's /bin/sh is secretly bash -- a DIFFERENT cache key, so the
+        # cached True for distro A must not be consulted for it.
+        with patch.object(cron_script, "run_limited", return_value=expanding):
+            assert (
+                cron_script._shell_is_posix_strict("/bin/sh", cache_key="wsl2:B:/bin/sh") is False
+            )
+        # Distro A's own cached verdict is unaffected by probing B.
+        assert cron_script._POSIX_STRICT_CACHE["wsl2:A:/bin/sh"] is True
 
 
 class TestRunScriptSandboxed:
