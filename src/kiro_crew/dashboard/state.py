@@ -3551,6 +3551,9 @@ class _ChatSlot:
         "_fallback_slot_model",
         "_model_pick_gen",
         "_fallback_pick_gen",
+        "_model_access_fallback_used",
+        "_model_access_recovery_pending",
+        "_model_access_recovery_stop_gen",
         "_posttoken_retry_used",
         "_prestream_exhausted_cycles",
         "_poisoned_reset_used",
@@ -4011,6 +4014,32 @@ class _ChatSlot:
         # snapshotted when the fallback activated.
         self._model_pick_gen: int = 0
         self._fallback_pick_gen: int = 0
+        # One-shot guard for the reactive model-access-denial fallback: a new
+        # conversation whose configured model (commonly the "auto" sentinel) is
+        # refused for entitlement, not throttled, is re-prompted at most ONCE on
+        # the first advertised model this account can run, rather than failing
+        # the first reply. One attempt only, so an account entitled to nothing
+        # falls through to the terminal entitlement error naming what was tried
+        # instead of looping. Refreshed at the start of a genuine user turn but
+        # NOT when the incoming turn is the swap's own replay (the
+        # _model_access_recovery_pending latch below carries that fact across),
+        # so a still-unentitled candidate cannot trigger a second swap.
+        self._model_access_fallback_used: bool = False
+        # Set when a model-access swap re-queues the user's ORIGINAL message as a
+        # synthetic recovery. That replay is indistinguishable from a fresh user
+        # turn at reset time (it carries the user's own words, not a synthetic
+        # marker), so this one-turn latch tells the reset to preserve
+        # _model_access_fallback_used for exactly that replay and is consumed
+        # there.
+        self._model_access_recovery_pending: bool = False
+        # _stop_generation snapshotted when that recovery is enqueued. A soft Stop
+        # (first press) does NOT clear the queue and the drain's continuation
+        # purge does not cover a message replay, so the drain compares this
+        # snapshot against the live counter at dequeue: any increment (or a
+        # pending steer / user follow-up) means the user cancelled or superseded
+        # the turn while the recovery waited, and the replay is dropped instead of
+        # dispatched.
+        self._model_access_recovery_stop_gen: int = 0
         # One-shot guard for the post-token (text-only) transient retry: a turn
         # that has already streamed answer tokens may be re-prompted at most
         # ONCE on a transient 5xx (and only when no tool call fired). Reset on a
