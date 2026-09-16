@@ -4451,16 +4451,27 @@ const chatSlice = createSlice({
         for (let i = msgs.length - 1; i >= floor; i--) {
           const m = msgs[i]
           if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
-          if (!m.meta?.steer || !m.meta?.optimistic) return true
+          if (!m.meta?.optimistic) return true
           // The drop arm. Also taken for a steer whose receipt never came (the
           // transport's deadline aborted the POST and the text went back to the
           // composer): a bubble left standing would read as delivered, and a
           // late `steer_push` echo that does arrive re-creates the row from the
           // server's copy (reconcileOptimisticEcho appends when no row carries
-          // the sendId).
+          // the sendId). A NON-steer optimistic bubble (the pane's question-card
+          // answer sent as an ordinary next turn) is dropped the same way, so a
+          // queued/failed answer never leaves an orphan row beside its
+          // QueueStack card or the restored composer text.
           if (outcome === 'queued') { msgs.splice(i, 1); return true }
+          // The `turn` arm: the answer landed on a fresh turn. A STEER bubble
+          // sheds only its `steer` badge and stays `optimistic` so its later
+          // `steer_push` echo still reconciles it (unchanged). A NON-steer
+          // bubble (the pane's question-card answer sent as an ordinary next
+          // turn) sheds `optimistic` too -- the same effect as
+          // confirmOptimisticSend, marking the row server-owned.
           const meta = { ...(m.meta || {}) }
+          const wasSteer = !!meta.steer
           delete meta.steer
+          if (!wasSteer) delete meta.optimistic
           m.meta = meta
           return true
         }

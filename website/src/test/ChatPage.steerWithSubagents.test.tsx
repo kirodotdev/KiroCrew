@@ -24,7 +24,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { sseChatMessage } from '../store/chatSlice'
+import chatReducer, { sseChatMessage, setQuestionCard } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -246,5 +246,77 @@ describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
 
     await waitFor(() => expect(sendChat).toHaveBeenCalled())
     expect(steerArgOf(sendChat.mock.calls[0])).toBeFalsy()
+  })
+})
+
+/* #10634: a native AskUserQuestion card (no ask_id, no card_id) is raised while
+ * its own turn is still running and waiting on the answer. Submitting it must
+ * STEER into the live turn through the receipt-aware path (steerMutation), not
+ * the plain send() that would queue behind that turn. When the turn has ended,
+ * the same answer starts an ordinary next turn. */
+describe('native question card (#10634) — main chat', { timeout: 20_000 }, () => {
+  const seedNativeCard = (store: ReturnType<typeof makeStore>) => {
+    act(() => {
+      store.dispatch(setQuestionCard({
+        slot: 'slot-a',
+        questions: [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }],
+      }))
+    })
+  }
+
+  it('steers the answer into the running turn via the receipt-aware path', async () => {
+    const { store } = await renderChat({ subagentsRunning: false, turnRunning: true })
+    seedNativeCard(store)
+    fireEvent.click(await screen.findByText('us-east-1'))
+    await act(async () => { fireEvent.click(screen.getByText('Submit')); await Promise.resolve() })
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const call = sendChat.mock.calls[0]
+    expect(call[0]).toBe('us-east-1')
+    // 6th arg is the steer flag.
+    expect(steerArgOf(call)).toBe(true)
+    // The receipt-aware steerMutation path (not send()): it carries the
+    // reconciliation sendId and NO colorTheme, unlike send()'s composer post.
+    // A `response-late` on this path hands the answer back + warns, so a busy
+    // steer whose bubble is suppressed can never silently lose the answer.
+    expect(call[2]).toBeUndefined()
+    expect((call[4] as { sendId?: string }).sendId).toBeTruthy()
+    // The optimistic bubble is shown at once so the answer does not vanish
+    // until the echo lands (the sendId reconciles it in place).
+    const bubble = store.getState().chat.messages.find(m => m.role === 'user' && m.content === 'us-east-1')
+    expect(bubble?.meta?.optimistic).toBe(true)
+  })
+
+  it('starts an ordinary next turn (no steer) when the turn has ended', async () => {
+    const { store } = await renderChat({ subagentsRunning: false, turnRunning: false })
+    seedNativeCard(store)
+    fireEvent.click(await screen.findByText('us-east-1'))
+    await act(async () => { fireEvent.click(screen.getByText('Submit')); await Promise.resolve() })
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const call = sendChat.mock.calls[0]
+    expect(call[0]).toBe('us-east-1')
+    // No live turn to inject into: plain send(), no steer flag.
+    expect(steerArgOf(call)).toBeFalsy()
+  })
+
+  it('does NOT steer a busy non-blocking ask_question card (card_id)', async () => {
+    // A card_id card is the non-blocking ask_question card; even with the slot
+    // busy (sub-agents running) it must start a next turn, never steer.
+    const { store } = await renderChat({ subagentsRunning: true, turnRunning: false })
+    act(() => {
+      store.dispatch(setQuestionCard({
+        slot: 'slot-a',
+        card_id: 'delivery-nb',
+        questions: [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }],
+      }))
+    })
+    fireEvent.click(await screen.findByText('us-east-1'))
+    await act(async () => { fireEvent.click(screen.getByText('Submit')); await Promise.resolve() })
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const call = sendChat.mock.calls[0]
+    expect(call[0]).toBe('us-east-1')
+    expect(steerArgOf(call)).toBeFalsy()
   })
 })

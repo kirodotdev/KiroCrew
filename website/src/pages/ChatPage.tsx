@@ -7399,15 +7399,52 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       // No-ask_id card: the card IS the interaction, so answer
                       // and send in one click.
                       //
-                      // Offline, send() bails at its own !connected guard and
-                      // the card clears regardless — which would DROP the
-                      // answer. Fall back to the composer so it survives, the
+                      // Offline, both paths below would clear the card and drop
+                      // the answer, so keep it in the composer for retry — the
                       // same recovery the 404 path uses.
                       if (!connected) {
                         setInput((prev) => (prev.trim() ? `${prev}\n${text}` : text))
                         return
                       }
-                      void send(text, activeSlot || undefined)
+                      // A native AskUserQuestion card is raised WHILE its own
+                      // turn is still running and waiting on the answer, so a
+                      // plain send would queue behind that turn and the question
+                      // would never be consumed (#10634). When the slot's turn
+                      // is live, inject the answer INTO it through the same
+                      // receipt-aware steer path `steer()` uses:
+                      // `steerMutation` hands the text back and shows the
+                      // delivery-unconfirmed notice on a `response-late`, so a
+                      // busy steer whose bubble is suppressed can never silently
+                      // lose the answer (the loss a raw `send(…, steerNow)`
+                      // through send()'s bare `response-late` return would risk).
+                      // `selectComposerBusy` is the shared "turn is live for this
+                      // slot" rule (chatSlice) both surfaces key on, so the two
+                      // routes cannot drift.
+                      //
+                      // When the turn has already ended (the card outlived it),
+                      // there is nothing to steer into: fall back to an ordinary
+                      // next-turn send, exactly as the non-blocking `ask_question`
+                      // card always does.
+                      //
+                      // Steer ONLY the native card, which carries neither an
+                      // `ask_id` (the blocking backend card) nor a server
+                      // `card_id` (the non-blocking `ask_question` MCP card,
+                      // stored as `serverCardId`). The client always mints a
+                      // local `cardId` per delivery, so that field cannot tell
+                      // the two apart -- `serverCardId` is the one the server
+                      // sets only for the non-blocking card. The non-blocking
+                      // card can be answered while sub-agents keep the slot
+                      // busy, and it must still start a next turn.
+                      const slot = activeSlot || undefined
+                      const isNativeCard = !pendingQuestion?.ask_id && !pendingQuestion?.serverCardId
+                      if (slot && isNativeCard && selectComposerBusy(store.getState(), slot)) {
+                        const steerSendId = mintSendId()
+                        drainPendingChunks()
+                        dispatch(appendMessage({ role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
+                        steerMutation.mutate({ text, sendId: steerSendId, slot })
+                        return
+                      }
+                      void send(text, slot)
                     }}
                   />
                 </div>
