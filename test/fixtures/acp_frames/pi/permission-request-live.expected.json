@@ -121,6 +121,7 @@
         "title": "echo gate-check",
         "tool_call_id": "call_t2dbfc6c",
         "tool_kind": "execute",
+        "tool_pending": true,
         "wire_title": "echo gate-check"
       }
     ],
@@ -219,6 +220,7 @@
         "title": "echo gate-check",
         "tool_call_id": "call_9mf80jes",
         "tool_kind": "execute",
+        "tool_pending": true,
         "wire_title": "echo gate-check"
       }
     ],

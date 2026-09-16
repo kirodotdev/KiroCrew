@@ -208,6 +208,7 @@
         "title": "Preparing file…",
         "tool_call_id": "toolu_bdrk_014o6ucJPag5iZuJoMrQM6HM",
         "tool_kind": "edit",
+        "tool_pending": true,
         "wire_title": "Preparing file…"
       }
     ],

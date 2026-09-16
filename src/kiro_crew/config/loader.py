@@ -2967,6 +2967,7 @@ def _build_wakatime_config(wakatime_data: dict) -> WakaTimeConfig:
     return WakaTimeConfig(
         enabled=bool(wakatime_data.get("enabled", False)),
         api_base_url=str(wakatime_data.get("api_base_url", "") or ""),
+        send_heartbeats=_safe_bool(wakatime_data.get("send_heartbeats", False), False),
     )
 
 
