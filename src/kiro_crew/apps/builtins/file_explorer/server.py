@@ -4,8 +4,8 @@ A small stdlib-only HTTP server that exposes a read-only filesystem API for the
 file-explorer frontend. Bound to localhost; KiroCrew proxies requests from
 ``/apps/file-explorer/api/*`` to this process.
 
-Endpoints (all relative to the proxied base — the server itself sees them at
-the root since KiroCrew strips the prefix):
+Endpoints (public paths are relative to the proxied base; the backend receives
+``/api/<path>`` and also accepts direct ``/<path>`` aliases):
 
   GET  /health                                  → {"status": "ok"}
   GET  /resolve?path=<p>                        → {"path", "exists", "type", "size", "mtime"}
@@ -17,7 +17,10 @@ the root since KiroCrew strips the prefix):
 
 Path safety: callers may only access paths under the user's home dir or the
 system temp dir on any OS, plus ``/home/`` and ``/opt/`` on POSIX (after
-symlink resolution).  Paths outside the allow-list return 403.
+symlink resolution), plus the project directories the dashboard has recorded
+in ``recent_projects.json`` — a user whose project lives outside the static
+roots can still browse it here.  Paths outside the allow-list return 403.
+Sensitive paths are refused in every case.
 
 Size / depth caps are tunable via env vars but have safe defaults.
 """
@@ -28,6 +31,7 @@ import base64
 import json
 import logging
 import mimetypes
+import ntpath
 import os
 import re
 import shutil
@@ -43,8 +47,8 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.proxy_auth import verify_proxy_request
-from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.hooks import safe_read_file_bytes
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.hooks import is_unc_shape, safe_read_file_bytes
 from kiro_crew.platform import boot_platform
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, wrap_argv
 from kiro_crew.security import is_sensitive_path
@@ -63,6 +67,8 @@ MAX_TREE_ENTRIES = int(os.environ.get("FE_MAX_TREE_ENTRIES", 5000))
 MAX_SEARCH_RESULTS = int(os.environ.get("FE_MAX_SEARCH_RESULTS", 500))
 SEARCH_TIMEOUT_SEC = int(os.environ.get("FE_SEARCH_TIMEOUT_SEC", 15))
 GIT_TIMEOUT_SEC = int(os.environ.get("FE_GIT_TIMEOUT_SEC", 5))
+MAX_RECENT_PROJECTS = 100
+MAX_RECENT_PROJECTS_BYTES = 1_000_000
 
 # Allow-list of root paths (resolved). Anything outside is denied.
 #
@@ -341,8 +347,7 @@ def _safe_path(raw: str, must_exist: bool = True) -> Path:
     if must_exist and the file/dir is missing.
     """
     p = _expand(raw)
-    in_allow = any(_is_within(p, root) for root in ALLOWED_ROOTS)
-    if not in_allow:
+    if not _is_in_allowed_roots(p):
         raise PathError(f"path not allowed: {p}", 403)
     if _is_sensitive(p):
         raise PathError("access denied: sensitive path", 403)
@@ -364,7 +369,8 @@ def _contain_in_allowed_roots(path: Path, *, operation: str, audit_denial: bool 
 
     The single sanitizer for user-derived paths that bypass ``_safe_path`` (the
     crew-home tree-list special case): ``resolve()`` collapses ``..`` traversal
-    and follows symlinks, then containment is checked against ``ALLOWED_ROOTS``.
+    and follows symlinks, then containment is checked against the effective
+    allowed roots.
     A violation is SEL-audited and raises ``PathError`` — so the RETURNED path is
     always inside the allow-list and safe to stat/read. Callers must use the
     returned value, never the original, so no untrusted path reaches a
@@ -377,14 +383,14 @@ def _contain_in_allowed_roots(path: Path, *, operation: str, audit_denial: bool 
     The raise itself is unconditional — only the audit emission is deferred.
     """
     # ``resolve()`` collapses ``..``/symlinks; the very next statement raises
-    # unless the result is inside ALLOWED_ROOTS, so this function IS the
-    # sanitizer and its return value is contained. CodeQL's py/path-injection
+    # unless the result is inside the effective allowed roots, so this function
+    # IS the sanitizer and its return value is contained. CodeQL's py/path-injection
     # query does not model the ``relative_to``-based containment guard as a
     # barrier, so it flags this resolve of a user-derived path — the same
     # false-positive the codebase suppresses at ``security.is_sensitive_path``'s
     # resolve(). Suppress at the barrier itself; no read/write happens here.
     resolved = path.resolve()  # lgtm[py/path-injection]
-    if not any(_is_within(resolved, root) for root in ALLOWED_ROOTS):
+    if not _is_in_allowed_roots(resolved):
         if audit_denial:
             _sel_audit(operation, str(path), outcome="denied")
         raise PathError(f"path not allowed: {path}", 403)
@@ -439,7 +445,7 @@ def _kirocrew_safe_children(kirocrew_dir: Path) -> list[dict]:
     Sensitive file names (config.json, *.key, memory.db) are never exposed.
     """
     # Re-contain at entry so the iterdir() sink consumes the RETURN of a raising
-    # ALLOWED_ROOTS barrier (idempotent — callers already pass a contained Path;
+    # allowed-roots barrier (idempotent — callers already pass a contained Path;
     # this makes the containment legible to CodeQL py/path-injection).
     kirocrew_dir = _contain_in_allowed_roots(kirocrew_dir, operation="tree_list")
     out: list[dict] = []
@@ -468,6 +474,176 @@ def _sel_audit(operation: str, resources: str, outcome: str = "granted") -> None
         source="builtin-app",
         resources=resources,
     )
+
+
+# ---------------------------------------------------------------------------
+# Recent projects
+# ---------------------------------------------------------------------------
+#
+# These directories widen what this app will browse, so the writer's trust level
+# matters. ``recent_projects.json`` is written by the dashboard when a human
+# picks a project AND by the agent-driven ``set_project`` directive, which admits
+# any path passing ``is_sensitive_path`` + ``is_dir``. A prompt-injected agent can
+# therefore record a directory a human never chose.
+#
+# That widening is accepted, bounded by two facts. Every entry is re-validated
+# here against ``_is_sensitive``, a strict superset of the writer's gate (it adds
+# the per-component ``SENSITIVE_DIRS`` match and the crew-home deny list), so no
+# credential directory becomes browsable regardless of what is recorded. And the
+# consumer is the token-authenticated dashboard operator, who already holds the
+# host's own filesystem access; the agent cannot read these proxied responses.
+# What is admitted is non-credential directories, to a reader who could already
+# reach them.
+
+_FileStamp = tuple[int, int, int, int, int]  # dev, ino, mtime_ns, ctime_ns, size
+_RECENT_ROOTS_CACHE: tuple[_FileStamp, tuple[Path, ...]] | None = None
+
+
+def _recent_projects_path() -> Path:
+    return config_dir() / "recent_projects.json"
+
+
+def _file_stamp(st: os.stat_result) -> _FileStamp | None:
+    # A zero inode is NO identity (same rule as project_scan.root_identity):
+    # (dev, 0, ...) would be shared by every file on the volume, so a
+    # replacement would read as unchanged.
+    if not st.st_ino:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+
+
+def _recent_projects_stamp(fp: Path) -> _FileStamp | None:
+    try:
+        st = fp.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return _file_stamp(st)
+
+
+def _open_recent_projects_fd(fp: Path) -> int:
+    if platform_compat.IS_POSIX:
+        # O_NONBLOCK so a path swapped for a FIFO cannot stall this worker.
+        return os.open(
+            os.fspath(fp),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+    # Windows: this helper's share mode includes FILE_SHARE_DELETE, which the
+    # dashboard's os.replace needs. It can follow a reparse point, so the
+    # caller's identity checks decide acceptance.
+    return platform_compat.open_log_file_for_tail(str(fp))
+
+
+def _load_recent_projects_entries(fp: Path) -> tuple[_FileStamp | None, list[str]] | None:
+    """One bounded snapshot. A None stamp must not be cached; a None return is a
+    transient failure or an identity race."""
+    # Both compared stamps come from lstat. A descriptor stat and a pathname stat
+    # can report different timestamps for the SAME file (Windows flushes handle
+    # metadata to the directory entry lazily), which would read as a replacement
+    # that never happened. fstat still guards the descriptor's own type and size.
+    before_stamp = _recent_projects_stamp(fp)
+    try:
+        fd = _open_recent_projects_fd(fp)
+    except OSError:
+        return None
+    try:
+        opened_stat = os.fstat(fd)
+        if not stat.S_ISREG(opened_stat.st_mode) or opened_stat.st_size > MAX_RECENT_PROJECTS_BYTES:
+            return (before_stamp, [])
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read(MAX_RECENT_PROJECTS_BYTES + 1)
+        if len(raw) > MAX_RECENT_PROJECTS_BYTES:
+            return (before_stamp, [])
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+    # The bytes are only trustworthy if the pathname still names the same regular
+    # file it did before the read.
+    try:
+        after_stat = fp.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(after_stat.st_mode):
+        return None
+    after_stamp = _file_stamp(after_stat)
+    if before_stamp is not None and after_stamp is not None and after_stamp != before_stamp:
+        return None
+    # Cache only under an identity both stats agree on. A volume that reports no
+    # file index still serves its snapshot; it just never caches.
+    stamp = before_stamp if before_stamp is not None and after_stamp is not None else None
+
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError):
+        return (stamp, [])
+    if not isinstance(data, list):
+        return (stamp, [])
+    return (stamp, [entry for entry in data if isinstance(entry, str) and entry])
+
+
+def _resolve_project_root(entry: str) -> Path | None:
+    try:
+        expanded = os.path.expanduser(entry)
+        # Resolving a UNC path on Windows opens it and can initiate SMB auth.
+        if platform_compat.IS_WINDOWS and is_unc_shape(expanded):
+            return None
+        # A LOCAL-looking entry can still be a link, or sit under one, whose
+        # target is a share -- resolve() would follow it and authenticate there.
+        if _link_chain_reaches_unc(Path(expanded)):
+            return None
+        # ValueError: an embedded null byte reaches resolve() as valid JSON, and
+        # an uncaught one would fail every authorization gate, not just this entry.
+        root = Path(expanded).resolve()
+        if not root.is_dir() or _is_sensitive(root):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return root
+
+
+def _recent_project_roots() -> list[Path]:
+    """Validated recent roots, reloaded only when the file's identity changes."""
+    global _RECENT_ROOTS_CACHE
+    fp = _recent_projects_path()
+    observed = _recent_projects_stamp(fp)
+
+    cached = _RECENT_ROOTS_CACHE
+    if observed is not None and cached is not None and cached[0] == observed:
+        return list(cached[1])
+
+    loaded = _load_recent_projects_entries(fp)
+    if loaded is None:
+        # Not cached, so a missing file or transient failure can recover on the
+        # next request instead of waiting for a timestamp change.
+        return []
+    opened_stamp, entries = loaded
+
+    seen: set[Path] = set()
+    roots: list[Path] = []
+    for entry in entries[:MAX_RECENT_PROJECTS]:
+        root = _resolve_project_root(entry)
+        if root is None or root in seen:
+            continue
+        seen.add(root)
+        roots.append(root)
+
+    if opened_stamp is not None:
+        _RECENT_ROOTS_CACHE = (opened_stamp, tuple(roots))
+    return roots
+
+
+def _effective_allowed_roots() -> list[Path]:
+    """Static roots FIRST — the frontend opens at roots[0]."""
+    return list(dict.fromkeys(ALLOWED_ROOTS + _recent_project_roots()))
+
+
+def _is_in_allowed_roots(path: Path, roots: list[Path] | None = None) -> bool:
+    """Pass ``roots`` to reuse one snapshot across a walk."""
+    candidates = _effective_allowed_roots() if roots is None else roots
+    return any(_is_within(path, root) for root in candidates)
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +702,119 @@ def _entry_meta(p: Path) -> dict:
     return info
 
 
+#: The OS stops following a link chain around this depth; so do we.
+_LINK_CHAIN_MAX = 40
+
+
+def _is_link_like(p: Path) -> bool:
+    """A symlink or, on Windows, a junction -- a name that points somewhere else.
+
+    ``is_symlink()`` reports False for a junction while ``stat()`` still follows
+    it, so detection goes through the shared helper that knows both. A name that
+    cannot be classified counts as one: its target cannot be validated, so
+    nothing may probe it.
+    """
+    try:
+        p.lstat()
+    except OSError:
+        return True
+    return platform_compat.is_link_or_junction(p)
+
+
+def _link_target(path: str) -> str | None:
+    """A link's own stored target, or None when it cannot be read.
+
+    ``readlink`` reads the reparse point's metadata and never traverses it, which
+    is what makes it safe to ask before any policy decision.
+    """
+    try:
+        return os.readlink(path)
+    except (OSError, ValueError):
+        return None
+
+
+def _link_chain_reaches_unc(p: Path) -> bool:
+    """True when *p*, an ancestor, or anything in their link chain stores a
+    UNC-shaped target.
+
+    ``resolve()`` on Windows OPENS what it resolves, so following a link aimed at
+    a remote share authenticates this process against that host. ``readlink`` is a
+    local reparse-point metadata read that never traverses, so every hop's target
+    is judged by shape BEFORE anything resolves it. ``is_unc_shape`` already folds
+    the NT long forms (``\\\\?\\UNC\\host\\share`` is a share, ``\\\\?\\C:\\...``
+    is local), which is exactly what ``readlink`` returns on Windows.
+
+    ANCESTORS ARE SCREENED FIRST, root-first, and that ordering is the safety
+    property rather than a detail: ``lstat`` on the leaf traverses every component
+    above it, so probing the leaf while an ancestor is still unknown would itself
+    perform the traversal this screen exists to prevent. Only once every ancestor
+    is known link-free is the leaf touched. Each hop re-anchors the part of the
+    path BELOW the link onto that link's target, so the remainder keeps being
+    screened instead of being dropped.
+
+    Windows-only: on POSIX resolving through a symlink costs nothing and the
+    ``_is_sensitive`` check on the resolved path is the real guard. Only a
+    UNC-shaped hop is refused, so a project reached through an ordinary local
+    junction still browses.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return False
+    hop = os.fspath(p)
+    for _ in range(_LINK_CHAIN_MAX):
+        ancestor = platform_compat.first_linked_ancestor(hop)
+        if ancestor is not None:
+            target = _link_target(ancestor)
+            if target is None or is_unc_shape(target):
+                return True
+            # ntpath, not os.path: Windows link semantics regardless of the host
+            # running it, so the branch stays testable off Windows.
+            try:
+                suffix = ntpath.relpath(hop, ancestor)
+            except ValueError:
+                return True
+            if suffix.startswith(".."):
+                return True  # not actually below the ancestor; refuse over guess
+            hop = target if suffix == "." else ntpath.join(target, suffix)
+            continue
+        # Every ancestor is now known link-free, so probing the leaf cannot
+        # traverse one.
+        if not platform_compat.is_link_or_junction(hop):
+            return False
+        target = _link_target(hop)
+        if target is None or is_unc_shape(target):
+            return True
+        hop = target if ntpath.isabs(target) else ntpath.join(ntpath.dirname(hop), target)
+    return True  # a chain longer than the OS would follow is refused, not probed
+
+
+def _link_screen(child: Path, roots: list[Path] | None = None) -> str:
+    """Verdict for a directory child BEFORE anything follows it: ``ok``, ``drop``
+    or ``opaque``.
+
+    Every caller that sorts or stats children must ask this first. ``is_dir()`` --
+    which both ``_entry_sort_key`` and the completion endpoint call -- FOLLOWS a
+    symlink or junction, and on Windows following one aimed at a share
+    authenticates this process against that host, so the target's shape and
+    policy have to be settled before the first probe.
+
+    ``opaque`` means the child is a link whose target could not be validated: it
+    may be NAMED but never probed. A tree listing reports it as ``missing`` so an
+    unreadable sibling does not vanish; a caller with nothing to show for it drops
+    it instead.
+    """
+    if not _is_link_like(child):
+        return "ok"
+    if _link_chain_reaches_unc(child):
+        return "drop"
+    try:
+        target = child.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return "opaque"
+    if not _is_in_allowed_roots(target, roots) or _is_sensitive(target):
+        return "drop"
+    return "ok"
+
+
 def _entry_sort_key(p: Path) -> tuple[bool, str]:
     # Dirs first, then case-insensitive name. is_dir() can raise on an
     # unreadable entry; treat that as a non-dir so one bad sibling never
@@ -541,30 +830,31 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
     """List directory contents up to ``depth`` levels (1 = immediate children).
     Returns (entries, truncated)."""
     # Re-contain the listing root so iterdir() consumes the RETURN of a raising
-    # ALLOWED_ROOTS barrier (idempotent for the contained Path callers pass;
+    # allowed-roots barrier (idempotent for the contained Path callers pass;
     # makes the containment legible to CodeQL py/path-injection). Descent into
     # subdirs is already gated by the _is_within check in walk().
     p = _contain_in_allowed_roots(p, operation="tree_list")
     count = [0]
+    # One snapshot for the whole walk, not one read per child.
+    roots = _effective_allowed_roots()
 
     def walk(d: Path, rem: int) -> list[dict]:
         if count[0] >= MAX_TREE_ENTRIES:
             return []
         # A failure opening the directory is a real directory-level error; a
-        # failure statting one child (e.g. a TCC-protected ~/.docker) must not.
-        # Keep the sort key from raising so one bad sibling doesn't collapse the
-        # whole listing.
+        # failure statting one child (e.g. a TCC-protected ~/.docker) must not
+        # collapse the whole listing.
         try:
-            entries = sorted(d.iterdir(), key=_entry_sort_key)
+            children = list(d.iterdir())
         except (OSError, PermissionError) as exc:
             return [{"name": d.name, "path": str(d), "type": "error", "error": str(exc)}]
-        items: list[dict] = []
-        for child in entries:
-            if count[0] >= MAX_TREE_ENTRIES:
-                items.append(
-                    {"name": "...", "path": str(d), "type": "truncated", "size": 0, "mtime": 0}
-                )
-                break
+
+        # Classify before sorting. _entry_sort_key probes is_dir(), which FOLLOWS
+        # a symlink or junction, so a reparse point must be judged by its target
+        # before anything -- the sort included -- can follow it. The bool records
+        # whether the entry may be probed at all.
+        classified: list[tuple[Path, bool]] = []
+        for child in children:
             if _is_sensitive_dir_name(child.name):
                 continue
             # Deny-by-default for the crew data-home root listing: show ONLY the
@@ -576,18 +866,46 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
                 continue
             if ignore and child.name in IGNORE_DIRS:
                 continue
+            verdict = _link_screen(child, roots)
+            if verdict == "drop":
+                continue
+            # "opaque": name it, never probe it -- the same "missing" sentinel
+            # _entry_meta uses for an unreadable entry.
+            classified.append((child, verdict == "ok"))
+
+        def sort_key(item: tuple[Path, bool]) -> tuple[bool, str]:
+            child, probe_ok = item
+            # An unprobeable entry cannot be asked whether it is a directory.
+            return _entry_sort_key(child) if probe_ok else (True, child.name.lower())
+
+        items: list[dict] = []
+        for child, probe_ok in sorted(classified, key=sort_key):
+            if count[0] >= MAX_TREE_ENTRIES:
+                items.append(
+                    {"name": "...", "path": str(d), "type": "truncated", "size": 0, "mtime": 0}
+                )
+                break
             count[0] += 1
+            if not probe_ok:
+                items.append(
+                    {
+                        "name": child.name,
+                        "path": str(child),
+                        "type": "missing",
+                        "size": 0,
+                        "mtime": 0,
+                    }
+                )
+                continue
             meta = _entry_meta(child)
             if rem > 1 and meta["type"] == "dir":
                 # resolve() can raise on an unreadable child; skip recursion
                 # for it rather than aborting the listing.
                 try:
                     resolved_child = child.resolve()
-                except OSError:
+                except (OSError, RuntimeError, ValueError):
                     resolved_child = None
-                if resolved_child is not None and any(
-                    _is_within(resolved_child, root) for root in ALLOWED_ROOTS
-                ):
+                if resolved_child is not None and _is_in_allowed_roots(resolved_child, roots):
                     meta["children"] = walk(child, rem - 1)
             items.append(meta)
         return items
@@ -599,7 +917,7 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
 def _is_binary_file(p: Path) -> bool:
     if p.suffix.lower() in BINARY_EXTS:
         return True
-    # Re-contain so the read sink consumes the RETURN of a raising ALLOWED_ROOTS
+    # Re-contain so the read sink consumes the RETURN of a raising allowed-roots
     # barrier (idempotent for the _safe_path'd Path the caller passes; makes the
     # containment legible to CodeQL py/path-injection).
     p = _contain_in_allowed_roots(p, operation="file_read")
@@ -642,7 +960,7 @@ def _guess_mime(p: Path) -> str:
 def _git_repo_root(p: Path) -> Path | None:
     """Walk up to find a .git directory."""
     # Re-contain the start dir so the .exists() probes consume the RETURN of a
-    # raising ALLOWED_ROOTS barrier (idempotent for the _safe_path'd Path the
+    # raising allowed-roots barrier (idempotent for the _safe_path'd Path the
     # caller passes; makes the containment legible to CodeQL py/path-injection).
     # The discovered repo root is separately re-contained by the caller before
     # any git command runs against it.
@@ -748,7 +1066,7 @@ def _search(root: Path, query: str, include: str = "", exclude: str = "") -> lis
 
 def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]:
     # Re-contain so the search root passed to the rg argv is the RETURN of a
-    # raising ALLOWED_ROOTS barrier (idempotent for the _safe_path'd caller
+    # raising allowed-roots barrier (idempotent for the _safe_path'd caller
     # value; makes the containment legible to CodeQL py/path-injection).
     root = _contain_in_allowed_roots(root, operation="file_search")
     cmd = [
@@ -867,7 +1185,7 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
 
 def _search_python(root: Path, query: str, include: str, exclude: str) -> list[dict]:
     # Re-contain the walk root so os.walk() + the per-file read sink below
-    # consume the RETURN of a raising ALLOWED_ROOTS barrier (idempotent for the
+    # consume the RETURN of a raising allowed-roots barrier (idempotent for the
     # _safe_path'd Path the caller passes; makes the containment legible to
     # CodeQL py/path-injection — walked descendants clear transitively).
     root = _contain_in_allowed_roots(root, operation="file_search")
@@ -1065,15 +1383,15 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         # _safe_path, but we expose only safe children via the dedicated helper.
         # SECURITY: the user-derived path is fully sanitized BEFORE any filesystem
         # access — ``_expand`` + ``.resolve()`` collapse ``..`` and symlinks, and
-        # ``_contain_in_allowed_roots`` rejects anything outside ALLOWED_ROOTS and
-        # raises. Only the returned, containment-checked path is ever stat'd or
+        # ``_contain_in_allowed_roots`` rejects anything outside the effective
+        # allowed roots and raises. Only the returned, containment-checked path is ever stat'd or
         # read (``.exists()``/``.is_dir()``/``_kirocrew_safe_children``), so no
         # untrusted value reaches a filesystem operation (closes CodeQL
         # py/path-injection: the guard dominates every path use below).
         expanded = _expand(raw)
         if _is_crew_home_root(expanded):
             resolved = _contain_in_allowed_roots(expanded, operation="tree_list")
-            # ``resolved`` is the return of the raising ALLOWED_ROOTS barrier, so
+            # ``resolved`` is the return of the raising allowed-roots barrier, so
             # it is contained; CodeQL doesn't trace the barrier across the call,
             # so suppress its py/path-injection flag on these stat-only ops.
             if resolved.exists() and resolved.is_dir():  # lgtm[py/path-injection]
@@ -1174,7 +1492,7 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         repo = _git_repo_root(p if p.is_dir() else p.parent)
         if not repo:
             return self._json(200, {"repoRoot": "", "branch": "", "statuses": {}})
-        if not any(_is_within(repo, root) for root in ALLOWED_ROOTS):
+        if not _is_in_allowed_roots(repo):
             raise PathError(f"git repo root not allowed: {repo}", 403)
         return self._json(200, _git_status(repo))
 
@@ -1257,9 +1575,19 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
 
         results: list[dict] = []
         try:
-            children = sorted(parent.iterdir(), key=_entry_sort_key)
+            raw_children = list(parent.iterdir())
         except (OSError, PermissionError):
             return self._json(200, {"entries": []})
+        # Screen links BEFORE the sort, for the same reason _list_dir does:
+        # _entry_sort_key probes is_dir(), which follows a symlink or junction, so
+        # a planted junction aimed at a share would authenticate during sorting.
+        # A completion has nothing to offer for a child it cannot validate, so
+        # "opaque" drops here rather than degrading to a named entry.
+        roots = _effective_allowed_roots()
+        children = sorted(
+            (child for child in raw_children if _link_screen(child, roots) == "ok"),
+            key=_entry_sort_key,
+        )
 
         plower = prefix.lower()
         for child in children:

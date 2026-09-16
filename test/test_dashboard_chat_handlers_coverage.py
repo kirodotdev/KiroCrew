@@ -511,6 +511,22 @@ class TestRecentProjects:
         stored = json.loads((_recent_dir / "recent_projects.json").read_text(encoding="utf-8"))
         assert stored == ["/a", "/b"]
 
+    def test_the_stored_schema_stays_a_flat_list_of_path_strings(self, _recent_dir):
+        """File Explorer consumes this file as AUTHORIZATION input, not just a UX
+        recency list. Any shape other than a JSON array of plain path strings --
+        entry objects, a wrapper dict, nested groups -- makes its reader drop every
+        entry and a recorded project 403s again, which is the symptom users cannot
+        diagnose. Change the shape here and that reader must change with it.
+        """
+        ch._save_recent_project("/a")
+        ch._save_recent_project("/b")
+
+        stored = json.loads((_recent_dir / "recent_projects.json").read_text(encoding="utf-8"))
+
+        assert isinstance(stored, list), stored
+        assert all(isinstance(entry, str) for entry in stored), stored
+        assert all(entry for entry in stored), stored
+
     def test_save_caps_the_list(self, _recent_dir):
         fp = _recent_dir / "recent_projects.json"
         fp.write_text(json.dumps([f"/p{i}" for i in range(ch._MAX_RECENT_PROJECTS + 20)]), "utf-8")
