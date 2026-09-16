@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew.mcp_gateway import rewriter
 from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.mcp_gateway.rewriter import (
@@ -610,6 +611,66 @@ def test_socket_and_work_dir_change_invalidates(
     assert rewrite_counter["n"] == before + 2
     _rewrite(tmp_path, socket_path=tmp_path / "other.sock", work_dir=tmp_path / "wd2")
     assert rewrite_counter["n"] == before + 4
+
+
+def test_pre_casing_schema_forces_regeneration(
+    tmp_path: Path, rewrite_counter: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schema 5 overlays can embed the PATHEXT spelling and must be rebuilt."""
+    _mk_tree(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(rewriter, "_FINGERPRINT_SCHEMA", 5)
+        _rewrite(tmp_path)
+    before = rewrite_counter["n"]
+    _rewrite(tmp_path)
+    assert rewrite_counter["n"] == before + 2
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows executable casing")
+@pytest.mark.parametrize("transient_settings_fault", [False, True])
+@pytest.mark.parametrize("rename_command", [False, True])
+def test_windows_casing_is_revalidated_on_cached_and_kept_overlays(
+    tmp_path: Path,
+    rewrite_counter: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    transient_settings_fault: bool,
+    rename_command: bool,
+) -> None:
+    """A case-only binary rename changes dispatch even when which stays identical."""
+    real_bin_dir = tmp_path / "Real Bin"
+    real_bin_dir.mkdir()
+    bin_dir = tmp_path / "Linked Bin"
+    make_dir_link(bin_dir, real_bin_dir)
+    filename = "casing-mcp.exe"
+    exe = real_bin_dir / filename
+    exe.touch()
+    expected = bin_dir / filename
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("PATHEXT", ".EXE")
+    src = _mk_tree(tmp_path, n_agents=1, with_env=False)
+    spec_path = src / "agent-0.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["mcpServers"]["srv"]["command"] = "casing-mcp"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    first = _rewrite(tmp_path)
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    written = json.loads(overlay.read_text(encoding="utf-8"))
+    flags = expand_stub_flags(written["mcpServers"]["srv"]["args"])
+    assert flags[flags.index("--target-command") + 1] == str(expected)
+    before = rewrite_counter["n"]
+    if rename_command:
+        filename = "CASING-mcp.exe"
+        exe = exe.rename(exe.with_name(filename))
+        expected = bin_dir / filename
+    with _settings_unreadable() if transient_settings_fault else contextlib.nullcontext():
+        second = _rewrite(tmp_path)
+    assert rewrite_counter["n"] == before + int(rename_command)
+    if not rename_command:
+        # A transient keep reports no rewrites, but still publishes its targets.
+        assert second[1] == first[1]
+    written = json.loads(overlay.read_text(encoding="utf-8"))
+    flags = expand_stub_flags(written["mcpServers"]["srv"]["args"])
+    assert flags[flags.index("--target-command") + 1] == str(expected)
 
 
 def test_path_env_change_invalidates(

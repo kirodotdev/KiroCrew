@@ -25,6 +25,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import ntpath
 import os
 import re
 import shlex
@@ -106,7 +107,8 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # relock — so an older fingerprint still validates correctly, and bumping would
 # gratuitously defeat the transient-keep gate (which compares stored vs current
 # inputs) on the first upgraded boot.
-_FINGERPRINT_SCHEMA = 5
+# 6: target commands and recorded probes carry their on-disk Windows casing.
+_FINGERPRINT_SCHEMA = 6
 
 
 @dataclass
@@ -114,7 +116,8 @@ class _RewritePassNotes:
     """Observations from one full rewrite pass that decide cacheability.
 
     ``which_results`` records every ``shutil.which`` probe as
-    ``(bare_command, search_path) -> resolved-or-""``. The resolved path is an
+    ``(bare_command, search_path) -> resolved-or-""``, with Windows on-disk
+    casing restored. The resolved path is an
     OUTPUT of filesystem state the stat-based fingerprint cannot see (a binary
     removed from, added to, or shadowed within an unchanged PATH), so the
     cache-hit path re-runs exactly these probes and compares — a disagreement
@@ -184,6 +187,38 @@ _TARGET_ARGS_FLAG_LEGACY = "--target-args"
 _STUB_MODULE = STUB_MODULE
 
 
+def _target_command_casing(path: str | None) -> str:
+    """Restore a PATH-resolved Windows basename without resolving aliases.
+
+    ``which`` can synthesize ``.EXE`` from PATHEXT. Looking up the matching
+    parent-directory entry repairs that spelling while retaining the lexical
+    parent route and a file symlink's own name. POSIX paths stay untouched.
+    """
+    if not path:
+        return ""
+    if not platform_compat.IS_WINDOWS:
+        return path
+    parent, name = os.path.split(path)
+    if not name:
+        return path
+    folded = ntpath.normcase(name)
+    matches: list[str] = []
+    try:
+        with os.scandir(parent or os.curdir) as entries:
+            for entry in entries:
+                if entry.name == name:
+                    return path
+                if ntpath.normcase(entry.name) == folded:
+                    matches.append(entry.name)
+    except OSError:
+        return path
+    # A case-sensitive Windows directory may legally contain ambiguous names.
+    # Never turn the requested launcher into a different directory entry.
+    if len(matches) != 1:
+        return path
+    return path[: -len(name)] + matches[0]
+
+
 def _resolve_target_command(
     target_command: str,
     env_pairs: dict[str, Any],
@@ -220,6 +255,10 @@ def _resolve_target_command(
         # session, so failing it in the session (visible) beats a per-session
         # pooled-spawn-then-fallback cycle.
         if os.path.isfile(target_command) and os.access(target_command, os.X_OK):
+            # PATHEXT did not synthesize this spelling: it came from the
+            # operator's spec. Preserve it exactly, including any deliberate
+            # file or directory alias, and keep absolute paths outside the
+            # bare-command probe cache as they were before schema 6.
             return target_command
         return ""
     # spec_path_key, not a literal "PATH" lookup: Windows-authored specs
@@ -232,12 +271,12 @@ def _resolve_target_command(
     # augmented host PATH. It also degrades a non-string PATH and dedups, so one
     # malformed hand-edited spec cannot abort the rewrite pass.
     search_path = mcp_search_path(env_path)
-    resolved = shutil.which(target_command, path=search_path)
+    resolved = _target_command_casing(shutil.which(target_command, path=search_path))
     if notes is not None:
         notes.which_results[
             f"{target_command}{_WHICH_KEY_SEP}{search_path}"
-        ] = resolved or ""
-    return resolved or ""
+        ] = resolved
+    return resolved
 
 
 def _normalized_env(entry: dict[str, Any], *, context: str = "") -> dict[str, Any]:
@@ -1119,7 +1158,7 @@ def _kept_artifacts_vouched(
     for key, recorded in which_probes.items():
         bare, _, search_path = key.partition(_WHICH_KEY_SEP)
         try:
-            current = shutil.which(bare, path=search_path) or ""
+            current = _target_command_casing(shutil.which(bare, path=search_path))
         except OSError:
             return False
         if current != recorded:
@@ -1342,7 +1381,7 @@ def _cached_rewrite_result(
     for key, recorded in stored["which"].items():
         bare, _, search_path = key.partition(_WHICH_KEY_SEP)
         try:
-            current = shutil.which(bare, path=search_path) or ""
+            current = _target_command_casing(shutil.which(bare, path=search_path))
         except OSError:
             return None
         if current != recorded:

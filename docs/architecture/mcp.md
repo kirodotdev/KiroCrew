@@ -595,6 +595,28 @@ are CONSTRUCTED and cannot be changed afterwards. `socket_path`, `overlay_dir`,
 once at spawn, so they too are marked `restart=True` in the config schema and
 apply to a broker started after the change.
 
+### Windows target command spelling
+
+Before writing `--target-command`, the rewriter restores the on-disk basename
+of a bare Windows command resolved through `shutil.which`. `which` can append
+uppercase `.EXE` from `PATHEXT` even when the file is named `demo-mcp.exe`.
+Windows can open that path, but a launcher that dispatches by its own basename
+with a case-sensitive lookup can reject it. The rewriter scans the resolved
+path's parent directory and substitutes the unique case-insensitive basename
+match instead of canonicalizing the full path.
+
+That narrow lookup preserves the lexical parent route (including a directory
+junction) and a file symlink's own name. Explicit absolute commands did not pass
+through `PATHEXT` and retain the operator's spelling unchanged. Empty or
+unresolvable commands remain unwrapped; an `OSError` while reading the parent,
+or an ambiguous case-insensitive match in a case-sensitive directory, keeps the
+`which` result. POSIX paths are unchanged. The normal cache-hit and
+transient-keep checks compare the same normalized bare-command probes, so a
+case-only rename invalidates a cached resolution without changing its alias
+route. Fingerprint schema 6 regenerates overlays carrying older bare-command
+spellings. Stub argv and the daemon target map therefore consume the same
+command string.
+
 ### Stub argument transport
 
 Generated overlays carry backend arguments as a base64url-encoded UTF-8 JSON
