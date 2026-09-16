@@ -74,7 +74,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     }
     : saveMutation.error
       ? {
-        title: i18nT('apps.specBuilder.components.settingsModal.couldn_t_save_these_settings_try_again'),
+        title: i18nT('apps.specBuilder.components.settingsModal.couldn_t_save_these_settings'),
         message: (saveMutation.error as Error).message,
       }
       : null
@@ -83,11 +83,16 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     <Modal
       open
       onClose={onClose}
+      // No dismissal while the write is pending: Cancel here, X / Escape /
+      // backdrop via the host. A dismissal mid-write unmounts this modal, and
+      // a rejection settling after that has nowhere to render -- the failure
+      // would be dropped. Holding the modal open keeps every failure on screen.
+      dismissDisabled={busy}
       title={i18nT('apps.specBuilder.components.settingsModal.settings')}
       maxWidth={520}
       footer={
         <>
-          <Btn label={i18nT('apps.specBuilder.components.settingsModal.cancel')} onClick={onClose} />
+          <Btn label={i18nT('apps.specBuilder.components.settingsModal.cancel')} disabled={busy} onClick={onClose} />
           <Btn label={busy ? i18nT('apps.specBuilder.components.settingsModal.saving') : i18nT('apps.specBuilder.components.settingsModal.save')} primary disabled={busy || unloaded} onClick={save} />
         </>
       }

@@ -43,7 +43,7 @@ describe('SettingsModal error surface', () => {
 
     // Translated lead + the raw reason, both inside the dialog the user is in.
     const alert = await within(dialog()).findByRole('alert')
-    expect(alert).toHaveTextContent('Couldn’t save these settings — try again.')
+    expect(alert).toHaveTextContent('Couldn’t save these settings.')
     expect(alert).toHaveTextContent('settings file is read-only')
     // The modal only closes on success; the failure must not read as a close.
     expect(onClose).not.toHaveBeenCalled()
@@ -52,12 +52,41 @@ describe('SettingsModal error surface', () => {
     await waitFor(() => expect(saveButton()).toBeEnabled())
   })
 
+  it('cannot be dismissed while the save is pending, so a late failure still lands', async () => {
+    vi.spyOn(specApi, 'getSettings').mockResolvedValue({ base_path: '/srv/specs', model: '' })
+    let reject: (e: Error) => void = () => {}
+    vi.spyOn(specApi, 'saveSettings').mockReturnValue(new Promise((_, r) => { reject = r }) as never)
+    const onClose = vi.fn()
+    renderModal(newClient(), onClose)
+
+    await waitFor(() => expect(saveButton()).toBeEnabled())
+    fireEvent.click(saveButton())
+    await waitFor(() => expect(screen.getByRole('button', { name: /saving/i })).toBeDisabled())
+
+    // Every dismissal path is refused while the write is in flight, and the
+    // refusal is visible on both explicit controls.
+    expect(screen.getByRole('button', { name: /^cancel$/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /close/i })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /close/i }))
+    fireEvent.keyDown(dialog(), { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+
+    // The write settles late, and the failure has a mounted dialog to land in.
+    reject(new Error('settings file is read-only'))
+    const alert = await within(dialog()).findByRole('alert')
+    expect(alert).toHaveTextContent('settings file is read-only')
+    // Dismissal is available again once the write has settled.
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('renders a failed read inside the dialog, explaining the disabled Save', async () => {
     vi.spyOn(specApi, 'getSettings').mockRejectedValue(new Error('settings unavailable'))
     renderModal(newClient())
 
     const alert = await within(dialog()).findByRole('alert')
-    expect(alert).toHaveTextContent('Couldn’t load these settings.')
+    expect(alert).toHaveTextContent('Couldn’t load these settings, so saving is off until they load.')
     expect(alert).toHaveTextContent('settings unavailable')
     expect(saveButton()).toBeDisabled()
   })
