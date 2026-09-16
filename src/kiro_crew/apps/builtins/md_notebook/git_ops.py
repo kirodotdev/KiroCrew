@@ -31,6 +31,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 
 logger = logging.getLogger(__name__)
 
@@ -893,12 +894,16 @@ async def repo_supplied_driver(dir_: str) -> str:
     driver-free, so the caller must not proceed.
     """
     scopes = ["--local"]
+    # --bool folds every git-true spelling (yes/on/1/valueless) to "true"; a
+    # raw string compare misses those spellings and skips the scope git still
+    # honors. A garbled value exits non-zero here AND kills the guarded git
+    # command itself with the same parse error, so skipping the scope is safe.
     code, out, _ = await run_git(
-        ["config", "--local", "--includes", "--get", "extensions.worktreeConfig"],
+        ["config", "--local", "--includes", "--bool", "--get", "extensions.worktreeConfig"],
         dir_,
         check=False,
     )
-    if code == 0 and out.strip().lower() == "true":
+    if code == 0 and out.strip() == "true":
         scopes.append("--worktree")
 
     for scope in scopes:
@@ -910,6 +915,21 @@ async def repo_supplied_driver(dir_: str) -> str:
             # the probe itself failed and we cannot clear the repo.
             if out.strip() == "" and err.strip() == "":
                 continue
+            if scope == "--worktree":
+                # Probe-first, classify after: git creates config.worktree
+                # lazily, so a probe that failed on a genuinely ABSENT file is
+                # the empty scope, not an unreadable one (the shared decision
+                # in kiro_crew.git_worktree_scope). The classification stats
+                # the filesystem, so it runs off the event loop.
+                gd_code, gd_out, _ = await run_git(
+                    ["rev-parse", "--absolute-git-dir"], dir_, check=False
+                )
+                if await asyncio.to_thread(
+                    worktree_probe_failure_is_empty_scope,
+                    gd_out if gd_code == 0 else "",
+                    dir_,
+                ):
+                    continue
             return "unprobeable config"
         for key in out.splitlines():
             k = key.strip().lower()

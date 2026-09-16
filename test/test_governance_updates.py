@@ -763,6 +763,30 @@ class TestRepoExecConfigRefusal:
         _git_config(repo, "--worktree", "filter.evil.process", "sh -c ':'")
         assert "filter.evil.process" in update_governance.repo_exec_config_reason(repo)
 
+    def test_worktree_extension_without_config_file_is_allowed(self, tmp_path):
+        """Extension on, `config.worktree` absent: git creates the file lazily,
+        so this is a healthy EMPTY scope, not an unreadable one. Probing it
+        anyway exits 128 and misreports a filter-free repo as unprobeable."""
+        repo = _init_repo(tmp_path / "wt-nofile")
+        _git_config(repo, "--local", "extensions.worktreeConfig", "true")
+        assert not (pathlib.Path(repo) / ".git" / "config.worktree").exists()
+        assert update_governance.repo_exec_config_reason(repo) == ""
+
+    @pytest.mark.parametrize("spelling", ["yes", "on", "1", None])
+    def test_worktree_driver_refused_under_every_true_spelling(self, tmp_path, spelling):
+        """git accepts `yes`/`on`/`1` and the valueless boolean form as TRUE for
+        `extensions.worktreeConfig`, and honors `config.worktree` under each.
+        A raw-spelling compare reads them as off and never probes the scope, so
+        a worktree-scoped driver executes unseen; `--bool` folds them all."""
+        repo = _init_repo(tmp_path / f"wt-{spelling or 'valueless'}")
+        if spelling is None:
+            with open(pathlib.Path(repo) / ".git" / "config", "a") as fh:
+                fh.write("[extensions]\n\tworktreeConfig\n")
+        else:
+            _git_config(repo, "--local", "extensions.worktreeConfig", spelling)
+        _git_config(repo, "--worktree", "filter.evil.process", "sh -c ':'")
+        assert "filter.evil.process" in update_governance.repo_exec_config_reason(repo)
+
     def test_included_driver_is_refused(self, tmp_path):
         """For a SPECIFIC scope query git defaults include-following OFF.
 
