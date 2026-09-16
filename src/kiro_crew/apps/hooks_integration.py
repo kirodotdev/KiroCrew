@@ -934,11 +934,14 @@ async def on_gateway_shutdown() -> None:
     retained prior-generation orphan record stays recoverable by the next
     boot's stale-reap.
     """
-    # list_apps() walks the apps dir (two file reads per app) — off the loop.
-    installed = await asyncio.to_thread(list_apps)
-    enabled = [a for a in installed if a.get("enabled")]
-
     try:
+        # list_apps() walks the apps dir (two file reads per app) — off the
+        # loop. Inside the try: the sweep in the finally block must run even
+        # when this walk raises, or a filesystem failure during shutdown would
+        # skip stopping the backends this gateway spawned.
+        installed = await asyncio.to_thread(list_apps)
+        enabled = [a for a in installed if a.get("enabled")]
+
         if _lifecycle_dispatcher and enabled:
             invoked = await _lifecycle_dispatcher.dispatch_shutdown(enabled)
             if invoked:

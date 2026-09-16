@@ -396,8 +396,9 @@ def _reverify_refused_target(refused_base: str) -> tuple[str, str] | None:
     * the port is not PROVEN to be held by this user's gateway. The source
       label alone cannot carry that proof: ``KIROCREW_BOUND_PORT`` is
       inherited process state naming the gateway that SPAWNED us, exported
-      once its site was listening (``dashboard.server._export_bound_port``),
-      and it ranks above the marker step — so ``bound``, not ``marker``, is
+      from the port that gateway owns (reserved pre-listen on the dashboard
+      path, republished by ``dashboard.server._export_bound_port`` once its
+      site serves), and it ranks above the marker step — so ``bound``, not ``marker``, is
       the source for every gateway-spawned process, and it is never
       ownership-checked. A refusal is affirmative evidence the previous owner
       is gone, and a retry that SLEEPS first is exactly the window in which

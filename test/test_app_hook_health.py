@@ -442,3 +442,35 @@ class TestListAppsSurfacesHookHealth:
         payload = json.loads(resp.text)
         assert payload[0]["hooks"]["health_status"]["issues"] == ["REDACTED"]
         assert hooks_mod._hook_health["broken-app"]["issues"] == ["Route module load failed: boom"]
+
+
+class TestShutdownSweepRunsDespiteDiscoveryFailure:
+    """The gateway-shutdown backend sweep survives a failing app-dir walk.
+
+    ``on_gateway_shutdown`` enumerates installed apps (``list_apps`` walks the
+    apps dir) to dispatch on_shutdown hooks. That walk lives INSIDE the try
+    whose ``finally`` stops the spawned backends: a filesystem failure during
+    shutdown must not skip stopping the backends this gateway spawned — the
+    exact orphan class the sweep exists to prevent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_backends_are_stopped_when_list_apps_raises(self, monkeypatch):
+        swept: list[bool] = []
+
+        async def _spy_sweep() -> None:
+            swept.append(True)
+
+        def _boom():
+            raise OSError("apps dir unreadable mid-shutdown")
+
+        monkeypatch.setattr(hooks_mod, "list_apps", _boom)
+        monkeypatch.setattr(hooks_mod, "_stop_spawned_backends", _spy_sweep)
+
+        with pytest.raises(OSError, match="apps dir unreadable"):
+            await hooks_mod.on_gateway_shutdown()
+
+        assert swept == [True], (
+            "the finally-sweep must stop spawned backends even when app "
+            "discovery raises mid-shutdown"
+        )

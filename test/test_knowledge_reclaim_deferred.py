@@ -338,7 +338,10 @@ class TestGatewayKick:
         source = inspect.getsource(srv.start_dashboard)
         kick = "_kick_knowledge_orphan_reclaim(state)"
         assert kick in source
-        assert source.index("_start_site(site, port)") < source.index(kick)
+        # The serving step: the pre-reserved socket is handed to SockSite and
+        # listen()ed inside start_dashboard (the reservation itself binds
+        # earlier, deliberately — see _reserve_dashboard_port).
+        assert source.index("await site.start()") < source.index(kick)
         assert "_kick_knowledge_orphan_reclaim" not in inspect.getsource(KnowledgeStore.__init__)
 
 

@@ -159,12 +159,14 @@ async def test_maintainer_bounds_executor_wait_and_does_not_resubmit(monkeypatch
 def test_gateway_trim_maintainer_is_created_after_socket_bind() -> None:
     source = Path(__file__).parents[1] / "src" / "kiro_crew" / "dashboard" / "server.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
-    start_site_line = next(
+    start_serving_line = next(
         node.lineno
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_start_site"
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "SockSite"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "web"
     )
     maintainer_calls = [
         node
@@ -176,4 +178,4 @@ def test_gateway_trim_maintainer_is_created_after_socket_bind() -> None:
         and node.func.attr == "HeapTrimMaintainer"
     ]
     assert len(maintainer_calls) == 1
-    assert maintainer_calls[0].lineno > start_site_line
+    assert maintainer_calls[0].lineno > start_serving_line

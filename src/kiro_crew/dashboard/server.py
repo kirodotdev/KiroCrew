@@ -9,6 +9,7 @@ import faulthandler
 import functools
 import logging
 import os
+import socket
 import stat
 import sys
 import time
@@ -1909,7 +1910,7 @@ async def _start_site(
                     outcome = ""
                 if outcome == RECLAIMED:
                     logger.warning(
-                        "Reclaimed port %d from a stale KiroCrew gateway — rebinding.",
+                        "Reclaimed port %d from a stale Kiro Crew gateway — rebinding.",
                         port,
                     )
                 elif outcome not in (HEALTHY_PEER, FOREIGN_HOLDER):
@@ -1926,7 +1927,113 @@ async def _start_site(
             if attempt < retries - 1:
                 await asyncio.sleep(delay)
     logger.error(
-        "Port %d still in use after %.0fs — is another KiroCrew gateway running?\n"
+        "Port %d still in use after %.0fs — is another Kiro Crew gateway running?\n"
+        "Stop it with: kirocrew stop  or  sudo systemctl stop kirocrew",
+        port,
+        retries * delay,
+    )
+    raise SystemExit(1) from last_exc
+
+
+async def _reserve_dashboard_port(
+    host: str,
+    port: int,
+    *,
+    retries: int = 30,
+    delay: float = 0.5,
+    reclaim: Callable[[int], Awaitable[str]] | None = None,
+) -> socket.socket:
+    """Bind AND listen on the dashboard port; return the owned socket.
+
+    This is _start_site's reclaim/retry contract moved to the moment of BIND,
+    so the gateway OWNS its port before anything downstream (the app-backend
+    boot pass) acts on the port's value. Bound-and-LISTENING is the reserved
+    state: entering TCP_LISTEN is what makes any overlap bind a hard
+    EADDRINUSE for other processes (see the listen() note in _bind_once), yet
+    nothing is served — connections queue in the kernel backlog until the
+    runner wraps the socket in a SockSite and starts accepting. The bound
+    socket's real name is also what makes ``--port auto`` (port 0) knowable
+    BEFORE the app backends spawn.
+
+    Same recovery ladder as _start_site: first EADDRINUSE probes/reclaims a
+    stale Kiro Crew holder, otherwise wait up to retries*delay for a graceful
+    handover, then SystemExit(1). Non-EADDRINUSE OSErrors re-raise.
+    """
+    _reclaim = reclaim if reclaim is not None else reclaim_stale_gateway_port
+
+    def _bind_once() -> socket.socket:
+        """One synchronous reservation attempt, run off the loop.
+
+        Family-resolved from *host* (KIROCREW_BIND may name an IPv6 address
+        such as ``::`` or an interface-specific literal — an AF_INET socket
+        cannot bind those), and offloaded because getaddrinfo on a non-literal
+        host and the bind syscall are blocking work that must not run on the
+        sole event loop (no-blocking-call-on-event-loop).
+        """
+        family = socket.AF_INET
+        with contextlib.suppress(OSError):
+            family = socket.getaddrinfo(
+                host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+            )[0][0]
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            # Parity with asyncio.create_server (what TCPSite used here
+            # before): SO_REUSEADDR on POSIX so TIME_WAIT from our own prior
+            # generation does not block the rebind. NOT on Windows, where
+            # SO_REUSEADDR allows live port hijack instead.
+            if os.name == "posix":
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+            # listen() IMMEDIATELY — this is load-bearing, not cosmetic. A
+            # SO_REUSEADDR socket that is bound but NOT listening permits a
+            # co-resident process to overlap-bind the same port (both the
+            # exact and the specific-over-wildcard forms) and steal the
+            # loopback callbacks carrying app secrets; entering TCP_LISTEN
+            # makes that bind a hard EADDRINUSE conflict (create_server's own
+            # posture — main's TCPSite listened at bind and never had the
+            # window). Listening does NOT serve anything: connections queue in
+            # the backlog until SockSite.start() attaches the HTTP protocol,
+            # so the boot pass stays race-free and an early child callback
+            # waits instead of being refused.
+            sock.listen(128)
+        except BaseException:
+            sock.close()
+            raise
+        return sock
+
+    last_exc: OSError | None = None
+    for attempt in range(retries):
+        try:
+            return await asyncio.to_thread(_bind_once)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            last_exc = exc
+            if attempt == 0:
+                try:
+                    outcome = await _reclaim(port)
+                except Exception:  # never let a reclaim bug block startup
+                    logger.exception(
+                        "Port %d reclaim probe failed — falling back to wait/retry.",
+                        port,
+                    )
+                    outcome = ""
+                if outcome == RECLAIMED:
+                    logger.warning(
+                        "Reclaimed port %d from a stale Kiro Crew gateway — rebinding.",
+                        port,
+                    )
+                elif outcome not in (HEALTHY_PEER, FOREIGN_HOLDER):
+                    logger.warning(
+                        "Port %d in use — waiting up to %.0fs for the previous"
+                        " gateway to release it…",
+                        port,
+                        retries * delay,
+                    )
+            if attempt < retries - 1:
+                await asyncio.sleep(delay)
+    logger.error(
+        "Port %d still in use after %.0fs — is another Kiro Crew gateway running?\n"
         "Stop it with: kirocrew stop  or  sudo systemctl stop kirocrew",
         port,
         retries * delay,
@@ -4103,18 +4210,60 @@ async def start_dashboard(
     # gateway restart.
     setup_link_meta_routes(app)
 
-    # Start backends for enabled apps on the subprocess_executor bulkhead: the
-    # startup stale-reap shells out to `ps` per orphan and may SIGTERM→sleep→
-    # SIGKILL for seconds, and start_app_backend blocks on a survival poll — all
-    # wedge-prone blocking work that would freeze this event loop if run inline.
-    # subprocess_executor (not the default to_thread pool) isolates it so a hung
-    # `ps` cannot starve asyncio's default executor (the RFC's bulkhead intent).
-    await cautious_boot.pause_before("app backends")
-    started_apps = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), start_enabled_app_backends
-    )
-    if started_apps:
-        logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))
+    # Reserve the dashboard port BEFORE the app-backend boot pass below, and
+    # publish the reserved socket's REAL name as bound-port evidence (the
+    # origin/proof injection in apps.backend is fail-closed on
+    # KIROCREW_BOUND_PORT). Bound-and-LISTENING is the point: this gateway
+    # OWNS the port kernel-hard — a squatter cannot overlap-bind it while
+    # backends spawn trusting its value, which is what made exporting the mere
+    # CONFIGURED port a credential-exposure window (a backend would present
+    # its X-App-Secret to whatever answered there). Nothing is served yet —
+    # connections queue in the backlog until the runner wraps this socket and
+    # starts accepting — so no HTTP lifecycle handler can race the boot pass,
+    # and an early child callback waits instead of being refused. Binding here
+    # also makes --port auto (port == 0) real before the spawn: every
+    # boot-spawned backend gets the true origin, fixed and auto alike.
+    _dashboard_sock = await _reserve_dashboard_port(bind_address_for(local_only), port)
+    try:
+        os.environ["KIROCREW_BOUND_PORT"] = str(_dashboard_sock.getsockname()[1])
+        # Callback-host evidence, classified by FAMILY. IPv4 loopback and
+        # wildcard binds are reachable at 127.0.0.1 (absent var = that
+        # default, the shape every existing bound-port consumer assumes). An
+        # IPv6 loopback or wildcard bind is NOT: KIROCREW_BIND=::1 listens
+        # only on the v6 loopback and leaves IPv4 127.0.0.1:<port> unbound —
+        # seizable by a co-resident, which would then receive the backends'
+        # secrets — so those export ::1 (reaches a v6-loopback, v6-wildcard,
+        # and dual-stack listener alike; the injection brackets it). A
+        # SPECIFIC-interface bind of either family exports its own address.
+        _bind_ip = str(_dashboard_sock.getsockname()[0])
+        if _bind_ip in ("::", "::1"):
+            os.environ["KIROCREW_BOUND_HOST"] = "::1"
+        elif _bind_ip in ("0.0.0.0", "127.0.0.1", ""):
+            os.environ.pop("KIROCREW_BOUND_HOST", None)
+        else:
+            os.environ["KIROCREW_BOUND_HOST"] = _bind_ip
+
+        # Start backends for enabled apps on the subprocess_executor bulkhead:
+        # the startup stale-reap shells out to `ps` per orphan and may SIGTERM→
+        # sleep→SIGKILL for seconds, and start_app_backend blocks on a survival
+        # poll — all wedge-prone blocking work that would freeze this event loop
+        # if run inline. subprocess_executor (not the default to_thread pool)
+        # isolates it so a hung `ps` cannot starve asyncio's default executor
+        # (the RFC's bulkhead intent).
+        await cautious_boot.pause_before("app backends")
+        started_apps = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), start_enabled_app_backends
+        )
+        if started_apps:
+            logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))
+    except BaseException:
+        # The reserved port must not outlive a boot pass that dies here (in a
+        # host process that survives the failure — tests, embedding callers —
+        # the socket would otherwise hold the port and answer the next attempt
+        # with EADDRINUSE noise). Past this block the socket is owned by the
+        # SockSite handoff below.
+        _dashboard_sock.close()
+        raise
 
     # Both adapters are shared with the enable path (apps/routes.py) so the two
     # entry points cannot drift into giving an app different capabilities.
@@ -4530,11 +4679,29 @@ async def start_dashboard(
     # prunes it (see refresh_tokens.foreign_port_cookies).
     runner = build_hardened_runner(app, max_field_size=_MAX_HEADER_FIELD_SIZE)
     await runner.setup()
-    site = web.TCPSite(runner, bind_address_for(local_only), port)
-    await _start_site(site, port)
-    # Export the port this gateway ACTUALLY bound so child processes resolve
-    # loopback callbacks against the truth, not a re-derived config guess.
-    _export_bound_port(runner, port)
+    # Serve on the socket reserved BEFORE the app-backend boot pass (see
+    # _reserve_dashboard_port above): the socket is already listening, so
+    # SockSite.start()'s create_server re-listen is a harmless backlog update
+    # and starting to ACCEPT here drains any callbacks that queued during the
+    # pass. The origin evidence the backends were spawned with is this
+    # socket's own kernel-assigned name.
+    try:
+        site = web.SockSite(runner, _dashboard_sock)
+        await site.start()
+    except BaseException:
+        # Backends already spawned holding this socket's origin; a boot that
+        # cannot start serving must not leave them running against a gateway
+        # that will never answer. runner.cleanup() dispatches on_cleanup →
+        # _hooks_shutdown, whose sweep stops every backend this process
+        # spawned. Re-raised so the boot still fails loud.
+        with contextlib.suppress(Exception):
+            await runner.cleanup()
+        _dashboard_sock.close()
+        raise
+    # (No _export_bound_port republish here: the reservation above already
+    # exported this same socket's name before the spawn pass — the one
+    # authoritative write on this path. The headless entrypoint, which binds
+    # via _start_site with no reservation step, still exports post-listen.)
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
     _unix_socket_holder["path"] = await _start_unix_site(runner, port)
