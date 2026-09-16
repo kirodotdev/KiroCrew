@@ -64,8 +64,6 @@ _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
     "git ls-tree",
     "git cat-file",
     "git blame",
-    "brazil ws show",
-    "brazil ws list",
     "brazil workspace show",
     "brazil workspace list",
     "brazil versionset print",
@@ -1451,9 +1449,9 @@ def is_read_only_bash(cmd: str) -> bool:
 def unsafe_bash_reason(cmd: str) -> str:
     """Human-readable reason a bash command failed read-only classification.
 
-    Used to make rejection messages specific ("unsafe shell pattern …")
-    instead of the generic adapter default ("User refused permission to run
-    tool"). Returns "" when the command IS read-only (no reason to reject on
+    Makes rejection messages specific ("unsafe shell pattern …") instead of
+    the generic adapter default ("User refused permission to run tool").
+    Returns "" when the command IS read-only (no reason to reject on
     safety grounds).
     """
     return _classify_bash(cmd)

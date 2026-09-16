@@ -91,7 +91,6 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("git blame file.py") is True
 
     def test_brazil_read_commands(self):
-        assert is_read_only_bash("brazil ws show") is True
         assert is_read_only_bash("brazil versionset print --vs live") is True
         assert is_read_only_bash("brazil workspace list") is True
 
