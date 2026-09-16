@@ -552,14 +552,28 @@ def audit_decision(service: str, *, outcome: str, detail: str = "") -> None:
     cheap -- ``sel()`` writes are already the established pattern here.
     """
     try:
+        # Local imports for the same reason as in ``_redacted``: the redaction
+        # stack is heavy and the voice/STT call paths import this module for the
+        # local gate alone.
+        from kiro_crew.platform.context import redact_log_via_context
         from kiro_crew.sel import sel
 
+        # ``detail`` is caller text (a refusal reason, a credential source) bound
+        # for a durable, dashboard-readable audit field. Redaction has to run
+        # over the FULL text before the 200-char clip: clipping first cuts a
+        # credential straddling the boundary in half, and the surviving prefix
+        # matches no credential grammar, so SEL's own write-path pass cannot
+        # recover it either. The context-aware spelling is the one for a
+        # gate-side audit line (a loaded companion's patterns apply, and it
+        # never raises); the slice follows it. The ``if detail`` branch is kept
+        # on purpose: an empty ``detail`` must still emit the bare ``service``
+        # with no ``": "`` separator.
         sel().log_api_access(
             caller="operator" if outcome in ("granted", "revoked") else "gateway",
             operation=f"aws_consent.{outcome}",
             outcome=outcome,
             source="aws-consent",
-            resources=f"{service}: {detail[:200]}" if detail else service,
+            resources=f"{service}: {redact_log_via_context(detail)[:200]}" if detail else service,
         )
     except Exception:  # pragma: no cover - audit must never break the gate
         logger.debug("could not write the AWS consent audit event", exc_info=True)

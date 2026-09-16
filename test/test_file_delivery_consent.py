@@ -454,3 +454,58 @@ class TestFileSendHonoursTheGrant:
         # even ATTEMPTED for content the owner scoped to their own dashboard.
         assert "/api/outbox/notify" in posted
         assert not any("upload-file" in p for p in posted)
+
+
+class TestAuditDecisionRedactsBeforeTruncate:
+    """``audit_decision`` must redact ``detail`` BEFORE clipping it to 200 chars.
+
+    Same site shape, and the same invariant, as ``aws_consent.audit_decision``
+    (pinned in ``test_aws_consent.py``): the ``resources`` string reaches the
+    durable Security Event Log through ``log_api_access``, whose own pass runs
+    over what it is handed. A credential the caller already cut in half at index
+    200 is a fragment no credential grammar matches, so the partial secret would
+    persist in a dashboard-readable audit log. The second test pins the branch
+    the redact-first rewrite must not disturb: an empty ``detail`` still emits
+    the bare ``destination_class`` with no ``": "`` separator.
+    """
+
+    @staticmethod
+    def _capture(monkeypatch):
+        import kiro_crew.sel as sel_mod
+
+        calls: list[dict] = []
+
+        class _Recorder:
+            def log_api_access(self, **kwargs) -> None:
+                calls.append(kwargs)
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: _Recorder())
+        return calls
+
+    def test_a_credential_straddling_the_clip_is_fully_redacted(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        key = _synth_aws_key()
+        pad = "d" * (200 - 4)
+        detail = pad + key + " " + "z" * 300
+        assert len(detail) > 200
+        assert 200 - len(pad) < len(key)  # key straddles the cut
+
+        file_delivery_consent.audit_decision(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD, outcome="denied", detail=detail
+        )
+
+        assert len(calls) == 1
+        resources = calls[0]["resources"]
+        assert key[:4] not in resources, resources
+        assert resources.startswith(f"{file_delivery_consent.CLASS_OWNER_DASHBOARD}: ")
+        assert len(resources) <= len(file_delivery_consent.CLASS_OWNER_DASHBOARD) + 2 + 200
+
+    def test_an_empty_detail_still_emits_the_bare_destination_class(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+
+        file_delivery_consent.audit_decision(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD, outcome="revoked", detail=""
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["resources"] == file_delivery_consent.CLASS_OWNER_DASHBOARD
