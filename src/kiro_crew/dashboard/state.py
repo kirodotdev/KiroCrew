@@ -2752,7 +2752,6 @@ REFUSAL_INBAND_RECOVERY_PREFIX = "[Tool blocked — reason sent to the agent]"
 
 def should_queue_refusal_recovery(
     refusal_reasons: list,
-    stopping: bool,
     needs_reset: bool,
     *,
     user_stopped: bool,
@@ -2763,14 +2762,16 @@ def should_queue_refusal_recovery(
 
     Returns False (skip recovery) when:
     - No refusals occurred
-    - A stop is still in progress
     - A session reset is already re-queuing
-    - The user pressed Stop during the turn (``user_stopped``)
+    - The user stopped the turn (``user_stopped``: a stop still in flight, or
+      one that pressed and resolved during the turn)
     - Every refusal was already explained IN-BAND and the backend confirmed it
 
     ``user_stopped`` is the host's own Stop signal, read LIVE at the call: a stop
-    in flight, or ``slot._stop_generation`` moved since the turn began. It is the
-    only user-cancel input this gate takes; the backend's wire ``stopReason`` is
+    in flight (``slot._stopping``), ``slot._stop_generation`` moved since the
+    turn began, or the session manager's stop count for the turn's session key
+    moved (a stop issued from a linked channel surface). It is the only
+    user-cancel input this gate takes; the backend's wire ``stopReason`` is
     deliberately not one. The two are not the same thing: codex-acp's command
     approval advertises ``cancel`` as its ONLY reject option (measured on
     codex-acp 1.11.0 / codex 0.153.4 -- there is no ``decline``), and codex
@@ -2785,8 +2786,10 @@ def should_queue_refusal_recovery(
     The parameter is keyword-only and REQUIRED so no caller can reintroduce a
     stop-reason rule by omission. Callers must read it at the gate, not from a
     snapshot taken before an await: a Stop that presses and resolves during an
-    awaited Stop hook leaves ``stopping`` False again, and only the generation
-    counter still says it happened.
+    awaited Stop hook leaves ``slot._stopping`` False again, and only the
+    generation counters still say it happened. The in-flight stop is part of
+    that signal rather than a parameter of its own, so a caller cannot pass a
+    stale in-flight read next to a live one.
 
     ``notices_sent`` is how many :func:`build_refusal_steer_notice` bodies were
     steered into the turn, and ``notices_pending`` how many of those the
@@ -2803,23 +2806,21 @@ def should_queue_refusal_recovery(
     """
     if refusal_reasons and notices_sent >= len(refusal_reasons) and notices_pending == 0:
         return False
-    return bool(refusal_reasons and not stopping and not needs_reset and not user_stopped)
+    return bool(refusal_reasons and not needs_reset and not user_stopped)
 
 
-def should_queue_hook_continuation(
-    stopping: bool, needs_reset: bool, *, user_stopped: bool
-) -> bool:
+def should_queue_hook_continuation(needs_reset: bool, *, user_stopped: bool) -> bool:
     """Decide whether a Stop hook's block decision may inject a continuation.
 
     Mirrors :func:`should_queue_refusal_recovery`'s suppression set so a hook can
-    never override the Stop button: a stop in progress, a pending session reset,
-    or a Stop pressed during the turn all win over the hook. Like that gate it
-    takes the host's live Stop signal and not the backend's wire ``stopReason``:
-    a backend that aborts a policy-denied turn (codex) reports ``cancelled``
-    with no Stop pressed, and a hook continuation is owed there just as the
-    refusal continuation is.
+    never override the Stop button: a pending session reset, or a Stop issued
+    during the turn (in flight or already resolved, from any surface), both win
+    over the hook. Like that gate it takes the host's live Stop signal and not
+    the backend's wire ``stopReason``: a backend that aborts a policy-denied
+    turn (codex) reports ``cancelled`` with no Stop pressed, and a hook
+    continuation is owed there just as the refusal continuation is.
     """
-    return bool(not stopping and not needs_reset and not user_stopped)
+    return bool(not needs_reset and not user_stopped)
 
 
 def parse_hook_continuations(stdouts: list[str]) -> list[str]:

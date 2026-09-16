@@ -2908,6 +2908,10 @@ class SessionManager:
             on_hard=on_hard,
         )
 
+    def stop_generation(self, key: str) -> int:
+        """Monotonic count of :meth:`stop_turn` requests recorded for *key*."""
+        return self._lifecycle_boundary().stop_generation(key)
+
     async def _send_abort_for_session(self, key: str, session: Any) -> None:
         """Best-effort abort gateway work before hard session teardown."""
         await self._lifecycle_boundary()._send_abort_for_session(key, session)

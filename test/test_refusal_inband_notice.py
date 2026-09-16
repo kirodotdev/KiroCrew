@@ -330,7 +330,6 @@ class TestRecoveryIsNowAFallback:
     def test_confirmed_in_band_delivery_skips_the_extra_turn(self):
         assert not should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
             user_stopped=False,
             notices_sent=1,
@@ -342,7 +341,6 @@ class TestRecoveryIsNowAFallback:
         # any model-inference boundary, so the model was told nothing.
         assert should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
             user_stopped=False,
             notices_sent=1,
@@ -353,7 +351,6 @@ class TestRecoveryIsNowAFallback:
         # Two denies, one notice: the uncovered one has no other way to be told.
         assert should_queue_refusal_recovery(
             [("bash", "denied"), ("fs_write", "blocked")],
-            stopping=False,
             needs_reset=False,
             user_stopped=False,
             notices_sent=1,
@@ -363,14 +360,11 @@ class TestRecoveryIsNowAFallback:
     def test_defaults_preserve_pre_existing_behaviour(self):
         # A caller that knows nothing about notices (harness without steer)
         # behaves as if nothing was steered: the extra turn is owed.
-        assert should_queue_refusal_recovery(
-            self.REFUSALS, stopping=False, needs_reset=False, user_stopped=False
-        )
+        assert should_queue_refusal_recovery(self.REFUSALS, needs_reset=False, user_stopped=False)
 
     def test_user_cancel_still_wins_over_in_band_accounting(self):
         assert not should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
             user_stopped=True,
             notices_sent=0,
@@ -379,7 +373,7 @@ class TestRecoveryIsNowAFallback:
 
     def test_no_refusals_never_queues_even_with_notices(self):
         assert not should_queue_refusal_recovery(
-            [], stopping=False, needs_reset=False, user_stopped=False, notices_sent=3
+            [], needs_reset=False, user_stopped=False, notices_sent=3
         )
 
 
@@ -735,8 +729,11 @@ class TestEveryHostDenyCallSiteIsWired:
         # turn coroutine.
         src = self._src()
         assert src.count("def _stop_pressed() -> bool:") == 1, "the live Stop signal helper moved"
-        body = src.split("def _stop_pressed() -> bool:", 1)[1][:1400]
+        body = src.split("def _stop_pressed() -> bool:", 1)[1][:2000]
         assert "_stop_generation" in body and "_stop_gen_at_entry" in body
+        # ...and the session-scoped count, so a stop issued on a linked channel
+        # surface (which never touches the slot's own state) is seen too.
+        assert "_session_stop_generation()" in body and "_session_stop_gen_at_entry" in body
         # refusal recovery: the gate call, and the re-read after the awaited
         # credential-hint lookup, before the queue write.
         gate = "if should_queue_refusal_recovery("
@@ -751,7 +748,7 @@ class TestEveryHostDenyCallSiteIsWired:
         assert "turn_aborted=(_stop_reason == STOP_REASON_CANCELLED)" in window
         # stop-hook continuation: outer gate and the recheck after the config load.
         hook_calls = re.findall(
-            r"should_queue_hook_continuation\(\s*slot\._stopping, needs_session_reset, user_stopped=_stop_pressed\(\)\s*\)",
+            r"should_queue_hook_continuation\(\s*needs_session_reset, user_stopped=_stop_pressed\(\)\s*\)",
             src,
         )
         assert (
