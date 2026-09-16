@@ -109,6 +109,24 @@ to integrate with two contracts. The remaining target is one plugin shape that
 both drivers consume; the acceptance fixture below proves the structured half
 is provider-neutral, not that the two stacks are already one.
 
+### Retiring `irq.Probe` is gated on layer 3
+
+Retirement is downstream of layer 3, not of the coalescing window the pure
+decision engine gained. That window folds successive changes to one subject over
+time, which is not the mechanism the cron path depends on. What that path uses,
+and the shared engine cannot yet express, is already named in layers 3 and 4
+below: the urgency claim layer 3 calls `IMMEDIATE` and the kernel implements as
+`Severity.NMI`, for a condition where waiting observes nothing further; and the
+per-entry `resets_on` distinction, which decides whether a new revision clears an
+entry or the entry outlives it. One fingerprint per subject can express neither.
+It has no per-entry identity to scope and no severity to raise, so an entry that
+must fire now cannot say so, and an entry that survives a force-push cannot be
+told from one the force-push resolved.
+
+Deleting the old extension point before layer 3 lands would therefore delete
+those two behaviours rather than move them. Until then the two drivers keep two
+contracts, and an author adding a cron-path kind still subclasses `irq.Probe`.
+
 ## A monitor is a field, not a system
 
 A reader who knows the code arrives expecting a monitor subsystem sitting beside
