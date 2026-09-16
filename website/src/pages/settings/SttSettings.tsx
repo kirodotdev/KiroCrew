@@ -475,12 +475,17 @@ export default function SttSettings({ cardIndex }: {
 
   const mut = useMutation({
     mutationFn: (patch: Partial<SttConfig>) => api.saveSttConfig(patch),
-    onSuccess: data => {
+    onSuccess: (data, patch) => {
       qc.setQueryData(['sttConfig'], data)
       // Provider, model and enablement all change what the availability probe
       // answers, so the status card would otherwise keep describing the previous
       // selection until something else happened to refetch it.
       qc.invalidateQueries({ queryKey: ['sttStatus'] })
+      // A new profile/region resolves a different account; without this the gate
+      // keeps the old one and Confirm 409s as a stale confirmation.
+      if ('transcribe_profile' in patch || 'transcribe_region' in patch) {
+        qc.invalidateQueries({ queryKey: ['awsConsent', PROVIDER_TRANSCRIBE] })
+      }
     },
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.failed_to_save_stt_config')),
   })
@@ -770,7 +775,7 @@ export default function SttSettings({ cardIndex }: {
 
         {isTranscribe && (
           <>
-            <AwsConsentGate service="transcribe" />
+            <AwsConsentGate service={PROVIDER_TRANSCRIBE} />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_profile_transcribe')} description={i18nT('pages.settings.sttSettings.aws_credentials_profile_for_transcribe_blank_def')} value={localProfile} onChange={setLocalProfile} onBlur={() => set({ transcribe_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.sttSettings.default')} disabled={saving} />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_region_transcribe')} description={i18nT('pages.settings.sttSettings.aws_region_for_transcribe')} value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder={i18nT('pages.settings.sttSettings.us_east_1')} disabled={saving} />
           </>

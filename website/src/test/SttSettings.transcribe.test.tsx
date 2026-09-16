@@ -27,6 +27,7 @@ vi.mock('../api/client', () => ({
     restartGateway: vi.fn(),
     sttStatus: vi.fn(),
     sttPrepare: vi.fn(),
+    awsConsent: vi.fn(),
   },
 }))
 
@@ -35,6 +36,7 @@ const mockApi = api as unknown as {
   saveSttConfig: ReturnType<typeof vi.fn>
   restartGateway: ReturnType<typeof vi.fn>
   sttStatus: ReturnType<typeof vi.fn>
+  awsConsent: ReturnType<typeof vi.fn>
 }
 
 function payload(over: Record<string, unknown> = {}) {
@@ -87,13 +89,28 @@ function mount(over: Record<string, unknown> = {}) {
     },
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  mockApi.awsConsent.mockResolvedValue({
+    service: 'transcribe',
+    serviceLabel: 'Amazon Transcribe',
+    profile: 'old-profile',
+    credentialSource: 'profile "old-profile"',
+    region: 'us-east-1',
+    account: '111111111111',
+    arn: 'arn:aws:iam::111111111111:user/old',
+    identityResolved: true,
+    identityDetail: '',
+    granted: true,
+    reason: '',
+    revokedOnAccountChange: false,
+  })
+  const view = render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
         <SttSettings />
       </QueryClientProvider>
     </Provider>,
   )
+  return Object.assign(view, { qc })
 }
 
 /**
@@ -236,5 +253,60 @@ describe('SttSettings provider-aware install surface', () => {
     // The backend never serves `docker_mode`, so the row could only ever
     // read "Native" — it conveys nothing and is gone.
     expect(screen.queryByText(/^runtime$/i)).toBeNull()
+  })
+})
+
+/**
+ * The consent gate caches the resolved account under ['awsConsent','transcribe'],
+ * which the save mutation must invalidate on a credential change but not otherwise.
+ */
+describe('SttSettings Transcribe consent-gate refresh', () => {
+  beforeEach(async () => {
+    await initI18n()
+    vi.clearAllMocks()
+  })
+  afterEach(cleanup)
+
+  it('re-probes the consent gate when the Transcribe profile is saved', async () => {
+    const view = mount({ provider: 'transcribe', transcribe_profile: 'old-profile' })
+    await loaded()
+    const invalidate = vi.spyOn(view.qc, 'invalidateQueries')
+
+    const profileInput = screen.getByLabelText(/aws.*profile/i)
+    fireEvent.change(profileInput, { target: { value: 'new-profile' } })
+    fireEvent.blur(profileInput)
+
+    await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ transcribe_profile: 'new-profile' }))
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['awsConsent', 'transcribe'] }),
+    )
+  })
+
+  it('re-probes the consent gate when the Transcribe region is saved', async () => {
+    const view = mount({ provider: 'transcribe', transcribe_region: 'us-east-1' })
+    await loaded()
+    const invalidate = vi.spyOn(view.qc, 'invalidateQueries')
+
+    const regionInput = screen.getByLabelText(/aws.*region/i)
+    fireEvent.change(regionInput, { target: { value: 'eu-west-1' } })
+    fireEvent.blur(regionInput)
+
+    await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ transcribe_region: 'eu-west-1' }))
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['awsConsent', 'transcribe'] }),
+    )
+  })
+
+  it('leaves the consent gate cache alone for a save that is not a credential change', async () => {
+    const view = mount({ provider: 'transcribe', enabled: true })
+    await loaded()
+    const invalidate = vi.spyOn(view.qc, 'invalidateQueries')
+
+    // A save whose patch touches neither profile nor region.
+    fireEvent.click(screen.getByLabelText(/^enabled$/i))
+
+    await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ enabled: false }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sttStatus'] })
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['awsConsent', 'transcribe'] })
   })
 })
