@@ -121,5 +121,6 @@ agent loads only the one it needs.
 | [cloud.md](cloud.md) | Cloud connect and remote gateway login. |
 | [connections.md](connections.md) | Third-party account connections: provider registry and tiers, the mint endpoints, grant custody at the kiro-cli boundary, warm-table prewarming, owner-only disconnect, and the L0/L1 launch gates. |
 | [connector-capability-manifest.md](connector-capability-manifest.md) | The connector campaign's manifest field schema (one row per required operation) and the `W00`–`W16` work-stream DAG that sequences its provider rounds. |
+| [connector-conformance.md](connector-conformance.md) | The `W00-S4` conformance foundation: which component owns each `ConformanceRun`/`EvidenceReceipt` conformance responsibility, so none is dropped when the slice-unique validation remainder is empty. Records the `evidence_tier` contract-vs-spec item as pending. |
 | [instances.md](instances.md) | Managing multiple instances over SSH. Sections here are cited by number from `cloud/connect.py`, so do not renumber them. |
 | [dev-fleet.md](dev-fleet.md) | Worktree fleet management and pruning. |
