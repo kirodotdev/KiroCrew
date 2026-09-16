@@ -75,7 +75,7 @@ from kiro_crew.dashboard.chat_utils import (
     run_config_write,
 )
 from kiro_crew.dashboard.state import append_and_surface
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import discovery_executor, run_in_embed_pool
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import (
     HOOK_REPLY,
@@ -1100,6 +1100,28 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
     return declared if isinstance(declared, str) and declared else match.stem
 
 
+async def _resolve_agent_name_off_loop(name: str, project_dir: str | None = None) -> str | None:
+    """Async wrapper: runs :func:`_resolve_agent_name` on the discovery executor.
+
+    ``_resolve_agent_name`` walks and stats ``.kiro``/``.kiro/agents`` (via
+    :func:`agent_discovery.project_agent_files`), which on Windows now also
+    calls :func:`platform_compat.hold_directory_tolerating_reparse` and
+    :func:`platform_compat.release_held_directory` — a synchronous
+    ``CreateFileW`` open plus a handle close — to close a TOCTOU in the
+    sensitivity check. Every
+    call site here is inside an ``async def`` Slack handler; running that
+    filesystem I/O directly on the event loop is exactly what the
+    ``no-blocking-call-on-event-loop`` anchor forbids (AUTOSDE.yaml), and stalls
+    every other in-flight Slack conversation and the gateway loop itself for as
+    long as the scan (or a slow/hung remote FS) takes. Every caller must use
+    this wrapper instead of calling ``_resolve_agent_name`` directly from async
+    code; the synchronous name stays available for the rare non-loop caller.
+    """
+    return await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _resolve_agent_name, name, project_dir
+    )
+
+
 # Frontmatter ``name:`` matcher for cc-plugins agent specs. Pre-compiled at
 # module level rather than per-iteration inside the agent-file walk below.
 _CC_AGENT_NAME_RE = re.compile(r'^name:\s*["\']?([^"\'\n]+)', re.MULTILINE)
@@ -1962,9 +1984,7 @@ async def _handle_slash_command(
             await slack.post_message(channel, "🔄 Reset to default agent.", reply_ts)
             await _add_phase_reaction(slack, channel, msg_ts, "done")
             return ""
-        resolved = await asyncio.to_thread(
-            _resolve_agent_name, agent_name, _thread_projects.get(session_key)
-        )
+        resolved = await _resolve_agent_name_off_loop(agent_name, _thread_projects.get(session_key))
         if not resolved:
             names = await asyncio.to_thread(_list_all_agent_names)
             await slack.post_message(
@@ -2131,9 +2151,7 @@ async def _handle_slash_command(
             await slack.post_message(channel, "🔄 Thread agent reset.", reply_ts)
             await _add_phase_reaction(slack, channel, msg_ts, "done")
             return ""
-        resolved = await asyncio.to_thread(
-            _resolve_agent_name, agent_name, _thread_projects.get(session_key)
-        )
+        resolved = await _resolve_agent_name_off_loop(agent_name, _thread_projects.get(session_key))
         if not resolved:
             names = await asyncio.to_thread(_list_all_agent_names)
             await slack.post_message(
@@ -2241,9 +2259,13 @@ async def _handle_slash_command(
             metadata={"user": user_id, "channel": channel, "project": resolved},
         )
         await sessions.remove(session_key)
-        # Discover project-local agents: a directory listing of the checkout,
-        # so off the loop like the metadata write above.
-        project_agents = await asyncio.to_thread(_discover_project_agents, resolved)
+        # Discover project-local agents. ``_discover_project_agents`` stats
+        # ``.kiro``/``.kiro/agents`` and on Windows opens each directory, so it
+        # runs on the discovery executor rather than this event loop -- the same
+        # hop ``_resolve_agent_name_off_loop`` makes for the same reason.
+        project_agents = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _discover_project_agents, resolved
+        )
         agent_info = ""
         if project_agents:
             names = ", ".join(
@@ -2309,8 +2331,8 @@ async def _handle_slash_command(
             if agent_name.lower() == "off":
                 agent_name = ""
             else:
-                resolved = await asyncio.to_thread(
-                    _resolve_agent_name, agent_name, _thread_projects.get(session_key)
+                resolved = await _resolve_agent_name_off_loop(
+                    agent_name, _thread_projects.get(session_key)
                 )
                 if not resolved:
                     names = await asyncio.to_thread(_list_all_agent_names)

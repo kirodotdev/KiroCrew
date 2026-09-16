@@ -12,14 +12,16 @@ Each agent is identified by its ``modeId`` — the value passed to
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import functools
+import itertools
 import logging
 import os
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Iterator
 
 from kiro_crew import agent_state
 from kiro_crew.agent_files import (
@@ -34,10 +36,23 @@ from kiro_crew.agent_spec_format import (
     parse_agent_spec_bytes,
     shadowed_markdown_specs,
     spec_stem,
+    split_listed_spec_paths,
 )
 from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir, project_kiro_dir
 from kiro_crew.executors import discovery_executor
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+from kiro_crew.hooks import (
+    FileTooLargeError,
+    is_unc_shape,
+    safe_read_file_bytes,
+    unc_probe_allowed,
+)
+from kiro_crew.platform_compat import (
+    IS_WINDOWS,
+    held_verified_chain,
+    hold_directory_tolerating_reparse,
+    path_redirects,
+    release_held_directory,
+)
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel as _sel
 
@@ -78,6 +93,48 @@ SCOPE_PROJECT = "project"
 # entry. The signature is the pair of per-directory signatures, so an edit in
 # either scope invalidates.
 _ListAgentsSig = tuple[tuple[str, int], ...]
+
+# The POSIX pinned-open flags. `O_NOFOLLOW` guards the FINAL component, which is
+# the scan target itself: a `.kiro`/`.kiro/agents` that is a link fails the open
+# rather than being followed, and `os.scandir(fd)` then reads the inode that was
+# opened, so a swap of the NAME afterwards cannot redirect the listing.
+#
+# Ancestors above the scan target are deliberately NOT screened per component
+# here. A component-by-component `O_NOFOLLOW` walk cannot tell an attacker's
+# symlink from the operating system's own: macOS resolves `/var` and `/tmp`
+# through symlinks, so such a walk refuses ordinary temp and project paths on a
+# stock machine, and the refusal surfaces as "this project has no agents" plus a
+# false security audit. Ancestor validation for a caller-supplied root belongs
+# with the caller, exactly as `project_scan._scandir_pinned` documents for its own
+# scan root; here the roster endpoint's sensitivity and UNC gates cover it.
+_NOFOLLOW_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+
+# Counter behind `_sensitive_dir_sig`, so each refusal gets a signature no cache
+# entry can already hold. `itertools.count` is atomic under CPython, which is what
+# this needs across the executor threads discovery runs on.
+_sensitive_dir_seq = itertools.count()
+
+
+def _sensitive_dir_sig() -> _ListAgentsSig:
+    """A signature for a REFUSED scan dir that never equals any earlier one.
+
+    Two distinct jobs, and a stable sentinel only does the first. It must differ
+    from the empty-dir signature ``()``, so a cache warmed on a legitimately
+    empty ``.kiro/agents`` cannot be served after that dir becomes a symlink into
+    a credential home. It must ALSO differ from its own previous value: the
+    refusal is what makes :func:`project_agent_files` emit the SEL denial, and a
+    stable sentinel matches the cached signature on the very next lookup, so the
+    cached result is served and every repeat attempt goes unaudited -- the first
+    probe is recorded and an attacker's subsequent ones are silent.
+
+    Counting per call makes the sensitive case permanently uncacheable, which is
+    the intent: a refused directory must be re-checked and re-audited every time
+    it is asked for. The ``\\0`` prefix keeps it outside the space of real
+    filenames as well.
+    """
+    return (("\0sensitive", next(_sensitive_dir_seq)),)
+
+
 _LIST_AGENTS_KEY = tuple[str, str]
 _LIST_AGENTS_CACHE: dict[_LIST_AGENTS_KEY, tuple[tuple[_ListAgentsSig, ...], list[AgentInfo]]] = {}
 
@@ -497,9 +554,178 @@ def _warn_on_systematic_scan_failure(directory: Path, candidates: int, parsed: i
         )
 
 
+@contextlib.contextmanager
+def _pinned_scan_dir(d: Path) -> Iterator[Iterable[os.DirEntry[str]] | None]:
+    """:func:`_pinned_scan_dir_fd` for a caller that needs only the entries.
+
+    Most callers just enumerate. The descriptor exists for the one that must put
+    a further question to the same directory, so it is not in this signature --
+    a caller cannot hold a descriptor it never asked for past the ``with`` block.
+    """
+    with _pinned_scan_dir_fd(d) as (entries, _dir_fd):
+        yield entries
+
+
+@contextlib.contextmanager
+def _pinned_scan_dir_fd(
+    d: Path,
+) -> Iterator[tuple[Iterable[os.DirEntry[str]] | None, int | None]]:
+    """Yield *d*'s entries and the descriptor they were read through, or ``None``.
+
+    ``project_agent_files`` sensitivity-checks the project ROOT, but the
+    directories it actually enumerates are the ``<project>/.kiro`` and
+    ``<project>/.kiro/agents`` SUBDIRS. A checkout whose ``.kiro`` or
+    ``.kiro/agents`` is a symlink into a credential home has a non-sensitive
+    root yet a sensitive scan target, so the root check alone lets
+    ``scandir``+``stat`` touch the protected directory (per-file reads are
+    still blocked by :func:`_read_agent_spec`, but the probe itself should not
+    happen). ``None`` means refuse-and-audit; an empty iterator means there is
+    simply nothing to scan, which is the ordinary case for a checkout with no
+    ``.kiro`` yet.
+
+    Yielding the ENTRIES rather than a verdict is what makes the check and the
+    use one operation instead of two racing ones, and this is
+    :func:`project_scan._scandir_pinned`'s shape on both platforms, for the
+    reasons that module documents:
+
+    * On POSIX the open is ``O_NOFOLLOW``/``O_DIRECTORY``, so a final component
+      that is (or becomes) a link fails the open rather than being followed, and
+      enumeration then runs ``os.scandir(fd)`` -- descriptor-relative, so it
+      reads the inode that was validated even if the NAME is swapped afterwards.
+      A name-based ``glob`` would re-resolve and follow the swap.
+    * On Windows, which has neither flag and cannot ``scandir`` a descriptor, a
+      held handle stands in: opened without ``FILE_SHARE_DELETE`` it refuses the
+      rename or delete every swap needs first, and NTFS extends that to the
+      ancestors by refusing to rename a directory while anything beneath it is
+      open. Under that hold the reparse TAG is inspected before anything
+      resolves the name, so a junction or symlink is refused while a OneDrive
+      placeholder -- a reparse point that decorates a real local directory in
+      place, default on Windows 11 -- still scans.
+
+    The caller MUST consume the entries inside the ``with`` block; nothing after
+    it exits is protected. The same holds for the descriptor, which is closed on
+    exit: it is ``None`` on Windows, which has no ``dir_fd`` and does not need one
+    because the hold pins the name there.
+    """
+    if IS_WINDOWS:
+        d_str = os.fspath(d)
+        try:
+            if is_unc_shape(d_str) and not unc_probe_allowed(d_str):
+                yield None, None
+                return
+        except (OSError, ValueError):
+            yield None, None
+            return
+        with contextlib.ExitStack() as chain:
+            # Ancestors screened and HELD before the hold below opens *d*: that
+            # open resolves the whole path, so an ancestor junction already in
+            # place is traversed by it, and a UNC target authenticates outbound
+            # before any check on *d* itself can run.
+            refused, absent = chain.enter_context(held_verified_chain(d_str))
+            if refused:
+                yield None, None
+                return
+            if absent:
+                # A component of the path does not exist. Report "nothing here"
+                # WITHOUT opening anything below it: an absent component cannot be
+                # held, so opening a descendant would traverse whatever is planted
+                # at that name meanwhile. Not a denial -- a checkout without
+                # `.kiro` is the ordinary case and must not write a security audit.
+                yield (), None
+                return
+            try:
+                fd = hold_directory_tolerating_reparse(d_str)
+            except (OSError, ValueError):
+                # Could not be opened at all (does not exist, permission denied,
+                # an embedded NUL): an ordinary "nothing here", NOT a security
+                # event, so an empty listing rather than a denial.
+                yield (), None
+                return
+            try:
+                if path_redirects(d_str):
+                    # Refused BEFORE anything resolves it: resolving a junction
+                    # that targets a UNC share is what makes Windows
+                    # authenticate to that host. Tag-discriminating, so a
+                    # placeholder still scans.
+                    yield None, None
+                    return
+                if is_sensitive_path(d_str):
+                    yield None, None
+                    return
+                try:
+                    # Materialized BEFORE the yield, deliberately. A
+                    # `@contextmanager` generator may yield exactly once, and a
+                    # lazy iterator lets an `OSError` surface DURING the caller's
+                    # iteration -- that exception is thrown back in at the yield,
+                    # and a second yield from the handler raises
+                    # `RuntimeError: generator didn't stop after throw()`, which
+                    # aborts the caller's whole command rather than degrading to
+                    # "no agents". Reading the entries here also guarantees the
+                    # enumeration happens while the hold is still live.
+                    with os.scandir(d_str) as scan:
+                        entries = list(scan)
+                except OSError:
+                    yield (), None
+                    return
+                # No `dir_fd`: Windows has none, and needs none here. The HOLD is
+                # what pins the name -- a directory cannot be renamed while a
+                # handle on it or beneath it is open -- so a later by-name probe
+                # of this directory resolves the directory that was validated.
+                yield entries, None
+            finally:
+                release_held_directory(fd)
+        return
+    try:
+        leaf_fd = os.open(d, _NOFOLLOW_DIR_FLAGS)
+    except NotADirectoryError:
+        # ENOTDIR: the name is not a directory at all.
+        yield None, None
+        return
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.ELOOP:
+            # ELOOP is how `O_NOFOLLOW` REFUSES a symlink, and it is an OSError
+            # rather than NotADirectoryError -- so a bare OSError branch reports a
+            # linked scan target as merely absent and the caller never audits it.
+            # A linked `.kiro`/`.kiro/agents` is the security-relevant case this
+            # function exists for, so it must deny, not skip.
+            yield None, None
+            return
+        # Absent or unreadable: "nothing here", not a denial.
+        yield (), None
+        return
+    try:
+        try:
+            resolved = os.path.realpath(d)
+        except (OSError, ValueError):
+            yield None, None
+            return
+        if is_sensitive_path(resolved):
+            yield None, None
+            return
+        try:
+            # Materialized before the yield: a `@contextmanager` may yield once,
+            # and a lazy iterator lets a mid-enumeration `OSError` be thrown back
+            # in at the yield, where a second yield raises `RuntimeError`.
+            with os.scandir(leaf_fd) as scan:
+                entries = list(scan)
+        except OSError:
+            yield (), None
+            return
+        # The descriptor travels with the entries so a caller that must ask this
+        # directory one more question -- does `<stem>.json` exist beside this
+        # `<stem>.md` -- asks it relative to the inode already validated, rather
+        # than by a name a swap could redirect.
+        yield entries, leaf_fd
+    finally:
+        os.close(leaf_fd)
+
+
 def project_agent_files(
     project_dir: str | Path | None,
     include_legacy: bool = False,
+    *,
+    operation: str = "list_agents",
+    source: str = "list_agents",
 ) -> list[Path]:
     """Agent config files declared by a project checkout, sorted by stem.
 
@@ -525,23 +751,66 @@ def project_agent_files(
     unreadable checkout yields no agents rather than failing the caller's scan.
 
     The sensitive-path check is on the project root because that value arrives from
-    a caller-supplied session field; the per-file resolved-target check that
-    catches a planted symlink stays with the reader (:func:`_read_agent_spec`).
+    a caller-supplied session field; the ``.kiro``/``.kiro/agents`` subdirs are
+    additionally resolved and sensitivity-checked (:func:`_pinned_scan_dir`)
+    so a symlinked scope is not even enumerated, and the per-file resolved-target
+    check that catches a planted spec symlink stays with the reader
+    (:func:`_read_agent_spec`).
     """
     if not project_dir:
         return []
     if is_sensitive_path(str(project_dir)):
         logger.debug("Skipping sensitive project dir for agent discovery: %s", project_dir)
+        _audit_denied(
+            operation=operation,
+            source=source,
+            resources=str(project_dir),
+            error="sensitive project dir rejected",
+        )
         return []
     specs: list[Path] = []
     try:
         if include_legacy:
             kiro_dir = project_kiro_dir(project_dir)
-            if kiro_dir.is_dir():
-                specs.extend(kiro_dir.glob(f"*{AGENT_SPEC_SUFFIX}"))
+            with _pinned_scan_dir(kiro_dir) as entries:
+                if entries is None:
+                    logger.debug("Skipping sensitive .kiro scan dir: %s", kiro_dir)
+                    _audit_denied(
+                        operation=operation,
+                        source=source,
+                        resources=str(kiro_dir),
+                        error="sensitive scan dir rejected",
+                    )
+                else:
+                    # Consumed inside the `with` block and, on POSIX,
+                    # descriptor-relative: a swap of the NAME after the check
+                    # cannot redirect what is read (see _pinned_scan_dir).
+                    specs.extend(
+                        kiro_dir / e.name for e in entries if e.name.endswith(AGENT_SPEC_SUFFIX)
+                    )
         agents_dir = project_agents_dir(project_dir)
-        if agents_dir.is_dir():
-            specs.extend(iter_agent_spec_files(agents_dir))
+        with _pinned_scan_dir_fd(agents_dir) as (entries, dir_fd):
+            if entries is None:
+                logger.debug("Skipping sensitive .kiro/agents scan dir: %s", agents_dir)
+                _audit_denied(
+                    operation=operation,
+                    source=source,
+                    resources=str(agents_dir),
+                    error="sensitive scan dir rejected",
+                )
+            else:
+                # Both spec forms, with a ``<stem>.md`` beside its ``<stem>.json``
+                # twin dropped — the same rule the user-level scan applies through
+                # ``iter_agent_spec_files``, reached here by the listed-paths entry
+                # point so the pinned entries are used as-is. Re-globbing
+                # ``agents_dir`` by name to get that rule would reopen the
+                # check-to-use window the pin closes, and so would probing one
+                # twin's existence by name — hence ``dir_fd``, which puts that
+                # probe through the very descriptor the entries were read from.
+                live, _shadowed = split_listed_spec_paths(
+                    agents_dir, (agents_dir / e.name for e in entries), dir_fd=dir_fd
+                )
+                specs.extend(live)
     except OSError:
         return []
     return sorted(specs, key=lambda f: f.stem)
@@ -585,12 +854,30 @@ def _project_signature(project_dir: str | Path) -> tuple[_ListAgentsSig, ...]:
 
     Covers both ``<project>/.kiro`` (legacy specs) and ``<project>/.kiro/agents``, so
     an add, removal, or in-place edit in either invalidates. Stats only — no file is
-    opened — which is what makes revalidating a warm cache cheap.
+    opened — which is what makes revalidating a warm cache cheap. Each subdir whose
+    RESOLVED target is sensitive contributes :func:`_sensitive_dir_sig` rather than
+    a real ``_dir_signature`` — never ``scandir``+``stat``'d, matching
+    :func:`project_agent_files` so a symlinked ``.kiro``/``.kiro/agents`` scope is
+    never probed even for cache validation. The sentinel must differ from the
+    empty-dir signature ``()`` so a transition from empty-and-cached to
+    sensitive is a cache MISS, not a hit that skips the denial audit — see
+    :func:`_sensitive_dir_sig`.
     """
-    return (
-        _dir_signature(project_kiro_dir(project_dir)),
-        _dir_signature(project_agents_dir(project_dir)),
-    )
+    kiro_dir = project_kiro_dir(project_dir)
+    agents_dir = project_agents_dir(project_dir)
+    with _pinned_scan_dir(kiro_dir) as kiro_entries:
+        # Computed from the entries the pinned scan yielded, inside the `with`
+        # block -- the same protection the spec scan gets, rather than a
+        # signature-only stat pass reopening the window by name right after the
+        # check released its pin.
+        kiro_sig = (
+            _sensitive_dir_sig() if kiro_entries is None else _entries_signature(kiro_entries)
+        )
+    with _pinned_scan_dir(agents_dir) as agents_entries:
+        agents_sig = (
+            _sensitive_dir_sig() if agents_entries is None else _entries_signature(agents_entries)
+        )
+    return (kiro_sig, agents_sig)
 
 
 def project_agent_names(
@@ -647,7 +934,7 @@ def project_agent_names(
         return cached[1]
     candidates = 0
     declared: list[str] = []
-    for f in project_agent_files(project_dir):
+    for f in project_agent_files(project_dir, operation=operation, source=source):
         # AppleDouble sidecars are rejected by design, not by failure — a
         # directory holding only sidecars is empty of specs, not broken.
         if not f.name.startswith("._"):
@@ -1145,6 +1432,49 @@ def agent_welcome_message(
     return spec_welcome_message(data)
 
 
+def _entries_signature(entries: Iterable[os.DirEntry[str]]) -> _ListAgentsSig:
+    """Signature of an ALREADY-OPENED listing, so the caller can compute it
+    without re-resolving the directory by name.
+
+    Split out of :func:`_dir_signature` so a pinned scan can hand over the
+    entries it already validated (see :func:`_pinned_scan_dir`): re-opening the
+    directory by path to stat it would reintroduce exactly the check-to-use
+    window the pin exists to close.
+    """
+    out: list[tuple[str, int]] = []
+    try:
+        for entry in entries:
+            # Both spec forms, case-insensitively: a case-insensitive filesystem
+            # serves ``Foo.JSON`` to ``*.json`` consumers, so a case-sensitive
+            # suffix here would omit from the signature a file the scans include
+            # — its edits would never invalidate. A markdown spec that went
+            # unfingerprinted would likewise serve a stale roster forever, so the
+            # predicate is the scans' own (:func:`is_agent_spec_name`), not a
+            # second copy of it.
+            if not is_agent_spec_name(entry.name):
+                continue
+            try:
+                # follow_symlinks=False, i.e. lstat semantics: ``DirEntry.stat()``
+                # follows by DEFAULT, and on Windows statting a name that is a
+                # symlink to ``\\host\share`` IS the outbound SMB/NTLM
+                # authentication -- so fingerprinting a planted link would
+                # authenticate to a caller-chosen host before the reader's
+                # resolved-target guard in ``_read_agent_spec`` ever runs. The
+                # directory-level hold protects the scan DIRECTORY from being
+                # swapped; it says nothing about a child entry inside it, and an
+                # attacker who can write the scanned path is this feature's own
+                # threat model. The LINK's own mtime is the better signature value
+                # anyway: repointing a link changes it, while the target's mtime
+                # would not notice the repoint.
+                m = entry.stat(follow_symlinks=False).st_mtime_ns
+            except OSError:
+                m = 0
+            out.append((entry.name, m))
+    except OSError:
+        pass
+    return tuple(sorted(out))
+
+
 def _dir_signature(d: Path) -> _ListAgentsSig:
     """Cheap stat-only signature of the agents dir.
 
@@ -1159,24 +1489,11 @@ def _dir_signature(d: Path) -> _ListAgentsSig:
     ``skill://`` globs. Invalidates the :func:`list_agents`, project-names,
     and parsed-specs caches.
     """
-    entries: list[tuple[str, int]] = []
     try:
         with os.scandir(d) as it:
-            for entry in it:
-                # Case-insensitive: a case-insensitive filesystem serves
-                # ``Foo.JSON`` to ``glob("*.json")`` consumers, so a
-                # case-sensitive suffix here would omit from the signature a
-                # file the scans include — its edits would never invalidate.
-                if not is_agent_spec_name(entry.name):
-                    continue
-                try:
-                    m = entry.stat().st_mtime_ns
-                except OSError:
-                    m = 0
-                entries.append((entry.name, m))
+            return _entries_signature(it)
     except OSError:
-        pass
-    return tuple(sorted(entries))
+        return ()
 
 
 def clear_list_agents_cache() -> None:

@@ -38,6 +38,16 @@ from kiro_crew import windows_acl
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# One guarded module-scope import for the Windows directory-hold helpers, rather
+# than a deferred import inside each: `top-level-imports` forbids the deferred
+# form, and the guard is what keeps this module importable on POSIX, where
+# `_winapi` does not exist. This is the stdlib binding CPython maintains, and the
+# same one `project_scan._hold_directory` uses for these identical calls.
+try:
+    import _winapi  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - POSIX has no _winapi
+    _winapi = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS: bool = sys.platform == "win32"
@@ -5261,6 +5271,131 @@ def symlink_or_junction(target: str | os.PathLike, link: str | os.PathLike) -> N
 _ISJUNCTION = getattr(os.path, "isjunction", None)
 _FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+# The name-surrogate bit of a Windows reparse tag (``IsReparseTagNameSurrogate``
+# in the Windows SDK): set on every reparse kind whose NAME resolves somewhere
+# else -- symlinks and mount points (junctions) today, and whatever redirecting
+# kind ships next -- and clear on the kinds that decorate a real local directory
+# in place (cloud placeholders, WCI, dedup), which must keep scanning. Same
+# constant, for the same reason, as ``project_scan``'s.
+_REPARSE_NAME_SURROGATE = 0x2000_0000
+
+
+def _fd_redirects(fd: int) -> bool:
+    """True when the OPEN descriptor *fd* names a redirecting reparse point.
+
+    The descriptor form of :func:`path_redirects`, for the one case a path-based
+    test cannot serve: deciding about a component that must then be DESCENDED
+    THROUGH. A path check can be outraced between the check and the next open; a
+    descriptor already IS the object, so what this answers about is what the
+    caller holds. Same name-surrogate tag test, so a cloud placeholder is still
+    not a redirect.
+    """
+    try:
+        info = os.fstat(fd)
+    except OSError:
+        return False
+    if not getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    return bool(getattr(info, "st_reparse_tag", 0) & _REPARSE_NAME_SURROGATE)
+
+
+@contextlib.contextmanager
+def held_verified_chain(path: str | os.PathLike) -> Iterator[tuple[bool, bool]]:
+    """Screen and HOLD every ancestor of *path*, root-first; yield ``(refused, absent)``.
+
+    ``hold_directory_tolerating_reparse`` opens the requested directory, and that
+    open must RESOLVE the whole path to reach it -- so a junction already planted
+    on an ANCESTOR is traversed by the open itself, and if it targets a UNC share
+    Windows authenticates to that host before any check on the leaf can run. The
+    hold cannot prevent this: it stops an ancestor being renamed once held, not an
+    ancestor that already redirects.
+
+    So each component is handled root-first in the only order that is safe:
+    **open it without following, inspect the DESCRIPTOR, then descend.** Opening
+    with ``OPEN_REPARSE_POINT`` opens a junction AS the junction rather than
+    following it, so the open cannot leak; inspecting the descriptor rather than
+    the name is what makes the decision unraceable. Every descriptor stays held
+    for the whole ``with`` block, so no component can be swapped underneath the
+    caller after it was cleared -- screening without holding would just move the
+    window.
+
+    Three outcomes, because "not safe" and "not there" need different answers:
+
+    * ``(False, False)`` -- safe: every component exists and redirects nowhere.
+    * ``(True, False)`` -- refused: a component redirects, or cannot be opened for
+      a reason other than absence. An auditable security finding.
+    * ``(False, True)`` -- absent: a component does not exist. The caller reports
+      "nothing here" and MUST NOT open anything below it. Not a denial: a checkout
+      without ``.kiro``, or a directory the owner has not created yet, is the
+      ordinary case and must not write a security audit. Stopping rather than
+      clearing is what closes the gap -- an absent component cannot be held, so a
+      caller that went on to open a descendant would traverse whatever was planted
+      at that name meanwhile.
+
+    ``PureWindowsPath`` does the decomposition so this is pure string work,
+    correct to run on the Linux test fleet. Never calls ``realpath``: it resolves
+    THROUGH an ancestor junction, which both fires the probe and makes any
+    comparison built on it compare equal.
+    """
+    if not IS_WINDOWS:
+        yield False, False
+        return
+    try:
+        raw = os.fspath(path)
+    except (TypeError, ValueError):
+        yield True, False
+        return
+    pure = pathlib.PureWindowsPath(raw)
+    anchor = pure.anchor
+    components = [str(c) for c in (*reversed(pure.parents), pure) if str(c) and str(c) != anchor]
+    with contextlib.ExitStack() as held:
+        for candidate in components:
+            try:
+                fd = _win_open_without_following(candidate)
+            except FileNotFoundError:
+                yield False, True
+                return
+            except (OSError, ValueError):
+                yield True, False
+                return
+            held.callback(os.close, fd)
+            if _fd_redirects(fd):
+                yield True, False
+                return
+        yield False, False
+
+
+def path_redirects(path: str | os.PathLike) -> bool:
+    """True when *path*'s own final component resolves somewhere other than itself.
+
+    The redirect test to run BEFORE any ``realpath`` on a caller-supplied
+    directory. ``realpath`` follows a junction, and following one that targets a
+    UNC share makes Windows authenticate to that host, so a redirecting name has
+    to be refused before it is resolved rather than after.
+
+    ``os.lstat`` is what makes that possible: it does not follow the final
+    component, so a junction is reported rather than traversed. Take it while the
+    directory is HELD (see :func:`hold_directory_tolerating_reparse`) so the name
+    this answers about is the name the caller goes on to use.
+
+    Tests the property rather than enumerating link kinds, exactly as
+    ``project_scan._entry_redirects`` does with the same constant: a reparse
+    point whose tag carries the name-surrogate bit redirects the name. That is
+    what keeps a OneDrive placeholder -- a reparse point that decorates a real
+    local directory in place, and is on by default on Windows 11 -- scannable
+    while a junction or symlink is refused.
+
+    False on POSIX and for a plain directory: the attributes do not exist there,
+    and an ``lstat`` that fails settles nothing, so the caller's own checks own
+    that case.
+    """
+    try:
+        info = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    if not getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    return bool(getattr(info, "st_reparse_tag", 0) & _REPARSE_NAME_SURROGATE)
 
 
 def _is_junction_fallback(path: str | os.PathLike) -> bool:
@@ -5424,6 +5559,86 @@ def pin_directory(path: str | os.PathLike) -> int:
         os.close(fd)
         raise
     return fd
+
+
+def hold_directory_tolerating_reparse(path: str | os.PathLike) -> int:
+    """Hold *path* against rename/delete WITHOUT refusing a reparse point.
+
+    The counterpart to :func:`pin_directory`, for directories the OWNER chose
+    rather than ones the product created. On Windows ``pin_directory`` refuses
+    ANY ``FILE_ATTRIBUTE_REPARSE_POINT``, which is right for a product-owned
+    path (the data home, pod homes, caches, install roots -- never
+    cloud-synced) but wrong for a user's project folder: a OneDrive Known
+    Folder Move placeholder directory carries that same attribute and is on by
+    default on Windows 11, so a blanket refusal makes a synced repo's project
+    agents vanish and records a false security denial with no in-product
+    remedy. :mod:`project_scan` -- the one existing scanner of user project
+    trees on Windows -- never calls :func:`pin_directory` for exactly this
+    reason.
+
+    On POSIX this delegates straight to :func:`pin_directory`: its
+    ``O_NOFOLLOW``/``O_DIRECTORY`` open is already the correct check there and
+    has no equivalent false positive, because POSIX has no cloud-placeholder
+    reparse points.
+
+    This does NOT decide whether the path is safe; it only pins it. Hold it
+    across every check and read the caller makes on that path: the pin is what
+    keeps the name the check resolved and the name the read enumerates the same
+    directory, since a handle without ``FILE_SHARE_DELETE`` refuses the rename
+    a swap needs first, and NTFS extends that to the ancestors by refusing to
+    rename a directory while anything beneath it is open.
+    :func:`project_scan._scandir_pinned` relies on exactly that property.
+
+    Release with :func:`release_held_directory`, which dispatches to match.
+
+    Raises:
+        OSError: if the directory cannot be opened (including
+            ``NotADirectoryError`` from the POSIX path, whose contract
+            :func:`pin_directory` documents).
+        ValueError: for an embedded NUL in *path* on Windows.
+    """
+    if IS_POSIX:
+        return pin_directory(path)
+    return _win_hold_directory_no_share_delete(os.fspath(path))
+
+
+def release_held_directory(handle: int) -> None:
+    """Release a hold taken by :func:`hold_directory_tolerating_reparse`.
+
+    Dispatches to match how the hold was taken: a CRT descriptor from
+    :func:`pin_directory` on POSIX, a raw Windows handle otherwise.
+    """
+    if IS_POSIX:
+        os.close(handle)
+        return
+    _win_close_handle(handle)
+
+
+def _win_hold_directory_no_share_delete(directory: str) -> int:
+    """Open *directory* WITHOUT ``FILE_SHARE_DELETE``, refusing nothing else.
+
+    Shared plumbing for :func:`hold_directory_tolerating_reparse`. Uses the
+    stdlib ``_winapi`` module -- the same CPython-maintained binding
+    ``project_scan.py``'s ``_hold_directory`` already uses for this identical
+    problem -- rather than a hand-rolled ``ctypes`` structure. Omitting
+    ``FILE_SHARE_DELETE`` is the whole point: the directory stays readable and
+    traversable normally, and only becomes un-renameable and un-deletable for
+    as long as the handle is held, which is what a swap needs to do first.
+    """
+    return _winapi.CreateFile(  # type: ignore[attr-defined, union-attr]
+        directory,
+        0x0080,  # FILE_READ_ATTRIBUTES
+        0x00000001 | 0x00000002,  # FILE_SHARE_READ | FILE_SHARE_WRITE
+        _winapi.NULL,  # type: ignore[attr-defined]
+        _WIN_OPEN_EXISTING,
+        _WIN_FILE_FLAG_BACKUP_SEMANTICS | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
+        _winapi.NULL,  # type: ignore[attr-defined]
+    )
+
+
+def _win_close_handle(handle: int) -> None:
+    """Release a handle opened by :func:`_win_hold_directory_no_share_delete`."""
+    _winapi.CloseHandle(handle)  # type: ignore[attr-defined, union-attr]
 
 
 def _win_open_without_following(path: str | os.PathLike) -> int:
