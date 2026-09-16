@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.mcp_gateway import rewriter
+from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.mcp_gateway.rewriter import (
     _FINGERPRINT_NAME,
     overlay_ready,
@@ -1010,7 +1011,7 @@ def test_unresolved_bare_command_is_reprobed_and_install_invalidates(
     _rewrite(tmp_path)
     assert rewrite_counter["n"] == before + 1  # probe disagreed -> full rewrite
     overlay = json.loads((tmp_path / "mcp-gateway" / "agents" / "agent-0.json").read_text())
-    args = overlay["mcpServers"]["srv"]["args"]
+    args = expand_stub_flags(overlay["mcpServers"]["srv"]["args"])
     i = args.index("--target-command")
     # normcase: which() may report a differently-cased/slashed spelling on
     # Windows than pathlib's str().
@@ -1364,12 +1365,14 @@ def test_disabling_sharing_is_not_deferred_by_a_settings_read_failure(
     _mk_tree(tmp_path, n_agents=1)
     _rewrite(tmp_path)  # healthy pass with sharing ON
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
-    assert "--poolable" in json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+    assert "--poolable" in expand_stub_flags(
+        json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+    )
 
     with _settings_unreadable():
         _rewrite(tmp_path, pooling_enabled=False)  # operator turns sharing OFF
 
-    args = json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+    args = expand_stub_flags(json.loads(overlay.read_text())["mcpServers"]["srv"]["args"])
     assert "--poolable" not in args, "an explicit policy change must not be deferred"
 
 
@@ -1496,7 +1499,7 @@ def test_a_vanished_target_binary_refuses_the_keep(
     _rewrite(tmp_path)
 
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
-    args = json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+    args = expand_stub_flags(json.loads(overlay.read_text())["mcpServers"]["srv"]["args"])
     assert os.path.normcase(args[args.index("--target-command") + 1]) == (
         os.path.normcase(str(exe))
     )

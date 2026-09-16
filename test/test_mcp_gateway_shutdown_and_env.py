@@ -24,6 +24,7 @@ from kiro_crew.mcp_gateway import gatewayd, manager
 from kiro_crew.mcp_gateway.backend import HEARTBEAT_PING_ID, Backend
 from kiro_crew.mcp_gateway.hashing import (
     ENV_SCRUB_PREFIXES,
+    expand_stub_flags,
     hash_effective_env,
     is_secret_env_key,
     non_secret_env,
@@ -725,11 +726,11 @@ class TestMalformedDeclaredEnv:
         entry = self._build(tmp_path, bad_env)
         assert entry["env"] == {}
         # A malformed env yields no --env-file: nothing to hash or apply.
-        assert "--env-file" not in entry["args"]
+        assert "--env-file" not in expand_stub_flags(entry["args"])
 
     def test_valid_env_still_produces_a_sidecar(self, tmp_path):
         entry = self._build(tmp_path, {"TOOL_PERSONALIZATION_ENABLED": "false"})
-        assert "--env-file" in entry["args"]
+        assert "--env-file" in expand_stub_flags(entry["args"])
 
 
 class TestForwardDeclaredEnvFlag:
